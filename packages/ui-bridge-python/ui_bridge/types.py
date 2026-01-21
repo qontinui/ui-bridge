@@ -300,6 +300,44 @@ class ControlSnapshot(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# Simplified workflow types for client API
+class WorkflowStep(BaseModel):
+    """Workflow step definition."""
+
+    id: str
+    type: str
+    target: str | None = None
+    action: str | None = None
+    params: dict[str, Any] | None = None
+    wait_for: str | None = Field(None, alias="waitFor")
+    condition: str | None = None
+    timeout: int | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class Workflow(BaseModel):
+    """Workflow definition."""
+
+    id: str
+    name: str
+    description: str | None = None
+    steps: list[WorkflowStep]
+    variables: dict[str, Any] | None = None
+
+
+class WorkflowResult(BaseModel):
+    """Simplified workflow execution result."""
+
+    workflow_id: str
+    success: bool
+    steps_completed: int
+    total_steps: int
+    duration_ms: float | None = None
+    error: str | None = None
+    failed_step: str | None = None
+
+
 class RenderLogEntryType(str, Enum):
     """Render log entry types."""
 

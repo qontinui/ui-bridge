@@ -419,8 +419,9 @@ export class UIBridgeRegistry {
   /**
    * Register a workflow
    */
-  registerWorkflow(workflow: Workflow): void {
+  registerWorkflow(workflow: Workflow): Workflow {
     this.workflows.set(workflow.id, workflow);
+    return workflow;
   }
 
   /**
