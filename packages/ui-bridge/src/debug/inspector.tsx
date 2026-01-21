@@ -181,9 +181,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
   return (
     <div style={panelStyles}>
       <div style={headerStyles}>
-        <span style={{ fontWeight: 'bold', color: '#60a5fa' }}>
-          UI Bridge Inspector
-        </span>
+        <span style={{ fontWeight: 'bold', color: '#60a5fa' }}>UI Bridge Inspector</span>
         <button
           onClick={onClose}
           style={{
@@ -199,9 +197,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
       </div>
 
       <div style={sectionStyles}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>
-          Element
-        </div>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Element</div>
         <div>
           <span style={labelKeyStyles}>Tag:</span>
           <span style={valueStyles}>{element.tagName.toLowerCase()}</span>
@@ -237,9 +233,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
       </div>
 
       <div style={sectionStyles}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>
-          State
-        </div>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>State</div>
         <div>
           <span style={labelKeyStyles}>Visible:</span>
           <span style={{ color: state.visible ? '#10b981' : '#ef4444' }}>
@@ -275,9 +269,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
       </div>
 
       <div style={sectionStyles}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>
-          Bounds
-        </div>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Bounds</div>
         <div>
           <span style={labelKeyStyles}>Position:</span>
           <span style={valueStyles}>
@@ -293,9 +285,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
       </div>
 
       <div style={{ ...sectionStyles, borderBottom: 'none' }}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>
-          Selectors
-        </div>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Selectors</div>
         <div style={{ wordBreak: 'break-all', marginBottom: '4px' }}>
           <span style={labelKeyStyles}>CSS:</span>
           <span style={valueStyles}>{identifier.selector}</span>
@@ -308,9 +298,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
 
       {registeredElement && registeredElement.actions.length > 0 && (
         <div style={{ ...sectionStyles, borderBottom: 'none' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>
-            Actions
-          </div>
+          <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Actions</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
             {registeredElement.actions.map((action) => (
               <span
@@ -467,11 +455,7 @@ export function Inspector({ getRegisteredElement, initialActive }: InspectorProp
       {inspector.bounds && (
         <InspectorOverlay
           bounds={inspector.bounds}
-          label={
-            inspector.displayElement
-              ? getBestIdentifier(inspector.displayElement)
-              : ''
-          }
+          label={inspector.displayElement ? getBestIdentifier(inspector.displayElement) : ''}
         />
       )}
       {inspector.selectedElement && (

@@ -36,10 +36,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
   /**
    * Run a workflow
    */
-  async run(
-    workflowId: string,
-    request?: WorkflowRunRequest
-  ): Promise<WorkflowRunResponse> {
+  async run(workflowId: string, request?: WorkflowRunRequest): Promise<WorkflowRunResponse> {
     const workflow = this.registry.getWorkflow(workflowId);
     if (!workflow) {
       return {
@@ -245,10 +242,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
         if (!step.target) {
           throw new Error('Wait step requires target');
         }
-        const waitResult = await this.executor.waitFor(
-          step.target,
-          step.waitOptions || {}
-        );
+        const waitResult = await this.executor.waitFor(step.target, step.waitOptions || {});
         if (!waitResult.met) {
           throw new Error(waitResult.error || 'Wait condition not met');
         }

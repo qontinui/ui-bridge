@@ -165,12 +165,24 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/control/elements', handler: 'getElements' },
   { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
   { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
-  { method: 'POST', path: '/control/element/:id/action', handler: 'executeElementAction', params: ['id'], bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/element/:id/action',
+    handler: 'executeElementAction',
+    params: ['id'],
+    bodyRequired: true,
+  },
 
   // Control - Components
   { method: 'GET', path: '/control/components', handler: 'getComponents' },
   { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
-  { method: 'POST', path: '/control/component/:id/action/:actionId', handler: 'executeComponentAction', params: ['id', 'actionId'], bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/component/:id/action/:actionId',
+    handler: 'executeComponentAction',
+    params: ['id', 'actionId'],
+    bodyRequired: true,
+  },
 
   // Discovery
   { method: 'POST', path: '/control/discover', handler: 'discover' },
@@ -179,7 +191,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
   { method: 'POST', path: '/control/workflow/:id/run', handler: 'runWorkflow', params: ['id'] },
-  { method: 'GET', path: '/control/workflow/:runId/status', handler: 'getWorkflowStatus', params: ['runId'] },
+  {
+    method: 'GET',
+    path: '/control/workflow/:runId/status',
+    handler: 'getWorkflowStatus',
+    params: ['runId'],
+  },
 
   // Debug
   { method: 'GET', path: '/debug/action-history', handler: 'getActionHistory' },

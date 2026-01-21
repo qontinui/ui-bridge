@@ -4,12 +4,7 @@
  * Types for the control protocol and action execution.
  */
 
-import type {
-  ActionRequest,
-  ActionResponse,
-  ElementState,
-  WaitOptions,
-} from '../core/types';
+import type { ActionRequest, ActionResponse, ElementState, WaitOptions } from '../core/types';
 
 /**
  * Extended action request with additional options
@@ -328,10 +323,7 @@ export interface WaitResult {
  */
 export interface ActionExecutor {
   /** Execute an action on an element */
-  executeAction(
-    elementId: string,
-    action: ControlActionRequest
-  ): Promise<ControlActionResponse>;
+  executeAction(elementId: string, action: ControlActionRequest): Promise<ControlActionResponse>;
 
   /** Execute an action on a component */
   executeComponentAction(
@@ -340,10 +332,7 @@ export interface ActionExecutor {
   ): Promise<ComponentActionResponse>;
 
   /** Wait for a condition */
-  waitFor(
-    elementId: string,
-    options: WaitOptions
-  ): Promise<WaitResult>;
+  waitFor(elementId: string, options: WaitOptions): Promise<WaitResult>;
 
   /** Discover controllable elements */
   discover(options?: DiscoveryRequest): Promise<DiscoveryResponse>;

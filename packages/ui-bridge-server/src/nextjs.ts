@@ -152,7 +152,9 @@ export function createNextRouteHandlers(
       }
 
       // Call handler
-      const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(...args);
+      const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
+        ...args
+      );
       return jsonResponse(result);
     } catch (error) {
       console.error('UI Bridge error:', error);
@@ -170,17 +172,12 @@ export function createNextRouteHandlers(
 /**
  * Find a matching route definition
  */
-function findMatchingRoute(
-  path: string,
-  method: string
-): RouteDefinition | null {
+function findMatchingRoute(path: string, method: string): RouteDefinition | null {
   for (const route of UI_BRIDGE_ROUTES) {
     if (route.method !== method) continue;
 
     // Convert route path to regex
-    const routeRegex = route.path
-      .replace(/:[^/]+/g, '([^/]+)')
-      .replace(/\//g, '\\/');
+    const routeRegex = route.path.replace(/:[^/]+/g, '([^/]+)').replace(/\//g, '\\/');
 
     const regex = new RegExp(`^${routeRegex}$`);
     if (regex.test(path)) {
@@ -193,10 +190,7 @@ function findMatchingRoute(
 /**
  * Extract params from URL path based on route definition
  */
-function extractParams(
-  path: string,
-  route: RouteDefinition
-): Record<string, string> {
+function extractParams(path: string, route: RouteDefinition): Record<string, string> {
   const params: Record<string, string> = {};
   if (!route.params) return params;
 
@@ -247,17 +241,11 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     element: {
-      async GET(
-        _request: NextRequest,
-        context: { params: { id: string } }
-      ): Promise<Response> {
+      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const result = await handlers.getElement(context.params.id);
         return jsonResponse(result);
       },
-      async POST(
-        request: NextRequest,
-        context: { params: { id: string } }
-      ): Promise<Response> {
+      async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const body = (await request.json()) as ControlActionRequest;
         const result = await handlers.executeElementAction(context.params.id, body);
         return jsonResponse(result);
@@ -270,10 +258,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     component: {
-      async GET(
-        _request: NextRequest,
-        context: { params: { id: string } }
-      ): Promise<Response> {
+      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const result = await handlers.getComponent(context.params.id);
         return jsonResponse(result);
       },
@@ -309,10 +294,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     workflow: {
-      async POST(
-        request: NextRequest,
-        context: { params: { id: string } }
-      ): Promise<Response> {
+      async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const body = (await request.json()) as WorkflowRunRequest;
         const result = await handlers.runWorkflow(context.params.id, body);
         return jsonResponse(result);
@@ -337,10 +319,7 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     highlight: {
-      async POST(
-        _request: NextRequest,
-        context: { params: { id: string } }
-      ): Promise<Response> {
+      async POST(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
         const result = await handlers.highlightElement(context.params.id);
         return jsonResponse(result);
       },

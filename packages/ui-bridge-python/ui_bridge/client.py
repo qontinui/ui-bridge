@@ -6,24 +6,19 @@ Python client for controlling UI elements via UI Bridge HTTP API.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urljoin
 
 import httpx
 
 from .types import (
-    ActionRequest,
     ActionResponse,
-    ComponentActionRequest,
     ComponentActionResponse,
     ControlSnapshot,
-    DiscoveredElement,
-    DiscoveryRequest,
     DiscoveryResponse,
     ElementState,
     PerformanceMetrics,
     RenderLogEntry,
-    WorkflowRunRequest,
     WorkflowRunResponse,
 )
 
@@ -31,7 +26,7 @@ from .types import (
 class UIBridgeError(Exception):
     """Base exception for UI Bridge errors."""
 
-    def __init__(self, message: str, code: Optional[str] = None):
+    def __init__(self, message: str, code: str | None = None):
         super().__init__(message)
         self.code = code
 
@@ -81,7 +76,7 @@ class UIBridgeClient:
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
 
-    def __enter__(self) -> "UIBridgeClient":
+    def __enter__(self) -> UIBridgeClient:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -100,8 +95,8 @@ class UIBridgeClient:
         method: str,
         path: str,
         *,
-        json: Optional[dict[str, Any]] = None,
-        params: Optional[dict[str, Any]] = None,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
         """Make an HTTP request and return the data."""
         response = self._client.request(
@@ -132,7 +127,7 @@ class UIBridgeClient:
         *,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """
         Click an element.
@@ -160,7 +155,7 @@ class UIBridgeClient:
         *,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """Double-click an element."""
         return self._execute_action(
@@ -177,7 +172,7 @@ class UIBridgeClient:
         *,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """Right-click an element."""
         return self._execute_action(
@@ -194,10 +189,10 @@ class UIBridgeClient:
         text: str,
         *,
         clear: bool = False,
-        delay: Optional[int] = None,
+        delay: int | None = None,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """
         Type text into an input element.
@@ -235,7 +230,7 @@ class UIBridgeClient:
         *,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """Clear an input element."""
         return self._execute_action(
@@ -254,7 +249,7 @@ class UIBridgeClient:
         by_label: bool = False,
         wait_visible: bool = True,
         wait_enabled: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """
         Select an option in a select element.
@@ -299,10 +294,10 @@ class UIBridgeClient:
         self,
         element_id: str,
         *,
-        direction: Optional[str] = None,
-        amount: Optional[int] = None,
-        to_element: Optional[str] = None,
-        position: Optional[tuple[int, int]] = None,
+        direction: str | None = None,
+        amount: int | None = None,
+        to_element: str | None = None,
+        position: tuple[int, int] | None = None,
         smooth: bool = False,
     ) -> ActionResponse:
         """
@@ -350,10 +345,10 @@ class UIBridgeClient:
         element_id: str,
         action: str,
         *,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         wait_visible: bool = False,
         wait_enabled: bool = False,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> ActionResponse:
         """Execute an action on an element."""
         request: dict[str, Any] = {"action": action}
@@ -404,7 +399,7 @@ class UIBridgeClient:
     # Components
     # ==========================================================================
 
-    def component(self, component_id: str) -> "ComponentControl":
+    def component(self, component_id: str) -> ComponentControl:
         """
         Get a component control interface.
 
@@ -428,7 +423,7 @@ class UIBridgeClient:
         self,
         component_id: str,
         action: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> ComponentActionResponse:
         """Execute an action on a component."""
         request: dict[str, Any] = {"action": action}
@@ -454,12 +449,12 @@ class UIBridgeClient:
     def discover(
         self,
         *,
-        root: Optional[str] = None,
+        root: str | None = None,
         interactive_only: bool = False,
         include_hidden: bool = False,
-        limit: Optional[int] = None,
-        types: Optional[list[str]] = None,
-        selector: Optional[str] = None,
+        limit: int | None = None,
+        types: list[str] | None = None,
+        selector: str | None = None,
     ) -> DiscoveryResponse:
         """
         Discover controllable elements in the UI.
@@ -501,7 +496,7 @@ class UIBridgeClient:
     # Workflows
     # ==========================================================================
 
-    def workflow(self, workflow_id: str) -> "WorkflowControl":
+    def workflow(self, workflow_id: str) -> WorkflowControl:
         """
         Get a workflow control interface.
 
@@ -520,12 +515,12 @@ class UIBridgeClient:
     def run_workflow(
         self,
         workflow_id: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         *,
-        start_step: Optional[str] = None,
-        stop_step: Optional[str] = None,
-        step_timeout: Optional[int] = None,
-        workflow_timeout: Optional[int] = None,
+        start_step: str | None = None,
+        stop_step: str | None = None,
+        step_timeout: int | None = None,
+        workflow_timeout: int | None = None,
     ) -> WorkflowRunResponse:
         """Run a workflow."""
         request: dict[str, Any] = {}
@@ -557,17 +552,17 @@ class UIBridgeClient:
     # ==========================================================================
 
     @property
-    def render_log(self) -> "RenderLogControl":
+    def render_log(self) -> RenderLogControl:
         """Get render log control interface."""
         return RenderLogControl(self)
 
     def get_render_log(
         self,
         *,
-        entry_type: Optional[str] = None,
-        since: Optional[int] = None,
-        until: Optional[int] = None,
-        limit: Optional[int] = None,
+        entry_type: str | None = None,
+        since: int | None = None,
+        until: int | None = None,
+        limit: int | None = None,
     ) -> list[RenderLogEntry]:
         """Get render log entries."""
         params: dict[str, Any] = {}
@@ -595,7 +590,7 @@ class UIBridgeClient:
     # Debug
     # ==========================================================================
 
-    def get_action_history(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    def get_action_history(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Get action history."""
         params = {"limit": limit} if limit else None
         return self._request("GET", "/debug/action-history", params=params)
@@ -638,17 +633,15 @@ class ComponentControl:
     def action(
         self,
         action: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> ComponentActionResponse:
         """Execute an action on the component."""
-        return self._client.execute_component_action(
-            self._component_id, action, params
-        )
+        return self._client.execute_component_action(self._component_id, action, params)
 
     def __call__(
         self,
         action: str,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> ComponentActionResponse:
         """Execute an action on the component."""
         return self.action(action, params)
@@ -663,10 +656,10 @@ class WorkflowControl:
 
     def run(
         self,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         *,
-        start_step: Optional[str] = None,
-        stop_step: Optional[str] = None,
+        start_step: str | None = None,
+        stop_step: str | None = None,
     ) -> WorkflowRunResponse:
         """Run the workflow."""
         return self._client.run_workflow(
@@ -678,7 +671,7 @@ class WorkflowControl:
 
     def __call__(
         self,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> WorkflowRunResponse:
         """Run the workflow."""
         return self.run(params)
@@ -693,10 +686,10 @@ class RenderLogControl:
     def get(
         self,
         *,
-        entry_type: Optional[str] = None,
-        since: Optional[int] = None,
-        until: Optional[int] = None,
-        limit: Optional[int] = None,
+        entry_type: str | None = None,
+        since: int | None = None,
+        until: int | None = None,
+        limit: int | None = None,
     ) -> list[RenderLogEntry]:
         """Get render log entries."""
         return self._client.get_render_log(

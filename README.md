@@ -15,11 +15,11 @@ UI Bridge enables programmatic observation and control of React UI elements via 
 
 ## Packages
 
-| Package | Description | Registry |
-|---------|-------------|----------|
-| `ui-bridge` | React hooks and providers | npm |
-| `ui-bridge-server` | HTTP server adapters (Express, Next.js) | npm |
-| `ui-bridge-python` | Python client library | PyPI |
+| Package            | Description                             | Registry |
+| ------------------ | --------------------------------------- | -------- |
+| `ui-bridge`        | React hooks and providers               | npm      |
+| `ui-bridge-server` | HTTP server adapters (Express, Next.js) | npm      |
+| `ui-bridge-python` | Python client library                   | PyPI     |
 
 ## Quick Start
 
@@ -38,9 +38,9 @@ function App() {
   return (
     <UIBridgeProvider
       features={{
-        renderLog: true,  // DOM observation
-        control: true,    // HTTP control endpoints
-        debug: true,      // DevTools integration
+        renderLog: true, // DOM observation
+        control: true, // HTTP control endpoints
+        debug: true, // DevTools integration
       }}
     >
       <YourApp />
@@ -179,6 +179,7 @@ GET  /ui-bridge/debug/metrics
 ### Server Integration
 
 **Express:**
+
 ```ts
 import { createExpressRouter } from 'ui-bridge-server/express';
 
@@ -186,6 +187,7 @@ app.use('/ui-bridge', createExpressRouter(handlers));
 ```
 
 **Next.js (App Router):**
+
 ```ts
 // app/api/ui-bridge/[...path]/route.ts
 import { createNextRouteHandlers } from 'ui-bridge-server/nextjs';
@@ -194,6 +196,7 @@ export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 ```
 
 **Standalone:**
+
 ```ts
 import { createStandaloneServer } from 'ui-bridge-server/standalone';
 
@@ -203,6 +206,7 @@ const server = await createStandaloneServer(handlers, { port: 9876 });
 ### Debug Tools
 
 Press `Ctrl+Shift+I` to open the inspector overlay:
+
 - Hover over elements to see their identifiers
 - Click to inspect element details
 - View available actions and current state

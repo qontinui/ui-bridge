@@ -152,10 +152,7 @@ export class MetricsCollector {
   /**
    * Record a workflow step
    */
-  recordWorkflowStep(
-    workflowId: string,
-    result: WorkflowStepResult
-  ): ActionHistoryEntry {
+  recordWorkflowStep(workflowId: string, result: WorkflowStepResult): ActionHistoryEntry {
     const entry: ActionHistoryEntry = {
       id: generateId(),
       timestamp: result.timestamp,
@@ -242,9 +239,7 @@ export class MetricsCollector {
    * Get performance metrics
    */
   getMetrics(since?: number): PerformanceMetrics {
-    const entries = since
-      ? this.history.filter((e) => e.timestamp >= since)
-      : this.history;
+    const entries = since ? this.history.filter((e) => e.timestamp >= since) : this.history;
 
     if (entries.length === 0) {
       return {
@@ -312,9 +307,7 @@ export class MetricsCollector {
    * Get slowest actions
    */
   getSlowestActions(limit = 10): ActionHistoryEntry[] {
-    return [...this.history]
-      .sort((a, b) => b.durationMs - a.durationMs)
-      .slice(0, limit);
+    return [...this.history].sort((a, b) => b.durationMs - a.durationMs).slice(0, limit);
   }
 
   /**
@@ -350,9 +343,7 @@ export class MetricsCollector {
 /**
  * Create a metrics collector
  */
-export function createMetricsCollector(
-  options?: MetricsCollectorOptions
-): MetricsCollector {
+export function createMetricsCollector(options?: MetricsCollectorOptions): MetricsCollector {
   return new MetricsCollector(options);
 }
 

@@ -60,9 +60,7 @@ function getElementState(element: HTMLElement): ElementState {
     state.value = element.value;
   } else if (element instanceof HTMLSelectElement) {
     state.value = element.value;
-    state.selectedOptions = Array.from(element.selectedOptions).map(
-      (opt) => opt.value
-    );
+    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
   }
 
   return state;
@@ -372,12 +370,13 @@ export class UIBridgeRegistry {
       id,
       name: options.name,
       description: options.description,
-      actions: options.actions?.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        handler: a.handler,
-      })) ?? [],
+      actions:
+        options.actions?.map((a) => ({
+          id: a.id,
+          label: a.label,
+          description: a.description,
+          handler: a.handler,
+        })) ?? [],
       elementIds: options.elementIds,
       registeredAt: Date.now(),
       mounted: true,
@@ -458,9 +457,7 @@ export class UIBridgeRegistry {
         identifier: el.getIdentifier(),
         state: el.getState(),
         actions: el.actions,
-        customActions: el.customActions
-          ? Object.keys(el.customActions)
-          : undefined,
+        customActions: el.customActions ? Object.keys(el.customActions) : undefined,
       })),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,

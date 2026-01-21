@@ -191,14 +191,11 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   );
 
   // Add element ID
-  const addElement = useCallback(
-    (elementId: string) => {
-      if (!elementIdsRef.current.includes(elementId)) {
-        elementIdsRef.current = [...elementIdsRef.current, elementId];
-      }
-    },
-    []
-  );
+  const addElement = useCallback((elementId: string) => {
+    if (!elementIdsRef.current.includes(elementId)) {
+      elementIdsRef.current = [...elementIdsRef.current, elementId];
+    }
+  }, []);
 
   // Remove element ID
   const removeElement = useCallback((elementId: string) => {

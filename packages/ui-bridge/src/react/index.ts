@@ -31,8 +31,4 @@ export {
 } from './useUIComponent';
 
 // Bridge hook
-export {
-  useUIBridge,
-  useUIBridgeRequired,
-  type UseUIBridgeReturn,
-} from './useUIBridge';
+export { useUIBridge, useUIBridgeRequired, type UseUIBridgeReturn } from './useUIBridge';

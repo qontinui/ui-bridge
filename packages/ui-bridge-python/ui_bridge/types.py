@@ -6,8 +6,8 @@ Pydantic models for UI Bridge API responses and requests.
 
 from __future__ import annotations
 
-from typing import Any, Optional
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -43,12 +43,12 @@ class ElementState(BaseModel):
     enabled: bool
     focused: bool
     rect: ElementRect
-    value: Optional[str] = None
-    checked: Optional[bool] = None
-    selected_options: Optional[list[str]] = Field(None, alias="selectedOptions")
-    text_content: Optional[str] = Field(None, alias="textContent")
-    inner_html: Optional[str] = Field(None, alias="innerHTML")
-    computed_styles: Optional[ComputedStyles] = Field(None, alias="computedStyles")
+    value: str | None = None
+    checked: bool | None = None
+    selected_options: list[str] | None = Field(None, alias="selectedOptions")
+    text_content: str | None = Field(None, alias="textContent")
+    inner_html: str | None = Field(None, alias="innerHTML")
+    computed_styles: ComputedStyles | None = Field(None, alias="computedStyles")
 
     model_config = {"populate_by_name": True}
 
@@ -56,10 +56,10 @@ class ElementState(BaseModel):
 class ElementIdentifier(BaseModel):
     """Element identification using multiple strategies."""
 
-    ui_id: Optional[str] = Field(None, alias="uiId")
-    test_id: Optional[str] = Field(None, alias="testId")
-    awas_id: Optional[str] = Field(None, alias="awasId")
-    html_id: Optional[str] = Field(None, alias="htmlId")
+    ui_id: str | None = Field(None, alias="uiId")
+    test_id: str | None = Field(None, alias="testId")
+    awas_id: str | None = Field(None, alias="awasId")
+    html_id: str | None = Field(None, alias="htmlId")
     xpath: str
     selector: str
 
@@ -105,22 +105,22 @@ class StandardAction(str, Enum):
 class WaitOptions(BaseModel):
     """Wait options for actions."""
 
-    visible: Optional[bool] = None
-    enabled: Optional[bool] = None
-    focused: Optional[bool] = None
-    state: Optional[dict[str, Any]] = None
-    timeout: Optional[int] = None
-    interval: Optional[int] = None
+    visible: bool | None = None
+    enabled: bool | None = None
+    focused: bool | None = None
+    state: dict[str, Any] | None = None
+    timeout: int | None = None
+    interval: int | None = None
 
 
 class ActionRequest(BaseModel):
     """Action request sent to the control API."""
 
     action: str
-    params: Optional[dict[str, Any]] = None
-    wait_options: Optional[WaitOptions] = Field(None, alias="waitOptions")
-    request_id: Optional[str] = Field(None, alias="requestId")
-    capture_after: Optional[bool] = Field(None, alias="captureAfter")
+    params: dict[str, Any] | None = None
+    wait_options: WaitOptions | None = Field(None, alias="waitOptions")
+    request_id: str | None = Field(None, alias="requestId")
+    capture_after: bool | None = Field(None, alias="captureAfter")
 
     model_config = {"populate_by_name": True}
 
@@ -129,14 +129,14 @@ class ActionResponse(BaseModel):
     """Response from an action execution."""
 
     success: bool
-    element_state: Optional[ElementState] = Field(None, alias="elementState")
-    result: Optional[Any] = None
-    error: Optional[str] = None
-    stack: Optional[str] = None
+    element_state: ElementState | None = Field(None, alias="elementState")
+    result: Any | None = None
+    error: str | None = None
+    stack: str | None = None
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
-    request_id: Optional[str] = Field(None, alias="requestId")
-    wait_duration_ms: Optional[float] = Field(None, alias="waitDurationMs")
+    request_id: str | None = Field(None, alias="requestId")
+    wait_duration_ms: float | None = Field(None, alias="waitDurationMs")
 
     model_config = {"populate_by_name": True}
 
@@ -145,8 +145,8 @@ class ComponentActionRequest(BaseModel):
     """Component action request."""
 
     action: str
-    params: Optional[dict[str, Any]] = None
-    request_id: Optional[str] = Field(None, alias="requestId")
+    params: dict[str, Any] | None = None
+    request_id: str | None = Field(None, alias="requestId")
 
     model_config = {"populate_by_name": True}
 
@@ -155,12 +155,12 @@ class ComponentActionResponse(BaseModel):
     """Component action response."""
 
     success: bool
-    result: Optional[Any] = None
-    error: Optional[str] = None
-    stack: Optional[str] = None
+    result: Any | None = None
+    error: str | None = None
+    stack: str | None = None
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
-    request_id: Optional[str] = Field(None, alias="requestId")
+    request_id: str | None = Field(None, alias="requestId")
 
     model_config = {"populate_by_name": True}
 
@@ -181,8 +181,8 @@ class WorkflowStepResult(BaseModel):
     step_id: str = Field(alias="stepId")
     step_type: str = Field(alias="stepType")
     success: bool
-    result: Optional[Any] = None
-    error: Optional[str] = None
+    result: Any | None = None
+    error: str | None = None
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
 
@@ -192,12 +192,12 @@ class WorkflowStepResult(BaseModel):
 class WorkflowRunRequest(BaseModel):
     """Workflow run request."""
 
-    params: Optional[dict[str, Any]] = None
-    request_id: Optional[str] = Field(None, alias="requestId")
-    start_step: Optional[str] = Field(None, alias="startStep")
-    stop_step: Optional[str] = Field(None, alias="stopStep")
-    step_timeout: Optional[int] = Field(None, alias="stepTimeout")
-    workflow_timeout: Optional[int] = Field(None, alias="workflowTimeout")
+    params: dict[str, Any] | None = None
+    request_id: str | None = Field(None, alias="requestId")
+    start_step: str | None = Field(None, alias="startStep")
+    stop_step: str | None = Field(None, alias="stopStep")
+    step_timeout: int | None = Field(None, alias="stepTimeout")
+    workflow_timeout: int | None = Field(None, alias="workflowTimeout")
 
     model_config = {"populate_by_name": True}
 
@@ -209,13 +209,13 @@ class WorkflowRunResponse(BaseModel):
     run_id: str = Field(alias="runId")
     status: WorkflowRunStatus
     steps: list[WorkflowStepResult]
-    current_step: Optional[int] = Field(None, alias="currentStep")
+    current_step: int | None = Field(None, alias="currentStep")
     total_steps: int = Field(alias="totalSteps")
-    success: Optional[bool] = None
-    error: Optional[str] = None
+    success: bool | None = None
+    error: str | None = None
     started_at: int = Field(alias="startedAt")
-    completed_at: Optional[int] = Field(None, alias="completedAt")
-    duration_ms: Optional[float] = Field(None, alias="durationMs")
+    completed_at: int | None = Field(None, alias="completedAt")
+    duration_ms: float | None = Field(None, alias="durationMs")
 
     model_config = {"populate_by_name": True}
 
@@ -225,10 +225,10 @@ class DiscoveredElement(BaseModel):
 
     id: str
     type: str
-    label: Optional[str] = None
+    label: str | None = None
     tag_name: str = Field(alias="tagName")
-    role: Optional[str] = None
-    accessible_name: Optional[str] = Field(None, alias="accessibleName")
+    role: str | None = None
+    accessible_name: str | None = Field(None, alias="accessibleName")
     actions: list[str]
     state: ElementState
     registered: bool
@@ -239,12 +239,12 @@ class DiscoveredElement(BaseModel):
 class DiscoveryRequest(BaseModel):
     """Discovery request options."""
 
-    root: Optional[str] = None
-    interactive_only: Optional[bool] = Field(None, alias="interactiveOnly")
-    include_hidden: Optional[bool] = Field(None, alias="includeHidden")
-    limit: Optional[int] = None
-    types: Optional[list[str]] = None
-    selector: Optional[str] = None
+    root: str | None = None
+    interactive_only: bool | None = Field(None, alias="interactiveOnly")
+    include_hidden: bool | None = Field(None, alias="includeHidden")
+    limit: int | None = None
+    types: list[str] | None = None
+    selector: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -265,7 +265,7 @@ class RegisteredElement(BaseModel):
 
     id: str
     type: str
-    label: Optional[str] = None
+    label: str | None = None
     actions: list[str]
     state: ElementState
 
@@ -318,7 +318,7 @@ class RenderLogEntry(BaseModel):
     type: RenderLogEntryType
     timestamp: int
     data: Any
-    metadata: Optional[dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 class PerformanceMetrics(BaseModel):
@@ -343,7 +343,7 @@ class APIResponse(BaseModel):
     """API response wrapper."""
 
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
-    code: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
+    code: str | None = None
     timestamp: int

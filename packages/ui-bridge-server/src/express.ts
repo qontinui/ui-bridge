@@ -141,7 +141,10 @@ export function createExpressRouter(
       continue;
     }
 
-    router[method](path, createRouteHandler(route, handler as (...args: unknown[]) => Promise<APIResponse<unknown>>));
+    router[method](
+      path,
+      createRouteHandler(route, handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)
+    );
   }
 
   return router;

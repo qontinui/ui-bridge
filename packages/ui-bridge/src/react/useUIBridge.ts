@@ -53,10 +53,7 @@ export interface UseUIBridgeReturn {
   /** Discover controllable elements */
   discover: (options?: DiscoveryRequest) => Promise<DiscoveryResponse>;
   /** Run a workflow */
-  runWorkflow: (
-    workflowId: string,
-    request?: WorkflowRunRequest
-  ) => Promise<WorkflowRunResponse>;
+  runWorkflow: (workflowId: string, request?: WorkflowRunRequest) => Promise<WorkflowRunResponse>;
   /** Get element by ID */
   getElement: (id: string) => RegisteredElement | undefined;
   /** Get component by ID */
@@ -116,20 +113,11 @@ export function useUIBridge(): UseUIBridgeReturn {
   const initialized = context?.initialized ?? false;
 
   // Get collections
-  const elements = useMemo(
-    () => context?.getElements() ?? [],
-    [context]
-  );
+  const elements = useMemo(() => context?.getElements() ?? [], [context]);
 
-  const components = useMemo(
-    () => context?.getComponents() ?? [],
-    [context]
-  );
+  const components = useMemo(() => context?.getComponents() ?? [], [context]);
 
-  const workflows = useMemo(
-    () => context?.registry.getAllWorkflows() ?? [],
-    [context]
-  );
+  const workflows = useMemo(() => context?.registry.getAllWorkflows() ?? [], [context]);
 
   // Create snapshot
   const createSnapshot = useCallback((): BridgeSnapshot => {
@@ -146,10 +134,7 @@ export function useUIBridge(): UseUIBridgeReturn {
 
   // Execute element action
   const executeAction = useCallback(
-    async (
-      elementId: string,
-      request: ControlActionRequest
-    ): Promise<ControlActionResponse> => {
+    async (elementId: string, request: ControlActionRequest): Promise<ControlActionResponse> => {
       if (!context) {
         return {
           success: false,
@@ -200,10 +185,7 @@ export function useUIBridge(): UseUIBridgeReturn {
 
   // Run workflow
   const runWorkflow = useCallback(
-    async (
-      workflowId: string,
-      request?: WorkflowRunRequest
-    ): Promise<WorkflowRunResponse> => {
+    async (workflowId: string, request?: WorkflowRunRequest): Promise<WorkflowRunResponse> => {
       if (!context) {
         return {
           workflowId,

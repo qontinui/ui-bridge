@@ -5,12 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import {
-  UIBridgeProvider,
-  useUIElement,
-  useUIComponent,
-  useUIBridge,
-} from 'ui-bridge';
+import { UIBridgeProvider, useUIElement, useUIComponent, useUIBridge } from 'ui-bridge';
 
 /**
  * Login Form Component
@@ -115,12 +110,7 @@ function LoginForm() {
         />
       </div>
 
-      <button
-        ref={submitButton.ref}
-        type="submit"
-        data-ui-id="login-submit"
-        style={styles.button}
-      >
+      <button ref={submitButton.ref} type="submit" data-ui-id="login-submit" style={styles.button}>
         Login
       </button>
 

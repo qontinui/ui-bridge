@@ -109,11 +109,7 @@ function sleep(ms: number): Promise<void> {
 /**
  * Create a mouse event
  */
-function createMouseEvent(
-  type: string,
-  element: HTMLElement,
-  options?: MouseAction
-): MouseEvent {
+function createMouseEvent(type: string, element: HTMLElement, options?: MouseAction): MouseEvent {
   const rect = element.getBoundingClientRect();
   const x = options?.position?.x ?? rect.width / 2;
   const y = options?.position?.y ?? rect.height / 2;
@@ -390,10 +386,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   /**
    * Wait for element conditions
    */
-  private async waitForElement(
-    element: HTMLElement,
-    options: WaitOptions
-  ): Promise<WaitResult> {
+  private async waitForElement(element: HTMLElement, options: WaitOptions): Promise<WaitResult> {
     const opts = { ...DEFAULT_WAIT_OPTIONS, ...options };
     const startTime = performance.now();
     const deadline = startTime + opts.timeout;
@@ -617,7 +610,10 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performCheck(element: HTMLElement, checked: boolean): void {
-    if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+    if (
+      element instanceof HTMLInputElement &&
+      (element.type === 'checkbox' || element.type === 'radio')
+    ) {
       if (element.checked !== checked) {
         element.checked = checked;
         element.dispatchEvent(new Event('change', { bubbles: true }));
@@ -663,14 +659,20 @@ export class DefaultActionExecutor implements ActionExecutor {
       if (labels.length > 0) return labels.join(' ');
     }
 
-    if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+    if (
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLSelectElement ||
+      element instanceof HTMLTextAreaElement
+    ) {
       if (element.id) {
         const label = document.querySelector<HTMLLabelElement>(`label[for="${element.id}"]`);
         if (label) return label.textContent?.trim();
       }
     }
 
-    return element.getAttribute('title') || element.textContent?.trim().substring(0, 50) || undefined;
+    return (
+      element.getAttribute('title') || element.textContent?.trim().substring(0, 50) || undefined
+    );
   }
 
   private inferElementType(element: HTMLElement): string {
@@ -679,22 +681,33 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     if (role) {
       switch (role) {
-        case 'button': return 'button';
-        case 'textbox': return 'input';
-        case 'checkbox': return 'checkbox';
-        case 'radio': return 'radio';
-        case 'link': return 'link';
+        case 'button':
+          return 'button';
+        case 'textbox':
+          return 'input';
+        case 'checkbox':
+          return 'checkbox';
+        case 'radio':
+          return 'radio';
+        case 'link':
+          return 'link';
         case 'listbox':
-        case 'combobox': return 'select';
-        case 'menu': return 'menu';
-        case 'menuitem': return 'menuitem';
-        case 'tab': return 'tab';
-        case 'dialog': return 'dialog';
+        case 'combobox':
+          return 'select';
+        case 'menu':
+          return 'menu';
+        case 'menuitem':
+          return 'menuitem';
+        case 'tab':
+          return 'tab';
+        case 'dialog':
+          return 'dialog';
       }
     }
 
     switch (tagName) {
-      case 'button': return 'button';
+      case 'button':
+        return 'button';
       case 'input': {
         const type = (element as HTMLInputElement).type;
         if (type === 'checkbox') return 'checkbox';
@@ -702,11 +715,16 @@ export class DefaultActionExecutor implements ActionExecutor {
         if (type === 'submit' || type === 'button') return 'button';
         return 'input';
       }
-      case 'textarea': return 'textarea';
-      case 'select': return 'select';
-      case 'a': return 'link';
-      case 'form': return 'form';
-      default: return 'custom';
+      case 'textarea':
+        return 'textarea';
+      case 'select':
+        return 'select';
+      case 'a':
+        return 'link';
+      case 'form':
+        return 'form';
+      default:
+        return 'custom';
     }
   }
 
@@ -715,14 +733,22 @@ export class DefaultActionExecutor implements ActionExecutor {
     const baseActions = ['focus', 'blur', 'hover'];
 
     switch (type) {
-      case 'button': return [...baseActions, 'click', 'doubleClick', 'rightClick'];
-      case 'input': return [...baseActions, 'click', 'type', 'clear'];
-      case 'textarea': return [...baseActions, 'click', 'type', 'clear'];
-      case 'select': return [...baseActions, 'click', 'select'];
-      case 'checkbox': return [...baseActions, 'click', 'check', 'uncheck', 'toggle'];
-      case 'radio': return [...baseActions, 'click', 'check'];
-      case 'link': return [...baseActions, 'click'];
-      default: return [...baseActions, 'click'];
+      case 'button':
+        return [...baseActions, 'click', 'doubleClick', 'rightClick'];
+      case 'input':
+        return [...baseActions, 'click', 'type', 'clear'];
+      case 'textarea':
+        return [...baseActions, 'click', 'type', 'clear'];
+      case 'select':
+        return [...baseActions, 'click', 'select'];
+      case 'checkbox':
+        return [...baseActions, 'click', 'check', 'uncheck', 'toggle'];
+      case 'radio':
+        return [...baseActions, 'click', 'check'];
+      case 'link':
+        return [...baseActions, 'click'];
+      default:
+        return [...baseActions, 'click'];
     }
   }
 }

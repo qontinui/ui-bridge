@@ -375,10 +375,7 @@ export class RenderLogManager {
   /**
    * Add a custom entry
    */
-  async logCustom(
-    data: unknown,
-    metadata?: Record<string, unknown>
-  ): Promise<RenderLogEntry> {
+  async logCustom(data: unknown, metadata?: Record<string, unknown>): Promise<RenderLogEntry> {
     const entry: RenderLogEntry = {
       id: generateId(),
       type: 'custom',

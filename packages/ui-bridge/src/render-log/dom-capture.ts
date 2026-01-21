@@ -167,7 +167,11 @@ function getAccessibleName(element: HTMLElement): string | undefined {
   }
 
   // Input associated label
-  if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+  ) {
     const id = element.id;
     if (id) {
       const label = document.querySelector<HTMLLabelElement>(`label[for="${id}"]`);

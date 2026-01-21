@@ -31,7 +31,9 @@ export interface StandaloneServerConfig extends UIBridgeServerConfig {
 /**
  * Default configuration
  */
-const DEFAULT_CONFIG: Required<Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>> = {
+const DEFAULT_CONFIG: Required<
+  Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
+> = {
   host: 'localhost',
   port: 9876,
   websocket: false,
@@ -63,7 +65,10 @@ interface WebSocketLike {
  */
 export class StandaloneServer {
   private server: import('http').Server | null = null;
-  private config: Required<Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>> & StandaloneServerConfig;
+  private config: Required<
+    Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
+  > &
+    StandaloneServerConfig;
   private handlers: UIBridgeServerHandlers;
   private wsConnections: Set<WebSocketLike> = new Set();
 
@@ -201,7 +206,9 @@ export class StandaloneServer {
       }
 
       // Call handler
-      const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(...args);
+      const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
+        ...args
+      );
       this.sendJSON(res, result);
     } catch (error) {
       this.config.log(`Error handling ${method} ${path}: ${error}`);
@@ -212,16 +219,11 @@ export class StandaloneServer {
   /**
    * Find a matching route
    */
-  private findRoute(
-    path: string,
-    method: string
-  ): (typeof UI_BRIDGE_ROUTES)[0] | null {
+  private findRoute(path: string, method: string): (typeof UI_BRIDGE_ROUTES)[0] | null {
     for (const route of UI_BRIDGE_ROUTES) {
       if (route.method !== method) continue;
 
-      const routeRegex = route.path
-        .replace(/:[^/]+/g, '([^/]+)')
-        .replace(/\//g, '\\/');
+      const routeRegex = route.path.replace(/:[^/]+/g, '([^/]+)').replace(/\//g, '\\/');
 
       const regex = new RegExp(`^${routeRegex}$`);
       if (regex.test(path)) {
@@ -234,10 +236,7 @@ export class StandaloneServer {
   /**
    * Extract params from path
    */
-  private extractParams(
-    path: string,
-    routePath: string
-  ): Record<string, string> {
+  private extractParams(path: string, routePath: string): Record<string, string> {
     const params: Record<string, string> = {};
     const routeParts = routePath.split('/');
     const pathParts = path.split('/');
@@ -272,11 +271,7 @@ export class StandaloneServer {
   /**
    * Send JSON response
    */
-  private sendJSON(
-    res: import('http').ServerResponse,
-    data: unknown,
-    status = 200
-  ): void {
+  private sendJSON(res: import('http').ServerResponse, data: unknown, status = 200): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   }

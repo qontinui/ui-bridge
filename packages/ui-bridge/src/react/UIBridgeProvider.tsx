@@ -4,14 +4,7 @@
  * React context provider for UI Bridge functionality.
  */
 
-import React, {
-  createContext,
-  useContext,
-  useMemo,
-  useEffect,
-  useCallback,
-  useRef,
-} from 'react';
+import React, { createContext, useContext, useMemo, useEffect, useCallback, useRef } from 'react';
 import type {
   UIBridgeFeatures,
   UIBridgeConfig,
@@ -21,11 +14,7 @@ import type {
   BridgeEventType,
   BridgeEventListener,
 } from '../core/types';
-import {
-  UIBridgeRegistry,
-  setGlobalRegistry,
-  resetGlobalRegistry,
-} from '../core/registry';
+import { UIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createActionExecutor } from '../control/action-executor';
 import { createWorkflowEngine } from '../control/workflow-engine';
 import { createRenderLogManager, RenderLogManager } from '../render-log/snapshot';
@@ -57,15 +46,9 @@ export interface UIBridgeContextValue {
   /** Create a snapshot */
   createSnapshot: () => BridgeSnapshot;
   /** Subscribe to events */
-  on: <T = unknown>(
-    type: BridgeEventType,
-    listener: BridgeEventListener<T>
-  ) => () => void;
+  on: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => () => void;
   /** Unsubscribe from events */
-  off: <T = unknown>(
-    type: BridgeEventType,
-    listener: BridgeEventListener<T>
-  ) => void;
+  off: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => void;
   /** Whether the provider is initialized */
   initialized: boolean;
 }
@@ -168,29 +151,20 @@ export function UIBridgeProvider({
   }, [renderLog]);
 
   // Context methods
-  const getElements = useCallback(
-    () => registry.getAllElements(),
-    [registry]
-  );
+  const getElements = useCallback(() => registry.getAllElements(), [registry]);
 
-  const getComponents = useCallback(
-    () => registry.getAllComponents(),
-    [registry]
-  );
+  const getComponents = useCallback(() => registry.getAllComponents(), [registry]);
 
-  const createSnapshot = useCallback(
-    () => registry.createSnapshot(),
-    [registry]
-  );
+  const createSnapshot = useCallback(() => registry.createSnapshot(), [registry]);
 
   const on = useCallback(
-    <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
+    <T = unknown,>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
       registry.on(type, listener),
     [registry]
   );
 
   const off = useCallback(
-    <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
+    <T = unknown,>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
       registry.off(type, listener),
     [registry]
   );
@@ -227,11 +201,7 @@ export function UIBridgeProvider({
     ]
   );
 
-  return (
-    <UIBridgeContext.Provider value={contextValue}>
-      {children}
-    </UIBridgeContext.Provider>
-  );
+  return <UIBridgeContext.Provider value={contextValue}>{children}</UIBridgeContext.Provider>;
 }
 
 /**

@@ -14,12 +14,7 @@ import type { ElementIdentifier } from './types';
 /**
  * Data attributes used for element identification (in priority order)
  */
-export const ID_ATTRIBUTES = [
-  'data-ui-id',
-  'data-testid',
-  'data-awas-element',
-  'id',
-] as const;
+export const ID_ATTRIBUTES = ['data-ui-id', 'data-testid', 'data-awas-element', 'id'] as const;
 
 /**
  * Generate a unique XPath for an element
@@ -194,21 +189,15 @@ export function findElementByIdentifier(
   // If string, try each identification method
   if (typeof identifier === 'string') {
     // Try data-ui-id
-    const byUiId = root.querySelector<HTMLElement>(
-      `[data-ui-id="${identifier}"]`
-    );
+    const byUiId = root.querySelector<HTMLElement>(`[data-ui-id="${identifier}"]`);
     if (byUiId) return byUiId;
 
     // Try data-testid
-    const byTestId = root.querySelector<HTMLElement>(
-      `[data-testid="${identifier}"]`
-    );
+    const byTestId = root.querySelector<HTMLElement>(`[data-testid="${identifier}"]`);
     if (byTestId) return byTestId;
 
     // Try data-awas-element
-    const byAwasId = root.querySelector<HTMLElement>(
-      `[data-awas-element="${identifier}"]`
-    );
+    const byAwasId = root.querySelector<HTMLElement>(`[data-awas-element="${identifier}"]`);
     if (byAwasId) return byAwasId;
 
     // Try id
@@ -244,30 +233,22 @@ export function findElementByIdentifier(
 
   // If ElementIdentifier object, try in priority order
   if (identifier.uiId) {
-    const el = root.querySelector<HTMLElement>(
-      `[data-ui-id="${identifier.uiId}"]`
-    );
+    const el = root.querySelector<HTMLElement>(`[data-ui-id="${identifier.uiId}"]`);
     if (el) return el;
   }
 
   if (identifier.testId) {
-    const el = root.querySelector<HTMLElement>(
-      `[data-testid="${identifier.testId}"]`
-    );
+    const el = root.querySelector<HTMLElement>(`[data-testid="${identifier.testId}"]`);
     if (el) return el;
   }
 
   if (identifier.awasId) {
-    const el = root.querySelector<HTMLElement>(
-      `[data-awas-element="${identifier.awasId}"]`
-    );
+    const el = root.querySelector<HTMLElement>(`[data-awas-element="${identifier.awasId}"]`);
     if (el) return el;
   }
 
   if (identifier.htmlId) {
-    const el = root.querySelector<HTMLElement>(
-      `#${CSS.escape(identifier.htmlId)}`
-    );
+    const el = root.querySelector<HTMLElement>(`#${CSS.escape(identifier.htmlId)}`);
     if (el) return el;
   }
 
@@ -362,12 +343,9 @@ export function elementMatchesIdentifier(
   }
 
   return (
-    (identifier.uiId &&
-      element.getAttribute('data-ui-id') === identifier.uiId) ||
-    (identifier.testId &&
-      element.getAttribute('data-testid') === identifier.testId) ||
-    (identifier.awasId &&
-      element.getAttribute('data-awas-element') === identifier.awasId) ||
+    (identifier.uiId && element.getAttribute('data-ui-id') === identifier.uiId) ||
+    (identifier.testId && element.getAttribute('data-testid') === identifier.testId) ||
+    (identifier.awasId && element.getAttribute('data-awas-element') === identifier.awasId) ||
     (identifier.htmlId && element.id === identifier.htmlId) ||
     false
   );
