@@ -4,7 +4,15 @@
  * React context provider for UI Bridge functionality.
  */
 
-import React, { createContext, useContext, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useMemo,
+  useEffect,
+  useCallback,
+  useRef,
+  useState,
+} from 'react';
 import type {
   UIBridgeFeatures,
   UIBridgeConfig,
@@ -13,8 +21,12 @@ import type {
   BridgeSnapshot,
   BridgeEventType,
   BridgeEventListener,
+  BridgeEvent,
+  WSConnectionState,
+  WSSubscriptionOptions,
 } from '../core/types';
 import { UIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
+import { UIBridgeWSClient, createWSClient } from '../core/websocket-client';
 import { createActionExecutor } from '../control/action-executor';
 import { createWorkflowEngine } from '../control/workflow-engine';
 import { createRenderLogManager, RenderLogManager } from '../render-log/snapshot';
@@ -39,6 +51,10 @@ export interface UIBridgeContextValue {
   renderLog?: RenderLogManager;
   /** Metrics collector (if debug enabled) */
   metrics?: MetricsCollector;
+  /** WebSocket client (if websocket enabled) */
+  wsClient?: UIBridgeWSClient;
+  /** WebSocket connection state */
+  wsConnectionState: WSConnectionState;
   /** Get all registered elements */
   getElements: () => RegisteredElement[];
   /** Get all registered components */
@@ -51,6 +67,17 @@ export interface UIBridgeContextValue {
   off: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => void;
   /** Whether the provider is initialized */
   initialized: boolean;
+  /** Connect to WebSocket server */
+  wsConnect: () => Promise<void>;
+  /** Disconnect from WebSocket server */
+  wsDisconnect: () => void;
+  /** Subscribe to WebSocket events */
+  wsSubscribe: (options: WSSubscriptionOptions) => Promise<BridgeEventType[]>;
+  /** Add WebSocket event listener */
+  onWsEvent: (
+    eventType: BridgeEventType | '*',
+    listener: (event: BridgeEvent) => void
+  ) => () => void;
 }
 
 /**
@@ -86,6 +113,8 @@ export function UIBridgeProvider({
   const registryRef = useRef<UIBridgeRegistry | null>(null);
   const renderLogRef = useRef<RenderLogManager | null>(null);
   const metricsRef = useRef<MetricsCollector | null>(null);
+  const wsClientRef = useRef<UIBridgeWSClient | null>(null);
+  const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
 
   // Initialize on first render
   if (!registryRef.current) {
@@ -104,11 +133,25 @@ export function UIBridgeProvider({
     if (features.debug) {
       metricsRef.current = createMetricsCollector();
     }
+
+    // Initialize WebSocket client if enabled
+    if (config.websocket) {
+      const wsPort = config.websocketPort || config.serverPort || 9876;
+      const wsUrl = `ws://localhost:${wsPort}`;
+      wsClientRef.current = createWSClient({
+        url: wsUrl,
+        autoReconnect: true,
+        reconnectDelay: 1000,
+        maxReconnectAttempts: 10,
+        pingInterval: 30000,
+      });
+    }
   }
 
   const registry = registryRef.current;
   const renderLog = renderLogRef.current || undefined;
   const metrics = metricsRef.current || undefined;
+  const wsClient = wsClientRef.current || undefined;
 
   // Create executor and workflow engine
   const executor = useMemo(() => createActionExecutor(registry), [registry]);
@@ -142,13 +185,56 @@ export function UIBridgeProvider({
     };
   }, [registry, metrics]);
 
+  // Setup WebSocket connection state listener
+  useEffect(() => {
+    if (!wsClient) return;
+
+    const unsubscribe = wsClient.onConnectionChange((state) => {
+      setWsConnectionState(state);
+    });
+
+    return unsubscribe;
+  }, [wsClient]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       renderLog?.stop();
+      wsClient?.disconnect();
       resetGlobalRegistry();
     };
-  }, [renderLog]);
+  }, [renderLog, wsClient]);
+
+  // WebSocket methods
+  const wsConnect = useCallback(async () => {
+    if (wsClient) {
+      await wsClient.connect();
+    }
+  }, [wsClient]);
+
+  const wsDisconnect = useCallback(() => {
+    wsClient?.disconnect();
+  }, [wsClient]);
+
+  const wsSubscribe = useCallback(
+    async (options: WSSubscriptionOptions) => {
+      if (!wsClient) {
+        return [];
+      }
+      return wsClient.subscribe(options);
+    },
+    [wsClient]
+  );
+
+  const onWsEvent = useCallback(
+    (eventType: BridgeEventType | '*', listener: (event: BridgeEvent) => void) => {
+      if (!wsClient) {
+        return () => {};
+      }
+      return wsClient.onEvent(eventType, listener);
+    },
+    [wsClient]
+  );
 
   // Context methods
   const getElements = useCallback(() => registry.getAllElements(), [registry]);
@@ -178,12 +264,18 @@ export function UIBridgeProvider({
       workflowEngine,
       renderLog,
       metrics,
+      wsClient,
+      wsConnectionState,
       getElements,
       getComponents,
       createSnapshot,
       on,
       off,
       initialized: true,
+      wsConnect,
+      wsDisconnect,
+      wsSubscribe,
+      onWsEvent,
     }),
     [
       features,
@@ -193,11 +285,17 @@ export function UIBridgeProvider({
       workflowEngine,
       renderLog,
       metrics,
+      wsClient,
+      wsConnectionState,
       getElements,
       getComponents,
       createSnapshot,
       on,
       off,
+      wsConnect,
+      wsDisconnect,
+      wsSubscribe,
+      onWsEvent,
     ]
   );
 

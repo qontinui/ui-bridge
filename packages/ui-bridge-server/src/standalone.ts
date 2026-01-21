@@ -2,6 +2,7 @@
  * Standalone Server
  *
  * Standalone HTTP server for UI Bridge that can run independently.
+ * Supports both HTTP and WebSocket connections.
  */
 
 import type {
@@ -11,6 +12,8 @@ import type {
   WebSocketMessage,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
+import type { BridgeEvent } from 'ui-bridge';
 
 /**
  * Standalone server configuration
@@ -53,28 +56,32 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
   };
 }
 
-// WebSocket type (simplified to avoid requiring ws types)
-interface WebSocketLike {
-  readyState: number;
-  send(data: string): void;
-  close(): void;
-}
-
 /**
  * Simple HTTP server implementation using Node.js built-in http module
+ * with optional WebSocket support.
  */
 export class StandaloneServer {
   private server: import('http').Server | null = null;
+  private wsServer: unknown = null; // WebSocket.Server from 'ws' package
   private config: Required<
     Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
   > &
     StandaloneServerConfig;
   private handlers: UIBridgeServerHandlers;
+  private wsHandler: UIBridgeWSHandler | null = null;
   private wsConnections: Set<WebSocketLike> = new Set();
 
   constructor(handlers: UIBridgeServerHandlers, config: StandaloneServerConfig = {}) {
     this.handlers = handlers;
     this.config = { ...DEFAULT_CONFIG, ...config };
+
+    // Create WebSocket handler if enabled
+    if (this.config.websocket) {
+      this.wsHandler = new UIBridgeWSHandler(handlers, {
+        verbose: true,
+        log: this.config.log,
+      });
+    }
   }
 
   /**
@@ -87,11 +94,22 @@ export class StandaloneServer {
       await this.handleRequest(req, res);
     });
 
+    // Start WebSocket server if enabled
+    if (this.config.websocket && this.wsHandler) {
+      await this.startWebSocketServer();
+    }
+
     return new Promise((resolve, reject) => {
       this.server!.listen(this.config.port, this.config.host, () => {
         this.config.log(
           `UI Bridge server listening on http://${this.config.host}:${this.config.port}`
         );
+        if (this.config.websocket) {
+          const wsPort = this.config.websocketPort || this.config.port;
+          this.config.log(
+            `UI Bridge WebSocket server listening on ws://${this.config.host}:${wsPort}`
+          );
+        }
         resolve();
       });
 
@@ -100,9 +118,70 @@ export class StandaloneServer {
   }
 
   /**
+   * Start WebSocket server
+   */
+  private async startWebSocketServer(): Promise<void> {
+    try {
+      // Dynamically import ws package
+      const { WebSocketServer } = await import('ws');
+
+      const wsPort = this.config.websocketPort || this.config.port;
+      const useSamePort = wsPort === this.config.port;
+
+      if (useSamePort && this.server) {
+        // Attach to same HTTP server (upgrade handling)
+        this.wsServer = new WebSocketServer({ server: this.server });
+      } else {
+        // Create separate WebSocket server
+        this.wsServer = new WebSocketServer({
+          host: this.config.host,
+          port: wsPort,
+        });
+      }
+
+      const wss = this.wsServer as {
+        on(event: 'connection', callback: (ws: WebSocketLike) => void): void;
+        on(event: 'error', callback: (error: Error) => void): void;
+        close(): void;
+      };
+
+      wss.on('connection', (ws) => {
+        this.wsConnections.add(ws);
+        this.wsHandler!.handleConnection(ws);
+
+        ws.onclose = () => {
+          this.wsConnections.delete(ws);
+        };
+      });
+
+      wss.on('error', (error) => {
+        this.config.log(`WebSocket server error: ${error.message}`);
+      });
+    } catch (error) {
+      // ws package not installed - WebSocket support disabled
+      this.config.log(
+        'Warning: WebSocket support requires the "ws" package. Install it with: npm install ws'
+      );
+      this.wsHandler = null;
+    }
+  }
+
+  /**
    * Stop the server
    */
   async stop(): Promise<void> {
+    // Close WebSocket handler
+    if (this.wsHandler) {
+      this.wsHandler.disconnectAll();
+    }
+
+    // Close WebSocket server
+    if (this.wsServer) {
+      const wss = this.wsServer as { close(): void };
+      wss.close();
+      this.wsServer = null;
+    }
+
     // Close WebSocket connections
     for (const ws of this.wsConnections) {
       ws.close();
@@ -277,7 +356,7 @@ export class StandaloneServer {
   }
 
   /**
-   * Broadcast a message to all WebSocket connections
+   * Broadcast a message to all WebSocket connections (legacy)
    */
   broadcast(message: WebSocketMessage): void {
     const data = JSON.stringify(message);
@@ -287,6 +366,29 @@ export class StandaloneServer {
         ws.send(data);
       }
     }
+  }
+
+  /**
+   * Broadcast an event to all subscribed WebSocket clients
+   */
+  broadcastEvent(event: BridgeEvent): void {
+    if (this.wsHandler) {
+      this.wsHandler.broadcastEvent(event);
+    }
+  }
+
+  /**
+   * Get WebSocket handler for direct access
+   */
+  getWSHandler(): UIBridgeWSHandler | null {
+    return this.wsHandler;
+  }
+
+  /**
+   * Get number of connected WebSocket clients
+   */
+  get wsClientCount(): number {
+    return this.wsHandler?.clientCount ?? 0;
   }
 
   /**

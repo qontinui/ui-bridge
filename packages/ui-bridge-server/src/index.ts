@@ -32,3 +32,6 @@ export {
   startCLI,
   type StandaloneServerConfig,
 } from './standalone';
+
+// WebSocket handler
+export { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';

@@ -27,3 +27,6 @@ export {
   resetGlobalRegistry,
   type RegistryOptions,
 } from './registry';
+
+// WebSocket client
+export { UIBridgeWSClient, createWSClient } from './websocket-client';

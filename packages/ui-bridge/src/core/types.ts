@@ -382,3 +382,313 @@ export interface BridgeEvent<T = unknown> {
  * Event listener function
  */
 export type BridgeEventListener<T = unknown> = (event: BridgeEvent<T>) => void;
+
+// ============================================================================
+// WebSocket Protocol Types
+// ============================================================================
+
+/**
+ * WebSocket message types from client to server
+ */
+export type WSClientMessageType =
+  | 'subscribe'
+  | 'unsubscribe'
+  | 'ping'
+  | 'discover'
+  | 'getElement'
+  | 'getSnapshot'
+  | 'executeAction'
+  | 'executeComponentAction'
+  | 'executeWorkflow';
+
+/**
+ * WebSocket message types from server to client
+ */
+export type WSServerMessageType =
+  | 'welcome'
+  | 'pong'
+  | 'subscribed'
+  | 'unsubscribed'
+  | 'event'
+  | 'response'
+  | 'error'
+  | 'workflowProgress';
+
+/**
+ * Base WebSocket message structure
+ */
+export interface WSMessageBase {
+  /** Unique message ID for request/response correlation */
+  id: string;
+  /** Message type */
+  type: WSClientMessageType | WSServerMessageType;
+  /** Timestamp when message was created */
+  timestamp: number;
+}
+
+/**
+ * Client message: Subscribe to events
+ */
+export interface WSSubscribeMessage extends WSMessageBase {
+  type: 'subscribe';
+  payload: {
+    /** Event types to subscribe to (empty = all events) */
+    events?: BridgeEventType[];
+    /** Filter events by element ID */
+    elementIds?: string[];
+    /** Filter events by component ID */
+    componentIds?: string[];
+  };
+}
+
+/**
+ * Client message: Unsubscribe from events
+ */
+export interface WSUnsubscribeMessage extends WSMessageBase {
+  type: 'unsubscribe';
+  payload: {
+    /** Event types to unsubscribe from (empty = all) */
+    events?: BridgeEventType[];
+  };
+}
+
+/**
+ * Client message: Ping (keepalive)
+ */
+export interface WSPingMessage extends WSMessageBase {
+  type: 'ping';
+}
+
+/**
+ * Client message: Discover elements
+ */
+export interface WSDiscoverMessage extends WSMessageBase {
+  type: 'discover';
+  payload?: {
+    interactiveOnly?: boolean;
+    includeState?: boolean;
+    selector?: string;
+  };
+}
+
+/**
+ * Client message: Get element details
+ */
+export interface WSGetElementMessage extends WSMessageBase {
+  type: 'getElement';
+  payload: {
+    elementId: string;
+    includeState?: boolean;
+  };
+}
+
+/**
+ * Client message: Get full snapshot
+ */
+export interface WSGetSnapshotMessage extends WSMessageBase {
+  type: 'getSnapshot';
+}
+
+/**
+ * Client message: Execute action on element
+ */
+export interface WSExecuteActionMessage extends WSMessageBase {
+  type: 'executeAction';
+  payload: {
+    elementId: string;
+    action: ActionRequest;
+  };
+}
+
+/**
+ * Client message: Execute component action
+ */
+export interface WSExecuteComponentActionMessage extends WSMessageBase {
+  type: 'executeComponentAction';
+  payload: {
+    componentId: string;
+    action: string;
+    params?: Record<string, unknown>;
+  };
+}
+
+/**
+ * Client message: Execute workflow
+ */
+export interface WSExecuteWorkflowMessage extends WSMessageBase {
+  type: 'executeWorkflow';
+  payload: {
+    workflowId: string;
+    params?: Record<string, unknown>;
+    /** Stream progress updates */
+    streamProgress?: boolean;
+  };
+}
+
+/**
+ * Union type for all client messages
+ */
+export type WSClientMessage =
+  | WSSubscribeMessage
+  | WSUnsubscribeMessage
+  | WSPingMessage
+  | WSDiscoverMessage
+  | WSGetElementMessage
+  | WSGetSnapshotMessage
+  | WSExecuteActionMessage
+  | WSExecuteComponentActionMessage
+  | WSExecuteWorkflowMessage;
+
+/**
+ * Server message: Welcome (sent on connection)
+ */
+export interface WSWelcomeMessage extends WSMessageBase {
+  type: 'welcome';
+  payload: {
+    /** Server version */
+    version: string;
+    /** Available features */
+    features: UIBridgeFeatures;
+    /** Client ID assigned by server */
+    clientId: string;
+  };
+}
+
+/**
+ * Server message: Pong (response to ping)
+ */
+export interface WSPongMessage extends WSMessageBase {
+  type: 'pong';
+}
+
+/**
+ * Server message: Subscription confirmed
+ */
+export interface WSSubscribedMessage extends WSMessageBase {
+  type: 'subscribed';
+  payload: {
+    /** Events now subscribed to */
+    events: BridgeEventType[];
+  };
+}
+
+/**
+ * Server message: Unsubscription confirmed
+ */
+export interface WSUnsubscribedMessage extends WSMessageBase {
+  type: 'unsubscribed';
+  payload: {
+    /** Events unsubscribed from */
+    events: BridgeEventType[];
+  };
+}
+
+/**
+ * Server message: Event notification
+ */
+export interface WSEventMessage extends WSMessageBase {
+  type: 'event';
+  payload: BridgeEvent;
+}
+
+/**
+ * Server message: Response to a request
+ */
+export interface WSResponseMessage<T = unknown> extends WSMessageBase {
+  type: 'response';
+  /** ID of the request this responds to */
+  requestId: string;
+  payload: {
+    success: boolean;
+    data?: T;
+    error?: string;
+  };
+}
+
+/**
+ * Server message: Error
+ */
+export interface WSErrorMessage extends WSMessageBase {
+  type: 'error';
+  /** ID of the request that caused the error (if applicable) */
+  requestId?: string;
+  payload: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+}
+
+/**
+ * Server message: Workflow progress update
+ */
+export interface WSWorkflowProgressMessage extends WSMessageBase {
+  type: 'workflowProgress';
+  /** ID of the workflow execution request */
+  requestId: string;
+  payload: {
+    workflowId: string;
+    /** Current step index (0-based) */
+    currentStep: number;
+    /** Total number of steps */
+    totalSteps: number;
+    /** Current step info */
+    step: {
+      id: string;
+      type: WorkflowStep['type'];
+      status: 'pending' | 'running' | 'completed' | 'failed';
+    };
+    /** Result of the current step (if completed) */
+    stepResult?: unknown;
+    /** Error (if failed) */
+    error?: string;
+  };
+}
+
+/**
+ * Union type for all server messages
+ */
+export type WSServerMessage =
+  | WSWelcomeMessage
+  | WSPongMessage
+  | WSSubscribedMessage
+  | WSUnsubscribedMessage
+  | WSEventMessage
+  | WSResponseMessage
+  | WSErrorMessage
+  | WSWorkflowProgressMessage;
+
+/**
+ * WebSocket connection state
+ */
+export type WSConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
+/**
+ * WebSocket client configuration
+ */
+export interface WSClientConfig {
+  /** WebSocket server URL */
+  url: string;
+  /** Auto-reconnect on disconnect */
+  autoReconnect?: boolean;
+  /** Reconnect delay in milliseconds */
+  reconnectDelay?: number;
+  /** Maximum reconnect attempts (0 = infinite) */
+  maxReconnectAttempts?: number;
+  /** Ping interval in milliseconds (0 = disabled) */
+  pingInterval?: number;
+  /** Connection timeout in milliseconds */
+  connectionTimeout?: number;
+}
+
+/**
+ * Subscription options for WebSocket client
+ */
+export interface WSSubscriptionOptions {
+  /** Event types to subscribe to */
+  events?: BridgeEventType[];
+  /** Filter by element IDs */
+  elementIds?: string[];
+  /** Filter by component IDs */
+  componentIds?: string[];
+}

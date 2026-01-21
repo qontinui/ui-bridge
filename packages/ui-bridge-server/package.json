@@ -45,7 +45,8 @@
   },
   "peerDependencies": {
     "express": "^4.18.0",
-    "next": "^13.0.0 || ^14.0.0 || ^15.0.0"
+    "next": "^13.0.0 || ^14.0.0 || ^15.0.0",
+    "ws": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "express": {
@@ -53,15 +54,20 @@
     },
     "next": {
       "optional": true
+    },
+    "ws": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.0",
+    "@types/ws": "^8.5.0",
     "express": "^4.18.2",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
-    "vitest": "^1.0.0"
+    "vitest": "^1.0.0",
+    "ws": "^8.18.0"
   },
   "license": "MIT",
   "repository": {
