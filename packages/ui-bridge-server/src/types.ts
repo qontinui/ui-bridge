@@ -1,0 +1,211 @@
+/**
+ * UI Bridge Server Types
+ *
+ * Shared types for server adapters.
+ */
+
+import type { UIBridgeConfig } from 'ui-bridge/core';
+import type {
+  ControlActionRequest,
+  ControlActionResponse,
+  ComponentActionRequest,
+  ComponentActionResponse,
+  DiscoveryRequest,
+  DiscoveryResponse,
+  ControlSnapshot,
+  WorkflowRunRequest,
+  WorkflowRunResponse,
+} from 'ui-bridge/control';
+import type { RenderLogEntry, RenderLogEntryType } from 'ui-bridge/render-log';
+
+/**
+ * Server configuration
+ */
+export interface UIBridgeServerConfig extends UIBridgeConfig {
+  /** Base path for API routes */
+  basePath?: string;
+  /** Enable CORS */
+  cors?: boolean | CORSOptions;
+  /** Authentication middleware */
+  authenticate?: (req: unknown) => boolean | Promise<boolean>;
+  /** Rate limiting */
+  rateLimit?: RateLimitOptions;
+}
+
+/**
+ * CORS options
+ */
+export interface CORSOptions {
+  /** Allowed origins */
+  origin?: string | string[] | boolean;
+  /** Allowed methods */
+  methods?: string[];
+  /** Allowed headers */
+  headers?: string[];
+  /** Expose headers */
+  exposeHeaders?: string[];
+  /** Allow credentials */
+  credentials?: boolean;
+  /** Max age for preflight cache */
+  maxAge?: number;
+}
+
+/**
+ * Rate limit options
+ */
+export interface RateLimitOptions {
+  /** Time window in milliseconds */
+  windowMs?: number;
+  /** Max requests per window */
+  max?: number;
+  /** Message when rate limited */
+  message?: string;
+}
+
+/**
+ * API response wrapper
+ */
+export interface APIResponse<T = unknown> {
+  /** Whether the request succeeded */
+  success: boolean;
+  /** Response data */
+  data?: T;
+  /** Error message if failed */
+  error?: string;
+  /** Error code */
+  code?: string;
+  /** Request timestamp */
+  timestamp: number;
+}
+
+/**
+ * Render log query parameters
+ */
+export interface RenderLogQuery {
+  /** Filter by entry type */
+  type?: RenderLogEntryType;
+  /** Filter entries since timestamp */
+  since?: number;
+  /** Filter entries until timestamp */
+  until?: number;
+  /** Limit number of results */
+  limit?: number;
+}
+
+/**
+ * Server handler interface
+ *
+ * Implementations provide these handlers for different frameworks.
+ */
+export interface UIBridgeServerHandlers {
+  // Render log endpoints
+  getRenderLog: (query?: RenderLogQuery) => Promise<APIResponse<RenderLogEntry[]>>;
+  clearRenderLog: () => Promise<APIResponse<void>>;
+  captureSnapshot: () => Promise<APIResponse<unknown>>;
+  getRenderLogPath: () => Promise<APIResponse<{ path: string }>>;
+
+  // Control endpoints
+  getElements: () => Promise<APIResponse<ControlSnapshot['elements']>>;
+  getElement: (id: string) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
+  getElementState: (id: string) => Promise<APIResponse<unknown>>;
+  executeElementAction: (
+    id: string,
+    request: ControlActionRequest
+  ) => Promise<APIResponse<ControlActionResponse>>;
+
+  // Component endpoints
+  getComponents: () => Promise<APIResponse<ControlSnapshot['components']>>;
+  getComponent: (id: string) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
+  executeComponentAction: (
+    id: string,
+    request: ComponentActionRequest
+  ) => Promise<APIResponse<ComponentActionResponse>>;
+
+  // Discovery endpoints
+  discover: (request?: DiscoveryRequest) => Promise<APIResponse<DiscoveryResponse>>;
+  getControlSnapshot: () => Promise<APIResponse<ControlSnapshot>>;
+
+  // Workflow endpoints
+  getWorkflows: () => Promise<APIResponse<ControlSnapshot['workflows']>>;
+  runWorkflow: (
+    id: string,
+    request?: WorkflowRunRequest
+  ) => Promise<APIResponse<WorkflowRunResponse>>;
+  getWorkflowStatus: (runId: string) => Promise<APIResponse<WorkflowRunResponse>>;
+
+  // Debug endpoints
+  getActionHistory: (limit?: number) => Promise<APIResponse<unknown[]>>;
+  getMetrics: () => Promise<APIResponse<unknown>>;
+  highlightElement: (id: string) => Promise<APIResponse<void>>;
+  getElementTree: () => Promise<APIResponse<unknown>>;
+}
+
+/**
+ * Route definition
+ */
+export interface RouteDefinition {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  path: string;
+  handler: string; // Key in UIBridgeServerHandlers
+  params?: string[]; // URL params to extract
+  bodyRequired?: boolean;
+}
+
+/**
+ * All UI Bridge routes
+ */
+export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
+  // Render log
+  { method: 'GET', path: '/render-log', handler: 'getRenderLog' },
+  { method: 'DELETE', path: '/render-log', handler: 'clearRenderLog' },
+  { method: 'POST', path: '/render-log/snapshot', handler: 'captureSnapshot' },
+  { method: 'GET', path: '/render-log/path', handler: 'getRenderLogPath' },
+
+  // Control - Elements
+  { method: 'GET', path: '/control/elements', handler: 'getElements' },
+  { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
+  { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
+  { method: 'POST', path: '/control/element/:id/action', handler: 'executeElementAction', params: ['id'], bodyRequired: true },
+
+  // Control - Components
+  { method: 'GET', path: '/control/components', handler: 'getComponents' },
+  { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
+  { method: 'POST', path: '/control/component/:id/action/:actionId', handler: 'executeComponentAction', params: ['id', 'actionId'], bodyRequired: true },
+
+  // Discovery
+  { method: 'POST', path: '/control/discover', handler: 'discover' },
+  { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
+
+  // Workflows
+  { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
+  { method: 'POST', path: '/control/workflow/:id/run', handler: 'runWorkflow', params: ['id'] },
+  { method: 'GET', path: '/control/workflow/:runId/status', handler: 'getWorkflowStatus', params: ['runId'] },
+
+  // Debug
+  { method: 'GET', path: '/debug/action-history', handler: 'getActionHistory' },
+  { method: 'GET', path: '/debug/metrics', handler: 'getMetrics' },
+  { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
+  { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },
+];
+
+/**
+ * WebSocket message types
+ */
+export type WebSocketMessageType =
+  | 'subscribe'
+  | 'unsubscribe'
+  | 'event'
+  | 'snapshot'
+  | 'action'
+  | 'error';
+
+/**
+ * WebSocket message
+ */
+export interface WebSocketMessage<T = unknown> {
+  type: WebSocketMessageType;
+  channel?: string;
+  data?: T;
+  error?: string;
+  timestamp: number;
+}

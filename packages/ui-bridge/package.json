@@ -1,0 +1,83 @@
+{
+  "name": "ui-bridge",
+  "version": "0.1.0",
+  "description": "UI Bridge Framework - React hooks and providers for UI observation, control, and debugging",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.mjs",
+      "require": "./dist/core/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.mjs",
+      "require": "./dist/react/index.js"
+    },
+    "./control": {
+      "types": "./dist/control/index.d.ts",
+      "import": "./dist/control/index.mjs",
+      "require": "./dist/control/index.js"
+    },
+    "./render-log": {
+      "types": "./dist/render-log/index.d.ts",
+      "import": "./dist/render-log/index.mjs",
+      "require": "./dist/render-log/index.js"
+    },
+    "./debug": {
+      "types": "./dist/debug/index.d.ts",
+      "import": "./dist/debug/index.mjs",
+      "require": "./dist/debug/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\""
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^14.1.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "jsdom": "^23.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qontinui/ui-bridge.git",
+    "directory": "packages/ui-bridge"
+  },
+  "keywords": [
+    "react",
+    "ui",
+    "automation",
+    "testing",
+    "ai",
+    "debugging",
+    "hooks"
+  ]
+}

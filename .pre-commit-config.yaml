@@ -1,0 +1,58 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Python (ui-bridge-python package)
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args: ['--fix']
+        files: ^packages/ui-bridge-python/
+      - id: ruff-format
+        files: ^packages/ui-bridge-python/
+
+  # TypeScript/JavaScript (ui-bridge and ui-bridge-server packages)
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: \.(ts|tsx|js|jsx|json|md)$
+        exclude: ^(node_modules/|dist/|packages/.*/dist/)
+
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint
+        entry: node node_modules/eslint/bin/eslint.js --fix --max-warnings=0
+        language: system
+        files: \.(ts|tsx)$
+        exclude: ^(node_modules/|dist/|packages/.*/dist/|examples/)
+
+      - id: validate-line-endings
+        name: Validate no CRLF left (text files)
+        entry: bash -c 'if git grep -I $'"'\r'"'$ -- "$(git rev-parse --show-toplevel)" >/dev/null; then echo "CRLF line endings detected. Convert to LF." >&2; exit 1; fi'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: block-claude-attribution
+        name: Block Claude Attribution
+        entry: .pre-commit-hooks/block-claude-attribution.sh
+        language: script
+        stages: [commit-msg]
+
+ci:
+  autofix_prs: true
+  autofix_commit_msg: "chore: pre-commit auto fixes"

@@ -1,0 +1,48 @@
+{
+  "name": "ui-bridge-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "UI Bridge Framework - Unified UI observation, control, and debugging for AI automation",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint packages/*/src",
+    "lint:fix": "eslint packages/*/src --fix",
+    "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx}\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "eslint-plugin-react": "^7.34.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qontinui/ui-bridge.git"
+  },
+  "keywords": [
+    "ui",
+    "automation",
+    "testing",
+    "react",
+    "ai",
+    "debugging"
+  ]
+}
