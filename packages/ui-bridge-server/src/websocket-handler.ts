@@ -182,7 +182,7 @@ export class UIBridgeWSHandler {
 
         case 'discover':
           // @deprecated Use 'find' instead
-          await this.handleFind(clientId, message as WSClientMessage & { type: 'find' });
+          await this.handleFind(clientId, message as unknown as WSClientMessage & { type: 'find' });
           break;
 
         case 'getElement':
