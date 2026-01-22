@@ -176,8 +176,13 @@ export class UIBridgeWSHandler {
           await this.handleUnsubscribe(clientId, message);
           break;
 
+        case 'find':
+          await this.handleFind(clientId, message);
+          break;
+
         case 'discover':
-          await this.handleDiscover(clientId, message);
+          // @deprecated Use 'find' instead
+          await this.handleFind(clientId, message as WSClientMessage & { type: 'find' });
           break;
 
         case 'getElement':
@@ -300,13 +305,13 @@ export class UIBridgeWSHandler {
   }
 
   /**
-   * Handle discover message
+   * Handle find message
    */
-  private async handleDiscover(
+  private async handleFind(
     clientId: string,
-    message: WSClientMessage & { type: 'discover' }
+    message: WSClientMessage & { type: 'find' }
   ): Promise<void> {
-    const result = await this.handlers.discover(message.payload || {});
+    const result = await this.handlers.find(message.payload || {});
 
     if (result.success && result.data) {
       this.sendResponse(clientId, message.id, true, { elements: result.data.elements });

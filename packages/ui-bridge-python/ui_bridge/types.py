@@ -221,7 +221,7 @@ class WorkflowRunResponse(BaseModel):
 
 
 class DiscoveredElement(BaseModel):
-    """Element info for discovery."""
+    """Element info for find/discovery."""
 
     id: str
     type: str
@@ -236,8 +236,11 @@ class DiscoveredElement(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class DiscoveryRequest(BaseModel):
-    """Discovery request options."""
+class FindRequest(BaseModel):
+    """Find request options.
+
+    Used to find/discover controllable elements in the UI.
+    """
 
     root: str | None = None
     interactive_only: bool | None = Field(None, alias="interactiveOnly")
@@ -249,8 +252,11 @@ class DiscoveryRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class DiscoveryResponse(BaseModel):
-    """Discovery response."""
+class FindResponse(BaseModel):
+    """Find response.
+
+    Response from finding/discovering controllable elements.
+    """
 
     elements: list[DiscoveredElement]
     total: int
@@ -258,6 +264,14 @@ class DiscoveryResponse(BaseModel):
     timestamp: int
 
     model_config = {"populate_by_name": True}
+
+
+# Deprecated aliases for backwards compatibility
+DiscoveryRequest = FindRequest
+"""Deprecated: Use FindRequest instead."""
+
+DiscoveryResponse = FindResponse
+"""Deprecated: Use FindResponse instead."""
 
 
 class RegisteredElement(BaseModel):
@@ -385,3 +399,115 @@ class APIResponse(BaseModel):
     error: str | None = None
     code: str | None = None
     timestamp: int
+
+
+# ============================================================================
+# State Management Types
+# ============================================================================
+
+
+class UIState(BaseModel):
+    """UI State definition.
+
+    Represents a distinct state in the UI (e.g., "LoginForm", "Dashboard", "Modal").
+    States can be active or inactive, and can block other states from activating.
+    """
+
+    id: str
+    name: str
+    elements: list[str]
+    blocking: bool | None = None
+    blocks: list[str] | None = None
+    group: str | None = None
+    path_cost: float | None = Field(None, alias="pathCost")
+    metadata: dict[str, Any] | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class UIStateGroup(BaseModel):
+    """State group - states that activate/deactivate atomically.
+
+    When a group is activated, all its states are activated together.
+    When deactivated, all states are deactivated together.
+    """
+
+    id: str
+    name: str
+    states: list[str]
+
+
+class UITransition(BaseModel):
+    """State transition definition.
+
+    Defines how to move from one set of states to another,
+    including any actions to execute during the transition.
+    """
+
+    id: str
+    name: str
+    from_states: list[str] = Field(alias="fromStates")
+    activate_states: list[str] = Field(alias="activateStates")
+    exit_states: list[str] = Field(alias="exitStates")
+    activate_groups: list[str] | None = Field(None, alias="activateGroups")
+    exit_groups: list[str] | None = Field(None, alias="exitGroups")
+    path_cost: float | None = Field(None, alias="pathCost")
+    stays_visible: bool | None = Field(None, alias="staysVisible")
+
+    model_config = {"populate_by_name": True}
+
+
+class PathResult(BaseModel):
+    """Path result from pathfinding.
+
+    Returned when searching for a path to target states.
+    """
+
+    found: bool
+    transitions: list[str]
+    total_cost: float = Field(alias="totalCost")
+    target_states: list[str] = Field(alias="targetStates")
+    estimated_steps: int = Field(alias="estimatedSteps")
+
+    model_config = {"populate_by_name": True}
+
+
+class TransitionResult(BaseModel):
+    """Transition execution result."""
+
+    success: bool
+    activated_states: list[str] = Field(alias="activatedStates")
+    deactivated_states: list[str] = Field(alias="deactivatedStates")
+    error: str | None = None
+    failed_phase: str | None = Field(None, alias="failedPhase")
+    duration_ms: float = Field(alias="durationMs")
+
+    model_config = {"populate_by_name": True}
+
+
+class NavigationResult(BaseModel):
+    """Navigation result.
+
+    Returned after navigating to target states via pathfinding.
+    """
+
+    success: bool
+    path: PathResult
+    executed_transitions: list[str] = Field(alias="executedTransitions")
+    final_active_states: list[str] = Field(alias="finalActiveStates")
+    error: str | None = None
+    duration_ms: float = Field(alias="durationMs")
+
+    model_config = {"populate_by_name": True}
+
+
+class StateSnapshot(BaseModel):
+    """State manager snapshot."""
+
+    timestamp: int
+    active_states: list[str] = Field(alias="activeStates")
+    states: list[UIState]
+    groups: list[UIStateGroup]
+    transitions: list[UITransition]
+
+    model_config = {"populate_by_name": True}

@@ -182,13 +182,92 @@ export interface RegisteredComponent {
 }
 
 /**
+ * Workflow step types
+ */
+export type WorkflowStepType =
+  | 'element-action'
+  | 'component-action'
+  | 'wait'
+  | 'assert'
+  | 'navigate'
+  | 'branch'
+  | 'loop'
+  | 'extract'
+  | 'log'
+  | 'custom';
+
+/**
+ * Branch condition for conditional workflow execution
+ */
+export interface BranchCondition {
+  /** State IDs that must be active */
+  activeStates?: string[];
+  /** State IDs that must be inactive */
+  inactiveStates?: string[];
+  /** Element ID to check state of */
+  elementId?: string;
+  /** Expected element state */
+  elementState?: Partial<ElementState>;
+  /** Custom condition function */
+  condition?: () => boolean | Promise<boolean>;
+}
+
+/**
+ * Loop configuration for repeated workflow steps
+ */
+export interface LoopConfig {
+  /** Maximum number of iterations */
+  maxIterations?: number;
+  /** Continue while these states are active */
+  whileStatesActive?: string[];
+  /** Continue while these states are inactive */
+  whileStatesInactive?: string[];
+  /** Custom continue condition */
+  whileCondition?: () => boolean | Promise<boolean>;
+  /** Delay between iterations in ms */
+  delayMs?: number;
+}
+
+/**
+ * Extract configuration for data extraction
+ */
+export interface ExtractConfig {
+  /** Element ID to extract from */
+  elementId: string;
+  /** Property to extract (value, textContent, innerHTML, attribute) */
+  property: 'value' | 'textContent' | 'innerHTML' | 'attribute' | 'state';
+  /** Attribute name (if property is 'attribute') */
+  attributeName?: string;
+  /** Variable name to store extracted value */
+  variableName: string;
+  /** Optional transformation function */
+  transform?: (value: unknown) => unknown;
+}
+
+/**
+ * Log configuration for debugging
+ */
+export interface LogConfig {
+  /** Log level */
+  level: 'debug' | 'info' | 'warn' | 'error';
+  /** Message to log */
+  message: string;
+  /** Additional data to include */
+  data?: Record<string, unknown>;
+  /** Include current active states */
+  includeStates?: boolean;
+  /** Include element state */
+  elementId?: string;
+}
+
+/**
  * Workflow step definition
  */
 export interface WorkflowStep {
   /** Step identifier */
   id: string;
   /** Type of step */
-  type: 'element-action' | 'component-action' | 'wait' | 'assert' | 'custom';
+  type: WorkflowStepType;
   /** Target element or component ID */
   target?: string;
   /** Action to execute */
@@ -201,6 +280,22 @@ export interface WorkflowStep {
   expectedState?: Partial<ElementState>;
   /** Custom step handler */
   handler?: () => unknown | Promise<unknown>;
+  /** Target states for navigation (type: 'navigate') */
+  targetStates?: string[];
+  /** Branch condition (type: 'branch') */
+  branchCondition?: BranchCondition;
+  /** Steps to execute if branch condition is true */
+  thenSteps?: WorkflowStep[];
+  /** Steps to execute if branch condition is false */
+  elseSteps?: WorkflowStep[];
+  /** Loop configuration (type: 'loop') */
+  loopConfig?: LoopConfig;
+  /** Steps to execute in loop */
+  loopSteps?: WorkflowStep[];
+  /** Extract configuration (type: 'extract') */
+  extractConfig?: ExtractConfig;
+  /** Log configuration (type: 'log') */
+  logConfig?: LogConfig;
 }
 
 /**
@@ -394,7 +489,8 @@ export type WSClientMessageType =
   | 'subscribe'
   | 'unsubscribe'
   | 'ping'
-  | 'discover'
+  | 'find'
+  | 'discover' // @deprecated Use 'find' instead
   | 'getElement'
   | 'getSnapshot'
   | 'executeAction'
@@ -460,7 +556,20 @@ export interface WSPingMessage extends WSMessageBase {
 }
 
 /**
+ * Client message: Find elements
+ */
+export interface WSFindMessage extends WSMessageBase {
+  type: 'find';
+  payload?: {
+    interactiveOnly?: boolean;
+    includeState?: boolean;
+    selector?: string;
+  };
+}
+
+/**
  * Client message: Discover elements
+ * @deprecated Use WSFindMessage instead
  */
 export interface WSDiscoverMessage extends WSMessageBase {
   type: 'discover';
@@ -532,7 +641,8 @@ export type WSClientMessage =
   | WSSubscribeMessage
   | WSUnsubscribeMessage
   | WSPingMessage
-  | WSDiscoverMessage
+  | WSFindMessage
+  | WSDiscoverMessage // @deprecated Use WSFindMessage instead
   | WSGetElementMessage
   | WSGetSnapshotMessage
   | WSExecuteActionMessage
@@ -691,4 +801,151 @@ export interface WSSubscriptionOptions {
   elementIds?: string[];
   /** Filter by component IDs */
   componentIds?: string[];
+}
+
+// ============================================================================
+// State Management Types
+// ============================================================================
+
+/**
+ * UI State definition
+ *
+ * Represents a distinct state in the UI (e.g., "LoginForm", "Dashboard", "Modal").
+ * States can be active or inactive, and can block other states from activating.
+ */
+export interface UIState {
+  /** Unique state identifier */
+  id: string;
+  /** Human-readable name */
+  name: string;
+  /** Element IDs belonging to this state */
+  elements: string[];
+  /** Optional function to detect if state is active */
+  activeWhen?: () => boolean;
+  /** If true, blocks other state activations (modal behavior) */
+  blocking?: boolean;
+  /** Specific state IDs this state blocks */
+  blocks?: string[];
+  /** State group membership */
+  group?: string;
+  /** Cost for pathfinding (default: 1.0) */
+  pathCost?: number;
+  /** Custom metadata */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * State group - states that activate/deactivate atomically
+ *
+ * When a group is activated, all its states are activated together.
+ * When deactivated, all states are deactivated together.
+ */
+export interface UIStateGroup {
+  /** Unique group identifier */
+  id: string;
+  /** Human-readable name */
+  name: string;
+  /** State IDs belonging to this group */
+  states: string[];
+}
+
+/**
+ * State transition definition
+ *
+ * Defines how to move from one set of states to another,
+ * including any actions to execute during the transition.
+ */
+export interface UITransition {
+  /** Unique transition identifier */
+  id: string;
+  /** Human-readable name */
+  name: string;
+  /** Precondition: at least one must be active */
+  fromStates: string[];
+  /** States to activate */
+  activateStates: string[];
+  /** States to deactivate */
+  exitStates: string[];
+  /** Groups to activate */
+  activateGroups?: string[];
+  /** Groups to deactivate */
+  exitGroups?: string[];
+  /** Actions to execute during transition */
+  actions?: WorkflowStep[];
+  /** Cost for pathfinding */
+  pathCost?: number;
+  /** Whether source states remain visible during transition */
+  staysVisible?: boolean;
+}
+
+/**
+ * Path result from pathfinding
+ *
+ * Returned when searching for a path to target states.
+ */
+export interface PathResult {
+  /** Whether a path was found */
+  found: boolean;
+  /** Transition IDs in order to reach target */
+  transitions: string[];
+  /** Total cost of the path */
+  totalCost: number;
+  /** Target state IDs */
+  targetStates: string[];
+  /** Estimated number of steps */
+  estimatedSteps: number;
+}
+
+/**
+ * Transition execution result
+ */
+export interface TransitionResult {
+  /** Whether the transition succeeded */
+  success: boolean;
+  /** States that were activated */
+  activatedStates: string[];
+  /** States that were deactivated */
+  deactivatedStates: string[];
+  /** Error message if failed */
+  error?: string;
+  /** Phase where failure occurred (if any) */
+  failedPhase?: string;
+  /** Duration of the transition in milliseconds */
+  durationMs: number;
+}
+
+/**
+ * Navigation result
+ *
+ * Returned after navigating to target states via pathfinding.
+ */
+export interface NavigationResult {
+  /** Whether navigation succeeded */
+  success: boolean;
+  /** The path that was followed */
+  path: PathResult;
+  /** Transitions that were executed */
+  executedTransitions: string[];
+  /** Final active states after navigation */
+  finalActiveStates: string[];
+  /** Error message if failed */
+  error?: string;
+  /** Duration of the navigation in milliseconds */
+  durationMs: number;
+}
+
+/**
+ * State manager snapshot
+ */
+export interface StateSnapshot {
+  /** Timestamp of the snapshot */
+  timestamp: number;
+  /** Currently active state IDs */
+  activeStates: string[];
+  /** All registered states */
+  states: UIState[];
+  /** All registered state groups */
+  groups: UIStateGroup[];
+  /** All registered transitions */
+  transitions: UITransition[];
 }

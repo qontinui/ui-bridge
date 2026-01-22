@@ -17,8 +17,8 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
-  DiscoveryRequest,
-  DiscoveryResponse,
+  FindRequest,
+  FindResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
 } from '../control/types';
@@ -50,8 +50,13 @@ export interface UseUIBridgeReturn {
     componentId: string,
     request: ComponentActionRequest
   ) => Promise<ComponentActionResponse>;
-  /** Discover controllable elements */
-  discover: (options?: DiscoveryRequest) => Promise<DiscoveryResponse>;
+  /** Find controllable elements */
+  find: (options?: FindRequest) => Promise<FindResponse>;
+  /**
+   * Discover controllable elements
+   * @deprecated Use find() instead
+   */
+  discover: (options?: FindRequest) => Promise<FindResponse>;
   /** Run a workflow */
   runWorkflow: (workflowId: string, request?: WorkflowRunRequest) => Promise<WorkflowRunResponse>;
   /** Get element by ID */
@@ -167,9 +172,9 @@ export function useUIBridge(): UseUIBridgeReturn {
     [context]
   );
 
-  // Discover elements
-  const discover = useCallback(
-    async (options?: DiscoveryRequest): Promise<DiscoveryResponse> => {
+  // Find elements
+  const find = useCallback(
+    async (options?: FindRequest): Promise<FindResponse> => {
       if (!context) {
         return {
           elements: [],
@@ -178,9 +183,17 @@ export function useUIBridge(): UseUIBridgeReturn {
           timestamp: Date.now(),
         };
       }
-      return context.executor.discover(options);
+      return context.executor.find(options);
     },
     [context]
+  );
+
+  // Discover elements (deprecated - use find instead)
+  const discover = useCallback(
+    async (options?: FindRequest): Promise<FindResponse> => {
+      return find(options);
+    },
+    [find]
   );
 
   // Run workflow
@@ -277,7 +290,8 @@ export function useUIBridge(): UseUIBridgeReturn {
     createSnapshot,
     executeAction,
     executeComponentAction,
-    discover,
+    find,
+    discover, // deprecated - use find
     runWorkflow,
     getElement,
     getComponent,

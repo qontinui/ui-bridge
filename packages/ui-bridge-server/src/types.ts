@@ -10,8 +10,8 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
-  DiscoveryRequest,
-  DiscoveryResponse,
+  FindRequest,
+  FindResponse,
   ControlSnapshot,
   WorkflowRunRequest,
   WorkflowRunResponse,
@@ -121,8 +121,12 @@ export interface UIBridgeServerHandlers {
     request: ComponentActionRequest
   ) => Promise<APIResponse<ComponentActionResponse>>;
 
-  // Discovery endpoints
-  discover: (request?: DiscoveryRequest) => Promise<APIResponse<DiscoveryResponse>>;
+  // Find endpoints
+  find: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
+  /**
+   * @deprecated Use find() instead
+   */
+  discover: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
   getControlSnapshot: () => Promise<APIResponse<ControlSnapshot>>;
 
   // Workflow endpoints
@@ -184,8 +188,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     bodyRequired: true,
   },
 
-  // Discovery
-  { method: 'POST', path: '/control/discover', handler: 'discover' },
+  // Find (formerly Discovery)
+  { method: 'POST', path: '/control/find', handler: 'find' },
+  { method: 'POST', path: '/control/discover', handler: 'discover' }, // @deprecated Use /control/find
   { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
 
   // Workflows

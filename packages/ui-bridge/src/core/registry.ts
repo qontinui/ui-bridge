@@ -17,6 +17,13 @@ import type {
   BridgeEventType,
   BridgeEventListener,
   BridgeSnapshot,
+  UIState,
+  UIStateGroup,
+  UITransition,
+  PathResult,
+  TransitionResult,
+  NavigationResult,
+  StateSnapshot,
 } from './types';
 import { createElementIdentifier } from './element-identifier';
 
@@ -217,6 +224,12 @@ export class UIBridgeRegistry {
   private workflows = new Map<string, Workflow>();
   private eventListeners = new Map<BridgeEventType, Set<BridgeEventListener>>();
   private options: RegistryOptions;
+
+  // State management
+  private states = new Map<string, UIState>();
+  private stateGroups = new Map<string, UIStateGroup>();
+  private transitions = new Map<string, UITransition>();
+  private activeStates = new Set<string>();
 
   constructor(options: RegistryOptions = {}) {
     this.options = options;
@@ -445,6 +458,431 @@ export class UIBridgeRegistry {
     return Array.from(this.workflows.values());
   }
 
+  // ==========================================================================
+  // State Management
+  // ==========================================================================
+
+  /**
+   * Register a state
+   */
+  registerState(state: UIState): UIState {
+    this.states.set(state.id, state);
+    this.emit('element:registered', { id: state.id, type: 'state', name: state.name });
+    return state;
+  }
+
+  /**
+   * Unregister a state
+   */
+  unregisterState(id: string): boolean {
+    const state = this.states.get(id);
+    if (state) {
+      this.activeStates.delete(id);
+      this.states.delete(id);
+      this.emit('element:unregistered', { id, type: 'state' });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get a registered state
+   */
+  getState(id: string): UIState | undefined {
+    return this.states.get(id);
+  }
+
+  /**
+   * Get all registered states
+   */
+  getAllStates(): UIState[] {
+    return Array.from(this.states.values());
+  }
+
+  /**
+   * Register a state group
+   */
+  registerStateGroup(group: UIStateGroup): UIStateGroup {
+    this.stateGroups.set(group.id, group);
+    return group;
+  }
+
+  /**
+   * Unregister a state group
+   */
+  unregisterStateGroup(id: string): boolean {
+    return this.stateGroups.delete(id);
+  }
+
+  /**
+   * Get a state group
+   */
+  getStateGroup(id: string): UIStateGroup | undefined {
+    return this.stateGroups.get(id);
+  }
+
+  /**
+   * Get all state groups
+   */
+  getAllStateGroups(): UIStateGroup[] {
+    return Array.from(this.stateGroups.values());
+  }
+
+  /**
+   * Register a transition
+   */
+  registerTransition(transition: UITransition): UITransition {
+    this.transitions.set(transition.id, transition);
+    return transition;
+  }
+
+  /**
+   * Unregister a transition
+   */
+  unregisterTransition(id: string): boolean {
+    return this.transitions.delete(id);
+  }
+
+  /**
+   * Get a transition
+   */
+  getTransition(id: string): UITransition | undefined {
+    return this.transitions.get(id);
+  }
+
+  /**
+   * Get all transitions
+   */
+  getAllTransitions(): UITransition[] {
+    return Array.from(this.transitions.values());
+  }
+
+  /**
+   * Get currently active states
+   */
+  getActiveStates(): string[] {
+    return Array.from(this.activeStates);
+  }
+
+  /**
+   * Check if a state is active
+   */
+  isStateActive(id: string): boolean {
+    return this.activeStates.has(id);
+  }
+
+  /**
+   * Activate a state
+   */
+  activateState(id: string): boolean {
+    const state = this.states.get(id);
+    if (!state) {
+      return false;
+    }
+
+    // Check if blocked by another state
+    for (const activeId of this.activeStates) {
+      const activeState = this.states.get(activeId);
+      if (activeState?.blocking && activeState.id !== id) {
+        // Blocked by a modal/blocking state
+        return false;
+      }
+      if (activeState?.blocks?.includes(id)) {
+        // Specifically blocked by this state
+        return false;
+      }
+    }
+
+    const wasActive = this.activeStates.has(id);
+    this.activeStates.add(id);
+
+    if (!wasActive) {
+      this.emit('element:stateChanged', {
+        stateId: id,
+        active: true,
+        activeStates: this.getActiveStates(),
+      });
+    }
+
+    return true;
+  }
+
+  /**
+   * Deactivate a state
+   */
+  deactivateState(id: string): boolean {
+    const wasActive = this.activeStates.has(id);
+    this.activeStates.delete(id);
+
+    if (wasActive) {
+      this.emit('element:stateChanged', {
+        stateId: id,
+        active: false,
+        activeStates: this.getActiveStates(),
+      });
+    }
+
+    return wasActive;
+  }
+
+  /**
+   * Activate multiple states
+   */
+  activateStates(ids: string[]): string[] {
+    const activated: string[] = [];
+    for (const id of ids) {
+      if (this.activateState(id)) {
+        activated.push(id);
+      }
+    }
+    return activated;
+  }
+
+  /**
+   * Deactivate multiple states
+   */
+  deactivateStates(ids: string[]): string[] {
+    const deactivated: string[] = [];
+    for (const id of ids) {
+      if (this.deactivateState(id)) {
+        deactivated.push(id);
+      }
+    }
+    return deactivated;
+  }
+
+  /**
+   * Activate a state group (all states in the group)
+   */
+  activateStateGroup(groupId: string): string[] {
+    const group = this.stateGroups.get(groupId);
+    if (!group) return [];
+    return this.activateStates(group.states);
+  }
+
+  /**
+   * Deactivate a state group (all states in the group)
+   */
+  deactivateStateGroup(groupId: string): string[] {
+    const group = this.stateGroups.get(groupId);
+    if (!group) return [];
+    return this.deactivateStates(group.states);
+  }
+
+  /**
+   * Check if a transition can be executed from current state
+   */
+  canExecuteTransition(transitionId: string): boolean {
+    const transition = this.transitions.get(transitionId);
+    if (!transition) return false;
+
+    // At least one fromState must be active
+    return transition.fromStates.some((stateId) => this.activeStates.has(stateId));
+  }
+
+  /**
+   * Execute a transition
+   */
+  async executeTransition(transitionId: string): Promise<TransitionResult> {
+    const startTime = performance.now();
+    const transition = this.transitions.get(transitionId);
+
+    if (!transition) {
+      return {
+        success: false,
+        activatedStates: [],
+        deactivatedStates: [],
+        error: `Transition not found: ${transitionId}`,
+        durationMs: performance.now() - startTime,
+      };
+    }
+
+    if (!this.canExecuteTransition(transitionId)) {
+      return {
+        success: false,
+        activatedStates: [],
+        deactivatedStates: [],
+        error: 'Precondition not met: none of the fromStates are active',
+        failedPhase: 'precondition',
+        durationMs: performance.now() - startTime,
+      };
+    }
+
+    try {
+      // Phase 1: Deactivate exit states
+      const deactivated = this.deactivateStates(transition.exitStates);
+
+      // Phase 2: Deactivate exit groups
+      if (transition.exitGroups) {
+        for (const groupId of transition.exitGroups) {
+          deactivated.push(...this.deactivateStateGroup(groupId));
+        }
+      }
+
+      // Phase 3: Execute actions (if any)
+      // Note: Actual action execution happens in the workflow engine
+      // Here we just track that the transition occurred
+
+      // Phase 4: Activate states
+      const activated = this.activateStates(transition.activateStates);
+
+      // Phase 5: Activate groups
+      if (transition.activateGroups) {
+        for (const groupId of transition.activateGroups) {
+          activated.push(...this.activateStateGroup(groupId));
+        }
+      }
+
+      return {
+        success: true,
+        activatedStates: activated,
+        deactivatedStates: deactivated,
+        durationMs: performance.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        activatedStates: [],
+        deactivatedStates: [],
+        error: error instanceof Error ? error.message : String(error),
+        failedPhase: 'execution',
+        durationMs: performance.now() - startTime,
+      };
+    }
+  }
+
+  /**
+   * Find a path from current state to target states
+   *
+   * Uses a simple BFS algorithm for pathfinding.
+   * For more advanced pathfinding (Dijkstra, A*), use the Python state manager service.
+   */
+  findPath(targetStates: string[]): PathResult {
+    const targets = new Set(targetStates);
+
+    // Check if already at target
+    const currentActive = this.getActiveStates();
+    if (targetStates.every((t) => this.activeStates.has(t))) {
+      return {
+        found: true,
+        transitions: [],
+        totalCost: 0,
+        targetStates,
+        estimatedSteps: 0,
+      };
+    }
+
+    // BFS to find path
+    const queue: { activeStates: Set<string>; path: string[]; cost: number }[] = [
+      { activeStates: new Set(this.activeStates), path: [], cost: 0 },
+    ];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const stateKey = Array.from(current.activeStates).sort().join(',');
+
+      if (visited.has(stateKey)) continue;
+      visited.add(stateKey);
+
+      // Check if target reached
+      if (targetStates.every((t) => current.activeStates.has(t))) {
+        return {
+          found: true,
+          transitions: current.path,
+          totalCost: current.cost,
+          targetStates,
+          estimatedSteps: current.path.length,
+        };
+      }
+
+      // Try each transition
+      for (const transition of this.transitions.values()) {
+        // Check if transition can be executed from current state
+        const canExecute = transition.fromStates.some((s) => current.activeStates.has(s));
+        if (!canExecute) continue;
+
+        // Calculate new state after transition
+        const newActive = new Set(current.activeStates);
+        for (const s of transition.exitStates) newActive.delete(s);
+        for (const s of transition.activateStates) newActive.add(s);
+
+        const newCost = current.cost + (transition.pathCost ?? 1);
+
+        queue.push({
+          activeStates: newActive,
+          path: [...current.path, transition.id],
+          cost: newCost,
+        });
+      }
+    }
+
+    return {
+      found: false,
+      transitions: [],
+      totalCost: 0,
+      targetStates,
+      estimatedSteps: 0,
+    };
+  }
+
+  /**
+   * Navigate to target states using pathfinding
+   */
+  async navigateTo(targetStates: string[]): Promise<NavigationResult> {
+    const startTime = performance.now();
+    const path = this.findPath(targetStates);
+
+    if (!path.found) {
+      return {
+        success: false,
+        path,
+        executedTransitions: [],
+        finalActiveStates: this.getActiveStates(),
+        error: `No path found to target states: ${targetStates.join(', ')}`,
+        durationMs: performance.now() - startTime,
+      };
+    }
+
+    const executedTransitions: string[] = [];
+
+    for (const transitionId of path.transitions) {
+      const result = await this.executeTransition(transitionId);
+      if (!result.success) {
+        return {
+          success: false,
+          path,
+          executedTransitions,
+          finalActiveStates: this.getActiveStates(),
+          error: result.error,
+          durationMs: performance.now() - startTime,
+        };
+      }
+      executedTransitions.push(transitionId);
+    }
+
+    return {
+      success: true,
+      path,
+      executedTransitions,
+      finalActiveStates: this.getActiveStates(),
+      durationMs: performance.now() - startTime,
+    };
+  }
+
+  /**
+   * Create a state snapshot
+   */
+  createStateSnapshot(): StateSnapshot {
+    return {
+      timestamp: Date.now(),
+      activeStates: this.getActiveStates(),
+      states: this.getAllStates(),
+      groups: this.getAllStateGroups(),
+      transitions: this.getAllTransitions(),
+    };
+  }
+
   /**
    * Create a snapshot of the current state
    */
@@ -484,6 +922,10 @@ export class UIBridgeRegistry {
     this.components.clear();
     this.workflows.clear();
     this.eventListeners.clear();
+    this.states.clear();
+    this.stateGroups.clear();
+    this.transitions.clear();
+    this.activeStates.clear();
   }
 
   /**
@@ -495,6 +937,10 @@ export class UIBridgeRegistry {
     workflowCount: number;
     mountedElementCount: number;
     mountedComponentCount: number;
+    stateCount: number;
+    stateGroupCount: number;
+    transitionCount: number;
+    activeStateCount: number;
   } {
     const elements = this.getAllElements();
     const components = this.getAllComponents();
@@ -505,6 +951,10 @@ export class UIBridgeRegistry {
       workflowCount: this.workflows.size,
       mountedElementCount: elements.filter((e) => e.mounted).length,
       mountedComponentCount: components.filter((c) => c.mounted).length,
+      stateCount: this.states.size,
+      stateGroupCount: this.stateGroups.size,
+      transitionCount: this.transitions.size,
+      activeStateCount: this.activeStates.size,
     };
   }
 }

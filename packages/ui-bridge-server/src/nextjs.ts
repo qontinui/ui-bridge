@@ -19,7 +19,7 @@ import { UI_BRIDGE_ROUTES } from './types';
 import type {
   ControlActionRequest,
   ComponentActionRequest,
-  DiscoveryRequest,
+  FindRequest,
   WorkflowRunRequest,
 } from 'ui-bridge/control';
 
@@ -274,9 +274,19 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         return jsonResponse(result);
       },
     },
-    discover: {
+    find: {
       async POST(request: NextRequest): Promise<Response> {
-        const body = (await request.json()) as DiscoveryRequest;
+        const body = (await request.json()) as FindRequest;
+        const result = await handlers.find(body);
+        return jsonResponse(result);
+      },
+    },
+    discover: {
+      /**
+       * @deprecated Use /control/find instead
+       */
+      async POST(request: NextRequest): Promise<Response> {
+        const body = (await request.json()) as FindRequest;
         const result = await handlers.discover(body);
         return jsonResponse(result);
       },

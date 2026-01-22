@@ -6,8 +6,8 @@ from ui_bridge.types import (
     ActionResponse,
     ComponentActionRequest,
     ComponentActionResponse,
-    DiscoveryRequest,
-    DiscoveryResponse,
+    FindRequest,
+    FindResponse,
     DiscoveredElement,
     ElementIdentifier,
     ElementState,
@@ -164,16 +164,16 @@ class TestComponentActionRequest:
         assert request.params["email"] == "test@example.com"
 
 
-class TestDiscoveryRequest:
-    """Tests for DiscoveryRequest model."""
+class TestFindRequest:
+    """Tests for FindRequest model."""
 
     def test_default_request(self):
-        request = DiscoveryRequest()
+        request = FindRequest()
         assert request.interactive_only is None
         assert request.include_hidden is None
 
     def test_interactive_only_request(self):
-        request = DiscoveryRequest(interactive_only=True)
+        request = FindRequest(interactive_only=True)
         assert request.interactive_only is True
 
 
@@ -199,11 +199,11 @@ class TestDiscoveredElement:
         assert "click" in element.actions
 
 
-class TestDiscoveryResponse:
-    """Tests for DiscoveryResponse model."""
+class TestFindResponse:
+    """Tests for FindResponse model."""
 
-    def test_create_discovery_response(self):
-        response = DiscoveryResponse(
+    def test_create_find_response(self):
+        response = FindResponse(
             elements=[
                 DiscoveredElement(
                     id="btn-1",
@@ -302,3 +302,196 @@ class TestWorkflowResult:
         assert result.success is False
         assert result.error == "Element not found"
         assert result.failed_step == "step-2"
+
+
+class TestUIState:
+    """Tests for UIState model."""
+
+    def test_create_basic_state(self):
+        from ui_bridge.types import UIState
+
+        state = UIState(
+            id="login-modal",
+            name="Login Modal",
+            elements=["email-input", "password-input", "submit-btn"],
+        )
+        assert state.id == "login-modal"
+        assert state.name == "Login Modal"
+        assert len(state.elements) == 3
+
+    def test_create_blocking_state(self):
+        from ui_bridge.types import UIState
+
+        state = UIState(
+            id="modal-overlay",
+            name="Modal Overlay",
+            elements=[],
+            blocking=True,
+            blocks=["dashboard"],
+        )
+        assert state.blocking is True
+        assert "dashboard" in state.blocks
+
+
+class TestUIStateGroup:
+    """Tests for UIStateGroup model."""
+
+    def test_create_state_group(self):
+        from ui_bridge.types import UIStateGroup
+
+        group = UIStateGroup(
+            id="nav-group",
+            name="Navigation",
+            states=["nav-home", "nav-about", "nav-contact"],
+        )
+        assert group.id == "nav-group"
+        assert len(group.states) == 3
+
+
+class TestUITransition:
+    """Tests for UITransition model."""
+
+    def test_create_transition(self):
+        from ui_bridge.types import UITransition
+
+        transition = UITransition(
+            id="open-modal",
+            name="Open Login Modal",
+            from_states=["dashboard"],
+            activate_states=["login-modal"],
+            exit_states=[],
+        )
+        assert transition.id == "open-modal"
+        assert transition.from_states == ["dashboard"]
+        assert transition.activate_states == ["login-modal"]
+
+    def test_create_transition_with_alias(self):
+        from ui_bridge.types import UITransition
+
+        transition = UITransition.model_validate(
+            {
+                "id": "close-modal",
+                "name": "Close Modal",
+                "fromStates": ["login-modal"],
+                "activateStates": [],
+                "exitStates": ["login-modal"],
+            }
+        )
+        assert transition.from_states == ["login-modal"]
+        assert transition.exit_states == ["login-modal"]
+
+
+class TestPathResult:
+    """Tests for PathResult model."""
+
+    def test_path_found(self):
+        from ui_bridge.types import PathResult
+
+        result = PathResult(
+            found=True,
+            transitions=["open-modal", "submit-form"],
+            total_cost=2.0,
+            target_states=["success-page"],
+            estimated_steps=2,
+        )
+        assert result.found is True
+        assert len(result.transitions) == 2
+        assert result.total_cost == 2.0
+
+    def test_path_not_found(self):
+        from ui_bridge.types import PathResult
+
+        result = PathResult(
+            found=False,
+            transitions=[],
+            total_cost=0,
+            target_states=["unreachable"],
+            estimated_steps=0,
+        )
+        assert result.found is False
+        assert len(result.transitions) == 0
+
+
+class TestTransitionResult:
+    """Tests for TransitionResult model."""
+
+    def test_successful_transition(self):
+        from ui_bridge.types import TransitionResult
+
+        result = TransitionResult(
+            success=True,
+            activated_states=["login-modal"],
+            deactivated_states=["dashboard"],
+            duration_ms=50.0,
+        )
+        assert result.success is True
+        assert "login-modal" in result.activated_states
+
+    def test_failed_transition(self):
+        from ui_bridge.types import TransitionResult
+
+        result = TransitionResult(
+            success=False,
+            activated_states=[],
+            deactivated_states=[],
+            error="Precondition not met",
+            failed_phase="precondition",
+            duration_ms=5.0,
+        )
+        assert result.success is False
+        assert result.failed_phase == "precondition"
+
+
+class TestNavigationResult:
+    """Tests for NavigationResult model."""
+
+    def test_successful_navigation(self):
+        from ui_bridge.types import NavigationResult, PathResult
+
+        path = PathResult(
+            found=True,
+            transitions=["t1", "t2"],
+            total_cost=2.0,
+            target_states=["target"],
+            estimated_steps=2,
+        )
+        result = NavigationResult(
+            success=True,
+            path=path,
+            executed_transitions=["t1", "t2"],
+            final_active_states=["target"],
+            duration_ms=100.0,
+        )
+        assert result.success is True
+        assert len(result.executed_transitions) == 2
+        assert result.final_active_states == ["target"]
+
+
+class TestStateSnapshot:
+    """Tests for StateSnapshot model."""
+
+    def test_create_snapshot(self):
+        from ui_bridge.types import StateSnapshot, UIState, UIStateGroup, UITransition
+
+        state = UIState(id="s1", name="State 1", elements=[])
+        group = UIStateGroup(id="g1", name="Group 1", states=["s1"])
+        transition = UITransition(
+            id="t1",
+            name="Transition 1",
+            from_states=["s1"],
+            activate_states=["s2"],
+            exit_states=["s1"],
+        )
+
+        snapshot = StateSnapshot(
+            timestamp=1234567890,
+            active_states=["s1"],
+            states=[state],
+            groups=[group],
+            transitions=[transition],
+        )
+        assert snapshot.timestamp == 1234567890
+        assert len(snapshot.active_states) == 1
+        assert len(snapshot.states) == 1
+        assert len(snapshot.groups) == 1
+        assert len(snapshot.transitions) == 1

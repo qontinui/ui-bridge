@@ -13,8 +13,8 @@ import type {
   ComponentActionRequest,
   ComponentActionResponse,
   WaitResult,
-  DiscoveryRequest,
-  DiscoveryResponse,
+  FindRequest,
+  FindResponse,
   DiscoveredElement,
   ControlSnapshot,
   ActionExecutor,
@@ -277,9 +277,9 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Discover controllable elements
+   * Find controllable elements
    */
-  async discover(options?: DiscoveryRequest): Promise<DiscoveryResponse> {
+  async find(options?: FindRequest): Promise<FindResponse> {
     const startTime = performance.now();
     const elements: DiscoveredElement[] = [];
 
@@ -350,6 +350,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       durationMs: performance.now() - startTime,
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Discover controllable elements
+   * @deprecated Use find() instead
+   */
+  async discover(options?: FindRequest): Promise<FindResponse> {
+    return this.find(options);
   }
 
   /**

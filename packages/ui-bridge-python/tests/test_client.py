@@ -122,8 +122,8 @@ class TestUIBridgeClientActions:
             assert result.success is True
 
 
-class TestUIBridgeClientDiscovery:
-    """Tests for UIBridgeClient discovery methods."""
+class TestUIBridgeClientFind:
+    """Tests for UIBridgeClient find methods."""
 
     @pytest.fixture
     def client(self):
@@ -136,7 +136,7 @@ class TestUIBridgeClientDiscovery:
         response.raise_for_status = MagicMock()
         return response
 
-    def test_discover(self, client, mock_response):
+    def test_find(self, client, mock_response):
         mock_response.json.return_value = {
             "success": True,
             "data": {
@@ -171,11 +171,33 @@ class TestUIBridgeClientDiscovery:
         }
 
         with patch.object(client._client, "request", return_value=mock_response):
-            result = client.discover()
+            result = client.find()
 
             assert len(result.elements) == 1
             assert result.elements[0].id == "btn-1"
             assert result.total == 1
+
+    def test_discover_deprecated(self, client, mock_response):
+        """Test that deprecated discover() still works."""
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "elements": [],
+                "total": 0,
+                "durationMs": 5.0,
+                "timestamp": 1234567890,
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response):
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = client.discover()
+                assert len(w) == 1
+                assert issubclass(w[0].category, DeprecationWarning)
+                assert "discover()" in str(w[0].message)
 
 
 class TestUIBridgeClientComponents:

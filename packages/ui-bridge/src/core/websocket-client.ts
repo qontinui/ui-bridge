@@ -230,21 +230,33 @@ export class UIBridgeWSClient {
   }
 
   /**
-   * Discover elements
+   * Find elements
    */
-  async discover(options?: {
+  async find(options?: {
     interactiveOnly?: boolean;
     includeState?: boolean;
     selector?: string;
   }): Promise<BridgeSnapshot['elements']> {
     const response = await this.sendRequest<{ elements: BridgeSnapshot['elements'] }>({
       id: generateId(),
-      type: 'discover',
+      type: 'find',
       timestamp: Date.now(),
       payload: options,
     });
 
     return response.elements;
+  }
+
+  /**
+   * Discover elements
+   * @deprecated Use find() instead
+   */
+  async discover(options?: {
+    interactiveOnly?: boolean;
+    includeState?: boolean;
+    selector?: string;
+  }): Promise<BridgeSnapshot['elements']> {
+    return this.find(options);
   }
 
   /**

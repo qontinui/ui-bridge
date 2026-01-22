@@ -11,14 +11,22 @@ from urllib.parse import urljoin
 
 import httpx
 
+import warnings
 from .types import (
     ActionResponse,
     ComponentActionResponse,
     ControlSnapshot,
-    DiscoveryResponse,
+    FindResponse,
     ElementState,
+    NavigationResult,
+    PathResult,
     PerformanceMetrics,
     RenderLogEntry,
+    StateSnapshot,
+    TransitionResult,
+    UIState,
+    UIStateGroup,
+    UITransition,
     WorkflowRunResponse,
 )
 
@@ -443,10 +451,10 @@ class UIBridgeClient:
         return response
 
     # ==========================================================================
-    # Discovery
+    # Find (formerly Discovery)
     # ==========================================================================
 
-    def discover(
+    def find(
         self,
         *,
         root: str | None = None,
@@ -455,20 +463,20 @@ class UIBridgeClient:
         limit: int | None = None,
         types: list[str] | None = None,
         selector: str | None = None,
-    ) -> DiscoveryResponse:
+    ) -> FindResponse:
         """
-        Discover controllable elements in the UI.
+        Find controllable elements in the UI.
 
         Args:
             root: Root element selector to start from
-            interactive_only: Only discover interactive elements
+            interactive_only: Only find interactive elements
             include_hidden: Include hidden elements
             limit: Maximum elements to return
             types: Filter by element types
             selector: Filter by CSS selector
 
         Returns:
-            DiscoveryResponse with discovered elements
+            FindResponse with found elements
         """
         request: dict[str, Any] = {}
         if root:
@@ -484,8 +492,49 @@ class UIBridgeClient:
         if selector:
             request["selector"] = selector
 
-        data = self._request("POST", "/control/discover", json=request)
-        return DiscoveryResponse.model_validate(data)
+        data = self._request("POST", "/control/find", json=request)
+        return FindResponse.model_validate(data)
+
+    def discover(
+        self,
+        *,
+        root: str | None = None,
+        interactive_only: bool = False,
+        include_hidden: bool = False,
+        limit: int | None = None,
+        types: list[str] | None = None,
+        selector: str | None = None,
+    ) -> FindResponse:
+        """
+        Discover controllable elements in the UI.
+
+        .. deprecated::
+            Use :meth:`find` instead.
+
+        Args:
+            root: Root element selector to start from
+            interactive_only: Only discover interactive elements
+            include_hidden: Include hidden elements
+            limit: Maximum elements to return
+            types: Filter by element types
+            selector: Filter by CSS selector
+
+        Returns:
+            FindResponse with discovered elements
+        """
+        warnings.warn(
+            "discover() is deprecated, use find() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.find(
+            root=root,
+            interactive_only=interactive_only,
+            include_hidden=include_hidden,
+            limit=limit,
+            types=types,
+            selector=selector,
+        )
 
     def get_snapshot(self) -> ControlSnapshot:
         """Get a full control snapshot."""
@@ -546,6 +595,97 @@ class UIBridgeClient:
         """Get workflow run status."""
         data = self._request("GET", f"/control/workflow/{run_id}/status")
         return WorkflowRunResponse.model_validate(data)
+
+    # ==========================================================================
+    # State Management
+    # ==========================================================================
+
+    @property
+    def state(self) -> StateControl:
+        """Get state management control interface."""
+        return StateControl(self)
+
+    def get_states(self) -> list[UIState]:
+        """Get all registered states."""
+        data = self._request("GET", "/control/states")
+        return [UIState.model_validate(s) for s in data]
+
+    def get_state(self, state_id: str) -> UIState:
+        """Get a specific state."""
+        data = self._request("GET", f"/control/state/{state_id}")
+        return UIState.model_validate(data)
+
+    def get_active_states(self) -> list[str]:
+        """Get currently active state IDs."""
+        return self._request("GET", "/control/states/active")
+
+    def is_state_active(self, state_id: str) -> bool:
+        """Check if a state is currently active."""
+        active = self.get_active_states()
+        return state_id in active
+
+    def activate_state(self, state_id: str) -> bool:
+        """Activate a state."""
+        data = self._request("POST", f"/control/state/{state_id}/activate")
+        return data.get("success", False)
+
+    def deactivate_state(self, state_id: str) -> bool:
+        """Deactivate a state."""
+        data = self._request("POST", f"/control/state/{state_id}/deactivate")
+        return data.get("success", False)
+
+    def get_state_groups(self) -> list[UIStateGroup]:
+        """Get all registered state groups."""
+        data = self._request("GET", "/control/state-groups")
+        return [UIStateGroup.model_validate(g) for g in data]
+
+    def activate_state_group(self, group_id: str) -> list[str]:
+        """Activate all states in a group."""
+        data = self._request("POST", f"/control/state-group/{group_id}/activate")
+        return data.get("activated", [])
+
+    def deactivate_state_group(self, group_id: str) -> list[str]:
+        """Deactivate all states in a group."""
+        data = self._request("POST", f"/control/state-group/{group_id}/deactivate")
+        return data.get("deactivated", [])
+
+    def get_transitions(self) -> list[UITransition]:
+        """Get all registered transitions."""
+        data = self._request("GET", "/control/transitions")
+        return [UITransition.model_validate(t) for t in data]
+
+    def can_execute_transition(self, transition_id: str) -> bool:
+        """Check if a transition can be executed from current state."""
+        data = self._request("GET", f"/control/transition/{transition_id}/can-execute")
+        return data.get("canExecute", False)
+
+    def execute_transition(self, transition_id: str) -> TransitionResult:
+        """Execute a transition."""
+        data = self._request("POST", f"/control/transition/{transition_id}/execute")
+        return TransitionResult.model_validate(data)
+
+    def find_path(self, target_states: list[str]) -> PathResult:
+        """Find a path to target states."""
+        data = self._request(
+            "POST",
+            "/control/states/find-path",
+            json={"targetStates": target_states},
+        )
+        return PathResult.model_validate(data)
+
+    def navigate_to(self, target_states: list[str]) -> NavigationResult:
+        """Navigate to target states using pathfinding."""
+        data = self._request(
+            "POST",
+            "/control/states/navigate",
+            json={"targetStates": target_states},
+        )
+        return NavigationResult.model_validate(data)
+
+    def get_state_snapshot(self) -> StateSnapshot:
+        """Get a snapshot of all state management data."""
+        data = self._request("GET", "/control/states/snapshot")
+        return StateSnapshot.model_validate(data)
 
     # ==========================================================================
     # Render Log
@@ -706,3 +846,87 @@ class RenderLogControl:
     def clear(self) -> None:
         """Clear the render log."""
         self._client.clear_render_log()
+
+
+class StateControl:
+    """State management control interface.
+
+    Provides a fluent API for UI state management.
+
+    Example:
+        >>> client = UIBridgeClient()
+        >>> client.state.active  # Get active state IDs
+        ['dashboard', 'sidebar']
+        >>> client.state.activate('modal')
+        True
+        >>> client.state.navigate_to(['checkout'])
+        NavigationResult(success=True, ...)
+    """
+
+    def __init__(self, client: UIBridgeClient):
+        self._client = client
+
+    @property
+    def active(self) -> list[str]:
+        """Get currently active state IDs."""
+        return self._client.get_active_states()
+
+    @property
+    def all(self) -> list[UIState]:
+        """Get all registered states."""
+        return self._client.get_states()
+
+    @property
+    def groups(self) -> list[UIStateGroup]:
+        """Get all registered state groups."""
+        return self._client.get_state_groups()
+
+    @property
+    def transitions(self) -> list[UITransition]:
+        """Get all registered transitions."""
+        return self._client.get_transitions()
+
+    @property
+    def snapshot(self) -> StateSnapshot:
+        """Get a snapshot of all state management data."""
+        return self._client.get_state_snapshot()
+
+    def get(self, state_id: str) -> UIState:
+        """Get a specific state."""
+        return self._client.get_state(state_id)
+
+    def is_active(self, state_id: str) -> bool:
+        """Check if a state is currently active."""
+        return self._client.is_state_active(state_id)
+
+    def activate(self, state_id: str) -> bool:
+        """Activate a state."""
+        return self._client.activate_state(state_id)
+
+    def deactivate(self, state_id: str) -> bool:
+        """Deactivate a state."""
+        return self._client.deactivate_state(state_id)
+
+    def activate_group(self, group_id: str) -> list[str]:
+        """Activate all states in a group."""
+        return self._client.activate_state_group(group_id)
+
+    def deactivate_group(self, group_id: str) -> list[str]:
+        """Deactivate all states in a group."""
+        return self._client.deactivate_state_group(group_id)
+
+    def can_transition(self, transition_id: str) -> bool:
+        """Check if a transition can be executed."""
+        return self._client.can_execute_transition(transition_id)
+
+    def transition(self, transition_id: str) -> TransitionResult:
+        """Execute a transition."""
+        return self._client.execute_transition(transition_id)
+
+    def find_path(self, target_states: list[str]) -> PathResult:
+        """Find a path to target states."""
+        return self._client.find_path(target_states)
+
+    def navigate_to(self, target_states: list[str]) -> NavigationResult:
+        """Navigate to target states using pathfinding."""
+        return self._client.navigate_to(target_states)

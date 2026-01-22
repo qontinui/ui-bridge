@@ -164,12 +164,14 @@ export interface DiscoveredElement {
 }
 
 /**
- * Discovery request options
+ * Find request options
+ *
+ * Used to find/discover controllable elements in the UI.
  */
-export interface DiscoveryRequest {
+export interface FindRequest {
   /** Root element selector to start from */
   root?: string;
-  /** Only discover interactive elements */
+  /** Only find interactive elements */
   interactiveOnly?: boolean;
   /** Include hidden elements */
   includeHidden?: boolean;
@@ -182,18 +184,30 @@ export interface DiscoveryRequest {
 }
 
 /**
- * Discovery response
+ * Find response
+ *
+ * Response from finding/discovering controllable elements.
  */
-export interface DiscoveryResponse {
-  /** Discovered elements */
+export interface FindResponse {
+  /** Found elements */
   elements: DiscoveredElement[];
   /** Total elements found */
   total: number;
-  /** Discovery duration */
+  /** Find duration */
   durationMs: number;
   /** Timestamp */
   timestamp: number;
 }
+
+/**
+ * @deprecated Use FindRequest instead
+ */
+export type DiscoveryRequest = FindRequest;
+
+/**
+ * @deprecated Use FindResponse instead
+ */
+export type DiscoveryResponse = FindResponse;
 
 /**
  * Control snapshot - full state of controllable UI
@@ -334,8 +348,13 @@ export interface ActionExecutor {
   /** Wait for a condition */
   waitFor(elementId: string, options: WaitOptions): Promise<WaitResult>;
 
-  /** Discover controllable elements */
-  discover(options?: DiscoveryRequest): Promise<DiscoveryResponse>;
+  /** Find controllable elements */
+  find(options?: FindRequest): Promise<FindResponse>;
+
+  /**
+   * @deprecated Use find() instead
+   */
+  discover(options?: FindRequest): Promise<FindResponse>;
 
   /** Get control snapshot */
   getSnapshot(): Promise<ControlSnapshot>;

@@ -32,3 +32,32 @@ export {
 
 // Bridge hook
 export { useUIBridge, useUIBridgeRequired, type UseUIBridgeReturn } from './useUIBridge';
+
+// State management hooks
+export {
+  useUIState,
+  useUIStateGroup,
+  useActiveStates,
+  useStateSnapshot,
+  type UseUIStateOptions,
+  type UseUIStateReturn,
+  type UseUIStateGroupOptions,
+  type UseUIStateGroupReturn,
+} from './useUIState';
+
+// Transition hook
+export {
+  useUITransition,
+  useTransitions,
+  useAvailableTransitions,
+  type UseUITransitionOptions,
+  type UseUITransitionReturn,
+} from './useUITransition';
+
+// Navigation hook
+export {
+  useUINavigation,
+  useCanNavigateTo,
+  useNavigationPath,
+  type UseUINavigationReturn,
+} from './useUINavigation';
