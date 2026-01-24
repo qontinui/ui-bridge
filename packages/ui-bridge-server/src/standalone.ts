@@ -13,7 +13,7 @@ import type {
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
-import type { BridgeEvent } from 'ui-bridge';
+import type { BridgeEvent } from '@qontinui/ui-bridge';
 
 /**
  * Standalone server configuration

@@ -21,7 +21,7 @@ import type {
   ComponentActionRequest,
   FindRequest,
   WorkflowRunRequest,
-} from 'ui-bridge/control';
+} from '@qontinui/ui-bridge/control';
 
 /**
  * Next.js specific configuration

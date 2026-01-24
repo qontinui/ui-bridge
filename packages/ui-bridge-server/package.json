@@ -1,5 +1,5 @@
 {
-  "name": "ui-bridge-server",
+  "name": "@qontinui/ui-bridge-server",
   "version": "0.1.0",
   "description": "UI Bridge Server - HTTP/WebSocket server adapters for UI Bridge",
   "main": "./dist/index.js",
@@ -41,7 +41,7 @@
     "format": "prettier --write \"src/**/*.ts\""
   },
   "dependencies": {
-    "ui-bridge": "*"
+    "@qontinui/ui-bridge": "*"
   },
   "peerDependencies": {
     "express": "^4.18.0",

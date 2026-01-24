@@ -78,7 +78,14 @@ export type ElementType =
   | 'menuitem'
   | 'tab'
   | 'dialog'
-  | 'custom';
+  | 'custom'
+  | 'switch'
+  | 'slider'
+  | 'combobox'
+  | 'listbox'
+  | 'option'
+  | 'textbox'
+  | 'generic';
 
 /**
  * Standard actions available on elements
@@ -96,7 +103,11 @@ export type StandardAction =
   | 'scroll'
   | 'check'
   | 'uncheck'
-  | 'toggle';
+  | 'toggle'
+  | 'setValue'
+  | 'drag'
+  | 'submit'
+  | 'reset';
 
 /**
  * Handler for custom actions

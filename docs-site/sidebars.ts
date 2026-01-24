@@ -21,6 +21,17 @@ const sidebars: SidebarsConfig = {
         'react/provider',
         'react/hooks',
         'react/components',
+        'react/auto-registration',
+        'react/render-logging',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Platform Guides',
+      items: [
+        'guides/web',
+        'guides/tauri',
+        'guides/mobile',
       ],
     },
     {

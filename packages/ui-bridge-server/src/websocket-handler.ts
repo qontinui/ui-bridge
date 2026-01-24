@@ -17,7 +17,7 @@ import type {
   WSEventMessage,
   WSResponseMessage,
   WSErrorMessage,
-} from 'ui-bridge';
+} from '@qontinui/ui-bridge';
 
 /**
  * WebSocket-like interface for compatibility

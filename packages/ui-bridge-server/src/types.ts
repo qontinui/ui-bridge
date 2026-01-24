@@ -4,7 +4,7 @@
  * Shared types for server adapters.
  */
 
-import type { UIBridgeConfig } from 'ui-bridge/core';
+import type { UIBridgeConfig } from '@qontinui/ui-bridge/core';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -15,8 +15,8 @@ import type {
   ControlSnapshot,
   WorkflowRunRequest,
   WorkflowRunResponse,
-} from 'ui-bridge/control';
-import type { RenderLogEntry, RenderLogEntryType } from 'ui-bridge/render-log';
+} from '@qontinui/ui-bridge/control';
+import type { RenderLogEntry, RenderLogEntryType } from '@qontinui/ui-bridge/render-log';
 
 /**
  * Server configuration

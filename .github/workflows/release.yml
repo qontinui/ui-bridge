@@ -7,6 +7,9 @@ on:
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for npm provenance/OIDC
     steps:
       - uses: actions/checkout@v4
 
@@ -25,13 +28,13 @@ jobs:
 
       - name: Publish ui-bridge
         working-directory: packages/ui-bridge
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish ui-bridge-server
         working-directory: packages/ui-bridge-server
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -61,3 +61,15 @@ export {
   useNavigationPath,
   type UseUINavigationReturn,
 } from './useUINavigation';
+
+// Auto-registration
+export {
+  useAutoRegister,
+  type AutoRegisterOptions,
+  type IdStrategy,
+} from './useAutoRegister';
+
+export {
+  AutoRegisterProvider,
+  type AutoRegisterProviderProps,
+} from './AutoRegisterProvider';
