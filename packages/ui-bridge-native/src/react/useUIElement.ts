@@ -107,7 +107,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const bridge = useUIBridgeNativeOptional();
   const ref = useRef<NativeElementRef>(null);
   const [registered, setRegistered] = useState(false);
-  const [layout, setLayout] = useState<NativeLayout | null>(null);
+  const [_layout, setLayout] = useState<NativeLayout | null>(null);
   const propsRef = useRef<Record<string, unknown>>({});
 
   const {
@@ -230,7 +230,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   }, [autoRegister, register, unregister]);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
-  const updateProps = useCallback(
+  const _updateProps = useCallback(
     (props: Record<string, unknown>) => {
       propsRef.current = { ...propsRef.current, ...props };
       if (bridge && registered) {

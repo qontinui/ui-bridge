@@ -138,7 +138,7 @@ export class UIBridgeWSClient {
         }
       };
 
-      this.ws.onerror = (event) => {
+      this.ws.onerror = (_event) => {
         clearTimeout(connectionTimeout);
         const error = new Error('WebSocket error');
         this.notifyError(error);
@@ -156,7 +156,7 @@ export class UIBridgeWSClient {
         this.setState('disconnected');
 
         // Reject all pending requests
-        for (const [id, pending] of this.pendingRequests) {
+        for (const [_id, pending] of this.pendingRequests) {
           clearTimeout(pending.timeout);
           pending.reject(new Error('Connection closed'));
         }

@@ -16,7 +16,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { useUIBridgeNativeOptional } from '../react/UIBridgeNativeProvider';
-import type { RegisteredNativeElement, NativeElementState } from '../core/types';
+import type { RegisteredNativeElement } from '../core/types';
 
 /**
  * Inspector props
@@ -343,7 +343,7 @@ export function UIBridgeInspector({
   );
 }
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+const { height: screenHeight } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
   toggleButton: {

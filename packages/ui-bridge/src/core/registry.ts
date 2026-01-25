@@ -764,10 +764,7 @@ export class UIBridgeRegistry {
    * For more advanced pathfinding (Dijkstra, A*), use the Python state manager service.
    */
   findPath(targetStates: string[]): PathResult {
-    const targets = new Set(targetStates);
-
     // Check if already at target
-    const currentActive = this.getActiveStates();
     if (targetStates.every((t) => this.activeStates.has(t))) {
       return {
         found: true,

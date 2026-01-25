@@ -21,7 +21,6 @@ import type {
   NativeBridgeSnapshot,
   BridgeEventType,
   BridgeEventListener,
-  BridgeEvent,
 } from '../core/types';
 import {
   NativeUIBridgeRegistry,

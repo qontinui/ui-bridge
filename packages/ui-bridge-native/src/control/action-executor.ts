@@ -8,7 +8,6 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type {
-  NativeElementState,
   NativeStandardAction,
   NativeFindRequest,
   NativeFindResponse,

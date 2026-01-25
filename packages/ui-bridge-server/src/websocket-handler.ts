@@ -222,7 +222,7 @@ export class UIBridgeWSHandler {
   /**
    * Handle ping message
    */
-  private handlePing(clientId: string, requestId: string): void {
+  private handlePing(clientId: string, _requestId: string): void {
     this.sendToClient(clientId, {
       id: generateId(),
       type: 'pong',
@@ -514,7 +514,7 @@ export class UIBridgeWSHandler {
    * Disconnect all clients
    */
   disconnectAll(): void {
-    for (const [clientId, client] of this.clients) {
+    for (const [_clientId, client] of this.clients) {
       try {
         client.ws.close();
       } catch {

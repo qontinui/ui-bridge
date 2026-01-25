@@ -554,7 +554,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
 
       // Unregister all elements
-      registeredElementsRef.current.forEach((id, element) => {
+      registeredElementsRef.current.forEach((id, _element) => {
         bridge.registry.unregisterElement(id);
       });
       registeredElementsRef.current.clear();

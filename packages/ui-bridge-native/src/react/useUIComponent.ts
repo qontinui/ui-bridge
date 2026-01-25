@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useCallback, useRef, useMemo } from 'react';
-import type { RegisteredNativeComponent, NativeComponentAction } from '../core/types';
+import type { RegisteredNativeComponent } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
 /**

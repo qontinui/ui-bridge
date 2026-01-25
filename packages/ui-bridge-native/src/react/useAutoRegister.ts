@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
-import type { NativeElementType, NativeElementRef } from '../core/types';
+import type { NativeElementRef } from '../core/types';
 import type { RegisterElementOptions } from '../core/registry';
 
 /**

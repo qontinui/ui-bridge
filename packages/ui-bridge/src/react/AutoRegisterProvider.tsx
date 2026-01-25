@@ -31,7 +31,7 @@
  * ```
  */
 
-import React, { type ReactNode, useRef, useEffect } from 'react';
+import React, { type ReactNode, useRef } from 'react';
 import { useAutoRegister, type AutoRegisterOptions } from './useAutoRegister';
 
 export interface AutoRegisterProviderProps extends Omit<AutoRegisterOptions, 'root'> {
