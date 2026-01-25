@@ -38,6 +38,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Publish ui-bridge-native
+        working-directory: packages/ui-bridge-native
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   publish-pypi:
     runs-on: ubuntu-latest
     steps:
