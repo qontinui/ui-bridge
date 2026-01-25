@@ -5,7 +5,10 @@
  * Adapted from ui-bridge for React Native environments.
  */
 
-import type { View, TextInput, Text, Pressable, TouchableOpacity } from 'react-native';
+// We use a generic type for native element refs to avoid dependency on specific
+// react-native versions. In practice, these will be View, TextInput, etc.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyNativeElement = any;
 
 // Re-export common types from the web version that don't need adaptation
 // Note: In a real implementation, these would be imported from ui-bridge/core
@@ -100,9 +103,10 @@ export interface BridgeEvent<T = unknown> {
 export type BridgeEventListener<T = unknown> = (event: BridgeEvent<T>) => void;
 
 /**
- * React Native element reference type
+ * React Native element reference type.
+ * Uses a generic type to avoid conflicts between different react-native versions.
  */
-export type NativeElementRef = View | TextInput | Text | Pressable | TouchableOpacity | null;
+export type NativeElementRef = AnyNativeElement | null;
 
 /**
  * Element identification for React Native (replaces XPath/CSS selectors)

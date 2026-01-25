@@ -5,7 +5,6 @@
  */
 
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
-import type { LayoutChangeEvent } from 'react-native';
 import type {
   NativeElementType,
   NativeStandardAction,
@@ -17,6 +16,22 @@ import type {
   NativeLayout,
 } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
+
+/**
+ * Local type definition for the layout data we extract from LayoutChangeEvent.
+ * We use this internally to avoid type conflicts between different react-native versions
+ * (e.g., when ui-bridge-native is used as a file: dependency with a different RN version).
+ */
+interface LayoutEventData {
+  nativeEvent: {
+    layout: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  };
+}
 
 /**
  * useUIElement options
@@ -56,8 +71,8 @@ export interface UIBridgeProps {
 export interface UseUIElementReturn {
   /** Ref to attach to the element */
   ref: React.RefObject<NativeElementRef>;
-  /** onLayout handler to spread onto the element */
-  onLayout: (event: LayoutChangeEvent) => void;
+  /** onLayout handler to spread onto the element - uses generic type for RN version compatibility */
+  onLayout: (event: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   /** Props to spread onto the element for identification */
   bridgeProps: UIBridgeProps;
   /** Whether the element is registered */
@@ -159,7 +174,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
 
   // Handle layout changes
   const onLayout = useCallback(
-    (event: LayoutChangeEvent) => {
+    (event: LayoutEventData) => {
       const { x, y, width, height } = event.nativeEvent.layout;
 
       // Get absolute position using measureInWindow
