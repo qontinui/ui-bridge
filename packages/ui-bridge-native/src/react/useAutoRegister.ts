@@ -12,7 +12,8 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
-import type { NativeElementType, NativeElementOptions } from '../core/types';
+import type { NativeElementType, NativeElementRef } from '../core/types';
+import type { RegisterElementOptions } from '../core/registry';
 
 /**
  * Options for auto-registration in React Native
@@ -31,7 +32,7 @@ export interface NativeAutoRegisterOptions {
  */
 export interface NativeAutoRegisterHandle {
   /** Register an element programmatically */
-  register: (id: string, options: NativeElementOptions) => void;
+  register: (id: string, ref: React.RefObject<NativeElementRef>, options?: RegisterElementOptions) => void;
   /** Unregister an element programmatically */
   unregister: (id: string) => void;
   /** Check if auto-registration is enabled */
@@ -67,7 +68,9 @@ export interface NativeAutoRegisterHandle {
 export function useAutoRegister(
   options: NativeAutoRegisterOptions = {}
 ): NativeAutoRegisterHandle {
-  const { enabled = __DEV__, onRegister, onUnregister } = options;
+  // Note: __DEV__ is a React Native global, but TypeScript doesn't know about it by default
+  // Using false as a safe default - consumers should explicitly set enabled: __DEV__ in their app
+  const { enabled = false, onRegister, onUnregister } = options;
 
   const bridge = useUIBridgeNativeOptional();
   const registeredIdsRef = useRef(new Set<string>());
@@ -76,13 +79,13 @@ export function useAutoRegister(
    * Register an element
    */
   const register = useCallback(
-    (id: string, elementOptions: NativeElementOptions): void => {
+    (id: string, ref: React.RefObject<NativeElementRef>, elementOptions?: RegisterElementOptions): void => {
       if (!enabled || !bridge?.registry) return;
 
       // Avoid duplicate registration
       if (registeredIdsRef.current.has(id)) return;
 
-      bridge.registry.registerElement(id, elementOptions);
+      bridge.registry.registerElement(id, ref, elementOptions);
       registeredIdsRef.current.add(id);
       onRegister?.(id);
     },

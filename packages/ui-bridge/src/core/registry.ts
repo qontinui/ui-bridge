@@ -303,6 +303,10 @@ export class UIBridgeRegistry {
     const type = options.type ?? inferElementType(element);
     const actions = options.actions ?? inferActions(type);
 
+    // Set data-ui-id attribute on the DOM element for external tools (Chrome extension, etc.)
+    // This allows tools to find and interact with registered elements via DOM queries
+    element.setAttribute('data-ui-id', id);
+
     const registered: RegisteredElement = {
       id,
       element,
@@ -326,9 +330,11 @@ export class UIBridgeRegistry {
    * Unregister an element
    */
   unregisterElement(id: string): boolean {
-    const element = this.elements.get(id);
-    if (element) {
-      element.mounted = false;
+    const registered = this.elements.get(id);
+    if (registered) {
+      registered.mounted = false;
+      // Remove data-ui-id attribute from DOM element
+      registered.element.removeAttribute('data-ui-id');
       this.elements.delete(id);
       this.emit('element:unregistered', { id });
       return true;
