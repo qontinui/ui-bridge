@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "UI Bridge Server - HTTP/WebSocket server adapters for UI Bridge",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",

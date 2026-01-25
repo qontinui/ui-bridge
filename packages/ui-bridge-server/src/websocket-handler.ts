@@ -283,7 +283,7 @@ export class UIBridgeWSHandler {
 
     let removedEvents: BridgeEventType[];
     if (events?.length) {
-      removedEvents = events.filter((e) => client.subscription.events.has(e));
+      removedEvents = events.filter((e: BridgeEventType) => client.subscription.events.has(e));
       for (const event of events) {
         client.subscription.events.delete(event);
       }
