@@ -54,7 +54,10 @@ impl UIBridgeVisitor {
     fn add_attribute(&self, element: &mut JSXOpeningElement, name: &str, value: &str) {
         element.attrs.push(JSXAttrOrSpread::JSXAttr(JSXAttr {
             span: DUMMY_SP,
-            name: JSXAttrName::Ident(Ident::new(name.into(), DUMMY_SP)),
+            name: JSXAttrName::Ident(IdentName {
+                span: DUMMY_SP,
+                sym: name.into(),
+            }),
             value: Some(JSXAttrValue::Lit(Lit::Str(Str {
                 span: DUMMY_SP,
                 value: value.into(),
@@ -171,7 +174,7 @@ impl UIBridgeVisitor {
 impl VisitMut for UIBridgeVisitor {
     // Track function declarations (function MyComponent() {})
     fn visit_mut_fn_decl(&mut self, n: &mut FnDecl) {
-        let name = n.ident.sym.to_string();
+        let name = n.ident.sym.as_str().to_string();
         if Self::is_component_name(&name) {
             self.component_stack.push(name);
             n.visit_mut_children_with(self);
@@ -184,7 +187,7 @@ impl VisitMut for UIBridgeVisitor {
     // Track variable declarations with arrow functions (const MyComponent = () => {})
     fn visit_mut_var_declarator(&mut self, n: &mut VarDeclarator) {
         if let Pat::Ident(ident) = &n.name {
-            let name = ident.id.sym.to_string();
+            let name = ident.id.sym.as_str().to_string();
             if Self::is_component_name(&name) {
                 if let Some(init) = &n.init {
                     if matches!(init.as_ref(), Expr::Arrow(_) | Expr::Fn(_)) {
@@ -207,7 +210,7 @@ impl VisitMut for UIBridgeVisitor {
 
     // Track class declarations
     fn visit_mut_class_decl(&mut self, n: &mut ClassDecl) {
-        let name = n.ident.sym.to_string();
+        let name = n.ident.sym.as_str().to_string();
         if Self::is_component_name(&name) {
             self.component_stack.push(name);
             n.visit_mut_children_with(self);

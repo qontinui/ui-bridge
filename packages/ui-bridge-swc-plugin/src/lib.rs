@@ -43,7 +43,7 @@
 //! ```
 
 use swc_core::ecma::ast::Program;
-use swc_core::ecma::visit::{as_folder, FoldWith};
+use swc_core::ecma::visit::VisitMutWith;
 use swc_core::plugin::{plugin_transform, proxies::TransformPluginProgramMetadata};
 
 mod alias_generator;
@@ -77,8 +77,9 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
     }
 
     // Create visitor and transform the program
-    let visitor = UIBridgeVisitor::new(config.clone(), filename.clone());
-    let result = program.fold_with(&mut as_folder(visitor));
+    let mut visitor = UIBridgeVisitor::new(config.clone(), filename.clone());
+    let mut result = program;
+    result.visit_mut_with(&mut visitor);
 
     if config.verbose {
         eprintln!("[ui-bridge-swc-plugin] Finished: {}", filename);

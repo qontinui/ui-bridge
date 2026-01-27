@@ -1,13 +1,13 @@
 {
   "name": "@qontinui/ui-bridge-swc-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SWC plugin for automatic UI Bridge instrumentation - compatible with Next.js 15+",
-  "main": "index.js",
+  "main": "ui_bridge_swc_plugin.wasm",
   "types": "index.d.ts",
   "files": [
-    "index.js",
+    "ui_bridge_swc_plugin.wasm",
     "index.d.ts",
-    "ui_bridge_swc_plugin.wasm"
+    "README.md"
   ],
   "scripts": {
     "build": "echo 'WASM file is pre-built and committed'",

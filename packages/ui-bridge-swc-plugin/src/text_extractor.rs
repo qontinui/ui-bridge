@@ -11,7 +11,8 @@ pub fn extract_text_content(children: &[JSXElementChild]) -> Option<String> {
     for child in children {
         match child {
             JSXElementChild::JSXText(text) => {
-                let trimmed = text.value.trim();
+                let text_str = text.value.as_str();
+                let trimmed = text_str.trim();
                 if !trimmed.is_empty() {
                     text_parts.push(trimmed.to_string());
                 }
@@ -20,7 +21,7 @@ pub fn extract_text_content(children: &[JSXElementChild]) -> Option<String> {
                 // Handle string literals in expressions like {"text"}
                 if let JSXExpr::Expr(e) = &expr.expr {
                     if let Expr::Lit(Lit::Str(s)) = e.as_ref() {
-                        let trimmed = s.value.trim();
+                        let trimmed = s.value.as_str().trim();
                         if !trimmed.is_empty() {
                             text_parts.push(trimmed.to_string());
                         }
@@ -28,7 +29,7 @@ pub fn extract_text_content(children: &[JSXElementChild]) -> Option<String> {
                     // Handle template literals like {`text`}
                     if let Expr::Tpl(tpl) = e.as_ref() {
                         for quasi in &tpl.quasis {
-                            let trimmed = quasi.raw.trim();
+                            let trimmed = quasi.raw.as_str().trim();
                             if !trimmed.is_empty() {
                                 text_parts.push(trimmed.to_string());
                             }
@@ -63,7 +64,7 @@ pub fn get_attribute_value(element: &JSXOpeningElement, attr_name: &str) -> Opti
     for attr in &element.attrs {
         if let JSXAttrOrSpread::JSXAttr(jsx_attr) = attr {
             let name = match &jsx_attr.name {
-                JSXAttrName::Ident(ident) => ident.sym.as_ref(),
+                JSXAttrName::Ident(ident) => ident.sym.as_str(),
                 JSXAttrName::JSXNamespacedName(_ns) => {
                     // Handle namespaced attributes like aria-label
                     // They're stored as JSXNamespacedName with ns="aria" and name="label"
@@ -74,11 +75,11 @@ pub fn get_attribute_value(element: &JSXOpeningElement, attr_name: &str) -> Opti
 
             if name == attr_name {
                 return match &jsx_attr.value {
-                    Some(JSXAttrValue::Lit(Lit::Str(s))) => Some(s.value.to_string()),
+                    Some(JSXAttrValue::Lit(Lit::Str(s))) => Some(s.value.as_str().to_string()),
                     Some(JSXAttrValue::JSXExprContainer(expr)) => {
                         if let JSXExpr::Expr(e) = &expr.expr {
                             if let Expr::Lit(Lit::Str(s)) = e.as_ref() {
-                                return Some(s.value.to_string());
+                                return Some(s.value.as_str().to_string());
                             }
                         }
                         None
@@ -96,7 +97,7 @@ pub fn has_attribute(element: &JSXOpeningElement, attr_name: &str) -> bool {
     element.attrs.iter().any(|attr| {
         if let JSXAttrOrSpread::JSXAttr(jsx_attr) = attr {
             if let JSXAttrName::Ident(ident) = &jsx_attr.name {
-                return ident.sym.as_ref() == attr_name;
+                return ident.sym.as_str() == attr_name;
             }
         }
         false
@@ -106,7 +107,7 @@ pub fn has_attribute(element: &JSXOpeningElement, attr_name: &str) -> bool {
 /// Get the tag name from a JSX element
 pub fn get_tag_name(element: &JSXOpeningElement) -> Option<String> {
     match &element.name {
-        JSXElementName::Ident(ident) => Some(ident.sym.to_string()),
+        JSXElementName::Ident(ident) => Some(ident.sym.as_str().to_string()),
         JSXElementName::JSXMemberExpr(_) => None, // Skip Component.SubComponent
         JSXElementName::JSXNamespacedName(_) => None, // Skip namespaced elements
     }
