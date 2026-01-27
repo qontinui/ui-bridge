@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "UI Bridge Server - HTTP/WebSocket server adapters for UI Bridge",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -25,6 +25,11 @@
       "types": "./dist/standalone.d.ts",
       "import": "./dist/standalone.mjs",
       "require": "./dist/standalone.js"
+    },
+    "./handlers": {
+      "types": "./dist/handlers.d.ts",
+      "import": "./dist/handlers.mjs",
+      "require": "./dist/handlers.js"
     }
   },
   "files": [

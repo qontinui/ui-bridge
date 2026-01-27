@@ -1,0 +1,56 @@
+{
+  "name": "@qontinui/ui-bridge-babel-plugin",
+  "version": "0.2.0",
+  "description": "Babel plugin for automatic UI Bridge instrumentation",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@babel/helper-plugin-utils": "^7.22.0"
+  },
+  "peerDependencies": {
+    "@babel/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@babel/types": "^7.23.0",
+    "@types/babel__core": "^7.20.0",
+    "@types/babel__helper-plugin-utils": "^7.10.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qontinui/ui-bridge.git",
+    "directory": "packages/ui-bridge-babel-plugin"
+  },
+  "keywords": [
+    "babel-plugin",
+    "ui-bridge",
+    "react",
+    "automation",
+    "instrumentation"
+  ]
+}

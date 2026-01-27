@@ -1,0 +1,45 @@
+{
+  "name": "@qontinui/ui-bridge-swc-plugin",
+  "version": "0.2.0",
+  "description": "SWC plugin for automatic UI Bridge instrumentation - compatible with Next.js 15+",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "ui_bridge_swc_plugin.wasm"
+  ],
+  "scripts": {
+    "build": "cargo build --release --target wasm32-wasip1",
+    "build:debug": "cargo build --target wasm32-wasip1",
+    "prepublishOnly": "npm run build && cp target/wasm32-wasip1/release/ui_bridge_swc_plugin.wasm ."
+  },
+  "keywords": [
+    "swc",
+    "plugin",
+    "ui-bridge",
+    "testing",
+    "automation",
+    "react",
+    "nextjs",
+    "ai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qontinui/ui-bridge",
+    "directory": "packages/ui-bridge-swc-plugin"
+  },
+  "author": "Qontinui",
+  "license": "MIT",
+  "peerDependencies": {
+    "next": ">=13.0.0"
+  },
+  "peerDependenciesMeta": {
+    "next": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

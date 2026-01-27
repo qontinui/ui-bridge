@@ -20,3 +20,6 @@ export * from './render-log';
 
 // Debug module - inspector and metrics
 export * from './debug';
+
+// AI module - natural language interaction
+export * from './ai';

@@ -7,6 +7,15 @@
 // Types
 export * from './types';
 
+// Handler factory
+export {
+  createHandlers,
+  createAIHandlers,
+  type RegistryLike,
+  type ActionExecutorLike,
+  type CreateHandlersConfig,
+} from './handlers';
+
 // Express adapter
 export {
   createExpressRouter,

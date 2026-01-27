@@ -40,6 +40,7 @@ result = client.workflow("login-flow").run({
 
 ## Features
 
+- **AI-Native Interface**: Natural language actions, semantic search, assertions
 - **Element Control**: Click, type, select, scroll, and more
 - **Component Actions**: Execute high-level component actions
 - **Workflows**: Run multi-step automation workflows
@@ -161,6 +162,142 @@ print(f"Average duration: {metrics.avg_duration_ms}ms")
 
 # Highlight an element (visual debugging)
 client.highlight_element("submit-btn")
+```
+
+## AI-Native Interface
+
+The `client.ai` interface provides natural language interaction for AI agents.
+
+### Natural Language Actions
+
+```python
+# Execute using natural language instructions
+result = client.ai.execute("click the Submit button")
+result = client.ai.execute("type 'hello@example.com' in the email field")
+result = client.ai.execute("select 'United States' from the country dropdown")
+
+# Convenience methods
+client.ai.click("Submit button")
+client.ai.type_text("email field", "hello@example.com")
+client.ai.select_option("country dropdown", "United States")
+
+# With context for disambiguation
+client.ai.execute(
+    "click the Submit button",
+    context="in the login form, not the registration form"
+)
+```
+
+### Element Search
+
+Find elements without knowing exact IDs:
+
+```python
+# Find best match by description
+element = client.ai.find("Submit button")
+if element:
+    print(f"Found: {element.id}, type: {element.type}")
+
+# Search with multiple criteria
+results = client.ai.search(text="Submit")
+results = client.ai.search(role="button", text_contains="Login")
+results = client.ai.search(
+    element_type="input",
+    placeholder="Enter email"
+)
+
+# Find by ARIA role
+buttons = client.ai.find_by_role("button", name="Submit")
+for result in buttons:
+    print(f"{result.element.id}: confidence={result.confidence}")
+```
+
+### Assertions
+
+Make assertions about UI state:
+
+```python
+# Basic assertions
+result = client.ai.assert_that("Submit button", "visible")
+result = client.ai.assert_that("error message", "hidden")
+result = client.ai.assert_that("email input", "hasValue", "test@example.com")
+
+# Convenience methods
+client.ai.assert_visible("Submit button")
+client.ai.assert_hidden("loading spinner")
+client.ai.assert_enabled("email input")
+client.ai.assert_has_text("welcome message", "Hello!")
+client.ai.assert_contains_text("status", "Success")
+
+# Batch assertions
+result = client.ai.assert_batch([
+    ("Submit button", "visible"),
+    ("error message", "hidden"),
+    ("email input", "enabled"),
+])
+print(f"All passed: {result.passed}")
+print(f"Passed: {result.passed_count}, Failed: {result.failed_count}")
+
+# Wait for conditions
+client.ai.wait_for_visible("confirmation dialog", timeout=5000)
+client.ai.wait_for_hidden("loading indicator", timeout=10000)
+```
+
+### Semantic Snapshots
+
+Get AI-friendly page state:
+
+```python
+# Full semantic snapshot
+snapshot = client.ai.snapshot()
+print(snapshot.summary)  # "Login page with email/password form"
+
+# Page context
+print(snapshot.page.url)
+print(snapshot.page.title)
+
+# Form states
+for form in snapshot.forms:
+    print(f"Form: {form.name}, valid: {form.is_valid}")
+    for field in form.fields:
+        print(f"  {field.label}: {field.value}")
+
+# All elements with AI metadata
+for elem in snapshot.elements:
+    print(f"{elem.id}: {elem.description}")
+    print(f"  Aliases: {elem.aliases}")
+    print(f"  Suggested actions: {elem.suggested_actions}")
+
+# Track changes over time
+diff = client.ai.diff()
+if diff:
+    print(diff.summary)
+    for change in diff.changes.appeared:
+        print(f"New: {change.description}")
+    for change in diff.changes.disappeared:
+        print(f"Gone: {change.description}")
+
+# Plain text summary for LLM context
+summary = client.ai.summary()
+```
+
+### Verify Page State
+
+Verify multiple conditions at once:
+
+```python
+# Returns True if all checks pass
+is_ready = client.ai.verify_page_state([
+    ("login form", "visible"),
+    ("email input", "enabled"),
+    ("password input", "enabled"),
+    ("submit button", "enabled"),
+])
+
+if is_ready:
+    client.ai.type_text("email input", "user@example.com")
+    client.ai.type_text("password input", "secret")
+    client.ai.click("submit button")
 ```
 
 ## Wait Options

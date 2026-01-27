@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'guides/web',
         'guides/tauri',
         'guides/mobile',
+        'guides/ai-agent-testing',
       ],
     },
     {
@@ -50,6 +51,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'python/installation',
         'python/usage',
+        'python/ai-client',
         'python/types',
       ],
     },

@@ -26,6 +26,9 @@ import type {
   StateSnapshot,
 } from './types';
 import { createElementIdentifier } from './element-identifier';
+import { fuzzyMatch, tokenSimilarity } from '../ai/fuzzy-matcher';
+import { generateAliases, generateDescription, generatePurpose } from '../ai/alias-generator';
+import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 
 /**
  * Get the current state of an element
@@ -303,12 +306,20 @@ export class UIBridgeRegistry {
     const type = options.type ?? inferElementType(element);
     const actions = options.actions ?? inferActions(type);
 
-    // Set data-ui-id attribute on the DOM element for external tools (Chrome extension, etc.)
-    // This allows tools to find and interact with registered elements via DOM queries
-    element.setAttribute('data-ui-id', id);
+    // Check if element has an explicitly-set data-ui-id attribute (e.g., from React props)
+    // If so, use that value as the ID to preserve developer intent
+    // This handles timing issues where React may apply props after MutationObserver fires
+    const existingUiId = element.getAttribute('data-ui-id');
+    const actualId = existingUiId || id;
+
+    // Only set data-ui-id if it wasn't already set
+    // This preserves explicitly-set IDs from React props
+    if (!existingUiId) {
+      element.setAttribute('data-ui-id', actualId);
+    }
 
     const registered: RegisteredElement = {
-      id,
+      id: actualId,
       element,
       type,
       label: options.label,
@@ -320,8 +331,8 @@ export class UIBridgeRegistry {
       mounted: true,
     };
 
-    this.elements.set(id, registered);
-    this.emit('element:registered', { id, type, label: options.label });
+    this.elements.set(actualId, registered);
+    this.emit('element:registered', { id: actualId, type, label: options.label });
 
     return registered;
   }
@@ -366,6 +377,245 @@ export class UIBridgeRegistry {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Search for elements using AI search criteria
+   */
+  searchElements(criteria: SearchCriteria): SearchResult[] {
+    const results: SearchResult[] = [];
+    const threshold = criteria.fuzzyThreshold ?? 0.7;
+
+    for (const element of this.elements.values()) {
+      if (!element.mounted) continue;
+
+      const state = element.getState();
+
+      // Skip hidden elements if not explicitly requested
+      if (!criteria.fuzzy && !state.visible) continue;
+
+      // Build searchable text from element
+      const aliases = element.aliases ?? this.generateElementAliases(element);
+      const textContent = state.textContent?.trim() || '';
+      const label = element.label || '';
+
+      let maxScore = 0;
+      const matchReasons: string[] = [];
+      const scores: SearchResult['scores'] = {};
+
+      // Text matching
+      if (criteria.text) {
+        // Exact match
+        if (textContent.toLowerCase() === criteria.text.toLowerCase() ||
+            label.toLowerCase() === criteria.text.toLowerCase()) {
+          maxScore = 1.0;
+          matchReasons.push('exact text match');
+          scores.text = 1.0;
+        } else if (criteria.fuzzy !== false) {
+          // Fuzzy match
+          const textResult = fuzzyMatch(criteria.text, textContent, { threshold });
+          const labelResult = fuzzyMatch(criteria.text, label, { threshold });
+          const bestResult = textResult.similarity > labelResult.similarity ? textResult : labelResult;
+
+          if (bestResult.isMatch) {
+            scores.text = bestResult.similarity;
+            if (bestResult.similarity > maxScore) {
+              maxScore = bestResult.similarity;
+              matchReasons.push(`text similarity: ${(bestResult.similarity * 100).toFixed(0)}%`);
+            }
+          }
+        }
+      }
+
+      // Text contains
+      if (criteria.textContains) {
+        if (textContent.toLowerCase().includes(criteria.textContains.toLowerCase()) ||
+            label.toLowerCase().includes(criteria.textContains.toLowerCase())) {
+          const containsScore = 0.85;
+          scores.text = Math.max(scores.text ?? 0, containsScore);
+          if (containsScore > maxScore) {
+            maxScore = containsScore;
+            matchReasons.push('text contains');
+          }
+        }
+      }
+
+      // Accessible name matching
+      if (criteria.accessibleName) {
+        const ariaLabel = element.element.getAttribute('aria-label') || '';
+        const accessibleName = ariaLabel || label || textContent;
+
+        if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
+          scores.accessibility = 1.0;
+          if (1.0 > maxScore) {
+            maxScore = 1.0;
+            matchReasons.push('accessible name match');
+          }
+        } else if (criteria.fuzzy !== false) {
+          const result = fuzzyMatch(criteria.accessibleName, accessibleName, { threshold });
+          if (result.isMatch) {
+            scores.accessibility = result.similarity;
+            if (result.similarity > maxScore) {
+              maxScore = result.similarity;
+              matchReasons.push(`accessible name similarity: ${(result.similarity * 100).toFixed(0)}%`);
+            }
+          }
+        }
+      }
+
+      // Role matching
+      if (criteria.role) {
+        const role = element.element.getAttribute('role') || this.inferRole(element.type);
+        if (role?.toLowerCase() === criteria.role.toLowerCase()) {
+          scores.role = 1.0;
+          if (1.0 > maxScore) {
+            maxScore = 1.0;
+            matchReasons.push(`role: ${criteria.role}`);
+          }
+        }
+      }
+
+      // Type matching
+      if (criteria.type) {
+        if (element.type === criteria.type) {
+          const typeScore = 0.9;
+          scores.role = Math.max(scores.role ?? 0, typeScore);
+          if (typeScore > maxScore) {
+            maxScore = typeScore;
+            matchReasons.push(`type: ${criteria.type}`);
+          }
+        }
+      }
+
+      // Alias matching
+      for (const alias of aliases) {
+        const searchText = criteria.text || criteria.textContains || criteria.accessibleName;
+        if (searchText) {
+          if (alias.toLowerCase() === searchText.toLowerCase()) {
+            scores.fuzzy = 1.0;
+            if (1.0 > maxScore) {
+              maxScore = 1.0;
+              matchReasons.push(`alias: "${alias}"`);
+            }
+          } else if (criteria.fuzzy !== false) {
+            const result = fuzzyMatch(searchText, alias, { threshold });
+            if (result.isMatch && result.similarity > (scores.fuzzy ?? 0)) {
+              scores.fuzzy = result.similarity;
+              if (result.similarity > maxScore) {
+                maxScore = result.similarity;
+                matchReasons.push(`fuzzy alias: "${alias}"`);
+              }
+            }
+          }
+        }
+      }
+
+      // Add result if above threshold
+      if (maxScore >= threshold) {
+        const aiElement: AIDiscoveredElement = {
+          id: element.id,
+          type: element.type,
+          label: element.label,
+          tagName: element.element.tagName.toLowerCase(),
+          role: element.element.getAttribute('role') || undefined,
+          accessibleName: element.element.getAttribute('aria-label') || element.label,
+          actions: element.actions,
+          state,
+          registered: true,
+          description: element.description || generateDescription({
+            textContent,
+            ariaLabel: element.element.getAttribute('aria-label'),
+            elementType: element.type,
+            id: element.id,
+            labelText: element.label,
+          }),
+          aliases,
+          purpose: element.purpose,
+          suggestedActions: [],
+          semanticType: element.semanticType,
+        };
+
+        results.push({
+          element: aiElement,
+          confidence: maxScore,
+          matchReasons,
+          scores,
+        });
+      }
+    }
+
+    // Sort by confidence
+    results.sort((a, b) => b.confidence - a.confidence);
+
+    return results;
+  }
+
+  /**
+   * Find element by visible text
+   */
+  findByText(text: string, fuzzy: boolean = true): RegisteredElement | undefined {
+    const results = this.searchElements({ text, fuzzy, fuzzyThreshold: fuzzy ? 0.7 : 1.0 });
+    if (results.length > 0) {
+      return this.elements.get(results[0].element.id);
+    }
+    return undefined;
+  }
+
+  /**
+   * Find element by accessible name
+   */
+  findByAccessibleName(name: string): RegisteredElement | undefined {
+    const results = this.searchElements({ accessibleName: name, fuzzy: true });
+    if (results.length > 0) {
+      return this.elements.get(results[0].element.id);
+    }
+    return undefined;
+  }
+
+  /**
+   * Generate aliases for an element
+   */
+  private generateElementAliases(element: RegisteredElement): string[] {
+    const state = element.getState();
+    return generateAliases({
+      textContent: state.textContent,
+      ariaLabel: element.element.getAttribute('aria-label'),
+      placeholder: element.element.getAttribute('placeholder'),
+      title: element.element.getAttribute('title'),
+      elementType: element.type,
+      tagName: element.element.tagName.toLowerCase(),
+      id: element.id,
+      labelText: element.label,
+    });
+  }
+
+  /**
+   * Infer ARIA role from element type
+   */
+  private inferRole(type: ElementType): string | undefined {
+    const roleMap: Record<ElementType, string | undefined> = {
+      button: 'button',
+      input: 'textbox',
+      select: 'combobox',
+      checkbox: 'checkbox',
+      radio: 'radio',
+      link: 'link',
+      form: undefined,
+      textarea: 'textbox',
+      menu: 'menu',
+      menuitem: 'menuitem',
+      tab: 'tab',
+      dialog: 'dialog',
+      custom: undefined,
+      switch: 'switch',
+      slider: 'slider',
+      combobox: 'combobox',
+      listbox: 'listbox',
+      option: 'option',
+      textbox: 'textbox',
+      generic: undefined,
+    };
+    return roleMap[type];
   }
 
   /**

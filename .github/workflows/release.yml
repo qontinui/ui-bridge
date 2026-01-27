@@ -38,8 +38,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish ui-bridge-native
-        working-directory: packages/ui-bridge-native
+      - name: Publish ui-bridge-babel-plugin
+        working-directory: packages/ui-bridge-babel-plugin
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish ui-bridge-swc-plugin
+        working-directory: packages/ui-bridge-swc-plugin
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

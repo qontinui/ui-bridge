@@ -154,6 +154,16 @@ export interface RegisteredElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+
+  // AI-Native metadata
+  /** Alternative names for natural language matching */
+  aliases?: string[];
+  /** Human-readable description for AI agents */
+  description?: string;
+  /** Semantic type (more descriptive than ElementType) */
+  semanticType?: string;
+  /** Purpose of the element */
+  purpose?: string;
 }
 
 /**

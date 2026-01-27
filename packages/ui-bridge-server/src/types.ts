@@ -17,6 +17,18 @@ import type {
   WorkflowRunResponse,
 } from '@qontinui/ui-bridge/control';
 import type { RenderLogEntry, RenderLogEntryType } from '@qontinui/ui-bridge/render-log';
+import type {
+  SearchCriteria,
+  SearchResponse,
+  NLActionRequest,
+  NLActionResponse,
+  AssertionRequest,
+  AssertionResult,
+  BatchAssertionRequest,
+  BatchAssertionResult,
+  SemanticSnapshot,
+  SemanticDiff,
+} from '@qontinui/ui-bridge/ai';
 
 /**
  * Server configuration
@@ -142,6 +154,15 @@ export interface UIBridgeServerHandlers {
   getMetrics: () => Promise<APIResponse<unknown>>;
   highlightElement: (id: string) => Promise<APIResponse<void>>;
   getElementTree: () => Promise<APIResponse<unknown>>;
+
+  // AI-native endpoints
+  aiSearch: (criteria: SearchCriteria) => Promise<APIResponse<SearchResponse>>;
+  aiExecute: (request: NLActionRequest) => Promise<APIResponse<NLActionResponse>>;
+  aiAssert: (request: AssertionRequest) => Promise<APIResponse<AssertionResult>>;
+  aiAssertBatch: (request: BatchAssertionRequest) => Promise<APIResponse<BatchAssertionResult>>;
+  getSemanticSnapshot: () => Promise<APIResponse<SemanticSnapshot>>;
+  getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
+  getPageSummary: () => Promise<APIResponse<string>>;
 }
 
 /**
@@ -208,6 +229,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/debug/metrics', handler: 'getMetrics' },
   { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
   { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },
+
+  // AI-native endpoints
+  { method: 'POST', path: '/ai/search', handler: 'aiSearch', bodyRequired: true },
+  { method: 'POST', path: '/ai/execute', handler: 'aiExecute', bodyRequired: true },
+  { method: 'POST', path: '/ai/assert', handler: 'aiAssert', bodyRequired: true },
+  { method: 'POST', path: '/ai/assert/batch', handler: 'aiAssertBatch', bodyRequired: true },
+  { method: 'GET', path: '/ai/snapshot', handler: 'getSemanticSnapshot' },
+  { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
+  { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
 ];
 
 /**

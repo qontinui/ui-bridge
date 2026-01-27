@@ -6,11 +6,13 @@
   "description": "UI Bridge Framework - Unified UI observation, control, and debugging for AI automation",
   "workspaces": [
     "packages/*",
-    "examples/*"
+    "examples/*",
+    "e2e"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test -w e2e",
     "lint": "eslint packages/*/src",
     "lint:fix": "eslint packages/*/src --fix",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\"",

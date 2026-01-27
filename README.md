@@ -15,11 +15,12 @@ UI Bridge enables programmatic observation and control of React UI elements via 
 
 ## Packages
 
-| Package            | Description                             | Registry |
-| ------------------ | --------------------------------------- | -------- |
-| `ui-bridge`        | React hooks and providers               | npm      |
-| `ui-bridge-server` | HTTP server adapters (Express, Next.js) | npm      |
-| `ui-bridge-python` | Python client library                   | PyPI     |
+| Package                  | Description                              | Registry |
+| ------------------------ | ---------------------------------------- | -------- |
+| `ui-bridge`              | React hooks and providers                | npm      |
+| `ui-bridge-server`       | HTTP server adapters (Express, Next.js)  | npm      |
+| `ui-bridge-babel-plugin` | Auto-instrumentation Babel plugin        | npm      |
+| `ui-bridge-python`       | Python client library with AI interface  | PyPI     |
 
 ## Quick Start
 
@@ -109,6 +110,90 @@ client.component("login-form").action("login", {
     "email": "user@example.com",
     "password": "secret"
 })
+```
+
+## AI-Native Features
+
+UI Bridge is designed for AI agents. The `client.ai.*` interface lets agents interact with UIs using natural language, without knowing exact element IDs.
+
+### Natural Language Actions
+
+```python
+from ui_bridge import UIBridgeClient
+
+client = UIBridgeClient("http://localhost:9876")
+
+# Execute actions using natural language
+client.ai.execute("click the Submit button")
+client.ai.execute("type 'hello@example.com' in the email input")
+client.ai.execute("select 'United States' from the country dropdown")
+
+# Convenience methods
+client.ai.click("Submit button")
+client.ai.type_text("email input", "hello@example.com")
+client.ai.select_option("country dropdown", "United States")
+```
+
+### Element Search
+
+Find elements without knowing exact IDs:
+
+```python
+# Find by natural language description
+element = client.ai.find("Submit button")
+element = client.ai.find("email input field")
+
+# Search with multiple criteria
+results = client.ai.search(text="Submit")
+results = client.ai.search(role="button", text_contains="Login")
+results = client.ai.search(text_contains="email", element_type="input")
+
+# Find by ARIA role
+buttons = client.ai.find_by_role("button", name="Submit")
+```
+
+### Assertions
+
+Make assertions about UI state using natural language:
+
+```python
+# Simple assertions
+client.ai.assert_that("Submit button", "visible")
+client.ai.assert_that("error message", "hidden")
+client.ai.assert_that("email input", "hasValue", "test@example.com")
+
+# Convenience methods
+client.ai.assert_visible("Submit button")
+client.ai.assert_hidden("loading spinner")
+client.ai.assert_has_text("welcome message", "Hello, User!")
+
+# Batch assertions
+client.ai.assert_batch([
+    ("Submit button", "visible"),
+    ("error message", "hidden"),
+    ("email input", "enabled"),
+])
+```
+
+### Semantic Snapshots
+
+Get AI-friendly page state representations:
+
+```python
+# Get semantic snapshot
+snapshot = client.ai.snapshot()
+print(snapshot.summary)  # "Login page with email/password form"
+print(snapshot.forms)    # Form states with validation info
+print(snapshot.elements) # AI-enhanced element descriptions
+
+# Track changes
+diff = client.ai.diff()
+print(diff.summary)  # "Submit button clicked, loading spinner appeared"
+print(diff.changes.appeared)  # New elements
+print(diff.changes.disappeared)  # Removed elements
+
+# Get plain text summary for LLM context
+summary = client.ai.summary()
 ```
 
 ## Features
@@ -226,8 +311,16 @@ ui-bridge-server/
 ├── nextjs.ts       # Next.js adapter
 └── standalone.ts   # Standalone HTTP server
 
+ui-bridge-babel-plugin/
+├── index.ts        # Babel plugin for auto-instrumentation
+├── config.ts       # Plugin configuration
+├── id-generator.ts # ID generation logic
+└── alias-generator.ts # Alias generation
+
 ui-bridge-python/
 ├── client.py       # HTTP client
+├── ai.py           # AI-native client
+├── ai_types.py     # AI type definitions
 └── types.py        # Pydantic models
 ```
 

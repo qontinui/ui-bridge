@@ -6,7 +6,7 @@ Python client for controlling UI elements via UI Bridge HTTP API.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urljoin
 
 import httpx
@@ -29,6 +29,10 @@ from .types import (
     UITransition,
     WorkflowRunResponse,
 )
+
+if TYPE_CHECKING:
+    from .ai import AIClient
+    from .ai_types import NLActionResponse
 
 
 class UIBridgeError(Exception):
@@ -761,6 +765,63 @@ class UIBridgeClient:
             return True
         except Exception:
             return False
+
+    # ==========================================================================
+    # AI-Native Interface
+    # ==========================================================================
+
+    @property
+    def ai(self) -> "AIClient":
+        """
+        AI-native interface for natural language interaction.
+
+        Provides semantic search, natural language actions, and assertions.
+
+        Example:
+            >>> client = UIBridgeClient()
+            >>> client.ai.execute("click the Submit button")
+            >>> client.ai.assert_that("error message", "hidden")
+            >>> element = client.ai.find("email input field")
+        """
+        # Lazy import to avoid circular dependencies
+        from .ai import AIClient
+
+        if not hasattr(self, "_ai_client"):
+            self._ai_client = AIClient(self)
+        return self._ai_client
+
+    # ==========================================================================
+    # AI Convenience Methods
+    # ==========================================================================
+
+    def click_text(self, text: str) -> "NLActionResponse":
+        """
+        Click an element by its visible text.
+
+        Convenience method for client.ai.execute(f'click "{text}"').
+
+        Args:
+            text: Visible text of the element to click
+
+        Returns:
+            NLActionResponse with execution result
+        """
+        return self.ai.click(text)
+
+    def type_into(self, target: str, text: str) -> "NLActionResponse":
+        """
+        Type text into an element by description.
+
+        Convenience method for client.ai.type_text(target, text).
+
+        Args:
+            target: Natural language description of the element
+            text: Text to type
+
+        Returns:
+            NLActionResponse with execution result
+        """
+        return self.ai.type_text(target, text)
 
 
 class ComponentControl:

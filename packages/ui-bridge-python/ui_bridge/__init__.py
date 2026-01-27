@@ -32,10 +32,44 @@ from .types import (
     WorkflowStepResult,
 )
 
+# AI-native client and types
+from .ai import AIClient
+from .ai_types import (
+    AIDiscoveredElement,
+    AIErrorContext,
+    AssertionRequest,
+    AssertionResult,
+    AssertionType,
+    BatchAssertionRequest,
+    BatchAssertionResult,
+    DiffChanges,
+    ElementChange,
+    ElementModification,
+    ErrorPageContext,
+    FormFieldState,
+    FormState,
+    ModalState,
+    NearestMatchInfo,
+    NLActionRequest,
+    NLActionResponse,
+    PageChanges,
+    PageContext,
+    RecoverySuggestion,
+    SearchCriteria,
+    SearchResponse,
+    SearchResult,
+    SearchResultsInfo,
+    SearchScores,
+    SemanticDiff,
+    SemanticSnapshot,
+)
+
 __version__ = "0.1.0"
 __all__ = [
     # Client
     "UIBridgeClient",
+    # AI-native client
+    "AIClient",
     # Element types
     "ElementState",
     "ElementIdentifier",
@@ -66,4 +100,32 @@ __all__ = [
     # Debug types
     "RenderLogEntry",
     "PerformanceMetrics",
+    # AI-native types
+    "AIDiscoveredElement",
+    "AIErrorContext",
+    "AssertionRequest",
+    "AssertionResult",
+    "AssertionType",
+    "BatchAssertionRequest",
+    "BatchAssertionResult",
+    "DiffChanges",
+    "ElementChange",
+    "ElementModification",
+    "ErrorPageContext",
+    "FormFieldState",
+    "FormState",
+    "ModalState",
+    "NearestMatchInfo",
+    "NLActionRequest",
+    "NLActionResponse",
+    "PageChanges",
+    "PageContext",
+    "RecoverySuggestion",
+    "SearchCriteria",
+    "SearchResponse",
+    "SearchResult",
+    "SearchResultsInfo",
+    "SearchScores",
+    "SemanticDiff",
+    "SemanticSnapshot",
 ]

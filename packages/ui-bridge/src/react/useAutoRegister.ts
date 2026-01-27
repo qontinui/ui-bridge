@@ -391,27 +391,29 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         const actions = inferActions(type);
         const label = getAccessibleLabel(element);
 
-        bridge.registry.registerElement(uniqueId, element, {
+        // Registry may use an existing data-ui-id if present, so use the returned registered element's ID
+        const registered = bridge.registry.registerElement(uniqueId, element, {
           type,
           actions,
           label,
         });
 
-        registeredElementsRef.current.set(element, uniqueId);
-        onRegister?.(uniqueId, element);
+        registeredElementsRef.current.set(element, registered.id);
+        onRegister?.(registered.id, element);
       } else {
         const type = inferElementType(element);
         const actions = inferActions(type);
         const label = getAccessibleLabel(element);
 
-        bridge.registry.registerElement(id, element, {
+        // Registry may use an existing data-ui-id if present, so use the returned registered element's ID
+        const registered = bridge.registry.registerElement(id, element, {
           type,
           actions,
           label,
         });
 
-        registeredElementsRef.current.set(element, id);
-        onRegister?.(id, element);
+        registeredElementsRef.current.set(element, registered.id);
+        onRegister?.(registered.id, element);
       }
     },
     [bridge, idStrategy, customGenerateId, onRegister]

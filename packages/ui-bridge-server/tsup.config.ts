@@ -6,6 +6,7 @@ export default defineConfig({
     express: 'src/express.ts',
     nextjs: 'src/nextjs.ts',
     standalone: 'src/standalone.ts',
+    handlers: 'src/handlers.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,

@@ -8,6 +8,7 @@ export default defineConfig({
     'control/index': 'src/control/index.ts',
     'render-log/index': 'src/render-log/index.ts',
     'debug/index': 'src/debug/index.ts',
+    'ai/index': 'src/ai/index.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,

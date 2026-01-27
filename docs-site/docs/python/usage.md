@@ -259,6 +259,66 @@ print(f"Success rate: {metrics.success_rate:.1%}")
 print(f"Avg duration: {metrics.avg_duration_ms:.1f}ms")
 ```
 
+## AI-Native Interface
+
+The `client.ai` interface provides natural language interaction for AI agents.
+
+### Natural Language Actions
+
+```python
+# Execute using natural language
+result = client.ai.execute("click the Submit button")
+result = client.ai.execute("type 'hello@example.com' in the email field")
+
+# Convenience methods
+client.ai.click("Submit button")
+client.ai.type_text("email field", "hello@example.com")
+client.ai.select_option("country dropdown", "United States")
+```
+
+### Element Search
+
+```python
+# Find by description
+element = client.ai.find("Submit button")
+if element:
+    print(f"Found: {element.id}")
+
+# Search with criteria
+results = client.ai.search(text="Submit")
+results = client.ai.search(role="button", text_contains="Login")
+```
+
+### Assertions
+
+```python
+# Make assertions
+client.ai.assert_visible("Submit button")
+client.ai.assert_hidden("error message")
+client.ai.assert_has_text("welcome", "Hello!")
+
+# Batch assertions
+result = client.ai.assert_batch([
+    ("Submit button", "visible"),
+    ("error message", "hidden"),
+])
+```
+
+### Semantic Snapshots
+
+```python
+# Get page state
+snapshot = client.ai.snapshot()
+print(snapshot.summary)
+
+# Track changes
+diff = client.ai.diff()
+if diff:
+    print(diff.summary)
+```
+
+For full AI interface documentation, see the [AI Client](./ai-client) page.
+
 ## Complete Example
 
 ```python
@@ -288,4 +348,42 @@ def login_and_checkout():
 
 if __name__ == '__main__':
     login_and_checkout()
+```
+
+## Complete Example (AI-Native)
+
+The same workflow using the AI-native interface:
+
+```python
+from ui_bridge import UIBridgeClient
+
+def login_and_checkout_ai():
+    client = UIBridgeClient('http://localhost:9876')
+
+    # Login using natural language
+    client.ai.type_text("email input", "user@example.com")
+    client.ai.type_text("password input", "secret123")
+    client.ai.click("login button")
+
+    # Wait for dashboard
+    client.ai.wait_for_visible("products link")
+    client.ai.click("products link")
+
+    # Add item to cart
+    client.ai.click("add to cart button")
+
+    # Verify cart state
+    client.ai.assert_visible("cart badge")
+
+    # Checkout
+    client.ai.click("checkout button")
+    client.ai.type_text("address field", "123 Main St")
+    client.ai.select_option("payment method", "Credit Card")
+    client.ai.click("place order button")
+
+    # Verify success
+    client.ai.assert_visible("order confirmation")
+
+if __name__ == '__main__':
+    login_and_checkout_ai()
 ```
