@@ -1,32 +1,11 @@
 /**
  * UI Bridge Core Module
  *
- * Shared infrastructure for element identification and registry.
+ * Exports all core types and WebSocket client.
  */
 
-// Types
+// Export all types
 export * from './types';
 
-// Element identification utilities
-export {
-  ID_ATTRIBUTES,
-  generateXPath,
-  generateCSSSelector,
-  getBestIdentifier,
-  createElementIdentifier,
-  findElementByIdentifier,
-  findAllElementsByIdentifier,
-  elementMatchesIdentifier,
-} from './element-identifier';
-
-// Registry
-export {
-  UIBridgeRegistry,
-  getGlobalRegistry,
-  setGlobalRegistry,
-  resetGlobalRegistry,
-  type RegistryOptions,
-} from './registry';
-
-// WebSocket client
+// WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';

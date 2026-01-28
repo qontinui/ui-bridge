@@ -90,6 +90,38 @@ Error responses:
 | GET | `/debug/metrics` | Get metrics |
 | POST | `/debug/highlight/:id` | Highlight element |
 
+### AI API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/ai/execute` | Execute natural language action |
+| POST | `/ai/search` | Search elements by criteria |
+| POST | `/ai/assert` | Assert element state |
+| POST | `/ai/assert-batch` | Batch assertions |
+| GET | `/ai/snapshot` | Get semantic snapshot |
+| GET | `/ai/summary` | Get page summary |
+| POST | `/ai/diff` | Get semantic diff |
+| POST | `/ai/intent/execute` | Execute an intent |
+| POST | `/ai/intent/find` | Find matching intents |
+| GET | `/ai/intents` | List available intents |
+| POST | `/ai/intent/register` | Register custom intent |
+
+### State API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/state/active` | Get active states |
+| GET | `/state/all` | Get all states |
+| POST | `/state/find-path` | Find path to target states |
+| POST | `/state/execute-transition` | Execute a transition |
+| GET | `/state/navigation-context` | Get navigation context |
+| POST | `/state/navigation-hints` | Get navigation hints |
+| GET | `/state/graph` | Get state graph |
+| POST | `/state/discovery/enable` | Enable auto-discovery |
+| POST | `/state/discovery/disable` | Disable auto-discovery |
+| POST | `/state/discovery/process-render` | Process render for discovery |
+| GET | `/state/export` | Export state machine |
+
 ### Health
 
 | Method | Endpoint | Description |

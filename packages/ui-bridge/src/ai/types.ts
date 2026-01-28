@@ -235,6 +235,66 @@ export interface ParsedAction {
 }
 
 /**
+ * Partial match information for structured failures
+ */
+export interface PartialMatchInfo {
+  /** Element ID */
+  elementId: string;
+  /** Match confidence 0-1 */
+  confidence: number;
+  /** Why this element was considered but not selected */
+  reason: string;
+  /** Element type */
+  type: string;
+  /** Element description/label */
+  description?: string;
+}
+
+/**
+ * Recovery suggestion for structured failures
+ */
+export interface RecoverySuggestionInfo {
+  /** Human-readable suggestion */
+  suggestion: string;
+  /** Machine-executable command (if applicable) */
+  command?: string;
+  /** Confidence that this action will help (0-1) */
+  confidence: number;
+  /** Whether retry with same parameters might help */
+  retryable: boolean;
+}
+
+/**
+ * Structured failure information for NL action responses
+ */
+export interface StructuredFailureInfo {
+  /** Machine-readable error code */
+  errorCode: string;
+  /** Human-readable error message */
+  message: string;
+  /** Target element ID (if known) */
+  elementId?: string;
+  /** Selectors/strategies that were attempted */
+  selectorsTried?: string[];
+  /** Similar elements that were found but not used */
+  partialMatches?: PartialMatchInfo[];
+  /** Current state of the target element (if found) */
+  elementState?: ElementState;
+  /** Reference to visual context (screenshot path/id) */
+  screenshotContext?: string;
+  /** Suggested recovery actions */
+  suggestedActions?: RecoverySuggestionInfo[];
+  /** Whether retry with same parameters might help */
+  retryRecommended: boolean;
+  /** Additional context data */
+  context?: Record<string, unknown>;
+  /** Duration before failure in milliseconds */
+  durationMs?: number;
+  /** Timeout value that was exceeded (for timeout errors) */
+  timeoutMs?: number;
+}
+
+/**
  * Response from executing a natural language action
  */
 export interface NLActionResponse {
@@ -253,7 +313,7 @@ export interface NLActionResponse {
   /** Timestamp */
   timestamp: number;
 
-  // Failure information
+  // Failure information (legacy fields for backward compatibility)
   /** Error message if failed */
   error?: string;
   /** Error code */
@@ -262,6 +322,10 @@ export interface NLActionResponse {
   suggestions?: string[];
   /** Alternative elements that could have been used */
   alternatives?: SearchResult[];
+
+  // Structured failure information
+  /** Detailed failure information when success is false */
+  failureInfo?: StructuredFailureInfo;
 }
 
 // ============================================================================
@@ -527,6 +591,80 @@ export interface ElementModification {
   to: string;
   /** Whether this is a significant change */
   significant: boolean;
+}
+
+// ============================================================================
+// Semantic Search Types
+// ============================================================================
+
+/**
+ * Semantic search criteria using embeddings
+ */
+export interface SemanticSearchCriteria {
+  /** Natural language query for semantic matching */
+  query: string;
+  /** Minimum similarity score (0-1, default: 0.5) */
+  threshold?: number;
+  /** Maximum results to return */
+  limit?: number;
+  /** Filter by element type */
+  type?: string;
+  /** Filter by ARIA role */
+  role?: string;
+  /** Combine with text-based search */
+  combineWithText?: boolean;
+}
+
+/**
+ * Semantic search result
+ */
+export interface SemanticSearchResult {
+  /** The matched element */
+  element: AIDiscoveredElement;
+  /** Semantic similarity score (0-1) */
+  similarity: number;
+  /** Rank in results (1-indexed) */
+  rank: number;
+  /** Text that was used for embedding */
+  embeddedText: string;
+}
+
+/**
+ * Response from semantic search operations
+ */
+export interface SemanticSearchResponse {
+  /** All matching results sorted by similarity */
+  results: SemanticSearchResult[];
+  /** Best match (highest similarity above threshold) */
+  bestMatch: SemanticSearchResult | null;
+  /** Total elements scanned */
+  scannedCount: number;
+  /** Search duration in milliseconds */
+  durationMs: number;
+  /** Query used */
+  query: string;
+  /** Embedding provider info */
+  providerInfo?: {
+    provider: string;
+    model: string;
+    dimension: number;
+  };
+  /** Timestamp */
+  timestamp: number;
+}
+
+/**
+ * Element with embedding data
+ */
+export interface ElementEmbedding {
+  /** Element ID */
+  elementId: string;
+  /** Text used for embedding */
+  text: string;
+  /** Embedding vector (base64 encoded float32 array) */
+  embedding?: string;
+  /** Whether embedding is available */
+  hasEmbedding: boolean;
 }
 
 // ============================================================================

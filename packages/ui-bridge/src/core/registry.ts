@@ -24,6 +24,8 @@ import type {
   TransitionResult,
   NavigationResult,
   StateSnapshot,
+  ComponentStateResponse,
+  StateGetter,
 } from './types';
 import { createElementIdentifier } from './element-identifier';
 import { fuzzyMatch, tokenSimilarity } from '../ai/fuzzy-matcher';
@@ -633,6 +635,8 @@ export class UIBridgeRegistry {
         handler: (params?: unknown) => unknown | Promise<unknown>;
       }>;
       elementIds?: string[];
+      getState?: StateGetter<Record<string, unknown>>;
+      getComputed?: () => Record<string, unknown>;
     }
   ): RegisteredComponent {
     const registered: RegisteredComponent = {
@@ -649,6 +653,8 @@ export class UIBridgeRegistry {
       elementIds: options.elementIds,
       registeredAt: Date.now(),
       mounted: true,
+      getState: options.getState,
+      getComputed: options.getComputed,
     };
 
     this.components.set(id, registered);
@@ -683,6 +689,22 @@ export class UIBridgeRegistry {
    */
   getAllComponents(): RegisteredComponent[] {
     return Array.from(this.components.values());
+  }
+
+  /**
+   * Get the current state and computed properties of a component
+   */
+  getComponentState(id: string): ComponentStateResponse | null {
+    const component = this.components.get(id);
+    if (!component || !component.mounted) {
+      return null;
+    }
+
+    return {
+      state: component.getState?.() ?? {},
+      computed: component.getComputed?.() ?? {},
+      timestamp: Date.now(),
+    };
   }
 
   /**

@@ -6,6 +6,8 @@ Python client for controlling UI elements via UI Bridge HTTP API.
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from urllib.parse import urljoin
 
@@ -15,6 +17,7 @@ import warnings
 from .types import (
     ActionResponse,
     ComponentActionResponse,
+    ComponentState,
     ControlSnapshot,
     FindResponse,
     ElementState,
@@ -28,6 +31,13 @@ from .types import (
     UIStateGroup,
     UITransition,
     WorkflowRunResponse,
+)
+from .logging import (
+    UIBridgeLogger,
+    LogLevel,
+    EventType,
+    TraceContext,
+    get_default_logger,
 )
 
 if TYPE_CHECKING:
@@ -87,6 +97,8 @@ class UIBridgeClient:
         self.api_path = api_path.rstrip("/")
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+        self._logger: UIBridgeLogger | None = None
+        self._active_trace: TraceContext | None = None
 
     def __enter__(self) -> UIBridgeClient:
         return self
@@ -102,6 +114,85 @@ class UIBridgeClient:
         """Build full URL for an API path."""
         return urljoin(self.base_url, f"{self.api_path}{path}")
 
+    # ==========================================================================
+    # Logging
+    # ==========================================================================
+
+    def enable_logging(
+        self,
+        *,
+        level: str = "info",
+        file_path: str | Path | None = None,
+        console: bool = False,
+    ) -> "UIBridgeClient":
+        """
+        Enable request/response logging.
+
+        Args:
+            level: Log level ("debug", "info", "warn", "error")
+            file_path: Path to write JSONL logs
+            console: Enable console output
+
+        Returns:
+            Self for chaining
+
+        Example:
+            >>> client = UIBridgeClient()
+            >>> client.enable_logging(level="debug", file_path="ui-bridge.jsonl")
+            >>> client.click("submit-btn")  # Will be logged
+        """
+        self._logger = UIBridgeLogger()
+        self._logger.enable(
+            level=level,
+            file_path=file_path,
+            console=console,
+        )
+        return self
+
+    def disable_logging(self) -> "UIBridgeClient":
+        """
+        Disable logging.
+
+        Returns:
+            Self for chaining
+        """
+        if self._logger:
+            self._logger.disable()
+            self._logger = None
+        return self
+
+    def get_logger(self) -> UIBridgeLogger | None:
+        """Get the logger instance."""
+        return self._logger
+
+    def start_trace(self) -> TraceContext:
+        """
+        Start a new trace for correlating related operations.
+
+        Returns:
+            TraceContext for passing to operations
+
+        Example:
+            >>> trace = client.start_trace()
+            >>> client.click("btn-1")  # Will be correlated
+            >>> client.type("input-1", "hello")  # Will be correlated
+            >>> client.end_trace()
+        """
+        if self._logger:
+            self._active_trace = self._logger.start_trace()
+            return self._active_trace
+        # Return a dummy trace context if logging is disabled
+        return TraceContext(
+            trace_id="00000000000000000000000000000000",
+            span_id="0000000000000000",
+        )
+
+    def end_trace(self) -> None:
+        """End the current trace."""
+        if self._logger and self._active_trace:
+            self._logger.end_trace(self._active_trace.trace_id)
+        self._active_trace = None
+
     def _request(
         self,
         method: str,
@@ -111,23 +202,78 @@ class UIBridgeClient:
         params: dict[str, Any] | None = None,
     ) -> Any:
         """Make an HTTP request and return the data."""
-        response = self._client.request(
-            method,
-            self._url(path),
-            json=json,
-            params=params,
-        )
-        response.raise_for_status()
-        result = response.json()
+        start_time = time.time()
 
-        if not result.get("success", False):
-            error = result.get("error", "Unknown error")
-            code = result.get("code")
-            if code == "NOT_FOUND":
-                raise ElementNotFoundError(error, code)
-            raise UIBridgeError(error, code)
+        # Log request start
+        if self._logger:
+            self._logger.request_started(method, path, trace=self._active_trace)
 
-        return result.get("data")
+        try:
+            response = self._client.request(
+                method,
+                self._url(path),
+                json=json,
+                params=params,
+            )
+            duration_ms = (time.time() - start_time) * 1000
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get("success", False):
+                error = result.get("error", "Unknown error")
+                code = result.get("code")
+
+                # Log request failure
+                if self._logger:
+                    self._logger.request_failed(
+                        method,
+                        path,
+                        error_message=error,
+                        duration_ms=duration_ms,
+                        trace=self._active_trace,
+                        status=response.status_code,
+                    )
+
+                if code == "NOT_FOUND":
+                    raise ElementNotFoundError(error, code)
+                raise UIBridgeError(error, code)
+
+            # Log request completion
+            if self._logger:
+                self._logger.request_completed(
+                    method,
+                    path,
+                    status=response.status_code,
+                    duration_ms=duration_ms,
+                    trace=self._active_trace,
+                )
+
+            return result.get("data")
+
+        except httpx.HTTPStatusError as e:
+            duration_ms = (time.time() - start_time) * 1000
+            if self._logger:
+                self._logger.request_failed(
+                    method,
+                    path,
+                    error_message=str(e),
+                    duration_ms=duration_ms,
+                    trace=self._active_trace,
+                    status=e.response.status_code if e.response else None,
+                )
+            raise
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            if self._logger:
+                self._logger.request_failed(
+                    method,
+                    path,
+                    error_message=str(e),
+                    duration_ms=duration_ms,
+                    trace=self._active_trace,
+                )
+            raise
 
     # ==========================================================================
     # Element Actions
@@ -363,6 +509,14 @@ class UIBridgeClient:
         timeout: int | None = None,
     ) -> ActionResponse:
         """Execute an action on an element."""
+        start_time = time.time()
+
+        # Log action started
+        if self._logger:
+            self._logger.action_started(
+                element_id, action, trace=self._active_trace, params=params
+            )
+
         request: dict[str, Any] = {"action": action}
         if params:
             request["params"] = params
@@ -378,17 +532,59 @@ class UIBridgeClient:
         if wait_options:
             request["waitOptions"] = wait_options
 
-        data = self._request(
-            "POST",
-            f"/control/element/{element_id}/action",
-            json=request,
-        )
-        response = ActionResponse.model_validate(data)
+        try:
+            data = self._request(
+                "POST",
+                f"/control/element/{element_id}/action",
+                json=request,
+            )
+            response = ActionResponse.model_validate(data)
+            duration_ms = (time.time() - start_time) * 1000
 
-        if not response.success:
-            raise ActionFailedError(response.error or "Action failed")
+            if not response.success:
+                # Log action failed
+                if self._logger:
+                    error_code = (
+                        response.failure_details.error_code.value
+                        if response.failure_details
+                        else "UNKNOWN"
+                    )
+                    self._logger.action_failed(
+                        element_id,
+                        action,
+                        error_code=error_code,
+                        error_message=response.error or "Action failed",
+                        duration_ms=duration_ms,
+                        trace=self._active_trace,
+                    )
+                raise ActionFailedError(response.error or "Action failed")
 
-        return response
+            # Log action completed
+            if self._logger:
+                self._logger.action_completed(
+                    element_id,
+                    action,
+                    duration_ms=duration_ms,
+                    trace=self._active_trace,
+                    result=response.result,
+                )
+
+            return response
+
+        except ActionFailedError:
+            raise
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            if self._logger:
+                self._logger.action_failed(
+                    element_id,
+                    action,
+                    error_code="NETWORK_ERROR",
+                    error_message=str(e),
+                    duration_ms=duration_ms,
+                    trace=self._active_trace,
+                )
+            raise
 
     # ==========================================================================
     # Element State
@@ -430,6 +626,19 @@ class UIBridgeClient:
     def get_components(self) -> list[dict[str, Any]]:
         """Get all registered components."""
         return self._request("GET", "/control/components")
+
+    def get_component_state(self, component_id: str) -> ComponentState:
+        """
+        Get the current state and computed properties of a component.
+
+        Args:
+            component_id: Component identifier
+
+        Returns:
+            ComponentState with state, computed, and timestamp
+        """
+        data = self._request("GET", f"/control/component/{component_id}/state")
+        return ComponentState.model_validate(data)
 
     def execute_component_action(
         self,
@@ -830,6 +1039,16 @@ class ComponentControl:
     def __init__(self, client: UIBridgeClient, component_id: str):
         self._client = client
         self._component_id = component_id
+
+    @property
+    def state(self) -> ComponentState:
+        """
+        Get the current state of the component.
+
+        Returns:
+            ComponentState with state, computed, and timestamp
+        """
+        return self._client.get_component_state(self._component_id)
 
     def action(
         self,

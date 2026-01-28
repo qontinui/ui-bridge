@@ -26,6 +26,7 @@ export {
   useUIComponent,
   useUIComponentAction,
   type ComponentActionDef,
+  type ComputedPropertyDef,
   type UseUIComponentOptions,
   type UseUIComponentReturn,
 } from './useUIComponent';

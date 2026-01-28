@@ -23,6 +23,16 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
 }
 
 /**
+ * Computed property definition for useUIComponent
+ */
+export interface ComputedPropertyDef<T = unknown> {
+  /** Getter function for the computed value */
+  getter: () => T;
+  /** Description of what the computed property represents */
+  description?: string;
+}
+
+/**
  * useUIComponent options
  */
 export interface UseUIComponentOptions {
@@ -38,6 +48,10 @@ export interface UseUIComponentOptions {
   elementIds?: string[];
   /** Whether to automatically register on mount */
   autoRegister?: boolean;
+  /** Function to get the current component state */
+  state?: () => Record<string, unknown>;
+  /** Computed properties exposed by the component */
+  computed?: Record<string, ComputedPropertyDef | (() => unknown)>;
 }
 
 /**
@@ -116,6 +130,8 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   const registeredRef = useRef(false);
   const actionsRef = useRef(options.actions || []);
   const elementIdsRef = useRef(options.elementIds || []);
+  const stateRef = useRef(options.state);
+  const computedRef = useRef(options.computed);
 
   const { id, name, description, autoRegister = true } = options;
 
@@ -123,7 +139,29 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   useEffect(() => {
     actionsRef.current = options.actions || [];
     elementIdsRef.current = options.elementIds || [];
-  }, [options.actions, options.elementIds]);
+    stateRef.current = options.state;
+    computedRef.current = options.computed;
+  }, [options.actions, options.elementIds, options.state, options.computed]);
+
+  // Create getComputed function from computed definitions
+  const createGetComputed = useCallback(() => {
+    return () => {
+      const computed = computedRef.current;
+      if (!computed) return {};
+
+      const result: Record<string, unknown> = {};
+      for (const [key, def] of Object.entries(computed)) {
+        try {
+          // Support both ComputedPropertyDef and plain getter functions
+          const getter = typeof def === 'function' ? def : def.getter;
+          result[key] = getter();
+        } catch {
+          result[key] = undefined;
+        }
+      }
+      return result;
+    };
+  }, []);
 
   // Register the component
   const register = useCallback(() => {
@@ -139,9 +177,11 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         handler: a.handler,
       })),
       elementIds: elementIdsRef.current,
+      getState: stateRef.current,
+      getComputed: createGetComputed(),
     });
     registeredRef.current = true;
-  }, [bridge, id, name, description]);
+  }, [bridge, id, name, description, createGetComputed]);
 
   // Unregister the component
   const unregister = useCallback(() => {

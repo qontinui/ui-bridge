@@ -28,6 +28,8 @@ import type {
   BatchAssertionResult,
   SemanticSnapshot,
   SemanticDiff,
+  SemanticSearchCriteria,
+  SemanticSearchResponse,
 } from '@qontinui/ui-bridge/ai';
 
 /**
@@ -128,6 +130,7 @@ export interface UIBridgeServerHandlers {
   // Component endpoints
   getComponents: () => Promise<APIResponse<ControlSnapshot['components']>>;
   getComponent: (id: string) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
+  getComponentState: (id: string) => Promise<APIResponse<{ state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number }>>;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest
@@ -163,6 +166,9 @@ export interface UIBridgeServerHandlers {
   getSemanticSnapshot: () => Promise<APIResponse<SemanticSnapshot>>;
   getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
   getPageSummary: () => Promise<APIResponse<string>>;
+
+  // Semantic search (embedding-based)
+  aiSemanticSearch: (criteria: SemanticSearchCriteria) => Promise<APIResponse<SemanticSearchResponse>>;
 }
 
 /**
@@ -201,6 +207,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Control - Components
   { method: 'GET', path: '/control/components', handler: 'getComponents' },
   { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
+  { method: 'GET', path: '/control/component/:id/state', handler: 'getComponentState', params: ['id'] },
   {
     method: 'POST',
     path: '/control/component/:id/action/:actionId',
@@ -238,6 +245,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/snapshot', handler: 'getSemanticSnapshot' },
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
+  { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
 ];
 
 /**

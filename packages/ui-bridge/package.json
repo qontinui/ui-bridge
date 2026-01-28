@@ -40,10 +40,75 @@
       "types": "./dist/ai/index.d.ts",
       "import": "./dist/ai/index.mjs",
       "require": "./dist/ai/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.mjs",
+      "require": "./dist/server/index.js"
+    },
+    "./server/express": {
+      "types": "./dist/server/express.d.ts",
+      "import": "./dist/server/express.mjs",
+      "require": "./dist/server/express.js"
+    },
+    "./server/nextjs": {
+      "types": "./dist/server/nextjs.d.ts",
+      "import": "./dist/server/nextjs.mjs",
+      "require": "./dist/server/nextjs.js"
+    },
+    "./server/standalone": {
+      "types": "./dist/server/standalone.d.ts",
+      "import": "./dist/server/standalone.mjs",
+      "require": "./dist/server/standalone.js"
+    },
+    "./server/handlers": {
+      "types": "./dist/server/handlers.d.ts",
+      "import": "./dist/server/handlers.mjs",
+      "require": "./dist/server/handlers.js"
+    },
+    "./babel-plugin": {
+      "import": "./dist/babel-plugin/index.mjs",
+      "require": "./dist/babel-plugin/index.js"
+    },
+    "./swc-plugin": {
+      "types": "./dist/swc-plugin/index.d.ts",
+      "import": "./dist/swc-plugin/index.mjs",
+      "require": "./dist/swc-plugin/index.js"
+    },
+    "./native": {
+      "types": "./dist/native/index.d.ts",
+      "import": "./dist/native/index.mjs",
+      "require": "./dist/native/index.js"
+    },
+    "./native/core": {
+      "types": "./dist/native/core/index.d.ts",
+      "import": "./dist/native/core/index.mjs",
+      "require": "./dist/native/core/index.js"
+    },
+    "./native/react": {
+      "types": "./dist/native/react/index.d.ts",
+      "import": "./dist/native/react/index.mjs",
+      "require": "./dist/native/react/index.js"
+    },
+    "./native/control": {
+      "types": "./dist/native/control/index.d.ts",
+      "import": "./dist/native/control/index.mjs",
+      "require": "./dist/native/control/index.js"
+    },
+    "./native/server": {
+      "types": "./dist/native/server/index.d.ts",
+      "import": "./dist/native/server/index.mjs",
+      "require": "./dist/native/server/index.js"
+    },
+    "./native/debug": {
+      "types": "./dist/native/debug/index.d.ts",
+      "import": "./dist/native/debug/index.mjs",
+      "require": "./dist/native/debug/index.js"
     }
   },
   "files": [
     "dist",
+    "swc-plugin-wasm/ui_bridge_swc_plugin.wasm",
     "README.md"
   ],
   "scripts": {
@@ -55,14 +120,48 @@
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
+  "dependencies": {
+    "@babel/helper-plugin-utils": "^7.22.0"
+  },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",
-    "react-dom": "^18.0.0 || ^19.0.0"
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "react-native": ">=0.70.0",
+    "express": "^4.18.0",
+    "next": ">=13.0.0",
+    "ws": "^8.0.0",
+    "@babel/core": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-dom": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
+    "next": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    },
+    "@babel/core": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@babel/types": "^7.23.0",
     "@testing-library/react": "^14.1.0",
+    "@types/babel__core": "^7.20.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@types/ws": "^8.5.0",
     "jsdom": "^23.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -83,6 +182,10 @@
     "testing",
     "ai",
     "debugging",
-    "hooks"
+    "hooks",
+    "server",
+    "babel-plugin",
+    "swc-plugin",
+    "react-native"
   ]
 }

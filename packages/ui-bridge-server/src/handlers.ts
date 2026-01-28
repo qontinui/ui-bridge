@@ -14,6 +14,10 @@ import type {
 } from '@qontinui/ui-bridge/control';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
 import type {
+  ActionFailureDetails,
+  ActionErrorCode,
+} from '@qontinui/ui-bridge/core';
+import type {
   SearchCriteria,
   SearchResponse,
   NLActionRequest,
@@ -24,6 +28,10 @@ import type {
   BatchAssertionResult,
   SemanticSnapshot,
   SemanticDiff,
+  SemanticSearchCriteria,
+  SemanticSearchResponse,
+  SemanticSearchResult,
+  AIDiscoveredElement,
 } from '@qontinui/ui-bridge/ai';
 import {
   SearchEngine,
@@ -42,6 +50,7 @@ export interface RegistryLike {
   getElement(id: string): unknown | undefined;
   getAllComponents(): unknown[];
   getComponent(id: string): unknown | undefined;
+  getComponentState?(id: string): { state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number } | null;
   createSnapshot(): ControlSnapshot;
   getRenderLog?(): RenderLogEntry[];
   clearRenderLog?(): void;
@@ -99,6 +108,98 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
     error: message,
     code,
     timestamp: Date.now(),
+  };
+}
+
+/**
+ * Generate recovery suggestions based on error code
+ */
+function getRecoverySuggestions(errorCode: ActionErrorCode): Array<{
+  suggestion: string;
+  command?: string;
+  confidence: number;
+  retryable: boolean;
+}> {
+  switch (errorCode) {
+    case 'ELEMENT_NOT_FOUND':
+      return [
+        { suggestion: 'Wait for the page to fully load', command: 'wait for page to load', confidence: 0.7, retryable: true },
+        { suggestion: 'Use a different description for the element', confidence: 0.8, retryable: false },
+        { suggestion: 'Scroll the page to reveal the element', command: 'scroll down', confidence: 0.6, retryable: true },
+      ];
+    case 'ELEMENT_NOT_VISIBLE':
+      return [
+        { suggestion: 'Scroll to make the element visible', command: 'scroll to element', confidence: 0.9, retryable: true },
+        { suggestion: 'Wait for any loading overlays to disappear', confidence: 0.7, retryable: true },
+        { suggestion: 'Close any blocking modals or popups', command: 'click close button', confidence: 0.8, retryable: true },
+      ];
+    case 'ELEMENT_NOT_ENABLED':
+      return [
+        { suggestion: 'Fill in required fields first', confidence: 0.8, retryable: false },
+        { suggestion: 'Complete prerequisite steps in the form', confidence: 0.7, retryable: false },
+        { suggestion: 'Wait for the element to become enabled', command: 'wait for element to be enabled', confidence: 0.6, retryable: true },
+      ];
+    case 'ELEMENT_NOT_INTERACTABLE':
+      return [
+        { suggestion: 'Close any modal or popup blocking the element', command: 'click close button', confidence: 0.9, retryable: true },
+        { suggestion: 'Wait for animations to complete', confidence: 0.7, retryable: true },
+        { suggestion: 'Scroll the element into the viewport', command: 'scroll to element', confidence: 0.8, retryable: true },
+      ];
+    case 'ACTION_TIMEOUT':
+      return [
+        { suggestion: 'Increase the timeout duration', confidence: 0.8, retryable: true },
+        { suggestion: 'Check if the condition can ever be met', confidence: 0.7, retryable: false },
+        { suggestion: 'Verify the page is responding', command: 'check page status', confidence: 0.6, retryable: true },
+      ];
+    case 'LOW_CONFIDENCE':
+      return [
+        { suggestion: 'Use the exact text shown on the element', confidence: 0.9, retryable: false },
+        { suggestion: 'Try a different description that more closely matches the element', confidence: 0.8, retryable: false },
+        { suggestion: 'Lower the confidence threshold if the match is correct', confidence: 0.7, retryable: true },
+      ];
+    case 'AMBIGUOUS_MATCH':
+      return [
+        { suggestion: 'Be more specific about which element you mean', confidence: 0.9, retryable: false },
+        { suggestion: 'Include the section or form name in the description', confidence: 0.8, retryable: false },
+        { suggestion: 'Use the element ID directly', confidence: 0.7, retryable: false },
+      ];
+    default:
+      return [
+        { suggestion: 'Try a different approach or check the page state', confidence: 0.5, retryable: false },
+      ];
+  }
+}
+
+/**
+ * Create structured failure details
+ */
+function createFailureDetails(
+  errorCode: ActionErrorCode,
+  message: string,
+  options: {
+    elementId?: string;
+    selectorsTried?: string[];
+    durationMs?: number;
+    timeoutMs?: number;
+  } = {}
+): ActionFailureDetails {
+  const retryableErrors: ActionErrorCode[] = [
+    'ELEMENT_NOT_VISIBLE',
+    'ACTION_TIMEOUT',
+    'LOW_CONFIDENCE',
+    'NETWORK_ERROR',
+    'STATE_NOT_REACHED',
+  ];
+
+  return {
+    errorCode,
+    message,
+    elementId: options.elementId,
+    selectorsTried: options.selectorsTried,
+    suggestedActions: getRecoverySuggestions(errorCode),
+    retryRecommended: retryableErrors.includes(errorCode),
+    durationMs: options.durationMs,
+    timeoutMs: options.timeoutMs,
   };
 }
 
@@ -216,7 +317,17 @@ export function createHandlers(
       try {
         const element = registry.getElement(id);
         if (!element) {
-          return error(`Element not found: ${id}`, 'NOT_FOUND');
+          const failureDetails = createFailureDetails('ELEMENT_NOT_FOUND', `Element not found: ${id}`, {
+            elementId: id,
+            selectorsTried: [id],
+          });
+          return {
+            success: false,
+            error: `Element not found: ${id}`,
+            code: 'ELEMENT_NOT_FOUND',
+            data: { failureDetails } as any,
+            timestamp: Date.now(),
+          };
         }
         return success(element as ControlSnapshot['elements'][0]);
       } catch (err) {
@@ -240,15 +351,98 @@ export function createHandlers(
       id: string,
       request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
     ) => {
+      const startTime = Date.now();
       try {
+        // Check if element exists first
+        const element = registry.getElement(id);
+        if (!element) {
+          const failureDetails = createFailureDetails('ELEMENT_NOT_FOUND', `Element not found: ${id}`, {
+            elementId: id,
+            selectorsTried: [id],
+            durationMs: Date.now() - startTime,
+          });
+          return {
+            success: false,
+            error: `Element not found: ${id}`,
+            code: 'ELEMENT_NOT_FOUND',
+            data: {
+              success: false,
+              error: `Element not found: ${id}`,
+              failureDetails,
+              durationMs: Date.now() - startTime,
+              timestamp: Date.now(),
+            },
+            timestamp: Date.now(),
+          } as APIResponse<any>;
+        }
+
         const result = await actionExecutor.executeAction(id, {
           action: request.action,
           params: request.params,
           waitOptions: request.waitOptions,
         });
+
+        // If the action executor returned a failure, enhance with structured details
+        if (result && typeof result === 'object' && 'success' in result && !result.success) {
+          const actionResult = result as { success: boolean; error?: string; elementState?: unknown };
+          // Determine error code based on error message
+          let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
+          const errorMsg = actionResult.error?.toLowerCase() || '';
+
+          if (errorMsg.includes('not found')) {
+            errorCode = 'ELEMENT_NOT_FOUND';
+          } else if (errorMsg.includes('not visible') || errorMsg.includes('hidden')) {
+            errorCode = 'ELEMENT_NOT_VISIBLE';
+          } else if (errorMsg.includes('disabled') || errorMsg.includes('not enabled')) {
+            errorCode = 'ELEMENT_NOT_ENABLED';
+          } else if (errorMsg.includes('timeout')) {
+            errorCode = 'ACTION_TIMEOUT';
+          } else if (errorMsg.includes('blocked') || errorMsg.includes('interactable')) {
+            errorCode = 'ELEMENT_NOT_INTERACTABLE';
+          }
+
+          const failureDetails = createFailureDetails(errorCode, actionResult.error || 'Action failed', {
+            elementId: id,
+            durationMs: Date.now() - startTime,
+          });
+
+          return success({
+            ...actionResult,
+            failureDetails,
+          }) as APIResponse<any>;
+        }
+
         return success(result) as APIResponse<any>;
       } catch (err) {
-        return error((err as Error).message, 'ACTION_ERROR');
+        const errorMessage = (err as Error).message;
+        let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
+
+        if (errorMessage.includes('not found')) {
+          errorCode = 'ELEMENT_NOT_FOUND';
+        } else if (errorMessage.includes('timeout')) {
+          errorCode = 'ACTION_TIMEOUT';
+        } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+          errorCode = 'NETWORK_ERROR';
+        }
+
+        const failureDetails = createFailureDetails(errorCode, errorMessage, {
+          elementId: id,
+          durationMs: Date.now() - startTime,
+        });
+
+        return {
+          success: false,
+          error: errorMessage,
+          code: errorCode,
+          data: {
+            success: false,
+            error: errorMessage,
+            failureDetails,
+            durationMs: Date.now() - startTime,
+            timestamp: Date.now(),
+          },
+          timestamp: Date.now(),
+        } as APIResponse<any>;
       }
     },
 
@@ -274,6 +468,35 @@ export function createHandlers(
         return success(component as ControlSnapshot['components'][0]);
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ERROR');
+      }
+    },
+
+    getComponentState: async (id: string): Promise<APIResponse<{ state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number }>> => {
+      try {
+        // First check if the component exists
+        const component = registry.getComponent(id);
+        if (!component) {
+          return error(`Component not found: ${id}`, 'NOT_FOUND');
+        }
+
+        // Use registry's getComponentState if available
+        if (registry.getComponentState) {
+          const stateResponse = registry.getComponentState(id);
+          if (!stateResponse) {
+            return error(`Component not found or not mounted: ${id}`, 'NOT_FOUND');
+          }
+          return success(stateResponse);
+        }
+
+        // Fallback: component exists but doesn't expose state
+        const comp = component as { getState?: () => Record<string, unknown>; getComputed?: () => Record<string, unknown> };
+        return success({
+          state: comp.getState?.() ?? {},
+          computed: comp.getComputed?.() ?? {},
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        return error((err as Error).message, 'COMPONENT_STATE_ERROR');
       }
     },
 
@@ -513,6 +736,152 @@ export function createHandlers(
         return success(summary);
       } catch (err) {
         return error((err as Error).message, 'PAGE_SUMMARY_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Semantic Search Handler (Embedding-based)
+    // =========================================================================
+
+    aiSemanticSearch: async (criteria: SemanticSearchCriteria): Promise<APIResponse<SemanticSearchResponse>> => {
+      const startTime = performance.now();
+      try {
+        // Refresh elements for search
+        refreshElements();
+
+        // Get all elements
+        const allElements = registry.getAllElements() as any[];
+
+        // Convert to AI discovered elements for semantic search
+        const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(el => {
+          // Build searchable text from element properties
+          const textParts: string[] = [];
+
+          // Prioritize description and accessible name for semantic matching
+          const state = 'getState' in el ? (el as any).getState() : el.state;
+          const textContent = state?.textContent || '';
+          const label = el.label || '';
+          const accessibleName = el.accessibleName || '';
+          const placeholder = el.placeholder || '';
+          const title = el.title || '';
+
+          if (label) textParts.push(label);
+          if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
+          if (textContent && textContent !== label && textContent !== accessibleName) {
+            textParts.push(textContent);
+          }
+          if (placeholder) textParts.push(`placeholder: ${placeholder}`);
+          if (title) textParts.push(title);
+
+          const combinedText = textParts.join(' ').trim() || el.id;
+
+          return {
+            element: {
+              id: el.id,
+              type: el.type,
+              label: el.label,
+              tagName: el.tagName || el.type,
+              role: el.role,
+              accessibleName: el.accessibleName,
+              actions: el.actions || [],
+              state: state || {},
+              registered: true,
+              description: label || el.id,
+              aliases: [],
+              suggestedActions: [],
+            } as AIDiscoveredElement,
+            text: combinedText,
+          };
+        });
+
+        // Apply type/role filters if specified
+        let filteredElements = aiElements;
+        if (criteria.type) {
+          filteredElements = filteredElements.filter(
+            ({ element }) => element.type.toLowerCase() === criteria.type!.toLowerCase()
+          );
+        }
+        if (criteria.role) {
+          filteredElements = filteredElements.filter(
+            ({ element }) => element.role?.toLowerCase() === criteria.role!.toLowerCase()
+          );
+        }
+
+        // NOTE: Semantic search with embeddings requires server-side embedding support.
+        // This handler provides the API structure. Actual embedding computation
+        // should be delegated to the qontinui library or a separate embedding service.
+        //
+        // For now, we fall back to fuzzy text matching as a placeholder.
+        // In production, this would call the qontinui embeddings module.
+
+        const query = criteria.query.toLowerCase();
+        const threshold = criteria.threshold ?? 0.5;
+        const limit = criteria.limit ?? 10;
+
+        // Simple text similarity as fallback (to be replaced with embedding similarity)
+        const scoredResults: SemanticSearchResult[] = filteredElements.map(({ element, text }) => {
+          // Calculate basic text similarity
+          const textLower = text.toLowerCase();
+          let similarity = 0;
+
+          // Exact match
+          if (textLower.includes(query)) {
+            similarity = 0.9;
+          } else {
+            // Word overlap similarity
+            const queryWords = new Set(query.split(/\s+/).filter(w => w.length > 2));
+            const textWords = new Set(textLower.split(/\s+/).filter(w => w.length > 2));
+
+            if (queryWords.size > 0 && textWords.size > 0) {
+              let matchCount = 0;
+              for (const word of queryWords) {
+                for (const textWord of textWords) {
+                  if (textWord.includes(word) || word.includes(textWord)) {
+                    matchCount++;
+                    break;
+                  }
+                }
+              }
+              similarity = matchCount / queryWords.size * 0.7;
+            }
+          }
+
+          return {
+            element,
+            similarity,
+            rank: 0, // Will be set after sorting
+            embeddedText: text,
+          };
+        });
+
+        // Filter by threshold and sort by similarity
+        const filteredResults = scoredResults
+          .filter(r => r.similarity >= threshold)
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, limit);
+
+        // Set ranks
+        filteredResults.forEach((result, index) => {
+          result.rank = index + 1;
+        });
+
+        const response: SemanticSearchResponse = {
+          results: filteredResults,
+          bestMatch: filteredResults.length > 0 ? filteredResults[0] : null,
+          scannedCount: filteredElements.length,
+          durationMs: performance.now() - startTime,
+          query: criteria.query,
+          providerInfo: {
+            provider: 'text-fallback',
+            model: 'simple-similarity',
+            dimension: 0,
+          },
+          timestamp: Date.now(),
+        };
+
+        return success(response);
+      } catch (err) {
+        return error((err as Error).message, 'AI_SEMANTIC_SEARCH_ERROR');
       }
     },
   };

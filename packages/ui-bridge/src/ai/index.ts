@@ -52,6 +52,11 @@ export type {
 
   // Registration types
   AIElementRegistrationOptions,
+
+  // Semantic search types
+  SemanticSearchCriteria,
+  SemanticSearchResult,
+  SemanticSearchResponse,
 } from './types';
 
 // Fuzzy Matcher

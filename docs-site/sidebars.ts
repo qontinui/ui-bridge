@@ -27,6 +27,52 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'AI Features',
+      items: [
+        'ai/overview',
+        'ai/intent-based-actions',
+        'ai/embedding-resolution',
+        'ai/visual-context',
+        'ai/navigation-assistance',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Error Handling & Recovery',
+      items: [
+        'recovery/structured-failure-feedback',
+        'recovery/failure-recovery-strategies',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'State Management',
+      items: [
+        'state/state-machine-integration',
+        'state/dynamic-state-discovery',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Observability',
+      items: [
+        'observability/logging',
+        'observability/performance-metrics',
+        'observability/accessibility',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Advanced Features',
+      items: [
+        'advanced/websocket-communication',
+        'advanced/recording-playback',
+        'advanced/cross-framework-support',
+        'advanced/component-state-exposure',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Platform Guides',
       items: [
         'guides/web',
@@ -64,6 +110,8 @@ const sidebars: SidebarsConfig = {
         'api/discovery-endpoints',
         'api/workflow-endpoints',
         'api/render-log-endpoints',
+        'api/ai-endpoints',
+        'api/state-endpoints',
       ],
     },
     {

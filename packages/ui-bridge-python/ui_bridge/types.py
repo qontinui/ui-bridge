@@ -125,6 +125,97 @@ class ActionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ActionErrorCode(str, Enum):
+    """Machine-readable error codes for action failures."""
+
+    ELEMENT_NOT_FOUND = "ELEMENT_NOT_FOUND"
+    ELEMENT_NOT_VISIBLE = "ELEMENT_NOT_VISIBLE"
+    ELEMENT_NOT_ENABLED = "ELEMENT_NOT_ENABLED"
+    ELEMENT_NOT_INTERACTABLE = "ELEMENT_NOT_INTERACTABLE"
+    ACTION_TIMEOUT = "ACTION_TIMEOUT"
+    ACTION_REJECTED = "ACTION_REJECTED"
+    STATE_NOT_REACHED = "STATE_NOT_REACHED"
+    NETWORK_ERROR = "NETWORK_ERROR"
+    PARSE_ERROR = "PARSE_ERROR"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    AMBIGUOUS_MATCH = "AMBIGUOUS_MATCH"
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+    UNSUPPORTED_ACTION = "UNSUPPORTED_ACTION"
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
+
+
+class PartialMatch(BaseModel):
+    """Partial element match found during search."""
+
+    element_id: str = Field(alias="elementId")
+    confidence: float
+    reason: str
+    type: str
+    description: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class RecoveryAction(BaseModel):
+    """Suggested recovery action."""
+
+    suggestion: str
+    command: str | None = None
+    confidence: float
+    retryable: bool
+
+    model_config = {"populate_by_name": True}
+
+
+class ActionFailureDetails(BaseModel):
+    """Structured error details for action failures."""
+
+    error_code: ActionErrorCode = Field(alias="errorCode")
+    message: str
+    element_id: str | None = Field(None, alias="elementId")
+    selectors_tried: list[str] | None = Field(None, alias="selectorsTried")
+    partial_matches: list[PartialMatch] | None = Field(None, alias="partialMatches")
+    element_state: "ElementState | None" = Field(None, alias="elementState")
+    screenshot_context: str | None = Field(None, alias="screenshotContext")
+    suggested_actions: list[RecoveryAction] = Field(alias="suggestedActions")
+    retry_recommended: bool = Field(alias="retryRecommended")
+    context: dict[str, Any] | None = None
+    duration_ms: float | None = Field(None, alias="durationMs")
+    timeout_ms: float | None = Field(None, alias="timeoutMs")
+
+    model_config = {"populate_by_name": True}
+
+    def is_element_not_found(self) -> bool:
+        """Check if the error is due to element not being found."""
+        return self.error_code == ActionErrorCode.ELEMENT_NOT_FOUND
+
+    def is_element_not_visible(self) -> bool:
+        """Check if the error is due to element not being visible."""
+        return self.error_code == ActionErrorCode.ELEMENT_NOT_VISIBLE
+
+    def is_element_not_enabled(self) -> bool:
+        """Check if the error is due to element being disabled."""
+        return self.error_code == ActionErrorCode.ELEMENT_NOT_ENABLED
+
+    def is_timeout(self) -> bool:
+        """Check if the error is due to timeout."""
+        return self.error_code == ActionErrorCode.ACTION_TIMEOUT
+
+    def is_retryable(self) -> bool:
+        """Check if the action should be retried."""
+        return self.retry_recommended
+
+    def get_best_suggestion(self) -> RecoveryAction | None:
+        """Get the highest confidence recovery suggestion."""
+        if not self.suggested_actions:
+            return None
+        return max(self.suggested_actions, key=lambda a: a.confidence)
+
+    def get_suggestions(self) -> list[str]:
+        """Get all recovery suggestions as strings."""
+        return [a.suggestion for a in self.suggested_actions]
+
+
 class ActionResponse(BaseModel):
     """Response from an action execution."""
 
@@ -133,12 +224,37 @@ class ActionResponse(BaseModel):
     result: Any | None = None
     error: str | None = None
     stack: str | None = None
+    failure_details: ActionFailureDetails | None = Field(None, alias="failureDetails")
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
     request_id: str | None = Field(None, alias="requestId")
     wait_duration_ms: float | None = Field(None, alias="waitDurationMs")
 
     model_config = {"populate_by_name": True}
+
+    def is_element_not_found(self) -> bool:
+        """Check if the failure is due to element not being found."""
+        if self.failure_details:
+            return self.failure_details.is_element_not_found()
+        return self.error is not None and "not found" in self.error.lower()
+
+    def is_timeout(self) -> bool:
+        """Check if the failure is due to timeout."""
+        if self.failure_details:
+            return self.failure_details.is_timeout()
+        return self.error is not None and "timeout" in self.error.lower()
+
+    def get_suggestions(self) -> list[str]:
+        """Get recovery suggestions if available."""
+        if self.failure_details:
+            return self.failure_details.get_suggestions()
+        return []
+
+    def get_error_code(self) -> ActionErrorCode | None:
+        """Get the structured error code if available."""
+        if self.failure_details:
+            return self.failure_details.error_code
+        return None
 
 
 class ComponentActionRequest(BaseModel):
@@ -232,6 +348,9 @@ class DiscoveredElement(BaseModel):
     actions: list[str]
     state: ElementState
     registered: bool
+    accessibility: "ElementAccessibility | None" = Field(
+        None, description="Full accessibility information for the element"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -511,3 +630,173 @@ class StateSnapshot(BaseModel):
     transitions: list[UITransition]
 
     model_config = {"populate_by_name": True}
+
+
+class ComponentState(BaseModel):
+    """Component state response.
+
+    Contains the current state and computed property values of a component.
+    """
+
+    state: dict[str, Any]
+    computed: dict[str, Any]
+    timestamp: int
+
+
+# ============================================================================
+# Accessibility Types
+# ============================================================================
+
+
+class WCAGLevel(str, Enum):
+    """WCAG conformance level."""
+
+    A = "A"
+    AA = "AA"
+    AAA = "AAA"
+
+
+class AccessibilitySeverity(str, Enum):
+    """Severity of accessibility issues."""
+
+    CRITICAL = "critical"
+    SERIOUS = "serious"
+    MODERATE = "moderate"
+    MINOR = "minor"
+
+
+class ElementAccessibility(BaseModel):
+    """Accessibility information for a UI element.
+
+    Captures ARIA attributes and accessibility-relevant properties
+    following the WAI-ARIA specification.
+    """
+
+    role: str = Field(description="The element's computed role (explicit or implicit)")
+    accessible_name: str | None = Field(
+        None,
+        alias="accessibleName",
+        description="Computed accessible name following ARIA name computation",
+    )
+    accessible_description: str | None = Field(
+        None,
+        alias="accessibleDescription",
+        description="Computed accessible description",
+    )
+    aria_label: str | None = Field(
+        None, alias="ariaLabel", description="Value of aria-label attribute"
+    )
+    aria_labelled_by: str | None = Field(
+        None, alias="ariaLabelledBy", description="Value of aria-labelledby attribute"
+    )
+    aria_described_by: str | None = Field(
+        None, alias="ariaDescribedBy", description="Value of aria-describedby attribute"
+    )
+    aria_expanded: bool | None = Field(
+        None,
+        alias="ariaExpanded",
+        description="Whether element is expanded (for expandable elements)",
+    )
+    aria_selected: bool | None = Field(
+        None,
+        alias="ariaSelected",
+        description="Whether element is selected (for selectable elements)",
+    )
+    aria_checked: bool | str | None = Field(
+        None,
+        alias="ariaChecked",
+        description="Checked state (for checkboxes, can be true/false/'mixed')",
+    )
+    aria_hidden: bool | None = Field(
+        None,
+        alias="ariaHidden",
+        description="Whether element is hidden from accessibility tree",
+    )
+    aria_disabled: bool | None = Field(
+        None,
+        alias="ariaDisabled",
+        description="Whether element is disabled via aria-disabled",
+    )
+    aria_required: bool | None = Field(
+        None,
+        alias="ariaRequired",
+        description="Whether element is required (for form inputs)",
+    )
+    aria_live: str | None = Field(
+        None, alias="ariaLive", description="Current aria-live value for live regions"
+    )
+    tab_index: int = Field(alias="tabIndex", description="Tab index value")
+    is_in_tab_order: bool = Field(
+        alias="isInTabOrder",
+        description="Whether element is in the tab order",
+    )
+    is_keyboard_accessible: bool = Field(
+        alias="isKeyboardAccessible",
+        description="Whether element can receive keyboard focus",
+    )
+    implicit_role: str | None = Field(
+        None,
+        alias="implicitRole",
+        description="The implicit role based on element type",
+    )
+    has_explicit_role: bool = Field(
+        alias="hasExplicitRole",
+        description="Whether element has an explicit role attribute",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class AccessibilityIssue(BaseModel):
+    """An accessibility issue found during validation."""
+
+    id: str = Field(description="Unique identifier for this issue instance")
+    wcag_criterion: str = Field(
+        alias="wcagCriterion",
+        description="The WCAG success criterion this issue relates to",
+    )
+    severity: AccessibilitySeverity = Field(description="How severe this issue is")
+    level: WCAGLevel = Field(
+        description="WCAG conformance level this criterion belongs to"
+    )
+    message: str = Field(description="Human-readable description of the issue")
+    element_id: str = Field(alias="elementId", description="ID of the element with the issue")
+    element_selector: str | None = Field(
+        None, alias="elementSelector", description="Selector to find the element"
+    )
+    suggestion: str = Field(description="Suggested fix for the issue")
+    rule_id: str = Field(alias="ruleId", description="The rule ID that detected this issue")
+
+    model_config = {"populate_by_name": True}
+
+
+class AccessibilityReport(BaseModel):
+    """Accessibility validation report."""
+
+    timestamp: int = Field(description="When the validation was performed")
+    url: str = Field(description="URL of the page that was validated")
+    elements_scanned: int = Field(
+        alias="elementsScanned", description="Number of elements that were scanned"
+    )
+    issues: list[AccessibilityIssue] = Field(
+        default_factory=list, description="All issues found during validation"
+    )
+    passed_count: int = Field(alias="passedCount", description="Number of checks that passed")
+    failed_count: int = Field(alias="failedCount", description="Number of checks that failed")
+    meets_wcag_a: bool = Field(
+        alias="meetsWCAG_A", description="Whether the page meets WCAG 2.1 Level A"
+    )
+    meets_wcag_aa: bool = Field(
+        alias="meetsWCAG_AA", description="Whether the page meets WCAG 2.1 Level AA"
+    )
+    summary: str = Field(description="Human-readable summary of the validation")
+    duration_ms: float = Field(
+        alias="durationMs", description="Duration of the validation in milliseconds"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+# Rebuild models with forward references
+DiscoveredElement.model_rebuild()
+ActionFailureDetails.model_rebuild()
