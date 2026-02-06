@@ -35,7 +35,9 @@ function App() {
 Only show in development:
 
 ```tsx
-{process.env.NODE_ENV === 'development' && <DebugOverlay />}
+{
+  process.env.NODE_ENV === 'development' && <DebugOverlay />;
+}
 ```
 
 ## Element Wrapper
@@ -66,11 +68,11 @@ function MyForm() {
 
 ### Props
 
-| Prop | Type | Description |
-|------|------|-------------|
-| `id` | `string` | Element identifier |
-| `type` | `ElementType` | Element type |
-| `label` | `string` | Human-readable label |
+| Prop       | Type           | Description          |
+| ---------- | -------------- | -------------------- |
+| `id`       | `string`       | Element identifier   |
+| `type`     | `ElementType`  | Element type         |
+| `label`    | `string`       | Human-readable label |
 | `children` | `ReactElement` | Single child element |
 
 ## Component Wrapper
@@ -90,13 +92,9 @@ function CheckoutForm() {
     <UIComponentWrapper
       id="checkout-form"
       name="Checkout Form"
-      actions={[
-        { id: 'submit', label: 'Submit Order', handler: handleSubmit },
-      ]}
+      actions={[{ id: 'submit', label: 'Submit Order', handler: handleSubmit }]}
     >
-      <form>
-        {/* Form fields */}
-      </form>
+      <form>{/* Form fields */}</form>
     </UIComponentWrapper>
   );
 }

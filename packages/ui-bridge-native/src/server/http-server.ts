@@ -13,11 +13,7 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor } from '../control/types';
-import type {
-  NativeServerConfig,
-  NativeServerHandlers,
-  APIResponse,
-} from './types';
+import type { NativeServerConfig, NativeServerHandlers, APIResponse } from './types';
 import { createServerHandlers } from './handlers';
 
 /**
@@ -98,24 +94,15 @@ export class NativeUIBridgeServer {
     }
 
     if (!this.adapter) {
-      console.warn(
-        '[ui-bridge-native] No server adapter configured. Call setAdapter() first.'
-      );
-      console.warn(
-        '[ui-bridge-native] See documentation for supported adapters.'
-      );
+      console.warn('[ui-bridge-native] No server adapter configured. Call setAdapter() first.');
+      console.warn('[ui-bridge-native] See documentation for supported adapters.');
       return;
     }
 
-    await this.adapter.start(
-      this.config.serverPort!,
-      this.handleRequest.bind(this)
-    );
+    await this.adapter.start(this.config.serverPort!, this.handleRequest.bind(this));
     this.running = true;
 
-    console.log(
-      `[ui-bridge-native] HTTP server started on port ${this.config.serverPort}`
-    );
+    console.log(`[ui-bridge-native] HTTP server started on port ${this.config.serverPort}`);
   }
 
   /**
@@ -190,10 +177,7 @@ export class NativeUIBridgeServer {
     const { method, path, query, body } = request;
 
     // Parse path parameters
-    const parsePath = (
-      pattern: string,
-      actual: string
-    ): Record<string, string> | null => {
+    const parsePath = (pattern: string, actual: string): Record<string, string> | null => {
       const patternParts = pattern.split('/');
       const actualParts = actual.split('/');
 

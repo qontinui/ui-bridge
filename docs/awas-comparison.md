@@ -65,7 +65,11 @@ const submitButton = useUIElement({
   label: 'Sign In',
 });
 
-return <button ref={submitButton.ref} data-ui-id="submit-btn">Sign In</button>;
+return (
+  <button ref={submitButton.ref} data-ui-id="submit-btn">
+    Sign In
+  </button>
+);
 ```
 
 ```python
@@ -76,20 +80,21 @@ client.type('email-input', 'user@example.com')
 
 ## Comparison Table
 
-| Aspect | AWAS | UI Bridge |
-|--------|------|-----------|
-| **Primary Purpose** | Capability declaration | Action execution |
-| **Type** | Standard/Specification | Framework/Library |
-| **Focus** | Discovery ("what exists") | Control ("how to interact") |
-| **State Tracking** | Declares possible states | Tracks real-time state |
-| **Workflows** | Describes available flows | Executes flow steps |
-| **Runtime** | Static manifest | Dynamic runtime |
-| **Integration** | Embedded in HTML/JSON | React hooks + HTTP API |
-| **AI Interaction** | AI reads manifest | AI calls API endpoints |
+| Aspect              | AWAS                      | UI Bridge                   |
+| ------------------- | ------------------------- | --------------------------- |
+| **Primary Purpose** | Capability declaration    | Action execution            |
+| **Type**            | Standard/Specification    | Framework/Library           |
+| **Focus**           | Discovery ("what exists") | Control ("how to interact") |
+| **State Tracking**  | Declares possible states  | Tracks real-time state      |
+| **Workflows**       | Describes available flows | Executes flow steps         |
+| **Runtime**         | Static manifest           | Dynamic runtime             |
+| **Integration**     | Embedded in HTML/JSON     | React hooks + HTTP API      |
+| **AI Interaction**  | AI reads manifest         | AI calls API endpoints      |
 
 ### Declaration vs Execution
 
 **AWAS (Declaration):**
+
 ```json
 {
   "element": "login-button",
@@ -100,6 +105,7 @@ client.type('email-input', 'user@example.com')
 ```
 
 **UI Bridge (Execution):**
+
 ```python
 result = client.click('login-button', wait_visible=True)
 print(result.success)  # True
@@ -109,6 +115,7 @@ print(result.element_state.visible)  # True
 ### State Handling
 
 **AWAS:** Describes possible states declaratively
+
 ```json
 {
   "states": {
@@ -119,6 +126,7 @@ print(result.element_state.visible)  # True
 ```
 
 **UI Bridge:** Observes and reports actual state
+
 ```python
 snapshot = client.get_snapshot()
 for element in snapshot.elements:
@@ -200,23 +208,23 @@ Execution Phase:     UI Bridge executes actions
 
 UI Bridge supports multiple identification strategies to maximize compatibility:
 
-| Priority | Attribute | Source | Description |
-|----------|-----------|--------|-------------|
-| 1 | `data-ui-id` | UI Bridge | Explicit UI Bridge identifier (preferred) |
-| 2 | `data-testid` | Testing libs | Testing library convention |
-| 3 | `data-awas-element` | AWAS | Legacy AWAS element identifier |
-| 4 | `id` | HTML | Standard HTML id attribute |
-| 5 | CSS/XPath | Generated | Automatically generated selectors |
+| Priority | Attribute           | Source       | Description                               |
+| -------- | ------------------- | ------------ | ----------------------------------------- |
+| 1        | `data-ui-id`        | UI Bridge    | Explicit UI Bridge identifier (preferred) |
+| 2        | `data-testid`       | Testing libs | Testing library convention                |
+| 3        | `data-awas-element` | AWAS         | Legacy AWAS element identifier            |
+| 4        | `id`                | HTML         | Standard HTML id attribute                |
+| 5        | CSS/XPath           | Generated    | Automatically generated selectors         |
 
 ### Identification Logic
 
 ```typescript
 // Element identification priority (from element-identifier.ts)
 const ID_ATTRIBUTES = [
-  'data-ui-id',        // UI Bridge native
-  'data-testid',       // Testing library
+  'data-ui-id', // UI Bridge native
+  'data-testid', // Testing library
   'data-awas-element', // AWAS compatibility
-  'id'                 // HTML standard
+  'id', // HTML standard
 ] as const;
 ```
 
@@ -242,6 +250,7 @@ When UI Bridge searches for an element:
 ```
 
 All of these would find the same element:
+
 ```python
 client.click('checkout-btn')      # via data-ui-id
 client.click('checkout-button')   # via data-testid
@@ -297,12 +306,12 @@ Once all automation code is updated, you can remove `data-awas-element`:
 
 ### Naming Convention Changes
 
-| AWAS Style | UI Bridge Style |
-|------------|-----------------|
-| `login` | `login-form` |
-| `email` | `login-email-input` |
-| `submit` | `login-submit-btn` |
-| `cart` | `shopping-cart` |
+| AWAS Style | UI Bridge Style     |
+| ---------- | ------------------- |
+| `login`    | `login-form`        |
+| `email`    | `login-email-input` |
+| `submit`   | `login-submit-btn`  |
+| `cart`     | `shopping-cart`     |
 
 UI Bridge recommends more descriptive, hierarchical naming to avoid collisions in larger applications.
 

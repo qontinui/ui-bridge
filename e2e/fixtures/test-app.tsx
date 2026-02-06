@@ -10,12 +10,6 @@ import React, { useState, useCallback } from 'react';
 /**
  * Types for the test application
  */
-interface ExtractionConfig {
-  url: string;
-  selector: string;
-  format: 'json' | 'csv' | 'xml';
-}
-
 interface ExtractionResult {
   data: string[];
   timestamp: number;
@@ -29,9 +23,15 @@ export function Header(): React.ReactElement {
     <header data-ui-id="app-header" data-ui-type="header">
       <h1>Data Extraction Tool</h1>
       <nav>
-        <a href="#home" data-ui-id="nav-home">Home</a>
-        <a href="#settings" data-ui-id="nav-settings">Settings</a>
-        <a href="#help" data-ui-id="nav-help">Help</a>
+        <a href="#home" data-ui-id="nav-home">
+          Home
+        </a>
+        <a href="#settings" data-ui-id="nav-settings">
+          Settings
+        </a>
+        <a href="#help" data-ui-id="nav-help">
+          Help
+        </a>
       </nav>
     </header>
   );
@@ -333,7 +333,9 @@ export function ConfirmationModal({
         aria-modal="true"
         aria-labelledby="modal-title"
       >
-        <h2 id="modal-title" data-ui-id="modal-title">{title}</h2>
+        <h2 id="modal-title" data-ui-id="modal-title">
+          {title}
+        </h2>
         <p data-ui-id="modal-message">{message}</p>
         <div className="modal-actions">
           <button

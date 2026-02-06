@@ -38,4 +38,3 @@ Closes #
 ## Screenshots (if applicable)
 
 ## Additional Notes
-

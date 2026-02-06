@@ -44,7 +44,7 @@ const discovery = new StateDiscovery(registry, {
 ```typescript
 const states = discovery.getDiscoveredStates();
 
-states.forEach(state => {
+states.forEach((state) => {
   console.log(`${state.id}: ${state.description}`);
   console.log(`  URL: ${state.signature.url}`);
 });

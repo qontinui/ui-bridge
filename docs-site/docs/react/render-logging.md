@@ -42,11 +42,11 @@ Render logging provides:
 
 ```tsx
 // lib/ui-bridge/RenderLogWrapper.tsx
-"use client";
+'use client';
 
-import { useEffect, useRef, useCallback, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
-import { useUIBridgeOptional } from "ui-bridge/react";
+import { useEffect, useRef, useCallback, type ReactNode } from 'react';
+import { usePathname } from 'next/navigation';
+import { useUIBridgeOptional } from 'ui-bridge/react';
 
 export function RenderLogWrapper({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -75,9 +75,7 @@ import { RenderLogWrapper } from '@/lib/ui-bridge/RenderLogWrapper';
 export default function RootLayout({ children }) {
   return (
     <UIBridgeProvider features={{ renderLog: true }}>
-      <RenderLogWrapper>
-        {children}
-      </RenderLogWrapper>
+      <RenderLogWrapper>{children}</RenderLogWrapper>
     </UIBridgeProvider>
   );
 }
@@ -147,17 +145,18 @@ export function RenderLogProvider({ children }) {
 
   // Capture screen changes
   useEffect(() => {
-    setLogs(prev => [...prev, {
-      type: 'screen_change',
-      timestamp: Date.now(),
-      screen: pathname,
-    }]);
+    setLogs((prev) => [
+      ...prev,
+      {
+        type: 'screen_change',
+        timestamp: Date.now(),
+        screen: pathname,
+      },
+    ]);
   }, [pathname]);
 
   return (
-    <RenderLogContext.Provider value={{ logs, logRender }}>
-      {children}
-    </RenderLogContext.Provider>
+    <RenderLogContext.Provider value={{ logs, logRender }}>{children}</RenderLogContext.Provider>
   );
 }
 ```
@@ -306,12 +305,12 @@ interface UseRenderLogManagerOptions {
 
 ### Automatic Triggers
 
-| Trigger | When | Default |
-|---------|------|---------|
-| `mount` | Initial render | ✅ Enabled |
-| `route_change` | URL/route changes | ✅ Enabled |
-| `mutation` | Significant DOM changes | ✅ Enabled |
-| `interval` | Periodic snapshots | ❌ Disabled |
+| Trigger        | When                    | Default     |
+| -------------- | ----------------------- | ----------- |
+| `mount`        | Initial render          | ✅ Enabled  |
+| `route_change` | URL/route changes       | ✅ Enabled  |
+| `mutation`     | Significant DOM changes | ✅ Enabled  |
+| `interval`     | Periodic snapshots      | ❌ Disabled |
 
 ### Manual Capture
 
@@ -330,11 +329,13 @@ await renderLog.captureQuick('user_action');
 Not all DOM changes trigger a capture. The system filters for "significant" mutations:
 
 **Captured:**
+
 - Element nodes added/removed
 - Data attributes changed (`data-*`)
 - State attributes changed (`aria-expanded`, `data-state`)
 
 **Ignored:**
+
 - Text node changes only
 - Animation classes (`animate-*`, `transition-*`)
 - Script/style elements
@@ -479,6 +480,7 @@ for entry in entries:
 ## Performance Tips
 
 1. **Enable only in development**: Render logging adds overhead
+
    ```tsx
    <UIBridgeProvider features={{ renderLog: process.env.NODE_ENV === 'development' }}>
    ```
@@ -486,8 +488,11 @@ for entry in entries:
 2. **Use debouncing**: Mutation captures are debounced by default (500ms)
 
 3. **Limit element count**: Configure `maxElements` to cap captured elements
+
    ```typescript
-   captureOptions: { maxElements: 500 }
+   captureOptions: {
+     maxElements: 500;
+   }
    ```
 
 4. **Use quick captures**: For frequent updates, use `captureQuick()` instead of full snapshots
@@ -496,13 +501,13 @@ for entry in entries:
 
 ## Platform Comparison
 
-| Feature | Web/Next.js | Tauri | React Native |
-|---------|-------------|-------|--------------|
-| DOM Snapshots | ✅ Full | ✅ Full | ❌ N/A |
-| Route Detection | ✅ usePathname | ✅ activeTab prop | ✅ usePathname |
-| Mutation Observer | ✅ Yes | ✅ Yes | ❌ N/A |
-| File Storage | ❌ API only | ✅ .dev-logs/ | ❌ In-memory |
-| Component Logging | ✅ Optional | ✅ Optional | ✅ Primary |
+| Feature           | Web/Next.js    | Tauri             | React Native   |
+| ----------------- | -------------- | ----------------- | -------------- |
+| DOM Snapshots     | ✅ Full        | ✅ Full           | ❌ N/A         |
+| Route Detection   | ✅ usePathname | ✅ activeTab prop | ✅ usePathname |
+| Mutation Observer | ✅ Yes         | ✅ Yes            | ❌ N/A         |
+| File Storage      | ❌ API only    | ✅ .dev-logs/     | ❌ In-memory   |
+| Component Logging | ✅ Optional    | ✅ Optional       | ✅ Primary     |
 
 ## Next Steps
 

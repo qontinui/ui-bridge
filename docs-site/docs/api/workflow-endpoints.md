@@ -106,13 +106,13 @@ POST /control/workflow/:id/run
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `params` | object | Variable values |
-| `startStep` | string | Step ID to start from |
-| `stopStep` | string | Step ID to stop at |
-| `stepTimeout` | number | Per-step timeout (ms) |
-| `workflowTimeout` | number | Total timeout (ms) |
+| Field             | Type   | Description           |
+| ----------------- | ------ | --------------------- |
+| `params`          | object | Variable values       |
+| `startStep`       | string | Step ID to start from |
+| `stopStep`        | string | Step ID to stop at    |
+| `stepTimeout`     | number | Per-step timeout (ms) |
+| `workflowTimeout` | number | Total timeout (ms)    |
 
 **Response:**
 
@@ -226,13 +226,13 @@ Get status of a running or completed workflow.
 
 ### Status Values
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Not yet started |
-| `running` | Currently executing |
+| Status      | Description           |
+| ----------- | --------------------- |
+| `pending`   | Not yet started       |
+| `running`   | Currently executing   |
 | `completed` | Successfully finished |
-| `failed` | Failed with error |
-| `cancelled` | Manually cancelled |
+| `failed`    | Failed with error     |
+| `cancelled` | Manually cancelled    |
 
 ## Examples
 

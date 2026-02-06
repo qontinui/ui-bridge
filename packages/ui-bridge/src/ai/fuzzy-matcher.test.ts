@@ -375,9 +375,7 @@ describe('FuzzyMatcher', () => {
       const results = findAllMatches('hello', candidates, { threshold: 0.5 });
 
       if (results.length > 1) {
-        expect(results[0].result.similarity).toBeGreaterThanOrEqual(
-          results[1].result.similarity
-        );
+        expect(results[0].result.similarity).toBeGreaterThanOrEqual(results[1].result.similarity);
       }
     });
   });

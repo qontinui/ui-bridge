@@ -28,6 +28,7 @@ import type {
 import { UIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { UIBridgeWSClient, createWSClient } from '../core/websocket-client';
 import { createActionExecutor } from '../control/action-executor';
+import { getGlobalSpecStore } from '../specs/store';
 import { createWorkflowEngine } from '../control/workflow-engine';
 import { createRenderLogManager, RenderLogManager } from '../render-log/snapshot';
 import { createMetricsCollector, MetricsCollector } from '../debug/metrics';
@@ -145,6 +146,17 @@ export function UIBridgeProvider({
         maxReconnectAttempts: 10,
         pingInterval: 30000,
       });
+    }
+
+    // Expose SpecStore on window.__UI_BRIDGE__ for Chrome extension access
+    if (typeof window !== 'undefined') {
+      const w = window as unknown as Record<string, unknown>;
+      if (!w.__UI_BRIDGE__) {
+        w.__UI_BRIDGE__ = {};
+      }
+      (w.__UI_BRIDGE__ as Record<string, unknown>).specs = {
+        getGlobalSpecStore,
+      };
     }
   }
 

@@ -191,20 +191,22 @@ For best results, add `data-ui-id` attributes to your interactive elements:
 ```html
 <button data-ui-id="submit-btn">Submit</button>
 <input data-ui-id="email-input" type="email" />
-<select data-ui-id="country-select">...</select>
+<select data-ui-id="country-select">
+  ...
+</select>
 ```
 
 ## Configuration Options
 
 ### UIBridgeProvider Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `features.control` | boolean | `true` | Enable HTTP control endpoints |
-| `features.renderLog` | boolean | `true` | Enable render logging |
-| `features.debug` | boolean | `false` | Enable debug tools |
-| `config.serverPort` | number | `9876` | Server port (standalone mode) |
-| `config.apiPath` | string | `/ui-bridge` | API path prefix |
+| Prop                 | Type    | Default      | Description                   |
+| -------------------- | ------- | ------------ | ----------------------------- |
+| `features.control`   | boolean | `true`       | Enable HTTP control endpoints |
+| `features.renderLog` | boolean | `true`       | Enable render logging         |
+| `features.debug`     | boolean | `false`      | Enable debug tools            |
+| `config.serverPort`  | number  | `9876`       | Server port (standalone mode) |
+| `config.apiPath`     | string  | `/ui-bridge` | API path prefix               |
 
 ### Python Client Options
 

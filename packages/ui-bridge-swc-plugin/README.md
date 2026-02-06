@@ -6,12 +6,12 @@ SWC plugin for automatic UI Bridge instrumentation. Adds `data-ui-id`, `data-ui-
 
 ## Why SWC Plugin?
 
-| Feature | Babel Plugin | SWC Plugin |
-|---------|-------------|------------|
+| Feature                  | Babel Plugin    | SWC Plugin      |
+| ------------------------ | --------------- | --------------- |
 | Next.js 15 + `next/font` | ❌ Incompatible | ✅ Full support |
-| Build speed | Baseline | 20-70x faster |
-| Same output | ✅ | ✅ |
-| Same config | ✅ | ✅ |
+| Build speed              | Baseline        | 20-70x faster   |
+| Same output              | ✅              | ✅              |
+| Same config              | ✅              | ✅              |
 
 ## Installation
 
@@ -26,18 +26,22 @@ npm install -D @qontinui/ui-bridge-swc-plugin
 module.exports = {
   experimental: {
     swcPlugins: [
-      ['@qontinui/ui-bridge-swc-plugin', {
-        elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
-        idPrefix: 'ui',
-      }]
-    ]
-  }
+      [
+        '@qontinui/ui-bridge-swc-plugin',
+        {
+          elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
+          idPrefix: 'ui',
+        },
+      ],
+    ],
+  },
 };
 ```
 
 ## Example Transformation
 
 **Input:**
+
 ```jsx
 function LoginForm() {
   return (
@@ -51,13 +55,11 @@ function LoginForm() {
 ```
 
 **Output:**
+
 ```jsx
 function LoginForm() {
   return (
-    <form
-      data-ui-id="ui-login-form-form"
-      data-ui-type="form"
-    >
+    <form data-ui-id="ui-login-form-form" data-ui-type="form">
       <input
         placeholder="Email"
         data-ui-id="ui-login-form-email-input"
@@ -86,22 +88,22 @@ function LoginForm() {
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `elements` | `string[]` | `['button', 'input', 'select', 'textarea', 'a', 'form']` | Elements to instrument |
-| `idPrefix` | `string` | `'ui'` | Prefix for generated IDs |
-| `idAttribute` | `string` | `'data-ui-id'` | Attribute name for IDs |
-| `aliasesAttribute` | `string` | `'data-ui-aliases'` | Attribute name for aliases |
-| `typeAttribute` | `string` | `'data-ui-type'` | Attribute name for element type |
-| `generateAliases` | `boolean` | `true` | Generate aliases from text/aria |
-| `includeComponentName` | `boolean` | `true` | Include component name in ID |
-| `includeFilePath` | `boolean` | `false` | Include file path in ID |
-| `hashIds` | `boolean` | `false` | Hash IDs for shorter strings |
-| `maxAliases` | `number` | `5` | Maximum aliases per element |
-| `skipExisting` | `boolean` | `true` | Skip elements with existing data-ui-id |
-| `onlyInComponents` | `string[]` | `[]` | Only instrument in these components |
-| `skipInComponents` | `string[]` | `[]` | Skip instrumentation in these components |
-| `verbose` | `boolean` | `false` | Enable verbose logging |
+| Option                 | Type       | Default                                                  | Description                              |
+| ---------------------- | ---------- | -------------------------------------------------------- | ---------------------------------------- |
+| `elements`             | `string[]` | `['button', 'input', 'select', 'textarea', 'a', 'form']` | Elements to instrument                   |
+| `idPrefix`             | `string`   | `'ui'`                                                   | Prefix for generated IDs                 |
+| `idAttribute`          | `string`   | `'data-ui-id'`                                           | Attribute name for IDs                   |
+| `aliasesAttribute`     | `string`   | `'data-ui-aliases'`                                      | Attribute name for aliases               |
+| `typeAttribute`        | `string`   | `'data-ui-type'`                                         | Attribute name for element type          |
+| `generateAliases`      | `boolean`  | `true`                                                   | Generate aliases from text/aria          |
+| `includeComponentName` | `boolean`  | `true`                                                   | Include component name in ID             |
+| `includeFilePath`      | `boolean`  | `false`                                                  | Include file path in ID                  |
+| `hashIds`              | `boolean`  | `false`                                                  | Hash IDs for shorter strings             |
+| `maxAliases`           | `number`   | `5`                                                      | Maximum aliases per element              |
+| `skipExisting`         | `boolean`  | `true`                                                   | Skip elements with existing data-ui-id   |
+| `onlyInComponents`     | `string[]` | `[]`                                                     | Only instrument in these components      |
+| `skipInComponents`     | `string[]` | `[]`                                                     | Skip instrumentation in these components |
+| `verbose`              | `boolean`  | `false`                                                  | Enable verbose logging                   |
 
 ## How It Works
 
@@ -110,7 +112,7 @@ function LoginForm() {
 3. **Extracts context**: Gets text content, aria-label, placeholder, component name
 4. **Generates ID**: Creates deterministic ID from context
 5. **Generates aliases**: Creates aliases from text and common synonyms
-6. **Injects attributes**: Adds data-ui-* attributes to elements
+6. **Injects attributes**: Adds data-ui-\* attributes to elements
 
 ## Why Auto-Instrumentation for AI?
 
@@ -179,14 +181,14 @@ cp target/wasm32-wasip1/release/ui_bridge_swc_plugin.wasm .
 
 ## Comparison with Babel Plugin
 
-| Aspect | Babel Plugin | SWC Plugin |
-|--------|-------------|------------|
-| Language | TypeScript | Rust |
-| Speed | ~1x | ~20-70x |
-| Next.js 15 + next/font | ❌ | ✅ |
-| Vite/CRA/Webpack | ✅ | ❌ |
-| Config format | Same | Same |
-| Output | Same | Same |
+| Aspect                 | Babel Plugin | SWC Plugin |
+| ---------------------- | ------------ | ---------- |
+| Language               | TypeScript   | Rust       |
+| Speed                  | ~1x          | ~20-70x    |
+| Next.js 15 + next/font | ❌           | ✅         |
+| Vite/CRA/Webpack       | ✅           | ❌         |
+| Config format          | Same         | Same       |
+| Output                 | Same         | Same       |
 
 **Use Babel plugin** for: Vite, Create React App, Webpack, Remix, Next.js 12-14
 

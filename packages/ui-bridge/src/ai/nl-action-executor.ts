@@ -436,7 +436,9 @@ export class NLActionExecutor {
     switch (errorCode) {
       case 'PARSE_ERROR':
         suggestions.push('Try using a simpler phrase like "click Submit button"');
-        suggestions.push('Ensure the instruction follows patterns like "click X" or "type Y into X"');
+        suggestions.push(
+          'Ensure the instruction follows patterns like "click X" or "type Y into X"'
+        );
         break;
 
       case 'ELEMENT_NOT_FOUND':
@@ -492,8 +494,6 @@ export class NLActionExecutor {
 /**
  * Create a default NL action executor
  */
-export function createNLActionExecutor(
-  config?: Partial<NLActionExecutorConfig>
-): NLActionExecutor {
+export function createNLActionExecutor(config?: Partial<NLActionExecutorConfig>): NLActionExecutor {
   return new NLActionExecutor(config);
 }

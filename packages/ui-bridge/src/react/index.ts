@@ -64,13 +64,9 @@ export {
 } from './useUINavigation';
 
 // Auto-registration
-export {
-  useAutoRegister,
-  type AutoRegisterOptions,
-  type IdStrategy,
-} from './useAutoRegister';
+export { useAutoRegister, type AutoRegisterOptions, type IdStrategy } from './useAutoRegister';
 
-export {
-  AutoRegisterProvider,
-  type AutoRegisterProviderProps,
-} from './AutoRegisterProvider';
+export { AutoRegisterProvider, type AutoRegisterProviderProps } from './AutoRegisterProvider';
+
+// Annotation hook
+export { useUIAnnotation } from './useUIAnnotation';

@@ -16,11 +16,11 @@ UI Bridge is a unified framework for AI-driven UI observation, control, and debu
 
 UI Bridge consists of three main packages:
 
-| Package | Registry | Purpose |
-|---------|----------|---------|
-| `ui-bridge` | npm | React hooks and providers |
-| `ui-bridge-server` | npm | HTTP server (Express/Next.js/Standalone) |
-| `ui-bridge-python` | PyPI | Python client library |
+| Package            | Registry | Purpose                                  |
+| ------------------ | -------- | ---------------------------------------- |
+| `ui-bridge`        | npm      | React hooks and providers                |
+| `ui-bridge-server` | npm      | HTTP server (Express/Next.js/Standalone) |
+| `ui-bridge-python` | PyPI     | Python client library                    |
 
 ```
 ┌─────────────────┐     HTTP/WS      ┌──────────────────┐

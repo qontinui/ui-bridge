@@ -149,7 +149,10 @@ function extractWords(text: string): string[] {
 /**
  * Generate aliases from text content
  */
-function generateTextAliases(text: string | null | undefined, config: AliasGeneratorConfig): string[] {
+function generateTextAliases(
+  text: string | null | undefined,
+  config: AliasGeneratorConfig
+): string[] {
   if (!text || !config.includeText) return [];
 
   const aliases: string[] = [];
@@ -271,10 +274,7 @@ export function generateAliases(
   // Helper to add alias with deduplication and length checks
   const addAlias = (alias: string) => {
     const normalized = normalizeAlias(alias);
-    if (
-      normalized.length >= finalConfig.minLength &&
-      normalized.length <= finalConfig.maxLength
-    ) {
+    if (normalized.length >= finalConfig.minLength && normalized.length <= finalConfig.maxLength) {
       aliasSet.add(normalized);
     }
   };
@@ -403,7 +403,9 @@ export function generateDescription(input: AliasGeneratorInput): string {
   }
 
   // Add element type
-  const typeWords = ELEMENT_ACTION_WORDS[input.elementType || ''] || [input.elementType || 'element'];
+  const typeWords = ELEMENT_ACTION_WORDS[input.elementType || ''] || [
+    input.elementType || 'element',
+  ];
   parts.push(typeWords[0]);
 
   // Add input type for inputs

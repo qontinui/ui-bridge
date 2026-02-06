@@ -5,7 +5,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SearchEngine, createSearchEngine, DEFAULT_SEARCH_CONFIG } from './search-engine';
 import type { DiscoveredElement } from '../control/types';
-import type { SearchCriteria } from './types';
 
 // Helper to create mock discovered elements
 function createMockElement(
@@ -499,9 +498,7 @@ describe('SearchEngine', () => {
     });
 
     it('should infer navigation link type', () => {
-      const elements = [
-        createMockElement('home-link', { type: 'link', textContent: 'Home' }),
-      ];
+      const elements = [createMockElement('home-link', { type: 'link', textContent: 'Home' })];
       engine.updateElements(elements);
 
       const response = engine.search({ text: 'Home' });

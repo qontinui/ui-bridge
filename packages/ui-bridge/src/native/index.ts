@@ -110,10 +110,7 @@ export {
   type PressActionParams,
 } from './control/types';
 
-export {
-  DefaultNativeActionExecutor,
-  createNativeActionExecutor,
-} from './control/action-executor';
+export { DefaultNativeActionExecutor, createNativeActionExecutor } from './control/action-executor';
 
 // Server exports
 export {

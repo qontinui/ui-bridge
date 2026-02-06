@@ -39,18 +39,12 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Error Handling & Recovery',
-      items: [
-        'recovery/structured-failure-feedback',
-        'recovery/failure-recovery-strategies',
-      ],
+      items: ['recovery/structured-failure-feedback', 'recovery/failure-recovery-strategies'],
     },
     {
       type: 'category',
       label: 'State Management',
-      items: [
-        'state/state-machine-integration',
-        'state/dynamic-state-discovery',
-      ],
+      items: ['state/state-machine-integration', 'state/dynamic-state-discovery'],
     },
     {
       type: 'category',
@@ -74,32 +68,17 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Platform Guides',
-      items: [
-        'guides/web',
-        'guides/tauri',
-        'guides/mobile',
-        'guides/ai-agent-testing',
-      ],
+      items: ['guides/web', 'guides/tauri', 'guides/mobile', 'guides/ai-agent-testing'],
     },
     {
       type: 'category',
       label: 'Server',
-      items: [
-        'server/overview',
-        'server/express',
-        'server/nextjs',
-        'server/standalone',
-      ],
+      items: ['server/overview', 'server/express', 'server/nextjs', 'server/standalone'],
     },
     {
       type: 'category',
       label: 'Python Client',
-      items: [
-        'python/installation',
-        'python/usage',
-        'python/ai-client',
-        'python/types',
-      ],
+      items: ['python/installation', 'python/usage', 'python/ai-client', 'python/types'],
     },
     {
       type: 'category',
@@ -117,11 +96,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Examples',
-      items: [
-        'examples/react-app',
-        'examples/nextjs-app',
-        'examples/tauri-app',
-      ],
+      items: ['examples/react-app', 'examples/nextjs-app', 'examples/tauri-app'],
     },
   ],
 };

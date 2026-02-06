@@ -30,27 +30,27 @@ console.log('UI Bridge server running on http://localhost:9876');
 ```typescript
 const server = startUIBridgeServer({
   // Server settings
-  port: 9876,              // Default: 9876
-  host: '127.0.0.1',       // Default: '0.0.0.0'
+  port: 9876, // Default: 9876
+  host: '127.0.0.1', // Default: '0.0.0.0'
 
   // Feature flags
   features: {
-    control: true,         // Element control API
-    renderLog: true,       // Render logging
-    debug: true,           // Debug endpoints
+    control: true, // Element control API
+    renderLog: true, // Render logging
+    debug: true, // Debug endpoints
   },
 
   // CORS settings
   cors: {
-    origin: '*',           // Or specific origins
+    origin: '*', // Or specific origins
     credentials: true,
   },
 
   // Logging
   logging: {
-    requests: true,        // Log incoming requests
-    actions: true,         // Log action executions
-    errors: true,          // Log errors
+    requests: true, // Log incoming requests
+    actions: true, // Log action executions
+    errors: true, // Log errors
   },
 });
 ```

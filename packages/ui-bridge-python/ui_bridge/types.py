@@ -175,7 +175,7 @@ class ActionFailureDetails(BaseModel):
     element_id: str | None = Field(None, alias="elementId")
     selectors_tried: list[str] | None = Field(None, alias="selectorsTried")
     partial_matches: list[PartialMatch] | None = Field(None, alias="partialMatches")
-    element_state: "ElementState | None" = Field(None, alias="elementState")
+    element_state: ElementState | None = Field(None, alias="elementState")
     screenshot_context: str | None = Field(None, alias="screenshotContext")
     suggested_actions: list[RecoveryAction] = Field(alias="suggestedActions")
     retry_recommended: bool = Field(alias="retryRecommended")
@@ -348,7 +348,7 @@ class DiscoveredElement(BaseModel):
     actions: list[str]
     state: ElementState
     registered: bool
-    accessibility: "ElementAccessibility | None" = Field(
+    accessibility: ElementAccessibility | None = Field(
         None, description="Full accessibility information for the element"
     )
 
@@ -756,9 +756,7 @@ class AccessibilityIssue(BaseModel):
         description="The WCAG success criterion this issue relates to",
     )
     severity: AccessibilitySeverity = Field(description="How severe this issue is")
-    level: WCAGLevel = Field(
-        description="WCAG conformance level this criterion belongs to"
-    )
+    level: WCAGLevel = Field(description="WCAG conformance level this criterion belongs to")
     message: str = Field(description="Human-readable description of the issue")
     element_id: str = Field(alias="elementId", description="ID of the element with the issue")
     element_selector: str | None = Field(
@@ -793,6 +791,110 @@ class AccessibilityReport(BaseModel):
     duration_ms: float = Field(
         alias="durationMs", description="Duration of the validation in milliseconds"
     )
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Annotation Types
+# ============================================================================
+
+
+class ElementAnnotation(BaseModel):
+    """Semantic annotation for a UI element.
+
+    All fields are optional - annotate only what's useful. Annotations provide
+    human-authored context that enriches the UI Bridge's understanding of
+    elements beyond what can be inferred from the DOM.
+
+    Attributes:
+        description: Human-readable description of what this element is.
+        purpose: Why this element exists and what it is for.
+        notes: Behavioral notes, edge cases, or caveats.
+        tags: Searchable tags for categorization (e.g., ``['auth', 'form']``).
+        related_elements: IDs of related elements (e.g., a label and its input).
+        metadata: Arbitrary key-value metadata.
+        updated_at: Timestamp of last update (auto-set by the server).
+        author: Author of this annotation.
+
+    Example:
+        >>> annotation = ElementAnnotation(
+        ...     description='Primary login button',
+        ...     purpose='Submits the login form and authenticates the user',
+        ...     tags=['auth', 'primary-action'],
+        ...     related_elements=['email-input', 'password-input'],
+        ... )
+    """
+
+    description: str | None = None
+    purpose: str | None = None
+    notes: str | None = None
+    tags: list[str] | None = None
+    related_elements: list[str] | None = Field(None, alias="relatedElements")
+    metadata: dict[str, Any] | None = None
+    updated_at: int | None = Field(None, alias="updatedAt")
+    author: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class AnnotationConfig(BaseModel):
+    """Annotation configuration file format for import/export.
+
+    This is the standard format for persisting annotations to JSON files.
+    Use ``client.annotations.export_config()`` to generate and
+    ``client.annotations.import_config()`` to load.
+
+    Attributes:
+        version: Config format version (currently ``"1.0.0"``).
+        annotations: Map of element ID to its ``ElementAnnotation``.
+        metadata: Optional file-level metadata (app name, export timestamp, etc.).
+
+    Example:
+        >>> config = AnnotationConfig(
+        ...     version='1.0.0',
+        ...     annotations={
+        ...         'login-btn': ElementAnnotation(description='Login button'),
+        ...         'email-input': ElementAnnotation(description='Email field'),
+        ...     },
+        ...     metadata={'appName': 'MyApp'},
+        ... )
+    """
+
+    version: str
+    annotations: dict[str, ElementAnnotation]
+    metadata: dict[str, Any] | None = None
+
+
+class AnnotationCoverage(BaseModel):
+    """Annotation coverage statistics.
+
+    Reports how many UI elements have been annotated out of the total
+    registered elements. Useful for tracking annotation completeness.
+
+    Attributes:
+        total_elements: Total number of elements known to the UI Bridge.
+        annotated_elements: Number of elements that have annotations.
+        coverage_percent: Coverage as a percentage (0-100).
+        annotated_ids: IDs of elements that have annotations.
+        unannotated_ids: IDs of elements missing annotations.
+        timestamp: When this coverage was computed (epoch ms).
+
+    Example:
+        >>> cov = client.annotations.coverage()
+        >>> print(f"{cov.annotated_elements}/{cov.total_elements} "
+        ...       f"({cov.coverage_percent:.1f}%)")
+        5/20 (25.0%)
+        >>> for element_id in cov.unannotated_ids[:3]:
+        ...     print(f"  Missing: {element_id}")
+    """
+
+    total_elements: int = Field(alias="totalElements")
+    annotated_elements: int = Field(alias="annotatedElements")
+    coverage_percent: float = Field(alias="coveragePercent")
+    annotated_ids: list[str] = Field(alias="annotatedIds")
+    unannotated_ids: list[str] = Field(alias="unannotatedIds")
+    timestamp: int
 
     model_config = {"populate_by_name": True}
 

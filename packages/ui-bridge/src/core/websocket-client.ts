@@ -375,10 +375,7 @@ export class UIBridgeWSClient {
   /**
    * Add event listener
    */
-  onEvent(
-    eventType: BridgeEventType | '*',
-    listener: (event: BridgeEvent) => void
-  ): () => void {
+  onEvent(eventType: BridgeEventType | '*', listener: (event: BridgeEvent) => void): () => void {
     if (!this.eventListeners.has(eventType)) {
       this.eventListeners.set(eventType, new Set());
     }

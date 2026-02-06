@@ -32,23 +32,26 @@ app.listen(3000, () => {
 ## Configuration
 
 ```typescript
-app.use('/ui-bridge', uiBridgeMiddleware({
-  // Enable/disable features
-  features: {
-    control: true,
-    renderLog: true,
-    debug: process.env.NODE_ENV === 'development',
-  },
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware({
+    // Enable/disable features
+    features: {
+      control: true,
+      renderLog: true,
+      debug: process.env.NODE_ENV === 'development',
+    },
 
-  // CORS configuration
-  cors: {
-    origin: ['http://localhost:3000', 'http://localhost:5173'],
-    credentials: true,
-  },
+    // CORS configuration
+    cors: {
+      origin: ['http://localhost:3000', 'http://localhost:5173'],
+      credentials: true,
+    },
 
-  // Request logging
-  logging: true,
-}));
+    // Request logging
+    logging: true,
+  })
+);
 ```
 
 ## With Authentication
@@ -96,9 +99,12 @@ If your Express server renders the React app:
 import { getGlobalRegistry } from 'ui-bridge';
 import { uiBridgeMiddleware } from 'ui-bridge-server/express';
 
-app.use('/ui-bridge', uiBridgeMiddleware({
-  registry: getGlobalRegistry(),
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware({
+    registry: getGlobalRegistry(),
+  })
+);
 ```
 
 ### Option 2: WebSocket Bridge
@@ -110,9 +116,12 @@ import { uiBridgeMiddleware, createWebSocketBridge } from 'ui-bridge-server/expr
 
 const wss = createWebSocketBridge({ port: 9877 });
 
-app.use('/ui-bridge', uiBridgeMiddleware({
-  bridge: wss,
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware({
+    bridge: wss,
+  })
+);
 ```
 
 In React:
@@ -128,15 +137,18 @@ In React:
 ## Error Handling
 
 ```typescript
-app.use('/ui-bridge', uiBridgeMiddleware({
-  onError: (error, req, res) => {
-    console.error('UI Bridge error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  },
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware({
+    onError: (error, req, res) => {
+      console.error('UI Bridge error:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    },
+  })
+);
 ```
 
 ## TypeScript
@@ -145,10 +157,7 @@ Full TypeScript support:
 
 ```typescript
 import express, { Request, Response } from 'express';
-import {
-  uiBridgeMiddleware,
-  UIBridgeMiddlewareOptions,
-} from 'ui-bridge-server/express';
+import { uiBridgeMiddleware, UIBridgeMiddlewareOptions } from 'ui-bridge-server/express';
 
 const options: UIBridgeMiddlewareOptions = {
   features: {
@@ -179,14 +188,17 @@ app.get('/api/health', (req, res) => {
 });
 
 // UI Bridge
-app.use('/ui-bridge', uiBridgeMiddleware({
-  features: {
-    control: true,
-    renderLog: true,
-    debug: process.env.NODE_ENV === 'development',
-  },
-  logging: true,
-}));
+app.use(
+  '/ui-bridge',
+  uiBridgeMiddleware({
+    features: {
+      control: true,
+      renderLog: true,
+      debug: process.env.NODE_ENV === 'development',
+    },
+    logging: true,
+  })
+);
 
 // Error handling
 app.use((err, req, res, next) => {

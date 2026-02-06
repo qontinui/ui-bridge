@@ -5,7 +5,7 @@
  * with data-ui-id, data-ui-type, and data-ui-aliases attributes.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { transformSync } from '@babel/core';
 // Import the babel plugin using relative path since workspaces may not resolve correctly
 import uiBridgeBabelPlugin from '../packages/ui-bridge-babel-plugin/src/index';
@@ -107,7 +107,7 @@ describe('Babel Plugin: data-ui-id generation', () => {
 
     // Extract all IDs
     const idMatches = output.match(/data-ui-id="([^"]+)"/g) || [];
-    const ids = idMatches.map(m => m.match(/data-ui-id="([^"]+)"/)![1]);
+    const ids = idMatches.map((m) => m.match(/data-ui-id="([^"]+)"/)![1]);
 
     // All IDs should be unique
     const uniqueIds = new Set(ids);

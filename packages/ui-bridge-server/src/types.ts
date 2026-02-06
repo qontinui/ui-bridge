@@ -130,7 +130,13 @@ export interface UIBridgeServerHandlers {
   // Component endpoints
   getComponents: () => Promise<APIResponse<ControlSnapshot['components']>>;
   getComponent: (id: string) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
-  getComponentState: (id: string) => Promise<APIResponse<{ state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number }>>;
+  getComponentState: (id: string) => Promise<
+    APIResponse<{
+      state: Record<string, unknown>;
+      computed: Record<string, unknown>;
+      timestamp: number;
+    }>
+  >;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest
@@ -168,7 +174,9 @@ export interface UIBridgeServerHandlers {
   getPageSummary: () => Promise<APIResponse<string>>;
 
   // Semantic search (embedding-based)
-  aiSemanticSearch: (criteria: SemanticSearchCriteria) => Promise<APIResponse<SemanticSearchResponse>>;
+  aiSemanticSearch: (
+    criteria: SemanticSearchCriteria
+  ) => Promise<APIResponse<SemanticSearchResponse>>;
 }
 
 /**
@@ -207,7 +215,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Control - Components
   { method: 'GET', path: '/control/components', handler: 'getComponents' },
   { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
-  { method: 'GET', path: '/control/component/:id/state', handler: 'getComponentState', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/component/:id/state',
+    handler: 'getComponentState',
+    params: ['id'],
+  },
   {
     method: 'POST',
     path: '/control/component/:id/action/:actionId',

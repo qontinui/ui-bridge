@@ -43,12 +43,7 @@ function SubmitButton({ onPress }) {
   });
 
   return (
-    <Pressable
-      ref={ref}
-      onLayout={onLayout}
-      {...bridgeProps}
-      onPress={onPress}
-    >
+    <Pressable ref={ref} onLayout={onLayout} {...bridgeProps} onPress={onPress}>
       <Text>Submit</Text>
     </Pressable>
   );
@@ -81,14 +76,14 @@ Register individual elements for control.
 ```tsx
 const { ref, onLayout, bridgeProps, trigger, getState } = useUIElement({
   id: 'my-element',
-  type: 'button',      // or 'input', 'text', 'view', etc.
-  label: 'My Button',  // Human-readable label
+  type: 'button', // or 'input', 'text', 'view', etc.
+  label: 'My Button', // Human-readable label
 });
 
 // Spread onto your component
 <Pressable ref={ref} onLayout={onLayout} {...bridgeProps}>
   <Text>Click Me</Text>
-</Pressable>
+</Pressable>;
 ```
 
 ### useUIElementWithProps
@@ -110,7 +105,7 @@ captureProps({ onChangeText, value });
   {...bridgeProps}
   value={value}
   onChangeText={onChangeText}
-/>
+/>;
 ```
 
 ### useUIComponent
@@ -148,14 +143,7 @@ useUIComponent({
 Access bridge functionality from any component.
 
 ```tsx
-const {
-  available,
-  elements,
-  components,
-  executeAction,
-  find,
-  createSnapshot,
-} = useUIBridge();
+const { available, elements, components, executeAction, find, createSnapshot } = useUIBridge();
 
 // Find all buttons
 const buttons = await find({ types: ['button'] });
@@ -208,16 +196,16 @@ The package includes an embedded HTTP server for external control. Configure wit
 
 ### API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/ui-bridge/health` | Health check |
-| GET | `/ui-bridge/control/elements` | List all elements |
-| GET | `/ui-bridge/control/element/:id` | Get element details |
-| POST | `/ui-bridge/control/element/:id/action` | Execute action |
-| GET | `/ui-bridge/control/components` | List all components |
-| POST | `/ui-bridge/control/component/:id/action/:actionId` | Execute component action |
-| POST | `/ui-bridge/control/find` | Find elements |
-| GET | `/ui-bridge/control/snapshot` | Get full snapshot |
+| Method | Path                                                | Description              |
+| ------ | --------------------------------------------------- | ------------------------ |
+| GET    | `/ui-bridge/health`                                 | Health check             |
+| GET    | `/ui-bridge/control/elements`                       | List all elements        |
+| GET    | `/ui-bridge/control/element/:id`                    | Get element details      |
+| POST   | `/ui-bridge/control/element/:id/action`             | Execute action           |
+| GET    | `/ui-bridge/control/components`                     | List all components      |
+| POST   | `/ui-bridge/control/component/:id/action/:actionId` | Execute component action |
+| POST   | `/ui-bridge/control/find`                           | Find elements            |
+| GET    | `/ui-bridge/control/snapshot`                       | Get full snapshot        |
 
 ### Custom Server Adapter
 
@@ -248,11 +236,7 @@ function App() {
 Full TypeScript support included. Import types as needed:
 
 ```tsx
-import type {
-  NativeElementState,
-  NativeElementType,
-  UseUIElementOptions,
-} from 'ui-bridge-native';
+import type { NativeElementState, NativeElementType, UseUIElementOptions } from 'ui-bridge-native';
 ```
 
 ## License

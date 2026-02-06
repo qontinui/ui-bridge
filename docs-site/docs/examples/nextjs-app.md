@@ -9,6 +9,7 @@ A Next.js application demonstrating UI Bridge integration with App Router.
 ## Overview
 
 This example shows how to:
+
 - Set up UIBridgeProvider in a Next.js layout
 - Create API routes for UI Bridge
 - Use client components for interactivity
@@ -76,19 +77,11 @@ export const DELETE = handler;
 ```tsx title="app/layout.tsx"
 import { UIBridgeProvider } from 'ui-bridge';
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <UIBridgeProvider
-          config={{ apiPath: '/api/ui-bridge' }}
-        >
-          {children}
-        </UIBridgeProvider>
+        <UIBridgeProvider config={{ apiPath: '/api/ui-bridge' }}>{children}</UIBridgeProvider>
       </body>
     </html>
   );
@@ -210,6 +203,7 @@ client.component('contact-form').action('submit', {
 ## Development vs Production
 
 For production, consider:
+
 - Adding authentication to API routes
 - Disabling debug features
 - Using environment variables for feature flags

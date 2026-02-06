@@ -4,19 +4,10 @@
  * Factory function to create handler implementations for all UI Bridge endpoints.
  */
 
-import type {
-  UIBridgeServerHandlers,
-  APIResponse,
-  RenderLogQuery,
-} from './types';
-import type {
-  ControlSnapshot,
-} from '../control';
+import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
+import type { ControlSnapshot } from '../control';
 import type { RenderLogEntry } from '../render-log';
-import type {
-  ActionFailureDetails,
-  ActionErrorCode,
-} from '../core';
+import type { ActionFailureDetails, ActionErrorCode } from '../core';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -41,6 +32,8 @@ import {
   SemanticDiffManager,
   generatePageSummary,
 } from '../ai';
+import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
+import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -50,7 +43,11 @@ export interface RegistryLike {
   getElement(id: string): unknown | undefined;
   getAllComponents(): unknown[];
   getComponent(id: string): unknown | undefined;
-  getComponentState?(id: string): { state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number } | null;
+  getComponentState?(id: string): {
+    state: Record<string, unknown>;
+    computed: Record<string, unknown>;
+    timestamp: number;
+  } | null;
   createSnapshot(): ControlSnapshot;
   getRenderLog?(): RenderLogEntry[];
   clearRenderLog?(): void;
@@ -86,6 +83,8 @@ export interface CreateHandlersConfig {
   renderLogPath?: string;
   /** Verbose logging */
   verbose?: boolean;
+  /** Optional annotation store (defaults to global singleton) */
+  annotationStore?: AnnotationStore;
 }
 
 /**
@@ -123,49 +122,125 @@ function getRecoverySuggestions(errorCode: ActionErrorCode): Array<{
   switch (errorCode) {
     case 'ELEMENT_NOT_FOUND':
       return [
-        { suggestion: 'Wait for the page to fully load', command: 'wait for page to load', confidence: 0.7, retryable: true },
-        { suggestion: 'Use a different description for the element', confidence: 0.8, retryable: false },
-        { suggestion: 'Scroll the page to reveal the element', command: 'scroll down', confidence: 0.6, retryable: true },
+        {
+          suggestion: 'Wait for the page to fully load',
+          command: 'wait for page to load',
+          confidence: 0.7,
+          retryable: true,
+        },
+        {
+          suggestion: 'Use a different description for the element',
+          confidence: 0.8,
+          retryable: false,
+        },
+        {
+          suggestion: 'Scroll the page to reveal the element',
+          command: 'scroll down',
+          confidence: 0.6,
+          retryable: true,
+        },
       ];
     case 'ELEMENT_NOT_VISIBLE':
       return [
-        { suggestion: 'Scroll to make the element visible', command: 'scroll to element', confidence: 0.9, retryable: true },
-        { suggestion: 'Wait for any loading overlays to disappear', confidence: 0.7, retryable: true },
-        { suggestion: 'Close any blocking modals or popups', command: 'click close button', confidence: 0.8, retryable: true },
+        {
+          suggestion: 'Scroll to make the element visible',
+          command: 'scroll to element',
+          confidence: 0.9,
+          retryable: true,
+        },
+        {
+          suggestion: 'Wait for any loading overlays to disappear',
+          confidence: 0.7,
+          retryable: true,
+        },
+        {
+          suggestion: 'Close any blocking modals or popups',
+          command: 'click close button',
+          confidence: 0.8,
+          retryable: true,
+        },
       ];
     case 'ELEMENT_NOT_ENABLED':
       return [
         { suggestion: 'Fill in required fields first', confidence: 0.8, retryable: false },
-        { suggestion: 'Complete prerequisite steps in the form', confidence: 0.7, retryable: false },
-        { suggestion: 'Wait for the element to become enabled', command: 'wait for element to be enabled', confidence: 0.6, retryable: true },
+        {
+          suggestion: 'Complete prerequisite steps in the form',
+          confidence: 0.7,
+          retryable: false,
+        },
+        {
+          suggestion: 'Wait for the element to become enabled',
+          command: 'wait for element to be enabled',
+          confidence: 0.6,
+          retryable: true,
+        },
       ];
     case 'ELEMENT_NOT_INTERACTABLE':
       return [
-        { suggestion: 'Close any modal or popup blocking the element', command: 'click close button', confidence: 0.9, retryable: true },
+        {
+          suggestion: 'Close any modal or popup blocking the element',
+          command: 'click close button',
+          confidence: 0.9,
+          retryable: true,
+        },
         { suggestion: 'Wait for animations to complete', confidence: 0.7, retryable: true },
-        { suggestion: 'Scroll the element into the viewport', command: 'scroll to element', confidence: 0.8, retryable: true },
+        {
+          suggestion: 'Scroll the element into the viewport',
+          command: 'scroll to element',
+          confidence: 0.8,
+          retryable: true,
+        },
       ];
     case 'ACTION_TIMEOUT':
       return [
         { suggestion: 'Increase the timeout duration', confidence: 0.8, retryable: true },
         { suggestion: 'Check if the condition can ever be met', confidence: 0.7, retryable: false },
-        { suggestion: 'Verify the page is responding', command: 'check page status', confidence: 0.6, retryable: true },
+        {
+          suggestion: 'Verify the page is responding',
+          command: 'check page status',
+          confidence: 0.6,
+          retryable: true,
+        },
       ];
     case 'LOW_CONFIDENCE':
       return [
-        { suggestion: 'Use the exact text shown on the element', confidence: 0.9, retryable: false },
-        { suggestion: 'Try a different description that more closely matches the element', confidence: 0.8, retryable: false },
-        { suggestion: 'Lower the confidence threshold if the match is correct', confidence: 0.7, retryable: true },
+        {
+          suggestion: 'Use the exact text shown on the element',
+          confidence: 0.9,
+          retryable: false,
+        },
+        {
+          suggestion: 'Try a different description that more closely matches the element',
+          confidence: 0.8,
+          retryable: false,
+        },
+        {
+          suggestion: 'Lower the confidence threshold if the match is correct',
+          confidence: 0.7,
+          retryable: true,
+        },
       ];
     case 'AMBIGUOUS_MATCH':
       return [
-        { suggestion: 'Be more specific about which element you mean', confidence: 0.9, retryable: false },
-        { suggestion: 'Include the section or form name in the description', confidence: 0.8, retryable: false },
+        {
+          suggestion: 'Be more specific about which element you mean',
+          confidence: 0.9,
+          retryable: false,
+        },
+        {
+          suggestion: 'Include the section or form name in the description',
+          confidence: 0.8,
+          retryable: false,
+        },
         { suggestion: 'Use the element ID directly', confidence: 0.7, retryable: false },
       ];
     default:
       return [
-        { suggestion: 'Try a different approach or check the page state', confidence: 0.5, retryable: false },
+        {
+          suggestion: 'Try a different approach or check the page state',
+          confidence: 0.5,
+          retryable: false,
+        },
       ];
   }
 }
@@ -238,6 +313,9 @@ export function createHandlers(
   const assertionExecutor = new AssertionExecutor();
   const snapshotManager = new SemanticSnapshotManager();
   const diffManager = new SemanticDiffManager();
+
+  // Annotation store
+  const annotationStore = config.annotationStore ?? getGlobalAnnotationStore();
 
   // Helper to get fresh elements and update AI modules
   function refreshElements(): void {
@@ -317,10 +395,14 @@ export function createHandlers(
       try {
         const element = registry.getElement(id);
         if (!element) {
-          const failureDetails = createFailureDetails('ELEMENT_NOT_FOUND', `Element not found: ${id}`, {
-            elementId: id,
-            selectorsTried: [id],
-          });
+          const failureDetails = createFailureDetails(
+            'ELEMENT_NOT_FOUND',
+            `Element not found: ${id}`,
+            {
+              elementId: id,
+              selectorsTried: [id],
+            }
+          );
           return {
             success: false,
             error: `Element not found: ${id}`,
@@ -356,11 +438,15 @@ export function createHandlers(
         // Check if element exists first
         const element = registry.getElement(id);
         if (!element) {
-          const failureDetails = createFailureDetails('ELEMENT_NOT_FOUND', `Element not found: ${id}`, {
-            elementId: id,
-            selectorsTried: [id],
-            durationMs: Date.now() - startTime,
-          });
+          const failureDetails = createFailureDetails(
+            'ELEMENT_NOT_FOUND',
+            `Element not found: ${id}`,
+            {
+              elementId: id,
+              selectorsTried: [id],
+              durationMs: Date.now() - startTime,
+            }
+          );
           return {
             success: false,
             error: `Element not found: ${id}`,
@@ -384,7 +470,11 @@ export function createHandlers(
 
         // If the action executor returned a failure, enhance with structured details
         if (result && typeof result === 'object' && 'success' in result && !result.success) {
-          const actionResult = result as { success: boolean; error?: string; elementState?: unknown };
+          const actionResult = result as {
+            success: boolean;
+            error?: string;
+            elementState?: unknown;
+          };
           // Determine error code based on error message
           let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
           const errorMsg = actionResult.error?.toLowerCase() || '';
@@ -401,10 +491,14 @@ export function createHandlers(
             errorCode = 'ELEMENT_NOT_INTERACTABLE';
           }
 
-          const failureDetails = createFailureDetails(errorCode, actionResult.error || 'Action failed', {
-            elementId: id,
-            durationMs: Date.now() - startTime,
-          });
+          const failureDetails = createFailureDetails(
+            errorCode,
+            actionResult.error || 'Action failed',
+            {
+              elementId: id,
+              durationMs: Date.now() - startTime,
+            }
+          );
 
           return success({
             ...actionResult,
@@ -471,7 +565,15 @@ export function createHandlers(
       }
     },
 
-    getComponentState: async (id: string): Promise<APIResponse<{ state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number }>> => {
+    getComponentState: async (
+      id: string
+    ): Promise<
+      APIResponse<{
+        state: Record<string, unknown>;
+        computed: Record<string, unknown>;
+        timestamp: number;
+      }>
+    > => {
       try {
         // First check if the component exists
         const component = registry.getComponent(id);
@@ -489,7 +591,10 @@ export function createHandlers(
         }
 
         // Fallback: component exists but doesn't expose state
-        const comp = component as { getState?: () => Record<string, unknown>; getComputed?: () => Record<string, unknown> };
+        const comp = component as {
+          getState?: () => Record<string, unknown>;
+          getComputed?: () => Record<string, unknown>;
+        };
         return success({
           state: comp.getState?.() ?? {},
           computed: comp.getComputed?.() ?? {},
@@ -521,9 +626,16 @@ export function createHandlers(
 
     find: async (request?: unknown) => {
       try {
-        const findRequest = request as { types?: string[]; selector?: string; limit?: number } | undefined;
+        const findRequest = request as
+          | { types?: string[]; selector?: string; limit?: number }
+          | undefined;
         const elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
-        return success({ elements, timestamp: Date.now(), total: (elements as unknown[]).length, durationMs: 0 }) as APIResponse<any>;
+        return success({
+          elements,
+          timestamp: Date.now(),
+          total: (elements as unknown[]).length,
+          durationMs: 0,
+        }) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'FIND_ERROR');
       }
@@ -532,9 +644,16 @@ export function createHandlers(
     discover: async (request?: unknown) => {
       // Deprecated, delegates to find
       try {
-        const findRequest = request as { types?: string[]; selector?: string; limit?: number } | undefined;
+        const findRequest = request as
+          | { types?: string[]; selector?: string; limit?: number }
+          | undefined;
         const elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
-        return success({ elements, timestamp: Date.now(), total: (elements as unknown[]).length, durationMs: 0 }) as APIResponse<any>;
+        return success({
+          elements,
+          timestamp: Date.now(),
+          total: (elements as unknown[]).length,
+          durationMs: 0,
+        }) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'DISCOVER_ERROR');
       }
@@ -562,10 +681,7 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (
-      id: string,
-      _request?: unknown
-    ) => {
+    runWorkflow: async (id: string, _request?: unknown) => {
       try {
         const workflow = registry.getWorkflow?.(id);
         if (!workflow) {
@@ -684,7 +800,9 @@ export function createHandlers(
       }
     },
 
-    aiAssertBatch: async (request: BatchAssertionRequest): Promise<APIResponse<BatchAssertionResult>> => {
+    aiAssertBatch: async (
+      request: BatchAssertionRequest
+    ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
         // Refresh elements before batch assertion
         refreshElements();
@@ -723,7 +841,7 @@ export function createHandlers(
       try {
         const snapshot = registry.createSnapshot();
         // Convert snapshot elements to AI elements format for summary
-        const elements = snapshot.elements.map(el => ({
+        const elements = snapshot.elements.map((el) => ({
           ...el,
           description: el.label || el.id,
           aliases: [],
@@ -743,7 +861,95 @@ export function createHandlers(
     // Semantic Search Handler (Embedding-based)
     // =========================================================================
 
-    aiSemanticSearch: async (criteria: SemanticSearchCriteria): Promise<APIResponse<SemanticSearchResponse>> => {
+    // =========================================================================
+    // Annotation Handlers
+    //
+    // REST API endpoints for managing element annotations:
+    //   GET    /annotations           - List all annotations
+    //   GET    /annotations/export    - Export all annotations as AnnotationConfig
+    //   GET    /annotations/coverage  - Get annotation coverage statistics
+    //   GET    /annotations/:id       - Get annotation for a specific element
+    //   PUT    /annotations/:id       - Create or update an annotation
+    //   DELETE /annotations/:id       - Delete an annotation
+    //   POST   /annotations/import    - Import annotations from AnnotationConfig
+    // =========================================================================
+
+    getAnnotations: async (): Promise<APIResponse<Record<string, ElementAnnotation>>> => {
+      try {
+        return success(annotationStore.getAll());
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATIONS_ERROR');
+      }
+    },
+
+    getAnnotation: async (id: string): Promise<APIResponse<ElementAnnotation>> => {
+      try {
+        const annotation = annotationStore.get(id);
+        if (!annotation) {
+          return error(`Annotation not found: ${id}`, 'NOT_FOUND');
+        }
+        return success(annotation);
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_ERROR');
+      }
+    },
+
+    setAnnotation: async (
+      id: string,
+      annotation: ElementAnnotation
+    ): Promise<APIResponse<ElementAnnotation>> => {
+      try {
+        annotationStore.set(id, annotation);
+        return success(annotationStore.get(id)!);
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_SET_ERROR');
+      }
+    },
+
+    deleteAnnotation: async (id: string): Promise<APIResponse<void>> => {
+      try {
+        const existed = annotationStore.delete(id);
+        if (!existed) {
+          return error(`Annotation not found: ${id}`, 'NOT_FOUND');
+        }
+        return success(undefined);
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_DELETE_ERROR');
+      }
+    },
+
+    importAnnotations: async (
+      config: AnnotationConfig
+    ): Promise<APIResponse<{ count: number }>> => {
+      try {
+        const count = annotationStore.importConfig(config);
+        return success({ count });
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_IMPORT_ERROR');
+      }
+    },
+
+    exportAnnotations: async (): Promise<APIResponse<AnnotationConfig>> => {
+      try {
+        return success(annotationStore.exportConfig());
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_EXPORT_ERROR');
+      }
+    },
+
+    getAnnotationCoverage: async (): Promise<APIResponse<AnnotationCoverage>> => {
+      try {
+        const allElements = registry.getAllElements() as Array<{ id: string }>;
+        const allIds = allElements.map((el) => el.id);
+        return success(annotationStore.getCoverage(allIds));
+      } catch (err) {
+        return error((err as Error).message, 'ANNOTATION_COVERAGE_ERROR');
+      }
+    },
+
+    aiSemanticSearch: async (
+      criteria: SemanticSearchCriteria
+    ): Promise<APIResponse<SemanticSearchResponse>> => {
       const startTime = performance.now();
       try {
         // Refresh elements for search
@@ -753,46 +959,48 @@ export function createHandlers(
         const allElements = registry.getAllElements() as any[];
 
         // Convert to AI discovered elements for semantic search
-        const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(el => {
-          // Build searchable text from element properties
-          const textParts: string[] = [];
+        const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(
+          (el) => {
+            // Build searchable text from element properties
+            const textParts: string[] = [];
 
-          // Prioritize description and accessible name for semantic matching
-          const state = 'getState' in el ? (el as any).getState() : el.state;
-          const textContent = state?.textContent || '';
-          const label = el.label || '';
-          const accessibleName = el.accessibleName || '';
-          const placeholder = el.placeholder || '';
-          const title = el.title || '';
+            // Prioritize description and accessible name for semantic matching
+            const state = 'getState' in el ? (el as any).getState() : el.state;
+            const textContent = state?.textContent || '';
+            const label = el.label || '';
+            const accessibleName = el.accessibleName || '';
+            const placeholder = el.placeholder || '';
+            const title = el.title || '';
 
-          if (label) textParts.push(label);
-          if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
-          if (textContent && textContent !== label && textContent !== accessibleName) {
-            textParts.push(textContent);
+            if (label) textParts.push(label);
+            if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
+            if (textContent && textContent !== label && textContent !== accessibleName) {
+              textParts.push(textContent);
+            }
+            if (placeholder) textParts.push(`placeholder: ${placeholder}`);
+            if (title) textParts.push(title);
+
+            const combinedText = textParts.join(' ').trim() || el.id;
+
+            return {
+              element: {
+                id: el.id,
+                type: el.type,
+                label: el.label,
+                tagName: el.tagName || el.type,
+                role: el.role,
+                accessibleName: el.accessibleName,
+                actions: el.actions || [],
+                state: state || {},
+                registered: true,
+                description: label || el.id,
+                aliases: [],
+                suggestedActions: [],
+              } as AIDiscoveredElement,
+              text: combinedText,
+            };
           }
-          if (placeholder) textParts.push(`placeholder: ${placeholder}`);
-          if (title) textParts.push(title);
-
-          const combinedText = textParts.join(' ').trim() || el.id;
-
-          return {
-            element: {
-              id: el.id,
-              type: el.type,
-              label: el.label,
-              tagName: el.tagName || el.type,
-              role: el.role,
-              accessibleName: el.accessibleName,
-              actions: el.actions || [],
-              state: state || {},
-              registered: true,
-              description: label || el.id,
-              aliases: [],
-              suggestedActions: [],
-            } as AIDiscoveredElement,
-            text: combinedText,
-          };
-        });
+        );
 
         // Apply type/role filters if specified
         let filteredElements = aiElements;
@@ -842,7 +1050,7 @@ export function createHandlers(
                   }
                 }
               }
-              similarity = matchCount / queryWords.size * 0.7;
+              similarity = (matchCount / queryWords.size) * 0.7;
             }
           }
 
@@ -856,7 +1064,7 @@ export function createHandlers(
 
         // Filter by threshold and sort by similarity
         const filteredResults = scoredResults
-          .filter(r => r.similarity >= threshold)
+          .filter((r) => r.similarity >= threshold)
           .sort((a, b) => b.similarity - a.similarity)
           .slice(0, limit);
 
@@ -926,7 +1134,12 @@ export function createAIHandlers(
         const response = searchEngine.search(criteria);
         return { success: true, data: response, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'AI_SEARCH_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'AI_SEARCH_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
@@ -936,7 +1149,12 @@ export function createAIHandlers(
         const response = await nlExecutor.execute(request);
         return { success: true, data: response, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'AI_EXECUTE_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'AI_EXECUTE_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
@@ -946,17 +1164,29 @@ export function createAIHandlers(
         const result = await assertionExecutor.assert(request);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'AI_ASSERT_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'AI_ASSERT_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
-    aiAssertBatch: async (request: BatchAssertionRequest): Promise<APIResponse<BatchAssertionResult>> => {
+    aiAssertBatch: async (
+      request: BatchAssertionRequest
+    ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
         refreshElements();
         const result = await assertionExecutor.assertBatch(request);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'AI_ASSERT_BATCH_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'AI_ASSERT_BATCH_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
@@ -966,7 +1196,12 @@ export function createAIHandlers(
         const snapshot = snapshotManager.createSnapshot(controlSnapshot);
         return { success: true, data: snapshot, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'SEMANTIC_SNAPSHOT_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'SEMANTIC_SNAPSHOT_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
@@ -977,7 +1212,12 @@ export function createAIHandlers(
         const diff = diffManager.update(currentSnapshot);
         return { success: true, data: diff, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'SEMANTIC_DIFF_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'SEMANTIC_DIFF_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
 
@@ -985,7 +1225,7 @@ export function createAIHandlers(
       try {
         const snapshot = registry.createSnapshot();
         // Convert snapshot elements to AI elements format for summary
-        const elements = snapshot.elements.map(el => ({
+        const elements = snapshot.elements.map((el) => ({
           ...el,
           description: el.label || el.id,
           aliases: [],
@@ -997,7 +1237,12 @@ export function createAIHandlers(
         const summary = generatePageSummary(elements);
         return { success: true, data: summary, timestamp: Date.now() };
       } catch (err) {
-        return { success: false, error: (err as Error).message, code: 'PAGE_SUMMARY_ERROR', timestamp: Date.now() };
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'PAGE_SUMMARY_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
   };

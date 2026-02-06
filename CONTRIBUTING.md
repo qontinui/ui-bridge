@@ -136,7 +136,7 @@ ui-bridge/
 - Use meaningful variable and function names
 - Add JSDoc comments for public APIs
 
-```typescript
+````typescript
 /**
  * Registers a UI element for control via UI Bridge.
  *
@@ -155,7 +155,7 @@ ui-bridge/
 export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   // Implementation
 }
-```
+````
 
 #### React
 
@@ -249,6 +249,7 @@ describe('useUIElement', () => {
 ### Bug Reports
 
 Include:
+
 - Clear description of the bug
 - Steps to reproduce
 - Expected vs actual behavior
@@ -258,6 +259,7 @@ Include:
 ### Feature Requests
 
 Include:
+
 - Problem statement or use case
 - Proposed solution
 - Example usage

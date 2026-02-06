@@ -27,14 +27,14 @@ Scan the DOM for controllable elements.
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `root` | string | `document` | Root element selector |
-| `interactiveOnly` | boolean | `false` | Only interactive elements |
-| `includeHidden` | boolean | `false` | Include hidden elements |
-| `limit` | number | none | Max elements to return |
-| `types` | string[] | all | Filter by element types |
-| `selector` | string | none | CSS selector filter |
+| Field             | Type     | Default    | Description               |
+| ----------------- | -------- | ---------- | ------------------------- |
+| `root`            | string   | `document` | Root element selector     |
+| `interactiveOnly` | boolean  | `false`    | Only interactive elements |
+| `includeHidden`   | boolean  | `false`    | Include hidden elements   |
+| `limit`           | number   | none       | Max elements to return    |
+| `types`           | string[] | all        | Filter by element types   |
+| `selector`        | string   | none       | CSS selector filter       |
 
 ### Response
 
@@ -95,37 +95,37 @@ Scan the DOM for controllable elements.
 
 ## Discovered Element Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Element identifier |
-| `type` | string | Element type (button, input, etc.) |
-| `label` | string | Registered label (if any) |
-| `tagName` | string | HTML tag name |
-| `role` | string | ARIA role |
-| `accessibleName` | string | Computed accessible name |
-| `actions` | string[] | Available actions |
-| `state` | object | Current element state |
-| `registered` | boolean | If registered with UI Bridge |
+| Field            | Type     | Description                        |
+| ---------------- | -------- | ---------------------------------- |
+| `id`             | string   | Element identifier                 |
+| `type`           | string   | Element type (button, input, etc.) |
+| `label`          | string   | Registered label (if any)          |
+| `tagName`        | string   | HTML tag name                      |
+| `role`           | string   | ARIA role                          |
+| `accessibleName` | string   | Computed accessible name           |
+| `actions`        | string[] | Available actions                  |
+| `state`          | object   | Current element state              |
+| `registered`     | boolean  | If registered with UI Bridge       |
 
 ## Element Types
 
 Discovery returns these element types:
 
-| Type | Elements |
-|------|----------|
-| `button` | `<button>`, `<input type="submit">`, `[role="button"]` |
-| `input` | `<input type="text">`, `<input type="email">`, etc. |
-| `textarea` | `<textarea>` |
-| `select` | `<select>`, `[role="listbox"]` |
-| `checkbox` | `<input type="checkbox">`, `[role="checkbox"]` |
-| `radio` | `<input type="radio">`, `[role="radio"]` |
-| `link` | `<a>`, `[role="link"]` |
-| `form` | `<form>` |
-| `menu` | `[role="menu"]` |
-| `menuitem` | `[role="menuitem"]` |
-| `tab` | `[role="tab"]` |
-| `dialog` | `<dialog>`, `[role="dialog"]` |
-| `custom` | Other interactive elements |
+| Type       | Elements                                               |
+| ---------- | ------------------------------------------------------ |
+| `button`   | `<button>`, `<input type="submit">`, `[role="button"]` |
+| `input`    | `<input type="text">`, `<input type="email">`, etc.    |
+| `textarea` | `<textarea>`                                           |
+| `select`   | `<select>`, `[role="listbox"]`                         |
+| `checkbox` | `<input type="checkbox">`, `[role="checkbox"]`         |
+| `radio`    | `<input type="radio">`, `[role="radio"]`               |
+| `link`     | `<a>`, `[role="link"]`                                 |
+| `form`     | `<form>`                                               |
+| `menu`     | `[role="menu"]`                                        |
+| `menuitem` | `[role="menuitem"]`                                    |
+| `tab`      | `[role="tab"]`                                         |
+| `dialog`   | `<dialog>`, `[role="dialog"]`                          |
+| `custom`   | Other interactive elements                             |
 
 ## Examples
 

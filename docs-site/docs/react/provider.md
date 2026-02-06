@@ -29,9 +29,9 @@ Enable or disable specific features:
 ```tsx
 <UIBridgeProvider
   features={{
-    control: true,      // HTTP control API (default: true)
-    renderLog: true,    // Render logging (default: true)
-    debug: false,       // Debug tools (default: false)
+    control: true, // HTTP control API (default: true)
+    renderLog: true, // Render logging (default: true)
+    debug: false, // Debug tools (default: false)
   }}
 >
   <App />
@@ -45,8 +45,8 @@ Configure the server settings:
 ```tsx
 <UIBridgeProvider
   config={{
-    serverPort: 9876,        // Server port (default: 9876)
-    apiPath: '/ui-bridge',   // API path prefix (default: '/ui-bridge')
+    serverPort: 9876, // Server port (default: 9876)
+    apiPath: '/ui-bridge', // API path prefix (default: '/ui-bridge')
   }}
 >
   <App />
@@ -71,14 +71,14 @@ Enable debug features in development:
 
 ## Props Reference
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `features.control` | `boolean` | `true` | Enable HTTP control endpoints |
-| `features.renderLog` | `boolean` | `true` | Enable render logging |
-| `features.debug` | `boolean` | `false` | Enable debug overlay and tools |
-| `config.serverPort` | `number` | `9876` | Port for standalone server |
-| `config.apiPath` | `string` | `'/ui-bridge'` | API path prefix |
-| `children` | `ReactNode` | - | Child components |
+| Prop                 | Type        | Default        | Description                    |
+| -------------------- | ----------- | -------------- | ------------------------------ |
+| `features.control`   | `boolean`   | `true`         | Enable HTTP control endpoints  |
+| `features.renderLog` | `boolean`   | `true`         | Enable render logging          |
+| `features.debug`     | `boolean`   | `false`        | Enable debug overlay and tools |
+| `config.serverPort`  | `number`    | `9876`         | Port for standalone server     |
+| `config.apiPath`     | `string`    | `'/ui-bridge'` | API path prefix                |
+| `children`           | `ReactNode` | -              | Child components               |
 
 ## Context
 
@@ -159,11 +159,7 @@ export default function RootLayout({ children }) {
   return (
     <html>
       <body>
-        <UIBridgeProvider
-          config={{ apiPath: '/api/ui-bridge' }}
-        >
-          {children}
-        </UIBridgeProvider>
+        <UIBridgeProvider config={{ apiPath: '/api/ui-bridge' }}>{children}</UIBridgeProvider>
       </body>
     </html>
   );

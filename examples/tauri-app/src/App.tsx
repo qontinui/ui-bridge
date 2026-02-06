@@ -199,7 +199,7 @@ function FileManager() {
       )}
 
       {!selectedFile && (
-        <p style={{ color: '#888' }}>No file selected. Click "Open File" to start.</p>
+        <p style={{ color: '#888' }}>No file selected. Click &quot;Open File&quot; to start.</p>
       )}
     </div>
   );
@@ -210,8 +210,8 @@ function App() {
     <div>
       <h1>UI Bridge Tauri Example</h1>
       <p>
-        This example demonstrates UI Bridge integration with Tauri desktop apps.
-        Control this app from Python or any HTTP client.
+        This example demonstrates UI Bridge integration with Tauri desktop apps. Control this app
+        from Python or any HTTP client.
       </p>
 
       <h2>Counter</h2>

@@ -7,18 +7,30 @@
  * - Semantic snapshot and diff detection
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import type { ElementState, StandardAction } from '../core/types';
-import type { DiscoveredElement, ActionExecutor, ControlActionRequest, ControlActionResponse, WaitResult, FindResponse, ControlSnapshot } from '../control/types';
-import type { AIDiscoveredElement, SearchCriteria, NLActionRequest } from './types';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { ElementState } from '../core/types';
+import type {
+  DiscoveredElement,
+  ActionExecutor,
+  ControlActionResponse,
+  WaitResult,
+  FindResponse,
+  ControlSnapshot,
+} from '../control/types';
+import type { NLActionRequest } from './types';
 
 // Import modules under test
 import { parseNLInstruction, describeAction, validateParsedAction } from './nl-action-parser';
 import { NLActionExecutor, createNLActionExecutor } from './nl-action-executor';
 import { SearchEngine, createSearchEngine } from './search-engine';
 import { SemanticSnapshotManager, createSnapshotManager } from './semantic-snapshot';
-import { computeDiff, SemanticDiffManager, hasSignificantChanges, describeDiff } from './semantic-diff';
-import { createErrorContext, ErrorCodes, formatErrorContext, getBestRecoverySuggestion } from './error-context';
+import {
+  computeDiff,
+  SemanticDiffManager,
+  hasSignificantChanges,
+  describeDiff,
+} from './semantic-diff';
+import { createErrorContext, formatErrorContext, getBestRecoverySuggestion } from './error-context';
 
 // ============================================================================
 // Test Fixtures
@@ -493,9 +505,7 @@ describe('AI Module Integration: Error Recovery', () => {
       const partialMatchExecutor = createNLActionExecutor();
       partialMatchExecutor.setActionExecutor(mockActionExecutor);
 
-      const partialMatchElements = [
-        createMockElement('send-msg-btn', 'button', 'Send Message'),
-      ];
+      const partialMatchElements = [createMockElement('send-msg-btn', 'button', 'Send Message')];
       partialMatchExecutor.updateElements(partialMatchElements);
 
       const response = await partialMatchExecutor.execute({
@@ -606,22 +616,14 @@ describe('AI Module Integration: Error Recovery', () => {
         createMockElement('modal-dialog', 'dialog', 'Confirmation Dialog'),
       ];
 
-      const context = createErrorContext(
-        'ELEMENT_BLOCKED',
-        'click Submit',
-        elementsWithDialog
-      );
+      const context = createErrorContext('ELEMENT_BLOCKED', 'click Submit', elementsWithDialog);
 
       expect(context.pageContext.possibleBlockers.length).toBeGreaterThan(0);
       expect(context.pageContext.possibleBlockers[0]).toContain('dialog');
     });
 
     it('should format error context for display', () => {
-      const context = createErrorContext(
-        'ELEMENT_NOT_FOUND',
-        'click Missing',
-        elements
-      );
+      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Missing', elements);
 
       const formatted = formatErrorContext(context);
 
@@ -631,11 +633,7 @@ describe('AI Module Integration: Error Recovery', () => {
     });
 
     it('should provide best recovery suggestion', () => {
-      const context = createErrorContext(
-        'ELEMENT_NOT_FOUND',
-        'click Missing',
-        elements
-      );
+      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Missing', elements);
 
       const bestSuggestion = getBestRecoverySuggestion(context);
 
@@ -647,27 +645,19 @@ describe('AI Module Integration: Error Recovery', () => {
 
   describe('Recovery suggestions quality', () => {
     it('should suggest waiting for page load on not found', () => {
-      const context = createErrorContext(
-        'ELEMENT_NOT_FOUND',
-        'click Loading Button',
-        []
-      );
+      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Loading Button', []);
 
-      const hasWaitSuggestion = context.suggestions.some(
-        (s) => s.action.toLowerCase().includes('wait')
+      const hasWaitSuggestion = context.suggestions.some((s) =>
+        s.action.toLowerCase().includes('wait')
       );
       expect(hasWaitSuggestion).toBe(true);
     });
 
     it('should suggest scrolling when element might be off-screen', () => {
-      const context = createErrorContext(
-        'ELEMENT_NOT_FOUND',
-        'click Bottom Button',
-        elements
-      );
+      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Bottom Button', elements);
 
-      const hasScrollSuggestion = context.suggestions.some(
-        (s) => s.action.toLowerCase().includes('scroll')
+      const hasScrollSuggestion = context.suggestions.some((s) =>
+        s.action.toLowerCase().includes('scroll')
       );
       expect(hasScrollSuggestion).toBe(true);
     });
@@ -678,14 +668,11 @@ describe('AI Module Integration: Error Recovery', () => {
         createMockElement('blocking-modal', 'dialog', 'Blocking Modal'),
       ];
 
-      const context = createErrorContext(
-        'ELEMENT_BLOCKED',
-        'click Submit',
-        elementsWithModal
-      );
+      const context = createErrorContext('ELEMENT_BLOCKED', 'click Submit', elementsWithModal);
 
       const hasCloseSuggestion = context.suggestions.some(
-        (s) => s.action.toLowerCase().includes('close') || s.action.toLowerCase().includes('blocking')
+        (s) =>
+          s.action.toLowerCase().includes('close') || s.action.toLowerCase().includes('blocking')
       );
       expect(hasCloseSuggestion).toBe(true);
     });
@@ -913,7 +900,9 @@ describe('AI Module Integration: Semantic Diff', () => {
       const elements1 = [createMockElement('input', 'input', 'Email', { value: '' })];
       const snapshot1 = snapshotManager.createSnapshot(createControlSnapshot(elements1));
 
-      const elements2 = [createMockElement('input', 'input', 'Email', { value: 'test@example.com' })];
+      const elements2 = [
+        createMockElement('input', 'input', 'Email', { value: 'test@example.com' }),
+      ];
       const snapshot2 = snapshotManager.createSnapshot(createControlSnapshot(elements2));
 
       const diff = computeDiff(snapshot1, snapshot2);

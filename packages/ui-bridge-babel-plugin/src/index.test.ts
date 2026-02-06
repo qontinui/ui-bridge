@@ -2,7 +2,7 @@
  * UI Bridge Babel Plugin Tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { transformSync } from '@babel/core';
 import uiBridgeBabelPlugin from './index';
 import type { PluginConfig } from './config';

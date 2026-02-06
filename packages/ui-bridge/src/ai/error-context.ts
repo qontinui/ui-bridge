@@ -394,9 +394,7 @@ export function createErrorContext(
 /**
  * Detect possible blocking elements
  */
-function detectPossibleBlockers(
-  elements: AnyElement[]
-): string[] {
+function detectPossibleBlockers(elements: AnyElement[]): string[] {
   const blockers: string[] = [];
 
   for (const el of elements) {
@@ -459,10 +457,7 @@ function enhanceSuggestions(
 /**
  * Determine why the nearest match was not selected
  */
-function determineWhyNotSelected(
-  errorCode: ErrorCode,
-  nearestMatch: SearchResult
-): string {
+function determineWhyNotSelected(errorCode: ErrorCode, nearestMatch: SearchResult): string {
   switch (errorCode) {
     case 'LOW_CONFIDENCE':
       return `Confidence (${(nearestMatch.confidence * 100).toFixed(0)}%) below threshold`;
@@ -494,7 +489,9 @@ export function formatErrorContext(context: AIErrorContext): string {
 
   if (context.searchResults.nearestMatch) {
     const match = context.searchResults.nearestMatch;
-    lines.push(`Nearest match: "${match.element.description}" (${(match.confidence * 100).toFixed(0)}% confidence)`);
+    lines.push(
+      `Nearest match: "${match.element.description}" (${(match.confidence * 100).toFixed(0)}% confidence)`
+    );
     lines.push(`Why not used: ${match.whyNotSelected}`);
     lines.push('');
   }
@@ -547,9 +544,7 @@ export function isRecoverableError(code: ErrorCode): boolean {
 /**
  * Get the best recovery suggestion for an error
  */
-export function getBestRecoverySuggestion(
-  context: AIErrorContext
-): RecoverySuggestion | null {
+export function getBestRecoverySuggestion(context: AIErrorContext): RecoverySuggestion | null {
   if (context.suggestions.length === 0) return null;
 
   // Return highest confidence suggestion

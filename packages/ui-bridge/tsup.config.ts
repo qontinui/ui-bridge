@@ -16,6 +16,8 @@ export default defineConfig([
       'server/nextjs': 'src/server/nextjs.ts',
       'server/standalone': 'src/server/standalone.ts',
       'server/handlers': 'src/server/handlers.ts',
+      'annotations/index': 'src/annotations/index.ts',
+      'specs/index': 'src/specs/index.ts',
       'swc-plugin/index': 'src/swc-plugin/index.ts',
     },
     format: ['cjs', 'esm'],

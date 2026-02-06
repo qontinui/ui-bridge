@@ -7,12 +7,7 @@
 
 import type { RegisteredElement, ElementState } from '../core/types';
 import type { DiscoveredElement } from '../control/types';
-import type {
-  SearchCriteria,
-  SearchResult,
-  SearchResponse,
-  AIDiscoveredElement,
-} from './types';
+import type { SearchCriteria, SearchResult, SearchResponse, AIDiscoveredElement } from './types';
 import {
   fuzzyMatch,
   fuzzyContains,
@@ -27,6 +22,7 @@ import {
   generateSuggestedActions,
   areSynonyms,
 } from './alias-generator';
+import { getGlobalAnnotationStore } from '../annotations';
 
 /**
  * Configuration for the search engine
@@ -145,9 +141,11 @@ export class SearchEngine {
       }
 
       // Get value for inputs
-      if (element.element instanceof HTMLInputElement ||
-          element.element instanceof HTMLTextAreaElement ||
-          element.element instanceof HTMLSelectElement) {
+      if (
+        element.element instanceof HTMLInputElement ||
+        element.element instanceof HTMLTextAreaElement ||
+        element.element instanceof HTMLSelectElement
+      ) {
         value = (element.element as HTMLInputElement).value || undefined;
       }
     } else {
@@ -161,7 +159,7 @@ export class SearchEngine {
     }
 
     // Generate aliases and description
-    const aliases = generateAliases({
+    let aliases = generateAliases({
       textContent,
       ariaLabel,
       placeholder,
@@ -173,7 +171,7 @@ export class SearchEngine {
       value,
     });
 
-    const description = generateDescription({
+    let description = generateDescription({
       textContent,
       ariaLabel,
       placeholder,
@@ -183,6 +181,23 @@ export class SearchEngine {
       id: element.id,
       labelText,
     });
+
+    // Merge annotation overrides into searchable data
+    const annotation = getGlobalAnnotationStore().get(element.id);
+    if (annotation) {
+      if (annotation.description) {
+        description = annotation.description;
+      }
+      if (annotation.tags && annotation.tags.length > 0) {
+        // Merge tags into aliases
+        const tagSet = new Set([...aliases, ...annotation.tags.map((t) => t.toLowerCase())]);
+        aliases = [...tagSet];
+      }
+      if (annotation.notes) {
+        // Make notes searchable by adding as an alias
+        aliases.push(annotation.notes.toLowerCase());
+      }
+    }
 
     return {
       id: element.id,
@@ -321,10 +336,7 @@ export class SearchEngine {
   /**
    * Score an element against search criteria
    */
-  private scoreElement(
-    searchable: SearchableElement,
-    criteria: SearchCriteria
-  ): SearchResult {
+  private scoreElement(searchable: SearchableElement, criteria: SearchCriteria): SearchResult {
     const scores: SearchResult['scores'] = {};
     const matchReasons: string[] = [];
     let totalWeight = 0;
@@ -337,7 +349,12 @@ export class SearchEngine {
 
     // Text matching
     if (criteria.text) {
-      const textScore = this.scoreTextMatch(searchable, criteria.text, criteria.fuzzy !== false, fuzzyConfig.threshold);
+      const textScore = this.scoreTextMatch(
+        searchable,
+        criteria.text,
+        criteria.fuzzy !== false,
+        fuzzyConfig.threshold
+      );
       scores.text = textScore.score;
       if (textScore.score > 0) {
         matchReasons.push(...textScore.reasons);
@@ -346,9 +363,53 @@ export class SearchEngine {
       totalWeight += this.config.textWeight;
     }
 
+    // textContent uses both exact and contains matching (best score wins)
+    // This is more intuitive for spec assertions where textContent checks
+    // if the text is present in the element, not necessarily the entire text.
+    // Supports pipe-separated alternatives: "Connected|Disconnected" matches either.
+    if (criteria.textContent && !criteria.text) {
+      // Split on pipe to support alternatives (e.g., "Connected|Disconnected")
+      const alternatives = criteria.textContent.includes('|')
+        ? criteria.textContent
+            .split('|')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [criteria.textContent];
+
+      let bestScore = 0;
+      let bestReasons: string[] = [];
+
+      for (const alt of alternatives) {
+        const exactScore = this.scoreTextMatch(
+          searchable,
+          alt,
+          criteria.fuzzy !== false,
+          fuzzyConfig.threshold
+        );
+        const containsScore = this.scoreContainsMatch(searchable, alt, criteria.fuzzy !== false);
+        const altBest = Math.max(exactScore.score, containsScore.score);
+        if (altBest > bestScore) {
+          bestScore = altBest;
+          bestReasons =
+            exactScore.score >= containsScore.score ? exactScore.reasons : containsScore.reasons;
+        }
+      }
+
+      scores.text = bestScore;
+      if (bestScore > 0) {
+        matchReasons.push(...bestReasons);
+      }
+      weightedScore += bestScore * this.config.textWeight;
+      totalWeight += this.config.textWeight;
+    }
+
     // Partial text matching (contains)
     if (criteria.textContains) {
-      const containsScore = this.scoreContainsMatch(searchable, criteria.textContains, criteria.fuzzy !== false);
+      const containsScore = this.scoreContainsMatch(
+        searchable,
+        criteria.textContains,
+        criteria.fuzzy !== false
+      );
       scores.text = Math.max(scores.text || 0, containsScore.score);
       if (containsScore.score > 0 && containsScore.reasons.length > 0) {
         matchReasons.push(...containsScore.reasons);
@@ -407,7 +468,11 @@ export class SearchEngine {
 
     // Placeholder matching
     if (criteria.placeholder && searchable.placeholder) {
-      const placeholderResult = fuzzyMatch(searchable.placeholder, criteria.placeholder, fuzzyConfig);
+      const placeholderResult = fuzzyMatch(
+        searchable.placeholder,
+        criteria.placeholder,
+        fuzzyConfig
+      );
       if (placeholderResult.isMatch) {
         matchReasons.push(`placeholder matches`);
         weightedScore += placeholderResult.similarity * this.config.textWeight;
@@ -470,11 +535,9 @@ export class SearchEngine {
     const reasons: string[] = [];
     let maxScore = 0;
 
-    const textsToMatch = [
-      searchable.textContent,
-      searchable.labelText,
-      searchable.value,
-    ].filter(Boolean) as string[];
+    const textsToMatch = [searchable.textContent, searchable.labelText, searchable.value].filter(
+      Boolean
+    ) as string[];
 
     for (const targetText of textsToMatch) {
       // Exact match
@@ -609,7 +672,11 @@ export class SearchEngine {
     };
 
     const inferredRoles = tagRoleMap[normalizedRole] || [];
-    if (inferredRoles.some((r) => searchable.tagName === r || searchable.type.toLowerCase() === normalizedRole)) {
+    if (
+      inferredRoles.some(
+        (r) => searchable.tagName === r || searchable.type.toLowerCase() === normalizedRole
+      )
+    ) {
       return { score: 0.8, reasons: [`inferred role: ${role}`] };
     }
 
@@ -726,9 +793,7 @@ export class SearchEngine {
    * Match a string against a pattern (supports * wildcard)
    */
   private matchPattern(str: string, pattern: string): boolean {
-    const regexPattern = pattern
-      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\\\*/g, '.*');
+    const regexPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*');
     return new RegExp(`^${regexPattern}$`, 'i').test(str);
   }
 

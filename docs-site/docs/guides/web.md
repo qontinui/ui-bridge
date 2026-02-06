@@ -60,11 +60,11 @@ Create a wrapper component that captures DOM snapshots on navigation:
 
 ```tsx
 // lib/ui-bridge/RenderLogWrapper.tsx
-"use client";
+'use client';
 
-import { useEffect, useRef, useCallback, type ReactNode } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
-import { useUIBridgeOptional } from "ui-bridge/react";
+import { useEffect, useRef, useCallback, type ReactNode } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { useUIBridgeOptional } from 'ui-bridge/react';
 
 export function RenderLogWrapper({
   children,
@@ -80,13 +80,13 @@ export function RenderLogWrapper({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const bridge = useUIBridgeOptional();
-  const isDev = process.env.NODE_ENV === "development";
+  const isDev = process.env.NODE_ENV === 'development';
 
   const lastPathRef = useRef<string | null>(null);
   const mutationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const observerRef = useRef<MutationObserver | null>(null);
 
-  const fullPath = pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : "");
+  const fullPath = pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : '');
 
   // Capture snapshot helper
   const captureSnapshot = useCallback(
@@ -110,7 +110,7 @@ export function RenderLogWrapper({
     if (previousPath === null && enableOnMount) return;
 
     const timeoutId = setTimeout(() => {
-      captureSnapshot("route_change", { previousPath, newPath: fullPath });
+      captureSnapshot('route_change', { previousPath, newPath: fullPath });
     }, 100);
 
     return () => clearTimeout(timeoutId);
@@ -121,7 +121,7 @@ export function RenderLogWrapper({
     if (!isDev || !bridge?.renderLog || !enableOnMount) return;
 
     const timeoutId = setTimeout(() => {
-      captureSnapshot("mount");
+      captureSnapshot('mount');
       lastPathRef.current = fullPath;
     }, 500);
 
@@ -138,7 +138,7 @@ export function RenderLogWrapper({
           for (const node of m.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const el = node as Element;
-              if (!["SCRIPT", "STYLE", "SVG"].includes(el.tagName)) return true;
+              if (!['SCRIPT', 'STYLE', 'SVG'].includes(el.tagName)) return true;
             }
           }
         }
@@ -148,7 +148,7 @@ export function RenderLogWrapper({
       if (significant) {
         if (mutationTimeoutRef.current) clearTimeout(mutationTimeoutRef.current);
         mutationTimeoutRef.current = setTimeout(() => {
-          captureSnapshot("mutation");
+          captureSnapshot('mutation');
         }, mutationDebounceMs);
       }
     });
@@ -179,9 +179,7 @@ export default function RootLayout({ children }) {
       <body>
         <UIBridgeProvider features={{ renderLog: true, control: true }}>
           <AutoRegisterProvider enabled={process.env.NODE_ENV === 'development'}>
-            <RenderLogWrapper>
-              {children}
-            </RenderLogWrapper>
+            <RenderLogWrapper>{children}</RenderLogWrapper>
           </AutoRegisterProvider>
         </UIBridgeProvider>
       </body>
@@ -200,12 +198,15 @@ import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge/react';
 import { RenderLogWrapper } from '@/lib/ui-bridge/RenderLogWrapper';
 
 const UI_BRIDGE_ENABLED =
-  process.env.NEXT_PUBLIC_UI_BRIDGE_ENABLED === 'true' ||
-  process.env.NODE_ENV === 'development';
+  process.env.NEXT_PUBLIC_UI_BRIDGE_ENABLED === 'true' || process.env.NODE_ENV === 'development';
 
 export default function RootLayout({ children }) {
   if (!UI_BRIDGE_ENABLED) {
-    return <html><body>{children}</body></html>;
+    return (
+      <html>
+        <body>{children}</body>
+      </html>
+    );
   }
 
   return (
@@ -251,7 +252,7 @@ UI Bridge hooks require client components. For server components, use the "use c
 
 ```tsx
 // components/InteractiveButton.tsx
-"use client";
+'use client';
 
 import { useUIElement } from 'ui-bridge/react';
 
@@ -264,7 +265,11 @@ export function InteractiveButton({ id, children, onClick }) {
     },
   });
 
-  return <button ref={ref} onClick={onClick}>{children}</button>;
+  return (
+    <button ref={ref} onClick={onClick}>
+      {children}
+    </button>
+  );
 }
 ```
 
@@ -279,15 +284,15 @@ NEXT_PUBLIC_UI_BRIDGE_ENABLED=true  # Enable in production if needed
 
 Once configured, these endpoints are available:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/ui-bridge/elements` | GET | List registered elements |
-| `/api/ui-bridge/elements/:id` | GET | Get element details |
-| `/api/ui-bridge/elements/:id/action` | POST | Execute element action |
-| `/api/ui-bridge/components` | GET | List registered components |
-| `/api/ui-bridge/discover` | GET | Auto-discover elements |
-| `/api/ui-bridge/render-log` | GET | Get render log entries |
-| `/api/ui-bridge/snapshot` | GET | Get current DOM snapshot |
+| Endpoint                             | Method | Description                |
+| ------------------------------------ | ------ | -------------------------- |
+| `/api/ui-bridge/elements`            | GET    | List registered elements   |
+| `/api/ui-bridge/elements/:id`        | GET    | Get element details        |
+| `/api/ui-bridge/elements/:id/action` | POST   | Execute element action     |
+| `/api/ui-bridge/components`          | GET    | List registered components |
+| `/api/ui-bridge/discover`            | GET    | Auto-discover elements     |
+| `/api/ui-bridge/render-log`          | GET    | Get render log entries     |
+| `/api/ui-bridge/snapshot`            | GET    | Get current DOM snapshot   |
 
 ## Python Client Usage
 

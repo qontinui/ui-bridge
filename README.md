@@ -15,12 +15,12 @@ UI Bridge enables programmatic observation and control of React UI elements via 
 
 ## Packages
 
-| Package                  | Description                              | Registry |
-| ------------------------ | ---------------------------------------- | -------- |
-| `ui-bridge`              | React hooks and providers                | npm      |
-| `ui-bridge-server`       | HTTP server adapters (Express, Next.js)  | npm      |
-| `ui-bridge-babel-plugin` | Auto-instrumentation Babel plugin        | npm      |
-| `ui-bridge-python`       | Python client library with AI interface  | PyPI     |
+| Package                  | Description                             | Registry |
+| ------------------------ | --------------------------------------- | -------- |
+| `ui-bridge`              | React hooks and providers               | npm      |
+| `ui-bridge-server`       | HTTP server adapters (Express, Next.js) | npm      |
+| `ui-bridge-babel-plugin` | Auto-instrumentation Babel plugin       | npm      |
+| `ui-bridge-python`       | Python client library with AI interface | PyPI     |
 
 ## Quick Start
 

@@ -72,7 +72,9 @@ export interface UseUIElementReturn {
   /** Ref to attach to the element */
   ref: React.RefObject<NativeElementRef>;
   /** onLayout handler to spread onto the element - uses generic type for RN version compatibility */
-  onLayout: (event: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
+  onLayout: (event: {
+    nativeEvent: { layout: { x: number; y: number; width: number; height: number } };
+  }) => void;
   /** Props to spread onto the element for identification */
   bridgeProps: UIBridgeProps;
   /** Whether the element is registered */
@@ -82,7 +84,10 @@ export interface UseUIElementReturn {
   /** Get element identifier */
   getIdentifier: () => NativeElementIdentifier | null;
   /** Trigger an action on this element */
-  trigger: (action: NativeStandardAction | string, params?: Record<string, unknown>) => Promise<void>;
+  trigger: (
+    action: NativeStandardAction | string,
+    params?: Record<string, unknown>
+  ) => Promise<void>;
   /** Manually register the element */
   register: () => void;
   /** Manually unregister the element */
@@ -179,32 +184,36 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
 
       // Get absolute position using measureInWindow
       if (ref.current && 'measureInWindow' in ref.current) {
-        (ref.current as { measureInWindow: (callback: (pageX: number, pageY: number, w: number, h: number) => void) => void }).measureInWindow(
-          (pageX: number, pageY: number) => {
-            const newLayout: NativeLayout = {
-              x,
-              y,
-              width,
-              height,
-              pageX,
-              pageY,
-            };
-            setLayout(newLayout);
-
-            // Update state in registry
-            if (bridge && registered) {
-              const newState: NativeElementState = {
-                mounted: true,
-                visible: width > 0 && height > 0,
-                enabled: true,
-                focused: false,
-                layout: newLayout,
-              };
-              bridge.registry.updateElementState(id, newState);
-              onStateChange?.(newState);
-            }
+        (
+          ref.current as {
+            measureInWindow: (
+              callback: (pageX: number, pageY: number, w: number, h: number) => void
+            ) => void;
           }
-        );
+        ).measureInWindow((pageX: number, pageY: number) => {
+          const newLayout: NativeLayout = {
+            x,
+            y,
+            width,
+            height,
+            pageX,
+            pageY,
+          };
+          setLayout(newLayout);
+
+          // Update state in registry
+          if (bridge && registered) {
+            const newState: NativeElementState = {
+              mounted: true,
+              visible: width > 0 && height > 0,
+              enabled: true,
+              focused: false,
+              layout: newLayout,
+            };
+            bridge.registry.updateElementState(id, newState);
+            onStateChange?.(newState);
+          }
+        });
       } else {
         // Fallback if measureInWindow not available
         const newLayout: NativeLayout = {
@@ -342,9 +351,7 @@ export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
   captureProps: (props: Record<string, unknown>) => void;
 }
 
-export function useUIElementWithProps(
-  options: UseUIElementOptions
-): UseUIElementWithPropsReturn {
+export function useUIElementWithProps(options: UseUIElementOptions): UseUIElementWithPropsReturn {
   const elementReturn = useUIElement(options);
   const bridge = useUIBridgeNativeOptional();
 

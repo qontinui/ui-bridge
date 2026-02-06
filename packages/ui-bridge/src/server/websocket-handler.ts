@@ -401,10 +401,7 @@ export class UIBridgeWSHandler {
   broadcastEvent(event: BridgeEvent): void {
     for (const [clientId, client] of this.clients) {
       // Check if client is subscribed to this event type
-      if (
-        client.subscription.events.size === 0 ||
-        client.subscription.events.has(event.type)
-      ) {
+      if (client.subscription.events.size === 0 || client.subscription.events.has(event.type)) {
         // Check element/component filters if applicable
         const eventData = event.data as { elementId?: string; componentId?: string };
 

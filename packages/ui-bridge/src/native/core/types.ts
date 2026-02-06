@@ -438,4 +438,3 @@ export interface NativeFindResponse {
   /** Timestamp */
   timestamp: number;
 }
-

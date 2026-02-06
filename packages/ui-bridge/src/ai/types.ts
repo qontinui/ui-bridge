@@ -5,7 +5,7 @@
  * search criteria, natural language actions, assertions, and semantic snapshots.
  */
 
-import type { ElementState, ElementType, StandardAction } from '../core/types';
+import type { ElementState, ElementType } from '../core/types';
 import type { DiscoveredElement } from '../control/types';
 
 // ============================================================================
@@ -18,6 +18,8 @@ import type { DiscoveredElement } from '../control/types';
 export interface SearchCriteria {
   /** Exact visible text match: "Start Extraction" */
   text?: string;
+  /** Alias for text (used by spec assertions) */
+  textContent?: string;
   /** Partial text match: "Start" */
   textContains?: string;
   /** Accessible name (aria-label, associated labels) */
@@ -141,7 +143,16 @@ export interface PageContext {
   /** Page title */
   title: string;
   /** Inferred page type */
-  pageType?: 'login' | 'dashboard' | 'form' | 'list' | 'detail' | 'search' | 'checkout' | 'settings' | 'unknown';
+  pageType?:
+    | 'login'
+    | 'dashboard'
+    | 'form'
+    | 'list'
+    | 'detail'
+    | 'search'
+    | 'checkout'
+    | 'settings'
+    | 'unknown';
   /** Active modals/dialogs */
   activeModals: string[];
   /** Currently focused element */
@@ -215,7 +226,20 @@ export interface NLActionRequest {
  */
 export interface ParsedAction {
   /** Action type */
-  action: 'click' | 'type' | 'select' | 'check' | 'uncheck' | 'scroll' | 'wait' | 'assert' | 'hover' | 'focus' | 'clear' | 'doubleClick' | 'rightClick';
+  action:
+    | 'click'
+    | 'type'
+    | 'select'
+    | 'check'
+    | 'uncheck'
+    | 'scroll'
+    | 'wait'
+    | 'assert'
+    | 'hover'
+    | 'focus'
+    | 'clear'
+    | 'doubleClick'
+    | 'rightClick';
   /** Description of the target element */
   targetDescription: string;
   /** Value for type/select actions */

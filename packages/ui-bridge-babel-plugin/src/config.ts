@@ -171,10 +171,7 @@ export function mergeConfig(userConfig: PluginConfig = {}): Required<PluginConfi
 /**
  * Check if a file should be processed based on include/exclude patterns
  */
-export function shouldProcessFile(
-  filename: string,
-  config: Required<PluginConfig>
-): boolean {
+export function shouldProcessFile(filename: string, config: Required<PluginConfig>): boolean {
   // Simple pattern matching (for full glob support, use micromatch)
   const matchPattern = (pattern: string, path: string): boolean => {
     // Simple extension-based matching for common patterns
@@ -193,7 +190,11 @@ export function shouldProcessFile(
 
       // Handle **/*.test.* or **/*.spec.* (files with .test. or .spec. in name)
       // Must check this BEFORE the simple extension check
-      if (restOfPattern.startsWith('*.') && restOfPattern.endsWith('.*') && restOfPattern.length > 3) {
+      if (
+        restOfPattern.startsWith('*.') &&
+        restOfPattern.endsWith('.*') &&
+        restOfPattern.length > 3
+      ) {
         const middle = restOfPattern.slice(2, -2); // Get middle part like "test" or "spec"
         const fileName = path.includes('/') ? path.split('/').pop() || path : path;
         return fileName.includes('.' + middle + '.');

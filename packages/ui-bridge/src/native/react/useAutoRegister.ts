@@ -32,7 +32,11 @@ export interface NativeAutoRegisterOptions {
  */
 export interface NativeAutoRegisterHandle {
   /** Register an element programmatically */
-  register: (id: string, ref: React.RefObject<NativeElementRef>, options?: RegisterElementOptions) => void;
+  register: (
+    id: string,
+    ref: React.RefObject<NativeElementRef>,
+    options?: RegisterElementOptions
+  ) => void;
   /** Unregister an element programmatically */
   unregister: (id: string) => void;
   /** Check if auto-registration is enabled */
@@ -65,9 +69,7 @@ export interface NativeAutoRegisterHandle {
  * }
  * ```
  */
-export function useAutoRegister(
-  options: NativeAutoRegisterOptions = {}
-): NativeAutoRegisterHandle {
+export function useAutoRegister(options: NativeAutoRegisterOptions = {}): NativeAutoRegisterHandle {
   // Note: __DEV__ is a React Native global, but TypeScript doesn't know about it by default
   // Using false as a safe default - consumers should explicitly set enabled: __DEV__ in their app
   const { enabled = false, onRegister, onUnregister } = options;
@@ -79,7 +81,11 @@ export function useAutoRegister(
    * Register an element
    */
   const register = useCallback(
-    (id: string, ref: React.RefObject<NativeElementRef>, elementOptions?: RegisterElementOptions): void => {
+    (
+      id: string,
+      ref: React.RefObject<NativeElementRef>,
+      elementOptions?: RegisterElementOptions
+    ): void => {
       if (!enabled || !bridge?.registry) return;
 
       // Avoid duplicate registration

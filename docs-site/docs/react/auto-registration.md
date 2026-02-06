@@ -108,18 +108,18 @@ function AppContent() {
 
 ### AutoRegisterProvider Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `enabled` | `boolean` | `true` in dev | Enable auto-registration |
-| `idStrategy` | `IdStrategy` | `'prefer-existing'` | How to generate element IDs |
-| `debounceMs` | `number` | `100` | Debounce time for DOM mutations |
-| `includeHidden` | `boolean` | `false` | Include hidden elements |
-| `includeSelectors` | `string[]` | `[]` | Additional selectors to include |
-| `excludeSelectors` | `string[]` | `[]` | Selectors to exclude |
-| `scopeToChildren` | `boolean` | `false` | Only observe within provider's subtree |
-| `generateId` | `function` | - | Custom ID generator |
-| `onRegister` | `function` | - | Callback when element registered |
-| `onUnregister` | `function` | - | Callback when element unregistered |
+| Prop               | Type         | Default             | Description                            |
+| ------------------ | ------------ | ------------------- | -------------------------------------- |
+| `enabled`          | `boolean`    | `true` in dev       | Enable auto-registration               |
+| `idStrategy`       | `IdStrategy` | `'prefer-existing'` | How to generate element IDs            |
+| `debounceMs`       | `number`     | `100`               | Debounce time for DOM mutations        |
+| `includeHidden`    | `boolean`    | `false`             | Include hidden elements                |
+| `includeSelectors` | `string[]`   | `[]`                | Additional selectors to include        |
+| `excludeSelectors` | `string[]`   | `[]`                | Selectors to exclude                   |
+| `scopeToChildren`  | `boolean`    | `false`             | Only observe within provider's subtree |
+| `generateId`       | `function`   | -                   | Custom ID generator                    |
+| `onRegister`       | `function`   | -                   | Callback when element registered       |
+| `onUnregister`     | `function`   | -                   | Callback when element unregistered     |
 
 ### ID Strategies
 
@@ -127,13 +127,13 @@ function AppContent() {
 <AutoRegisterProvider idStrategy="prefer-existing">
 ```
 
-| Strategy | Description | Example Output |
-|----------|-------------|----------------|
+| Strategy            | Description                                    | Example Output                  |
+| ------------------- | ---------------------------------------------- | ------------------------------- |
 | `'prefer-existing'` | Use existing attributes, fall back to semantic | `submit-btn` (from data-testid) |
-| `'data-testid'` | Only use data-testid | `submit-btn` or auto-generated |
-| `'data-ui-id'` | Only use data-ui-id | `my-button` or auto-generated |
-| `'semantic'` | Generate from element content | `button-submit-form` |
-| `'auto'` | Always auto-generate | `button-1705123456-abc123` |
+| `'data-testid'`     | Only use data-testid                           | `submit-btn` or auto-generated  |
+| `'data-ui-id'`      | Only use data-ui-id                            | `my-button` or auto-generated   |
+| `'semantic'`        | Generate from element content                  | `button-submit-form`            |
+| `'auto'`            | Always auto-generate                           | `button-1705123456-abc123`      |
 
 ### ID Priority (prefer-existing)
 
@@ -163,21 +163,21 @@ When using `prefer-existing` strategy, IDs are generated in this order:
 
 Auto-registration detects these elements by default:
 
-| Element | Selector |
-|---------|----------|
-| Links | `a[href]` |
-| Buttons | `button`, `[role="button"]` |
-| Inputs | `input`, `textarea`, `[role="textbox"]` |
-| Selects | `select`, `[role="combobox"]`, `[role="listbox"]` |
-| Checkboxes | `input[type="checkbox"]`, `[role="checkbox"]` |
-| Radio buttons | `input[type="radio"]`, `[role="radio"]` |
-| Tabs | `[role="tab"]` |
-| Menu items | `[role="menuitem"]` |
-| Sliders | `input[type="range"]`, `[role="slider"]` |
-| Switches | `[role="switch"]` |
-| Focusable | `[tabindex]:not([tabindex="-1"])` |
-| Editable | `[contenteditable="true"]` |
-| Explicit | `[data-ui-element]`, `[data-testid]` |
+| Element       | Selector                                          |
+| ------------- | ------------------------------------------------- |
+| Links         | `a[href]`                                         |
+| Buttons       | `button`, `[role="button"]`                       |
+| Inputs        | `input`, `textarea`, `[role="textbox"]`           |
+| Selects       | `select`, `[role="combobox"]`, `[role="listbox"]` |
+| Checkboxes    | `input[type="checkbox"]`, `[role="checkbox"]`     |
+| Radio buttons | `input[type="radio"]`, `[role="radio"]`           |
+| Tabs          | `[role="tab"]`                                    |
+| Menu items    | `[role="menuitem"]`                               |
+| Sliders       | `input[type="range"]`, `[role="slider"]`          |
+| Switches      | `[role="switch"]`                                 |
+| Focusable     | `[tabindex]:not([tabindex="-1"])`                 |
+| Editable      | `[contenteditable="true"]`                        |
+| Explicit      | `[data-ui-element]`, `[data-testid]`              |
 
 ### Adding Custom Selectors
 
@@ -317,6 +317,7 @@ function MyForm() {
 1. **Debouncing**: DOM mutations are debounced (default 100ms) to prevent excessive registration during rapid updates
 
 2. **Development Only**: Enable only in development to avoid production overhead:
+
    ```tsx
    <AutoRegisterProvider enabled={process.env.NODE_ENV === 'development'}>
    ```
@@ -337,6 +338,7 @@ function MyForm() {
 ### Duplicate IDs
 
 If two elements generate the same ID, a unique suffix is added:
+
 ```
 submit-btn → submit-btn
 submit-btn → submit-btn-1705123456abc

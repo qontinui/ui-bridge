@@ -149,11 +149,13 @@ Execute an action on an element.
 #### Action Types
 
 **click**
+
 ```json
 { "action": "click" }
 ```
 
 **type**
+
 ```json
 {
   "action": "type",
@@ -166,6 +168,7 @@ Execute an action on an element.
 ```
 
 **select**
+
 ```json
 {
   "action": "select",
@@ -177,6 +180,7 @@ Execute an action on an element.
 ```
 
 **scroll**
+
 ```json
 {
   "action": "scroll",

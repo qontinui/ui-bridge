@@ -3,11 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  AssertionExecutor,
-  createAssertionExecutor,
-  DEFAULT_ASSERTION_CONFIG,
-} from './assertions';
+import { AssertionExecutor, createAssertionExecutor, DEFAULT_ASSERTION_CONFIG } from './assertions';
 import type { AIDiscoveredElement } from './types';
 
 // Helper to create mock AI discovered elements
@@ -218,7 +214,12 @@ describe('AssertionExecutor', () => {
 
   describe('assertHasText', () => {
     it('should pass when element has exact text', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit Form', aliases: ['btn-1', 'submit form'] })];
+      const elements = [
+        createMockAIElement('btn-1', {
+          textContent: 'Submit Form',
+          aliases: ['btn-1', 'submit form'],
+        }),
+      ];
       executor.updateElements(elements);
 
       // Search by text content
@@ -228,7 +229,12 @@ describe('AssertionExecutor', () => {
     });
 
     it('should fail when text does not match exactly', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit Form', aliases: ['btn-1', 'submit form'] })];
+      const elements = [
+        createMockAIElement('btn-1', {
+          textContent: 'Submit Form',
+          aliases: ['btn-1', 'submit form'],
+        }),
+      ];
       executor.updateElements(elements);
 
       const result = await executor.assertHasText('Submit Form', 'Submit');
@@ -237,7 +243,12 @@ describe('AssertionExecutor', () => {
     });
 
     it('should include expected and actual text', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Actual Text', aliases: ['btn-1', 'actual text'] })];
+      const elements = [
+        createMockAIElement('btn-1', {
+          textContent: 'Actual Text',
+          aliases: ['btn-1', 'actual text'],
+        }),
+      ];
       executor.updateElements(elements);
 
       const result = await executor.assertHasText('Actual Text', 'Expected Text');
@@ -249,7 +260,12 @@ describe('AssertionExecutor', () => {
 
   describe('assertContainsText', () => {
     it('should pass when element contains text', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit Form Now', aliases: ['btn-1', 'submit form now'] })];
+      const elements = [
+        createMockAIElement('btn-1', {
+          textContent: 'Submit Form Now',
+          aliases: ['btn-1', 'submit form now'],
+        }),
+      ];
       executor.updateElements(elements);
 
       // Search by the full text content
@@ -259,7 +275,12 @@ describe('AssertionExecutor', () => {
     });
 
     it('should fail when element does not contain text', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit Form', aliases: ['btn-1', 'submit form'] })];
+      const elements = [
+        createMockAIElement('btn-1', {
+          textContent: 'Submit Form',
+          aliases: ['btn-1', 'submit form'],
+        }),
+      ];
       executor.updateElements(elements);
 
       const result = await executor.assertContainsText('Submit Form', 'Cancel');
@@ -434,7 +455,11 @@ describe('AssertionExecutor', () => {
   describe('assert with SearchCriteria', () => {
     it('should find element using search criteria', async () => {
       const elements = [
-        createMockAIElement('submit-btn', { textContent: 'Submit', type: 'button', aliases: ['submit', 'submit-btn'] }),
+        createMockAIElement('submit-btn', {
+          textContent: 'Submit',
+          type: 'button',
+          aliases: ['submit', 'submit-btn'],
+        }),
       ];
       executor.updateElements(elements);
 
@@ -447,7 +472,12 @@ describe('AssertionExecutor', () => {
     });
 
     it('should support fuzzy matching in criteria', async () => {
-      const elements = [createMockAIElement('submit-btn', { textContent: 'Submit', aliases: ['submit', 'submit-btn'] })];
+      const elements = [
+        createMockAIElement('submit-btn', {
+          textContent: 'Submit',
+          aliases: ['submit', 'submit-btn'],
+        }),
+      ];
       executor.updateElements(elements);
 
       // Use textContains for partial matching which is more lenient
@@ -644,7 +674,9 @@ describe('AssertionExecutor', () => {
     });
 
     it('should fail for unsupported attributes', async () => {
-      const elements = [createMockAIElement('btn-1', { textContent: 'Submit', aliases: ['btn-1', 'submit'] })];
+      const elements = [
+        createMockAIElement('btn-1', { textContent: 'Submit', aliases: ['btn-1', 'submit'] }),
+      ];
       executor.updateElements(elements);
 
       const result = await executor.assert({

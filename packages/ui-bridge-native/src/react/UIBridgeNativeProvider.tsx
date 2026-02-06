@@ -22,11 +22,7 @@ import type {
   BridgeEventType,
   BridgeEventListener,
 } from '../core/types';
-import {
-  NativeUIBridgeRegistry,
-  setGlobalRegistry,
-  resetGlobalRegistry,
-} from '../core/registry';
+import { NativeUIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
 
@@ -140,9 +136,7 @@ export function UIBridgeNativeProvider({
 
     // TODO: Implement actual HTTP server using react-native-http-bridge or similar
     // For now, just log that we would start the server
-    console.log(
-      `[ui-bridge-native] Would start HTTP server on port ${config.serverPort || 9876}`
-    );
+    console.log(`[ui-bridge-native] Would start HTTP server on port ${config.serverPort || 9876}`);
     setServerRunning(true);
   }, [features.server, config.serverPort]);
 
@@ -220,9 +214,7 @@ export function UIBridgeNativeProvider({
   );
 
   return (
-    <UIBridgeNativeContext.Provider value={contextValue}>
-      {children}
-    </UIBridgeNativeContext.Provider>
+    <UIBridgeNativeContext.Provider value={contextValue}>{children}</UIBridgeNativeContext.Provider>
   );
 }
 

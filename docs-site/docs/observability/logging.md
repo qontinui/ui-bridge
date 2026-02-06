@@ -22,12 +22,12 @@ logger.info('Action executed', {
 
 ## Log Levels
 
-| Level | Description |
-|-------|-------------|
-| `error` | Failures and errors |
-| `warn` | Potential issues |
-| `info` | Important events |
-| `debug` | Detailed information |
+| Level   | Description           |
+| ------- | --------------------- |
+| `error` | Failures and errors   |
+| `warn`  | Potential issues      |
+| `info`  | Important events      |
+| `debug` | Detailed information  |
 | `trace` | Very detailed tracing |
 
 ## Distributed Tracing

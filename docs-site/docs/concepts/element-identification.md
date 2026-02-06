@@ -30,6 +30,7 @@ The most reliable way to identify elements is with explicit `data-ui-id` attribu
 ```
 
 This approach:
+
 - Won't break when class names change
 - Works even without an HTML `id`
 - Is explicit about automation intent
@@ -70,12 +71,12 @@ When you need full identification details, UI Bridge provides an `ElementIdentif
 
 ```typescript
 interface ElementIdentifier {
-  uiId?: string;      // data-ui-id value
-  testId?: string;    // data-testid value
-  awasId?: string;    // data-awas-element value
-  htmlId?: string;    // id attribute value
-  xpath: string;      // Generated XPath
-  selector: string;   // Generated CSS selector
+  uiId?: string; // data-ui-id value
+  testId?: string; // data-testid value
+  awasId?: string; // data-awas-element value
+  htmlId?: string; // id attribute value
+  xpath: string; // Generated XPath
+  selector: string; // Generated CSS selector
 }
 ```
 
@@ -105,6 +106,7 @@ When explicit identifiers aren't available, UI Bridge generates CSS selectors an
 ### CSS Selector Generation
 
 The generated selector prefers:
+
 1. Element ID: `#my-element`
 2. Data attributes: `[data-ui-id="my-element"]`
 3. Ancestor with ID + path: `#container > div > button`
@@ -113,6 +115,7 @@ The generated selector prefers:
 ### XPath Generation
 
 The generated XPath uses:
+
 1. Element ID: `//*[@id="my-element"]`
 2. Data attributes: `//button[@data-ui-id="submit"]`
 3. Positional path: `/html/body/div[2]/form/button[1]`

@@ -179,7 +179,10 @@ export function matchesIdentifier(
   if (criteria.testId && identifier.testId !== criteria.testId) {
     return false;
   }
-  if (criteria.accessibilityLabel && identifier.accessibilityLabel !== criteria.accessibilityLabel) {
+  if (
+    criteria.accessibilityLabel &&
+    identifier.accessibilityLabel !== criteria.accessibilityLabel
+  ) {
     return false;
   }
   if (criteria.treePath && identifier.treePath !== criteria.treePath) {

@@ -57,22 +57,22 @@ function App() {
 
 ```typescript
 interface Workflow {
-  id: string;              // Unique identifier
-  name: string;            // Display name
-  description?: string;    // Optional description
-  steps: WorkflowStep[];   // Array of steps
-  variables?: Record<string, any>;  // Default variable values
+  id: string; // Unique identifier
+  name: string; // Display name
+  description?: string; // Optional description
+  steps: WorkflowStep[]; // Array of steps
+  variables?: Record<string, any>; // Default variable values
 }
 
 interface WorkflowStep {
-  id: string;              // Step identifier
+  id: string; // Step identifier
   type: 'action' | 'wait' | 'condition' | 'component';
-  target?: string;         // Element or component ID
-  action?: string;         // Action to perform
-  params?: Record<string, any>;  // Action parameters
-  waitFor?: string;        // Wait condition
-  condition?: string;      // Conditional expression
-  timeout?: number;        // Step timeout (ms)
+  target?: string; // Element or component ID
+  action?: string; // Action to perform
+  params?: Record<string, any>; // Action parameters
+  waitFor?: string; // Wait condition
+  condition?: string; // Conditional expression
+  timeout?: number; // Step timeout (ms)
 }
 ```
 

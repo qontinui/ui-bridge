@@ -5,12 +5,14 @@ Embedding resolution enables semantic search for UI elements using vector embedd
 ## Overview
 
 Traditional element lookup requires exact matches:
+
 ```typescript
 // Only finds exact text match
 registry.findByText('Submit Order');
 ```
 
 With embedding resolution, you can find semantically similar elements:
+
 ```typescript
 // Finds "Submit Order", "Place Order", "Complete Purchase", etc.
 const elements = await resolver.findSimilar('confirm my purchase');
@@ -59,7 +61,7 @@ Only return results above a confidence threshold:
 
 ```typescript
 const results = await resolver.findSimilar('shopping cart', {
-  threshold: 0.75,  // Only results with 75%+ similarity
+  threshold: 0.75, // Only results with 75%+ similarity
 });
 ```
 
@@ -88,7 +90,7 @@ const resolver = new EmbeddingResolver(registry, {
       method: 'POST',
       body: JSON.stringify({ text }),
     });
-    return response.json();  // Returns number[]
+    return response.json(); // Returns number[]
   },
 });
 ```
@@ -97,13 +99,13 @@ const resolver = new EmbeddingResolver(registry, {
 
 Embeddings are generated from multiple text sources:
 
-| Source | Weight | Example |
-|--------|--------|---------|
-| `innerText` | 1.0 | "Submit Order" |
-| `aria-label` | 0.9 | "Place your order" |
-| `placeholder` | 0.8 | "Enter email address" |
-| `title` | 0.7 | "Click to submit" |
-| `data-ui-aliases` | 0.85 | "submit,confirm,order" |
+| Source            | Weight | Example                |
+| ----------------- | ------ | ---------------------- |
+| `innerText`       | 1.0    | "Submit Order"         |
+| `aria-label`      | 0.9    | "Place your order"     |
+| `placeholder`     | 0.8    | "Enter email address"  |
+| `title`           | 0.7    | "Click to submit"      |
+| `data-ui-aliases` | 0.85   | "submit,confirm,order" |
 
 Weights affect the final similarity score.
 
@@ -113,15 +115,9 @@ Weights affect the final similarity score.
 
 ```typescript
 class EmbeddingResolver {
-  constructor(
-    registry: UIBridgeRegistry,
-    options?: EmbeddingResolverOptions
-  );
+  constructor(registry: UIBridgeRegistry, options?: EmbeddingResolverOptions);
 
-  findSimilar(
-    query: string,
-    options?: FindSimilarOptions
-  ): Promise<SimilarityResult[]>;
+  findSimilar(query: string, options?: FindSimilarOptions): Promise<SimilarityResult[]>;
 
   generateIndex(): Promise<EmbeddingIndex>;
 
@@ -133,10 +129,10 @@ class EmbeddingResolver {
 
 ```typescript
 interface FindSimilarOptions {
-  threshold?: number;    // Minimum similarity (0-1)
-  limit?: number;        // Max results to return
-  type?: string;         // Filter by element type
-  role?: string;         // Filter by ARIA role
-  visible?: boolean;     // Only visible elements
+  threshold?: number; // Minimum similarity (0-1)
+  limit?: number; // Max results to return
+  type?: string; // Filter by element type
+  role?: string; // Filter by ARIA role
+  visible?: boolean; // Only visible elements
 }
 ```

@@ -6,11 +6,7 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor } from '../control/types';
-import type {
-  APIResponse,
-  HandlerContext,
-  NativeServerHandlers,
-} from './types';
+import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
 
 /**
  * Create a success response
@@ -74,9 +70,7 @@ export function createServerHandlers(
           identifier: element.getIdentifier(),
           state: element.getState(),
           actions: element.actions,
-          customActions: element.customActions
-            ? Object.keys(element.customActions)
-            : undefined,
+          customActions: element.customActions ? Object.keys(element.customActions) : undefined,
         },
       });
     },

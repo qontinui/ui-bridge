@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { RegisteredElement, ElementState, ElementIdentifier } from '../core/types';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
+import { getGlobalAnnotationStore } from '../annotations';
 
 /**
  * Inspector state
@@ -297,7 +298,7 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
       </div>
 
       {registeredElement && registeredElement.actions.length > 0 && (
-        <div style={{ ...sectionStyles, borderBottom: 'none' }}>
+        <div style={sectionStyles}>
           <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Actions</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
             {registeredElement.actions.map((action) => (
@@ -314,6 +315,62 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      <AnnotationSection elementId={bestId} />
+    </div>
+  );
+}
+
+/**
+ * Annotation section in the inspector panel.
+ * Only renders if an annotation exists for the element.
+ */
+function AnnotationSection({ elementId }: { elementId: string }) {
+  const annotation = getGlobalAnnotationStore().get(elementId);
+  if (!annotation) return null;
+
+  return (
+    <div style={{ ...sectionStyles, borderBottom: 'none' }}>
+      <div style={{ marginBottom: '8px', fontWeight: 'bold', color: '#f3f4f6' }}>Annotation</div>
+      {annotation.description && (
+        <div style={{ marginBottom: '4px' }}>
+          <span style={labelKeyStyles}>Description:</span>
+          <span style={valueStyles}>{annotation.description}</span>
+        </div>
+      )}
+      {annotation.purpose && (
+        <div style={{ marginBottom: '4px' }}>
+          <span style={labelKeyStyles}>Purpose:</span>
+          <span style={valueStyles}>{annotation.purpose}</span>
+        </div>
+      )}
+      {annotation.notes && (
+        <div style={{ marginBottom: '4px' }}>
+          <span style={labelKeyStyles}>Notes:</span>
+          <span style={{ color: '#fbbf24' }}>{annotation.notes}</span>
+        </div>
+      )}
+      {annotation.tags && annotation.tags.length > 0 && (
+        <div>
+          <span style={labelKeyStyles}>Tags:</span>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px' }}>
+            {annotation.tags.map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  padding: '1px 6px',
+                  backgroundColor: '#1e3a5f',
+                  borderRadius: '4px',
+                  color: '#93c5fd',
+                  fontSize: '11px',
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+          </span>
         </div>
       )}
     </div>

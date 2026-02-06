@@ -39,11 +39,7 @@ export const DELETE = handler;
 ```tsx title="app/layout.tsx"
 import { UIBridgeProvider } from 'ui-bridge';
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
@@ -156,7 +152,7 @@ export default function HomePage() {
       {
         id: 'increment',
         handler: async () => {
-          setCount(c => c + 1);
+          setCount((c) => c + 1);
           return { count: count + 1 };
         },
       },
@@ -173,11 +169,7 @@ export default function HomePage() {
   return (
     <div>
       <p>Count: {count}</p>
-      <button
-        ref={button.ref}
-        data-ui-id="counter-button"
-        onClick={() => setCount(c => c + 1)}
-      >
+      <button ref={button.ref} data-ui-id="counter-button" onClick={() => setCount((c) => c + 1)}>
         Increment
       </button>
     </div>

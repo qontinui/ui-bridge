@@ -36,11 +36,7 @@
 import { declare } from '@babel/helper-plugin-utils';
 import type { PluginObj, NodePath, BabelFile } from '@babel/core';
 import type * as t from '@babel/types';
-import {
-  type PluginConfig,
-  mergeConfig,
-  shouldProcessFile,
-} from './config';
+import { type PluginConfig, mergeConfig, shouldProcessFile } from './config';
 import {
   generateId,
   getNextElementIndex,
@@ -71,7 +67,13 @@ interface PluginState {
  * Extract text content from JSX children
  */
 function extractTextContent(
-  children: (t.JSXElement | t.JSXText | t.JSXExpressionContainer | t.JSXSpreadChild | t.JSXFragment)[],
+  children: (
+    | t.JSXElement
+    | t.JSXText
+    | t.JSXExpressionContainer
+    | t.JSXSpreadChild
+    | t.JSXFragment
+  )[],
   types: typeof t
 ): string | null {
   const textParts: string[] = [];
@@ -116,16 +118,10 @@ function getAttributeValue(
 /**
  * Check if element has a specific attribute
  */
-function hasAttribute(
-  element: t.JSXOpeningElement,
-  attrName: string,
-  types: typeof t
-): boolean {
+function hasAttribute(element: t.JSXOpeningElement, attrName: string, types: typeof t): boolean {
   return element.attributes.some(
     (attr) =>
-      types.isJSXAttribute(attr) &&
-      types.isJSXIdentifier(attr.name) &&
-      attr.name.name === attrName
+      types.isJSXAttribute(attr) && types.isJSXIdentifier(attr.name) && attr.name.name === attrName
   );
 }
 
@@ -139,10 +135,7 @@ function addAttribute(
   types: typeof t
 ): void {
   element.attributes.push(
-    types.jsxAttribute(
-      types.jsxIdentifier(name),
-      types.stringLiteral(value)
-    )
+    types.jsxAttribute(types.jsxIdentifier(name), types.stringLiteral(value))
   );
 }
 
@@ -255,10 +248,8 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
 
       visitor: {
         JSXElement(this: PluginState, path: NodePath<t.JSXElement>) {
-          const state = this;
-
           // Check if file should be processed
-          if (!shouldProcessFile(state.filename, state.config)) {
+          if (!shouldProcessFile(this.filename, this.config)) {
             return;
           }
 
@@ -271,14 +262,14 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
           }
 
           // Check if this element type should be instrumented
-          if (!state.config.elements.includes(tagName as any)) {
+          if (!this.config.elements.includes(tagName as any)) {
             return;
           }
 
           // Skip if already has ui-id (unless configured otherwise)
           if (
-            state.config.skipExisting &&
-            hasAttribute(openingElement, state.config.idAttribute, types)
+            this.config.skipExisting &&
+            hasAttribute(openingElement, this.config.idAttribute, types)
           ) {
             return;
           }
@@ -287,23 +278,20 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
           const componentName = findComponentName(path);
 
           // Check component filters
-          if (state.config.onlyInComponents.length > 0) {
-            if (!componentName || !state.config.onlyInComponents.includes(componentName)) {
+          if (this.config.onlyInComponents.length > 0) {
+            if (!componentName || !this.config.onlyInComponents.includes(componentName)) {
               return;
             }
           }
 
-          if (state.config.skipInComponents.length > 0) {
-            if (componentName && state.config.skipInComponents.includes(componentName)) {
+          if (this.config.skipInComponents.length > 0) {
+            if (componentName && this.config.skipInComponents.includes(componentName)) {
               return;
             }
           }
 
           // Extract element info
-          const textContent = extractTextContent(
-            path.node.children as any[],
-            types
-          );
+          const textContent = extractTextContent(path.node.children as any[], types);
           const ariaLabel = getAttributeValue(openingElement, 'aria-label', types);
           const placeholder = getAttributeValue(openingElement, 'placeholder', types);
           const title = getAttributeValue(openingElement, 'title', types);
@@ -311,12 +299,12 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
           const existingId = getAttributeValue(openingElement, 'id', types);
 
           // Get element index for uniqueness
-          const elementIndex = getNextElementIndex(state.filename, tagName);
+          const elementIndex = getNextElementIndex(this.filename, tagName);
 
           // Build context for ID generation
           const idContext: IdGeneratorContext = {
             componentName,
-            filePath: state.filename,
+            filePath: this.filename,
             tagName,
             textContent,
             ariaLabel,
@@ -327,21 +315,21 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
           };
 
           // Generate ID
-          const generatedId = generateId(idContext, state.config);
+          const generatedId = generateId(idContext, this.config);
 
           // Skip if this exact ID was already generated (collision)
-          if (state.processed.has(generatedId)) {
+          if (this.processed.has(generatedId)) {
             // Add index suffix for uniqueness
             const uniqueId = `${generatedId}-${elementIndex}`;
-            addAttribute(openingElement, state.config.idAttribute, uniqueId, types);
+            addAttribute(openingElement, this.config.idAttribute, uniqueId, types);
           } else {
-            state.processed.add(generatedId);
-            addAttribute(openingElement, state.config.idAttribute, generatedId, types);
+            this.processed.add(generatedId);
+            addAttribute(openingElement, this.config.idAttribute, generatedId, types);
           }
 
           // Add element type
           const semanticType = getSemanticType(tagName, idContext);
-          addAttribute(openingElement, state.config.typeAttribute, semanticType, types);
+          addAttribute(openingElement, this.config.typeAttribute, semanticType, types);
 
           // Generate and add aliases
           const aliasContext: AliasGeneratorContext = {
@@ -354,31 +342,27 @@ const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
             id: existingId,
           };
 
-          if (shouldGenerateAliases(aliasContext, state.config)) {
-            const aliases = generateAliases(aliasContext, state.config);
+          if (shouldGenerateAliases(aliasContext, this.config)) {
+            const aliases = generateAliases(aliasContext, this.config);
             if (aliases.length > 0) {
               addAttribute(
                 openingElement,
-                state.config.aliasesAttribute,
+                this.config.aliasesAttribute,
                 formatAliasesAttribute(aliases),
                 types
               );
             }
           }
 
-          if (state.config.verbose) {
-            console.log(
-              `[ui-bridge-babel-plugin] Instrumented <${tagName}> as "${generatedId}"`
-            );
+          if (this.config.verbose) {
+            console.log(`[ui-bridge-babel-plugin] Instrumented <${tagName}> as "${generatedId}"`);
           }
         },
       },
 
       post(this: PluginState) {
         if (this.config.verbose) {
-          console.log(
-            `[ui-bridge-babel-plugin] Finished processing: ${this.filename}`
-          );
+          console.log(`[ui-bridge-babel-plugin] Finished processing: ${this.filename}`);
         }
       },
     };

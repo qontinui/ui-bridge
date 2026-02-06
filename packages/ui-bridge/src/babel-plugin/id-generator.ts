@@ -38,7 +38,7 @@ function simpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32bit integer
   }
   // Convert to positive hex string
@@ -49,17 +49,19 @@ function simpleHash(str: string): string {
  * Normalize text for use in ID
  */
 function normalizeForId(text: string): string {
-  return text
-    .toLowerCase()
-    .trim()
-    // Replace non-alphanumeric with dash
-    .replace(/[^a-z0-9]+/g, '-')
-    // Remove leading/trailing dashes
-    .replace(/^-+|-+$/g, '')
-    // Collapse multiple dashes
-    .replace(/-+/g, '-')
-    // Limit length
-    .substring(0, 30);
+  return (
+    text
+      .toLowerCase()
+      .trim()
+      // Replace non-alphanumeric with dash
+      .replace(/[^a-z0-9]+/g, '-')
+      // Remove leading/trailing dashes
+      .replace(/^-+|-+$/g, '')
+      // Collapse multiple dashes
+      .replace(/-+/g, '-')
+      // Limit length
+      .substring(0, 30)
+  );
 }
 
 /**
@@ -129,10 +131,7 @@ export function getSemanticType(tagName: string, context: IdGeneratorContext): s
 /**
  * Generate a unique ID for an element
  */
-export function generateId(
-  context: IdGeneratorContext,
-  config: Required<PluginConfig>
-): string {
+export function generateId(context: IdGeneratorContext, config: Required<PluginConfig>): string {
   const parts: string[] = [];
 
   // Add prefix

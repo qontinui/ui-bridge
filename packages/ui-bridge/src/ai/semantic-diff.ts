@@ -344,9 +344,7 @@ function generateSuggestedActionsFromDiff(
   }
 
   if (trigger === 'Modal opened') {
-    const modal = appeared.find(
-      (e) => e.type === 'dialog' || e.semanticType?.includes('dialog')
-    );
+    const modal = appeared.find((e) => e.type === 'dialog' || e.semanticType?.includes('dialog'));
     if (modal) {
       suggestions.push(`Interact with the "${modal.description}" dialog`);
     }

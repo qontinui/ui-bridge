@@ -284,20 +284,23 @@ const ACTION_PATTERNS: ActionPattern[] = [
 
   // Assert patterns
   {
-    regex: /^(?:assert|verify|check)\s+(?:that\s+)?(?:the\s+)?(.+?)\s+(?:is\s+)?(visible|hidden|enabled|disabled|checked|unchecked|focused)$/i,
+    regex:
+      /^(?:assert|verify|check)\s+(?:that\s+)?(?:the\s+)?(.+?)\s+(?:is\s+)?(visible|hidden|enabled|disabled|checked|unchecked|focused)$/i,
     action: 'assert',
     targetGroup: 1,
     confidence: 0.9,
   },
   {
-    regex: /^(?:assert|verify|check)\s+(?:that\s+)?(?:the\s+)?(.+?)\s+(?:contains|has)\s+["'](.+?)["']$/i,
+    regex:
+      /^(?:assert|verify|check)\s+(?:that\s+)?(?:the\s+)?(.+?)\s+(?:contains|has)\s+["'](.+?)["']$/i,
     action: 'assert',
     targetGroup: 1,
     valueGroup: 2,
     confidence: 0.9,
   },
   {
-    regex: /^(?:the\s+)?(.+?)\s+should\s+(?:be\s+)?(visible|hidden|enabled|disabled|checked|unchecked|focused)$/i,
+    regex:
+      /^(?:the\s+)?(.+?)\s+should\s+(?:be\s+)?(visible|hidden|enabled|disabled|checked|unchecked|focused)$/i,
     action: 'assert',
     targetGroup: 1,
     confidence: 0.85,
@@ -351,13 +354,16 @@ export function parseNLInstruction(instruction: string): ParsedAction | null {
       if (pattern.action === 'scroll') {
         const directionMatch = trimmed.match(/(up|down|left|right)/i);
         if (directionMatch) {
-          parsed.scrollDirection = directionMatch[1].toLowerCase() as ParsedAction['scrollDirection'];
+          parsed.scrollDirection =
+            directionMatch[1].toLowerCase() as ParsedAction['scrollDirection'];
         }
       }
 
       // Handle assertion type
       if (pattern.action === 'assert') {
-        const assertMatch = trimmed.match(/(visible|hidden|enabled|disabled|checked|unchecked|focused|contains|has)/i);
+        const assertMatch = trimmed.match(
+          /(visible|hidden|enabled|disabled|checked|unchecked|focused|contains|has)/i
+        );
         if (assertMatch) {
           parsed.assertionType = ASSERTION_TYPE_MAP[assertMatch[1].toLowerCase()];
         }
@@ -383,13 +389,15 @@ export function parseNLInstruction(instruction: string): ParsedAction | null {
  * Clean up target description
  */
 function cleanTargetDescription(target: string): string {
-  return target
-    .trim()
-    // Remove leading articles
-    .replace(/^(the|a|an)\s+/i, '')
-    // Remove trailing type indicators
-    .replace(/\s+(button|field|input|link|dropdown|checkbox|radio)$/i, '')
-    .trim();
+  return (
+    target
+      .trim()
+      // Remove leading articles
+      .replace(/^(the|a|an)\s+/i, '')
+      // Remove trailing type indicators
+      .replace(/\s+(button|field|input|link|dropdown|checkbox|radio)$/i, '')
+      .trim()
+  );
 }
 
 /**
@@ -400,9 +408,7 @@ function inferAction(instruction: string): ParsedAction | null {
 
   // Simple click inference
   if (lower.includes('click') || lower.includes('press') || lower.includes('tap')) {
-    const target = instruction
-      .replace(/click|press|tap|on|the/gi, '')
-      .trim();
+    const target = instruction.replace(/click|press|tap|on|the/gi, '').trim();
     if (target) {
       return {
         action: 'click',
@@ -418,9 +424,7 @@ function inferAction(instruction: string): ParsedAction | null {
     // Try to extract quoted value
     const quotedMatch = instruction.match(/["'](.+?)["']/);
     if (quotedMatch) {
-      const target = instruction
-        .replace(/type|enter|input|into|in|the|["'].*?["']/gi, '')
-        .trim();
+      const target = instruction.replace(/type|enter|input|into|in|the|["'].*?["']/gi, '').trim();
       return {
         action: 'type',
         targetDescription: cleanTargetDescription(target),
@@ -478,7 +482,12 @@ export function extractModifiers(instruction: string): ParsedAction['modifiers']
   if (lower.includes('alt') || lower.includes('with alt') || lower.includes('option')) {
     modifiers.push('alt');
   }
-  if (lower.includes('meta') || lower.includes('command') || lower.includes('cmd') || lower.includes('windows')) {
+  if (
+    lower.includes('meta') ||
+    lower.includes('command') ||
+    lower.includes('cmd') ||
+    lower.includes('windows')
+  ) {
     modifiers.push('meta');
   }
 

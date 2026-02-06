@@ -41,6 +41,16 @@
       "import": "./dist/ai/index.mjs",
       "require": "./dist/ai/index.js"
     },
+    "./annotations": {
+      "types": "./dist/annotations/index.d.ts",
+      "import": "./dist/annotations/index.mjs",
+      "require": "./dist/annotations/index.js"
+    },
+    "./specs": {
+      "types": "./dist/specs/index.d.ts",
+      "import": "./dist/specs/index.mjs",
+      "require": "./dist/specs/index.js"
+    },
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.mjs",
@@ -104,7 +114,8 @@
       "types": "./dist/native/debug/index.d.ts",
       "import": "./dist/native/debug/index.mjs",
       "require": "./dist/native/debug/index.js"
-    }
+    },
+    "./swc-plugin-wasm/ui_bridge_swc_plugin.wasm": "./swc-plugin-wasm/ui_bridge_swc_plugin.wasm"
   },
   "files": [
     "dist",

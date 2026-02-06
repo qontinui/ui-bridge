@@ -115,7 +115,7 @@ describe('NLActionParser', () => {
       expect(result?.value).toBe('hello');
     });
 
-    it('should parse "type \"world\" into the input"', () => {
+    it('should parse "type "world" into the input"', () => {
       const result = parseNLInstruction('type "world" into the input');
 
       expect(result?.action).toBe('type');

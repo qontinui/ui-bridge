@@ -14,12 +14,12 @@ GET /render-log
 
 **Query Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `type` | string | Filter by entry type |
-| `since` | number | Entries after timestamp |
-| `until` | number | Entries before timestamp |
-| `limit` | number | Max entries to return |
+| Parameter | Type   | Description              |
+| --------- | ------ | ------------------------ |
+| `type`    | string | Filter by entry type     |
+| `since`   | number | Entries after timestamp  |
+| `until`   | number | Entries before timestamp |
+| `limit`   | number | Max entries to return    |
 
 **Response:**
 
@@ -59,14 +59,14 @@ GET /render-log
 
 ## Entry Types
 
-| Type | Description |
-|------|-------------|
-| `snapshot` | Full DOM snapshot |
-| `change` | DOM mutation |
-| `navigation` | Page navigation |
-| `interaction` | User interaction |
-| `error` | JavaScript error |
-| `custom` | Custom event |
+| Type          | Description       |
+| ------------- | ----------------- |
+| `snapshot`    | Full DOM snapshot |
+| `change`      | DOM mutation      |
+| `navigation`  | Page navigation   |
+| `interaction` | User interaction  |
+| `error`       | JavaScript error  |
+| `custom`      | Custom event      |
 
 ## Capture Snapshot
 

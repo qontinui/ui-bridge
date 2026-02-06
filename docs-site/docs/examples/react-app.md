@@ -9,6 +9,7 @@ A basic React application demonstrating UI Bridge integration.
 ## Overview
 
 This example shows how to:
+
 - Set up UIBridgeProvider
 - Register elements with useUIElement
 - Register components with useUIComponent
@@ -95,7 +96,9 @@ function LoginForm() {
     <form>
       <input ref={emailInput.ref} data-ui-id="login-email" type="email" />
       <input ref={passwordInput.ref} data-ui-id="login-password" type="password" />
-      <button ref={submitButton.ref} data-ui-id="login-submit">Login</button>
+      <button ref={submitButton.ref} data-ui-id="login-submit">
+        Login
+      </button>
     </form>
   );
 }

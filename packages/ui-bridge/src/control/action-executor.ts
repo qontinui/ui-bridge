@@ -65,6 +65,13 @@ function getElementState(element: HTMLElement): ElementState {
     },
   };
 
+  // Populate textContent from the element's visible text
+  const rawText = element.textContent?.trim();
+  if (rawText) {
+    // Collapse whitespace and truncate to avoid storing huge text
+    state.textContent = rawText.replace(/\s+/g, ' ').slice(0, 500);
+  }
+
   if (element instanceof HTMLInputElement) {
     state.value = element.value;
     if (element.type === 'checkbox' || element.type === 'radio') {
@@ -307,6 +314,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       '[role="switch"]',
       '[tabindex]:not([tabindex="-1"])',
       '[contenteditable="true"]',
+      '[data-ui-element]',
       '[data-ui-id]',
       '[data-testid]',
     ];

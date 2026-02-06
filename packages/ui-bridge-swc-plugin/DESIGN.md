@@ -6,12 +6,12 @@ A Rust-based SWC plugin that provides the same functionality as `@qontinui/ui-br
 
 ## Why SWC Plugin?
 
-| Problem | Solution |
-|---------|----------|
+| Problem                        | Solution                             |
+| ------------------------------ | ------------------------------------ |
 | Next.js 15 uses SWC by default | Native SWC plugin, no Babel fallback |
-| `next/font` requires SWC | Plugin runs within SWC, no conflict |
-| Babel is slower | SWC is 20-70x faster |
-| Future-proofing | SWC adoption is growing |
+| `next/font` requires SWC       | Plugin runs within SWC, no conflict  |
+| Babel is slower                | SWC is 20-70x faster                 |
+| Future-proofing                | SWC adoption is growing              |
 
 ## Architecture
 
@@ -78,23 +78,26 @@ Configuration is passed via `next.config.js` (or `.swcrc`):
 module.exports = {
   experimental: {
     swcPlugins: [
-      ['@qontinui/ui-bridge-swc-plugin', {
-        // Same options as Babel plugin for consistency
-        elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
-        idPrefix: 'ui',
-        idAttribute: 'data-ui-id',
-        aliasesAttribute: 'data-ui-aliases',
-        typeAttribute: 'data-ui-type',
-        generateAliases: true,
-        includeComponentName: true,
-        includeFilePath: false,
-        hashIds: false,
-        maxAliases: 5,
-        skipExisting: true,
-        verbose: false,
-      }]
-    ]
-  }
+      [
+        '@qontinui/ui-bridge-swc-plugin',
+        {
+          // Same options as Babel plugin for consistency
+          elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
+          idPrefix: 'ui',
+          idAttribute: 'data-ui-id',
+          aliasesAttribute: 'data-ui-aliases',
+          typeAttribute: 'data-ui-type',
+          generateAliases: true,
+          includeComponentName: true,
+          includeFilePath: false,
+          hashIds: false,
+          maxAliases: 5,
+          skipExisting: true,
+          verbose: false,
+        },
+      ],
+    ],
+  },
 };
 ```
 
@@ -787,11 +790,7 @@ cp target/wasm32-wasi/release/ui_bridge_swc_plugin.wasm npm/wasm32-wasi/
   "version": "0.2.0",
   "description": "SWC plugin for automatic UI Bridge instrumentation",
   "main": "index.js",
-  "files": [
-    "index.js",
-    "index.d.ts",
-    "*.wasm"
-  ],
+  "files": ["index.js", "index.d.ts", "*.wasm"],
   "keywords": ["swc", "plugin", "ui-bridge", "testing", "automation"],
   "repository": {
     "type": "git",
@@ -811,13 +810,16 @@ cp target/wasm32-wasi/release/ui_bridge_swc_plugin.wasm npm/wasm32-wasi/
 module.exports = {
   experimental: {
     swcPlugins: [
-      ['@qontinui/ui-bridge-swc-plugin', {
-        elements: ['button', 'input', 'a', 'form'],
-        idPrefix: 'ui',
-        generateAliases: true,
-      }]
-    ]
-  }
+      [
+        '@qontinui/ui-bridge-swc-plugin',
+        {
+          elements: ['button', 'input', 'a', 'form'],
+          idPrefix: 'ui',
+          generateAliases: true,
+        },
+      ],
+    ],
+  },
 };
 ```
 
@@ -845,10 +847,10 @@ For users migrating from the Babel plugin:
 
 ## Timeline Estimate
 
-| Phase | Duration | Tasks |
-|-------|----------|-------|
-| Setup | 1 week | Rust project, SWC dependencies, build pipeline |
-| Core | 2 weeks | Visitor, ID generation, alias generation |
-| Testing | 1 week | Unit tests, fixtures, integration |
-| Distribution | 1 week | NPM packaging, CI/CD, documentation |
-| **Total** | **5 weeks** | |
+| Phase        | Duration    | Tasks                                          |
+| ------------ | ----------- | ---------------------------------------------- |
+| Setup        | 1 week      | Rust project, SWC dependencies, build pipeline |
+| Core         | 2 weeks     | Visitor, ID generation, alias generation       |
+| Testing      | 1 week      | Unit tests, fixtures, integration              |
+| Distribution | 1 week      | NPM packaging, CI/CD, documentation            |
+| **Total**    | **5 weeks** |                                                |

@@ -5,6 +5,7 @@ Visual Context generates AI-friendly descriptions of the current UI state, enabl
 ## Overview
 
 Visual Context provides:
+
 - Structured descriptions of all visible elements
 - Spatial relationships between elements
 - Current state and values
@@ -114,10 +115,10 @@ console.log(summary);
 
 ```typescript
 const generator = new VisualContextGenerator(registry, {
-  includeHidden: false,      // Exclude hidden elements
-  includePositions: true,    // Include x,y coordinates
+  includeHidden: false, // Exclude hidden elements
+  includePositions: true, // Include x,y coordinates
   includeBoundingBoxes: true, // Include width/height
-  maxElements: 100,          // Limit for large pages
-  textFormat: 'markdown',    // Output format for text
+  maxElements: 100, // Limit for large pages
+  textFormat: 'markdown', // Output format for text
 });
 ```

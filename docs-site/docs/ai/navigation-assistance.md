@@ -5,6 +5,7 @@ Navigation Assistance helps AI agents understand how to navigate between pages a
 ## Overview
 
 Navigation Assistance provides:
+
 - Path finding between pages
 - Breadcrumb tracking
 - Navigation hints and suggestions
@@ -65,7 +66,7 @@ const breadcrumbs = assistant.getBreadcrumbs();
 // ['Home', 'Products', 'Electronics', 'Phones']
 
 // Navigate back
-await assistant.navigateBack(2);  // Goes to 'Products'
+await assistant.navigateBack(2); // Goes to 'Products'
 ```
 
 ## Navigation Map
@@ -75,21 +76,21 @@ Define your application's navigation structure:
 ```typescript
 const assistant = new NavigationAssistant(registry, {
   navigationMap: {
-    'home': {
+    home: {
       path: '/',
       links: ['products', 'cart', 'account'],
     },
-    'products': {
+    products: {
       path: '/products',
       parent: 'home',
       links: ['product-detail', 'cart'],
     },
-    'cart': {
+    cart: {
       path: '/cart',
       parent: 'home',
       links: ['checkout', 'products'],
     },
-    'checkout': {
+    checkout: {
       path: '/checkout',
       parent: 'cart',
       links: ['confirmation'],

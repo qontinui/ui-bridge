@@ -38,9 +38,9 @@ const registered = registry.registerElement('my-button', buttonElement, {
 });
 
 // Get element info
-console.log(registered.id);       // 'my-button'
-console.log(registered.type);     // 'button'
-console.log(registered.actions);  // ['click', 'focus', 'blur']
+console.log(registered.id); // 'my-button'
+console.log(registered.type); // 'button'
+console.log(registered.actions); // ['click', 'focus', 'blur']
 ```
 
 ### Getting Element State
@@ -49,10 +49,10 @@ console.log(registered.actions);  // ['click', 'focus', 'blur']
 const element = registry.getElement('my-button');
 if (element) {
   const state = element.getState();
-  console.log(state.visible);   // true
-  console.log(state.enabled);   // true
-  console.log(state.focused);   // false
-  console.log(state.rect);      // { x, y, width, height, ... }
+  console.log(state.visible); // true
+  console.log(state.enabled); // true
+  console.log(state.focused); // false
+  console.log(state.rect); // { x, y, width, height, ... }
 }
 ```
 
@@ -60,7 +60,7 @@ if (element) {
 
 ```typescript
 const elements = registry.getAllElements();
-elements.forEach(el => {
+elements.forEach((el) => {
   console.log(`${el.id}: ${el.type}`);
 });
 ```
@@ -105,7 +105,7 @@ const component = registry.registerComponent('login-form', {
 
 ```typescript
 const component = registry.getComponent('login-form');
-const action = component.actions.find(a => a.id === 'login');
+const action = component.actions.find((a) => a.id === 'login');
 const result = await action.handler({ email: 'user@example.com', password: 'secret' });
 ```
 
@@ -171,12 +171,12 @@ registry.off('element:registered', listener);
 
 ### Event Types
 
-| Event | Data | Description |
-|-------|------|-------------|
-| `element:registered` | `{ id, type, label }` | Element was registered |
-| `element:unregistered` | `{ id }` | Element was unregistered |
-| `component:registered` | `{ id, name }` | Component was registered |
-| `component:unregistered` | `{ id }` | Component was unregistered |
+| Event                    | Data                  | Description                |
+| ------------------------ | --------------------- | -------------------------- |
+| `element:registered`     | `{ id, type, label }` | Element was registered     |
+| `element:unregistered`   | `{ id }`              | Element was unregistered   |
+| `component:registered`   | `{ id, name }`        | Component was registered   |
+| `component:unregistered` | `{ id }`              | Component was unregistered |
 
 ## Snapshots
 
@@ -185,10 +185,10 @@ Create a complete snapshot of the registry state:
 ```typescript
 const snapshot = registry.createSnapshot();
 
-console.log(snapshot.timestamp);   // Unix timestamp
-console.log(snapshot.elements);    // Array of element info
-console.log(snapshot.components);  // Array of component info
-console.log(snapshot.workflows);   // Array of workflow info
+console.log(snapshot.timestamp); // Unix timestamp
+console.log(snapshot.elements); // Array of element info
+console.log(snapshot.components); // Array of component info
+console.log(snapshot.workflows); // Array of workflow info
 ```
 
 ## Global Registry
@@ -196,11 +196,7 @@ console.log(snapshot.workflows);   // Array of workflow info
 UI Bridge maintains a global registry instance:
 
 ```typescript
-import {
-  getGlobalRegistry,
-  setGlobalRegistry,
-  resetGlobalRegistry,
-} from 'ui-bridge';
+import { getGlobalRegistry, setGlobalRegistry, resetGlobalRegistry } from 'ui-bridge';
 
 // Get the global registry (creates one if none exists)
 const registry = getGlobalRegistry();
@@ -219,9 +215,9 @@ Get registry statistics:
 
 ```typescript
 const stats = registry.getStats();
-console.log(stats.elementCount);         // Total elements
-console.log(stats.componentCount);       // Total components
-console.log(stats.workflowCount);        // Total workflows
-console.log(stats.mountedElementCount);  // Currently mounted elements
+console.log(stats.elementCount); // Total elements
+console.log(stats.componentCount); // Total components
+console.log(stats.workflowCount); // Total workflows
+console.log(stats.mountedElementCount); // Currently mounted elements
 console.log(stats.mountedComponentCount); // Currently mounted components
 ```

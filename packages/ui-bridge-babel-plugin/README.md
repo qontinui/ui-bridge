@@ -4,14 +4,14 @@ Babel plugin for automatic UI Bridge instrumentation. Automatically adds `data-u
 
 ## Compatibility
 
-| Framework | Compatible | Notes |
-|-----------|------------|-------|
-| **Vite + React** | ✅ Yes | Full support |
-| **Create React App** | ✅ Yes | Full support |
-| **Webpack + React** | ✅ Yes | Full support |
-| **Remix** | ✅ Yes | With Babel config |
-| **Next.js 12-14** | ✅ Yes | With Babel config |
-| **Next.js 15** | ⚠️ Partial | See warning below |
+| Framework            | Compatible | Notes             |
+| -------------------- | ---------- | ----------------- |
+| **Vite + React**     | ✅ Yes     | Full support      |
+| **Create React App** | ✅ Yes     | Full support      |
+| **Webpack + React**  | ✅ Yes     | Full support      |
+| **Remix**            | ✅ Yes     | With Babel config |
+| **Next.js 12-14**    | ✅ Yes     | With Babel config |
+| **Next.js 15**       | ⚠️ Partial | See warning below |
 
 ### ⚠️ Next.js 15 + `next/font` Warning
 
@@ -24,6 +24,7 @@ Syntax error: "next/font" requires SWC although Babel is being used due to a cus
 ```
 
 **Options for Next.js 15:**
+
 1. **Use runtime instrumentation** - Use `@qontinui/ui-bridge` with `AutoRegisterProvider` instead (no build-time plugin needed)
 2. **Remove `next/font`** - Use CSS `@font-face` instead (loses font optimization)
 3. **Wait for SWC plugin** - A Rust-based SWC plugin is planned for full Next.js 15 compatibility
@@ -44,12 +45,15 @@ npm install -D @qontinui/ui-bridge-babel-plugin
 // babel.config.js
 module.exports = {
   plugins: [
-    ['@qontinui/ui-bridge-babel-plugin', {
-      // Options
-      elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
-      idPrefix: 'ui',
-    }]
-  ]
+    [
+      '@qontinui/ui-bridge-babel-plugin',
+      {
+        // Options
+        elements: ['button', 'input', 'select', 'textarea', 'a', 'form'],
+        idPrefix: 'ui',
+      },
+    ],
+  ],
 };
 ```
 
@@ -62,10 +66,13 @@ module.exports = {
 module.exports = {
   presets: ['next/babel'],
   plugins: [
-    ['@qontinui/ui-bridge-babel-plugin', {
-      elements: ['button', 'input', 'a'],
-    }]
-  ]
+    [
+      '@qontinui/ui-bridge-babel-plugin',
+      {
+        elements: ['button', 'input', 'a'],
+      },
+    ],
+  ],
 };
 ```
 
@@ -90,19 +97,23 @@ export default {
     react({
       babel: {
         plugins: [
-          ['@qontinui/ui-bridge-babel-plugin', {
-            elements: ['button', 'input', 'a'],
-          }]
-        ]
-      }
-    })
-  ]
+          [
+            '@qontinui/ui-bridge-babel-plugin',
+            {
+              elements: ['button', 'input', 'a'],
+            },
+          ],
+        ],
+      },
+    }),
+  ],
 };
 ```
 
 ## Example
 
 **Input (your code):**
+
 ```jsx
 function LoginForm() {
   return (
@@ -116,13 +127,11 @@ function LoginForm() {
 ```
 
 **Output (after transformation):**
+
 ```jsx
 function LoginForm() {
   return (
-    <form
-      data-ui-id="ui-loginform-form"
-      data-ui-type="form"
-    >
+    <form data-ui-id="ui-loginform-form" data-ui-type="form">
       <input
         placeholder="Email"
         data-ui-id="ui-loginform-email-input"
@@ -151,28 +160,29 @@ function LoginForm() {
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `include` | `string[]` | `['**/*.tsx', '**/*.jsx']` | File patterns to include |
-| `exclude` | `string[]` | `['**/node_modules/**', '**/*.test.*']` | File patterns to exclude |
-| `elements` | `string[]` | `['button', 'input', 'select', 'textarea', 'a', 'form']` | Elements to instrument |
-| `idPrefix` | `string` | `'ui'` | Prefix for generated IDs |
-| `idAttribute` | `string` | `'data-ui-id'` | Attribute name for IDs |
-| `aliasesAttribute` | `string` | `'data-ui-aliases'` | Attribute name for aliases |
-| `typeAttribute` | `string` | `'data-ui-type'` | Attribute name for element type |
-| `generateAliases` | `boolean` | `true` | Generate aliases from text/aria |
-| `includeComponentName` | `boolean` | `true` | Include component name in ID |
-| `includeFilePath` | `boolean` | `false` | Include file path in ID |
-| `hashIds` | `boolean` | `false` | Hash IDs for shorter strings |
-| `maxAliases` | `number` | `5` | Maximum aliases per element |
-| `skipExisting` | `boolean` | `true` | Skip elements with existing data-ui-id |
-| `onlyInComponents` | `string[]` | `[]` | Only instrument in these components |
-| `skipInComponents` | `string[]` | `[]` | Skip instrumentation in these components |
-| `verbose` | `boolean` | `false` | Enable verbose logging |
+| Option                 | Type       | Default                                                  | Description                              |
+| ---------------------- | ---------- | -------------------------------------------------------- | ---------------------------------------- |
+| `include`              | `string[]` | `['**/*.tsx', '**/*.jsx']`                               | File patterns to include                 |
+| `exclude`              | `string[]` | `['**/node_modules/**', '**/*.test.*']`                  | File patterns to exclude                 |
+| `elements`             | `string[]` | `['button', 'input', 'select', 'textarea', 'a', 'form']` | Elements to instrument                   |
+| `idPrefix`             | `string`   | `'ui'`                                                   | Prefix for generated IDs                 |
+| `idAttribute`          | `string`   | `'data-ui-id'`                                           | Attribute name for IDs                   |
+| `aliasesAttribute`     | `string`   | `'data-ui-aliases'`                                      | Attribute name for aliases               |
+| `typeAttribute`        | `string`   | `'data-ui-type'`                                         | Attribute name for element type          |
+| `generateAliases`      | `boolean`  | `true`                                                   | Generate aliases from text/aria          |
+| `includeComponentName` | `boolean`  | `true`                                                   | Include component name in ID             |
+| `includeFilePath`      | `boolean`  | `false`                                                  | Include file path in ID                  |
+| `hashIds`              | `boolean`  | `false`                                                  | Hash IDs for shorter strings             |
+| `maxAliases`           | `number`   | `5`                                                      | Maximum aliases per element              |
+| `skipExisting`         | `boolean`  | `true`                                                   | Skip elements with existing data-ui-id   |
+| `onlyInComponents`     | `string[]` | `[]`                                                     | Only instrument in these components      |
+| `skipInComponents`     | `string[]` | `[]`                                                     | Skip instrumentation in these components |
+| `verbose`              | `boolean`  | `false`                                                  | Enable verbose logging                   |
 
 ## ID Generation
 
 IDs are generated using:
+
 1. Prefix (`idPrefix`)
 2. Component name (if `includeComponentName` is true)
 3. Text content, aria-label, or placeholder
@@ -183,6 +193,7 @@ Example: `ui-loginform-sign-in-button`
 ## Alias Generation
 
 Aliases are automatically generated from:
+
 - Text content
 - `aria-label` attribute
 - `placeholder` attribute
@@ -194,6 +205,7 @@ Common synonyms are also added (e.g., "sign in" also gets "signin", "login", "lo
 ## Supported Elements
 
 By default, the plugin instruments:
+
 - `button` - Buttons
 - `input` - Input fields
 - `select` - Dropdowns
@@ -206,9 +218,18 @@ You can customize this with the `elements` option:
 ```js
 {
   elements: [
-    'button', 'input', 'select', 'textarea', 'a', 'form',
-    'nav', 'header', 'footer', 'dialog', 'img'
-  ]
+    'button',
+    'input',
+    'select',
+    'textarea',
+    'a',
+    'form',
+    'nav',
+    'header',
+    'footer',
+    'dialog',
+    'img',
+  ];
 }
 ```
 

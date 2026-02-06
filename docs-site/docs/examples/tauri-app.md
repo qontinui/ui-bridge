@@ -9,6 +9,7 @@ A Tauri desktop application demonstrating UI Bridge integration.
 ## Overview
 
 This example shows how to:
+
 - Integrate UI Bridge with a Tauri app
 - Bridge the UI Bridge server to Rust backend
 - Control the desktop app from Python

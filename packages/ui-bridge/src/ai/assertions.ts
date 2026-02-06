@@ -8,7 +8,6 @@
 import type { ElementState } from '../core/types';
 import type { DiscoveredElement } from '../control/types';
 import type {
-  AssertionType,
   AssertionRequest,
   AssertionResult,
   BatchAssertionRequest,
@@ -81,7 +80,9 @@ export class AssertionExecutor {
         request.type === 'exists' ? true : request.expected,
         null,
         'Element could not be found',
-        this.config.includeSuggestions ? 'Check if the element exists and is properly labeled' : undefined,
+        this.config.includeSuggestions
+          ? 'Check if the element exists and is properly labeled'
+          : undefined,
         startTime
       );
     }
@@ -117,9 +118,7 @@ export class AssertionExecutor {
     }
 
     // Determine overall pass/fail
-    const passed = request.mode === 'all'
-      ? failedCount === 0
-      : passedCount > 0;
+    const passed = request.mode === 'all' ? failedCount === 0 : passedCount > 0;
 
     return {
       passed,
@@ -155,7 +154,10 @@ export class AssertionExecutor {
   /**
    * Convenience method: assert element is disabled
    */
-  async assertDisabled(target: string | SearchCriteria, timeout?: number): Promise<AssertionResult> {
+  async assertDisabled(
+    target: string | SearchCriteria,
+    timeout?: number
+  ): Promise<AssertionResult> {
     return this.assert({ target, type: 'disabled', timeout });
   }
 
@@ -202,7 +204,10 @@ export class AssertionExecutor {
   /**
    * Convenience method: assert element does not exist
    */
-  async assertNotExists(target: string | SearchCriteria, timeout?: number): Promise<AssertionResult> {
+  async assertNotExists(
+    target: string | SearchCriteria,
+    timeout?: number
+  ): Promise<AssertionResult> {
     return this.assert({ target, type: 'notExists', timeout });
   }
 
@@ -216,7 +221,10 @@ export class AssertionExecutor {
   /**
    * Convenience method: assert checkbox is unchecked
    */
-  async assertUnchecked(target: string | SearchCriteria, timeout?: number): Promise<AssertionResult> {
+  async assertUnchecked(
+    target: string | SearchCriteria,
+    timeout?: number
+  ): Promise<AssertionResult> {
     return this.assert({ target, type: 'unchecked', timeout });
   }
 
@@ -232,9 +240,10 @@ export class AssertionExecutor {
   }
 
   /**
-   * Find element by target (string or criteria)
+   * Find element by target (string or criteria).
+   * Public for use by condition evaluation in SpecExecutor.
    */
-  private async findElement(
+  public async findElement(
     target: string | SearchCriteria,
     fuzzy: boolean = true
   ): Promise<AIDiscoveredElement | null> {
@@ -259,33 +268,68 @@ export class AssertionExecutor {
     timeout: number,
     startTime: number
   ): Promise<AssertionResult> {
-    const targetStr = typeof request.target === 'string'
-      ? request.target
-      : JSON.stringify(request.target);
+    const targetStr =
+      typeof request.target === 'string' ? request.target : JSON.stringify(request.target);
 
     const elementDescription = element?.description || targetStr;
 
     switch (request.type) {
       case 'visible':
-        return this.assertVisibility(element!, true, elementDescription, request.message, startTime);
+        return this.assertVisibility(
+          element!,
+          true,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'hidden':
-        return this.assertVisibility(element!, false, elementDescription, request.message, startTime);
+        return this.assertVisibility(
+          element!,
+          false,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'enabled':
-        return this.assertEnabledState(element!, true, elementDescription, request.message, startTime);
+        return this.assertEnabledState(
+          element!,
+          true,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'disabled':
-        return this.assertEnabledState(element!, false, elementDescription, request.message, startTime);
+        return this.assertEnabledState(
+          element!,
+          false,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'focused':
         return this.assertFocused(element!, elementDescription, request.message, startTime);
 
       case 'checked':
-        return this.assertCheckedState(element!, true, elementDescription, request.message, startTime);
+        return this.assertCheckedState(
+          element!,
+          true,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'unchecked':
-        return this.assertCheckedState(element!, false, elementDescription, request.message, startTime);
+        return this.assertCheckedState(
+          element!,
+          false,
+          elementDescription,
+          request.message,
+          startTime
+        );
 
       case 'hasText':
         return this.assertTextMatch(
@@ -413,7 +457,10 @@ export class AssertionExecutor {
       description,
       expectedVisible,
       isVisible,
-      passed ? undefined : message || `Element is ${isVisible ? 'visible' : 'hidden'} but expected ${expectedVisible ? 'visible' : 'hidden'}`,
+      passed
+        ? undefined
+        : message ||
+            `Element is ${isVisible ? 'visible' : 'hidden'} but expected ${expectedVisible ? 'visible' : 'hidden'}`,
       passed ? undefined : 'Check if element is covered by another element or has display:none',
       startTime,
       element.state
@@ -439,7 +486,10 @@ export class AssertionExecutor {
       description,
       expectedEnabled,
       isEnabled,
-      passed ? undefined : message || `Element is ${isEnabled ? 'enabled' : 'disabled'} but expected ${expectedEnabled ? 'enabled' : 'disabled'}`,
+      passed
+        ? undefined
+        : message ||
+            `Element is ${isEnabled ? 'enabled' : 'disabled'} but expected ${expectedEnabled ? 'enabled' : 'disabled'}`,
       passed ? undefined : 'Check if the element has a disabled attribute or aria-disabled',
       startTime,
       element.state
@@ -489,7 +539,10 @@ export class AssertionExecutor {
       description,
       expectedChecked,
       isChecked,
-      passed ? undefined : message || `Element is ${isChecked ? 'checked' : 'unchecked'} but expected ${expectedChecked ? 'checked' : 'unchecked'}`,
+      passed
+        ? undefined
+        : message ||
+            `Element is ${isChecked ? 'checked' : 'unchecked'} but expected ${expectedChecked ? 'checked' : 'unchecked'}`,
       passed ? undefined : 'Click the checkbox to change its state',
       startTime,
       element.state
@@ -508,9 +561,7 @@ export class AssertionExecutor {
     startTime: number = performance.now()
   ): AssertionResult {
     const actualText = element.state.textContent || '';
-    const passed = exact
-      ? actualText === expectedText
-      : actualText.includes(expectedText);
+    const passed = exact ? actualText === expectedText : actualText.includes(expectedText);
 
     return this.createResult(
       passed,
@@ -520,9 +571,10 @@ export class AssertionExecutor {
       actualText,
       passed
         ? undefined
-        : message || (exact
-          ? `Text "${actualText}" does not match expected "${expectedText}"`
-          : `Text "${actualText}" does not contain "${expectedText}"`),
+        : message ||
+            (exact
+              ? `Text "${actualText}" does not match expected "${expectedText}"`
+              : `Text "${actualText}" does not contain "${expectedText}"`),
       passed ? undefined : 'Verify the element contains the expected text',
       startTime,
       element.state
@@ -548,7 +600,9 @@ export class AssertionExecutor {
       description,
       expectedValue,
       actualValue,
-      passed ? undefined : message || `Value "${actualValue}" does not match expected "${expectedValue}"`,
+      passed
+        ? undefined
+        : message || `Value "${actualValue}" does not match expected "${expectedValue}"`,
       passed ? undefined : 'Type the expected value into the input',
       startTime,
       element.state
@@ -625,7 +679,10 @@ export class AssertionExecutor {
       description,
       expectedValue,
       actualValue,
-      passed ? undefined : message || `Attribute "${attributeName}" is "${actualValue}" but expected "${expectedValue}"`,
+      passed
+        ? undefined
+        : message ||
+            `Attribute "${attributeName}" is "${actualValue}" but expected "${expectedValue}"`,
       undefined,
       startTime,
       element.state
@@ -692,7 +749,10 @@ export class AssertionExecutor {
       description,
       expectedValue,
       actualValue,
-      passed ? undefined : message || `CSS property "${propertyName}" is "${actualValue}" but expected "${expectedValue}"`,
+      passed
+        ? undefined
+        : message ||
+            `CSS property "${propertyName}" is "${actualValue}" but expected "${expectedValue}"`,
       undefined,
       startTime,
       element.state

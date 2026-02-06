@@ -129,9 +129,7 @@ export interface HandlerContext {
 /**
  * Handler function type
  */
-export type HandlerFunction<T = unknown> = (
-  context: HandlerContext
-) => Promise<APIResponse<T>>;
+export type HandlerFunction<T = unknown> = (context: HandlerContext) => Promise<APIResponse<T>>;
 
 /**
  * Server handlers interface

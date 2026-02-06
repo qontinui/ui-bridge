@@ -8,8 +8,8 @@ export default function Home() {
     <main style={{ padding: '2rem', maxWidth: '800px', margin: '0 auto' }}>
       <h1>UI Bridge Next.js Example</h1>
       <p>
-        This example demonstrates UI Bridge integration with Next.js App Router.
-        Control this UI from Python or any HTTP client.
+        This example demonstrates UI Bridge integration with Next.js App Router. Control this UI
+        from Python or any HTTP client.
       </p>
 
       <section style={{ marginTop: '2rem' }}>
@@ -25,7 +25,7 @@ export default function Home() {
       <section style={{ marginTop: '2rem', padding: '1rem', background: '#f5f5f5' }}>
         <h3>Python Control Example</h3>
         <pre style={{ overflow: 'auto' }}>
-{`from ui_bridge import UIBridgeClient
+          {`from ui_bridge import UIBridgeClient
 
 client = UIBridgeClient(
     base_url='http://localhost:3000',

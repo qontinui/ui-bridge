@@ -84,10 +84,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 
       // Wait for conditions if specified
       if (request.waitOptions) {
-        const waitResult = await this.waitForElementInternal(
-          registered.id,
-          request.waitOptions
-        );
+        const waitResult = await this.waitForElementInternal(registered.id, request.waitOptions);
         waitDurationMs = waitResult.waitedMs;
         if (!waitResult.met) {
           return {
@@ -496,9 +493,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 
     // Filter by testID pattern
     if (request.testIdPattern) {
-      const regex = new RegExp(
-        request.testIdPattern.replace(/\*/g, '.*').replace(/\?/g, '.')
-      );
+      const regex = new RegExp(request.testIdPattern.replace(/\*/g, '.*').replace(/\?/g, '.'));
       filtered = filtered.filter((e) => {
         const identifier = e.getIdentifier();
         return identifier.testId && regex.test(identifier.testId);
@@ -512,9 +507,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       );
       filtered = filtered.filter((e) => {
         const identifier = e.getIdentifier();
-        return (
-          identifier.accessibilityLabel && regex.test(identifier.accessibilityLabel)
-        );
+        return identifier.accessibilityLabel && regex.test(identifier.accessibilityLabel);
       });
     }
 
@@ -621,8 +614,6 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 /**
  * Create a native action executor
  */
-export function createNativeActionExecutor(
-  registry: NativeUIBridgeRegistry
-): NativeActionExecutor {
+export function createNativeActionExecutor(registry: NativeUIBridgeRegistry): NativeActionExecutor {
   return new DefaultNativeActionExecutor(registry);
 }

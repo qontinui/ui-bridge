@@ -8,13 +8,13 @@ Complete guide for integrating UI Bridge with React Native and Expo applications
 
 ## Key Differences from Web
 
-| Feature | Web | React Native |
-|---------|-----|--------------|
-| DOM Snapshots | ✅ Full DOM capture | ❌ No DOM |
-| MutationObserver | ✅ Auto-detects changes | ❌ Not available |
-| Auto-Registration | ✅ Automatic discovery | ⚠️ Manual via hooks |
-| Render Logging | ✅ DOM-based | ✅ Screen/component-based |
-| Element Control | ✅ Direct DOM access | ✅ Via component refs |
+| Feature           | Web                     | React Native              |
+| ----------------- | ----------------------- | ------------------------- |
+| DOM Snapshots     | ✅ Full DOM capture     | ❌ No DOM                 |
+| MutationObserver  | ✅ Auto-detects changes | ❌ Not available          |
+| Auto-Registration | ✅ Automatic discovery  | ⚠️ Manual via hooks       |
+| Render Logging    | ✅ DOM-based            | ✅ Screen/component-based |
+| Element Control   | ✅ Direct DOM access    | ✅ Via component refs     |
 
 ## Installation
 
@@ -43,7 +43,7 @@ export default function RootLayout() {
   return (
     <UIBridgeNativeProvider
       features={{
-        server: __DEV__,  // Enable HTTP server in dev
+        server: __DEV__, // Enable HTTP server in dev
         debug: __DEV__,
       }}
       config={{
@@ -89,7 +89,11 @@ import { usePathname, useSegments } from 'expo-router';
 interface RenderLogContextValue {
   isEnabled: boolean;
   logRender: (componentName: string, trigger: string, data?: Record<string, unknown>) => void;
-  logInteraction: (eventType: string, targetComponent?: string, details?: Record<string, unknown>) => void;
+  logInteraction: (
+    eventType: string,
+    targetComponent?: string,
+    details?: Record<string, unknown>
+  ) => void;
   getEntries: () => Promise<RenderLogEntry[]>;
   clear: () => Promise<void>;
   currentScreen: string;
@@ -127,51 +131,59 @@ export function RenderLogProvider({ children, enableOnMount = __DEV__ }) {
       },
     };
 
-    setLogs(prev => [...prev.slice(-499), entry]);
+    setLogs((prev) => [...prev.slice(-499), entry]);
   }, [currentScreen, isEnabled]);
 
-  const logRender = useCallback((componentName, trigger, data = {}) => {
-    if (!isEnabled) return;
+  const logRender = useCallback(
+    (componentName, trigger, data = {}) => {
+      if (!isEnabled) return;
 
-    const entry: RenderLogEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: 'component_render',
-      timestamp: Date.now(),
-      source: componentName,
-      trigger,
-      data: { ...data, screen: currentScreen },
-    };
+      const entry: RenderLogEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: 'component_render',
+        timestamp: Date.now(),
+        source: componentName,
+        trigger,
+        data: { ...data, screen: currentScreen },
+      };
 
-    setLogs(prev => [...prev.slice(-499), entry]);
-  }, [isEnabled, currentScreen]);
+      setLogs((prev) => [...prev.slice(-499), entry]);
+    },
+    [isEnabled, currentScreen]
+  );
 
-  const logInteraction = useCallback((eventType, targetComponent, details = {}) => {
-    if (!isEnabled) return;
+  const logInteraction = useCallback(
+    (eventType, targetComponent, details = {}) => {
+      if (!isEnabled) return;
 
-    const entry: RenderLogEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: 'interaction',
-      timestamp: Date.now(),
-      source: targetComponent || 'unknown',
-      trigger: eventType,
-      data: { ...details, screen: currentScreen },
-    };
+      const entry: RenderLogEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: 'interaction',
+        timestamp: Date.now(),
+        source: targetComponent || 'unknown',
+        trigger: eventType,
+        data: { ...details, screen: currentScreen },
+      };
 
-    setLogs(prev => [...prev.slice(-499), entry]);
-  }, [isEnabled, currentScreen]);
+      setLogs((prev) => [...prev.slice(-499), entry]);
+    },
+    [isEnabled, currentScreen]
+  );
 
   const getEntries = useCallback(async () => logs, [logs]);
   const clear = useCallback(async () => setLogs([]), []);
 
   return (
-    <RenderLogContext.Provider value={{
-      isEnabled,
-      logRender,
-      logInteraction,
-      getEntries,
-      clear,
-      currentScreen,
-    }}>
+    <RenderLogContext.Provider
+      value={{
+        isEnabled,
+        logRender,
+        logInteraction,
+        getEntries,
+        clear,
+        currentScreen,
+      }}
+    >
       {children}
     </RenderLogContext.Provider>
   );
@@ -285,11 +297,7 @@ function LoginForm() {
 
   return (
     <View>
-      <TextInput
-        value={email}
-        onChangeText={setEmail}
-        placeholder="Email"
-      />
+      <TextInput value={email} onChangeText={setEmail} placeholder="Email" />
       <TextInput
         value={password}
         onChangeText={setPassword}
@@ -352,10 +360,14 @@ export function useLogRender(
 ```tsx
 // Usage
 function ProductCard({ product }) {
-  useLogRender('ProductCard', {
-    productId: product.id,
-    inStock: product.quantity > 0,
-  }, [product.id]);
+  useLogRender(
+    'ProductCard',
+    {
+      productId: product.id,
+      inStock: product.quantity > 0,
+    },
+    [product.id]
+  );
 
   return <View>...</View>;
 }

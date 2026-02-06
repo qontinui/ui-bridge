@@ -83,6 +83,7 @@ export function createNextRouteHandlers(
 ): {
   GET: NextRouteHandler;
   POST: NextRouteHandler;
+  PUT: NextRouteHandler;
   DELETE: NextRouteHandler;
 } {
   const authenticate = config.authenticate;
@@ -132,8 +133,8 @@ export function createNextRouteHandlers(
         }
       }
 
-      // Add body for POST requests
-      if (method === 'POST') {
+      // Add body for POST/PUT/PATCH requests or when body is required
+      if (route.bodyRequired || method === 'POST' || method === 'PUT' || method === 'PATCH') {
         try {
           const body = await request.json();
           args.push(body);
@@ -165,6 +166,7 @@ export function createNextRouteHandlers(
   return {
     GET: handleRequest,
     POST: handleRequest,
+    PUT: handleRequest,
     DELETE: handleRequest,
   };
 }

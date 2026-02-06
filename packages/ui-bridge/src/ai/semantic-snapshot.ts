@@ -5,8 +5,7 @@
  * form analysis, and modal detection.
  */
 
-import type { ElementState } from '../core/types';
-import type { ControlSnapshot, DiscoveredElement } from '../control/types';
+import type { ControlSnapshot } from '../control/types';
 import type {
   SemanticSnapshot,
   AIDiscoveredElement,
@@ -14,21 +13,16 @@ import type {
   FormState,
   FormFieldState,
   ModalState,
-  FormAnalysis,
-  FormFieldAnalysis,
 } from './types';
 import { SearchEngine } from './search-engine';
-import {
-  generatePageSummary,
-  generateElementDescription,
-  inferPageType,
-} from './summary-generator';
+import { generatePageSummary, inferPageType } from './summary-generator';
 import {
   generateAliases,
   generateDescription,
   generatePurpose,
   generateSuggestedActions,
 } from './alias-generator';
+import { getGlobalAnnotationStore } from '../annotations';
 
 /**
  * Configuration for semantic snapshots
@@ -44,6 +38,8 @@ export interface SemanticSnapshotConfig {
   generateDescriptions: boolean;
   /** Maximum elements to include */
   maxElements: number;
+  /** Merge annotations from the annotation store (default: true) */
+  useAnnotations: boolean;
 }
 
 /**
@@ -55,6 +51,7 @@ export const DEFAULT_SNAPSHOT_CONFIG: SemanticSnapshotConfig = {
   inferPageType: true,
   generateDescriptions: true,
   maxElements: 500,
+  useAnnotations: true,
 };
 
 /**
@@ -99,14 +96,10 @@ export class SemanticSnapshotManager {
     const fullPageContext = this.buildPageContext(aiElements, pageContext);
 
     // Analyze forms
-    const forms = this.config.analyzeForms
-      ? this.analyzeForms(aiElements)
-      : [];
+    const forms = this.config.analyzeForms ? this.analyzeForms(aiElements) : [];
 
     // Detect modals
-    const modals = this.config.detectModals
-      ? this.detectModals(aiElements)
-      : [];
+    const modals = this.config.detectModals ? this.detectModals(aiElements) : [];
 
     // Count elements by type
     const elementCounts = this.countElementTypes(aiElements);
@@ -168,18 +161,14 @@ export class SemanticSnapshotManager {
   /**
    * Convert control snapshot elements to AI elements
    */
-  private convertElements(
-    elements: ControlSnapshot['elements']
-  ): AIDiscoveredElement[] {
+  private convertElements(elements: ControlSnapshot['elements']): AIDiscoveredElement[] {
     return elements.map((el) => this.convertElement(el));
   }
 
   /**
    * Convert a single element to AI element
    */
-  private convertElement(
-    element: ControlSnapshot['elements'][0]
-  ): AIDiscoveredElement {
+  private convertElement(element: ControlSnapshot['elements'][0]): AIDiscoveredElement {
     const aliases = generateAliases({
       textContent: element.state.textContent,
       elementType: element.type,
@@ -206,6 +195,28 @@ export class SemanticSnapshotManager {
       elementType: element.type,
     });
 
+    // Merge annotation overrides (explicit > inferred)
+    let finalDescription = description;
+    let finalPurpose = purpose;
+    let finalAliases = aliases;
+
+    if (this.config.useAnnotations) {
+      const annotation = getGlobalAnnotationStore().get(element.id);
+      if (annotation) {
+        if (annotation.description) {
+          finalDescription = annotation.description;
+        }
+        if (annotation.purpose) {
+          finalPurpose = annotation.purpose;
+        }
+        if (annotation.tags && annotation.tags.length > 0) {
+          // Merge tags into aliases additively
+          const tagSet = new Set([...finalAliases, ...annotation.tags.map((t) => t.toLowerCase())]);
+          finalAliases = [...tagSet];
+        }
+      }
+    }
+
     return {
       id: element.id,
       type: element.type,
@@ -216,9 +227,9 @@ export class SemanticSnapshotManager {
       actions: element.actions,
       state: element.state,
       registered: true,
-      description,
-      aliases,
-      purpose,
+      description: finalDescription,
+      aliases: finalAliases,
+      purpose: finalPurpose,
       suggestedActions,
       semanticType: this.inferSemanticType(element),
     };
@@ -326,8 +337,7 @@ export class SemanticSnapshotManager {
     // Find form fields (simplified - would need DOM relationship data)
     const inputs = allElements.filter(
       (el) =>
-        (el.type === 'input' || el.type === 'textarea' || el.type === 'select') &&
-        el.state.visible
+        (el.type === 'input' || el.type === 'textarea' || el.type === 'select') && el.state.visible
     );
 
     const fields = this.analyzeFormFields(inputs);
@@ -335,10 +345,7 @@ export class SemanticSnapshotManager {
 
     // Find submit button
     const submitButton = allElements.find(
-      (el) =>
-        el.type === 'button' &&
-        el.state.visible &&
-        el.semanticType === 'submit-button'
+      (el) => el.type === 'button' && el.state.visible && el.semanticType === 'submit-button'
     );
 
     return {
@@ -374,9 +381,7 @@ export class SemanticSnapshotManager {
     const modals: ModalState[] = [];
 
     // Find dialog elements
-    const dialogElements = elements.filter(
-      (el) => el.type === 'dialog' && el.state.visible
-    );
+    const dialogElements = elements.filter((el) => el.type === 'dialog' && el.state.visible);
 
     for (const dialog of dialogElements) {
       // Try to find close button within dialog context
@@ -390,10 +395,7 @@ export class SemanticSnapshotManager {
 
       // Try to find primary action
       const primaryAction = elements.find(
-        (el) =>
-          el.type === 'button' &&
-          el.state.visible &&
-          el.semanticType === 'submit-button'
+        (el) => el.type === 'button' && el.state.visible && el.semanticType === 'submit-button'
       );
 
       modals.push({
@@ -446,9 +448,7 @@ export class SemanticSnapshotManager {
    * Infer form purpose from fields
    */
   private inferFormPurpose(fields: AIDiscoveredElement[]): string {
-    const labels = fields.map((f) =>
-      (f.accessibleName || f.label || '').toLowerCase()
-    );
+    const labels = fields.map((f) => (f.accessibleName || f.label || '').toLowerCase());
     const allLabels = labels.join(' ');
 
     if (allLabels.includes('email') && allLabels.includes('password')) {

@@ -8,11 +8,11 @@ UI Bridge Server provides HTTP endpoints for controlling your React application.
 
 ## Server Options
 
-| Option | Best For | Setup |
-|--------|----------|-------|
+| Option         | Best For               | Setup            |
+| -------------- | ---------------------- | ---------------- |
 | **Standalone** | Create React App, Vite | Separate process |
-| **Express** | Express.js apps | Middleware |
-| **Next.js** | Next.js apps | API routes |
+| **Express**    | Express.js apps        | Middleware       |
+| **Next.js**    | Next.js apps           | API routes       |
 
 ## Quick Comparison
 
@@ -63,21 +63,21 @@ export { GET, POST, DELETE } from 'ui-bridge-server/nextjs';
 
 All server options provide the same HTTP API:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/control/elements` | GET | List registered elements |
-| `/control/element/:id` | GET | Get element details |
-| `/control/element/:id/state` | GET | Get element state |
-| `/control/element/:id/action` | POST | Execute action |
-| `/control/components` | GET | List components |
-| `/control/component/:id/action/:name` | POST | Execute component action |
-| `/control/discover` | POST | Discover elements |
-| `/control/snapshot` | GET | Get full snapshot |
-| `/control/workflows` | GET | List workflows |
-| `/control/workflow/:id/run` | POST | Run workflow |
-| `/render-log` | GET | Get render log |
-| `/render-log/snapshot` | POST | Capture snapshot |
-| `/debug/metrics` | GET | Get metrics |
+| Endpoint                              | Method | Description              |
+| ------------------------------------- | ------ | ------------------------ |
+| `/control/elements`                   | GET    | List registered elements |
+| `/control/element/:id`                | GET    | Get element details      |
+| `/control/element/:id/state`          | GET    | Get element state        |
+| `/control/element/:id/action`         | POST   | Execute action           |
+| `/control/components`                 | GET    | List components          |
+| `/control/component/:id/action/:name` | POST   | Execute component action |
+| `/control/discover`                   | POST   | Discover elements        |
+| `/control/snapshot`                   | GET    | Get full snapshot        |
+| `/control/workflows`                  | GET    | List workflows           |
+| `/control/workflow/:id/run`           | POST   | Run workflow             |
+| `/render-log`                         | GET    | Get render log           |
+| `/render-log/snapshot`                | POST   | Capture snapshot         |
+| `/debug/metrics`                      | GET    | Get metrics              |
 
 ## Communication
 

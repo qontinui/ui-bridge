@@ -23,3 +23,9 @@ export * from './debug';
 
 // AI module - natural language interaction
 export * from './ai';
+
+// Annotations module - semantic element annotations
+export * from './annotations';
+
+// Specs module - declarative UI element specifications
+export * from './specs';

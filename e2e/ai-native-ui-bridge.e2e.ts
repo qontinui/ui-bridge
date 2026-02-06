@@ -9,8 +9,7 @@
  * 5. Babel plugin instruments React components correctly
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { JSDOM } from 'jsdom';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   SearchEngine,
   NLActionExecutor,
@@ -19,12 +18,7 @@ import {
   createErrorContext,
   ErrorCodes,
 } from '@qontinui/ui-bridge/ai';
-import type {
-  AIDiscoveredElement,
-  SearchCriteria,
-  NLActionRequest,
-  AssertionRequest,
-} from '@qontinui/ui-bridge/ai';
+import type { AIDiscoveredElement, SearchCriteria, NLActionRequest } from '@qontinui/ui-bridge/ai';
 import type { DiscoveredElement } from '@qontinui/ui-bridge/control';
 import type { ElementState } from '@qontinui/ui-bridge/core';
 
@@ -196,7 +190,7 @@ describe('Success Criteria 1: AI can find elements by text', () => {
     expect(response.bestMatch!.confidence).toBeGreaterThan(0.8);
     // Check that one of the match reasons indicates text matching
     const hasTextMatchReason = response.bestMatch!.matchReasons.some(
-      r => r.toLowerCase().includes('text') || r.toLowerCase().includes('match')
+      (r) => r.toLowerCase().includes('text') || r.toLowerCase().includes('match')
     );
     expect(hasTextMatchReason).toBe(true);
   });
@@ -249,7 +243,7 @@ describe('Success Criteria 1: AI can find elements by text', () => {
 
     expect(response.bestMatch).not.toBeNull();
     expect(response.bestMatch!.element.id).toBe('cancel-button');
-    expect(response.bestMatch!.matchReasons.some(r => r.includes('role'))).toBe(true);
+    expect(response.bestMatch!.matchReasons.some((r) => r.includes('role'))).toBe(true);
   });
 
   it('should return multiple results sorted by confidence', () => {
@@ -562,7 +556,10 @@ describe('Success Criteria 3: Assertions work for page state verification', () =
 
   it('should assert checkbox is checked', async () => {
     // Use the aria-label to find the checkbox
-    const result = await assertionExecutor.assertChecked({ accessibleName: 'Include Headers', fuzzy: true });
+    const result = await assertionExecutor.assertChecked({
+      accessibleName: 'Include Headers',
+      fuzzy: true,
+    });
 
     expect(result.passed).toBe(true);
     expect(result.expected).toBe(true);
@@ -920,13 +917,13 @@ describe('Integration: Full AI-native workflow', () => {
     mockActionExecutor = {
       executeAction: vi.fn().mockImplementation((elementId, request) => {
         // Simulate state changes based on action
-        const element = testElements.find(e => e.id === elementId);
+        const element = testElements.find((e) => e.id === elementId);
         if (element && request.action === 'type') {
           element.state.value = request.params?.text;
         }
         if (elementId === 'start-extraction-button' && request.action === 'click') {
           // Simulate extraction completing
-          const statusEl = testElements.find(e => e.id === 'status-message');
+          const statusEl = testElements.find((e) => e.id === 'status-message');
           if (statusEl) {
             statusEl.state.textContent = 'Extraction completed successfully!';
             statusEl.state.visible = true;
@@ -953,7 +950,10 @@ describe('Integration: Full AI-native workflow', () => {
 
   it('should complete a full extraction workflow', async () => {
     // Step 1: Find the URL input using search engine
-    const findResult = searchEngine.findBest({ accessibleName: 'Target URL input field', fuzzy: true });
+    const findResult = searchEngine.findBest({
+      accessibleName: 'Target URL input field',
+      fuzzy: true,
+    });
     expect(findResult).not.toBeNull();
     expect(findResult!.element.id).toBe('url-input');
     expect(findResult!.confidence).toBeGreaterThan(0.5);
@@ -991,9 +991,10 @@ describe('Integration: Full AI-native workflow', () => {
 
     // Suggestions should be actionable
     const hasActionableSuggestion = result.suggestions!.some(
-      s => s.toLowerCase().includes('try') ||
-           s.toLowerCase().includes('check') ||
-           s.toLowerCase().includes('did you mean')
+      (s) =>
+        s.toLowerCase().includes('try') ||
+        s.toLowerCase().includes('check') ||
+        s.toLowerCase().includes('did you mean')
     );
     expect(hasActionableSuggestion).toBe(true);
   });

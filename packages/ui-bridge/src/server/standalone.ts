@@ -246,9 +246,9 @@ export class StandaloneServer {
     }
 
     try {
-      // Parse body for POST requests
+      // Parse body for POST/PUT/PATCH requests or when body is required
       let body: unknown = {};
-      if (method === 'POST') {
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH' || route.bodyRequired) {
         body = await this.parseBody(req);
       }
 
@@ -273,7 +273,7 @@ export class StandaloneServer {
         }
       }
 
-      if (method === 'POST') {
+      if (route.bodyRequired || method === 'POST' || method === 'PUT' || method === 'PATCH') {
         args.push(body);
       }
 

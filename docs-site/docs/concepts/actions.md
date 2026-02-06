@@ -12,42 +12,42 @@ These actions are automatically available based on element type:
 
 ### Button Actions
 
-| Action | Description |
-|--------|-------------|
-| `click` | Click the button |
-| `doubleClick` | Double-click the button |
-| `rightClick` | Right-click (context menu) |
-| `focus` | Focus the button |
-| `blur` | Remove focus |
-| `hover` | Hover over the button |
+| Action        | Description                |
+| ------------- | -------------------------- |
+| `click`       | Click the button           |
+| `doubleClick` | Double-click the button    |
+| `rightClick`  | Right-click (context menu) |
+| `focus`       | Focus the button           |
+| `blur`        | Remove focus               |
+| `hover`       | Hover over the button      |
 
 ### Input Actions
 
-| Action | Description |
-|--------|-------------|
-| `click` | Click the input |
-| `type` | Type text into the input |
-| `clear` | Clear the input value |
-| `focus` | Focus the input |
-| `blur` | Remove focus |
+| Action  | Description              |
+| ------- | ------------------------ |
+| `click` | Click the input          |
+| `type`  | Type text into the input |
+| `clear` | Clear the input value    |
+| `focus` | Focus the input          |
+| `blur`  | Remove focus             |
 
 ### Select Actions
 
-| Action | Description |
-|--------|-------------|
-| `click` | Click the select |
+| Action   | Description      |
+| -------- | ---------------- |
+| `click`  | Click the select |
 | `select` | Select an option |
-| `focus` | Focus the select |
-| `blur` | Remove focus |
+| `focus`  | Focus the select |
+| `blur`   | Remove focus     |
 
 ### Checkbox/Radio Actions
 
-| Action | Description |
-|--------|-------------|
-| `click` | Toggle the checkbox |
-| `check` | Check (set to true) |
+| Action    | Description            |
+| --------- | ---------------------- |
+| `click`   | Toggle the checkbox    |
+| `check`   | Check (set to true)    |
 | `uncheck` | Uncheck (set to false) |
-| `toggle` | Toggle current state |
+| `toggle`  | Toggle current state   |
 
 ## Using Actions
 
@@ -154,11 +154,11 @@ client.click('submit-btn',
 
 ### Wait Conditions
 
-| Option | Description |
-|--------|-------------|
-| `wait_visible` | Wait for element to be visible |
-| `wait_enabled` | Wait for element to be enabled |
-| `timeout` | Maximum wait time in milliseconds |
+| Option         | Description                       |
+| -------------- | --------------------------------- |
+| `wait_visible` | Wait for element to be visible    |
+| `wait_enabled` | Wait for element to be enabled    |
+| `timeout`      | Maximum wait time in milliseconds |
 
 ## Action Response
 
@@ -221,8 +221,8 @@ except ActionFailedError as e:
 
 ### Common Errors
 
-| Error | Cause |
-|-------|-------|
-| `ElementNotFoundError` | Element doesn't exist |
-| `ActionFailedError` | Element exists but action failed |
-| `TimeoutError` | Wait condition not met |
+| Error                  | Cause                            |
+| ---------------------- | -------------------------------- |
+| `ElementNotFoundError` | Element doesn't exist            |
+| `ActionFailedError`    | Element exists but action failed |
+| `TimeoutError`         | Wait condition not met           |

@@ -60,10 +60,7 @@ export interface UseUIBridgeReturn {
   /** Create a snapshot of the current state */
   createSnapshot: () => NativeBridgeSnapshot;
   /** Execute an action on an element */
-  executeAction: (
-    elementId: string,
-    request: NativeActionRequest
-  ) => Promise<NativeActionResponse>;
+  executeAction: (elementId: string, request: NativeActionRequest) => Promise<NativeActionResponse>;
   /** Execute a component action */
   executeComponentAction: (
     componentId: string,
@@ -122,22 +119,13 @@ export function useUIBridge(): UseUIBridgeReturn {
   const initialized = bridge?.initialized ?? false;
 
   // Get elements
-  const elements = useMemo(
-    () => (bridge ? bridge.getElements() : []),
-    [bridge]
-  );
+  const elements = useMemo(() => (bridge ? bridge.getElements() : []), [bridge]);
 
   // Get components
-  const components = useMemo(
-    () => (bridge ? bridge.getComponents() : []),
-    [bridge]
-  );
+  const components = useMemo(() => (bridge ? bridge.getComponents() : []), [bridge]);
 
   // Get workflows
-  const workflows = useMemo(
-    () => (bridge ? bridge.registry.getAllWorkflows() : []),
-    [bridge]
-  );
+  const workflows = useMemo(() => (bridge ? bridge.registry.getAllWorkflows() : []), [bridge]);
 
   // Create snapshot
   const createSnapshot = useCallback((): NativeBridgeSnapshot => {
@@ -154,10 +142,7 @@ export function useUIBridge(): UseUIBridgeReturn {
 
   // Execute action
   const executeAction = useCallback(
-    async (
-      elementId: string,
-      request: NativeActionRequest
-    ): Promise<NativeActionResponse> => {
+    async (elementId: string, request: NativeActionRequest): Promise<NativeActionResponse> => {
       if (!bridge) {
         return {
           success: false,
@@ -207,16 +192,10 @@ export function useUIBridge(): UseUIBridgeReturn {
   );
 
   // Get element
-  const getElement = useCallback(
-    (id: string) => bridge?.registry.getElement(id),
-    [bridge]
-  );
+  const getElement = useCallback((id: string) => bridge?.registry.getElement(id), [bridge]);
 
   // Get component
-  const getComponent = useCallback(
-    (id: string) => bridge?.registry.getComponent(id),
-    [bridge]
-  );
+  const getComponent = useCallback((id: string) => bridge?.registry.getComponent(id), [bridge]);
 
   // Get element state
   const getElementState = useCallback(

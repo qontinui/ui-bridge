@@ -9,6 +9,7 @@ Complete guide for integrating UI Bridge with Tauri desktop applications, includ
 ## Overview
 
 Tauri apps have unique requirements:
+
 - **IPC Bridge**: Communication between React frontend and Rust backend
 - **File Storage**: Render logs can be persisted to the filesystem
 - **Desktop Context**: Access to system features and local files
@@ -191,10 +192,13 @@ export function useRenderLogManager(options: UseRenderLogManagerOptions = {}) {
     }, 100);
   }, [isEnabled, activeTab]);
 
-  const captureSnapshot = useCallback(async (trigger = 'manual') => {
-    if (!managerRef.current) return;
-    await managerRef.current.captureSnapshot({ trigger, activeTab, taskRunId });
-  }, [activeTab, taskRunId]);
+  const captureSnapshot = useCallback(
+    async (trigger = 'manual') => {
+      if (!managerRef.current) return;
+      await managerRef.current.captureSnapshot({ trigger, activeTab, taskRunId });
+    },
+    [activeTab, taskRunId]
+  );
 
   return { captureSnapshot, isRunning: !!managerRef.current };
 }
@@ -367,10 +371,7 @@ export default function App() {
           enableMutationObserver={true}
         >
           <div className="app">
-            <Sidebar
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
-            />
+            <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
             <MainContent tab={activeTab} />
           </div>
         </RenderLogWrapper>
@@ -418,7 +419,9 @@ export function UIBridgeEventHandler() {
       }
     });
 
-    return () => { unlisten.then(fn => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [bridge]);
 
   return null;

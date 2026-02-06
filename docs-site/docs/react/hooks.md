@@ -33,11 +33,12 @@ function Button() {
 
 ```tsx
 const control = useUIElement({
-  id: 'my-element',           // Required: Unique identifier
-  type: 'button',             // Optional: Element type (auto-detected)
-  label: 'Submit Button',     // Optional: Human-readable label
+  id: 'my-element', // Required: Unique identifier
+  type: 'button', // Optional: Element type (auto-detected)
+  label: 'Submit Button', // Optional: Human-readable label
   actions: ['click', 'focus'], // Optional: Override available actions
-  customActions: {            // Optional: Custom action handlers
+  customActions: {
+    // Optional: Custom action handlers
     highlight: async () => {
       // Custom logic
     },
@@ -49,8 +50,8 @@ const control = useUIElement({
 
 ```typescript
 interface UseUIElementReturn {
-  ref: RefObject<HTMLElement>;  // Ref to attach to element
-  trigger: (action: string, params?: any) => Promise<any>;  // Trigger action
+  ref: RefObject<HTMLElement>; // Ref to attach to element
+  trigger: (action: string, params?: any) => Promise<any>; // Trigger action
   getState: () => ElementState; // Get current state
   getIdentifier: () => ElementIdentifier; // Get identifiers
 }
@@ -255,11 +256,11 @@ function Dashboard() {
 
 ```typescript
 interface UseUIBridgeReturn {
-  elements: RegisteredElement[];     // All registered elements
+  elements: RegisteredElement[]; // All registered elements
   components: RegisteredComponent[]; // All registered components
   executeAction: (elementId: string, action: string, params?: any) => Promise<any>;
   captureSnapshot: () => BridgeSnapshot;
-  registry: UIBridgeRegistry;        // Direct registry access
+  registry: UIBridgeRegistry; // Direct registry access
 }
 ```
 

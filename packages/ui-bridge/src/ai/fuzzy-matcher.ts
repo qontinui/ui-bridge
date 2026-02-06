@@ -401,17 +401,19 @@ export function wordSimilarity(
  * Handles camelCase, PascalCase, snake_case, kebab-case
  */
 export function tokenize(s: string): string[] {
-  return s
-    // Split camelCase and PascalCase
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    // Split snake_case and kebab-case
-    .replace(/[_-]/g, ' ')
-    // Normalize whitespace
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase()
-    .split(' ')
-    .filter((token) => token.length > 0);
+  return (
+    s
+      // Split camelCase and PascalCase
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      // Split snake_case and kebab-case
+      .replace(/[_-]/g, ' ')
+      // Normalize whitespace
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+      .split(' ')
+      .filter((token) => token.length > 0)
+  );
 }
 
 /**

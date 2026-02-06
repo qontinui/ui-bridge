@@ -7,20 +7,27 @@ Python client for controlling UI elements via UI Bridge HTTP API.
 from __future__ import annotations
 
 import time
+import warnings
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
 import httpx
 
-import warnings
+from .logging import (
+    TraceContext,
+    UIBridgeLogger,
+)
 from .types import (
     ActionResponse,
+    AnnotationConfig,
+    AnnotationCoverage,
     ComponentActionResponse,
     ComponentState,
     ControlSnapshot,
-    FindResponse,
+    ElementAnnotation,
     ElementState,
+    FindResponse,
     NavigationResult,
     PathResult,
     PerformanceMetrics,
@@ -31,13 +38,6 @@ from .types import (
     UIStateGroup,
     UITransition,
     WorkflowRunResponse,
-)
-from .logging import (
-    UIBridgeLogger,
-    LogLevel,
-    EventType,
-    TraceContext,
-    get_default_logger,
 )
 
 if TYPE_CHECKING:
@@ -124,7 +124,7 @@ class UIBridgeClient:
         level: str = "info",
         file_path: str | Path | None = None,
         console: bool = False,
-    ) -> "UIBridgeClient":
+    ) -> UIBridgeClient:
         """
         Enable request/response logging.
 
@@ -149,7 +149,7 @@ class UIBridgeClient:
         )
         return self
 
-    def disable_logging(self) -> "UIBridgeClient":
+    def disable_logging(self) -> UIBridgeClient:
         """
         Disable logging.
 
@@ -513,9 +513,7 @@ class UIBridgeClient:
 
         # Log action started
         if self._logger:
-            self._logger.action_started(
-                element_id, action, trace=self._active_trace, params=params
-            )
+            self._logger.action_started(element_id, action, trace=self._active_trace, params=params)
 
         request: dict[str, Any] = {"action": action}
         if params:
@@ -980,7 +978,7 @@ class UIBridgeClient:
     # ==========================================================================
 
     @property
-    def ai(self) -> "AIClient":
+    def ai(self) -> AIClient:
         """
         AI-native interface for natural language interaction.
 
@@ -1003,7 +1001,32 @@ class UIBridgeClient:
     # AI Convenience Methods
     # ==========================================================================
 
-    def click_text(self, text: str) -> "NLActionResponse":
+    # ==========================================================================
+    # Annotations
+    # ==========================================================================
+
+    @property
+    def annotations(self) -> AnnotationControl:
+        """
+        Get annotation control interface.
+
+        Provides methods for managing semantic element annotations.
+
+        Example:
+            >>> client = UIBridgeClient()
+            >>> client.annotations.set('btn-1', ElementAnnotation(description='Submit button'))
+            >>> client.annotations.get('btn-1')
+            ElementAnnotation(description='Submit button', ...)
+            >>> client.annotations.coverage()
+            AnnotationCoverage(totalElements=10, annotatedElements=1, ...)
+        """
+        return AnnotationControl(self)
+
+    # ==========================================================================
+    # AI Convenience Methods
+    # ==========================================================================
+
+    def click_text(self, text: str) -> NLActionResponse:
         """
         Click an element by its visible text.
 
@@ -1017,7 +1040,7 @@ class UIBridgeClient:
         """
         return self.ai.click(text)
 
-    def type_into(self, target: str, text: str) -> "NLActionResponse":
+    def type_into(self, target: str, text: str) -> NLActionResponse:
         """
         Type text into an element by description.
 
@@ -1210,3 +1233,146 @@ class StateControl:
     def navigate_to(self, target_states: list[str]) -> NavigationResult:
         """Navigate to target states using pathfinding."""
         return self._client.navigate_to(target_states)
+
+
+class AnnotationControl:
+    """Annotation control interface.
+
+    Provides methods for managing semantic element annotations via the
+    UI Bridge HTTP API. Access this through ``client.annotations``.
+
+    Example:
+        Typical workflow - annotate elements, check coverage, export:
+
+        >>> client = UIBridgeClient("http://localhost:9876")
+        >>> # Annotate elements
+        >>> client.annotations.set('login-btn', ElementAnnotation(
+        ...     description='Primary login button',
+        ...     purpose='Submits the login form',
+        ...     tags=['auth', 'primary-action'],
+        ... ))
+        >>> client.annotations.set('email-input', ElementAnnotation(
+        ...     description='Email input field',
+        ...     related_elements=['email-label', 'email-error'],
+        ... ))
+        >>> # Check coverage
+        >>> cov = client.annotations.coverage()
+        >>> print(f"{cov.coverage_percent:.1f}% annotated")
+        20.0% annotated
+        >>> # Export to file for version control
+        >>> config = client.annotations.export_config()
+        >>> import json
+        >>> with open('annotations.json', 'w') as f:
+        ...     json.dump(config.model_dump(by_alias=True), f, indent=2)
+        >>> # Import from file on another machine
+        >>> count = client.annotations.import_file('annotations.json')
+        >>> print(f"Imported {count} annotations")
+        Imported 2 annotations
+    """
+
+    def __init__(self, client: UIBridgeClient):
+        self._client = client
+
+    def get(self, element_id: str) -> ElementAnnotation:
+        """Get an annotation by element ID.
+
+        Args:
+            element_id: Element identifier
+
+        Returns:
+            ElementAnnotation for the element
+
+        Raises:
+            ElementNotFoundError: If no annotation exists for this element
+        """
+        data = self._client._request("GET", f"/annotations/{element_id}")
+        return ElementAnnotation.model_validate(data)
+
+    def set(self, element_id: str, annotation: ElementAnnotation) -> ElementAnnotation:
+        """Set an annotation for an element.
+
+        Args:
+            element_id: Element identifier
+            annotation: Annotation data
+
+        Returns:
+            The saved ElementAnnotation (with updatedAt set)
+        """
+        data = self._client._request(
+            "PUT",
+            f"/annotations/{element_id}",
+            json=annotation.model_dump(by_alias=True, exclude_none=True),
+        )
+        return ElementAnnotation.model_validate(data)
+
+    def delete(self, element_id: str) -> None:
+        """Delete an annotation.
+
+        Args:
+            element_id: Element identifier
+
+        Raises:
+            ElementNotFoundError: If no annotation exists for this element
+        """
+        self._client._request("DELETE", f"/annotations/{element_id}")
+
+    def list(self) -> dict[str, ElementAnnotation]:
+        """Get all annotations.
+
+        Returns:
+            Dictionary mapping element IDs to their annotations
+        """
+        data = self._client._request("GET", "/annotations")
+        return {k: ElementAnnotation.model_validate(v) for k, v in data.items()}
+
+    def export_config(self) -> AnnotationConfig:
+        """Export all annotations as a config object.
+
+        Returns:
+            AnnotationConfig suitable for saving to a file
+        """
+        data = self._client._request("GET", "/annotations/export")
+        return AnnotationConfig.model_validate(data)
+
+    def import_config(self, config: AnnotationConfig) -> int:
+        """Import annotations from a config object.
+
+        Args:
+            config: AnnotationConfig to import
+
+        Returns:
+            Number of annotations imported
+        """
+        data = self._client._request(
+            "POST",
+            "/annotations/import",
+            json=config.model_dump(by_alias=True, exclude_none=True),
+        )
+        return data.get("count", 0)
+
+    def import_file(self, path: str | Path) -> int:
+        """Import annotations from a JSON file.
+
+        Args:
+            path: Path to the JSON config file
+
+        Returns:
+            Number of annotations imported
+        """
+        import json
+
+        file_path = Path(path)
+        with file_path.open() as f:
+            raw = json.load(f)
+
+        config = AnnotationConfig.model_validate(raw)
+        return self.import_config(config)
+
+    def coverage(self) -> AnnotationCoverage:
+        """Get annotation coverage statistics.
+
+        Returns:
+            AnnotationCoverage with counts and percentages
+        """
+        data = self._client._request("GET", "/annotations/coverage")
+        return AnnotationCoverage.model_validate(data)

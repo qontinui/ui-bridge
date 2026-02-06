@@ -31,6 +31,7 @@ import type {
   SemanticSearchCriteria,
   SemanticSearchResponse,
 } from '../ai';
+import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 
 /**
  * Server configuration
@@ -130,7 +131,13 @@ export interface UIBridgeServerHandlers {
   // Component endpoints
   getComponents: () => Promise<APIResponse<ControlSnapshot['components']>>;
   getComponent: (id: string) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
-  getComponentState: (id: string) => Promise<APIResponse<{ state: Record<string, unknown>; computed: Record<string, unknown>; timestamp: number }>>;
+  getComponentState: (id: string) => Promise<
+    APIResponse<{
+      state: Record<string, unknown>;
+      computed: Record<string, unknown>;
+      timestamp: number;
+    }>
+  >;
   executeComponentAction: (
     id: string,
     request: ComponentActionRequest
@@ -168,7 +175,21 @@ export interface UIBridgeServerHandlers {
   getPageSummary: () => Promise<APIResponse<string>>;
 
   // Semantic search (embedding-based)
-  aiSemanticSearch: (criteria: SemanticSearchCriteria) => Promise<APIResponse<SemanticSearchResponse>>;
+  aiSemanticSearch: (
+    criteria: SemanticSearchCriteria
+  ) => Promise<APIResponse<SemanticSearchResponse>>;
+
+  // Annotation endpoints
+  getAnnotations: () => Promise<APIResponse<Record<string, ElementAnnotation>>>;
+  getAnnotation: (id: string) => Promise<APIResponse<ElementAnnotation>>;
+  setAnnotation: (
+    id: string,
+    annotation: ElementAnnotation
+  ) => Promise<APIResponse<ElementAnnotation>>;
+  deleteAnnotation: (id: string) => Promise<APIResponse<void>>;
+  importAnnotations: (config: AnnotationConfig) => Promise<APIResponse<{ count: number }>>;
+  exportAnnotations: () => Promise<APIResponse<AnnotationConfig>>;
+  getAnnotationCoverage: () => Promise<APIResponse<AnnotationCoverage>>;
 }
 
 /**
@@ -207,7 +228,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Control - Components
   { method: 'GET', path: '/control/components', handler: 'getComponents' },
   { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
-  { method: 'GET', path: '/control/component/:id/state', handler: 'getComponentState', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/component/:id/state',
+    handler: 'getComponentState',
+    params: ['id'],
+  },
   {
     method: 'POST',
     path: '/control/component/:id/action/:actionId',
@@ -246,6 +272,21 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
+
+  // Annotations (static routes before parameterized)
+  { method: 'GET', path: '/annotations', handler: 'getAnnotations' },
+  { method: 'GET', path: '/annotations/export', handler: 'exportAnnotations' },
+  { method: 'GET', path: '/annotations/coverage', handler: 'getAnnotationCoverage' },
+  { method: 'POST', path: '/annotations/import', handler: 'importAnnotations', bodyRequired: true },
+  { method: 'GET', path: '/annotations/:id', handler: 'getAnnotation', params: ['id'] },
+  {
+    method: 'PUT',
+    path: '/annotations/:id',
+    handler: 'setAnnotation',
+    params: ['id'],
+    bodyRequired: true,
+  },
+  { method: 'DELETE', path: '/annotations/:id', handler: 'deleteAnnotation', params: ['id'] },
 ];
 
 /**

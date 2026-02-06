@@ -5,15 +5,12 @@
  * for AI agents to understand the current UI state.
  */
 
-import type { ElementState } from '../core/types';
-import type { ControlSnapshot } from '../control/types';
 import type {
   AIDiscoveredElement,
   FormAnalysis,
   FormState,
   PageContext,
   SemanticSnapshot,
-  ModalState,
 } from './types';
 
 /**
@@ -72,11 +69,14 @@ export function generatePageSummary(
     const counts = countElementTypes(elements);
     const countParts: string[] = [];
 
-    if (counts.button > 0) countParts.push(`${counts.button} button${counts.button > 1 ? 's' : ''}`);
+    if (counts.button > 0)
+      countParts.push(`${counts.button} button${counts.button > 1 ? 's' : ''}`);
     if (counts.input > 0) countParts.push(`${counts.input} input${counts.input > 1 ? 's' : ''}`);
     if (counts.link > 0) countParts.push(`${counts.link} link${counts.link > 1 ? 's' : ''}`);
-    if (counts.select > 0) countParts.push(`${counts.select} dropdown${counts.select > 1 ? 's' : ''}`);
-    if (counts.checkbox > 0) countParts.push(`${counts.checkbox} checkbox${counts.checkbox > 1 ? 'es' : ''}`);
+    if (counts.select > 0)
+      countParts.push(`${counts.select} dropdown${counts.select > 1 ? 's' : ''}`);
+    if (counts.checkbox > 0)
+      countParts.push(`${counts.checkbox} checkbox${counts.checkbox > 1 ? 'es' : ''}`);
 
     if (countParts.length > 0) {
       lines.push(`Contains: ${countParts.join(', ')}`);
@@ -96,7 +96,11 @@ export function generatePageSummary(
   }
 
   // Active modals
-  if (finalConfig.includeModals && pageContext?.activeModals && pageContext.activeModals.length > 0) {
+  if (
+    finalConfig.includeModals &&
+    pageContext?.activeModals &&
+    pageContext.activeModals.length > 0
+  ) {
     lines.push('');
     lines.push(`Active modals: ${pageContext.activeModals.join(', ')}`);
   }
@@ -174,7 +178,9 @@ function generateFormSummary(form: FormAnalysis, verbosity: SummaryConfig['verbo
   if (verbosity === 'brief') {
     const fieldCount = form.fields.length;
     const filledCount = form.fields.filter((f) => f.value).length;
-    lines.push(`    ${filledCount}/${fieldCount} fields filled, ${form.isValid ? 'valid' : 'has errors'}`);
+    lines.push(
+      `    ${filledCount}/${fieldCount} fields filled, ${form.isValid ? 'valid' : 'has errors'}`
+    );
   } else {
     // List fields
     for (const field of form.fields) {
@@ -316,7 +322,9 @@ export function generateDiffSummary(
   if (modified.length > 0) {
     lines.push('Changed:');
     for (const mod of modified.slice(0, 5)) {
-      lines.push(`  - ${mod.description}: ${mod.property} changed from "${mod.from}" to "${mod.to}"`);
+      lines.push(
+        `  - ${mod.description}: ${mod.property} changed from "${mod.from}" to "${mod.to}"`
+      );
     }
     if (modified.length > 5) {
       lines.push(`  ... and ${modified.length - 5} more changes`);
@@ -354,7 +362,11 @@ function countElementTypes(elements: AIDiscoveredElement[]): Record<string, numb
 function detectForms(elements: AIDiscoveredElement[]): FormAnalysis[] {
   // Group inputs by common patterns (this is a simplified heuristic)
   const formElements = elements.filter(
-    (el) => el.type === 'input' || el.type === 'textarea' || el.type === 'select' || el.type === 'checkbox'
+    (el) =>
+      el.type === 'input' ||
+      el.type === 'textarea' ||
+      el.type === 'select' ||
+      el.type === 'checkbox'
   );
 
   if (formElements.length === 0) return [];
@@ -466,9 +478,7 @@ function getKeyElements(elements: AIDiscoveredElement[]): AIDiscoveredElement[] 
 /**
  * Format page type for display
  */
-function formatPageType(
-  pageType: PageContext['pageType']
-): string {
+function formatPageType(pageType: PageContext['pageType']): string {
   const typeLabels: Record<NonNullable<PageContext['pageType']>, string> = {
     login: 'Login page',
     dashboard: 'Dashboard',

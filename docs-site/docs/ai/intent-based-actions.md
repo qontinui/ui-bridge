@@ -5,11 +5,13 @@ Intent-based actions allow you to execute user intentions using natural language
 ## Overview
 
 Instead of writing:
+
 ```typescript
 await registry.executeAction('ui-login-form-submit-button', 'click');
 ```
 
 You can write:
+
 ```typescript
 await executor.execute('submit the login form');
 ```
@@ -20,19 +22,19 @@ The intent system understands common UI patterns and maps natural language to th
 
 UI Bridge includes 11 built-in intents:
 
-| Intent | Description | Example |
-|--------|-------------|---------|
-| `click` | Click on an element | "click the submit button" |
-| `type` | Enter text into a field | "type hello into the search box" |
-| `select` | Choose from a dropdown | "select California from state dropdown" |
-| `check` | Check a checkbox | "check the terms checkbox" |
-| `uncheck` | Uncheck a checkbox | "uncheck remember me" |
-| `scroll` | Scroll to an element | "scroll to the footer" |
-| `hover` | Hover over an element | "hover over the menu" |
-| `focus` | Focus an input | "focus the email field" |
-| `clear` | Clear an input | "clear the search input" |
-| `submit` | Submit a form | "submit the login form" |
-| `navigate` | Navigate to a page | "navigate to settings" |
+| Intent     | Description             | Example                                 |
+| ---------- | ----------------------- | --------------------------------------- |
+| `click`    | Click on an element     | "click the submit button"               |
+| `type`     | Enter text into a field | "type hello into the search box"        |
+| `select`   | Choose from a dropdown  | "select California from state dropdown" |
+| `check`    | Check a checkbox        | "check the terms checkbox"              |
+| `uncheck`  | Uncheck a checkbox      | "uncheck remember me"                   |
+| `scroll`   | Scroll to an element    | "scroll to the footer"                  |
+| `hover`    | Hover over an element   | "hover over the menu"                   |
+| `focus`    | Focus an input          | "focus the email field"                 |
+| `clear`    | Clear an input          | "clear the search input"                |
+| `submit`   | Submit a form           | "submit the login form"                 |
+| `navigate` | Navigate to a page      | "navigate to settings"                  |
 
 ## Usage
 
@@ -75,9 +77,9 @@ The executor returns a detailed result:
 interface IntentResult {
   success: boolean;
   intent: {
-    action: string;      // e.g., 'click'
-    target: string;      // e.g., 'login button'
-    value?: string;      // e.g., 'user@example.com' for type intent
+    action: string; // e.g., 'click'
+    target: string; // e.g., 'login button'
+    value?: string; // e.g., 'user@example.com' for type intent
   };
   element?: {
     id: string;
@@ -98,10 +100,7 @@ Register custom intents for domain-specific actions:
 ```typescript
 executor.registerIntent({
   name: 'add-to-cart',
-  patterns: [
-    /add (?:the )?(.+) to (?:my )?cart/i,
-    /buy (?:the )?(.+)/i,
-  ],
+  patterns: [/add (?:the )?(.+) to (?:my )?cart/i, /buy (?:the )?(.+)/i],
   handler: async (match, registry) => {
     const productName = match[1];
     const element = await registry.findByText(productName);
@@ -122,8 +121,8 @@ When intent execution fails, you get structured feedback:
 const result = await executor.execute('click the checkout button');
 
 if (!result.success) {
-  console.log(result.error.code);        // 'ELEMENT_NOT_FOUND'
-  console.log(result.error.message);     // 'Could not find element matching "checkout button"'
+  console.log(result.error.code); // 'ELEMENT_NOT_FOUND'
+  console.log(result.error.message); // 'Could not find element matching "checkout button"'
   console.log(result.error.suggestions); // ['Try "proceed to checkout"', 'Element may not be visible']
 }
 ```
@@ -132,10 +131,10 @@ if (!result.success) {
 
 ```typescript
 const executor = new IntentExecutor(registry, {
-  fuzzyMatch: true,           // Allow fuzzy text matching
-  fuzzyThreshold: 0.8,        // Minimum similarity score
-  timeout: 10000,             // Global timeout for actions
-  retries: 3,                 // Number of retry attempts
-  waitForVisible: true,       // Wait for elements to be visible
+  fuzzyMatch: true, // Allow fuzzy text matching
+  fuzzyThreshold: 0.8, // Minimum similarity score
+  timeout: 10000, // Global timeout for actions
+  retries: 3, // Number of retry attempts
+  waitForVisible: true, // Wait for elements to be visible
 });
 ```

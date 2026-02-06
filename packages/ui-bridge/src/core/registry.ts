@@ -28,8 +28,8 @@ import type {
   StateGetter,
 } from './types';
 import { createElementIdentifier } from './element-identifier';
-import { fuzzyMatch, tokenSimilarity } from '../ai/fuzzy-matcher';
-import { generateAliases, generateDescription, generatePurpose } from '../ai/alias-generator';
+import { fuzzyMatch } from '../ai/fuzzy-matcher';
+import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 
 /**
@@ -408,8 +408,10 @@ export class UIBridgeRegistry {
       // Text matching
       if (criteria.text) {
         // Exact match
-        if (textContent.toLowerCase() === criteria.text.toLowerCase() ||
-            label.toLowerCase() === criteria.text.toLowerCase()) {
+        if (
+          textContent.toLowerCase() === criteria.text.toLowerCase() ||
+          label.toLowerCase() === criteria.text.toLowerCase()
+        ) {
           maxScore = 1.0;
           matchReasons.push('exact text match');
           scores.text = 1.0;
@@ -417,7 +419,8 @@ export class UIBridgeRegistry {
           // Fuzzy match
           const textResult = fuzzyMatch(criteria.text, textContent, { threshold });
           const labelResult = fuzzyMatch(criteria.text, label, { threshold });
-          const bestResult = textResult.similarity > labelResult.similarity ? textResult : labelResult;
+          const bestResult =
+            textResult.similarity > labelResult.similarity ? textResult : labelResult;
 
           if (bestResult.isMatch) {
             scores.text = bestResult.similarity;
@@ -431,8 +434,10 @@ export class UIBridgeRegistry {
 
       // Text contains
       if (criteria.textContains) {
-        if (textContent.toLowerCase().includes(criteria.textContains.toLowerCase()) ||
-            label.toLowerCase().includes(criteria.textContains.toLowerCase())) {
+        if (
+          textContent.toLowerCase().includes(criteria.textContains.toLowerCase()) ||
+          label.toLowerCase().includes(criteria.textContains.toLowerCase())
+        ) {
           const containsScore = 0.85;
           scores.text = Math.max(scores.text ?? 0, containsScore);
           if (containsScore > maxScore) {
@@ -459,7 +464,9 @@ export class UIBridgeRegistry {
             scores.accessibility = result.similarity;
             if (result.similarity > maxScore) {
               maxScore = result.similarity;
-              matchReasons.push(`accessible name similarity: ${(result.similarity * 100).toFixed(0)}%`);
+              matchReasons.push(
+                `accessible name similarity: ${(result.similarity * 100).toFixed(0)}%`
+              );
             }
           }
         }
@@ -524,13 +531,15 @@ export class UIBridgeRegistry {
           actions: element.actions,
           state,
           registered: true,
-          description: element.description || generateDescription({
-            textContent,
-            ariaLabel: element.element.getAttribute('aria-label'),
-            elementType: element.type,
-            id: element.id,
-            labelText: element.label,
-          }),
+          description:
+            element.description ||
+            generateDescription({
+              textContent,
+              ariaLabel: element.element.getAttribute('aria-label'),
+              elementType: element.type,
+              id: element.id,
+              labelText: element.label,
+            }),
           aliases,
           purpose: element.purpose,
           suggestedActions: [],

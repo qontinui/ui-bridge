@@ -44,25 +44,18 @@ function ElementCard({
   const identifier = element.getIdentifier();
 
   return (
-    <TouchableOpacity
-      style={styles.elementCard}
-      onPress={() => onPress(element)}
-    >
+    <TouchableOpacity style={styles.elementCard} onPress={() => onPress(element)}>
       <View style={styles.elementHeader}>
         <Text style={styles.elementId}>{element.id}</Text>
         <Text style={styles.elementType}>{element.type}</Text>
       </View>
-      {element.label && (
-        <Text style={styles.elementLabel}>{element.label}</Text>
-      )}
+      {element.label && <Text style={styles.elementLabel}>{element.label}</Text>}
       <View style={styles.stateRow}>
         <StateIndicator label="Mounted" value={state.mounted} />
         <StateIndicator label="Visible" value={state.visible} />
         <StateIndicator label="Enabled" value={state.enabled} />
       </View>
-      {identifier.testId && (
-        <Text style={styles.testId}>testID: {identifier.testId}</Text>
-      )}
+      {identifier.testId && <Text style={styles.testId}>testID: {identifier.testId}</Text>}
     </TouchableOpacity>
   );
 }
@@ -73,12 +66,7 @@ function ElementCard({
 function StateIndicator({ label, value }: { label: string; value: boolean }) {
   return (
     <View style={styles.stateIndicator}>
-      <View
-        style={[
-          styles.stateDot,
-          { backgroundColor: value ? '#4CAF50' : '#F44336' },
-        ]}
-      />
+      <View style={[styles.stateDot, { backgroundColor: value ? '#4CAF50' : '#F44336' }]} />
       <Text style={styles.stateLabel}>{label}</Text>
     </View>
   );
@@ -123,9 +111,7 @@ function ElementDetail({
           <Text style={styles.stateText}>Visible: {String(state.visible)}</Text>
           <Text style={styles.stateText}>Enabled: {String(state.enabled)}</Text>
           <Text style={styles.stateText}>Focused: {String(state.focused)}</Text>
-          {state.value !== undefined && (
-            <Text style={styles.stateText}>Value: {state.value}</Text>
-          )}
+          {state.value !== undefined && <Text style={styles.stateText}>Value: {state.value}</Text>}
         </View>
 
         {state.layout && (
@@ -147,16 +133,10 @@ function ElementDetail({
 
         <Text style={styles.sectionTitle}>Identifier</Text>
         <View style={styles.stateSection}>
-          {identifier.uiId && (
-            <Text style={styles.stateText}>uiId: {identifier.uiId}</Text>
-          )}
-          {identifier.testId && (
-            <Text style={styles.stateText}>testId: {identifier.testId}</Text>
-          )}
+          {identifier.uiId && <Text style={styles.stateText}>uiId: {identifier.uiId}</Text>}
+          {identifier.testId && <Text style={styles.stateText}>testId: {identifier.testId}</Text>}
           {identifier.accessibilityLabel && (
-            <Text style={styles.stateText}>
-              a11yLabel: {identifier.accessibilityLabel}
-            </Text>
+            <Text style={styles.stateText}>a11yLabel: {identifier.accessibilityLabel}</Text>
           )}
           <Text style={styles.stateText}>treePath: {identifier.treePath}</Text>
         </View>
@@ -219,19 +199,11 @@ export function UIBridgeInspector({
 }: UIBridgeInspectorProps) {
   const bridge = useUIBridgeNativeOptional();
   const [showInspector, setShowInspector] = useState(visible);
-  const [selectedElement, setSelectedElement] = useState<RegisteredNativeElement | null>(
-    null
-  );
+  const [selectedElement, setSelectedElement] = useState<RegisteredNativeElement | null>(null);
 
-  const elements = useMemo(
-    () => (bridge ? bridge.getElements() : []),
-    [bridge, showInspector]
-  );
+  const elements = useMemo(() => (bridge ? bridge.getElements() : []), [bridge, showInspector]);
 
-  const components = useMemo(
-    () => (bridge ? bridge.getComponents() : []),
-    [bridge, showInspector]
-  );
+  const components = useMemo(() => (bridge ? bridge.getComponents() : []), [bridge, showInspector]);
 
   const handleToggle = useCallback(() => {
     setShowInspector((prev) => !prev);
@@ -272,10 +244,7 @@ export function UIBridgeInspector({
   return (
     <>
       {/* Toggle button */}
-      <TouchableOpacity
-        style={[styles.toggleButton, toggleStyle]}
-        onPress={handleToggle}
-      >
+      <TouchableOpacity style={[styles.toggleButton, toggleStyle]} onPress={handleToggle}>
         <Text style={styles.toggleText}>UI</Text>
       </TouchableOpacity>
 
@@ -307,32 +276,21 @@ export function UIBridgeInspector({
                 <Text style={styles.statLabel}>Components</Text>
               </View>
               <View style={styles.stat}>
-                <Text style={styles.statValue}>
-                  {bridge.serverRunning ? 'ON' : 'OFF'}
-                </Text>
+                <Text style={styles.statValue}>{bridge.serverRunning ? 'ON' : 'OFF'}</Text>
                 <Text style={styles.statLabel}>Server</Text>
               </View>
             </View>
 
             {/* Element list or detail */}
             {selectedElement ? (
-              <ElementDetail
-                element={selectedElement}
-                onClose={handleCloseDetail}
-              />
+              <ElementDetail element={selectedElement} onClose={handleCloseDetail} />
             ) : (
               <ScrollView style={styles.elementList}>
                 {elements.map((element) => (
-                  <ElementCard
-                    key={element.id}
-                    element={element}
-                    onPress={handleSelectElement}
-                  />
+                  <ElementCard key={element.id} element={element} onPress={handleSelectElement} />
                 ))}
                 {elements.length === 0 && (
-                  <Text style={styles.emptyText}>
-                    No elements registered yet
-                  </Text>
+                  <Text style={styles.emptyText}>No elements registered yet</Text>
                 )}
               </ScrollView>
             )}

@@ -16,10 +16,7 @@ function HomepageHeader() {
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <div className={styles.buttons}>
-          <Link
-            className="button button--secondary button--lg"
-            to="/docs/getting-started"
-          >
+          <Link className="button button--secondary button--lg" to="/docs/getting-started">
             Get Started
           </Link>
           <Link
@@ -45,8 +42,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Element Control',
     description: (
       <>
-        Programmatically interact with UI elements through a simple HTTP API.
-        Click buttons, type into inputs, select options, and more.
+        Programmatically interact with UI elements through a simple HTTP API. Click buttons, type
+        into inputs, select options, and more.
       </>
     ),
   },
@@ -54,8 +51,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Component Actions',
     description: (
       <>
-        Register high-level component actions that can be triggered remotely.
-        Perfect for AI agents that need to interact with complex UI workflows.
+        Register high-level component actions that can be triggered remotely. Perfect for AI agents
+        that need to interact with complex UI workflows.
       </>
     ),
   },
@@ -63,8 +60,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Workflow Engine',
     description: (
       <>
-        Define multi-step workflows that execute a series of UI actions.
-        Built-in error handling and retry logic for robust automation.
+        Define multi-step workflows that execute a series of UI actions. Built-in error handling and
+        retry logic for robust automation.
       </>
     ),
   },
@@ -72,8 +69,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Element Discovery',
     description: (
       <>
-        Automatically discover controllable elements in your UI.
-        Uses multiple identification strategies for reliable element targeting.
+        Automatically discover controllable elements in your UI. Uses multiple identification
+        strategies for reliable element targeting.
       </>
     ),
   },
@@ -81,8 +78,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Render Logging',
     description: (
       <>
-        Capture DOM snapshots and track UI changes over time.
-        Useful for debugging and understanding UI state transitions.
+        Capture DOM snapshots and track UI changes over time. Useful for debugging and understanding
+        UI state transitions.
       </>
     ),
   },
@@ -90,8 +87,8 @@ const FeatureList: FeatureItem[] = [
     title: 'Python Client',
     description: (
       <>
-        Full-featured Python client library for controlling your UI from
-        Python scripts, AI agents, or test automation frameworks.
+        Full-featured Python client library for controlling your UI from Python scripts, AI agents,
+        or test automation frameworks.
       </>
     ),
   },

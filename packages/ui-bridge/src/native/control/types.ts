@@ -91,10 +91,7 @@ export interface NativeActionExecutor {
   /**
    * Execute an action on an element
    */
-  executeAction(
-    elementId: string,
-    request: ControlActionRequest
-  ): Promise<ControlActionResponse>;
+  executeAction(elementId: string, request: ControlActionRequest): Promise<ControlActionResponse>;
 
   /**
    * Execute a component action
@@ -112,10 +109,7 @@ export interface NativeActionExecutor {
   /**
    * Wait for element conditions
    */
-  waitForElement(
-    elementId: string,
-    options: WaitOptions
-  ): Promise<WaitResult>;
+  waitForElement(elementId: string, options: WaitOptions): Promise<WaitResult>;
 }
 
 /**
