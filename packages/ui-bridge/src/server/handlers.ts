@@ -5,7 +5,7 @@
  */
 
 import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
-import type { ControlSnapshot } from '../control';
+import type { ControlSnapshot, PageNavigateRequest, PageNavigationResponse } from '../control';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, ActionErrorCode } from '../core';
 import type {
@@ -23,7 +23,26 @@ import type {
   SemanticSearchResponse,
   SemanticSearchResult,
   AIDiscoveredElement,
+  Intent,
+  IntentSearchResponse,
+  IntentExecutionResult,
+  RecoveryAttemptRequest,
+  RecoveryAttemptResult,
+  PageDataMap,
+  PageRegionMap,
+  StructuredDataExtraction,
+  CrossAppComparisonReport,
+  ComponentInfo,
 } from '../ai';
+import type {
+  UIState,
+  UIStateGroup,
+  UITransition,
+  PathResult,
+  TransitionResult,
+  NavigationResult,
+  StateSnapshot,
+} from '../core';
 import {
   SearchEngine,
   NLActionExecutor,
@@ -31,6 +50,10 @@ import {
   SemanticSnapshotManager,
   SemanticDiffManager,
   generatePageSummary,
+  extractPageData,
+  segmentPageRegions,
+  extractStructuredData,
+  generateComparisonReport,
 } from '../ai';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
@@ -59,6 +82,22 @@ export interface RegistryLike {
   getMetrics?(): unknown;
   highlightElement?(id: string): void;
   getElementTree?(): unknown;
+
+  // State management
+  getStates?(): UIState[];
+  getState?(id: string): UIState | undefined;
+  getActiveStates?(): UIState[];
+  activateState?(id: string): void;
+  deactivateState?(id: string): void;
+  getStateGroups?(): UIStateGroup[];
+  activateStateGroup?(id: string): void;
+  deactivateStateGroup?(id: string): void;
+  getTransitions?(): UITransition[];
+  canExecuteTransition?(id: string): { canExecute: boolean; reason?: string };
+  executeTransition?(id: string): Promise<TransitionResult>;
+  findPath?(targetStates: string[]): PathResult;
+  navigateTo?(targetStates: string[]): Promise<NavigationResult>;
+  getStateSnapshot?(): StateSnapshot;
 }
 
 /**
@@ -313,6 +352,9 @@ export function createHandlers(
   const assertionExecutor = new AssertionExecutor();
   const snapshotManager = new SemanticSnapshotManager();
   const diffManager = new SemanticDiffManager();
+
+  // Intent registry (in-memory store for registered intents)
+  const intentRegistry = new Map<string, Intent>();
 
   // Annotation store
   const annotationStore = config.annotationStore ?? getGlobalAnnotationStore();
@@ -862,6 +904,51 @@ export function createHandlers(
     // =========================================================================
 
     // =========================================================================
+    // Page Navigation Handlers
+    // =========================================================================
+
+    pageRefresh: async (): Promise<APIResponse<PageNavigationResponse>> => {
+      try {
+        window.location.reload();
+        return success({ success: true, url: window.location.href, timestamp: Date.now() });
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_REFRESH_ERROR');
+      }
+    },
+
+    pageNavigate: async (
+      request: PageNavigateRequest
+    ): Promise<APIResponse<PageNavigationResponse>> => {
+      try {
+        if (!request.url) {
+          return error('URL is required', 'INVALID_REQUEST');
+        }
+        window.location.href = request.url;
+        return success({ success: true, url: request.url, timestamp: Date.now() });
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_NAVIGATE_ERROR');
+      }
+    },
+
+    pageGoBack: async (): Promise<APIResponse<PageNavigationResponse>> => {
+      try {
+        window.history.back();
+        return success({ success: true, url: window.location.href, timestamp: Date.now() });
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_GO_BACK_ERROR');
+      }
+    },
+
+    pageGoForward: async (): Promise<APIResponse<PageNavigationResponse>> => {
+      try {
+        window.history.forward();
+        return success({ success: true, url: window.location.href, timestamp: Date.now() });
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_GO_FORWARD_ERROR');
+      }
+    },
+
+    // =========================================================================
     // Annotation Handlers
     //
     // REST API endpoints for managing element annotations:
@@ -1090,6 +1177,454 @@ export function createHandlers(
         return success(response);
       } catch (err) {
         return error((err as Error).message, 'AI_SEMANTIC_SEARCH_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // State Management Handlers
+    // =========================================================================
+
+    getStates: async (): Promise<APIResponse<UIState[]>> => {
+      try {
+        const states = registry.getStates?.() ?? [];
+        return success(states);
+      } catch (err) {
+        return error((err as Error).message, 'STATES_ERROR');
+      }
+    },
+
+    getState: async (id: string): Promise<APIResponse<UIState>> => {
+      try {
+        const state = registry.getState?.(id);
+        if (!state) {
+          return error(`State not found: ${id}`, 'NOT_FOUND');
+        }
+        return success(state);
+      } catch (err) {
+        return error((err as Error).message, 'STATE_ERROR');
+      }
+    },
+
+    getActiveStates: async (): Promise<APIResponse<UIState[]>> => {
+      try {
+        const states = registry.getActiveStates?.() ?? [];
+        return success(states);
+      } catch (err) {
+        return error((err as Error).message, 'ACTIVE_STATES_ERROR');
+      }
+    },
+
+    activateState: async (id: string): Promise<APIResponse<void>> => {
+      try {
+        if (!registry.activateState) {
+          return error('State management not available', 'NOT_IMPLEMENTED');
+        }
+        registry.activateState(id);
+        return success(undefined);
+      } catch (err) {
+        return error((err as Error).message, 'ACTIVATE_STATE_ERROR');
+      }
+    },
+
+    deactivateState: async (id: string): Promise<APIResponse<void>> => {
+      try {
+        if (!registry.deactivateState) {
+          return error('State management not available', 'NOT_IMPLEMENTED');
+        }
+        registry.deactivateState(id);
+        return success(undefined);
+      } catch (err) {
+        return error((err as Error).message, 'DEACTIVATE_STATE_ERROR');
+      }
+    },
+
+    getStateGroups: async (): Promise<APIResponse<UIStateGroup[]>> => {
+      try {
+        const groups = registry.getStateGroups?.() ?? [];
+        return success(groups);
+      } catch (err) {
+        return error((err as Error).message, 'STATE_GROUPS_ERROR');
+      }
+    },
+
+    activateStateGroup: async (id: string): Promise<APIResponse<void>> => {
+      try {
+        if (!registry.activateStateGroup) {
+          return error('State group management not available', 'NOT_IMPLEMENTED');
+        }
+        registry.activateStateGroup(id);
+        return success(undefined);
+      } catch (err) {
+        return error((err as Error).message, 'ACTIVATE_STATE_GROUP_ERROR');
+      }
+    },
+
+    deactivateStateGroup: async (id: string): Promise<APIResponse<void>> => {
+      try {
+        if (!registry.deactivateStateGroup) {
+          return error('State group management not available', 'NOT_IMPLEMENTED');
+        }
+        registry.deactivateStateGroup(id);
+        return success(undefined);
+      } catch (err) {
+        return error((err as Error).message, 'DEACTIVATE_STATE_GROUP_ERROR');
+      }
+    },
+
+    getTransitions: async (): Promise<APIResponse<UITransition[]>> => {
+      try {
+        const transitions = registry.getTransitions?.() ?? [];
+        return success(transitions);
+      } catch (err) {
+        return error((err as Error).message, 'TRANSITIONS_ERROR');
+      }
+    },
+
+    canExecuteTransition: async (
+      id: string
+    ): Promise<APIResponse<{ canExecute: boolean; reason?: string }>> => {
+      try {
+        if (!registry.canExecuteTransition) {
+          return error('Transition management not available', 'NOT_IMPLEMENTED');
+        }
+        const result = registry.canExecuteTransition(id);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'CAN_EXECUTE_TRANSITION_ERROR');
+      }
+    },
+
+    executeTransition: async (id: string): Promise<APIResponse<TransitionResult>> => {
+      try {
+        if (!registry.executeTransition) {
+          return error('Transition execution not available', 'NOT_IMPLEMENTED');
+        }
+        const result = await registry.executeTransition(id);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'EXECUTE_TRANSITION_ERROR');
+      }
+    },
+
+    findPath: async (request: { targetStates: string[] }): Promise<APIResponse<PathResult>> => {
+      try {
+        if (!registry.findPath) {
+          return error('Pathfinding not available', 'NOT_IMPLEMENTED');
+        }
+        const result = registry.findPath(request.targetStates);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'FIND_PATH_ERROR');
+      }
+    },
+
+    navigateTo: async (request: {
+      targetStates: string[];
+    }): Promise<APIResponse<NavigationResult>> => {
+      try {
+        if (!registry.navigateTo) {
+          return error('Navigation not available', 'NOT_IMPLEMENTED');
+        }
+        const result = await registry.navigateTo(request.targetStates);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'NAVIGATE_TO_ERROR');
+      }
+    },
+
+    getStateSnapshot: async (): Promise<APIResponse<StateSnapshot>> => {
+      try {
+        if (!registry.getStateSnapshot) {
+          // Fallback: build from available data
+          const snapshot: StateSnapshot = {
+            timestamp: Date.now(),
+            activeStates: (registry.getActiveStates?.() ?? []).map((s) => s.id),
+            states: registry.getStates?.() ?? [],
+            groups: registry.getStateGroups?.() ?? [],
+            transitions: registry.getTransitions?.() ?? [],
+          };
+          return success(snapshot);
+        }
+        return success(registry.getStateSnapshot());
+      } catch (err) {
+        return error((err as Error).message, 'STATE_SNAPSHOT_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Intent Handlers
+    // =========================================================================
+
+    executeIntent: async (request: {
+      intentId: string;
+      params?: Record<string, unknown>;
+    }): Promise<APIResponse<IntentExecutionResult>> => {
+      const startTime = Date.now();
+      try {
+        refreshElements();
+        const intent = intentRegistry.get(request.intentId);
+        if (!intent) {
+          return error(`Intent not found: ${request.intentId}`, 'NOT_FOUND');
+        }
+        // Execute via NL executor using intent description as instruction
+        const nlResponse = await nlExecutor.execute({
+          instruction: intent.description,
+          context: `Executing intent: ${intent.name}`,
+        });
+        return success({
+          success: nlResponse.success,
+          intentId: request.intentId,
+          result: nlResponse,
+          error: nlResponse.error,
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'EXECUTE_INTENT_ERROR');
+      }
+    },
+
+    findIntent: async (request: { query: string }): Promise<APIResponse<IntentSearchResponse>> => {
+      try {
+        const query = request.query.toLowerCase();
+        const results: Array<{ intent: Intent; confidence: number }> = [];
+
+        for (const intent of intentRegistry.values()) {
+          let confidence = 0;
+          const nameLower = intent.name.toLowerCase();
+          const descLower = intent.description.toLowerCase();
+
+          if (nameLower === query) {
+            confidence = 1.0;
+          } else if (nameLower.includes(query) || query.includes(nameLower)) {
+            confidence = 0.8;
+          } else if (descLower.includes(query)) {
+            confidence = 0.6;
+          } else if (intent.tags?.some((t) => t.toLowerCase().includes(query))) {
+            confidence = 0.5;
+          }
+
+          if (confidence > 0) {
+            results.push({ intent, confidence });
+          }
+        }
+
+        results.sort((a, b) => b.confidence - a.confidence);
+        return success({ intents: results });
+      } catch (err) {
+        return error((err as Error).message, 'FIND_INTENT_ERROR');
+      }
+    },
+
+    listIntents: async (): Promise<APIResponse<Intent[]>> => {
+      try {
+        return success(Array.from(intentRegistry.values()));
+      } catch (err) {
+        return error((err as Error).message, 'LIST_INTENTS_ERROR');
+      }
+    },
+
+    registerIntent: async (intent: Intent): Promise<APIResponse<Intent>> => {
+      try {
+        intentRegistry.set(intent.id, intent);
+        return success(intent);
+      } catch (err) {
+        return error((err as Error).message, 'REGISTER_INTENT_ERROR');
+      }
+    },
+
+    executeIntentFromQuery: async (request: {
+      query: string;
+      params?: Record<string, unknown>;
+    }): Promise<APIResponse<IntentExecutionResult>> => {
+      const startTime = Date.now();
+      try {
+        refreshElements();
+        // Find best matching intent
+        const query = request.query.toLowerCase();
+        let bestIntent: Intent | null = null;
+        let bestConfidence = 0;
+
+        for (const intent of intentRegistry.values()) {
+          let confidence = 0;
+          const nameLower = intent.name.toLowerCase();
+          const descLower = intent.description.toLowerCase();
+
+          if (nameLower === query) {
+            confidence = 1.0;
+          } else if (nameLower.includes(query) || query.includes(nameLower)) {
+            confidence = 0.8;
+          } else if (descLower.includes(query)) {
+            confidence = 0.6;
+          }
+
+          if (confidence > bestConfidence) {
+            bestConfidence = confidence;
+            bestIntent = intent;
+          }
+        }
+
+        if (!bestIntent) {
+          return success({
+            success: false,
+            intentId: '',
+            error: `No intent found matching query: ${request.query}`,
+            durationMs: Date.now() - startTime,
+          });
+        }
+
+        const nlResponse = await nlExecutor.execute({
+          instruction: bestIntent.description,
+          context: `Executing intent from query: ${request.query}`,
+        });
+
+        return success({
+          success: nlResponse.success,
+          intentId: bestIntent.id,
+          result: nlResponse,
+          error: nlResponse.error,
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'EXECUTE_INTENT_FROM_QUERY_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Recovery Handler
+    // =========================================================================
+
+    attemptRecovery: async (
+      request: RecoveryAttemptRequest
+    ): Promise<APIResponse<RecoveryAttemptResult>> => {
+      const startTime = Date.now();
+      try {
+        refreshElements();
+        const strategiesAttempted: string[] = [];
+        let lastResult: NLActionResponse | undefined;
+
+        // Try recovery strategies based on the failure info
+        const suggestions = request.failure.suggestedActions ?? [];
+
+        for (let i = 0; i < Math.min(suggestions.length, request.maxRetries); i++) {
+          const suggestion = suggestions[i];
+          strategiesAttempted.push(suggestion.suggestion || `strategy-${i}`);
+
+          // If the suggestion has a command, try executing it
+          const instruction = suggestion.command || request.instruction;
+          try {
+            const result = await nlExecutor.execute({
+              instruction,
+              context: `Recovery attempt ${i + 1}: ${suggestion.suggestion}`,
+            });
+            lastResult = result;
+
+            if (result.success) {
+              return success({
+                recovered: true,
+                strategiesAttempted,
+                finalResult: result,
+                durationMs: Date.now() - startTime,
+              });
+            }
+          } catch {
+            // Continue to next strategy
+          }
+        }
+
+        // If no suggestions or all failed, try the instruction directly
+        if (strategiesAttempted.length === 0 || !lastResult?.success) {
+          strategiesAttempted.push('direct-instruction');
+          try {
+            const result = await nlExecutor.execute({
+              instruction: request.instruction,
+              context: 'Recovery: direct instruction attempt',
+            });
+            lastResult = result;
+
+            if (result.success) {
+              return success({
+                recovered: true,
+                strategiesAttempted,
+                finalResult: result,
+                durationMs: Date.now() - startTime,
+              });
+            }
+          } catch {
+            // Fall through to failure
+          }
+        }
+
+        return success({
+          recovered: false,
+          strategiesAttempted,
+          finalResult: lastResult,
+          error: 'All recovery strategies exhausted',
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'RECOVERY_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Cross-App Analysis Handlers
+    // =========================================================================
+
+    analyzePageData: async (): Promise<APIResponse<PageDataMap>> => {
+      try {
+        const controlSnapshot = registry.createSnapshot();
+        const snapshot = snapshotManager.createSnapshot(controlSnapshot);
+        const result = extractPageData(snapshot.elements);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'ANALYZE_DATA_ERROR');
+      }
+    },
+
+    analyzePageRegions: async (): Promise<APIResponse<PageRegionMap>> => {
+      try {
+        const controlSnapshot = registry.createSnapshot();
+        const snapshot = snapshotManager.createSnapshot(controlSnapshot);
+        const result = segmentPageRegions(snapshot.elements);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'ANALYZE_REGIONS_ERROR');
+      }
+    },
+
+    analyzeStructuredData: async (): Promise<APIResponse<StructuredDataExtraction>> => {
+      try {
+        const controlSnapshot = registry.createSnapshot();
+        const snapshot = snapshotManager.createSnapshot(controlSnapshot);
+        const result = extractStructuredData(snapshot.elements);
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'ANALYZE_STRUCTURED_DATA_ERROR');
+      }
+    },
+
+    crossAppCompare: async (request: {
+      sourceSnapshot: SemanticSnapshot;
+      targetSnapshot: SemanticSnapshot;
+      sourceComponents?: ComponentInfo[];
+      targetComponents?: ComponentInfo[];
+    }): Promise<APIResponse<CrossAppComparisonReport>> => {
+      try {
+        const hasComponents = request.sourceComponents && request.targetComponents;
+        const report = generateComparisonReport(
+          request.sourceSnapshot,
+          request.targetSnapshot,
+          hasComponents
+            ? {
+                config: { includeComponents: true },
+                sourceComponents: request.sourceComponents,
+                targetComponents: request.targetComponents,
+              }
+            : undefined
+        );
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'CROSS_APP_COMPARE_ERROR');
       }
     },
   };

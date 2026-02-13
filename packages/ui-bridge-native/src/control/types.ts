@@ -113,6 +113,26 @@ export interface NativeActionExecutor {
 }
 
 /**
+ * Page navigation request
+ */
+export interface PageNavigateRequest {
+  /** URL to navigate to */
+  url: string;
+}
+
+/**
+ * Page navigation response
+ */
+export interface PageNavigationResponse {
+  /** Whether the navigation succeeded */
+  success: boolean;
+  /** Current URL after navigation */
+  url?: string;
+  /** Timestamp */
+  timestamp: number;
+}
+
+/**
  * Action execution options
  */
 export interface ActionExecutionOptions {

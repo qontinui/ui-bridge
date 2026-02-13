@@ -297,59 +297,95 @@ export class DefaultActionExecutor implements ActionExecutor {
       if (rootEl) root = rootEl;
     }
 
-    // Find interactive elements
-    const interactiveSelectors = [
-      'a[href]',
-      'button',
-      'input',
-      'select',
-      'textarea',
-      '[onclick]',
-      '[role="button"]',
-      '[role="link"]',
-      '[role="checkbox"]',
-      '[role="radio"]',
-      '[role="menuitem"]',
-      '[role="tab"]',
-      '[role="switch"]',
-      '[tabindex]:not([tabindex="-1"])',
-      '[contenteditable="true"]',
-      '[data-ui-element]',
-      '[data-ui-id]',
-      '[data-testid]',
-    ];
+    // Find interactive elements (unless contentOnly is set)
+    if (!options?.contentOnly) {
+      const interactiveSelectors = [
+        'a[href]',
+        'button',
+        'input',
+        'select',
+        'textarea',
+        '[onclick]',
+        '[role="button"]',
+        '[role="link"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="menuitem"]',
+        '[role="tab"]',
+        '[role="switch"]',
+        '[tabindex]:not([tabindex="-1"])',
+        '[contenteditable="true"]',
+        '[data-ui-element]',
+        '[data-ui-id]',
+        '[data-testid]',
+      ];
 
-    const selector = options?.selector || interactiveSelectors.join(', ');
-    const foundElements = root.querySelectorAll<HTMLElement>(selector);
+      const selector = options?.selector || interactiveSelectors.join(', ');
+      const foundElements = root.querySelectorAll<HTMLElement>(selector);
 
-    for (const el of foundElements) {
-      if (options?.limit && elements.length >= options.limit) break;
+      for (const el of foundElements) {
+        if (options?.limit && elements.length >= options.limit) break;
 
-      const state = getElementState(el);
+        const state = getElementState(el);
 
-      // Filter by visibility
-      if (!options?.includeHidden && !state.visible) continue;
+        // Filter by visibility
+        if (!options?.includeHidden && !state.visible) continue;
 
-      // Filter by type
-      if (options?.types) {
-        const type = this.inferElementType(el);
-        if (!options.types.includes(type)) continue;
+        // Filter by type
+        if (options?.types) {
+          const type = this.inferElementType(el);
+          if (!options.types.includes(type)) continue;
+        }
+
+        // Check if registered
+        const registered = this.registry.findByDOMElement(el);
+
+        elements.push({
+          id: registered?.id || this.getElementId(el),
+          type: registered?.type || this.inferElementType(el),
+          label: registered?.label || this.getElementLabel(el),
+          tagName: el.tagName.toLowerCase(),
+          role: el.getAttribute('role') || undefined,
+          accessibleName: this.getAccessibleName(el),
+          actions: registered?.actions || this.inferActions(el),
+          state,
+          registered: !!registered,
+          category: registered?.category || 'interactive',
+          contentMetadata: registered?.contentMetadata,
+        });
       }
+    }
 
-      // Check if registered
-      const registered = this.registry.findByDOMElement(el);
+    // Include content elements from registry when requested
+    if (options?.includeContent || options?.contentOnly) {
+      const contentElements = this.registry.getAllContentElements();
+      for (const el of contentElements) {
+        if (options?.limit && elements.length >= options.limit) break;
 
-      elements.push({
-        id: registered?.id || this.getElementId(el),
-        type: registered?.type || this.inferElementType(el),
-        label: registered?.label || this.getElementLabel(el),
-        tagName: el.tagName.toLowerCase(),
-        role: el.getAttribute('role') || undefined,
-        accessibleName: this.getAccessibleName(el),
-        actions: registered?.actions || this.inferActions(el),
-        state,
-        registered: !!registered,
-      });
+        const state = el.getState();
+
+        // Filter by visibility
+        if (!options?.includeHidden && !state.visible) continue;
+
+        // Filter by content role
+        if (options?.contentRole && el.contentMetadata?.contentRole !== options.contentRole) {
+          continue;
+        }
+
+        elements.push({
+          id: el.id,
+          type: el.type,
+          label: el.label,
+          tagName: el.element.tagName.toLowerCase(),
+          role: el.element.getAttribute('role') || undefined,
+          accessibleName: el.label || state.textContent?.trim(),
+          actions: [],
+          state,
+          registered: true,
+          category: 'content',
+          contentMetadata: el.contentMetadata,
+        });
+      }
     }
 
     return {
@@ -384,6 +420,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         label: el.label,
         actions: [...el.actions, ...(el.customActions ? Object.keys(el.customActions) : [])],
         state: el.getState(),
+        category: el.category,
+        contentMetadata: el.contentMetadata,
       })),
       components: components.map((comp) => ({
         id: comp.id,

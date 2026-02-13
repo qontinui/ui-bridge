@@ -216,6 +216,23 @@ export function createServerHandlers(
       });
     },
 
+    // Page Navigation (stubs — React Native apps should override with their navigation provider)
+    pageRefresh: async () => {
+      return error('Page refresh not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageNavigate: async () => {
+      return error('Page navigation not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageGoBack: async () => {
+      return error('Page go back not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageGoForward: async () => {
+      return error('Page go forward not supported on native platform', 'NOT_SUPPORTED');
+    },
+
     // Health
     health: async () => {
       const stats = registry.getStats();

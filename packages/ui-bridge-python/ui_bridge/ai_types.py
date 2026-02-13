@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 
 from .types import ElementState
 
-
 # ============================================================================
 # Search Types
 # ============================================================================
@@ -123,12 +122,10 @@ class StructuredFailureInfo(BaseModel):
     message: str
     element_id: str | None = Field(None, alias="elementId")
     selectors_tried: list[str] | None = Field(None, alias="selectorsTried")
-    partial_matches: list["PartialMatchInfo"] | None = Field(None, alias="partialMatches")
+    partial_matches: list[PartialMatchInfo] | None = Field(None, alias="partialMatches")
     element_state: ElementState | None = Field(None, alias="elementState")
     screenshot_context: str | None = Field(None, alias="screenshotContext")
-    suggested_actions: list["RecoverySuggestionInfo"] | None = Field(
-        None, alias="suggestedActions"
-    )
+    suggested_actions: list[RecoverySuggestionInfo] | None = Field(None, alias="suggestedActions")
     retry_recommended: bool = Field(False, alias="retryRecommended")
     context: dict[str, Any] | None = None
     duration_ms: float | None = Field(None, alias="durationMs")
@@ -242,9 +239,7 @@ class NLActionResponse(BaseModel):
         summaries = []
         if self.alternatives:
             for alt in self.alternatives[:5]:
-                summaries.append(
-                    f"{alt.element.description} (confidence: {alt.confidence:.0%})"
-                )
+                summaries.append(f"{alt.element.description} (confidence: {alt.confidence:.0%})")
         return summaries
 
 
@@ -452,6 +447,55 @@ class PageChanges(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class TextChange(BaseModel):
+    """A text content change between snapshots."""
+
+    element_id: str = Field(alias="elementId")
+    content_type: str = Field(alias="contentType")
+    old_text: str = Field(alias="oldText")
+    new_text: str = Field(alias="newText")
+    change_type: Literal["modified", "added", "removed"] = Field(alias="changeType")
+
+    model_config = {"populate_by_name": True}
+
+
+class MetricChange(BaseModel):
+    """A metric value change with numeric analysis."""
+
+    element_id: str = Field(alias="elementId")
+    label: str
+    old_value: str = Field(alias="oldValue")
+    new_value: str = Field(alias="newValue")
+    numeric_delta: float | None = Field(None, alias="numericDelta")
+    percent_change: float | None = Field(None, alias="percentChange")
+    significant: bool
+
+    model_config = {"populate_by_name": True}
+
+
+class StatusChange(BaseModel):
+    """A status change with direction analysis."""
+
+    element_id: str = Field(alias="elementId")
+    label: str
+    old_status: str = Field(alias="oldStatus")
+    new_status: str = Field(alias="newStatus")
+    direction: Literal["improved", "degraded", "neutral"]
+
+    model_config = {"populate_by_name": True}
+
+
+class ContentChanges(BaseModel):
+    """Content-specific changes detected between snapshots."""
+
+    text_changes: list[TextChange] = Field(alias="textChanges")
+    metric_changes: list[MetricChange] = Field(alias="metricChanges")
+    status_changes: list[StatusChange] = Field(alias="statusChanges")
+    summary: str
+
+    model_config = {"populate_by_name": True}
+
+
 class SemanticDiff(BaseModel):
     """Semantic diff between two snapshots."""
 
@@ -459,6 +503,7 @@ class SemanticDiff(BaseModel):
     from_snapshot_id: str = Field(alias="fromSnapshotId")
     to_snapshot_id: str = Field(alias="toSnapshotId")
     changes: DiffChanges
+    content_changes: ContentChanges | None = Field(None, alias="contentChanges")
     probable_trigger: str | None = Field(None, alias="probableTrigger")
     suggested_actions: list[str] | None = Field(None, alias="suggestedActions")
     page_changes: PageChanges | None = Field(None, alias="pageChanges")

@@ -15,6 +15,8 @@ import type {
   ControlSnapshot,
   WorkflowRunRequest,
   WorkflowRunResponse,
+  PageNavigateRequest,
+  PageNavigationResponse,
 } from '../control';
 import type { RenderLogEntry, RenderLogEntryType } from '../render-log';
 import type {
@@ -30,7 +32,26 @@ import type {
   SemanticDiff,
   SemanticSearchCriteria,
   SemanticSearchResponse,
+  Intent,
+  IntentSearchResponse,
+  IntentExecutionResult,
+  RecoveryAttemptRequest,
+  RecoveryAttemptResult,
+  PageDataMap,
+  PageRegionMap,
+  StructuredDataExtraction,
+  CrossAppComparisonReport,
+  ComponentInfo,
 } from '../ai';
+import type {
+  UIState,
+  UIStateGroup,
+  UITransition,
+  PathResult,
+  TransitionResult,
+  NavigationResult,
+  StateSnapshot,
+} from '../core';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 
 /**
@@ -179,6 +200,57 @@ export interface UIBridgeServerHandlers {
     criteria: SemanticSearchCriteria
   ) => Promise<APIResponse<SemanticSearchResponse>>;
 
+  // State management endpoints
+  getStates: () => Promise<APIResponse<UIState[]>>;
+  getState: (id: string) => Promise<APIResponse<UIState>>;
+  getActiveStates: () => Promise<APIResponse<UIState[]>>;
+  activateState: (id: string) => Promise<APIResponse<void>>;
+  deactivateState: (id: string) => Promise<APIResponse<void>>;
+  getStateGroups: () => Promise<APIResponse<UIStateGroup[]>>;
+  activateStateGroup: (id: string) => Promise<APIResponse<void>>;
+  deactivateStateGroup: (id: string) => Promise<APIResponse<void>>;
+  getTransitions: () => Promise<APIResponse<UITransition[]>>;
+  canExecuteTransition: (
+    id: string
+  ) => Promise<APIResponse<{ canExecute: boolean; reason?: string }>>;
+  executeTransition: (id: string) => Promise<APIResponse<TransitionResult>>;
+  findPath: (request: { targetStates: string[] }) => Promise<APIResponse<PathResult>>;
+  navigateTo: (request: { targetStates: string[] }) => Promise<APIResponse<NavigationResult>>;
+  getStateSnapshot: () => Promise<APIResponse<StateSnapshot>>;
+
+  // Intent endpoints
+  executeIntent: (request: {
+    intentId: string;
+    params?: Record<string, unknown>;
+  }) => Promise<APIResponse<IntentExecutionResult>>;
+  findIntent: (request: { query: string }) => Promise<APIResponse<IntentSearchResponse>>;
+  listIntents: () => Promise<APIResponse<Intent[]>>;
+  registerIntent: (intent: Intent) => Promise<APIResponse<Intent>>;
+  executeIntentFromQuery: (request: {
+    query: string;
+    params?: Record<string, unknown>;
+  }) => Promise<APIResponse<IntentExecutionResult>>;
+
+  // Recovery endpoints
+  attemptRecovery: (request: RecoveryAttemptRequest) => Promise<APIResponse<RecoveryAttemptResult>>;
+
+  // Cross-app analysis endpoints
+  analyzePageData: () => Promise<APIResponse<PageDataMap>>;
+  analyzePageRegions: () => Promise<APIResponse<PageRegionMap>>;
+  analyzeStructuredData: () => Promise<APIResponse<StructuredDataExtraction>>;
+  crossAppCompare: (request: {
+    sourceSnapshot: SemanticSnapshot;
+    targetSnapshot: SemanticSnapshot;
+    sourceComponents?: ComponentInfo[];
+    targetComponents?: ComponentInfo[];
+  }) => Promise<APIResponse<CrossAppComparisonReport>>;
+
+  // Page navigation endpoints
+  pageRefresh: () => Promise<APIResponse<PageNavigationResponse>>;
+  pageNavigate: (request: PageNavigateRequest) => Promise<APIResponse<PageNavigationResponse>>;
+  pageGoBack: () => Promise<APIResponse<PageNavigationResponse>>;
+  pageGoForward: () => Promise<APIResponse<PageNavigationResponse>>;
+
   // Annotation endpoints
   getAnnotations: () => Promise<APIResponse<Record<string, ElementAnnotation>>>;
   getAnnotation: (id: string) => Promise<APIResponse<ElementAnnotation>>;
@@ -272,6 +344,84 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
+
+  // State management (static routes before parameterized)
+  { method: 'GET', path: '/control/states', handler: 'getStates' },
+  { method: 'GET', path: '/control/states/active', handler: 'getActiveStates' },
+  { method: 'GET', path: '/control/states/snapshot', handler: 'getStateSnapshot' },
+  { method: 'POST', path: '/control/states/find-path', handler: 'findPath', bodyRequired: true },
+  { method: 'POST', path: '/control/states/navigate', handler: 'navigateTo', bodyRequired: true },
+  { method: 'GET', path: '/control/state/:id', handler: 'getState', params: ['id'] },
+  { method: 'POST', path: '/control/state/:id/activate', handler: 'activateState', params: ['id'] },
+  {
+    method: 'POST',
+    path: '/control/state/:id/deactivate',
+    handler: 'deactivateState',
+    params: ['id'],
+  },
+  { method: 'GET', path: '/control/state-groups', handler: 'getStateGroups' },
+  {
+    method: 'POST',
+    path: '/control/state-group/:id/activate',
+    handler: 'activateStateGroup',
+    params: ['id'],
+  },
+  {
+    method: 'POST',
+    path: '/control/state-group/:id/deactivate',
+    handler: 'deactivateStateGroup',
+    params: ['id'],
+  },
+  { method: 'GET', path: '/control/transitions', handler: 'getTransitions' },
+  {
+    method: 'GET',
+    path: '/control/transition/:id/can-execute',
+    handler: 'canExecuteTransition',
+    params: ['id'],
+  },
+  {
+    method: 'POST',
+    path: '/control/transition/:id/execute',
+    handler: 'executeTransition',
+    params: ['id'],
+  },
+
+  // Intent endpoints
+  { method: 'GET', path: '/ai/intents', handler: 'listIntents' },
+  { method: 'POST', path: '/ai/intents/execute', handler: 'executeIntent', bodyRequired: true },
+  { method: 'POST', path: '/ai/intents/find', handler: 'findIntent', bodyRequired: true },
+  { method: 'POST', path: '/ai/intents/register', handler: 'registerIntent', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/ai/intents/execute-from-query',
+    handler: 'executeIntentFromQuery',
+    bodyRequired: true,
+  },
+
+  // Recovery endpoints
+  {
+    method: 'POST',
+    path: '/ai/recovery/attempt',
+    handler: 'attemptRecovery',
+    bodyRequired: true,
+  },
+
+  // Cross-app analysis endpoints
+  { method: 'GET', path: '/ai/analyze/data', handler: 'analyzePageData' },
+  { method: 'GET', path: '/ai/analyze/regions', handler: 'analyzePageRegions' },
+  { method: 'GET', path: '/ai/analyze/structured-data', handler: 'analyzeStructuredData' },
+  {
+    method: 'POST',
+    path: '/ai/analyze/cross-app-compare',
+    handler: 'crossAppCompare',
+    bodyRequired: true,
+  },
+
+  // Page navigation
+  { method: 'POST', path: '/control/page/refresh', handler: 'pageRefresh' },
+  { method: 'POST', path: '/control/page/navigate', handler: 'pageNavigate', bodyRequired: true },
+  { method: 'POST', path: '/control/page/back', handler: 'pageGoBack' },
+  { method: 'POST', path: '/control/page/forward', handler: 'pageGoForward' },
 
   // Annotations (static routes before parameterized)
   { method: 'GET', path: '/annotations', handler: 'getAnnotations' },

@@ -85,6 +85,13 @@ export class StandaloneServer {
   }
 
   /**
+   * Get enabled capabilities based on handlers
+   */
+  private getCapabilities(): string[] {
+    return ['elements', 'components', 'actions', 'search', 'workflows'];
+  }
+
+  /**
    * Start the server
    */
   async start(): Promise<void> {
@@ -228,7 +235,32 @@ export class StandaloneServer {
 
     // Health check
     if (url.pathname === '/health') {
-      this.sendJSON(res, { status: 'ok', timestamp: Date.now() });
+      const healthResponse: Record<string, unknown> = { status: 'ok', timestamp: Date.now() };
+
+      // Include UI Bridge metadata for app discovery
+      if (this.config.appInfo) {
+        const uiBridge: Record<string, unknown> = {
+          version: '0.3.0',
+          ...this.config.appInfo,
+          capabilities: this.getCapabilities(),
+        };
+
+        // Try to get element/component counts from handlers
+        try {
+          const snapshotResult = await this.handlers.getControlSnapshot?.();
+          if (snapshotResult?.success && snapshotResult.data) {
+            const data = snapshotResult.data as any;
+            uiBridge.elementCount = data.elements?.length ?? 0;
+            uiBridge.componentCount = data.components?.length ?? 0;
+          }
+        } catch {
+          // Ignore - counts are optional
+        }
+
+        healthResponse.uiBridge = uiBridge;
+      }
+
+      this.sendJSON(res, healthResponse);
       return;
     }
 

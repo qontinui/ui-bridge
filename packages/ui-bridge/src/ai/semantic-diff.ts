@@ -11,6 +11,10 @@ import type {
   ElementChange,
   ElementModification,
   AIDiscoveredElement,
+  ContentChanges,
+  TextChange,
+  MetricChange,
+  StatusChange,
 } from './types';
 import { generateDiffSummary } from './summary-generator';
 
@@ -108,6 +112,9 @@ export function computeDiff(
   // Detect page changes
   const pageChanges = detectPageChanges(fromSnapshot, toSnapshot);
 
+  // Detect content changes
+  const contentChanges = detectContentChanges(fromElements, toElements);
+
   // Generate summary
   const summary = generateDiffSummary(
     appeared.map((e) => e.description),
@@ -124,6 +131,7 @@ export function computeDiff(
       disappeared,
       modified: limitedModifications,
     },
+    contentChanges: contentChanges || undefined,
     probableTrigger,
     suggestedActions,
     pageChanges,
@@ -440,6 +448,12 @@ export function hasSignificantChanges(diff: SemanticDiff): boolean {
   if (diff.changes.disappeared.length > 0) return true;
   if (diff.changes.modified.some((m) => m.significant)) return true;
   if (diff.pageChanges?.urlChanged) return true;
+  if (diff.contentChanges) {
+    const cc = diff.contentChanges;
+    if (cc.textChanges.length > 0) return true;
+    if (cc.metricChanges.some((m) => m.significant)) return true;
+    if (cc.statusChanges.length > 0) return true;
+  }
   return false;
 }
 
@@ -466,8 +480,389 @@ export function describeDiff(diff: SemanticDiff): string {
     parts.push('URL changed');
   }
 
+  if (diff.contentChanges) {
+    parts.push(diff.contentChanges.summary);
+  }
+
   if (parts.length === 0) {
     return 'No significant changes';
+  }
+
+  return parts.join(', ');
+}
+
+// ============================================================================
+// Content Change Detection
+// ============================================================================
+
+/**
+ * Content types that represent metric values
+ */
+const METRIC_CONTENT_TYPES = new Set(['metric-value']);
+
+/**
+ * Content types that represent status indicators
+ */
+const STATUS_CONTENT_TYPES = new Set(['status-message', 'badge']);
+
+/**
+ * Content types that represent headings
+ */
+const HEADING_CONTENT_TYPES = new Set(['heading']);
+
+/**
+ * Check if an element is a content element based on its category or contentMetadata
+ */
+function isContentElement(element: AIDiscoveredElement): boolean {
+  return element.category === 'content' || element.contentMetadata !== undefined;
+}
+
+/**
+ * Get the content type from an element's metadata or type field
+ */
+function getContentType(element: AIDiscoveredElement): string {
+  if (element.contentMetadata?.contentRole) {
+    return element.contentMetadata.contentRole;
+  }
+  // Fall back to element type for content elements
+  return element.type;
+}
+
+/**
+ * Detect content-specific changes between two snapshots
+ */
+function detectContentChanges(
+  fromElements: Map<string, AIDiscoveredElement>,
+  toElements: Map<string, AIDiscoveredElement>
+): ContentChanges | null {
+  const textChanges: TextChange[] = [];
+  const metricChanges: MetricChange[] = [];
+  const statusChanges: StatusChange[] = [];
+
+  // Check content elements that exist in both snapshots (modified)
+  for (const [id, toElement] of toElements) {
+    const fromElement = fromElements.get(id);
+
+    if (fromElement) {
+      // Both exist - check for text content changes on content elements
+      if (isContentElement(toElement) || isContentElement(fromElement)) {
+        const fromText = (fromElement.state.textContent || '').trim();
+        const toText = (toElement.state.textContent || '').trim();
+
+        if (fromText !== toText) {
+          const contentType = getContentType(toElement);
+          const label = toElement.description || toElement.accessibleName || id;
+
+          // Classify by content type
+          if (METRIC_CONTENT_TYPES.has(contentType) || contentType === 'metric') {
+            const parsed = parseMetricChange(fromText, toText, id, label);
+            if (parsed) {
+              metricChanges.push(parsed);
+            }
+          } else if (STATUS_CONTENT_TYPES.has(contentType) || contentType === 'status') {
+            statusChanges.push({
+              elementId: id,
+              label,
+              oldStatus: fromText,
+              newStatus: toText,
+              direction: classifyStatusDirection(fromText, toText),
+            });
+          } else {
+            textChanges.push({
+              elementId: id,
+              contentType,
+              oldText: fromText,
+              newText: toText,
+              changeType: 'modified',
+            });
+          }
+        }
+      }
+    } else {
+      // New content element appeared
+      if (isContentElement(toElement)) {
+        const toText = (toElement.state.textContent || '').trim();
+        if (toText) {
+          textChanges.push({
+            elementId: id,
+            contentType: getContentType(toElement),
+            oldText: '',
+            newText: toText,
+            changeType: 'added',
+          });
+        }
+      }
+    }
+  }
+
+  // Check for content elements that disappeared
+  for (const [id, fromElement] of fromElements) {
+    if (!toElements.has(id) && isContentElement(fromElement)) {
+      const fromText = (fromElement.state.textContent || '').trim();
+      if (fromText) {
+        textChanges.push({
+          elementId: id,
+          contentType: getContentType(fromElement),
+          oldText: fromText,
+          newText: '',
+          changeType: 'removed',
+        });
+      }
+    }
+  }
+
+  // If no content changes detected, return null
+  if (textChanges.length === 0 && metricChanges.length === 0 && statusChanges.length === 0) {
+    return null;
+  }
+
+  return {
+    textChanges,
+    metricChanges,
+    statusChanges,
+    summary: generateContentChangeSummary(textChanges, metricChanges, statusChanges),
+  };
+}
+
+// ============================================================================
+// Metric Value Parsing
+// ============================================================================
+
+/**
+ * Parse a numeric value from a string, handling common formats:
+ * - Plain numbers: "42", "1,234", "1234.56"
+ * - Percentages: "95%", "12.5%"
+ * - Currency: "$1,234", "$1,234.56", "-$50"
+ * - Duration: "2h 30m", "1.5s", "100ms"
+ * - Negative values: "-42", "($500)"
+ *
+ * Returns the numeric value or null if not parseable.
+ */
+export function parseNumericValue(text: string): number | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  // Handle parenthesized negatives: ($500) -> -500
+  let working = trimmed;
+  let negate = false;
+  if (working.startsWith('(') && working.endsWith(')')) {
+    working = working.slice(1, -1).trim();
+    negate = true;
+  }
+
+  // Strip leading negative sign
+  if (working.startsWith('-')) {
+    negate = !negate;
+    working = working.slice(1).trim();
+  }
+  if (working.startsWith('+')) {
+    working = working.slice(1).trim();
+  }
+
+  // Strip currency symbols
+  working = working.replace(/^[£€¥₹$]/, '').trim();
+
+  // Strip trailing percent sign
+  const isPercent = working.endsWith('%');
+  if (isPercent) {
+    working = working.slice(0, -1).trim();
+  }
+
+  // Strip trailing duration units (we parse just the numeric part)
+  working = working.replace(/\s*(ms|s|m|h|d|hrs?|mins?|secs?|days?)$/i, '').trim();
+
+  // Remove thousands separators (commas)
+  working = working.replace(/,/g, '');
+
+  // Try to parse as a number
+  const num = Number(working);
+  if (isNaN(num) || !isFinite(num) || working === '') {
+    return null;
+  }
+
+  return negate ? -num : num;
+}
+
+/**
+ * Parse a metric change between two text values
+ */
+function parseMetricChange(
+  fromText: string,
+  toText: string,
+  elementId: string,
+  label: string
+): MetricChange | null {
+  const fromNum = parseNumericValue(fromText);
+  const toNum = parseNumericValue(toText);
+
+  let numericDelta: number | undefined;
+  let percentChange: number | undefined;
+  let significant = false;
+
+  if (fromNum !== null && toNum !== null) {
+    numericDelta = toNum - fromNum;
+
+    if (fromNum !== 0) {
+      percentChange = ((toNum - fromNum) / Math.abs(fromNum)) * 100;
+    }
+
+    // Significant if >10% change, sign flip, or from/to zero
+    if (percentChange !== undefined && Math.abs(percentChange) > 10) {
+      significant = true;
+    }
+    if (fromNum > 0 && toNum < 0) significant = true;
+    if (fromNum < 0 && toNum > 0) significant = true;
+    if (fromNum === 0 && toNum !== 0) significant = true;
+    if (fromNum !== 0 && toNum === 0) significant = true;
+  } else {
+    // Text changed but not parseable as numbers - still a change
+    significant = fromText !== toText;
+  }
+
+  return {
+    elementId,
+    label,
+    oldValue: fromText,
+    newValue: toText,
+    numericDelta,
+    percentChange: percentChange !== undefined ? Math.round(percentChange * 100) / 100 : undefined,
+    significant,
+  };
+}
+
+// ============================================================================
+// Status Classification
+// ============================================================================
+
+/**
+ * Status progressions where later states are "better" (improved direction).
+ * Each array is ordered from worst to best.
+ */
+const STATUS_PROGRESSIONS: string[][] = [
+  [
+    'failed',
+    'error',
+    'pending',
+    'queued',
+    'running',
+    'in progress',
+    'completed',
+    'success',
+    'done',
+  ],
+  ['disconnected', 'connecting', 'connected'],
+  ['unhealthy', 'degraded', 'healthy'],
+  ['offline', 'online'],
+  ['inactive', 'active'],
+  ['disabled', 'enabled'],
+  ['down', 'up'],
+  ['stopped', 'starting', 'started', 'running'],
+  ['closed', 'open'],
+  ['blocked', 'unblocked'],
+  ['rejected', 'pending', 'approved'],
+  ['critical', 'warning', 'info', 'ok'],
+  ['red', 'yellow', 'green'],
+];
+
+/**
+ * Classify whether a status change is an improvement, degradation, or neutral
+ */
+export function classifyStatusDirection(
+  oldStatus: string,
+  newStatus: string
+): 'improved' | 'degraded' | 'neutral' {
+  const oldLower = oldStatus.toLowerCase().trim();
+  const newLower = newStatus.toLowerCase().trim();
+
+  for (const progression of STATUS_PROGRESSIONS) {
+    let oldIndex = -1;
+    let newIndex = -1;
+
+    for (let i = 0; i < progression.length; i++) {
+      if (oldLower.includes(progression[i])) oldIndex = i;
+      if (newLower.includes(progression[i])) newIndex = i;
+    }
+
+    if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
+      return newIndex > oldIndex ? 'improved' : 'degraded';
+    }
+  }
+
+  return 'neutral';
+}
+
+// ============================================================================
+// Content Change Summary
+// ============================================================================
+
+/**
+ * Generate a concise, actionable summary of content changes
+ */
+function generateContentChangeSummary(
+  textChanges: TextChange[],
+  metricChanges: MetricChange[],
+  statusChanges: StatusChange[]
+): string {
+  const parts: string[] = [];
+
+  // Count text changes by type
+  const modified = textChanges.filter((t) => t.changeType === 'modified').length;
+  const added = textChanges.filter((t) => t.changeType === 'added').length;
+  const removed = textChanges.filter((t) => t.changeType === 'removed').length;
+
+  // Heading changes
+  const headingChanges = textChanges.filter(
+    (t) => HEADING_CONTENT_TYPES.has(t.contentType) || t.contentType === 'heading'
+  );
+  if (headingChanges.length > 0) {
+    parts.push(`${headingChanges.length} heading${headingChanges.length > 1 ? 's' : ''} changed`);
+  }
+
+  // Metric changes
+  if (metricChanges.length > 0) {
+    const significantMetrics = metricChanges.filter((m) => m.significant);
+    if (significantMetrics.length > 0) {
+      parts.push(
+        `${significantMetrics.length} metric${significantMetrics.length > 1 ? 's' : ''} changed significantly`
+      );
+    } else {
+      parts.push(`${metricChanges.length} metric${metricChanges.length > 1 ? 's' : ''} changed`);
+    }
+  }
+
+  // Status changes
+  if (statusChanges.length > 0) {
+    const degraded = statusChanges.filter((s) => s.direction === 'degraded');
+    const improved = statusChanges.filter((s) => s.direction === 'improved');
+
+    if (degraded.length > 0) {
+      parts.push(`${degraded.length} status${degraded.length > 1 ? 'es' : ''} degraded`);
+    }
+    if (improved.length > 0) {
+      parts.push(`${improved.length} status${improved.length > 1 ? 'es' : ''} improved`);
+    }
+    const neutral = statusChanges.length - degraded.length - improved.length;
+    if (neutral > 0 && degraded.length === 0 && improved.length === 0) {
+      parts.push(`${neutral} status${neutral > 1 ? 'es' : ''} changed`);
+    }
+  }
+
+  // General text changes (excluding headings already counted)
+  const otherModified = modified - headingChanges.filter((h) => h.changeType === 'modified').length;
+  if (otherModified > 0) {
+    parts.push(`${otherModified} text${otherModified > 1 ? ' values' : ' value'} modified`);
+  }
+
+  if (added > 0) {
+    parts.push(`${added} content${added > 1 ? ' elements' : ' element'} added`);
+  }
+
+  if (removed > 0) {
+    parts.push(`${removed} content${removed > 1 ? ' elements' : ' element'} removed`);
+  }
+
+  if (parts.length === 0) {
+    return 'No content changes';
   }
 
   return parts.join(', ');

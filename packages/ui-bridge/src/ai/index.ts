@@ -45,6 +45,10 @@ export type {
   SemanticDiff,
   ElementChange,
   ElementModification,
+  ContentChanges,
+  TextChange,
+  MetricChange,
+  StatusChange,
 
   // Error types
   AIErrorContext,
@@ -57,6 +61,58 @@ export type {
   SemanticSearchCriteria,
   SemanticSearchResult,
   SemanticSearchResponse,
+
+  // Intent types
+  Intent,
+  IntentParam,
+  IntentSearchResponse,
+  IntentExecutionResult,
+
+  // Recovery types
+  RecoveryAttemptRequest,
+  RecoveryAttemptResult,
+
+  // Cross-app comparison types
+  DataType,
+  ExtractedDataValue,
+  PageDataMap,
+  RegionType,
+  PageRegion,
+  PageRegionMap,
+  TableColumn,
+  TableSchema,
+  ListItemField,
+  ListSchema,
+  StructuredDataExtraction,
+  FormatDescriptor,
+  FormatMismatch,
+  MatchedElementPair,
+  DataValueComparison,
+  CrossAppDiff,
+  InteractionParity,
+  NavigationPair,
+  NavigationMap,
+  ComponentInfo,
+  ComponentMatch,
+  ComponentComparison,
+  GridStructure,
+  GridDiff,
+  HierarchyDiff,
+  DensityComparison,
+  LayoutComparison,
+  ComparisonIssue,
+  CrossAppComparisonReport,
+
+  // Content comparison types
+  HeadingMatch,
+  HeadingChange,
+  MetricMatch,
+  CrossAppMetricChange,
+  StatusMatch,
+  CrossAppStatusChange,
+  HeadingLevelComparison,
+  TableComparison,
+  ContentComparison,
 } from './types';
 
 // Fuzzy Matcher
@@ -142,6 +198,8 @@ export {
   createDiffManager,
   hasSignificantChanges,
   describeDiff,
+  parseNumericValue,
+  classifyStatusDirection,
   DEFAULT_DIFF_CONFIG,
 } from './semantic-diff';
 export type { SemanticDiffConfig } from './semantic-diff';
@@ -156,3 +214,80 @@ export {
   getBestRecoverySuggestion,
 } from './error-context';
 export type { ErrorCode } from './error-context';
+
+// Data Extraction
+export {
+  extractPageData,
+  classifyDataType,
+  normalizeValue,
+  DEFAULT_DATA_EXTRACTION_CONFIG,
+} from './data-extraction';
+export type { DataExtractionConfig } from './data-extraction';
+
+// Region Segmentation
+export {
+  segmentPageRegions,
+  classifyRegionType,
+  DEFAULT_REGION_SEGMENTATION_CONFIG,
+} from './region-segmentation';
+export type { RegionSegmentationConfig } from './region-segmentation';
+
+// Table Extraction
+export {
+  extractStructuredData,
+  detectTable,
+  detectList,
+  DEFAULT_TABLE_EXTRACTION_CONFIG,
+} from './table-extraction';
+export type { TableExtractionConfig } from './table-extraction';
+
+// Format Analysis
+export {
+  analyzeFormat,
+  compareFormats,
+  analyzePageFormats,
+  detectFormatPattern,
+  DEFAULT_FORMAT_ANALYSIS_CONFIG,
+} from './format-analysis';
+export type { FormatAnalysisConfig } from './format-analysis';
+
+// Cross-App Diff
+export {
+  computeCrossAppDiff,
+  matchElements,
+  DEFAULT_CROSS_APP_DIFF_CONFIG,
+} from './cross-app-diff';
+export type { CrossAppDiffConfig } from './cross-app-diff';
+
+// Action Parity
+export { analyzeActionParity, DEFAULT_ACTION_PARITY_CONFIG } from './action-parity';
+export type { ActionParityConfig } from './action-parity';
+
+// Navigation Map
+export {
+  buildNavigationMap,
+  isNavigationElement,
+  DEFAULT_NAVIGATION_MAP_CONFIG,
+} from './navigation-map';
+export type { NavigationMapConfig } from './navigation-map';
+
+// Component Comparison
+export { compareComponents, DEFAULT_COMPONENT_COMPARISON_CONFIG } from './component-comparison';
+export type { ComponentComparisonConfig } from './component-comparison';
+
+// Layout Comparison
+export {
+  compareLayouts,
+  detectGridStructure,
+  computeProminence,
+  DEFAULT_LAYOUT_COMPARISON_CONFIG,
+} from './layout-comparison';
+export type { LayoutComparisonConfig } from './layout-comparison';
+
+// Content Comparison
+export { compareContent, DEFAULT_CONTENT_COMPARISON_CONFIG } from './content-comparison';
+export type { ContentComparisonConfig } from './content-comparison';
+
+// Comparison Report
+export { generateComparisonReport, DEFAULT_COMPARISON_REPORT_CONFIG } from './comparison-report';
+export type { ComparisonReportConfig } from './comparison-report';

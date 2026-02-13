@@ -389,6 +389,13 @@ export interface NativeUIBridgeConfig {
   verbose?: boolean;
   /** Path prefix for parent components (for treePath generation) */
   parentPath?: string;
+  /** Application info for discovery */
+  appInfo?: {
+    appId: string;
+    appName: string;
+    appType: 'web' | 'desktop' | 'mobile' | 'other';
+    framework?: string;
+  };
 }
 
 /**

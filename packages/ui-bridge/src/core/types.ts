@@ -93,6 +93,62 @@ export type ElementType =
   | 'generic';
 
 /**
+ * Types of static content elements (non-interactive)
+ */
+export type ContentType =
+  | 'heading'
+  | 'paragraph'
+  | 'list-item'
+  | 'table-cell'
+  | 'table-header'
+  | 'label'
+  | 'caption'
+  | 'blockquote'
+  | 'code-block'
+  | 'badge'
+  | 'status-message'
+  | 'metric-value'
+  | 'description-text'
+  | 'nav-text'
+  | 'content-generic';
+
+/**
+ * Semantic role of content elements
+ */
+export type ContentRole =
+  | 'heading'
+  | 'body-text'
+  | 'list-item'
+  | 'table-cell'
+  | 'table-header'
+  | 'label'
+  | 'caption'
+  | 'quote'
+  | 'code'
+  | 'badge'
+  | 'status'
+  | 'metric'
+  | 'description'
+  | 'navigation'
+  | 'generic';
+
+/**
+ * Metadata for content elements
+ */
+export interface ContentMetadata {
+  /** Semantic role of the content */
+  contentRole: ContentRole;
+  /** Heading level (1-6) for heading content */
+  headingLevel?: number;
+  /** Whether the content is dynamically updated */
+  dynamic?: boolean;
+  /** Stable text prefix for identification when full text changes */
+  stableTextPrefix?: string;
+  /** Structural context (e.g., "table > tbody > tr:nth-child(2)") */
+  structuralContext?: string;
+}
+
+/**
  * Standard actions available on elements
  */
 export type StandardAction =
@@ -159,6 +215,12 @@ export interface RegisteredElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+
+  // Category
+  /** Whether this is an interactive element or static content */
+  category?: 'interactive' | 'content';
+  /** Metadata for content elements */
+  contentMetadata?: ContentMetadata;
 
   // AI-Native metadata
   /** Alternative names for natural language matching */
@@ -539,12 +601,14 @@ export interface BridgeSnapshot {
   /** All registered elements */
   elements: Array<{
     id: string;
-    type: ElementType;
+    type: ElementType | string;
     label?: string;
     identifier: ElementIdentifier;
     state: ElementState;
     actions: StandardAction[];
     customActions?: string[];
+    category?: 'interactive' | 'content';
+    contentMetadata?: ContentMetadata;
   }>;
   /** All registered components */
   components: Array<{
@@ -630,6 +694,13 @@ export interface UIBridgeConfig {
   maxLogEntries?: number;
   /** Enable verbose logging */
   verbose?: boolean;
+  /** Application info for discovery */
+  appInfo?: {
+    appId: string;
+    appName: string;
+    appType: 'web' | 'desktop' | 'mobile' | 'other';
+    framework?: string;
+  };
 }
 
 // ============================================================================

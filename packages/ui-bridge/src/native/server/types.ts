@@ -10,7 +10,7 @@ import type {
   NativeFindResponse,
   NativeBridgeSnapshot,
 } from '../core/types';
-import type { ComponentActionResponse } from '../control/types';
+import type { ComponentActionResponse, PageNavigationResponse } from '../control/types';
 
 /**
  * Server configuration
@@ -98,6 +98,28 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Run a workflow',
   },
 
+  // Page Navigation
+  PAGE_REFRESH: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/refresh',
+    description: 'Refresh the current page',
+  },
+  PAGE_NAVIGATE: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/navigate',
+    description: 'Navigate to a URL',
+  },
+  PAGE_GO_BACK: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/back',
+    description: 'Go back in navigation history',
+  },
+  PAGE_GO_FORWARD: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/forward',
+    description: 'Go forward in navigation history',
+  },
+
   // Health
   HEALTH: {
     method: 'GET',
@@ -153,6 +175,12 @@ export interface NativeServerHandlers {
   // Workflows
   getWorkflows: HandlerFunction<{ workflows: unknown[] }>;
   runWorkflow: HandlerFunction<{ runId: string; status: string }>;
+
+  // Page Navigation
+  pageRefresh: HandlerFunction<PageNavigationResponse>;
+  pageNavigate: HandlerFunction<PageNavigationResponse>;
+  pageGoBack: HandlerFunction<PageNavigationResponse>;
+  pageGoForward: HandlerFunction<PageNavigationResponse>;
 
   // Health
   health: HandlerFunction<{ status: string; timestamp: number }>;

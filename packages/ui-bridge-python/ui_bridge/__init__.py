@@ -4,7 +4,102 @@ UI Bridge Python Client
 A Python client library for controlling UI elements via UI Bridge.
 """
 
+# AI-native client and types
+from .ai import AIClient
+from .ai_types import (
+    ActionStepResult,
+    AIDiscoveredElement,
+    AIElementRegistrationOptions,
+    AIErrorContext,
+    AIFindResponse,
+    AssertionRequest,
+    AssertionResult,
+    AssertionType,
+    BatchAssertionRequest,
+    BatchAssertionResult,
+    ContentChanges,
+    DiffChanges,
+    ElementChange,
+    ElementModification,
+    EmbeddingProviderInfo,
+    ErrorPageContext,
+    FormAnalysis,
+    FormFieldAnalysis,
+    FormFieldState,
+    FormState,
+    Intent,
+    IntentExecutionResult,
+    IntentMatch,
+    IntentParameter,
+    IntentSearchResponse,
+    MetricChange,
+    ModalState,
+    NearestMatchInfo,
+    NLActionRequest,
+    NLActionResponse,
+    PageChanges,
+    PageContext,
+    ParsedAction,
+    PartialMatchInfo,
+    RecoverySuggestion,
+    RecoverySuggestionInfo,
+    SearchCriteria,
+    SearchResponse,
+    SearchResult,
+    SearchResultsInfo,
+    SearchScores,
+    SemanticDiff,
+    SemanticSearchCriteria,
+    SemanticSearchResponse,
+    SemanticSearchResult,
+    SemanticSnapshot,
+    StatusChange,
+    StructuredFailureInfo,
+    TextChange,
+)
 from .client import UIBridgeClient
+
+# Logging
+from .logging import (
+    EventType,
+    LogEntry,
+    LogLevel,
+    TraceContext,
+    UIBridgeLogger,
+    get_default_logger,
+    set_default_logger,
+)
+
+# Recovery types
+from .recovery_types import (
+    DEFAULT_RECOVERY_CONFIG,
+    ERROR_CODE_STRATEGIES,
+    ExecuteWithRecoveryResult,
+    RecoveryContext,
+    RecoveryExecutorConfig,
+    RecoveryExecutorResult,
+    RecoveryStrategyResult,
+    StrategyStatus,
+)
+
+# State machine integration
+from .states import (
+    AvailableAction,
+    BreadcrumbEntry,
+    BreadcrumbTracker,
+    CommonDestination,
+    DiscoveredState,
+    DiscoveredTransition,
+    NavigationContext,
+    # Navigation assistance types
+    NavigationHint,
+    NavigationIssue,
+    NavigationLoop,
+    NavigationProgress,
+    NavigationProgressEvent,
+    ReachableState,
+    StateManager,
+)
 from .types import (
     AccessibilityIssue,
     AccessibilityReport,
@@ -39,98 +134,6 @@ from .types import (
     WorkflowRunRequest,
     WorkflowRunResponse,
     WorkflowStepResult,
-)
-
-# AI-native client and types
-from .ai import AIClient
-
-# State machine integration
-from .states import (
-    StateManager,
-    DiscoveredState,
-    DiscoveredTransition,
-    # Navigation assistance types
-    NavigationHint,
-    BreadcrumbEntry,
-    NavigationLoop,
-    AvailableAction,
-    ReachableState,
-    CommonDestination,
-    NavigationIssue,
-    NavigationContext,
-    NavigationProgressEvent,
-    NavigationProgress,
-    BreadcrumbTracker,
-)
-from .ai_types import (
-    ActionStepResult,
-    AIDiscoveredElement,
-    AIElementRegistrationOptions,
-    AIErrorContext,
-    AIFindResponse,
-    AssertionRequest,
-    AssertionResult,
-    AssertionType,
-    BatchAssertionRequest,
-    BatchAssertionResult,
-    DiffChanges,
-    ElementChange,
-    ElementModification,
-    EmbeddingProviderInfo,
-    ErrorPageContext,
-    FormAnalysis,
-    FormFieldAnalysis,
-    FormFieldState,
-    FormState,
-    Intent,
-    IntentExecutionResult,
-    IntentMatch,
-    IntentParameter,
-    IntentSearchResponse,
-    ModalState,
-    NearestMatchInfo,
-    NLActionRequest,
-    NLActionResponse,
-    PageChanges,
-    PageContext,
-    ParsedAction,
-    PartialMatchInfo,
-    RecoverySuggestion,
-    RecoverySuggestionInfo,
-    SearchCriteria,
-    SearchResponse,
-    SearchResult,
-    SearchResultsInfo,
-    SearchScores,
-    SemanticDiff,
-    SemanticSearchCriteria,
-    SemanticSearchResponse,
-    SemanticSearchResult,
-    SemanticSnapshot,
-    StructuredFailureInfo,
-)
-
-# Recovery types
-from .recovery_types import (
-    DEFAULT_RECOVERY_CONFIG,
-    ERROR_CODE_STRATEGIES,
-    ExecuteWithRecoveryResult,
-    RecoveryContext,
-    RecoveryExecutorConfig,
-    RecoveryExecutorResult,
-    RecoveryStrategyResult,
-    StrategyStatus,
-)
-
-# Logging
-from .logging import (
-    UIBridgeLogger,
-    LogEntry,
-    LogLevel,
-    EventType,
-    TraceContext,
-    get_default_logger,
-    set_default_logger,
 )
 
 __version__ = "0.1.0"
@@ -193,9 +196,13 @@ __all__ = [
     "AssertionType",
     "BatchAssertionRequest",
     "BatchAssertionResult",
+    "ContentChanges",
     "DiffChanges",
     "ElementChange",
     "ElementModification",
+    "MetricChange",
+    "StatusChange",
+    "TextChange",
     "ErrorPageContext",
     "FormAnalysis",
     "FormFieldAnalysis",

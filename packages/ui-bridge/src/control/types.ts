@@ -4,7 +4,13 @@
  * Types for the control protocol and action execution.
  */
 
-import type { ActionRequest, ActionResponse, ElementState, WaitOptions } from '../core/types';
+import type {
+  ActionRequest,
+  ActionResponse,
+  ElementState,
+  WaitOptions,
+  ContentMetadata,
+} from '../core/types';
 
 /**
  * Extended action request with additional options
@@ -161,6 +167,10 @@ export interface DiscoveredElement {
   state: ElementState;
   /** Whether registered with UI Bridge */
   registered: boolean;
+  /** Whether this is an interactive element or static content */
+  category?: 'interactive' | 'content';
+  /** Metadata for content elements */
+  contentMetadata?: ContentMetadata;
 }
 
 /**
@@ -181,6 +191,12 @@ export interface FindRequest {
   types?: string[];
   /** Filter by selector */
   selector?: string;
+  /** Include content (non-interactive) elements in results */
+  includeContent?: boolean;
+  /** Only return content elements */
+  contentOnly?: boolean;
+  /** Filter by content role */
+  contentRole?: string;
 }
 
 /**
@@ -222,6 +238,8 @@ export interface ControlSnapshot {
     label?: string;
     actions: string[];
     state: ElementState;
+    category?: 'interactive' | 'content';
+    contentMetadata?: ContentMetadata;
   }>;
   /** All registered components */
   components: Array<{
@@ -330,6 +348,26 @@ export interface WaitResult {
   state?: ElementState;
   /** Error if timed out */
   error?: string;
+}
+
+/**
+ * Page navigation request
+ */
+export interface PageNavigateRequest {
+  /** URL to navigate to */
+  url: string;
+}
+
+/**
+ * Page navigation response
+ */
+export interface PageNavigationResponse {
+  /** Whether the navigation succeeded */
+  success: boolean;
+  /** Current URL after navigation */
+  url?: string;
+  /** Timestamp */
+  timestamp: number;
 }
 
 /**

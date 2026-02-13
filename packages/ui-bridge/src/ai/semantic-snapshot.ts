@@ -169,6 +169,8 @@ export class SemanticSnapshotManager {
    * Convert a single element to AI element
    */
   private convertElement(element: ControlSnapshot['elements'][0]): AIDiscoveredElement {
+    const isContent = element.category === 'content';
+
     const aliases = generateAliases({
       textContent: element.state.textContent,
       elementType: element.type,
@@ -176,24 +178,34 @@ export class SemanticSnapshotManager {
       labelText: element.label,
     });
 
-    const description = this.config.generateDescriptions
-      ? generateDescription({
+    // Generate content-specific descriptions
+    let description: string;
+    if (isContent && element.contentMetadata) {
+      description = this.generateContentDescription(element);
+    } else if (this.config.generateDescriptions) {
+      description = generateDescription({
+        textContent: element.state.textContent,
+        elementType: element.type,
+        id: element.id,
+        labelText: element.label,
+      });
+    } else {
+      description = element.label || element.id;
+    }
+
+    const purpose = isContent
+      ? generatePurpose({ textContent: element.state.textContent, elementType: element.type })
+      : generatePurpose({ textContent: element.state.textContent, elementType: element.type });
+
+    const suggestedActions = isContent
+      ? generateSuggestedActions({
           textContent: element.state.textContent,
           elementType: element.type,
-          id: element.id,
-          labelText: element.label,
         })
-      : element.label || element.id;
-
-    const purpose = generatePurpose({
-      textContent: element.state.textContent,
-      elementType: element.type,
-    });
-
-    const suggestedActions = generateSuggestedActions({
-      textContent: element.state.textContent,
-      elementType: element.type,
-    });
+      : generateSuggestedActions({
+          textContent: element.state.textContent,
+          elementType: element.type,
+        });
 
     // Merge annotation overrides (explicit > inferred)
     let finalDescription = description;
@@ -232,7 +244,53 @@ export class SemanticSnapshotManager {
       purpose: finalPurpose,
       suggestedActions,
       semanticType: this.inferSemanticType(element),
+      category: element.category,
+      contentMetadata: element.contentMetadata,
     };
+  }
+
+  /**
+   * Generate a content-specific description
+   */
+  private generateContentDescription(element: ControlSnapshot['elements'][0]): string {
+    const meta = element.contentMetadata;
+    const text = element.state.textContent?.trim() || '';
+    const truncatedText = text.length > 60 ? text.substring(0, 57) + '...' : text;
+
+    if (!meta) return `"${truncatedText}"`;
+
+    switch (meta.contentRole) {
+      case 'heading':
+        return `Level ${meta.headingLevel || '?'} heading: '${truncatedText}'`;
+      case 'table-cell':
+        return `Table cell${meta.structuralContext ? ` (${meta.structuralContext})` : ''}: '${truncatedText}'`;
+      case 'table-header':
+        return `Table header${meta.structuralContext ? ` (${meta.structuralContext})` : ''}: '${truncatedText}'`;
+      case 'status':
+        return `Status message: '${truncatedText}'`;
+      case 'badge':
+        return `Badge: '${truncatedText}'`;
+      case 'metric':
+        return `Metric value: '${truncatedText}'`;
+      case 'body-text':
+        return `Text: '${truncatedText}'`;
+      case 'list-item':
+        return `List item: '${truncatedText}'`;
+      case 'quote':
+        return `Blockquote: '${truncatedText}'`;
+      case 'code':
+        return `Code block: '${truncatedText}'`;
+      case 'caption':
+        return `Caption: '${truncatedText}'`;
+      case 'label':
+        return `Label: '${truncatedText}'`;
+      case 'description':
+        return `Description: '${truncatedText}'`;
+      case 'navigation':
+        return `Navigation text: '${truncatedText}'`;
+      default:
+        return `Content: '${truncatedText}'`;
+    }
   }
 
   /**
@@ -508,6 +566,15 @@ export class SemanticSnapshotManager {
    * Infer semantic type
    */
   private inferSemanticType(element: ControlSnapshot['elements'][0]): string {
+    // Content elements use their contentRole as semantic type
+    if (element.category === 'content' && element.contentMetadata) {
+      const role = element.contentMetadata.contentRole;
+      if (role === 'heading' && element.contentMetadata.headingLevel) {
+        return `heading-${element.contentMetadata.headingLevel}`;
+      }
+      return role;
+    }
+
     const text = (element.state.textContent || element.label || '').toLowerCase();
     const type = element.type.toLowerCase();
 

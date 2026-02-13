@@ -33,12 +33,15 @@
 
 import React, { type ReactNode, useRef } from 'react';
 import { useAutoRegister, type AutoRegisterOptions } from './useAutoRegister';
+import type { ContentDiscoveryOptions } from './content-discovery';
 
 export interface AutoRegisterProviderProps extends Omit<AutoRegisterOptions, 'root'> {
   /** Children to render */
   children: ReactNode;
   /** Use this element as the observation root instead of document.body */
   scopeToChildren?: boolean;
+  /** Content discovery options (enabled by default) */
+  contentDiscovery?: ContentDiscoveryOptions;
 }
 
 /**
@@ -65,6 +68,7 @@ export function AutoRegisterProvider({
   generateId,
   onRegister,
   onUnregister,
+  contentDiscovery,
 }: AutoRegisterProviderProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -80,6 +84,7 @@ export function AutoRegisterProvider({
     generateId,
     onRegister,
     onUnregister,
+    contentDiscovery,
   });
 
   // If scoped to children, wrap in a div

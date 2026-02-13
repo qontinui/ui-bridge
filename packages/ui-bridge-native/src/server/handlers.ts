@@ -36,7 +36,8 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
  */
 export function createServerHandlers(
   registry: NativeUIBridgeRegistry,
-  executor: NativeActionExecutor
+  executor: NativeActionExecutor,
+  config?: { appInfo?: { appId: string; appName: string; appType: string; framework?: string } }
 ): NativeServerHandlers {
   return {
     // Elements
@@ -216,14 +217,43 @@ export function createServerHandlers(
       });
     },
 
+    // Page Navigation (stubs — React Native apps should override with their navigation provider)
+    pageRefresh: async () => {
+      return error('Page refresh not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageNavigate: async () => {
+      return error('Page navigation not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageGoBack: async () => {
+      return error('Page go back not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageGoForward: async () => {
+      return error('Page go forward not supported on native platform', 'NOT_SUPPORTED');
+    },
+
     // Health
     health: async () => {
       const stats = registry.getStats();
-      return success({
+      const response: Record<string, unknown> = {
         status: 'healthy',
         timestamp: Date.now(),
         ...stats,
-      });
+      };
+
+      if (config?.appInfo) {
+        response.uiBridge = {
+          version: '0.3.0',
+          ...config.appInfo,
+          capabilities: ['elements', 'components', 'actions'],
+          elementCount: stats.elements,
+          componentCount: stats.components,
+        };
+      }
+
+      return success(response as any);
     },
   };
 }

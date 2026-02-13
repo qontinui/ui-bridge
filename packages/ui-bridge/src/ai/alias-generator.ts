@@ -417,12 +417,71 @@ export function generateDescription(input: AliasGeneratorInput): string {
 }
 
 /**
+ * Content type strings for purpose/action generation
+ */
+const CONTENT_TYPES = new Set([
+  'heading',
+  'paragraph',
+  'list-item',
+  'table-cell',
+  'table-header',
+  'label',
+  'caption',
+  'blockquote',
+  'code-block',
+  'badge',
+  'status-message',
+  'metric-value',
+  'description-text',
+  'nav-text',
+  'content-generic',
+]);
+
+/**
  * Generate a purpose statement for an element
  */
 export function generatePurpose(input: AliasGeneratorInput): string | undefined {
   const text = (input.textContent || input.ariaLabel || input.title || '').toLowerCase();
   const type = input.elementType?.toLowerCase() || '';
   const inputType = input.inputType?.toLowerCase() || '';
+
+  // Content-specific purposes
+  if (CONTENT_TYPES.has(type)) {
+    switch (type) {
+      case 'heading':
+        return 'Section heading';
+      case 'paragraph':
+        return 'Body text content';
+      case 'list-item':
+        return 'List item';
+      case 'table-cell':
+        return 'Table data cell';
+      case 'table-header':
+        return 'Table column header';
+      case 'label':
+        return 'Field label or definition term';
+      case 'caption':
+        return 'Figure or table caption';
+      case 'blockquote':
+        return 'Quoted content';
+      case 'code-block':
+        return 'Code or preformatted text';
+      case 'badge':
+        return 'Status badge or tag';
+      case 'status-message':
+        return 'Dynamic status indicator';
+      case 'metric-value':
+        return 'Metric or statistic value';
+      case 'description-text':
+        return 'Description or definition';
+      case 'nav-text':
+        return 'Navigation label';
+      case 'content-generic':
+        return 'Text content';
+      default:
+        return 'Static content';
+    }
+  }
 
   // Check for common patterns
   if (type === 'button' || inputType === 'submit') {
@@ -499,6 +558,12 @@ export function generateSuggestedActions(input: AliasGeneratorInput): string[] {
   const inputType = input.inputType?.toLowerCase() || '';
   const text = (input.textContent || input.ariaLabel || '').toLowerCase();
   const actions: string[] = [];
+
+  // Content elements get read-only actions
+  if (CONTENT_TYPES.has(type)) {
+    actions.push('read text content', 'verify text matches expected');
+    return actions;
+  }
 
   switch (type) {
     case 'button':

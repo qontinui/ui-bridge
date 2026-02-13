@@ -13,6 +13,7 @@ import type {
   BatchAssertionRequest,
   BatchAssertionResult,
   SearchCriteria,
+  SearchResult,
   AIDiscoveredElement,
 } from './types';
 import { SearchEngine } from './search-engine';
@@ -69,11 +70,19 @@ export class AssertionExecutor {
     const startTime = performance.now();
     const timeout = request.timeout ?? this.config.defaultTimeout;
 
-    // Find the target element
-    const element = await this.findElement(request.target, request.fuzzy !== false);
+    // Find the target element with full search metadata
+    const searchResult = this.findElementDetailed(request.target, request.fuzzy !== false);
+    const element = searchResult?.element ?? null;
+    const searchDetails = searchResult
+      ? {
+          confidence: searchResult.confidence,
+          matchReasons: searchResult.matchReasons,
+          candidateCount: this.elements.length,
+        }
+      : undefined;
 
     if (!element && request.type !== 'notExists') {
-      return this.createResult(
+      const result = this.createResult(
         false,
         typeof request.target === 'string' ? request.target : JSON.stringify(request.target),
         'element not found',
@@ -85,10 +94,20 @@ export class AssertionExecutor {
           : undefined,
         startTime
       );
+      // Attach search details even for not-found (candidateCount helps AI understand scope)
+      if (searchDetails) {
+        result.searchDetails = searchDetails;
+      }
+      return result;
     }
 
     // Execute the assertion based on type
-    return this.executeAssertion(request, element, timeout, startTime);
+    const result = await this.executeAssertion(request, element, timeout, startTime);
+    // Attach search details to the result
+    if (searchDetails) {
+      result.searchDetails = searchDetails;
+    }
+    return result;
   }
 
   /**
@@ -240,6 +259,27 @@ export class AssertionExecutor {
   }
 
   /**
+   * Find element by target with full search metadata.
+   * Returns the SearchResult (including confidence, matchReasons, scores)
+   * or null if no match above the fuzzy threshold.
+   */
+  private findElementDetailed(
+    target: string | SearchCriteria,
+    fuzzy: boolean = true
+  ): SearchResult | null {
+    const criteria: SearchCriteria =
+      typeof target === 'string' ? { text: target, fuzzy } : { ...target, fuzzy };
+
+    const searchResult = this.searchEngine.findBest(criteria);
+
+    if (searchResult && searchResult.confidence >= this.config.fuzzyThreshold) {
+      return searchResult;
+    }
+
+    return null;
+  }
+
+  /**
    * Find element by target (string or criteria).
    * Public for use by condition evaluation in SpecExecutor.
    */
@@ -247,16 +287,8 @@ export class AssertionExecutor {
     target: string | SearchCriteria,
     fuzzy: boolean = true
   ): Promise<AIDiscoveredElement | null> {
-    const criteria: SearchCriteria =
-      typeof target === 'string' ? { text: target, fuzzy } : { ...target, fuzzy };
-
-    const searchResult = this.searchEngine.findBest(criteria);
-
-    if (searchResult && searchResult.confidence >= this.config.fuzzyThreshold) {
-      return searchResult.element;
-    }
-
-    return null;
+    const result = this.findElementDetailed(target, fuzzy);
+    return result?.element ?? null;
   }
 
   /**

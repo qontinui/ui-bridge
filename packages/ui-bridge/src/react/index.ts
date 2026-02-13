@@ -68,5 +68,8 @@ export { useAutoRegister, type AutoRegisterOptions, type IdStrategy } from './us
 
 export { AutoRegisterProvider, type AutoRegisterProviderProps } from './AutoRegisterProvider';
 
+// Content discovery
+export { type ContentDiscoveryOptions } from './content-discovery';
+
 // Annotation hook
 export { useUIAnnotation } from './useUIAnnotation';

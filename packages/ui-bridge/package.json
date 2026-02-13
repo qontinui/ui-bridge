@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "UI Bridge Framework - React hooks and providers for UI observation, control, and debugging",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -50,6 +50,11 @@
       "types": "./dist/specs/index.d.ts",
       "import": "./dist/specs/index.mjs",
       "require": "./dist/specs/index.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery/index.d.ts",
+      "import": "./dist/discovery/index.mjs",
+      "require": "./dist/discovery/index.js"
     },
     "./server": {
       "types": "./dist/server/index.d.ts",

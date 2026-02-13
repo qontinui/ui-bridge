@@ -26,6 +26,7 @@ import type {
   StateSnapshot,
   ComponentStateResponse,
   StateGetter,
+  ContentMetadata,
 } from './types';
 import { createElementIdentifier } from './element-identifier';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
@@ -303,6 +304,8 @@ export class UIBridgeRegistry {
       label?: string;
       actions?: StandardAction[];
       customActions?: Record<string, CustomAction>;
+      category?: 'interactive' | 'content';
+      contentMetadata?: ContentMetadata;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -331,12 +334,49 @@ export class UIBridgeRegistry {
       getIdentifier: () => createElementIdentifier(element),
       registeredAt: Date.now(),
       mounted: true,
+      category: options.category ?? 'interactive',
+      contentMetadata: options.contentMetadata,
     };
 
     this.elements.set(actualId, registered);
     this.emit('element:registered', { id: actualId, type, label: options.label });
 
     return registered;
+  }
+
+  /**
+   * Register a content (non-interactive) element
+   */
+  registerContentElement(
+    id: string,
+    element: HTMLElement,
+    options: {
+      contentType: string;
+      contentMetadata: ContentMetadata;
+      label?: string;
+    }
+  ): RegisteredElement {
+    return this.registerElement(id, element, {
+      type: options.contentType as ElementType,
+      label: options.label,
+      actions: [],
+      category: 'content',
+      contentMetadata: options.contentMetadata,
+    });
+  }
+
+  /**
+   * Get all content (non-interactive) elements
+   */
+  getAllContentElements(): RegisteredElement[] {
+    return Array.from(this.elements.values()).filter((el) => el.category === 'content');
+  }
+
+  /**
+   * Get all interactive elements
+   */
+  getAllInteractiveElements(): RegisteredElement[] {
+    return Array.from(this.elements.values()).filter((el) => el.category !== 'content');
   }
 
   /**
@@ -1181,6 +1221,8 @@ export class UIBridgeRegistry {
         state: el.getState(),
         actions: el.actions,
         customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+        category: el.category,
+        contentMetadata: el.contentMetadata,
       })),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,

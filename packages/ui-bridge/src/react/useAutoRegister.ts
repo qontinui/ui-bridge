@@ -15,6 +15,14 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { ElementType, StandardAction } from '../core/types';
+import type { ContentDiscoveryOptions } from './content-discovery';
+import {
+  CONTENT_SELECTORS,
+  shouldRegisterContent,
+  inferContentType,
+  inferContentMetadata,
+  generateContentId,
+} from './content-discovery';
 
 /**
  * ID generation strategy
@@ -50,6 +58,8 @@ export interface AutoRegisterOptions {
   onRegister?: (id: string, element: HTMLElement) => void;
   /** Callback when element is unregistered */
   onUnregister?: (id: string) => void;
+  /** Content discovery options (enabled by default) */
+  contentDiscovery?: ContentDiscoveryOptions;
 }
 
 /**
@@ -329,12 +339,18 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     generateId: customGenerateId,
     onRegister,
     onUnregister,
+    contentDiscovery,
   } = options;
+
+  const contentEnabled = contentDiscovery?.enabled !== false;
 
   const bridge = useUIBridgeOptional();
   const registeredElementsRef = useRef(new Map<HTMLElement, string>());
+  const registeredContentElementsRef = useRef(new Map<HTMLElement, string>());
   const pendingRegistrationsRef = useRef(new Set<HTMLElement>());
+  const pendingContentRegistrationsRef = useRef(new Set<HTMLElement>());
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contentDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * Check if element should be registered
@@ -435,6 +451,60 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Register a single content element
+   */
+  const registerContentElement = useCallback(
+    (element: HTMLElement): void => {
+      if (!bridge?.registry || registeredContentElementsRef.current.has(element)) {
+        return;
+      }
+
+      const maxElements = contentDiscovery?.maxContentElements ?? 500;
+      if (registeredContentElementsRef.current.size >= maxElements) {
+        return;
+      }
+
+      const id = generateContentId(element);
+
+      // Check if ID already exists in registry
+      const existing = bridge.registry.getElement(id);
+      if (existing) {
+        return; // Content IDs are deterministic — skip duplicates
+      }
+
+      const contentType = inferContentType(element);
+      const metadata = inferContentMetadata(element);
+      const label =
+        element.getAttribute('data-content-label') ||
+        element.textContent?.trim().substring(0, 50) ||
+        undefined;
+
+      bridge.registry.registerContentElement(id, element, {
+        contentType,
+        contentMetadata: metadata,
+        label,
+      });
+
+      registeredContentElementsRef.current.set(element, id);
+    },
+    [bridge, contentDiscovery?.maxContentElements]
+  );
+
+  /**
+   * Unregister a single content element
+   */
+  const unregisterContentElement = useCallback(
+    (element: HTMLElement): void => {
+      const id = registeredContentElementsRef.current.get(element);
+      if (!id || !bridge?.registry) return;
+
+      bridge.registry.unregisterElement(id);
+      registeredContentElementsRef.current.delete(element);
+    },
+    [bridge]
+  );
+
+  /**
    * Process pending registrations (debounced)
    */
   const processPendingRegistrations = useCallback(() => {
@@ -445,6 +515,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     });
     pendingRegistrationsRef.current.clear();
   }, [shouldRegister, registerElement]);
+
+  /**
+   * Process pending content registrations (debounced, separate timer)
+   */
+  const processPendingContentRegistrations = useCallback(() => {
+    const registeredIds = new Set(registeredContentElementsRef.current.values());
+    pendingContentRegistrationsRef.current.forEach((element) => {
+      if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+        registerContentElement(element);
+      }
+    });
+    pendingContentRegistrationsRef.current.clear();
+  }, [contentDiscovery, registerContentElement]);
 
   /**
    * Queue element for registration (with debounce)
@@ -463,10 +546,31 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Queue content element for registration (separate debounce timer)
+   */
+  const queueContentRegistration = useCallback(
+    (element: HTMLElement): void => {
+      pendingContentRegistrationsRef.current.add(element);
+
+      if (contentDebounceTimeoutRef.current) {
+        clearTimeout(contentDebounceTimeoutRef.current);
+      }
+
+      const contentDebounceMs = contentDiscovery?.contentDebounceMs ?? 250;
+      contentDebounceTimeoutRef.current = setTimeout(
+        processPendingContentRegistrations,
+        contentDebounceMs
+      );
+    },
+    [contentDiscovery?.contentDebounceMs, processPendingContentRegistrations]
+  );
+
+  /**
    * Scan and register all existing interactive elements
    */
   const scanAndRegister = useCallback(
     (rootElement: HTMLElement): void => {
+      // Scan interactive elements
       const allSelectors = [...INTERACTIVE_SELECTORS, ...includeSelectors].join(', ');
       const elements = rootElement.querySelectorAll<HTMLElement>(allSelectors);
 
@@ -475,8 +579,31 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           queueRegistration(element);
         }
       });
+
+      // Scan content elements
+      if (contentEnabled) {
+        const contentSelectors = [
+          ...CONTENT_SELECTORS,
+          ...(contentDiscovery?.includeContentSelectors || []),
+        ].join(', ');
+        const contentElements = rootElement.querySelectorAll<HTMLElement>(contentSelectors);
+        const registeredIds = new Set(registeredContentElementsRef.current.values());
+
+        contentElements.forEach((element) => {
+          if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+            queueContentRegistration(element);
+          }
+        });
+      }
     },
-    [includeSelectors, shouldRegister, queueRegistration]
+    [
+      includeSelectors,
+      shouldRegister,
+      queueRegistration,
+      contentEnabled,
+      contentDiscovery,
+      queueContentRegistration,
+    ]
   );
 
   /**
@@ -490,12 +617,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           if (node.nodeType === Node.ELEMENT_NODE) {
             const element = node as HTMLElement;
 
-            // Check the element itself
+            // Check the element itself for interactive registration
             if (shouldRegister(element)) {
               queueRegistration(element);
             }
 
-            // Check descendants
+            // Check descendants for interactive registration
             const allSelectors = [...INTERACTIVE_SELECTORS, ...includeSelectors].join(', ');
             const descendants = element.querySelectorAll<HTMLElement>(allSelectors);
             descendants.forEach((descendant) => {
@@ -503,6 +630,28 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
                 queueRegistration(descendant);
               }
             });
+
+            // Content discovery for added nodes
+            if (contentEnabled) {
+              const contentSelectors = [
+                ...CONTENT_SELECTORS,
+                ...(contentDiscovery?.includeContentSelectors || []),
+              ].join(', ');
+              const registeredIds = new Set(registeredContentElementsRef.current.values());
+
+              // Check the element itself
+              if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
+                queueContentRegistration(element);
+              }
+
+              // Check descendants
+              const contentDescendants = element.querySelectorAll<HTMLElement>(contentSelectors);
+              contentDescendants.forEach((descendant) => {
+                if (shouldRegisterContent(descendant, contentDiscovery, registeredIds)) {
+                  queueContentRegistration(descendant);
+                }
+              });
+            }
           }
         });
 
@@ -511,9 +660,14 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           if (node.nodeType === Node.ELEMENT_NODE) {
             const element = node as HTMLElement;
 
-            // Unregister the element itself
+            // Unregister the element itself (interactive)
             if (registeredElementsRef.current.has(element)) {
               unregisterElement(element);
+            }
+
+            // Unregister the element itself (content)
+            if (registeredContentElementsRef.current.has(element)) {
+              unregisterContentElement(element);
             }
 
             // Unregister descendants
@@ -522,12 +676,24 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               if (registeredElementsRef.current.has(descendant)) {
                 unregisterElement(descendant);
               }
+              if (registeredContentElementsRef.current.has(descendant)) {
+                unregisterContentElement(descendant);
+              }
             });
           }
         });
       });
     },
-    [shouldRegister, queueRegistration, unregisterElement, includeSelectors]
+    [
+      shouldRegister,
+      queueRegistration,
+      unregisterElement,
+      includeSelectors,
+      contentEnabled,
+      contentDiscovery,
+      queueContentRegistration,
+      unregisterContentElement,
+    ]
   );
 
   /**
@@ -554,12 +720,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
+      if (contentDebounceTimeoutRef.current) {
+        clearTimeout(contentDebounceTimeoutRef.current);
+      }
 
-      // Unregister all elements
+      // Unregister all interactive elements
       registeredElementsRef.current.forEach((id, _element) => {
         bridge.registry.unregisterElement(id);
       });
       registeredElementsRef.current.clear();
+
+      // Unregister all content elements
+      registeredContentElementsRef.current.forEach((id, _element) => {
+        bridge.registry.unregisterElement(id);
+      });
+      registeredContentElementsRef.current.clear();
     };
   }, [enabled, bridge, root, scanAndRegister, handleMutations]);
 }
