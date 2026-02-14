@@ -554,10 +554,23 @@ export class DefaultActionExecutor implements ActionExecutor {
       throw new Error('Type action requires an input or textarea element');
     }
 
+    // Use the native value setter to bypass React's synthetic event system.
+    // React overrides the value property; setting .value directly doesn't
+    // trigger onChange. The native setter + dispatched 'input' event does.
+    const proto =
+      element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+
     element.focus();
 
     if (options?.clear) {
-      element.value = '';
+      if (nativeSetter) {
+        nativeSetter.call(element, '');
+      } else {
+        element.value = '';
+      }
       element.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
@@ -565,7 +578,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     const delay = options?.delay || 0;
 
     for (const char of text) {
-      element.value += char;
+      const current = element.value;
+      if (nativeSetter) {
+        nativeSetter.call(element, current + char);
+      } else {
+        element.value = current + char;
+      }
       if (options?.triggerEvents !== false) {
         element.dispatchEvent(new Event('input', { bubbles: true }));
       }
@@ -581,7 +599,16 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private performClear(element: HTMLElement): void {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      element.value = '';
+      const proto =
+        element instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(element, '');
+      } else {
+        element.value = '';
+      }
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
