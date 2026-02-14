@@ -91,7 +91,7 @@ export interface UIBridgeNativeProviderProps {
  *   return (
  *     <UIBridgeNativeProvider
  *       features={{ server: __DEV__, debug: __DEV__ }}
- *       config={{ serverPort: 9876 }}
+ *       config={{ serverPort: 8087 }}
  *     >
  *       <Stack>{children}</Stack>
  *     </UIBridgeNativeProvider>
@@ -136,7 +136,7 @@ export function UIBridgeNativeProvider({
 
     // TODO: Implement actual HTTP server using react-native-http-bridge or similar
     // For now, just log that we would start the server
-    console.log(`[ui-bridge-native] Would start HTTP server on port ${config.serverPort || 9876}`);
+    console.log(`[ui-bridge-native] Would start HTTP server on port ${config.serverPort || 8087}`);
     setServerRunning(true);
   }, [features.server, config.serverPort]);
 

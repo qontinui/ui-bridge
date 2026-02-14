@@ -22,7 +22,7 @@ export default function RootLayout() {
   return (
     <UIBridgeNativeProvider
       features={{ server: __DEV__, debug: __DEV__ }}
-      config={{ serverPort: 9876 }}
+      config={{ serverPort: 8087 }}
     >
       <Stack>{/* Your app content */}</Stack>
     </UIBridgeNativeProvider>
@@ -56,7 +56,7 @@ function SubmitButton({ onPress }) {
 from ui_bridge import UIBridgeClient
 
 # Connect to device (use 10.0.2.2 for Android emulator)
-client = UIBridgeClient("http://10.0.2.2:9876")
+client = UIBridgeClient("http://10.0.2.2:8087")
 
 # Find and interact with elements
 client.press("submit-button")
@@ -190,7 +190,7 @@ The package includes an embedded HTTP server for external control. Configure wit
 ```tsx
 <UIBridgeNativeProvider
   features={{ server: true }}
-  config={{ serverPort: 9876 }}
+  config={{ serverPort: 8087 }}
 >
 ```
 

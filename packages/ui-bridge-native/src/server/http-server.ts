@@ -70,7 +70,7 @@ export class NativeUIBridgeServer {
     config: NativeServerConfig = {}
   ) {
     this.config = {
-      serverPort: 9876,
+      serverPort: 8087,
       cors: true,
       ...config,
     };
