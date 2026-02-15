@@ -5,6 +5,9 @@
  * plus ui-bridge-specific types (WebSocket protocol, accessibility, extended workflow types).
  */
 
+import type { CapturedError } from '../debug/browser-capture-types';
+export type { CapturedError } from '../debug/browser-capture-types';
+
 // ============================================================================
 // Core Element Types
 // ============================================================================
@@ -503,6 +506,8 @@ export interface ActionResponse {
   durationMs: number;
   /** Timestamp when the action completed */
   timestamp: number;
+  /** Console errors/warnings captured during action execution */
+  consoleErrors?: CapturedError[];
 }
 
 // ============================================================================

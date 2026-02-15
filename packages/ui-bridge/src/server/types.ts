@@ -53,6 +53,7 @@ import type {
   StateSnapshot,
 } from '../core';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
+import type { CapturedError } from '../debug/browser-capture-types';
 
 /**
  * Server configuration
@@ -185,6 +186,10 @@ export interface UIBridgeServerHandlers {
   getMetrics: () => Promise<APIResponse<unknown>>;
   highlightElement: (id: string) => Promise<APIResponse<void>>;
   getElementTree: () => Promise<APIResponse<unknown>>;
+  getConsoleErrors: (params?: {
+    since?: number;
+    limit?: number;
+  }) => Promise<APIResponse<{ errors: CapturedError[]; count: number }>>;
 
   // AI-native endpoints
   aiSearch: (criteria: SearchCriteria) => Promise<APIResponse<SearchResponse>>;
@@ -334,6 +339,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/debug/metrics', handler: 'getMetrics' },
   { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
   { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },
+  { method: 'GET', path: '/control/console-errors', handler: 'getConsoleErrors' },
 
   // AI-native endpoints
   { method: 'POST', path: '/ai/search', handler: 'aiSearch', bodyRequired: true },

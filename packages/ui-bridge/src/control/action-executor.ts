@@ -6,6 +6,8 @@
 
 import type { UIBridgeRegistry } from '../core/registry';
 import type { WaitOptions, ElementState, StandardAction } from '../core/types';
+import type { CapturedError } from '../debug/browser-capture-types';
+import type { BrowserEventCapture } from '../debug/browser-capture';
 import { findElementByIdentifier } from '../core/element-identifier';
 import type {
   ControlActionRequest,
@@ -135,7 +137,10 @@ function createMouseEvent(type: string, element: HTMLElement, options?: MouseAct
  * Default action executor implementation
  */
 export class DefaultActionExecutor implements ActionExecutor {
-  constructor(private registry: UIBridgeRegistry) {}
+  constructor(
+    private registry: UIBridgeRegistry,
+    private consoleCapture?: BrowserEventCapture
+  ) {}
 
   /**
    * Execute an action on an element
@@ -184,12 +189,22 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
 
       // Execute the action
+      const actionStartTime = Date.now();
       const result = await this.performAction(element, request.action, request.params);
+
+      // Brief wait to catch immediate async errors (promise rejections from click handlers)
+      let consoleErrors: CapturedError[] | undefined;
+      if (this.consoleCapture) {
+        await sleep(50);
+        const errors = this.consoleCapture.getConsoleSince(actionStartTime);
+        if (errors.length > 0) consoleErrors = errors;
+      }
 
       return {
         success: true,
         elementState: getElementState(element),
         result,
+        consoleErrors,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -837,6 +852,9 @@ export class DefaultActionExecutor implements ActionExecutor {
 /**
  * Create an action executor
  */
-export function createActionExecutor(registry: UIBridgeRegistry): ActionExecutor {
-  return new DefaultActionExecutor(registry);
+export function createActionExecutor(
+  registry: UIBridgeRegistry,
+  consoleCapture?: BrowserEventCapture
+): ActionExecutor {
+  return new DefaultActionExecutor(registry, consoleCapture);
 }

@@ -57,6 +57,7 @@ import {
 } from '../ai';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
+import type { CapturedError } from '../debug/browser-capture-types';
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -115,6 +116,15 @@ export interface ActionExecutorLike {
 }
 
 /**
+ * Console capture interface — minimal contract for handler usage
+ */
+export interface ConsoleCapturelike {
+  getConsoleSince(ts: number): CapturedError[];
+  getConsoleRecent(n?: number): CapturedError[];
+  clear(): void;
+}
+
+/**
  * Configuration for creating handlers
  */
 export interface CreateHandlersConfig {
@@ -124,6 +134,8 @@ export interface CreateHandlersConfig {
   verbose?: boolean;
   /** Optional annotation store (defaults to global singleton) */
   annotationStore?: AnnotationStore;
+  /** Optional console capture instance for error monitoring */
+  consoleCapture?: ConsoleCapturelike;
 }
 
 /**
@@ -355,6 +367,9 @@ export function createHandlers(
 
   // Intent registry (in-memory store for registered intents)
   const intentRegistry = new Map<string, Intent>();
+
+  // Console capture
+  const consoleCapture = config.consoleCapture ?? null;
 
   // Annotation store
   const annotationStore = config.annotationStore ?? getGlobalAnnotationStore();
@@ -802,6 +817,23 @@ export function createHandlers(
         return success(tree);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_TREE_ERROR');
+      }
+    },
+
+    getConsoleErrors: async (params?: {
+      since?: number;
+      limit?: number;
+    }): Promise<APIResponse<{ errors: CapturedError[]; count: number }>> => {
+      try {
+        if (!consoleCapture) {
+          return success({ errors: [], count: 0 });
+        }
+        const errors = params?.since
+          ? consoleCapture.getConsoleSince(params.since)
+          : consoleCapture.getConsoleRecent(params?.limit ?? 50);
+        return success({ errors, count: errors.length });
+      } catch (err) {
+        return error((err as Error).message, 'CONSOLE_ERRORS_ERROR');
       }
     },
 

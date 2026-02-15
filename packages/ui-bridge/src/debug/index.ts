@@ -1,7 +1,7 @@
 /**
  * UI Bridge Debug Module
  *
- * DevTools, inspection, and metrics utilities.
+ * DevTools, inspection, metrics, and browser event capture utilities.
  */
 
 // Inspector
@@ -17,6 +17,29 @@ export {
   type UseInspectorOptions,
   type InspectorProps,
 } from './inspector';
+
+// Browser Event Capture (replaces ConsoleCapture)
+export { BrowserEventCapture } from './browser-capture';
+export {
+  type BrowserEventType,
+  type BrowserCapturedEvent,
+  type ConsoleCapturedEvent,
+  type NetworkCapturedEvent,
+  type ReactErrorCapturedEvent,
+  type NavigationCapturedEvent,
+  type LongTaskCapturedEvent,
+  type ResourceErrorCapturedEvent,
+  type WebVitalCapturedEvent,
+  type MemoryCapturedEvent,
+  type WsDisconnectionCapturedEvent,
+  type AnyCapturedEvent,
+  type OnBrowserEventCallback,
+  type BrowserCaptureConfig,
+  // Backward-compat exports
+  type CapturedError,
+  type OnCaptureCallback,
+  DEFAULT_CAPTURE_CONFIG,
+} from './browser-capture-types';
 
 // Metrics
 export {

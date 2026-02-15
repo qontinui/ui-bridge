@@ -32,6 +32,8 @@ import { getGlobalSpecStore } from '../specs/store';
 import { createWorkflowEngine } from '../control/workflow-engine';
 import { createRenderLogManager, RenderLogManager } from '../render-log/snapshot';
 import { createMetricsCollector, MetricsCollector } from '../debug/metrics';
+import { BrowserEventCapture } from '../debug/browser-capture';
+import type { OnBrowserEventCallback, BrowserCaptureConfig } from '../debug/browser-capture-types';
 import type { ActionExecutor, WorkflowEngine } from '../control/types';
 
 /**
@@ -98,6 +100,10 @@ export interface UIBridgeProviderProps {
   config?: UIBridgeConfig;
   /** Event handler */
   onEvent?: BridgeEventListener;
+  /** Callback fired for each captured browser event */
+  onBrowserEvent?: OnBrowserEventCallback;
+  /** Configuration for browser event capture sub-modules */
+  browserCaptureConfig?: BrowserCaptureConfig;
 }
 
 /**
@@ -110,12 +116,16 @@ export function UIBridgeProvider({
   features = {},
   config = {},
   onEvent,
+  onBrowserEvent,
+  browserCaptureConfig,
 }: UIBridgeProviderProps) {
   const registryRef = useRef<UIBridgeRegistry | null>(null);
   const renderLogRef = useRef<RenderLogManager | null>(null);
   const metricsRef = useRef<MetricsCollector | null>(null);
+  const browserCaptureRef = useRef<BrowserEventCapture | null>(null);
   const wsClientRef = useRef<UIBridgeWSClient | null>(null);
   const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
+  const prevWsStateRef = useRef<WSConnectionState>('disconnected');
 
   // Initialize on first render
   if (!registryRef.current) {
@@ -135,6 +145,10 @@ export function UIBridgeProvider({
       metricsRef.current = createMetricsCollector();
     }
 
+    // Install browser event capture (always on — lightweight and needed for action responses)
+    browserCaptureRef.current = new BrowserEventCapture(browserCaptureConfig);
+    browserCaptureRef.current.install();
+
     // Initialize WebSocket client if enabled
     if (config.websocket) {
       const wsPort = config.websocketPort || config.serverPort || 9876;
@@ -148,7 +162,7 @@ export function UIBridgeProvider({
       });
     }
 
-    // Expose SpecStore on window.__UI_BRIDGE__ for Chrome extension access
+    // Expose on window.__UI_BRIDGE__ for Chrome extension and external access
     if (typeof window !== 'undefined') {
       const w = window as unknown as Record<string, unknown>;
       if (!w.__UI_BRIDGE__) {
@@ -157,6 +171,9 @@ export function UIBridgeProvider({
       (w.__UI_BRIDGE__ as Record<string, unknown>).specs = {
         getGlobalSpecStore,
       };
+      (w.__UI_BRIDGE__ as Record<string, unknown>).browserCapture = browserCaptureRef.current;
+      // Backward-compat: also expose as consoleCapture (same instance supports getSince/getRecent)
+      (w.__UI_BRIDGE__ as Record<string, unknown>).consoleCapture = browserCaptureRef.current;
     }
   }
 
@@ -166,7 +183,11 @@ export function UIBridgeProvider({
   const wsClient = wsClientRef.current || undefined;
 
   // Create executor and workflow engine
-  const executor = useMemo(() => createActionExecutor(registry), [registry]);
+  const browserCapture = browserCaptureRef.current || undefined;
+  const executor = useMemo(
+    () => createActionExecutor(registry, browserCapture),
+    [registry, browserCapture]
+  );
   const workflowEngine = useMemo(
     () => createWorkflowEngine(registry, executor),
     [registry, executor]
@@ -197,21 +218,31 @@ export function UIBridgeProvider({
     };
   }, [registry, metrics]);
 
-  // Setup WebSocket connection state listener
+  // Setup WebSocket connection state listener + forward WS state changes to browser capture
   useEffect(() => {
     if (!wsClient) return;
 
     const unsubscribe = wsClient.onConnectionChange((state) => {
+      const prev = prevWsStateRef.current;
+      prevWsStateRef.current = state;
       setWsConnectionState(state);
+      browserCaptureRef.current?.reportWsStateChange(prev, state);
     });
 
     return unsubscribe;
   }, [wsClient]);
 
+  // Wire up onBrowserEvent callback
+  useEffect(() => {
+    browserCaptureRef.current?.setOnEvent(onBrowserEvent ?? null);
+  }, [onBrowserEvent]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       renderLog?.stop();
+      browserCaptureRef.current?.setOnEvent(null);
+      browserCaptureRef.current?.uninstall();
       wsClient?.disconnect();
       resetGlobalRegistry();
     };
