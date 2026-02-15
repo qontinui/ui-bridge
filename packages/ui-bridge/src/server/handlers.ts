@@ -837,6 +837,18 @@ export function createHandlers(
       }
     },
 
+    clearConsoleErrors: async (): Promise<APIResponse<{ cleared: boolean }>> => {
+      try {
+        if (!consoleCapture) {
+          return success({ cleared: false });
+        }
+        consoleCapture.clear();
+        return success({ cleared: true });
+      } catch (err) {
+        return error((err as Error).message, 'CONSOLE_CLEAR_ERROR');
+      }
+    },
+
     // =========================================================================
     // AI-Native Handlers
     // =========================================================================

@@ -190,6 +190,7 @@ export interface UIBridgeServerHandlers {
     since?: number;
     limit?: number;
   }) => Promise<APIResponse<{ errors: CapturedError[]; count: number }>>;
+  clearConsoleErrors: () => Promise<APIResponse<{ cleared: boolean }>>;
 
   // AI-native endpoints
   aiSearch: (criteria: SearchCriteria) => Promise<APIResponse<SearchResponse>>;
@@ -340,6 +341,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
   { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },
   { method: 'GET', path: '/control/console-errors', handler: 'getConsoleErrors' },
+  { method: 'POST', path: '/control/console-errors/clear', handler: 'clearConsoleErrors' },
 
   // AI-native endpoints
   { method: 'POST', path: '/ai/search', handler: 'aiSearch', bodyRequired: true },
