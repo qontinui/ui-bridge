@@ -20,6 +20,7 @@ import { installLongTaskCapture } from './captures/long-tasks';
 import { installResourceErrorCapture } from './captures/resource-errors';
 import { installWebVitalsCapture } from './captures/web-vitals';
 import { installMemoryCapture } from './captures/memory';
+import { installHmrCapture } from './captures/hmr';
 
 export class BrowserEventCapture {
   private buffer: AnyCapturedEvent[] = [];
@@ -72,6 +73,9 @@ export class BrowserEventCapture {
     }
     if (cfg.memory) {
       this.cleanups.push(installMemoryCapture(emit, cfg.memoryIntervalMs));
+    }
+    if (cfg.hmr) {
+      this.cleanups.push(installHmrCapture(emit));
     }
 
     this.installed = true;
@@ -145,10 +149,15 @@ export class BrowserEventCapture {
    */
   getConsoleSince(ts: number): CapturedError[] {
     return this.buffer
-      .filter((e) => e.type === 'console' && e.timestamp >= ts)
+      .filter((e) => (e.type === 'console' || e.type === 'hmr') && e.timestamp >= ts)
       .map((e) => ({
         timestamp: e.timestamp,
-        level: (e as { level: CapturedError['level'] }).level,
+        level:
+          e.type === 'hmr'
+            ? e.level === 'warning'
+              ? 'warn'
+              : e.level
+            : (e as { level: CapturedError['level'] }).level,
         message: (e as { message: string }).message,
         stack: (e as { stack?: string }).stack,
       }));
@@ -159,11 +168,16 @@ export class BrowserEventCapture {
    */
   getConsoleRecent(n = 50): CapturedError[] {
     return this.buffer
-      .filter((e) => e.type === 'console')
+      .filter((e) => e.type === 'console' || e.type === 'hmr')
       .slice(-n)
       .map((e) => ({
         timestamp: e.timestamp,
-        level: (e as { level: CapturedError['level'] }).level,
+        level:
+          e.type === 'hmr'
+            ? e.level === 'warning'
+              ? 'warn'
+              : e.level
+            : (e as { level: CapturedError['level'] }).level,
         message: (e as { message: string }).message,
         stack: (e as { stack?: string }).stack,
       }));

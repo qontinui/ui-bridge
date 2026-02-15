@@ -32,6 +32,7 @@ export {
   type WebVitalCapturedEvent,
   type MemoryCapturedEvent,
   type WsDisconnectionCapturedEvent,
+  type HmrCapturedEvent,
   type AnyCapturedEvent,
   type OnBrowserEventCallback,
   type BrowserCaptureConfig,

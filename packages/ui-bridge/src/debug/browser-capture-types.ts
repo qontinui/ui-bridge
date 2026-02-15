@@ -17,7 +17,8 @@ export type BrowserEventType =
   | 'resource-error'
   | 'web-vital'
   | 'memory'
-  | 'ws-disconnection';
+  | 'ws-disconnection'
+  | 'hmr';
 
 // ---------------------------------------------------------------------------
 // Base interface (all events share these fields)
@@ -96,6 +97,16 @@ export interface WsDisconnectionCapturedEvent extends BrowserCapturedEvent {
   reconnectAttempt?: number;
 }
 
+export interface HmrCapturedEvent extends BrowserCapturedEvent {
+  type: 'hmr';
+  level: 'error' | 'warning';
+  message: string;
+  /** Source file that caused the error, if available */
+  moduleName?: string;
+  /** Source location (line:col), if available */
+  loc?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Union type
 // ---------------------------------------------------------------------------
@@ -109,7 +120,8 @@ export type AnyCapturedEvent =
   | ResourceErrorCapturedEvent
   | WebVitalCapturedEvent
   | MemoryCapturedEvent
-  | WsDisconnectionCapturedEvent;
+  | WsDisconnectionCapturedEvent
+  | HmrCapturedEvent;
 
 // ---------------------------------------------------------------------------
 // Callback
@@ -151,6 +163,8 @@ export interface BrowserCaptureConfig {
   resourceErrors?: boolean;
   /** Capture WebSocket disconnection events. Default: true */
   wsDisconnections?: boolean;
+  /** Capture Next.js HMR compilation errors/warnings via EventSource. Default: true */
+  hmr?: boolean;
   /** Capture Web Vitals (LCP, CLS). Default: false (opt-in) */
   webVitals?: boolean;
   /** Capture Chrome memory snapshots. Default: false (opt-in) */
@@ -176,6 +190,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
     | 'longTasks'
     | 'resourceErrors'
     | 'wsDisconnections'
+    | 'hmr'
     | 'webVitals'
     | 'memory'
     | 'memoryIntervalMs'
@@ -188,6 +203,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
   longTasks: true,
   resourceErrors: true,
   wsDisconnections: true,
+  hmr: true,
   webVitals: false,
   memory: false,
   memoryIntervalMs: 30000,
