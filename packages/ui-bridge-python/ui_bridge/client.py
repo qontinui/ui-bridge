@@ -680,7 +680,8 @@ class UIBridgeClient:
 
     def get_element(self, element_id: str) -> dict[str, Any]:
         """Get element details."""
-        return self._request("GET", f"/control/element/{element_id}")
+        result: dict[str, Any] = self._request("GET", f"/control/element/{element_id}")
+        return result
 
     def get_element_state(self, element_id: str) -> ElementState:
         """Get current element state."""
@@ -689,7 +690,8 @@ class UIBridgeClient:
 
     def get_elements(self) -> list[dict[str, Any]]:
         """Get all registered elements."""
-        return self._request("GET", "/control/elements")
+        result: list[dict[str, Any]] = self._request("GET", "/control/elements")
+        return result
 
     # ==========================================================================
     # Components
@@ -709,11 +711,13 @@ class UIBridgeClient:
 
     def get_component(self, component_id: str) -> dict[str, Any]:
         """Get component details."""
-        return self._request("GET", f"/control/component/{component_id}")
+        result: dict[str, Any] = self._request("GET", f"/control/component/{component_id}")
+        return result
 
     def get_components(self) -> list[dict[str, Any]]:
         """Get all registered components."""
-        return self._request("GET", "/control/components")
+        result: list[dict[str, Any]] = self._request("GET", "/control/components")
+        return result
 
     def get_component_state(self, component_id: str) -> ComponentState:
         """
@@ -860,7 +864,8 @@ class UIBridgeClient:
 
     def get_workflows(self) -> list[dict[str, Any]]:
         """Get all registered workflows."""
-        return self._request("GET", "/control/workflows")
+        result: list[dict[str, Any]] = self._request("GET", "/control/workflows")
+        return result
 
     def run_workflow(
         self,
@@ -918,7 +923,8 @@ class UIBridgeClient:
 
     def get_active_states(self) -> list[str]:
         """Get currently active state IDs."""
-        return self._request("GET", "/control/states/active")
+        result: list[str] = self._request("GET", "/control/states/active")
+        return result
 
     def is_state_active(self, state_id: str) -> bool:
         """Check if a state is currently active."""
@@ -927,38 +933,42 @@ class UIBridgeClient:
 
     def activate_state(self, state_id: str) -> bool:
         """Activate a state."""
-        data = self._request("POST", f"/control/state/{state_id}/activate")
-        return data.get("success", False)
+        data: dict[str, Any] = self._request("POST", f"/control/state/{state_id}/activate")
+        return bool(data.get("success", False))
 
     def deactivate_state(self, state_id: str) -> bool:
         """Deactivate a state."""
-        data = self._request("POST", f"/control/state/{state_id}/deactivate")
-        return data.get("success", False)
+        data: dict[str, Any] = self._request("POST", f"/control/state/{state_id}/deactivate")
+        return bool(data.get("success", False))
 
     def get_state_groups(self) -> list[UIStateGroup]:
         """Get all registered state groups."""
-        data = self._request("GET", "/control/state-groups")
+        data: list[Any] = self._request("GET", "/control/state-groups")
         return [UIStateGroup.model_validate(g) for g in data]
 
     def activate_state_group(self, group_id: str) -> list[str]:
         """Activate all states in a group."""
-        data = self._request("POST", f"/control/state-group/{group_id}/activate")
-        return data.get("activated", [])
+        data: dict[str, Any] = self._request("POST", f"/control/state-group/{group_id}/activate")
+        result: list[str] = data.get("activated", [])
+        return result
 
     def deactivate_state_group(self, group_id: str) -> list[str]:
         """Deactivate all states in a group."""
-        data = self._request("POST", f"/control/state-group/{group_id}/deactivate")
-        return data.get("deactivated", [])
+        data: dict[str, Any] = self._request("POST", f"/control/state-group/{group_id}/deactivate")
+        result: list[str] = data.get("deactivated", [])
+        return result
 
     def get_transitions(self) -> list[UITransition]:
         """Get all registered transitions."""
-        data = self._request("GET", "/control/transitions")
+        data: list[Any] = self._request("GET", "/control/transitions")
         return [UITransition.model_validate(t) for t in data]
 
     def can_execute_transition(self, transition_id: str) -> bool:
         """Check if a transition can be executed from current state."""
-        data = self._request("GET", f"/control/transition/{transition_id}/can-execute")
-        return data.get("canExecute", False)
+        data: dict[str, Any] = self._request(
+            "GET", f"/control/transition/{transition_id}/can-execute"
+        )
+        return bool(data.get("canExecute", False))
 
     def execute_transition(self, transition_id: str) -> TransitionResult:
         """Execute a transition."""
@@ -1021,7 +1031,8 @@ class UIBridgeClient:
 
     def capture_snapshot(self) -> dict[str, Any]:
         """Capture a DOM snapshot."""
-        return self._request("POST", "/render-log/snapshot")
+        result: dict[str, Any] = self._request("POST", "/render-log/snapshot")
+        return result
 
     def clear_render_log(self) -> None:
         """Clear the render log."""
@@ -1034,7 +1045,8 @@ class UIBridgeClient:
     def get_action_history(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Get action history."""
         params = {"limit": limit} if limit else None
-        return self._request("GET", "/debug/action-history", params=params)
+        result: list[dict[str, Any]] = self._request("GET", "/debug/action-history", params=params)
+        return result
 
     def get_metrics(self) -> PerformanceMetrics:
         """Get performance metrics."""
@@ -1053,7 +1065,8 @@ class UIBridgeClient:
         """Check server health."""
         response = self._client.get(urljoin(self.base_url, "/health"))
         response.raise_for_status()
-        return response.json()
+        result: dict[str, Any] = response.json()
+        return result
 
     def is_connected(self) -> bool:
         """Check if connected to the server."""
@@ -1433,12 +1446,13 @@ class AnnotationControl:
         Returns:
             Number of annotations imported
         """
-        data = self._client._request(
+        data: dict[str, Any] = self._client._request(
             "POST",
             "/annotations/import",
             json=config.model_dump(by_alias=True, exclude_none=True),
         )
-        return data.get("count", 0)
+        result: int = data.get("count", 0)
+        return result
 
     def import_file(self, path: str | Path) -> int:
         """Import annotations from a JSON file.

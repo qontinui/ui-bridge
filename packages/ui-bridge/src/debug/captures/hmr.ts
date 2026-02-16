@@ -139,10 +139,10 @@ function installWebSocketCapture(emit: Emit, cleanups: (() => void)[]): void {
   } as unknown as typeof WebSocket;
 
   PatchedWebSocket.prototype = OriginalWebSocket.prototype;
-  PatchedWebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-  PatchedWebSocket.OPEN = OriginalWebSocket.OPEN;
-  PatchedWebSocket.CLOSING = OriginalWebSocket.CLOSING;
-  PatchedWebSocket.CLOSED = OriginalWebSocket.CLOSED;
+  Object.defineProperty(PatchedWebSocket, 'CONNECTING', { value: OriginalWebSocket.CONNECTING });
+  Object.defineProperty(PatchedWebSocket, 'OPEN', { value: OriginalWebSocket.OPEN });
+  Object.defineProperty(PatchedWebSocket, 'CLOSING', { value: OriginalWebSocket.CLOSING });
+  Object.defineProperty(PatchedWebSocket, 'CLOSED', { value: OriginalWebSocket.CLOSED });
 
   window.WebSocket = PatchedWebSocket;
 
@@ -189,9 +189,11 @@ function installEventSourceCapture(emit: Emit, cleanups: (() => void)[]): void {
   } as unknown as typeof EventSource;
 
   PatchedEventSource.prototype = OriginalEventSource.prototype;
-  PatchedEventSource.CONNECTING = OriginalEventSource.CONNECTING;
-  PatchedEventSource.OPEN = OriginalEventSource.OPEN;
-  PatchedEventSource.CLOSED = OriginalEventSource.CLOSED;
+  Object.defineProperty(PatchedEventSource, 'CONNECTING', {
+    value: OriginalEventSource.CONNECTING,
+  });
+  Object.defineProperty(PatchedEventSource, 'OPEN', { value: OriginalEventSource.OPEN });
+  Object.defineProperty(PatchedEventSource, 'CLOSED', { value: OriginalEventSource.CLOSED });
 
   window.EventSource = PatchedEventSource;
 

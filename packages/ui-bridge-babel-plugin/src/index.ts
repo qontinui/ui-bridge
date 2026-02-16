@@ -37,6 +37,16 @@ import { declare } from '@babel/helper-plugin-utils';
 import type { PluginObj, NodePath, BabelFile } from '@babel/core';
 import type * as t from '@babel/types';
 import { type PluginConfig, mergeConfig, shouldProcessFile } from './config';
+
+/**
+ * Type alias for Babel's types namespace.
+ *
+ * `import * as t` with esModuleInterop adds a `default` property that makes
+ * `typeof t` structurally incompatible with the `api.types` parameter provided
+ * by `@babel/helper-plugin-utils` `declare()`. Using `Omit` strips that extra
+ * property so helper functions accept both flavors.
+ */
+type BabelTypes = Omit<typeof t, 'default'>;
 import {
   generateId,
   getNextElementIndex,
@@ -74,7 +84,7 @@ function extractTextContent(
     | t.JSXSpreadChild
     | t.JSXFragment
   )[],
-  types: typeof t
+  types: BabelTypes
 ): string | null {
   const textParts: string[] = [];
 
@@ -96,7 +106,7 @@ function extractTextContent(
 function getAttributeValue(
   element: t.JSXOpeningElement,
   attrName: string,
-  types: typeof t
+  types: BabelTypes
 ): string | null {
   for (const attr of element.attributes) {
     if (types.isJSXAttribute(attr) && types.isJSXIdentifier(attr.name)) {
@@ -118,7 +128,7 @@ function getAttributeValue(
 /**
  * Check if element has a specific attribute
  */
-function hasAttribute(element: t.JSXOpeningElement, attrName: string, types: typeof t): boolean {
+function hasAttribute(element: t.JSXOpeningElement, attrName: string, types: BabelTypes): boolean {
   return element.attributes.some(
     (attr) =>
       types.isJSXAttribute(attr) && types.isJSXIdentifier(attr.name) && attr.name.name === attrName
@@ -132,7 +142,7 @@ function addAttribute(
   element: t.JSXOpeningElement,
   name: string,
   value: string,
-  types: typeof t
+  types: BabelTypes
 ): void {
   element.attributes.push(
     types.jsxAttribute(types.jsxIdentifier(name), types.stringLiteral(value))
@@ -142,7 +152,7 @@ function addAttribute(
 /**
  * Get tag name from JSX element
  */
-function getTagName(element: t.JSXOpeningElement, types: typeof t): string | null {
+function getTagName(element: t.JSXOpeningElement, types: BabelTypes): string | null {
   if (types.isJSXIdentifier(element.name)) {
     return element.name.name;
   }
@@ -211,163 +221,153 @@ function findComponentName(path: NodePath<t.JSXElement>): string | null {
 }
 
 /**
- * Babel API interface
- */
-interface BabelAPI {
-  assertVersion(version: number): void;
-  types: typeof t;
-}
-
-/**
  * The Babel plugin
  */
-const uiBridgeBabelPlugin = declare<PluginConfig, PluginObj<PluginState>>(
-  (api: BabelAPI, options: PluginConfig) => {
-    api.assertVersion(7);
+const uiBridgeBabelPlugin = declare<PluginConfig, PluginState>((api, options) => {
+  api.assertVersion(7);
 
-    const types = api.types;
-    const config = mergeConfig(options);
+  const types = api.types;
+  const config = mergeConfig(options);
 
-    return {
-      name: 'ui-bridge-babel-plugin',
+  return {
+    name: 'ui-bridge-babel-plugin',
 
-      pre(this: PluginState, file: BabelFile) {
-        const filename = file.opts.filename || 'unknown';
-        this.filename = filename;
-        this.config = config;
-        this.componentStack = [];
-        this.processed = new Set();
+    pre(this: PluginState, file: BabelFile) {
+      const filename = file.opts.filename || 'unknown';
+      this.filename = filename;
+      this.config = config;
+      this.componentStack = [];
+      this.processed = new Set();
 
-        // Reset element counters for this file
-        resetFileCounters(filename);
+      // Reset element counters for this file
+      resetFileCounters(filename);
 
-        if (config.verbose) {
-          console.log(`[ui-bridge-babel-plugin] Processing: ${filename}`);
+      if (config.verbose) {
+        console.log(`[ui-bridge-babel-plugin] Processing: ${filename}`);
+      }
+    },
+
+    visitor: {
+      JSXElement(this: PluginState, path: NodePath<t.JSXElement>) {
+        // Check if file should be processed
+        if (!shouldProcessFile(this.filename, this.config)) {
+          return;
         }
-      },
 
-      visitor: {
-        JSXElement(this: PluginState, path: NodePath<t.JSXElement>) {
-          // Check if file should be processed
-          if (!shouldProcessFile(this.filename, this.config)) {
+        const openingElement = path.node.openingElement;
+        const tagName = getTagName(openingElement, types);
+
+        // Skip if no tag name or not an HTML element
+        if (!tagName || !isHtmlElement(tagName)) {
+          return;
+        }
+
+        // Check if this element type should be instrumented
+        if (!this.config.elements.includes(tagName as any)) {
+          return;
+        }
+
+        // Skip if already has ui-id (unless configured otherwise)
+        if (
+          this.config.skipExisting &&
+          hasAttribute(openingElement, this.config.idAttribute, types)
+        ) {
+          return;
+        }
+
+        // Find component name
+        const componentName = findComponentName(path);
+
+        // Check component filters
+        if (this.config.onlyInComponents.length > 0) {
+          if (!componentName || !this.config.onlyInComponents.includes(componentName)) {
             return;
           }
+        }
 
-          const openingElement = path.node.openingElement;
-          const tagName = getTagName(openingElement, types);
-
-          // Skip if no tag name or not an HTML element
-          if (!tagName || !isHtmlElement(tagName)) {
+        if (this.config.skipInComponents.length > 0) {
+          if (componentName && this.config.skipInComponents.includes(componentName)) {
             return;
           }
+        }
 
-          // Check if this element type should be instrumented
-          if (!this.config.elements.includes(tagName as any)) {
-            return;
+        // Extract element info
+        const textContent = extractTextContent(path.node.children as any[], types);
+        const ariaLabel = getAttributeValue(openingElement, 'aria-label', types);
+        const placeholder = getAttributeValue(openingElement, 'placeholder', types);
+        const title = getAttributeValue(openingElement, 'title', types);
+        const name = getAttributeValue(openingElement, 'name', types);
+        const existingId = getAttributeValue(openingElement, 'id', types);
+
+        // Get element index for uniqueness
+        const elementIndex = getNextElementIndex(this.filename, tagName);
+
+        // Build context for ID generation
+        const idContext: IdGeneratorContext = {
+          componentName,
+          filePath: this.filename,
+          tagName,
+          textContent,
+          ariaLabel,
+          placeholder,
+          title,
+          elementIndex,
+          existingId,
+        };
+
+        // Generate ID
+        const generatedId = generateId(idContext, this.config);
+
+        // Skip if this exact ID was already generated (collision)
+        if (this.processed.has(generatedId)) {
+          // Add index suffix for uniqueness
+          const uniqueId = `${generatedId}-${elementIndex}`;
+          addAttribute(openingElement, this.config.idAttribute, uniqueId, types);
+        } else {
+          this.processed.add(generatedId);
+          addAttribute(openingElement, this.config.idAttribute, generatedId, types);
+        }
+
+        // Add element type
+        const semanticType = getSemanticType(tagName, idContext);
+        addAttribute(openingElement, this.config.typeAttribute, semanticType, types);
+
+        // Generate and add aliases
+        const aliasContext: AliasGeneratorContext = {
+          tagName,
+          textContent,
+          ariaLabel,
+          placeholder,
+          title,
+          name,
+          id: existingId,
+        };
+
+        if (shouldGenerateAliases(aliasContext, this.config)) {
+          const aliases = generateAliases(aliasContext, this.config);
+          if (aliases.length > 0) {
+            addAttribute(
+              openingElement,
+              this.config.aliasesAttribute,
+              formatAliasesAttribute(aliases),
+              types
+            );
           }
+        }
 
-          // Skip if already has ui-id (unless configured otherwise)
-          if (
-            this.config.skipExisting &&
-            hasAttribute(openingElement, this.config.idAttribute, types)
-          ) {
-            return;
-          }
-
-          // Find component name
-          const componentName = findComponentName(path);
-
-          // Check component filters
-          if (this.config.onlyInComponents.length > 0) {
-            if (!componentName || !this.config.onlyInComponents.includes(componentName)) {
-              return;
-            }
-          }
-
-          if (this.config.skipInComponents.length > 0) {
-            if (componentName && this.config.skipInComponents.includes(componentName)) {
-              return;
-            }
-          }
-
-          // Extract element info
-          const textContent = extractTextContent(path.node.children as any[], types);
-          const ariaLabel = getAttributeValue(openingElement, 'aria-label', types);
-          const placeholder = getAttributeValue(openingElement, 'placeholder', types);
-          const title = getAttributeValue(openingElement, 'title', types);
-          const name = getAttributeValue(openingElement, 'name', types);
-          const existingId = getAttributeValue(openingElement, 'id', types);
-
-          // Get element index for uniqueness
-          const elementIndex = getNextElementIndex(this.filename, tagName);
-
-          // Build context for ID generation
-          const idContext: IdGeneratorContext = {
-            componentName,
-            filePath: this.filename,
-            tagName,
-            textContent,
-            ariaLabel,
-            placeholder,
-            title,
-            elementIndex,
-            existingId,
-          };
-
-          // Generate ID
-          const generatedId = generateId(idContext, this.config);
-
-          // Skip if this exact ID was already generated (collision)
-          if (this.processed.has(generatedId)) {
-            // Add index suffix for uniqueness
-            const uniqueId = `${generatedId}-${elementIndex}`;
-            addAttribute(openingElement, this.config.idAttribute, uniqueId, types);
-          } else {
-            this.processed.add(generatedId);
-            addAttribute(openingElement, this.config.idAttribute, generatedId, types);
-          }
-
-          // Add element type
-          const semanticType = getSemanticType(tagName, idContext);
-          addAttribute(openingElement, this.config.typeAttribute, semanticType, types);
-
-          // Generate and add aliases
-          const aliasContext: AliasGeneratorContext = {
-            tagName,
-            textContent,
-            ariaLabel,
-            placeholder,
-            title,
-            name,
-            id: existingId,
-          };
-
-          if (shouldGenerateAliases(aliasContext, this.config)) {
-            const aliases = generateAliases(aliasContext, this.config);
-            if (aliases.length > 0) {
-              addAttribute(
-                openingElement,
-                this.config.aliasesAttribute,
-                formatAliasesAttribute(aliases),
-                types
-              );
-            }
-          }
-
-          if (this.config.verbose) {
-            console.log(`[ui-bridge-babel-plugin] Instrumented <${tagName}> as "${generatedId}"`);
-          }
-        },
-      },
-
-      post(this: PluginState) {
         if (this.config.verbose) {
-          console.log(`[ui-bridge-babel-plugin] Finished processing: ${this.filename}`);
+          console.log(`[ui-bridge-babel-plugin] Instrumented <${tagName}> as "${generatedId}"`);
         }
       },
-    };
-  }
-);
+    },
+
+    post(this: PluginState) {
+      if (this.config.verbose) {
+        console.log(`[ui-bridge-babel-plugin] Finished processing: ${this.filename}`);
+      }
+    },
+  };
+});
 
 export default uiBridgeBabelPlugin;
 

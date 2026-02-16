@@ -22,19 +22,19 @@ class SearchCriteria(BaseModel):
     """Criteria for searching elements using multiple strategies."""
 
     text: str | None = None
-    text_contains: str | None = Field(None, alias="textContains")
-    accessible_name: str | None = Field(None, alias="accessibleName")
+    text_contains: str | None = Field(default=None, alias="textContains")
+    accessible_name: str | None = Field(default=None, alias="accessibleName")
     role: str | None = None
     type: str | None = None
     near: str | None = None
     within: str | None = None
     fuzzy: bool | None = True
-    fuzzy_threshold: float | None = Field(None, alias="fuzzyThreshold")
-    id_pattern: str | None = Field(None, alias="idPattern")
+    fuzzy_threshold: float | None = Field(default=None, alias="fuzzyThreshold")
+    id_pattern: str | None = Field(default=None, alias="idPattern")
     selector: str | None = None
     placeholder: str | None = None
     title: str | None = None
-    data_attributes: dict[str, str] | None = Field(None, alias="dataAttributes")
+    data_attributes: dict[str, str] | None = Field(default=None, alias="dataAttributes")
 
     model_config = {"populate_by_name": True}
 
@@ -110,7 +110,7 @@ class NLActionRequest(BaseModel):
     instruction: str
     context: str | None = None
     timeout: int | None = None
-    confidence_threshold: float | None = Field(None, alias="confidenceThreshold")
+    confidence_threshold: float | None = Field(default=None, alias="confidenceThreshold")
 
     model_config = {"populate_by_name": True}
 
@@ -275,8 +275,8 @@ class AssertionRequest(BaseModel):
     target: str | SearchCriteria
     type: AssertionType
     expected: Any | None = None
-    attribute_name: str | None = Field(None, alias="attributeName")
-    property_name: str | None = Field(None, alias="propertyName")
+    attribute_name: str | None = Field(default=None, alias="attributeName")
+    property_name: str | None = Field(default=None, alias="propertyName")
     timeout: int | None = None
     message: str | None = None
     fuzzy: bool | None = None
@@ -306,7 +306,7 @@ class BatchAssertionRequest(BaseModel):
 
     assertions: list[AssertionRequest]
     mode: str  # 'all' | 'any'
-    stop_on_failure: bool | None = Field(None, alias="stopOnFailure")
+    stop_on_failure: bool | None = Field(default=None, alias="stopOnFailure")
 
     model_config = {"populate_by_name": True}
 
@@ -586,7 +586,7 @@ class SemanticSearchCriteria(BaseModel):
     limit: int | None = Field(default=None, ge=1)
     type: str | None = None
     role: str | None = None
-    combine_with_text: bool | None = Field(None, alias="combineWithText")
+    combine_with_text: bool | None = Field(default=None, alias="combineWithText")
 
     model_config = {"populate_by_name": True}
 

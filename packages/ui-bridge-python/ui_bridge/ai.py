@@ -98,14 +98,14 @@ class AIClient:
         """
         criteria = SearchCriteria(
             text=text,
-            textContains=text_contains,
-            accessibleName=accessible_name,
+            text_contains=text_contains,
+            accessible_name=accessible_name,
             role=role,
             type=element_type,
             near=near,
             within=within,
             fuzzy=fuzzy,
-            fuzzyThreshold=fuzzy_threshold,
+            fuzzy_threshold=fuzzy_threshold,
         )
         response = self._search(criteria)
         return response.results
@@ -154,7 +154,7 @@ class AIClient:
         Returns:
             List of matching elements
         """
-        criteria = SearchCriteria(role=role, accessibleName=name)
+        criteria = SearchCriteria(role=role, accessible_name=name)
         response = self._search(criteria)
         return response.results
 
@@ -213,7 +213,7 @@ class AIClient:
             limit=limit,
             type=element_type,
             role=role,
-            combineWithText=combine_with_text,
+            combine_with_text=combine_with_text,
         )
         response = self._semantic_search(criteria)
         return response.results
@@ -287,7 +287,7 @@ class AIClient:
             instruction=instruction,
             context=context,
             timeout=timeout,
-            confidenceThreshold=confidence_threshold,
+            confidence_threshold=confidence_threshold,
         )
         data = self._client._request(
             "POST",
@@ -471,7 +471,7 @@ class AIClient:
         batch_request = BatchAssertionRequest(
             assertions=requests,
             mode=mode,
-            stopOnFailure=stop_on_failure,
+            stop_on_failure=stop_on_failure,
         )
         data = self._client._request(
             "POST",
@@ -517,7 +517,8 @@ class AIClient:
         Returns:
             LLM-friendly text summary of the page state
         """
-        return self._client._request("GET", "/ai/summary")
+        result: str = self._client._request("GET", "/ai/summary")
+        return result
 
     # =========================================================================
     # Convenience Methods
@@ -548,7 +549,8 @@ class AIClient:
         Returns:
             True if all checks pass, False otherwise
         """
-        result = self.assert_batch(checks, mode="all")
+        assertions: list[tuple[str, str, Any] | tuple[str, str]] = list(checks)
+        result = self.assert_batch(assertions, mode="all")
         return result.passed
 
     # =========================================================================
@@ -593,7 +595,7 @@ class AIClient:
             >>> # Search for something
             >>> result = client.ai.execute_intent("search-for", {"query": "products"})
         """
-        request_data = {
+        request_data: dict[str, Any] = {
             "intentId": intent,
             "params": params or {},
         }
@@ -989,16 +991,16 @@ class AIClient:
                 total_duration_ms = (time.time() - start_time) * 1000
                 return ExecuteWithRecoveryResult(
                     success=True,
-                    executedAction=response.executed_action,
-                    elementUsed=response.element_used,
+                    executed_action=response.executed_action,
+                    element_used=response.element_used,
                     confidence=response.confidence,
-                    elementState=response.element_state,
-                    durationMs=response.duration_ms,
+                    element_state=response.element_state,
+                    duration_ms=response.duration_ms,
                     timestamp=response.timestamp,
-                    recoveryAttempted=total_attempts > 1,
-                    recoveryResult=recovery_result,
-                    totalAttempts=total_attempts,
-                    totalDurationMs=total_duration_ms,
+                    recovery_attempted=total_attempts > 1,
+                    recovery_result=recovery_result,
+                    total_attempts=total_attempts,
+                    total_duration_ms=total_duration_ms,
                 )
 
             # Check if recovery is enabled and retry is recommended
@@ -1048,18 +1050,18 @@ class AIClient:
         total_duration_ms = (time.time() - start_time) * 1000
         return ExecuteWithRecoveryResult(
             success=False,
-            executedAction=last_response.executed_action if last_response else instruction,
-            elementUsed=last_response.element_used if last_response else None,
+            executed_action=last_response.executed_action if last_response else instruction,
+            element_used=last_response.element_used if last_response else None,
             confidence=last_response.confidence if last_response else 0.0,
-            elementState=last_response.element_state if last_response else None,
-            durationMs=last_response.duration_ms if last_response else 0.0,
+            element_state=last_response.element_state if last_response else None,
+            duration_ms=last_response.duration_ms if last_response else 0.0,
             timestamp=last_response.timestamp if last_response else int(time.time() * 1000),
             error=last_response.error if last_response else "Unknown error",
-            errorCode=last_response.error_code if last_response else None,
-            recoveryAttempted=recovery_result is not None,
-            recoveryResult=recovery_result,
-            totalAttempts=total_attempts,
-            totalDurationMs=total_duration_ms,
+            error_code=last_response.error_code if last_response else None,
+            recovery_attempted=recovery_result is not None,
+            recovery_result=recovery_result,
+            total_attempts=total_attempts,
+            total_duration_ms=total_duration_ms,
         )
 
     def click_with_recovery(
