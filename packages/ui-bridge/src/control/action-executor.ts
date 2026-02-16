@@ -24,6 +24,7 @@ import type {
   SelectAction,
   ScrollAction,
   MouseAction,
+  DragAction,
 } from './types';
 
 /**
@@ -116,7 +117,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Create a mouse event
+ * Create a mouse event relative to an element's bounding rect
  */
 function createMouseEvent(type: string, element: HTMLElement, options?: MouseAction): MouseEvent {
   const rect = element.getBoundingClientRect();
@@ -130,6 +131,30 @@ function createMouseEvent(type: string, element: HTMLElement, options?: MouseAct
     button: options?.button === 'right' ? 2 : options?.button === 'middle' ? 1 : 0,
     clientX: rect.left + x,
     clientY: rect.top + y,
+  });
+}
+
+/**
+ * Safe wrapper around document.elementFromPoint that returns null if unavailable.
+ * (elementFromPoint is not implemented in some test environments like jsdom.)
+ */
+function elementFromPointSafe(x: number, y: number): HTMLElement | null {
+  if (typeof document.elementFromPoint === 'function') {
+    return document.elementFromPoint(x, y) as HTMLElement | null;
+  }
+  return null;
+}
+
+/**
+ * Create a mouse event at absolute client coordinates
+ */
+function createMouseEventAt(type: string, clientX: number, clientY: number): MouseEvent {
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX,
+    clientY,
   });
 }
 
@@ -534,6 +559,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performCheck(element, false);
       case 'toggle':
         return this.performToggle(element);
+      case 'drag':
+        return this.performDrag(element, params as unknown as DragAction);
+      case 'setValue':
+        return this.performSetValue(element, params);
+      case 'submit':
+        return this.performSubmit(element);
+      case 'reset':
+        return this.performReset(element);
       default: {
         // Check for custom actions
         const registered = this.registry.findByDOMElement(element);
@@ -722,6 +755,183 @@ export class DefaultActionExecutor implements ActionExecutor {
       element.checked = !element.checked;
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
+  }
+
+  private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {
+    const value = params?.value as string | undefined;
+    if (value === undefined) {
+      throw new Error('setValue requires a "value" parameter');
+    }
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      // Use native setter to work with React controlled inputs
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        element instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      if (nativeSetter) {
+        nativeSetter.call(element, value);
+      } else {
+        element.value = value;
+      }
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (element instanceof HTMLSelectElement) {
+      element.value = value;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  private performSubmit(element: HTMLElement): void {
+    const form = element instanceof HTMLFormElement ? element : element.closest('form');
+    if (form) {
+      // Dispatch submit event first (allows preventDefault)
+      const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+      if (form.dispatchEvent(submitEvent)) {
+        form.requestSubmit();
+      }
+    } else {
+      throw new Error('No form found for submit action');
+    }
+  }
+
+  private performReset(element: HTMLElement): void {
+    const form = element instanceof HTMLFormElement ? element : element.closest('form');
+    if (form) {
+      form.reset();
+      form.dispatchEvent(new Event('reset', { bubbles: true }));
+    } else {
+      throw new Error('No form found for reset action');
+    }
+  }
+
+  /**
+   * Perform a drag operation by dispatching a sequence of mouse events.
+   *
+   * Follows the same composite pattern as the qontinui core library:
+   * mousedown on source → wait → mousemove × N along path → mouseup on target.
+   *
+   * Optionally dispatches HTML5 drag events (dragstart/dragover/drop/dragend)
+   * for apps that use the HTML5 Drag and Drop API instead of mouse events.
+   */
+  private async performDrag(sourceElement: HTMLElement, options?: DragAction): Promise<void> {
+    const sourceRect = sourceElement.getBoundingClientRect();
+    const sourceX = sourceRect.left + (options?.sourceOffset?.x ?? sourceRect.width / 2);
+    const sourceY = sourceRect.top + (options?.sourceOffset?.y ?? sourceRect.height / 2);
+
+    // Resolve target position
+    let targetX: number;
+    let targetY: number;
+
+    if (options?.targetPosition) {
+      targetX = options.targetPosition.x;
+      targetY = options.targetPosition.y;
+    } else if (options?.target) {
+      const targetElement = this.resolveTargetElement(options.target);
+      if (!targetElement) {
+        throw new Error(`Drag target element not found: ${JSON.stringify(options.target)}`);
+      }
+      const targetRect = targetElement.getBoundingClientRect();
+      targetX = targetRect.left + (options?.targetOffset?.x ?? targetRect.width / 2);
+      targetY = targetRect.top + (options?.targetOffset?.y ?? targetRect.height / 2);
+    } else {
+      throw new Error('Drag requires either target or targetPosition');
+    }
+
+    const steps = options?.steps ?? 10;
+    const holdDelay = options?.holdDelay ?? 100;
+    const releaseDelay = options?.releaseDelay ?? 50;
+
+    // 1. Dispatch mousedown on source
+    sourceElement.dispatchEvent(createMouseEventAt('mousedown', sourceX, sourceY));
+
+    // 2. Optionally dispatch dragstart (HTML5 mode, requires DragEvent support)
+    const canHTML5 = options?.html5 && typeof DragEvent !== 'undefined';
+    if (canHTML5) {
+      sourceElement.dispatchEvent(
+        new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          clientX: sourceX,
+          clientY: sourceY,
+        })
+      );
+    }
+
+    // 3. Wait hold delay (matches qontinui core's delay_between_mouse_down_and_move)
+    if (holdDelay > 0) {
+      await sleep(holdDelay);
+    }
+
+    // 4. Dispatch intermediate mousemove events along the path
+    for (let i = 1; i <= steps; i++) {
+      const progress = i / steps;
+      const currentX = sourceX + (targetX - sourceX) * progress;
+      const currentY = sourceY + (targetY - sourceY) * progress;
+
+      // Find the element under the cursor (falls back to source if unavailable)
+      const dispatchTarget = elementFromPointSafe(currentX, currentY) || sourceElement;
+
+      dispatchTarget.dispatchEvent(createMouseEventAt('mousemove', currentX, currentY));
+
+      if (canHTML5) {
+        dispatchTarget.dispatchEvent(
+          new DragEvent('dragover', {
+            bubbles: true,
+            cancelable: true,
+            clientX: currentX,
+            clientY: currentY,
+          })
+        );
+      }
+    }
+
+    // 5. Dispatch mouseup on the element under the final position
+    const dropTarget = elementFromPointSafe(targetX, targetY) || sourceElement;
+
+    dropTarget.dispatchEvent(createMouseEventAt('mouseup', targetX, targetY));
+
+    // 6. Optionally dispatch drop + dragend (HTML5 mode)
+    if (canHTML5) {
+      dropTarget.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientX: targetX,
+          clientY: targetY,
+        })
+      );
+      sourceElement.dispatchEvent(
+        new DragEvent('dragend', {
+          bubbles: true,
+          cancelable: true,
+          clientX: targetX,
+          clientY: targetY,
+        })
+      );
+    }
+
+    // 7. Wait release delay (matches qontinui core's delay_after_drag)
+    if (releaseDelay > 0) {
+      await sleep(releaseDelay);
+    }
+  }
+
+  /**
+   * Resolve a drag target element from a target descriptor.
+   */
+  private resolveTargetElement(target: NonNullable<DragAction['target']>): HTMLElement | null {
+    if (target.elementId) {
+      const registered = this.registry.getElement(target.elementId);
+      if (registered?.element) return registered.element;
+      // Fall back to DOM lookup by identifier
+      return findElementByIdentifier(target.elementId);
+    }
+    if (target.selector) {
+      return document.querySelector<HTMLElement>(target.selector);
+    }
+    return null;
   }
 
   private getElementId(element: HTMLElement): string {

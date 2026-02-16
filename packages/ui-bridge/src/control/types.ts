@@ -281,6 +281,38 @@ export interface KeyboardAction {
 }
 
 /**
+ * Drag action parameters
+ *
+ * Drags the source element to a target element or position by dispatching
+ * a sequence of mouse events: mousedown → mousemove × N → mouseup.
+ * Optionally dispatches HTML5 drag events (dragstart, dragover, drop, dragend)
+ * for applications that listen to those instead of mouse events.
+ */
+export interface DragAction {
+  /** Target element to drag to (resolved via registry or DOM query) */
+  target?: {
+    /** UI Bridge element ID (checked in registry first) */
+    elementId?: string;
+    /** CSS selector */
+    selector?: string;
+  };
+  /** Target coordinates (absolute client position, alternative to target element) */
+  targetPosition?: { x: number; y: number };
+  /** Source offset from element center in pixels (default: element center) */
+  sourceOffset?: { x: number; y: number };
+  /** Target offset from target element center in pixels (default: element center) */
+  targetOffset?: { x: number; y: number };
+  /** Number of intermediate mousemove steps (default: 10) */
+  steps?: number;
+  /** Delay in ms between mousedown and first move (default: 100) */
+  holdDelay?: number;
+  /** Delay in ms after mouseup (default: 50) */
+  releaseDelay?: number;
+  /** Also dispatch HTML5 drag events (dragstart/dragover/drop/dragend) alongside mouse events (default: false) */
+  html5?: boolean;
+}
+
+/**
  * Action types for mouse input
  */
 export interface MouseAction {

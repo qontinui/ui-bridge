@@ -498,6 +498,96 @@ class UIBridgeClient:
         """Toggle a checkbox."""
         return self._execute_action(element_id, "toggle")
 
+    def set_value(self, element_id: str, value: str) -> ActionResponse:
+        """Set the value of an input element directly.
+
+        Args:
+            element_id: Element identifier
+            value: Value to set
+
+        Returns:
+            ActionResponse with element state after action
+        """
+        return self._execute_action(element_id, "setValue", params={"value": value})
+
+    def submit(self, element_id: str) -> ActionResponse:
+        """Submit the form containing the element.
+
+        Args:
+            element_id: Element identifier (element or its parent form)
+
+        Returns:
+            ActionResponse with element state after action
+        """
+        return self._execute_action(element_id, "submit")
+
+    def reset(self, element_id: str) -> ActionResponse:
+        """Reset the form containing the element.
+
+        Args:
+            element_id: Element identifier (element or its parent form)
+
+        Returns:
+            ActionResponse with element state after action
+        """
+        return self._execute_action(element_id, "reset")
+
+    def drag(
+        self,
+        element_id: str,
+        *,
+        target_element_id: str | None = None,
+        target_selector: str | None = None,
+        target_position: tuple[int, int] | None = None,
+        source_offset: tuple[int, int] | None = None,
+        target_offset: tuple[int, int] | None = None,
+        steps: int | None = None,
+        hold_delay: int | None = None,
+        release_delay: int | None = None,
+        html5: bool = False,
+    ) -> ActionResponse:
+        """Drag an element to a target.
+
+        Args:
+            element_id: Source element identifier
+            target_element_id: Target element data-ui-id
+            target_selector: Target CSS selector (alternative to target_element_id)
+            target_position: Target coordinates (x, y) as alternative to element target
+            source_offset: Offset from source element center (x, y)
+            target_offset: Offset from target element center (x, y)
+            steps: Number of intermediate mousemove steps (default: 10)
+            hold_delay: Delay in ms between mousedown and first move (default: 100)
+            release_delay: Delay in ms after mouseup (default: 50)
+            html5: Also dispatch HTML5 drag events (default: False)
+
+        Returns:
+            ActionResponse with element state after action
+        """
+        params: dict[str, Any] = {}
+        if target_element_id or target_selector:
+            target: dict[str, str] = {}
+            if target_element_id:
+                target["elementId"] = target_element_id
+            if target_selector:
+                target["selector"] = target_selector
+            params["target"] = target
+        if target_position:
+            params["targetPosition"] = {"x": target_position[0], "y": target_position[1]}
+        if source_offset:
+            params["sourceOffset"] = {"x": source_offset[0], "y": source_offset[1]}
+        if target_offset:
+            params["targetOffset"] = {"x": target_offset[0], "y": target_offset[1]}
+        if steps is not None:
+            params["steps"] = steps
+        if hold_delay is not None:
+            params["holdDelay"] = hold_delay
+        if release_delay is not None:
+            params["releaseDelay"] = release_delay
+        if html5:
+            params["html5"] = True
+
+        return self._execute_action(element_id, "drag", params=params)
+
     def _execute_action(
         self,
         element_id: str,
