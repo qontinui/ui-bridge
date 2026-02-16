@@ -1,20 +1,18 @@
 """Tests for ui_bridge types."""
 
-import pytest
 from ui_bridge.types import (
     ActionRequest,
     ActionResponse,
     ComponentActionRequest,
-    ComponentActionResponse,
-    FindRequest,
-    FindResponse,
     DiscoveredElement,
     ElementIdentifier,
-    ElementState,
     ElementRect,
-    WorkflowStep,
+    ElementState,
+    FindRequest,
+    FindResponse,
     Workflow,
     WorkflowResult,
+    WorkflowStep,
 )
 
 

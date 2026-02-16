@@ -7,7 +7,7 @@ semantic snapshots, and assertion capabilities.
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .client import UIBridgeClient
@@ -22,7 +22,6 @@ from .ai_types import (
     BatchAssertionResult,
     Intent,
     IntentExecutionResult,
-    IntentMatch,
     IntentSearchResponse,
     NLActionRequest,
     NLActionResponse,
@@ -50,7 +49,7 @@ class AIClient:
         >>> snapshot = client.ai.snapshot()
     """
 
-    def __init__(self, http_client: "UIBridgeClient"):
+    def __init__(self, http_client: UIBridgeClient):
         """
         Initialize the AI client.
 
@@ -144,9 +143,7 @@ class AIClient:
         """
         return self.find(text, fuzzy=fuzzy)
 
-    def find_by_role(
-        self, role: str, name: str | None = None
-    ) -> list[SearchResult]:
+    def find_by_role(self, role: str, name: str | None = None) -> list[SearchResult]:
         """
         Find elements by ARIA role.
 
@@ -921,7 +918,7 @@ class AIClient:
         confidence_threshold: float | None = None,
         max_retries: int = 3,
         recovery_enabled: bool = True,
-    ) -> "ExecuteWithRecoveryResult":
+    ) -> ExecuteWithRecoveryResult:
         """
         Execute a natural language instruction with automatic recovery.
 
@@ -965,8 +962,9 @@ class AIClient:
             ...     recovery_enabled=False
             ... )
         """
-        from .recovery_types import ExecuteWithRecoveryResult, RecoveryExecutorResult
         import time
+
+        from .recovery_types import ExecuteWithRecoveryResult, RecoveryExecutorResult
 
         start_time = time.time()
         total_attempts = 0
@@ -1069,7 +1067,7 @@ class AIClient:
         target: str,
         *,
         max_retries: int = 3,
-    ) -> "ExecuteWithRecoveryResult":
+    ) -> ExecuteWithRecoveryResult:
         """
         Click an element with automatic recovery.
 
@@ -1088,7 +1086,7 @@ class AIClient:
         text: str,
         *,
         max_retries: int = 3,
-    ) -> "ExecuteWithRecoveryResult":
+    ) -> ExecuteWithRecoveryResult:
         """
         Type text into an element with automatic recovery.
 

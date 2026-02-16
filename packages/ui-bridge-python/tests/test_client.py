@@ -1,10 +1,11 @@
 """Tests for ui_bridge client."""
 
-import pytest
 from unittest.mock import MagicMock, patch
-import httpx
 
-from ui_bridge.client import UIBridgeClient, UIBridgeError, ElementNotFoundError, ActionFailedError
+import httpx
+import pytest
+
+from ui_bridge.client import ActionFailedError, ElementNotFoundError, UIBridgeClient, UIBridgeError
 
 
 class TestUIBridgeClient:
@@ -194,7 +195,7 @@ class TestUIBridgeClientFind:
 
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
-                result = client.discover()
+                client.discover()
                 assert len(w) == 1
                 assert issubclass(w[0].category, DeprecationWarning)
                 assert "discover()" in str(w[0].message)
