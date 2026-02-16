@@ -66,7 +66,7 @@ jobs:
 
       - name: Type check with mypy
         working-directory: packages/ui-bridge-python
-        run: mypy src
+        run: mypy ui_bridge
 
       - name: Test with pytest
         working-directory: packages/ui-bridge-python
