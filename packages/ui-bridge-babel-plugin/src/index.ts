@@ -34,7 +34,7 @@
  */
 
 import { declare } from '@babel/helper-plugin-utils';
-import type { PluginObj, NodePath, BabelFile } from '@babel/core';
+import type { NodePath, BabelFile } from '@babel/core';
 import type * as t from '@babel/types';
 import { type PluginConfig, mergeConfig, shouldProcessFile } from './config';
 
