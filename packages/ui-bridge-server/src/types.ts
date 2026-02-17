@@ -179,6 +179,15 @@ export interface UIBridgeServerHandlers {
   aiSemanticSearch: (
     criteria: SemanticSearchCriteria
   ) => Promise<APIResponse<SemanticSearchResponse>>;
+
+  // Performance diagnostics
+  getPerformanceEntries: () => Promise<APIResponse<unknown>>;
+  clearPerformanceEntries: () => Promise<APIResponse<{ cleared: boolean }>>;
+  getBrowserEvents: (params?: {
+    type?: string;
+    since?: number;
+    limit?: number;
+  }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
 }
 
 /**
@@ -261,6 +270,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
+
+  // Performance diagnostics
+  { method: 'GET', path: '/control/performance-entries', handler: 'getPerformanceEntries' },
+  {
+    method: 'POST',
+    path: '/control/performance-entries/clear',
+    handler: 'clearPerformanceEntries',
+  },
+  { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
 ];
 
 /**

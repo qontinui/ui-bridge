@@ -1671,6 +1671,32 @@ export function createHandlers(
         return error((err as Error).message, 'CROSS_APP_COMPARE_ERROR');
       }
     },
+
+    // =========================================================================
+    // Performance Diagnostics Handlers
+    // =========================================================================
+
+    getPerformanceEntries: async (): Promise<APIResponse<unknown>> => {
+      // Performance entries are browser-only; the SDK handler returns empty data.
+      // The actual implementation lives in the browser transport (useUIBridgeTransport).
+      return {
+        success: true,
+        data: { navigation: null, resources: [], paint: [] },
+        timestamp: Date.now(),
+      };
+    },
+
+    clearPerformanceEntries: async (): Promise<APIResponse<{ cleared: boolean }>> => {
+      return { success: true, data: { cleared: true }, timestamp: Date.now() };
+    },
+
+    getBrowserEvents: async (_params?: {
+      type?: string;
+      since?: number;
+      limit?: number;
+    }): Promise<APIResponse<{ events: unknown[]; count: number }>> => {
+      return { success: true, data: { events: [], count: 0 }, timestamp: Date.now() };
+    },
   };
 }
 

@@ -268,6 +268,15 @@ export interface UIBridgeServerHandlers {
   importAnnotations: (config: AnnotationConfig) => Promise<APIResponse<{ count: number }>>;
   exportAnnotations: () => Promise<APIResponse<AnnotationConfig>>;
   getAnnotationCoverage: () => Promise<APIResponse<AnnotationCoverage>>;
+
+  // Performance diagnostics endpoints
+  getPerformanceEntries: () => Promise<APIResponse<unknown>>;
+  clearPerformanceEntries: () => Promise<APIResponse<{ cleared: boolean }>>;
+  getBrowserEvents: (params?: {
+    type?: string;
+    since?: number;
+    limit?: number;
+  }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
 }
 
 /**
@@ -445,6 +454,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     bodyRequired: true,
   },
   { method: 'DELETE', path: '/annotations/:id', handler: 'deleteAnnotation', params: ['id'] },
+
+  // Performance diagnostics
+  { method: 'GET', path: '/control/performance-entries', handler: 'getPerformanceEntries' },
+  {
+    method: 'POST',
+    path: '/control/performance-entries/clear',
+    handler: 'clearPerformanceEntries',
+  },
+  { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
 ];
 
 /**
