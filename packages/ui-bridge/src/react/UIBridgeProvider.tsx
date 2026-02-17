@@ -64,6 +64,8 @@ export interface UIBridgeContextValue {
   getComponents: () => RegisteredComponent[];
   /** Create a snapshot */
   createSnapshot: () => BridgeSnapshot;
+  /** Create a snapshot asynchronously (non-blocking) */
+  createSnapshotAsync: (batchSize?: number) => Promise<BridgeSnapshot>;
   /** Subscribe to events */
   on: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => () => void;
   /** Unsubscribe from events */
@@ -286,6 +288,11 @@ export function UIBridgeProvider({
 
   const createSnapshot = useCallback(() => registry.createSnapshot(), [registry]);
 
+  const createSnapshotAsync = useCallback(
+    (batchSize?: number) => registry.createSnapshotAsync(batchSize),
+    [registry]
+  );
+
   const on = useCallback(
     <T = unknown,>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
       registry.on(type, listener),
@@ -312,6 +319,7 @@ export function UIBridgeProvider({
       getElements,
       getComponents,
       createSnapshot,
+      createSnapshotAsync,
       on,
       off,
       initialized: true,
@@ -333,6 +341,7 @@ export function UIBridgeProvider({
       getElements,
       getComponents,
       createSnapshot,
+      createSnapshotAsync,
       on,
       off,
       wsConnect,

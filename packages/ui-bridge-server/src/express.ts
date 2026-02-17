@@ -158,6 +158,7 @@ function createRouteHandler(
   handler: (...args: unknown[]) => Promise<APIResponse<unknown>>
 ) {
   return async (req: Request, res: Response) => {
+    const start = performance.now();
     try {
       // Extract params
       const args: unknown[] = [];
@@ -179,9 +180,13 @@ function createRouteHandler(
       }
 
       const result = await handler(...args);
-      res.json(result);
+      const durationMs = Math.round(performance.now() - start);
+      res.setHeader('X-Response-Time', `${durationMs}ms`);
+      res.json({ ...result, durationMs });
     } catch (error) {
-      res.status(500).json(wrapError(error as Error, 'INTERNAL_ERROR'));
+      const durationMs = Math.round(performance.now() - start);
+      res.setHeader('X-Response-Time', `${durationMs}ms`);
+      res.status(500).json({ ...wrapError(error as Error, 'INTERNAL_ERROR'), durationMs });
     }
   };
 }

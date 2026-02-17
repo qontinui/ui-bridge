@@ -1241,6 +1241,56 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Create a snapshot asynchronously, processing elements in batches to avoid
+   * blocking the main thread. This prevents "Page Unresponsive" dialogs when
+   * there are many registered elements (200-500+), since getState() and
+   * getIdentifier() force layout/style recalculation for each element.
+   */
+  async createSnapshotAsync(batchSize = 50): Promise<BridgeSnapshot> {
+    const allElements = this.getAllElements();
+    const elementSnapshots: BridgeSnapshot['elements'] = [];
+
+    for (let i = 0; i < allElements.length; i += batchSize) {
+      const batch = allElements.slice(i, i + batchSize);
+      for (const el of batch) {
+        elementSnapshots.push({
+          id: el.id,
+          type: el.type,
+          label: el.label,
+          identifier: el.getIdentifier(),
+          state: el.getState(),
+          actions: el.actions,
+          customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+          category: el.category,
+          contentMetadata: el.contentMetadata,
+        });
+      }
+      // Yield to main thread between batches to keep UI responsive
+      if (i + batchSize < allElements.length) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    return {
+      timestamp: Date.now(),
+      elements: elementSnapshots,
+      components: this.getAllComponents().map((comp) => ({
+        id: comp.id,
+        name: comp.name,
+        description: comp.description,
+        actions: comp.actions.map((a) => a.id),
+        elementIds: comp.elementIds,
+      })),
+      workflows: this.getAllWorkflows().map((wf) => ({
+        id: wf.id,
+        name: wf.name,
+        description: wf.description,
+        stepCount: wf.steps.length,
+      })),
+    };
+  }
+
+  /**
    * Clear all registrations
    */
   clear(): void {

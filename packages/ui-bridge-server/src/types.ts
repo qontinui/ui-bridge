@@ -90,6 +90,8 @@ export interface APIResponse<T = unknown> {
   code?: string;
   /** Request timestamp */
   timestamp: number;
+  /** Response time in milliseconds (set by server) */
+  durationMs?: number;
 }
 
 /**
