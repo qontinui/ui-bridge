@@ -33,24 +33,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish ui-bridge-server
-        working-directory: packages/ui-bridge-server
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish ui-bridge-babel-plugin
-        working-directory: packages/ui-bridge-babel-plugin
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish ui-bridge-swc-plugin
-        working-directory: packages/ui-bridge-swc-plugin
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
   publish-pypi:
     runs-on: ubuntu-latest
     steps:

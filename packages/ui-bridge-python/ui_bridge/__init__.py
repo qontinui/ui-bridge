@@ -57,6 +57,8 @@ from .ai_types import (
     StructuredFailureInfo,
     TextChange,
 )
+from .async_ai import AsyncAIClient
+from .async_client import AsyncUIBridgeClient
 from .client import UIBridgeClient
 
 # Logging
@@ -140,8 +142,12 @@ __version__ = "0.1.0"
 __all__ = [
     # Client
     "UIBridgeClient",
+    # Async client
+    "AsyncUIBridgeClient",
     # AI-native client
     "AIClient",
+    # Async AI client
+    "AsyncAIClient",
     # Element types
     "ElementState",
     "ElementIdentifier",

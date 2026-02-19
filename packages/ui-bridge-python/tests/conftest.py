@@ -4,14 +4,18 @@ Stub out missing modules that are imported by ui_bridge.__init__
 but may not exist yet during development.
 """
 
+import importlib
 import sys
 from unittest.mock import MagicMock
 
 
 def _ensure_module(name: str) -> None:
-    """Register a stub module if it doesn't exist."""
+    """Try to import the real module; register a stub only if it truly does not exist."""
     if name not in sys.modules:
-        sys.modules[name] = MagicMock()
+        try:
+            importlib.import_module(name)
+        except (ImportError, ModuleNotFoundError):
+            sys.modules[name] = MagicMock()
 
 
 # Stub out modules that __init__.py imports but may not exist yet.

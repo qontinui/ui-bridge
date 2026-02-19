@@ -2,10 +2,13 @@
 UI Bridge Logging
 
 Logging utilities for UI Bridge client operations.
+Supports JSONL file output and formatted console output.
 """
 
 from __future__ import annotations
 
+import sys
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -22,6 +25,15 @@ class LogLevel(str, Enum):
     ERROR = "error"
 
 
+# Numeric ordering for level comparison
+_LEVEL_ORDER: dict[LogLevel, int] = {
+    LogLevel.DEBUG: 0,
+    LogLevel.INFO: 1,
+    LogLevel.WARN: 2,
+    LogLevel.ERROR: 3,
+}
+
+
 class EventType(str, Enum):
     """Event types for structured logging."""
 
@@ -33,6 +45,19 @@ class EventType(str, Enum):
     ACTION_FAIL = "action_fail"
     TRACE_START = "trace_start"
     TRACE_END = "trace_end"
+
+
+# Map event types to their default log levels
+_EVENT_LEVELS: dict[EventType, LogLevel] = {
+    EventType.REQUEST_START: LogLevel.DEBUG,
+    EventType.REQUEST_COMPLETE: LogLevel.INFO,
+    EventType.REQUEST_FAIL: LogLevel.ERROR,
+    EventType.ACTION_START: LogLevel.DEBUG,
+    EventType.ACTION_COMPLETE: LogLevel.INFO,
+    EventType.ACTION_FAIL: LogLevel.ERROR,
+    EventType.TRACE_START: LogLevel.DEBUG,
+    EventType.TRACE_END: LogLevel.DEBUG,
+}
 
 
 class TraceContext(BaseModel):
@@ -55,7 +80,16 @@ class LogEntry(BaseModel):
 
 
 class UIBridgeLogger:
-    """Logger for UI Bridge client operations."""
+    """Logger for UI Bridge client operations.
+
+    Supports JSONL file logging and formatted console output.
+
+    Example:
+        >>> logger = UIBridgeLogger()
+        >>> logger.enable(level="debug", file_path="ui-bridge.jsonl", console=True)
+        >>> trace = logger.start_trace()
+        >>> logger.request_started("GET", "/control/snapshot", trace=trace)
+    """
 
     def __init__(self) -> None:
         self._enabled: bool = False
@@ -80,18 +114,62 @@ class UIBridgeLogger:
         """Disable logging."""
         self._enabled = False
 
+    def _should_log(self, level: LogLevel) -> bool:
+        """Check if a message at the given level should be logged."""
+        if not self._enabled:
+            return False
+        return _LEVEL_ORDER[level] >= _LEVEL_ORDER[self._level]
+
+    def _emit(self, entry: LogEntry) -> None:
+        """Write a log entry to configured outputs."""
+        if not self._should_log(entry.level):
+            return
+
+        if self._file_path is not None:
+            with open(self._file_path, "a", encoding="utf-8") as f:
+                f.write(entry.model_dump_json() + "\n")
+
+        if self._console:
+            level_str = entry.level.value.upper()
+            duration = ""
+            if entry.data and "duration_ms" in entry.data:
+                duration = f" ({entry.data['duration_ms']:.1f}ms)"
+            print(
+                f"[{level_str}] {entry.event_type.value}: {entry.message}{duration}",
+                file=sys.stderr,
+            )
+
     def start_trace(self) -> TraceContext:
         """Start a new trace context."""
         import uuid
 
-        return TraceContext(
+        trace = TraceContext(
             trace_id=uuid.uuid4().hex,
             span_id=uuid.uuid4().hex[:16],
         )
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.TRACE_START],
+                event_type=EventType.TRACE_START,
+                message=f"Trace started: {trace.trace_id[:8]}",
+                trace_id=trace.trace_id,
+                span_id=trace.span_id,
+            )
+        )
+        return trace
 
     def end_trace(self, trace_id: str) -> None:
         """End a trace."""
-        pass
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.TRACE_END],
+                event_type=EventType.TRACE_END,
+                message=f"Trace ended: {trace_id[:8]}",
+                trace_id=trace_id,
+            )
+        )
 
     def request_started(
         self,
@@ -101,7 +179,17 @@ class UIBridgeLogger:
         trace: TraceContext | None = None,
     ) -> None:
         """Log a request start."""
-        pass
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.REQUEST_START],
+                event_type=EventType.REQUEST_START,
+                message=f"{method} {path}",
+                data={"method": method, "path": path},
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
     def request_completed(
         self,
@@ -113,7 +201,22 @@ class UIBridgeLogger:
         trace: TraceContext | None = None,
     ) -> None:
         """Log a request completion."""
-        pass
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.REQUEST_COMPLETE],
+                event_type=EventType.REQUEST_COMPLETE,
+                message=f"{method} {path} -> {status}",
+                data={
+                    "method": method,
+                    "path": path,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                },
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
     def request_failed(
         self,
@@ -126,7 +229,26 @@ class UIBridgeLogger:
         status: int | None = None,
     ) -> None:
         """Log a request failure."""
-        pass
+        data: dict[str, Any] = {
+            "method": method,
+            "path": path,
+            "error": error_message,
+            "duration_ms": duration_ms,
+        }
+        if status is not None:
+            data["status"] = status
+
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.REQUEST_FAIL],
+                event_type=EventType.REQUEST_FAIL,
+                message=f"{method} {path} FAILED: {error_message}",
+                data=data,
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
     def action_started(
         self,
@@ -137,7 +259,24 @@ class UIBridgeLogger:
         params: dict[str, Any] | None = None,
     ) -> None:
         """Log an action start."""
-        pass
+        data: dict[str, Any] = {
+            "element_id": element_id,
+            "action": action,
+        }
+        if params:
+            data["params"] = params
+
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.ACTION_START],
+                event_type=EventType.ACTION_START,
+                message=f"{action} on {element_id}",
+                data=data,
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
     def action_completed(
         self,
@@ -149,7 +288,25 @@ class UIBridgeLogger:
         result: Any = None,
     ) -> None:
         """Log an action completion."""
-        pass
+        data: dict[str, Any] = {
+            "element_id": element_id,
+            "action": action,
+            "duration_ms": duration_ms,
+        }
+        if result is not None:
+            data["result"] = result
+
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.ACTION_COMPLETE],
+                event_type=EventType.ACTION_COMPLETE,
+                message=f"{action} on {element_id} completed",
+                data=data,
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
     def action_failed(
         self,
@@ -162,7 +319,23 @@ class UIBridgeLogger:
         trace: TraceContext | None = None,
     ) -> None:
         """Log an action failure."""
-        pass
+        self._emit(
+            LogEntry(
+                timestamp=time.time(),
+                level=_EVENT_LEVELS[EventType.ACTION_FAIL],
+                event_type=EventType.ACTION_FAIL,
+                message=f"{action} on {element_id} FAILED: {error_message}",
+                data={
+                    "element_id": element_id,
+                    "action": action,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "duration_ms": duration_ms,
+                },
+                trace_id=trace.trace_id if trace else None,
+                span_id=trace.span_id if trace else None,
+            )
+        )
 
 
 _default_logger: UIBridgeLogger | None = None

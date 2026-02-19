@@ -21,6 +21,7 @@ import { installResourceErrorCapture } from './captures/resource-errors';
 import { installWebVitalsCapture } from './captures/web-vitals';
 import { installMemoryCapture } from './captures/memory';
 import { installHmrCapture } from './captures/hmr';
+import { installLoafCapture } from './captures/long-animation-frames';
 
 export class BrowserEventCapture {
   private buffer: AnyCapturedEvent[] = [];
@@ -64,6 +65,9 @@ export class BrowserEventCapture {
     }
     if (cfg.longTasks) {
       this.cleanups.push(installLongTaskCapture(emit));
+    }
+    if (cfg.longAnimationFrames) {
+      this.cleanups.push(installLoafCapture(emit));
     }
     if (cfg.resourceErrors) {
       this.cleanups.push(installResourceErrorCapture(emit));

@@ -125,28 +125,60 @@ export class SearchEngine {
     let value: string | undefined;
 
     if ('getState' in element && typeof element.getState === 'function') {
-      // RegisteredElement
+      // RegisteredElement — prefer getState() data over direct DOM queries
+      // to be resilient when DOM refs are stale or inaccessible
       state = getState ? getState(element) : element.getState();
       textContent = state.textContent || undefined;
-      tagName = element.element.tagName.toLowerCase();
-      role = element.element.getAttribute('role') || undefined;
-      ariaLabel = element.element.getAttribute('aria-label') || undefined;
-      placeholder = element.element.getAttribute('placeholder') || undefined;
-      title = element.element.getAttribute('title') || undefined;
 
-      // Get associated label
-      if (element.element.id) {
-        const labelEl = document.querySelector(`label[for="${element.element.id}"]`);
-        labelText = labelEl?.textContent?.trim() || undefined;
+      // Safely extract DOM attributes with fallbacks
+      try {
+        tagName = element.element.tagName.toLowerCase();
+      } catch {
+        tagName = element.type || 'unknown';
+      }
+
+      try {
+        role = element.element.getAttribute('role') || undefined;
+        ariaLabel = element.element.getAttribute('aria-label') || undefined;
+        placeholder = element.element.getAttribute('placeholder') || undefined;
+        title = element.element.getAttribute('title') || undefined;
+      } catch {
+        // DOM access failed — use fallbacks from RegisteredElement metadata
+      }
+
+      // Use registered label as labelText
+      if (!ariaLabel && element.label) {
+        ariaLabel = element.label;
+      }
+
+      try {
+        if (element.element.id) {
+          const labelEl = document.querySelector(`label[for="${element.element.id}"]`);
+          labelText = labelEl?.textContent?.trim() || undefined;
+        }
+      } catch {
+        // label query failed
+      }
+      if (!labelText && element.label) {
+        labelText = element.label;
+      }
+
+      // Use label as textContent fallback — ensures search can match by label
+      if (!textContent && element.label) {
+        textContent = element.label;
       }
 
       // Get value for inputs
-      if (
-        element.element instanceof HTMLInputElement ||
-        element.element instanceof HTMLTextAreaElement ||
-        element.element instanceof HTMLSelectElement
-      ) {
-        value = (element.element as HTMLInputElement).value || undefined;
+      try {
+        if (
+          element.element instanceof HTMLInputElement ||
+          element.element instanceof HTMLTextAreaElement ||
+          element.element instanceof HTMLSelectElement
+        ) {
+          value = (element.element as HTMLInputElement).value || undefined;
+        }
+      } catch {
+        value = state.value || undefined;
       }
     } else {
       // DiscoveredElement
@@ -156,6 +188,10 @@ export class SearchEngine {
       tagName = discovered.tagName;
       role = discovered.role || undefined;
       ariaLabel = discovered.accessibleName || undefined;
+      // Use label property if available and no other label source
+      if (!labelText && (element as { label?: string }).label) {
+        labelText = (element as { label?: string }).label;
+      }
     }
 
     // Generate aliases and description
@@ -171,6 +207,15 @@ export class SearchEngine {
       value,
     });
 
+    // Merge pre-computed aliases from RegisteredElement if available
+    if ('aliases' in element && Array.isArray(element.aliases) && element.aliases.length > 0) {
+      const aliasSet = new Set([
+        ...aliases,
+        ...element.aliases.map((a: string) => a.toLowerCase()),
+      ]);
+      aliases = [...aliasSet];
+    }
+
     let description = generateDescription({
       textContent,
       ariaLabel,
@@ -181,6 +226,11 @@ export class SearchEngine {
       id: element.id,
       labelText,
     });
+
+    // Use pre-computed description from RegisteredElement if available
+    if (!description && 'description' in element && element.description) {
+      description = element.description as string;
+    }
 
     // Merge annotation overrides into searchable data
     const annotation = getGlobalAnnotationStore().get(element.id);

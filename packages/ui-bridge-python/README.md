@@ -335,21 +335,46 @@ with UIBridgeClient("http://localhost:9876") as client:
     # Client is automatically closed
 ```
 
-## Async Support
+## Async Client
 
-For async applications, use httpx's async client:
+For async applications, use `AsyncUIBridgeClient`:
 
 ```python
-import httpx
-from ui_bridge.types import ActionResponse
+import asyncio
+from ui_bridge import AsyncUIBridgeClient
 
 async def main():
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.post(
-            "http://localhost:9876/ui-bridge/control/element/btn/action",
-            json={"action": "click"}
-        )
-        result = ActionResponse.model_validate(response.json()["data"])
+    async with AsyncUIBridgeClient("http://localhost:9876") as client:
+        # Element actions
+        await client.click("submit-btn")
+        await client.type("email-input", "user@example.com")
+
+        # Get snapshot
+        snapshot = await client.get_snapshot()
+
+        # AI-native interface
+        await client.ai.execute("click the Submit button")
+        result = await client.ai.assert_that("error message", "hidden")
+
+        # State management (async methods instead of properties)
+        active = await client.state.get_active()
+        await client.state.activate("modal")
+
+asyncio.run(main())
+```
+
+## JSONL Logging
+
+Enable structured JSONL logging for debugging and observability:
+
+```python
+from ui_bridge import UIBridgeClient
+
+client = UIBridgeClient()
+client.enable_logging(level="debug", file_path="ui-bridge.jsonl", console=True)
+
+# All operations are now logged
+client.click("submit-btn")  # Logs ACTION_START, REQUEST_START, REQUEST_COMPLETE, ACTION_COMPLETE
 ```
 
 ## License

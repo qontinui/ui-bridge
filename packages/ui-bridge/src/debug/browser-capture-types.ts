@@ -14,6 +14,7 @@ export type BrowserEventType =
   | 'react-error'
   | 'navigation'
   | 'long-task'
+  | 'long-animation-frame'
   | 'resource-error'
   | 'web-vital'
   | 'memory'
@@ -107,6 +108,21 @@ export interface HmrCapturedEvent extends BrowserCapturedEvent {
   loc?: string;
 }
 
+export interface LoafScriptAttribution {
+  invoker: string;
+  sourceURL: string;
+  sourceFunctionName: string;
+  sourceCharPosition: number;
+  duration: number;
+}
+
+export interface LoafCapturedEvent extends BrowserCapturedEvent {
+  type: 'long-animation-frame';
+  durationMs: number;
+  blockingDurationMs: number;
+  scripts: LoafScriptAttribution[];
+}
+
 // ---------------------------------------------------------------------------
 // Union type
 // ---------------------------------------------------------------------------
@@ -117,6 +133,7 @@ export type AnyCapturedEvent =
   | ReactErrorCapturedEvent
   | NavigationCapturedEvent
   | LongTaskCapturedEvent
+  | LoafCapturedEvent
   | ResourceErrorCapturedEvent
   | WebVitalCapturedEvent
   | MemoryCapturedEvent
@@ -159,6 +176,8 @@ export interface BrowserCaptureConfig {
   navigation?: boolean;
   /** Capture PerformanceObserver long tasks. Default: true */
   longTasks?: boolean;
+  /** Capture Long Animation Frames (LoAF) with script attribution. Default: true */
+  longAnimationFrames?: boolean;
   /** Capture failed resource loads (img/script/link). Default: true */
   resourceErrors?: boolean;
   /** Capture WebSocket disconnection events. Default: true */
@@ -188,6 +207,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
     | 'network'
     | 'navigation'
     | 'longTasks'
+    | 'longAnimationFrames'
     | 'resourceErrors'
     | 'wsDisconnections'
     | 'hmr'
@@ -201,6 +221,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
   network: true,
   navigation: true,
   longTasks: true,
+  longAnimationFrames: true,
   resourceErrors: true,
   wsDisconnections: true,
   hmr: true,

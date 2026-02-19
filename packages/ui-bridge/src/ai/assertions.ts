@@ -270,7 +270,7 @@ export class AssertionExecutor {
     const criteria: SearchCriteria =
       typeof target === 'string' ? { text: target, fuzzy } : { ...target, fuzzy };
 
-    const searchResult = this.searchEngine.findBest(criteria);
+    const searchResult = this.searchEngine.findBest(criteria, this.elements);
 
     if (searchResult && searchResult.confidence >= this.config.fuzzyThreshold) {
       return searchResult;
