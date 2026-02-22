@@ -61,6 +61,10 @@ export interface ElementState {
   textContent?: string;
   /** Inner HTML of the element (sanitized) */
   innerHTML?: string;
+  /** href for anchor elements */
+  href?: string;
+  /** Route path from data-route attribute (navigation elements) */
+  dataRoute?: string;
   /** Computed styles relevant for automation */
   computedStyles?: {
     display: string;

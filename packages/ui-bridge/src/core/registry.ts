@@ -76,6 +76,17 @@ function getElementState(element: HTMLElement): ElementState {
     state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
   }
 
+  // Capture href for anchor elements
+  if (element instanceof HTMLAnchorElement && element.href) {
+    state.href = element.href;
+  }
+
+  // Capture data-route for navigation elements
+  const dataRoute = element.getAttribute('data-route');
+  if (dataRoute) {
+    state.dataRoute = dataRoute;
+  }
+
   return state;
 }
 
