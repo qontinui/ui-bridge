@@ -62,9 +62,7 @@ function getNavLabel(el: AIDiscoveredElement): string {
  * Extract the href/destination from an element.
  */
 function getHref(el: AIDiscoveredElement): string | undefined {
-  // href is not on ElementState; check for it via unknown cast
-  const state = el.state as unknown as Record<string, unknown>;
-  return (state?.href as string) || undefined;
+  return el.state?.href || undefined;
 }
 
 /**
