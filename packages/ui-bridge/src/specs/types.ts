@@ -20,6 +20,7 @@ export type SpecCategory =
   | 'modal-dialog'
   | 'navigation'
   | 'cross-page-consistency'
+  | 'semantic'
   | 'custom';
 
 export type SpecSeverity = 'critical' | 'warning' | 'info';
@@ -270,6 +271,7 @@ export const VALID_SPEC_CATEGORIES: readonly SpecCategory[] = [
   'modal-dialog',
   'navigation',
   'cross-page-consistency',
+  'semantic',
   'custom',
 ] as const;
 
