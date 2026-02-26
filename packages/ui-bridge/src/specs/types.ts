@@ -94,6 +94,12 @@ export interface SpecAssertion {
   enabled: boolean;
   notes?: string;
   /**
+   * Human-readable precondition describing when this assertion applies.
+   * Complements the machine-evaluated `condition` field with a natural-language
+   * description of the expected UI state (e.g., "Workflow is loaded in editor").
+   */
+  precondition?: string;
+  /**
    * Optional condition that must be met for this assertion to be evaluated.
    * If condition is not met, the assertion is skipped (passes with no opinion).
    *
