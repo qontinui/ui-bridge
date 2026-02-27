@@ -294,8 +294,13 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     snapshot: {
-      async GET(): Promise<Response> {
-        const result = await handlers.getControlSnapshot();
+      async GET(request: NextRequest): Promise<Response> {
+        const url = request.nextUrl?.searchParams?.get('url') ?? undefined;
+        const targetTabId = request.nextUrl?.searchParams?.get('targetTabId') ?? undefined;
+        const result = await handlers.getControlSnapshot({
+          targetTabId,
+          url,
+        });
         return jsonResponse(result);
       },
     },

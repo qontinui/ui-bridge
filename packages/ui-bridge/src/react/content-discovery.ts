@@ -256,6 +256,7 @@ function isInteractiveElement(element: HTMLElement): boolean {
   if (role && interactiveRoles.includes(role)) return true;
 
   if (element.getAttribute('contenteditable') === 'true') return true;
+  if (element.hasAttribute('data-ui-id')) return true;
   if (element.hasAttribute('data-ui-element')) return true;
 
   return false;

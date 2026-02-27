@@ -133,6 +133,9 @@ const INTERACTIVE_SELECTORS = [
   '[role="switch"]',
   '[tabindex]:not([tabindex="-1"])',
   '[contenteditable="true"]',
+  '[data-ui-id]',
+  '[data-ui-element]',
+  '[data-testid]',
 ];
 
 /**

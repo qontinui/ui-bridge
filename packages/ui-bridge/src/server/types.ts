@@ -171,7 +171,10 @@ export interface UIBridgeServerHandlers {
    * @deprecated Use find() instead
    */
   discover: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
-  getControlSnapshot: () => Promise<APIResponse<ControlSnapshot>>;
+  getControlSnapshot: (request?: {
+    targetTabId?: string;
+    url?: string;
+  }) => Promise<APIResponse<ControlSnapshot>>;
 
   // Workflow endpoints
   getWorkflows: () => Promise<APIResponse<ControlSnapshot['workflows']>>;

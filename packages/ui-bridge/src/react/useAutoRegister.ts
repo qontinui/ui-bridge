@@ -86,6 +86,7 @@ const INTERACTIVE_SELECTORS = [
   '[role="textbox"]',
   '[tabindex]:not([tabindex="-1"])',
   '[contenteditable="true"]',
+  '[data-ui-id]', // UI Bridge identifier — always register
   '[data-ui-element]', // Explicitly marked for registration
   '[data-testid]', // Testing library convention
 ];
