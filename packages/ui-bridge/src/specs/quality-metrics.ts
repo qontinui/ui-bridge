@@ -81,6 +81,248 @@ function makeResult(
 }
 
 // ============================================================================
+// UX Helpers
+// ============================================================================
+
+const CONTENT_BEARING_TYPES = new Set([
+  'heading',
+  'paragraph',
+  'label',
+  'metric-value',
+  'badge',
+  'input',
+  'textarea',
+  'select',
+  'list-item',
+  'table-cell',
+  'table-header',
+  'caption',
+  'description-text',
+  'status-message',
+  'code-block',
+  'blockquote',
+  'nav-text',
+]);
+
+function isContentBearing(el: ElementDesignData): boolean {
+  return CONTENT_BEARING_TYPES.has(el.type.toLowerCase());
+}
+
+function isContainerElement(el: ElementDesignData): boolean {
+  const hasBg = parseColor(el.styles.backgroundColor) !== null;
+  const hasRadius = parsePx(el.styles.borderRadius) > 0;
+  const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
+  const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
+  return hasBg && (hasRadius || hasPadding) && largeEnough;
+}
+
+function rectContains(
+  outer: { x: number; y: number; width: number; height: number },
+  inner: { x: number; y: number; width: number; height: number },
+  tolerance = 2
+): boolean {
+  return (
+    inner.x >= outer.x - tolerance &&
+    inner.y >= outer.y - tolerance &&
+    inner.x + inner.width <= outer.x + outer.width + tolerance &&
+    inner.y + inner.height <= outer.y + outer.height + tolerance
+  );
+}
+
+// ============================================================================
+// UX (5 metrics)
+// ============================================================================
+
+export const contentOverflow: MetricFunction = (elements, viewport) => {
+  if (elements.length === 0)
+    return makeResult('contentOverflow', 'Content Overflow', 'ux', 100, []);
+
+  const maxBottom = Math.max(...elements.map((el) => el.rect.y + el.rect.height));
+  const overflowPx = maxBottom - viewport.height;
+
+  if (overflowPx <= 0) return makeResult('contentOverflow', 'Content Overflow', 'ux', 100, []);
+
+  // Degrade linearly: 1 viewport of overflow → score 0
+  const overflowRatio = overflowPx / viewport.height;
+  const score = Math.max(0, 100 - overflowRatio * 100);
+  const findings: MetricFinding[] = [
+    {
+      severity: overflowRatio > 0.5 ? 'error' : 'warning',
+      message: `Content extends ${Math.round(overflowPx)}px (${(overflowRatio * 100).toFixed(0)}%) below the viewport.`,
+      recommendation:
+        'Reduce content height, use more compact layouts, or prioritize above-fold content.',
+    },
+  ];
+
+  return makeResult('contentOverflow', 'Content Overflow', 'ux', score, findings, {
+    overflowPx,
+    overflowRatio,
+    maxBottom,
+    viewportHeight: viewport.height,
+  });
+};
+
+export const aboveFoldRatio: MetricFunction = (elements, viewport) => {
+  const contentElements = elements.filter(isContentBearing);
+  if (contentElements.length === 0)
+    return makeResult('aboveFoldRatio', 'Above Fold Ratio', 'ux', 100, []);
+
+  const visibleCount = contentElements.filter(
+    (el) => el.rect.y + el.rect.height <= viewport.height
+  ).length;
+  const score = (visibleCount / contentElements.length) * 100;
+  const findings: MetricFinding[] = [];
+
+  if (score < 70) {
+    const belowCount = contentElements.length - visibleCount;
+    findings.push({
+      severity: score < 40 ? 'error' : 'warning',
+      message: `Only ${visibleCount} of ${contentElements.length} content elements are above the fold (${belowCount} require scrolling).`,
+      recommendation: 'Move critical content above the fold or reduce vertical space usage.',
+    });
+  }
+
+  return makeResult('aboveFoldRatio', 'Above Fold Ratio', 'ux', score, findings, {
+    visibleCount,
+    totalCount: contentElements.length,
+  });
+};
+
+export const informationDensity: MetricFunction = (elements, _viewport) => {
+  const contentElements = elements.filter(isContentBearing);
+  if (contentElements.length === 0 || elements.length === 0)
+    return makeResult('informationDensity', 'Information Density', 'ux', 100, []);
+
+  const contentArea = contentElements.reduce((sum, el) => sum + elementArea(el), 0);
+  const totalArea = elements.reduce((sum, el) => sum + elementArea(el), 0);
+
+  if (totalArea === 0)
+    return makeResult('informationDensity', 'Information Density', 'ux', 100, []);
+
+  const ratio = contentArea / totalArea;
+  const findings: MetricFinding[] = [];
+
+  // Ideal: >= 0.3 content ratio (at least 30% of element area is content)
+  let score: number;
+  if (ratio >= 0.3) {
+    score = 100;
+  } else {
+    score = (ratio / 0.3) * 100;
+    findings.push({
+      severity: ratio < 0.15 ? 'error' : 'warning',
+      message: `Only ${(ratio * 100).toFixed(0)}% of element area contains content. Too much chrome/decoration.`,
+      recommendation: 'Reduce container padding, decorative elements, or oversized headers.',
+    });
+  }
+
+  return makeResult('informationDensity', 'Information Density', 'ux', score, findings, {
+    contentArea,
+    totalArea,
+    ratio,
+    contentElementCount: contentElements.length,
+  });
+};
+
+export const containerEfficiency: MetricFunction = (elements, _viewport) => {
+  const containers = elements.filter(isContainerElement);
+  if (containers.length === 0)
+    return makeResult('containerEfficiency', 'Container Efficiency', 'ux', 100, []);
+
+  const efficiencies: number[] = [];
+  const inefficientContainers: string[] = [];
+
+  for (const container of containers) {
+    // Find children that are geometrically contained
+    const children = elements.filter(
+      (el) => el.elementId !== container.elementId && rectContains(container.rect, el.rect)
+    );
+
+    if (children.length === 0) continue;
+
+    const childArea = children.reduce((sum, el) => sum + elementArea(el), 0);
+    const containerArea = elementArea(container);
+    if (containerArea === 0) continue;
+
+    const efficiency = Math.min(1, childArea / containerArea);
+    efficiencies.push(efficiency);
+
+    if (efficiency < 0.2) {
+      inefficientContainers.push(container.elementId);
+    }
+  }
+
+  if (efficiencies.length === 0)
+    return makeResult('containerEfficiency', 'Container Efficiency', 'ux', 100, []);
+
+  const avgEfficiency = efficiencies.reduce((s, v) => s + v, 0) / efficiencies.length;
+  // Ideal: avg >= 0.3
+  const score = avgEfficiency >= 0.3 ? 100 : (avgEfficiency / 0.3) * 100;
+  const findings: MetricFinding[] = [];
+
+  if (inefficientContainers.length > 0) {
+    findings.push({
+      severity: avgEfficiency < 0.15 ? 'error' : 'warning',
+      message: `${inefficientContainers.length} container(s) are oversized for their content (avg efficiency: ${(avgEfficiency * 100).toFixed(0)}%).`,
+      recommendation: 'Reduce container dimensions to better fit their child content.',
+      elementIds: inefficientContainers.slice(0, 10),
+    });
+  }
+
+  return makeResult('containerEfficiency', 'Container Efficiency', 'ux', score, findings, {
+    avgEfficiency,
+    containerCount: efficiencies.length,
+    inefficientCount: inefficientContainers.length,
+  });
+};
+
+export const viewportUtilization: MetricFunction = (elements, viewport) => {
+  if (elements.length === 0)
+    return makeResult('viewportUtilization', 'Viewport Utilization', 'ux', 100, []);
+
+  // Compute bounding box of all elements
+  const minX = Math.max(0, Math.min(...elements.map((el) => el.rect.x)));
+  const minY = Math.max(0, Math.min(...elements.map((el) => el.rect.y)));
+  const maxX = Math.min(
+    viewport.width,
+    Math.max(...elements.map((el) => el.rect.x + el.rect.width))
+  );
+  const maxY = Math.min(
+    viewport.height,
+    Math.max(...elements.map((el) => el.rect.y + el.rect.height))
+  );
+
+  const usedWidth = maxX - minX;
+  const usedHeight = maxY - minY;
+
+  const widthRatio = viewport.width > 0 ? usedWidth / viewport.width : 1;
+  const heightRatio = viewport.height > 0 ? usedHeight / viewport.height : 1;
+  const utilization = (widthRatio + heightRatio) / 2;
+
+  // Ideal: >= 0.7 utilization
+  const score = utilization >= 0.7 ? 100 : (utilization / 0.7) * 100;
+  const findings: MetricFinding[] = [];
+
+  if (score < 70) {
+    const issues: string[] = [];
+    if (widthRatio < 0.6) issues.push(`width (${(widthRatio * 100).toFixed(0)}% used)`);
+    if (heightRatio < 0.6) issues.push(`height (${(heightRatio * 100).toFixed(0)}% used)`);
+    findings.push({
+      severity: 'warning',
+      message: `Low viewport utilization: ${issues.join(', ')}. Content occupies only ${(utilization * 100).toFixed(0)}% of available space.`,
+      recommendation:
+        'Expand content to use more of the available viewport, or center content meaningfully.',
+    });
+  }
+
+  return makeResult('viewportUtilization', 'Viewport Utilization', 'ux', score, findings, {
+    widthRatio,
+    heightRatio,
+    utilization,
+    boundingBox: { minX, minY, maxX, maxY },
+  });
+};
+
+// ============================================================================
 // Density & Layout (6 metrics)
 // ============================================================================
 
@@ -1184,6 +1426,12 @@ export const touchTargetCompliance: MetricFunction = (elements) => {
 // ============================================================================
 
 export const METRIC_FUNCTIONS: Record<QualityMetricId, MetricFunction> = {
+  // UX
+  contentOverflow,
+  aboveFoldRatio,
+  informationDensity,
+  containerEfficiency,
+  viewportUtilization,
   // Density
   elementDensity,
   whitespaceRatio,

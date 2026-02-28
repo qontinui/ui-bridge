@@ -117,6 +117,18 @@ export function evaluateQuality(
   // Normalize weighted score
   const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 100;
 
+  // Compute UX sub-score
+  const uxMetrics = metricResults.filter(
+    (r) => r.enabled && getCategoryForMetric(r.metricId) === 'ux'
+  );
+  let uxWeightedSum = 0;
+  let uxTotalWeight = 0;
+  for (const r of uxMetrics) {
+    uxWeightedSum += r.score * r.weight;
+    uxTotalWeight += r.weight;
+  }
+  const uxScore = uxTotalWeight > 0 ? Math.round(uxWeightedSum / uxTotalWeight) : 100;
+
   // Collect top issues: findings from non-good metrics, sorted by weight
   const allFindings: Array<MetricFinding & { _weight: number }> = [];
   for (const result of metricResults) {
@@ -141,6 +153,8 @@ export function evaluateQuality(
   return {
     overallScore,
     grade: assignGrade(overallScore),
+    uxScore,
+    uxGrade: assignGrade(uxScore),
     contextName: ctx.name,
     metrics: metricResults,
     topIssues,
@@ -156,6 +170,11 @@ export function evaluateQuality(
 // ============================================================================
 
 const METRIC_CATEGORIES: Record<QualityMetricId, MetricResult['category']> = {
+  contentOverflow: 'ux',
+  aboveFoldRatio: 'ux',
+  informationDensity: 'ux',
+  containerEfficiency: 'ux',
+  viewportUtilization: 'ux',
   elementDensity: 'density',
   whitespaceRatio: 'density',
   localDensityBalance: 'density',

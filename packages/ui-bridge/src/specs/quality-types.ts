@@ -20,9 +20,21 @@ export interface ViewportDimensions {
 // Metric IDs
 // ============================================================================
 
-export type QualityMetricCategory = 'density' | 'spacing' | 'color' | 'typography' | 'consistency';
+export type QualityMetricCategory =
+  | 'ux'
+  | 'density'
+  | 'spacing'
+  | 'color'
+  | 'typography'
+  | 'consistency';
 
 export type QualityMetricId =
+  // UX (5)
+  | 'contentOverflow'
+  | 'aboveFoldRatio'
+  | 'informationDensity'
+  | 'containerEfficiency'
+  | 'viewportUtilization'
   // Density & Layout (6)
   | 'elementDensity'
   | 'whitespaceRatio'
@@ -103,6 +115,8 @@ export type QualityGrade = 'A' | 'B' | 'C' | 'D' | 'F';
 export interface QualityEvaluationReport {
   overallScore: number; // 0-100 weighted average
   grade: QualityGrade;
+  uxScore: number; // 0-100 UX sub-score
+  uxGrade: QualityGrade;
   contextName: string;
   metrics: MetricResult[];
   topIssues: MetricFinding[];
