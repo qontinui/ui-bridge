@@ -5,6 +5,7 @@
  */
 
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { StyleSheet } from 'react-native';
 import type {
   NativeElementType,
   NativeStandardAction,
@@ -16,6 +17,46 @@ import type {
   NativeLayout,
 } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
+
+/**
+ * Flatten an RN style prop into a plain object.
+ * Uses StyleSheet.flatten which handles arrays, IDs, and nested objects.
+ */
+function flattenStyle(style: unknown): Record<string, unknown> | undefined {
+  if (style == null) return undefined;
+  try {
+    const flat = StyleSheet.flatten(style as Parameters<typeof StyleSheet.flatten>[0]);
+    return flat ? (flat as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Flatten state style overrides into plain objects.
+ */
+function flattenStateStyles(stateStyles?: {
+  pressed?: unknown;
+  focused?: unknown;
+  disabled?: unknown;
+}):
+  | {
+      pressed?: Record<string, unknown>;
+      focused?: Record<string, unknown>;
+      disabled?: Record<string, unknown>;
+    }
+  | undefined {
+  if (!stateStyles) return undefined;
+  const result: {
+    pressed?: Record<string, unknown>;
+    focused?: Record<string, unknown>;
+    disabled?: Record<string, unknown>;
+  } = {};
+  if (stateStyles.pressed != null) result.pressed = flattenStyle(stateStyles.pressed);
+  if (stateStyles.focused != null) result.focused = flattenStyle(stateStyles.focused);
+  if (stateStyles.disabled != null) result.disabled = flattenStyle(stateStyles.disabled);
+  return Object.keys(result).length > 0 ? result : undefined;
+}
 
 /**
  * Local type definition for the layout data we extract from LayoutChangeEvent.
@@ -53,6 +94,14 @@ export interface UseUIElementOptions {
   onStateChange?: (state: NativeElementState) => void;
   /** Parent component path for tree path generation */
   parentPath?: string;
+  /** RN style prop — will be flattened for design review */
+  style?: unknown;
+  /** State-specific style overrides for design review (pressed, focused, disabled) */
+  stateStyles?: {
+    pressed?: unknown;
+    focused?: unknown;
+    disabled?: unknown;
+  };
 }
 
 /**
@@ -94,6 +143,11 @@ export interface UseUIElementReturn {
   unregister: () => void;
   /** The registered element info */
   registeredElement: RegisteredNativeElement | null;
+  /** Update style for design review (flattens and stores in registry) */
+  updateStyle: (
+    style: unknown,
+    stateStyles?: { pressed?: unknown; focused?: unknown; disabled?: unknown }
+  ) => void;
 }
 
 /**
@@ -139,6 +193,8 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     autoRegister = true,
     onStateChange,
     parentPath,
+    style,
+    stateStyles: stateStylesProp,
   } = options;
 
   // Build tree path
@@ -165,9 +221,22 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       treePath,
       testId: id,
       accessibilityLabel: label,
+      flatStyle: flattenStyle(style),
+      stateStyles: flattenStateStyles(stateStylesProp),
     });
     setRegistered(true);
-  }, [bridge, registered, id, type, label, actions, customActions, treePath]);
+  }, [
+    bridge,
+    registered,
+    id,
+    type,
+    label,
+    actions,
+    customActions,
+    treePath,
+    style,
+    stateStylesProp,
+  ]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -297,6 +366,21 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [bridge, id]
   );
 
+  // Update style for design review
+  const updateStyle = useCallback(
+    (
+      newStyle: unknown,
+      newStateStyles?: { pressed?: unknown; focused?: unknown; disabled?: unknown }
+    ) => {
+      if (!bridge || !registered) return;
+      const flat = flattenStyle(newStyle);
+      if (flat) {
+        bridge.registry.updateElementStyle(id, flat, flattenStateStyles(newStateStyles));
+      }
+    },
+    [bridge, registered, id]
+  );
+
   // Get registered element
   const registeredElement = useMemo(() => {
     if (!bridge) return null;
@@ -314,6 +398,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     register,
     unregister,
     registeredElement,
+    updateStyle,
   };
 }
 

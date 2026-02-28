@@ -21,6 +21,7 @@ export type SpecCategory =
   | 'navigation'
   | 'cross-page-consistency'
   | 'semantic'
+  | 'design'
   | 'custom';
 
 export type SpecSeverity = 'critical' | 'warning' | 'info';
@@ -267,6 +268,9 @@ export const VALID_ASSERTION_TYPES: readonly AssertionType[] = [
   'count',
   'attribute',
   'cssProperty',
+  'cssPropertyInSet',
+  'cssPropertyRange',
+  'tokenCompliance',
 ] as const;
 
 export const VALID_SPEC_CATEGORIES: readonly SpecCategory[] = [
@@ -278,6 +282,7 @@ export const VALID_SPEC_CATEGORIES: readonly SpecCategory[] = [
   'navigation',
   'cross-page-consistency',
   'semantic',
+  'design',
   'custom',
 ] as const;
 

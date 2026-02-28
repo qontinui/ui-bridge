@@ -257,6 +257,58 @@ export class NativeUIBridgeServer {
       return this.handlers.runWorkflow({ params, query, body });
     }
 
+    // Design Review
+    params = parsePath('/ui-bridge/design/element/:id/styles', path);
+    if (method === 'GET' && params) {
+      return this.handlers.getElementStyles({ params, query, body });
+    }
+
+    params = parsePath('/ui-bridge/design/element/:id/state-styles', path);
+    if (method === 'POST' && params) {
+      return this.handlers.getElementStateStyles({ params, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/snapshot') {
+      return this.handlers.getDesignSnapshot({ params: {}, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/responsive') {
+      return this.handlers.getResponsiveSnapshots({ params: {}, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/audit') {
+      return this.handlers.runDesignAudit({ params: {}, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/style-guide/load') {
+      return this.handlers.loadStyleGuide({ params: {}, query, body });
+    }
+
+    if (method === 'GET' && path === '/ui-bridge/design/style-guide') {
+      return this.handlers.getStyleGuide({ params: {}, query, body });
+    }
+
+    if (method === 'DELETE' && path === '/ui-bridge/design/style-guide') {
+      return this.handlers.clearStyleGuide({ params: {}, query, body });
+    }
+
+    // Quality Evaluation
+    if (method === 'POST' && path === '/ui-bridge/design/evaluate') {
+      return this.handlers.evaluateQuality({ params: {}, query, body });
+    }
+
+    if (method === 'GET' && path === '/ui-bridge/design/evaluate/contexts') {
+      return this.handlers.getQualityContexts({ params: {}, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/evaluate/baseline') {
+      return this.handlers.saveBaseline({ params: {}, query, body });
+    }
+
+    if (method === 'POST' && path === '/ui-bridge/design/evaluate/diff') {
+      return this.handlers.diffBaseline({ params: {}, query, body });
+    }
+
     // Not found
     return {
       success: false,

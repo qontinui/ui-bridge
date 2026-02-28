@@ -31,6 +31,11 @@
       "import": "./dist/server/index.mjs",
       "require": "./dist/server/index.js"
     },
+    "./design": {
+      "types": "./dist/design/index.d.ts",
+      "import": "./dist/design/index.mjs",
+      "require": "./dist/design/index.js"
+    },
     "./debug": {
       "types": "./dist/debug/index.d.ts",
       "import": "./dist/debug/index.mjs",
@@ -44,21 +49,28 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "test": "echo \"No tests yet\"",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
   "peerDependencies": {
+    "@qontinui/ui-bridge": ">=0.3.0",
     "react": "^18.0.0 || ^19.0.0",
     "react-native": ">=0.70.0"
+  },
+  "peerDependenciesMeta": {
+    "@qontinui/ui-bridge": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
     "react": "^19.1.0",
     "react-native": "^0.81.5",
     "tsup": "^8.0.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.18"
   },
   "license": "MIT",
   "repository": {

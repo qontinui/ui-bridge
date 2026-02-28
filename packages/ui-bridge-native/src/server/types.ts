@@ -11,6 +11,7 @@ import type {
   NativeBridgeSnapshot,
 } from '../core/types';
 import type { ComponentActionResponse, PageNavigationResponse } from '../control/types';
+import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
 
 /**
  * Server configuration
@@ -120,6 +121,48 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Go forward in navigation history',
   },
 
+  // Design Review
+  DESIGN_ELEMENT_STYLES: {
+    method: 'GET',
+    path: '/ui-bridge/design/element/:id/styles',
+    description: 'Get computed styles for an element',
+  },
+  DESIGN_ELEMENT_STATE_STYLES: {
+    method: 'POST',
+    path: '/ui-bridge/design/element/:id/state-styles',
+    description: 'Get state-specific styles for an element',
+  },
+  DESIGN_SNAPSHOT: {
+    method: 'POST',
+    path: '/ui-bridge/design/snapshot',
+    description: 'Get design data for all or selected elements',
+  },
+  DESIGN_RESPONSIVE: {
+    method: 'POST',
+    path: '/ui-bridge/design/responsive',
+    description: 'Get responsive snapshots (current device only on native)',
+  },
+  DESIGN_AUDIT: {
+    method: 'POST',
+    path: '/ui-bridge/design/audit',
+    description: 'Run style guide audit on elements',
+  },
+  DESIGN_STYLE_GUIDE_LOAD: {
+    method: 'POST',
+    path: '/ui-bridge/design/style-guide/load',
+    description: 'Load a style guide for audit',
+  },
+  DESIGN_STYLE_GUIDE_GET: {
+    method: 'GET',
+    path: '/ui-bridge/design/style-guide',
+    description: 'Get currently loaded style guide',
+  },
+  DESIGN_STYLE_GUIDE_CLEAR: {
+    method: 'DELETE',
+    path: '/ui-bridge/design/style-guide',
+    description: 'Clear loaded style guide',
+  },
+
   // Health
   HEALTH: {
     method: 'GET',
@@ -181,6 +224,22 @@ export interface NativeServerHandlers {
   pageNavigate: HandlerFunction<PageNavigationResponse>;
   pageGoBack: HandlerFunction<PageNavigationResponse>;
   pageGoForward: HandlerFunction<PageNavigationResponse>;
+
+  // Design Review
+  getElementStyles: HandlerFunction<ElementDesignData>;
+  getElementStateStyles: HandlerFunction<{ elementId: string; stateStyles: StateStyles[] }>;
+  getDesignSnapshot: HandlerFunction<{ elements: ElementDesignData[]; timestamp: number }>;
+  getResponsiveSnapshots: HandlerFunction<ResponsiveSnapshot[]>;
+  runDesignAudit: HandlerFunction<unknown>;
+  loadStyleGuide: HandlerFunction<{ loaded: boolean }>;
+  getStyleGuide: HandlerFunction<unknown>;
+  clearStyleGuide: HandlerFunction<{ cleared: boolean }>;
+
+  // Quality Evaluation
+  evaluateQuality: HandlerFunction<unknown>;
+  getQualityContexts: HandlerFunction<Array<{ name: string; description: string }>>;
+  saveBaseline: HandlerFunction<{ saved: boolean; elementCount: number }>;
+  diffBaseline: HandlerFunction<unknown>;
 
   // Health
   health: HandlerFunction<{ status: string; timestamp: number }>;

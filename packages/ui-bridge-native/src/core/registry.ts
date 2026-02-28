@@ -33,6 +33,14 @@ export interface RegisterElementOptions {
   treePath?: string;
   testId?: string;
   accessibilityLabel?: string;
+  /** Flattened RN style (from StyleSheet.flatten) for design review */
+  flatStyle?: Record<string, unknown>;
+  /** State-specific style overrides for design review */
+  stateStyles?: {
+    pressed?: Record<string, unknown>;
+    focused?: Record<string, unknown>;
+    disabled?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -133,6 +141,8 @@ export class NativeUIBridgeRegistry {
       treePath = id,
       testId,
       accessibilityLabel,
+      flatStyle,
+      stateStyles,
     } = options;
 
     // Create state getter
@@ -184,6 +194,8 @@ export class NativeUIBridgeRegistry {
       getIdentifier,
       registeredAt: Date.now(),
       mounted: true,
+      flatStyle,
+      stateStyles,
     };
 
     this.elements.set(id, registered);
@@ -258,6 +270,37 @@ export class NativeUIBridgeRegistry {
       };
       this.elements.set(id, updated);
     }
+  }
+
+  /**
+   * Update element style for design review
+   */
+  updateElementStyle(
+    id: string,
+    flatStyle: Record<string, unknown>,
+    stateStyles?: {
+      pressed?: Record<string, unknown>;
+      focused?: Record<string, unknown>;
+      disabled?: Record<string, unknown>;
+    }
+  ): void {
+    const element = this.elements.get(id);
+    if (element) {
+      const updated: RegisteredNativeElement = {
+        ...element,
+        flatStyle,
+        ...(stateStyles !== undefined ? { stateStyles } : {}),
+      };
+      this.elements.set(id, updated);
+    }
+  }
+
+  /**
+   * Get element style for design review
+   */
+  getElementStyle(id: string): Record<string, unknown> | null {
+    const element = this.elements.get(id);
+    return element?.flatStyle ?? null;
   }
 
   /**

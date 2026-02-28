@@ -251,6 +251,14 @@ export interface RegisteredNativeElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+  /** Flattened RN style for design review */
+  flatStyle?: Record<string, unknown>;
+  /** State-specific style overrides (pressed, focused, disabled) */
+  stateStyles?: {
+    pressed?: Record<string, unknown>;
+    focused?: Record<string, unknown>;
+    disabled?: Record<string, unknown>;
+  };
 }
 
 /**

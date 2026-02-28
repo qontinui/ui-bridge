@@ -1205,6 +1205,138 @@ export interface WSSubscriptionOptions {
  */
 export type AriaCheckedState = boolean | 'mixed';
 
+// ============================================================================
+// Design Review Types
+// ============================================================================
+
+/**
+ * Extended computed styles for design review (~40 design-relevant CSS properties).
+ * Separate from ElementState.computedStyles to keep normal snapshots lightweight.
+ */
+export interface ExtendedComputedStyles {
+  // Layout
+  display: string;
+  position: string;
+  boxSizing: string;
+  width: string;
+  height: string;
+  minWidth: string;
+  maxWidth: string;
+  minHeight: string;
+  maxHeight: string;
+  margin: string;
+  marginTop: string;
+  marginRight: string;
+  marginBottom: string;
+  marginLeft: string;
+  padding: string;
+  paddingTop: string;
+  paddingRight: string;
+  paddingBottom: string;
+  paddingLeft: string;
+  overflow: string;
+  overflowX: string;
+  overflowY: string;
+
+  // Flex/Grid
+  flexDirection: string;
+  flexWrap: string;
+  justifyContent: string;
+  alignItems: string;
+  alignSelf: string;
+  gap: string;
+  gridTemplateColumns: string;
+  gridTemplateRows: string;
+
+  // Typography
+  fontFamily: string;
+  fontSize: string;
+  fontWeight: string;
+  lineHeight: string;
+  letterSpacing: string;
+  textAlign: string;
+  textTransform: string;
+  textDecoration: string;
+  color: string;
+
+  // Visual
+  backgroundColor: string;
+  backgroundImage: string;
+  border: string;
+  borderRadius: string;
+  boxShadow: string;
+  opacity: string;
+  outline: string;
+
+  // Effects
+  transform: string;
+  transition: string;
+  cursor: string;
+  zIndex: string;
+  visibility: string;
+  pointerEvents: string;
+}
+
+/**
+ * Interaction state name for state variation capture
+ */
+export type InteractionStateName = 'default' | 'hover' | 'focus' | 'active' | 'disabled';
+
+/**
+ * Style diff entry: a property that changed from default state
+ */
+export interface StyleDiff {
+  property: string;
+  defaultValue: string;
+  stateValue: string;
+}
+
+/**
+ * Styles captured in a specific interaction state
+ */
+export interface StateStyles {
+  state: InteractionStateName;
+  styles: ExtendedComputedStyles;
+  diffFromDefault: StyleDiff[];
+}
+
+/**
+ * Pseudo-element computed styles
+ */
+export interface PseudoElementStyles {
+  selector: '::before' | '::after';
+  content: string;
+  styles: Partial<ExtendedComputedStyles>;
+}
+
+/**
+ * Full design data for a single element
+ */
+export interface ElementDesignData {
+  elementId: string;
+  label?: string;
+  type: string;
+  styles: ExtendedComputedStyles;
+  stateVariations?: StateStyles[];
+  pseudoElements?: PseudoElementStyles[];
+  rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+/**
+ * Design snapshot at a specific viewport width
+ */
+export interface ResponsiveSnapshot {
+  viewportWidth: number;
+  viewportLabel?: string;
+  elements: ElementDesignData[];
+  timestamp: number;
+}
+
 /**
  * Accessibility information for a UI element
  */

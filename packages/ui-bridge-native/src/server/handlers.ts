@@ -7,6 +7,7 @@
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor } from '../control/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
+import { createDesignHandlers } from './design-handlers';
 
 /**
  * Create a success response
@@ -39,6 +40,8 @@ export function createServerHandlers(
   executor: NativeActionExecutor,
   config?: { appInfo?: { appId: string; appName: string; appType: string; framework?: string } }
 ): NativeServerHandlers {
+  const designHandlers = createDesignHandlers(registry);
+
   return {
     // Elements
     getElements: async () => {
@@ -234,6 +237,9 @@ export function createServerHandlers(
       return error('Page go forward not supported on native platform', 'NOT_SUPPORTED');
     },
 
+    // Design Review
+    ...designHandlers,
+
     // Health
     health: async () => {
       const stats = registry.getStats();
@@ -247,7 +253,7 @@ export function createServerHandlers(
         response.uiBridge = {
           version: '0.3.0',
           ...config.appInfo,
-          capabilities: ['elements', 'components', 'actions'],
+          capabilities: ['elements', 'components', 'actions', 'design'],
           elementCount: stats.elements,
           componentCount: stats.components,
         };

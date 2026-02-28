@@ -456,6 +456,37 @@ export class AssertionExecutor {
           startTime
         );
 
+      case 'cssPropertyInSet':
+        return this.assertCssPropertyInSet(
+          element!,
+          request.propertyName!,
+          request.allowedValues || [],
+          elementDescription,
+          request.message,
+          startTime
+        );
+
+      case 'cssPropertyRange':
+        return this.assertCssPropertyRange(
+          element!,
+          request.propertyName!,
+          request.range || {},
+          elementDescription,
+          request.message,
+          startTime
+        );
+
+      case 'tokenCompliance':
+        return this.assertTokenCompliance(
+          element!,
+          request.propertyName!,
+          request.tokenPath || '',
+          request.expected,
+          elementDescription,
+          request.message,
+          startTime
+        );
+
       default:
         return this.createResult(
           false,
@@ -740,6 +771,180 @@ export class AssertionExecutor {
       undefined,
       'Cannot check CSS classes without DOM access',
       'Use the server API to check element classes',
+      startTime,
+      element.state
+    );
+  }
+
+  /**
+   * Assert CSS property value is in a set of allowed values
+   */
+  private assertCssPropertyInSet(
+    element: AIDiscoveredElement,
+    propertyName: string,
+    allowedValues: string[],
+    description: string,
+    message?: string,
+    startTime: number = performance.now()
+  ): AssertionResult {
+    const computedStyles = element.state.computedStyles;
+    if (!computedStyles) {
+      return this.createResult(
+        false,
+        element.id,
+        description,
+        allowedValues,
+        undefined,
+        'Computed styles not available',
+        'Request element state with computed styles',
+        startTime,
+        element.state
+      );
+    }
+
+    const styleKey = propertyName as keyof typeof computedStyles;
+    const actualValue = computedStyles[styleKey] || '';
+    const normalizedActual = actualValue.trim().toLowerCase();
+    const passed = allowedValues.some((v) => v.trim().toLowerCase() === normalizedActual);
+
+    return this.createResult(
+      passed,
+      element.id,
+      description,
+      allowedValues,
+      actualValue,
+      passed
+        ? undefined
+        : message ||
+            `CSS property "${propertyName}" is "${actualValue}" but expected one of [${allowedValues.join(', ')}]`,
+      undefined,
+      startTime,
+      element.state
+    );
+  }
+
+  /**
+   * Assert CSS property numeric value is within a range
+   */
+  private assertCssPropertyRange(
+    element: AIDiscoveredElement,
+    propertyName: string,
+    range: { min?: number; max?: number },
+    description: string,
+    message?: string,
+    startTime: number = performance.now()
+  ): AssertionResult {
+    const computedStyles = element.state.computedStyles;
+    if (!computedStyles) {
+      return this.createResult(
+        false,
+        element.id,
+        description,
+        range,
+        undefined,
+        'Computed styles not available',
+        'Request element state with computed styles',
+        startTime,
+        element.state
+      );
+    }
+
+    const styleKey = propertyName as keyof typeof computedStyles;
+    const actualValue = computedStyles[styleKey] || '';
+    const numericValue = parseFloat(actualValue);
+
+    if (isNaN(numericValue)) {
+      return this.createResult(
+        false,
+        element.id,
+        description,
+        range,
+        actualValue,
+        `Cannot parse "${actualValue}" as a number for range check`,
+        undefined,
+        startTime,
+        element.state
+      );
+    }
+
+    const aboveMin = range.min === undefined || numericValue >= range.min;
+    const belowMax = range.max === undefined || numericValue <= range.max;
+    const passed = aboveMin && belowMax;
+
+    return this.createResult(
+      passed,
+      element.id,
+      description,
+      range,
+      numericValue,
+      passed
+        ? undefined
+        : message ||
+            `CSS property "${propertyName}" is ${numericValue} but expected range [${range.min ?? '-∞'}, ${range.max ?? '∞'}]`,
+      undefined,
+      startTime,
+      element.state
+    );
+  }
+
+  /**
+   * Assert CSS property matches a design token value.
+   * Note: Token resolution requires the token value to be provided as `expected`.
+   */
+  private assertTokenCompliance(
+    element: AIDiscoveredElement,
+    propertyName: string,
+    tokenPath: string,
+    expectedTokenValue: unknown,
+    description: string,
+    message?: string,
+    startTime: number = performance.now()
+  ): AssertionResult {
+    const computedStyles = element.state.computedStyles;
+    if (!computedStyles) {
+      return this.createResult(
+        false,
+        element.id,
+        description,
+        expectedTokenValue,
+        undefined,
+        'Computed styles not available',
+        'Request element state with computed styles',
+        startTime,
+        element.state
+      );
+    }
+
+    if (expectedTokenValue === undefined) {
+      return this.createResult(
+        false,
+        element.id,
+        description,
+        undefined,
+        undefined,
+        `Token value not provided for "${tokenPath}"`,
+        'Provide the resolved token value in the expected field',
+        startTime,
+        element.state
+      );
+    }
+
+    const styleKey = propertyName as keyof typeof computedStyles;
+    const actualValue = (computedStyles[styleKey] || '').trim().toLowerCase();
+    const expectedStr = String(expectedTokenValue).trim().toLowerCase();
+    const passed = actualValue === expectedStr;
+
+    return this.createResult(
+      passed,
+      element.id,
+      description,
+      `${expectedTokenValue} (token: ${tokenPath})`,
+      actualValue,
+      passed
+        ? undefined
+        : message ||
+            `CSS property "${propertyName}" is "${actualValue}" but expected token "${tokenPath}" (${expectedTokenValue})`,
+      undefined,
       startTime,
       element.state
     );

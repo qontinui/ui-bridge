@@ -385,7 +385,10 @@ export type AssertionType =
   | 'notExists'
   | 'count'
   | 'attribute'
-  | 'cssProperty';
+  | 'cssProperty'
+  | 'cssPropertyInSet'
+  | 'cssPropertyRange'
+  | 'tokenCompliance';
 
 /**
  * Assertion request
@@ -399,8 +402,14 @@ export interface AssertionRequest {
   expected?: unknown;
   /** Attribute name (for attribute assertions) */
   attributeName?: string;
-  /** CSS property name (for cssProperty assertions) */
+  /** CSS property name (for cssProperty, cssPropertyInSet, cssPropertyRange, tokenCompliance) */
   propertyName?: string;
+  /** Allowed values set (for cssPropertyInSet) */
+  allowedValues?: string[];
+  /** Range bounds (for cssPropertyRange) */
+  range?: { min?: number; max?: number };
+  /** Token path (for tokenCompliance, e.g. "colors.primary") */
+  tokenPath?: string;
   /** Timeout for waiting (ms) */
   timeout?: number;
   /** Custom failure message */

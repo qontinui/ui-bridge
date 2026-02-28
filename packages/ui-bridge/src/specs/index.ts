@@ -70,3 +70,69 @@ export type { SpecListener, SpecFilterOptions } from './store';
 
 // Executor
 export { SpecExecutor, resolveTarget } from './executor';
+
+// Style types
+export type {
+  DesignTokens,
+  StyleConstraint,
+  StyleRule,
+  StyleGuideConfig,
+  StyleConstraintResult,
+  StyleValidationResult,
+  StyleAuditReport,
+} from './style-types';
+export { STYLE_GUIDE_FILE_EXTENSION, STYLE_GUIDE_VERSION } from './style-types';
+
+// Style validator
+export {
+  validateElement,
+  resolveTokenValue,
+  runStyleAudit,
+  evaluateConstraint,
+} from './style-validator';
+
+// Quality evaluator types
+export type {
+  ViewportDimensions,
+  QualityMetricCategory,
+  QualityMetricId,
+  MetricFindingSeverity,
+  MetricFinding,
+  MetricResult,
+  MetricContextConfig,
+  QualityContext,
+  QualityGrade,
+  QualityEvaluationReport,
+  SnapshotBaseline,
+  StyleChange,
+  LayoutShift,
+  ElementDiff,
+  SnapshotDiffReport,
+  MetricFunction,
+  EvaluateRequest,
+} from './quality-types';
+
+// Color utilities
+export {
+  parseColor,
+  rgbToHsl,
+  relativeLuminance,
+  contrastRatio,
+  colorDistance,
+  clusterColors,
+  isGrayscale,
+  hueDistance,
+} from './color-utils';
+export type { RGBA, HSL } from './color-utils';
+
+// Quality metrics
+export { METRIC_FUNCTIONS } from './quality-metrics';
+
+// Quality contexts
+export { BUILT_IN_CONTEXTS, getContext, listContexts, mergeContext } from './quality-contexts';
+
+// Quality evaluator
+export { evaluateQuality } from './quality-evaluator';
+
+// Snapshot diff
+export { createBaseline, diffSnapshots } from './quality-diff';

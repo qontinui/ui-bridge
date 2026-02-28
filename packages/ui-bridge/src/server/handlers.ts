@@ -54,7 +54,29 @@ import {
   segmentPageRegions,
   extractStructuredData,
   generateComparisonReport,
+  getElementDesignData,
+  captureStateVariations,
+  captureResponsiveSnapshots,
+  DEFAULT_VIEWPORTS,
 } from '../ai';
+import type {
+  InteractionStateName,
+  ElementDesignData,
+  StateStyles,
+  ResponsiveSnapshot,
+} from '../core/types';
+import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import { runStyleAudit } from '../specs/style-validator';
+import type {
+  QualityEvaluationReport,
+  SnapshotDiffReport,
+  SnapshotBaseline,
+  EvaluateRequest,
+  QualityContext,
+} from '../specs/quality-types';
+import { evaluateQuality } from '../specs/quality-evaluator';
+import { listContexts } from '../specs/quality-contexts';
+import { createBaseline, diffSnapshots } from '../specs/quality-diff';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
 import type { CapturedError } from '../debug/browser-capture-types';
@@ -373,6 +395,10 @@ export function createHandlers(
 
   // Annotation store
   const annotationStore = config.annotationStore ?? getGlobalAnnotationStore();
+
+  // Design review: loaded style guide (in-memory)
+  let loadedStyleGuide: StyleGuideConfig | null = null;
+  let savedBaseline: SnapshotBaseline | null = null;
 
   // Helper to get fresh elements and update AI modules
   function refreshElements(): void {
@@ -1696,6 +1722,285 @@ export function createHandlers(
       limit?: number;
     }): Promise<APIResponse<{ events: unknown[]; count: number }>> => {
       return { success: true, data: { events: [], count: 0 }, timestamp: Date.now() };
+    },
+
+    // =========================================================================
+    // Design Review Handlers
+    // =========================================================================
+
+    getElementStyles: async (id: string): Promise<APIResponse<ElementDesignData>> => {
+      try {
+        const rawElement = registry.getElement(id);
+        if (!rawElement) {
+          return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
+        }
+        const el = rawElement as any;
+        if (!el.element || !(el.element instanceof HTMLElement)) {
+          return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
+        }
+        const data = getElementDesignData(el.element, {
+          elementId: el.id,
+          label: el.label,
+          type: el.type,
+          includePseudoElements: true,
+        });
+        return success(data);
+      } catch (err) {
+        return error((err as Error).message, 'DESIGN_STYLES_ERROR');
+      }
+    },
+
+    getElementStateStyles: async (
+      id: string,
+      request: { states?: InteractionStateName[] }
+    ): Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>> => {
+      try {
+        const rawElement = registry.getElement(id);
+        if (!rawElement) {
+          return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
+        }
+        const el = rawElement as any;
+        if (!el.element || !(el.element instanceof HTMLElement)) {
+          return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
+        }
+        const stateStyles = await captureStateVariations(el.element, request.states);
+        return success({ elementId: id, stateStyles });
+      } catch (err) {
+        return error((err as Error).message, 'DESIGN_STATE_STYLES_ERROR');
+      }
+    },
+
+    getDesignSnapshot: async (request?: {
+      elementIds?: string[];
+      includePseudoElements?: boolean;
+    }): Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>> => {
+      try {
+        const allElements = registry.getAllElements() as any[];
+        const elements = request?.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const designData: ElementDesignData[] = [];
+        for (const el of elements) {
+          if (el.element && el.element instanceof HTMLElement) {
+            designData.push(
+              getElementDesignData(el.element, {
+                elementId: el.id,
+                label: el.label,
+                type: el.type,
+                includePseudoElements: request?.includePseudoElements,
+              })
+            );
+          }
+        }
+
+        return success({ elements: designData, timestamp: Date.now() });
+      } catch (err) {
+        return error((err as Error).message, 'DESIGN_SNAPSHOT_ERROR');
+      }
+    },
+
+    getResponsiveSnapshots: async (request: {
+      viewports?: Record<string, number>;
+      elementIds?: string[];
+    }): Promise<APIResponse<ResponsiveSnapshot[]>> => {
+      try {
+        const viewports = request.viewports || DEFAULT_VIEWPORTS;
+
+        // Create a minimal registry adapter that filters by elementIds if specified
+        const allElements = registry.getAllElements() as any[];
+        const filteredElements = request.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const registryAdapter = {
+          getAllElements: () =>
+            filteredElements
+              .filter((el: any) => el.element instanceof HTMLElement)
+              .map((el: any) => ({
+                id: el.id,
+                element: el.element,
+                type: el.type,
+                label: el.label,
+              })),
+        };
+
+        const snapshots = await captureResponsiveSnapshots(registryAdapter, viewports);
+        return success(snapshots);
+      } catch (err) {
+        return error((err as Error).message, 'RESPONSIVE_SNAPSHOT_ERROR');
+      }
+    },
+
+    runDesignAudit: async (request?: {
+      guide?: StyleGuideConfig;
+      elementIds?: string[];
+    }): Promise<APIResponse<StyleAuditReport>> => {
+      try {
+        const guide = request?.guide || loadedStyleGuide;
+        if (!guide) {
+          return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
+        }
+
+        const allElements = registry.getAllElements() as any[];
+        const elements = request?.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const designData: ElementDesignData[] = [];
+        for (const el of elements) {
+          if (el.element && el.element instanceof HTMLElement) {
+            designData.push(
+              getElementDesignData(el.element, {
+                elementId: el.id,
+                label: el.label,
+                type: el.type,
+              })
+            );
+          }
+        }
+
+        const report = runStyleAudit(designData, guide);
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'DESIGN_AUDIT_ERROR');
+      }
+    },
+
+    loadStyleGuide: async (request: {
+      guide: StyleGuideConfig;
+    }): Promise<APIResponse<{ loaded: boolean }>> => {
+      try {
+        loadedStyleGuide = request.guide;
+        return success({ loaded: true });
+      } catch (err) {
+        return error((err as Error).message, 'LOAD_STYLE_GUIDE_ERROR');
+      }
+    },
+
+    getStyleGuide: async (): Promise<APIResponse<StyleGuideConfig | null>> => {
+      return success(loadedStyleGuide);
+    },
+
+    clearStyleGuide: async (): Promise<APIResponse<{ cleared: boolean }>> => {
+      loadedStyleGuide = null;
+      return success({ cleared: true });
+    },
+
+    // Quality evaluation endpoints
+
+    evaluateQuality: async (
+      request?: EvaluateRequest
+    ): Promise<APIResponse<QualityEvaluationReport>> => {
+      try {
+        const allElements = registry.getAllElements() as any[];
+        const elements = request?.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const designData: ElementDesignData[] = [];
+        for (const el of elements) {
+          if (el.element && el.element instanceof HTMLElement) {
+            designData.push(
+              getElementDesignData(el.element, {
+                elementId: el.id,
+                label: el.label,
+                type: el.type,
+              })
+            );
+          }
+        }
+
+        const viewport = request?.viewport ?? {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        };
+
+        // Resolve context: custom object > style guide context > built-in name
+        let context: QualityContext | string =
+          request?.customContext ?? request?.context ?? 'general';
+        if (typeof context === 'string' && loadedStyleGuide?.qualityContexts?.[context]) {
+          context = loadedStyleGuide.qualityContexts[context];
+        }
+        const report = evaluateQuality(designData, viewport, context);
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'QUALITY_EVALUATION_ERROR');
+      }
+    },
+
+    getQualityContexts: async (): Promise<
+      APIResponse<Array<{ name: string; description: string }>>
+    > => {
+      return success(listContexts());
+    },
+
+    saveBaseline: async (request?: {
+      label?: string;
+      elementIds?: string[];
+    }): Promise<APIResponse<{ saved: boolean; elementCount: number }>> => {
+      try {
+        const allElements = registry.getAllElements() as any[];
+        const elements = request?.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const designData: ElementDesignData[] = [];
+        for (const el of elements) {
+          if (el.element && el.element instanceof HTMLElement) {
+            designData.push(
+              getElementDesignData(el.element, {
+                elementId: el.id,
+                label: el.label,
+                type: el.type,
+              })
+            );
+          }
+        }
+
+        const viewport = {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        };
+
+        savedBaseline = createBaseline(designData, viewport, request?.label);
+        return success({ saved: true, elementCount: designData.length });
+      } catch (err) {
+        return error((err as Error).message, 'SAVE_BASELINE_ERROR');
+      }
+    },
+
+    diffBaseline: async (request?: {
+      elementIds?: string[];
+    }): Promise<APIResponse<SnapshotDiffReport>> => {
+      try {
+        if (!savedBaseline) {
+          return error('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
+        }
+
+        const allElements = registry.getAllElements() as any[];
+        const elements = request?.elementIds
+          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          : allElements;
+
+        const designData: ElementDesignData[] = [];
+        for (const el of elements) {
+          if (el.element && el.element instanceof HTMLElement) {
+            designData.push(
+              getElementDesignData(el.element, {
+                elementId: el.id,
+                label: el.label,
+                type: el.type,
+              })
+            );
+          }
+        }
+
+        const report = diffSnapshots(savedBaseline, designData);
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'DIFF_BASELINE_ERROR');
+      }
     },
   };
 }

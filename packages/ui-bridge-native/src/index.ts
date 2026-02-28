@@ -134,5 +134,27 @@ export {
   type ServerAdapter,
 } from './server/http-server';
 
+// Design exports
+export {
+  type ExtendedComputedStyles,
+  type StyleDiff,
+  type StateStyles,
+  type ElementDesignData,
+  type PseudoElementStyles,
+  type ResponsiveSnapshot,
+  type FlattenedNativeStyle,
+  type NativeStateStyles,
+  type NativeInteractionStateName,
+} from './design/design-types';
+
+export {
+  mapNativeStyleToExtended,
+  getNativeElementDesignData,
+  captureNativeStateVariations,
+  captureNativeResponsiveSnapshot,
+} from './design/design-inspector-native';
+
+export { createDesignHandlers, type NativeDesignHandlers } from './server/design-handlers';
+
 // Debug exports
 export { UIBridgeInspector, type UIBridgeInspectorProps } from './debug/inspector';

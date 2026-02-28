@@ -44,6 +44,18 @@ import type {
   ComponentInfo,
 } from '../ai';
 import type {
+  InteractionStateName,
+  ElementDesignData,
+  StateStyles,
+  ResponsiveSnapshot,
+} from '../core/types';
+import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
+import type {
+  QualityEvaluationReport,
+  SnapshotDiffReport,
+  EvaluateRequest,
+} from '../specs/quality-types';
+import type {
   UIState,
   UIStateGroup,
   UITransition,
@@ -280,6 +292,39 @@ export interface UIBridgeServerHandlers {
     since?: number;
     limit?: number;
   }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
+
+  // Design review endpoints
+  getElementStyles: (id: string) => Promise<APIResponse<ElementDesignData>>;
+  getElementStateStyles: (
+    id: string,
+    request: { states?: InteractionStateName[] }
+  ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
+  getDesignSnapshot: (request?: {
+    elementIds?: string[];
+    includePseudoElements?: boolean;
+  }) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
+  getResponsiveSnapshots: (request: {
+    viewports?: Record<string, number>;
+    elementIds?: string[];
+  }) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  runDesignAudit: (request?: {
+    guide?: StyleGuideConfig;
+    elementIds?: string[];
+  }) => Promise<APIResponse<StyleAuditReport>>;
+  loadStyleGuide: (request: {
+    guide: StyleGuideConfig;
+  }) => Promise<APIResponse<{ loaded: boolean }>>;
+  getStyleGuide: () => Promise<APIResponse<StyleGuideConfig | null>>;
+  clearStyleGuide: () => Promise<APIResponse<{ cleared: boolean }>>;
+
+  // Quality evaluation endpoints
+  evaluateQuality: (request?: EvaluateRequest) => Promise<APIResponse<QualityEvaluationReport>>;
+  getQualityContexts: () => Promise<APIResponse<Array<{ name: string; description: string }>>>;
+  saveBaseline: (request?: {
+    label?: string;
+    elementIds?: string[];
+  }) => Promise<APIResponse<{ saved: boolean; elementCount: number }>>;
+  diffBaseline: (request?: { elementIds?: string[] }) => Promise<APIResponse<SnapshotDiffReport>>;
 }
 
 /**
@@ -466,6 +511,42 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'clearPerformanceEntries',
   },
   { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
+
+  // Design review
+  {
+    method: 'GET',
+    path: '/design/element/:id/styles',
+    handler: 'getElementStyles',
+    params: ['id'],
+  },
+  {
+    method: 'POST',
+    path: '/design/element/:id/state-styles',
+    handler: 'getElementStateStyles',
+    params: ['id'],
+  },
+  { method: 'POST', path: '/design/snapshot', handler: 'getDesignSnapshot' },
+  {
+    method: 'POST',
+    path: '/design/responsive',
+    handler: 'getResponsiveSnapshots',
+    bodyRequired: true,
+  },
+  { method: 'POST', path: '/design/audit', handler: 'runDesignAudit' },
+  {
+    method: 'POST',
+    path: '/design/style-guide/load',
+    handler: 'loadStyleGuide',
+    bodyRequired: true,
+  },
+  { method: 'GET', path: '/design/style-guide', handler: 'getStyleGuide' },
+  { method: 'DELETE', path: '/design/style-guide', handler: 'clearStyleGuide' },
+
+  // Quality evaluation
+  { method: 'POST', path: '/design/evaluate', handler: 'evaluateQuality' },
+  { method: 'GET', path: '/design/evaluate/contexts', handler: 'getQualityContexts' },
+  { method: 'POST', path: '/design/evaluate/baseline', handler: 'saveBaseline' },
+  { method: 'POST', path: '/design/evaluate/diff', handler: 'diffBaseline' },
 ];
 
 /**

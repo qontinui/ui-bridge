@@ -6,4 +6,5 @@
 
 export * from './types';
 export * from './handlers';
+export * from './design-handlers';
 export * from './http-server';

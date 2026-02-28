@@ -291,3 +291,15 @@ export type { ContentComparisonConfig } from './content-comparison';
 // Comparison Report
 export { generateComparisonReport, DEFAULT_COMPARISON_REPORT_CONFIG } from './comparison-report';
 export type { ComparisonReportConfig } from './comparison-report';
+
+// Design Inspector
+export {
+  getExtendedComputedStyles,
+  getElementDesignData,
+  captureStateVariations,
+  captureResponsiveSnapshots,
+  computeContrastRatio,
+  checkContrastCompliance,
+  DEFAULT_VIEWPORTS,
+} from './design-inspector';
+export type { DesignRegistryLike } from './design-inspector';
