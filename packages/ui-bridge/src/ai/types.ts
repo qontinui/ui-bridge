@@ -388,7 +388,9 @@ export type AssertionType =
   | 'cssProperty'
   | 'cssPropertyInSet'
   | 'cssPropertyRange'
-  | 'tokenCompliance';
+  | 'tokenCompliance'
+  | 'noOverlap'
+  | 'minSpacing';
 
 /**
  * Assertion request
@@ -416,6 +418,10 @@ export interface AssertionRequest {
   message?: string;
   /** Whether to use fuzzy matching for element search */
   fuzzy?: boolean;
+  /** Second element target for spatial assertions (noOverlap, minSpacing) */
+  relatedTarget?: string | SearchCriteria;
+  /** Minimum gap in pixels between elements (for minSpacing) */
+  minGap?: number;
 }
 
 /**

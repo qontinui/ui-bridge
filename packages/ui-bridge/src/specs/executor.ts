@@ -66,7 +66,7 @@ export class SpecExecutor {
    * Convert a SpecAssertion to an AssertionRequest.
    */
   toAssertionRequest(assertion: SpecAssertion): AssertionRequest {
-    return {
+    const request: AssertionRequest = {
       target: resolveTarget(assertion.target),
       type: assertion.assertionType,
       expected: assertion.expected,
@@ -75,6 +75,15 @@ export class SpecExecutor {
       timeout: assertion.timeout,
       message: assertion.message,
     };
+
+    if (assertion.relatedTarget) {
+      request.relatedTarget = resolveTarget(assertion.relatedTarget);
+    }
+    if (assertion.minGap !== undefined) {
+      request.minGap = assertion.minGap;
+    }
+
+    return request;
   }
 
   /**

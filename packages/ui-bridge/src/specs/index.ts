@@ -24,6 +24,7 @@ export type {
   SpecEventType,
   SpecEvent,
   AssertionCondition,
+  SetupAction,
 } from './types';
 
 // Re-export AI types used in spec assertions
@@ -136,3 +137,55 @@ export { evaluateQuality } from './quality-evaluator';
 
 // Snapshot diff
 export { createBaseline, diffSnapshots } from './quality-diff';
+
+// Architecture spec types
+export type {
+  TechStackEntry,
+  DirectoryEntry,
+  ArchitecturePattern,
+  ArchitectureConstraint,
+  FeatureDependency,
+  FeatureSpec,
+  ArchitectureConfig,
+} from './architecture-types';
+export { ARCHITECTURE_FILE_EXTENSION, ARCHITECTURE_CONFIG_VERSION } from './architecture-types';
+
+// API spec types
+export type { HttpMethod, SchemaField, ApiEndpoint, DataModel, ApiConfig } from './api-types';
+export { API_FILE_EXTENSION, API_CONFIG_VERSION } from './api-types';
+
+// Data spec types
+export type {
+  ColumnType,
+  DataColumn,
+  DataIndex,
+  DataRelation,
+  DataEntity,
+  DataSeed,
+  DataMigration,
+  DataConfig,
+} from './data-types';
+export { DATA_FILE_EXTENSION, DATA_CONFIG_VERSION } from './data-types';
+
+// Dependency spec types
+export type {
+  ArtifactKind,
+  ArtifactRef,
+  DependencyLink,
+  ModuleRef,
+  DependencyCluster,
+  DependencyConfig,
+} from './dependency-types';
+export { DEPENDENCY_FILE_EXTENSION, DEPENDENCY_CONFIG_VERSION } from './dependency-types';
+
+// Constraint spec types
+export type {
+  PerformanceBudget,
+  BundleBudget,
+  BrowserTarget,
+  ResponsiveBreakpoint,
+  AccessibilityTarget,
+  CapacityConstraint,
+  ConstraintConfig,
+} from './constraint-types';
+export { CONSTRAINT_FILE_EXTENSION, CONSTRAINT_CONFIG_VERSION } from './constraint-types';

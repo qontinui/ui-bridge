@@ -487,6 +487,115 @@ export class AssertionExecutor {
           startTime
         );
 
+      case 'noOverlap': {
+        const relatedResult = this.findElementDetailed(
+          request.relatedTarget!,
+          request.fuzzy !== false
+        );
+        if (!relatedResult) {
+          return this.createResult(
+            false,
+            targetStr,
+            elementDescription,
+            'no overlap',
+            null,
+            'Related target element not found',
+            'Check if the related target element exists and is properly labeled',
+            startTime,
+            element?.state
+          );
+        }
+        const rectA = element!.state.rect;
+        const rectB = relatedResult.element.state.rect;
+        if (!rectA || !rectB) {
+          return this.createResult(
+            false,
+            targetStr,
+            elementDescription,
+            'no overlap',
+            null,
+            'Rect data not available for one or both elements',
+            'Ensure elements have rect data in their state',
+            startTime,
+            element?.state
+          );
+        }
+        const overlaps =
+          rectA.right > rectB.left &&
+          rectA.left < rectB.right &&
+          rectA.bottom > rectB.top &&
+          rectA.top < rectB.bottom;
+        const overlapDesc = overlaps
+          ? `elements overlap (A: ${rectA.left},${rectA.top}-${rectA.right},${rectA.bottom} B: ${rectB.left},${rectB.top}-${rectB.right},${rectB.bottom})`
+          : `no overlap (gap exists)`;
+        return this.createResult(
+          !overlaps,
+          targetStr,
+          elementDescription,
+          'no overlap',
+          overlapDesc,
+          overlaps ? 'Elements overlap when they should not' : undefined,
+          overlaps ? 'Adjust element positions or sizes to remove overlap' : undefined,
+          startTime,
+          element?.state
+        );
+      }
+
+      case 'minSpacing': {
+        const relatedResult2 = this.findElementDetailed(
+          request.relatedTarget!,
+          request.fuzzy !== false
+        );
+        if (!relatedResult2) {
+          return this.createResult(
+            false,
+            targetStr,
+            elementDescription,
+            `min gap ${request.minGap ?? 0}px`,
+            null,
+            'Related target element not found',
+            'Check if the related target element exists and is properly labeled',
+            startTime,
+            element?.state
+          );
+        }
+        const rA = element!.state.rect;
+        const rB = relatedResult2.element.state.rect;
+        if (!rA || !rB) {
+          return this.createResult(
+            false,
+            targetStr,
+            elementDescription,
+            `min gap ${request.minGap ?? 0}px`,
+            null,
+            'Rect data not available for one or both elements',
+            'Ensure elements have rect data in their state',
+            startTime,
+            element?.state
+          );
+        }
+        const gapLeft = rB.left - rA.right;
+        const gapRight = rA.left - rB.right;
+        const gapTop = rB.top - rA.bottom;
+        const gapBottom = rA.top - rB.bottom;
+        const actualGap = Math.max(gapLeft, gapRight, gapTop, gapBottom);
+        const requiredGap = request.minGap ?? 0;
+        const spacingPassed = actualGap >= requiredGap;
+        return this.createResult(
+          spacingPassed,
+          targetStr,
+          elementDescription,
+          `min gap ${requiredGap}px`,
+          `${actualGap}px`,
+          spacingPassed
+            ? undefined
+            : `Spacing is ${actualGap}px but expected at least ${requiredGap}px`,
+          spacingPassed ? undefined : 'Increase margin or padding between elements',
+          startTime,
+          element?.state
+        );
+      }
+
       default:
         return this.createResult(
           false,

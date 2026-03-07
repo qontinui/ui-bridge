@@ -22,7 +22,8 @@ export type SpecCategory =
   | 'cross-page-consistency'
   | 'semantic'
   | 'design'
-  | 'custom';
+  | 'custom'
+  | 'layout';
 
 export type SpecSeverity = 'critical' | 'warning' | 'info';
 
@@ -71,6 +72,21 @@ export type AssertionCondition =
     };
 
 // =============================================================================
+// Setup Actions (state-triggering actions before assertions)
+// =============================================================================
+
+/**
+ * An action that puts the UI into a specific state before assertions run.
+ * Used in SpecGroup.setupActions to trigger error states, navigate, etc.
+ */
+export type SetupAction =
+  | { type: 'click'; target: SpecTarget }
+  | { type: 'type'; target: SpecTarget; value: string; clear?: boolean }
+  | { type: 'navigate'; url: string }
+  | { type: 'waitForElement'; target: SpecTarget; timeout?: number }
+  | { type: 'wait'; ms: number };
+
+// =============================================================================
 // Assertions
 // =============================================================================
 
@@ -94,6 +110,10 @@ export interface SpecAssertion {
   reviewed: boolean;
   enabled: boolean;
   notes?: string;
+  /** Second target for spatial assertions (noOverlap, minSpacing) */
+  relatedTarget?: SpecTarget;
+  /** Minimum gap in pixels (for minSpacing) */
+  minGap?: number;
   /**
    * Human-readable precondition describing when this assertion applies.
    * Complements the machine-evaluated `condition` field with a natural-language
@@ -123,6 +143,7 @@ export interface SpecGroup {
   description: string;
   category: SpecCategory;
   assertions: SpecAssertion[];
+  setupActions?: SetupAction[];
   stateId?: string;
   transitionId?: string;
   source: SpecSource;
@@ -271,6 +292,8 @@ export const VALID_ASSERTION_TYPES: readonly AssertionType[] = [
   'cssPropertyInSet',
   'cssPropertyRange',
   'tokenCompliance',
+  'noOverlap',
+  'minSpacing',
 ] as const;
 
 export const VALID_SPEC_CATEGORIES: readonly SpecCategory[] = [
@@ -284,6 +307,7 @@ export const VALID_SPEC_CATEGORIES: readonly SpecCategory[] = [
   'semantic',
   'design',
   'custom',
+  'layout',
 ] as const;
 
 export const VALID_SPEC_SEVERITIES: readonly SpecSeverity[] = [
