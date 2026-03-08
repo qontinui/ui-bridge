@@ -51,6 +51,8 @@ function App() {
 
 ### 3. Register Elements
 
+The SDK automatically sets `data-ui-id` attributes on DOM elements at runtime — no manual attributes needed in JSX.
+
 ```tsx
 import { useUIElement, useUIComponent } from 'ui-bridge';
 
@@ -87,6 +89,7 @@ function LoginForm() {
       <button ref={submitButton.ref}>Login</button>
     </form>
   );
+  // The SDK sets data-ui-id="login-email" and data-ui-id="login-submit" on the DOM elements at runtime
 }
 ```
 
@@ -197,7 +200,7 @@ summary = client.ai.summary()
 
 ### Element Identification
 
-UI Bridge supports multiple identification strategies:
+The SDK sets `data-ui-id` attributes on DOM elements at runtime when they are registered via `useUIElement()`. No manual `data-ui-id` props are needed in JSX. If an explicit `data-ui-id` attribute already exists on the element, it is respected.
 
 1. **AutoRegisterProvider** - Automatic semantic IDs from element content (preferred)
 2. `data-testid` - Testing library convention

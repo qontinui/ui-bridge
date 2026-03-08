@@ -57,6 +57,8 @@ UI Bridge is primarily an **execution mechanism** - it enables AI agents to inte
 
 ### Example UI Bridge Usage
 
+The SDK sets `data-ui-id` on DOM elements at runtime — no manual attributes needed in JSX.
+
 ```tsx
 // Register elements with UI Bridge
 const submitButton = useUIElement({
@@ -65,11 +67,8 @@ const submitButton = useUIElement({
   label: 'Sign In',
 });
 
-return (
-  <button ref={submitButton.ref} data-ui-id="submit-btn">
-    Sign In
-  </button>
-);
+return <button ref={submitButton.ref}>Sign In</button>;
+// The SDK automatically sets data-ui-id="submit-btn" on the button at runtime
 ```
 
 ```python
@@ -198,8 +197,8 @@ Execution Phase:     UI Bridge executes actions
 |   AI Decision    |                             | React Components |
 |     Making       |                             |                  |
 |                  |                             | <button          |
-| Based on state   |                             |   data-ui-id=    |
-| and results      |                             |   "submit-btn">  |
+| Based on state   |                             |   ref={btn.ref}> |
+| and results      |                             |   (SDK sets ID)  |
 |                  |                             |                  |
 +------------------+                             +------------------+
 ```
@@ -208,20 +207,20 @@ Execution Phase:     UI Bridge executes actions
 
 UI Bridge supports multiple identification strategies to maximize compatibility:
 
-| Priority | Attribute           | Source       | Description                               |
-| -------- | ------------------- | ------------ | ----------------------------------------- |
-| 1        | `data-ui-id`        | UI Bridge    | Explicit UI Bridge identifier (preferred) |
-| 2        | `data-testid`       | Testing libs | Testing library convention                |
-| 3        | `data-awas-element` | AWAS         | Legacy AWAS element identifier            |
-| 4        | `id`                | HTML         | Standard HTML id attribute                |
-| 5        | CSS/XPath           | Generated    | Automatically generated selectors         |
+| Priority | Attribute           | Source       | Description                                      |
+| -------- | ------------------- | ------------ | ------------------------------------------------ |
+| 1        | `data-ui-id`        | UI Bridge    | Set at runtime by the SDK (or explicitly in JSX) |
+| 2        | `data-testid`       | Testing libs | Testing library convention                       |
+| 3        | `data-awas-element` | AWAS         | Legacy AWAS element identifier                   |
+| 4        | `id`                | HTML         | Standard HTML id attribute                       |
+| 5        | CSS/XPath           | Generated    | Automatically generated selectors                |
 
 ### Identification Logic
 
 ```typescript
 // Element identification priority (from element-identifier.ts)
 const ID_ATTRIBUTES = [
-  'data-ui-id', // UI Bridge native
+  'data-ui-id', // Set at runtime by the SDK, or explicitly in JSX
   'data-testid', // Testing library
   'data-awas-element', // AWAS compatibility
   'id', // HTML standard
@@ -230,15 +229,20 @@ const ID_ATTRIBUTES = [
 
 When UI Bridge searches for an element:
 
-1. First checks `data-ui-id` attribute
+1. First checks `data-ui-id` attribute (set at runtime by the SDK via `useUIElement()`)
 2. Then checks `data-testid` attribute
 3. Then checks `data-awas-element` attribute
 4. Then checks `id` attribute
 5. Falls back to CSS selector or XPath matching
 
+Note: The SDK automatically sets `data-ui-id` on DOM elements when they are registered. If a `data-ui-id` attribute already exists on the element (e.g., from JSX props), the SDK respects that value. When an element is unregistered, the SDK removes the `data-ui-id` attribute.
+
 ### Example: Multi-Attribute Element
 
+When `useUIElement({ id: 'checkout-btn' })` is used with a ref, the SDK sets `data-ui-id="checkout-btn"` at runtime. If the element also has other identifying attributes, all are supported:
+
 ```html
+<!-- At runtime, after SDK registration: -->
 <button
   data-ui-id="checkout-btn"
   data-testid="checkout-button"
@@ -260,18 +264,20 @@ client.click('btn-checkout')      # via id
 
 ## Migration Guide: AWAS to UI Bridge
 
-If you have an existing application using `data-awas-element` attributes, you can migrate to `data-ui-id` while maintaining backward compatibility.
+If you have an existing application using `data-awas-element` attributes, you can migrate to UI Bridge while maintaining backward compatibility.
 
-### Step 1: Add UI Bridge Attributes
+### Step 1: Register Elements with UI Bridge Hooks
 
-Add `data-ui-id` alongside existing AWAS attributes:
+Use `useUIElement()` to register elements. The SDK sets `data-ui-id` at runtime — no manual attributes needed:
 
-```html
-<!-- Before -->
-<button data-awas-element="submit">Submit</button>
+```tsx
+// Before: manual AWAS attribute
+<button data-awas-element="submit">Submit</button>;
 
-<!-- After (both work) -->
-<button data-ui-id="submit-btn" data-awas-element="submit">Submit</button>
+// After: SDK-managed ID via hook
+const submitBtn = useUIElement({ id: 'submit-btn', type: 'button', label: 'Submit' });
+<button ref={submitBtn.ref}>Submit</button>;
+// data-ui-id="submit-btn" is set at runtime by the SDK
 ```
 
 ### Step 2: Update Automation Code
@@ -279,27 +285,22 @@ Add `data-ui-id` alongside existing AWAS attributes:
 Gradually update your automation code to use UI Bridge identifiers:
 
 ```python
-# Old (still works)
+# Old (still works via data-awas-element lookup)
 client.click('submit')
 
-# New (preferred)
+# New (preferred — uses runtime-set data-ui-id)
 client.click('submit-btn')
 ```
 
 ### Step 3: Remove Legacy Attributes (Optional)
 
-Once all automation code is updated, you can remove `data-awas-element`:
-
-```html
-<!-- Final -->
-<button data-ui-id="submit-btn">Submit</button>
-```
+Once all elements are registered via `useUIElement()`, you can remove `data-awas-element` attributes.
 
 ### Migration Checklist
 
 - [ ] Install UI Bridge packages
 - [ ] Add `UIBridgeProvider` to your React app
-- [ ] Add `data-ui-id` attributes to elements (keep `data-awas-element` temporarily)
+- [ ] Register elements with `useUIElement()` hooks (SDK sets `data-ui-id` at runtime)
 - [ ] Update automation scripts to use UI Bridge client
 - [ ] Test all automation flows
 - [ ] Remove `data-awas-element` attributes (optional)
@@ -319,21 +320,21 @@ UI Bridge recommends more descriptive, hierarchical naming to avoid collisions i
 
 ### For New Applications
 
-1. Use UI Bridge from the start with `data-ui-id` attributes
+1. Use `useUIElement()` hooks to register elements — the SDK sets `data-ui-id` at runtime
 2. Consider generating AWAS manifests from UI Bridge registry for AI discovery
 3. Use component-level actions for complex operations
 
 ### For Existing AWAS Applications
 
 1. UI Bridge will find elements by `data-awas-element` automatically
-2. Gradually add `data-ui-id` for new elements
+2. Gradually register elements with `useUIElement()` hooks (SDK manages `data-ui-id` at runtime)
 3. Use UI Bridge's workflow system to replace AWAS workflow declarations
 
 ### For Hybrid Approaches
 
 1. Serve AWAS manifest for capability discovery
 2. Use UI Bridge for action execution
-3. Keep element IDs consistent between AWAS manifest and `data-ui-id` values
+3. Keep element IDs consistent between AWAS manifest and `useUIElement({ id })` values
 
 ## Related Documentation
 
