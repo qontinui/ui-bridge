@@ -124,7 +124,9 @@ function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclarati
   if (rect.width === 0 || rect.height === 0) return false;
   if (style.display === 'none') return false;
   if (style.visibility === 'hidden') return false;
-  if (parseFloat(style.opacity) === 0) return false;
+  // Note: opacity: 0 elements are NOT excluded. They are interactive elements
+  // (e.g., close buttons revealed on hover) that should be discoverable.
+  // They are marked with opacityHidden: true in getElementState() instead.
   return (
     rect.top < window.innerHeight &&
     rect.bottom > 0 &&
