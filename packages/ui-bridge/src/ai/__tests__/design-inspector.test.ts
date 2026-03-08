@@ -455,8 +455,8 @@ describe('getElementDesignData', () => {
     expect(data.elementId).toBe('my-element');
   });
 
-  it('should use data-ui-id for elementId when no id', () => {
-    el.setAttribute('data-ui-id', 'bridge-element');
+  it('should use data-testid for elementId when no id', () => {
+    el.setAttribute('data-testid', 'bridge-element');
     const data = getElementDesignData(el);
     expect(data.elementId).toBe('bridge-element');
   });

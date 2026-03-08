@@ -24,7 +24,7 @@ describe('DefaultActionExecutor - drag', () => {
 
   function createPositionedElement(id: string, x: number, y: number, size = 50): HTMLDivElement {
     const el = document.createElement('div');
-    el.setAttribute('data-ui-id', id);
+    el.setAttribute('data-testid', id);
     el.style.position = 'absolute';
     el.style.left = `${x}px`;
     el.style.top = `${y}px`;

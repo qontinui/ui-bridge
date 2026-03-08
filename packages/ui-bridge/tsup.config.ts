@@ -18,7 +18,6 @@ export default defineConfig([
       'server/handlers': 'src/server/handlers.ts',
       'annotations/index': 'src/annotations/index.ts',
       'specs/index': 'src/specs/index.ts',
-      'swc-plugin/index': 'src/swc-plugin/index.ts',
     },
     format: ['cjs', 'esm'],
     dts: true,
@@ -33,25 +32,10 @@ export default defineConfig([
       'express',
       'next',
       'ws',
-      '@babel/core',
-      '@babel/types',
-      '@babel/helper-plugin-utils',
       'http',
       'path',
       'url',
     ],
-  },
-  {
-    // Babel plugin: DTS disabled (Babel types too complex for rollup-dts)
-    entry: {
-      'babel-plugin/index': 'src/babel-plugin/index.ts',
-    },
-    format: ['cjs', 'esm'],
-    dts: false,
-    splitting: false,
-    sourcemap: true,
-    treeshake: true,
-    external: ['@babel/core', '@babel/types', '@babel/helper-plugin-utils'],
   },
   {
     // Native: DTS disabled (react-native types not available at build time)

@@ -15,12 +15,11 @@ UI Bridge enables programmatic observation and control of React UI elements via 
 
 ## Packages
 
-| Package                  | Description                             | Registry |
-| ------------------------ | --------------------------------------- | -------- |
-| `ui-bridge`              | React hooks and providers               | npm      |
-| `ui-bridge-server`       | HTTP server adapters (Express, Next.js) | npm      |
-| `ui-bridge-babel-plugin` | Auto-instrumentation Babel plugin       | npm      |
-| `ui-bridge-python`       | Python client library with AI interface | PyPI     |
+| Package            | Description                             | Registry |
+| ------------------ | --------------------------------------- | -------- |
+| `ui-bridge`        | React hooks and providers               | npm      |
+| `ui-bridge-server` | HTTP server adapters (Express, Next.js) | npm      |
+| `ui-bridge-python` | Python client library with AI interface | PyPI     |
 
 ## Quick Start
 
@@ -84,10 +83,8 @@ function LoginForm() {
 
   return (
     <form>
-      <input ref={emailInput.ref} data-ui-id="login-email" />
-      <button ref={submitButton.ref} data-ui-id="login-submit">
-        Login
-      </button>
+      <input ref={emailInput.ref} />
+      <button ref={submitButton.ref}>Login</button>
     </form>
   );
 }
@@ -202,10 +199,12 @@ summary = client.ai.summary()
 
 UI Bridge supports multiple identification strategies:
 
-1. `data-ui-id` - Explicit UI Bridge identifier (preferred)
+1. **AutoRegisterProvider** - Automatic semantic IDs from element content (preferred)
 2. `data-testid` - Testing library convention
 3. `id` - HTML id attribute
 4. Generated XPath/CSS selector - Automatic fallback
+
+The AutoRegisterProvider automatically discovers interactive elements and generates stable semantic IDs at runtime (e.g., `button-save`, `input-email`). No manual attributes needed.
 
 ### React Hooks
 
@@ -310,12 +309,6 @@ ui-bridge-server/
 ├── express.ts      # Express.js adapter
 ├── nextjs.ts       # Next.js adapter
 └── standalone.ts   # Standalone HTTP server
-
-ui-bridge-babel-plugin/
-├── index.ts        # Babel plugin for auto-instrumentation
-├── config.ts       # Plugin configuration
-├── id-generator.ts # ID generation logic
-└── alias-generator.ts # Alias generation
 
 ui-bridge-python/
 ├── client.py       # HTTP client

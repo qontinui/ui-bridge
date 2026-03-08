@@ -75,6 +75,36 @@ function getElementState(element: HTMLElement): ElementState {
     state.textContent = rawText.replace(/\s+/g, ' ').slice(0, 500);
   }
 
+  // Fallback for icon-only elements (no textContent but has aria-label/title)
+  if (!state.textContent) {
+    state.textContent =
+      element.getAttribute('aria-label') || element.getAttribute('title') || undefined;
+  }
+
+  // Opacity hidden detection
+  const opacityVal = parseFloat(style.opacity);
+  if (opacityVal === 0) {
+    state.opacityHidden = true;
+  }
+
+  // ARIA state attributes
+  const ariaSelected = element.getAttribute('aria-selected');
+  if (ariaSelected !== null) {
+    state.ariaSelected = ariaSelected === 'true';
+  }
+  const ariaPressed = element.getAttribute('aria-pressed');
+  if (ariaPressed !== null) {
+    state.ariaPressed = ariaPressed === 'mixed' ? 'mixed' : ariaPressed === 'true';
+  }
+  const ariaCurrent = element.getAttribute('aria-current');
+  if (ariaCurrent !== null && ariaCurrent !== 'false') {
+    state.ariaCurrent = ariaCurrent;
+  }
+  const ariaExpanded = element.getAttribute('aria-expanded');
+  if (ariaExpanded !== null) {
+    state.ariaExpanded = ariaExpanded === 'true';
+  }
+
   if (element instanceof HTMLInputElement) {
     state.value = element.value;
     if (element.type === 'checkbox' || element.type === 'radio') {
@@ -356,7 +386,6 @@ export class DefaultActionExecutor implements ActionExecutor {
         '[tabindex]:not([tabindex="-1"])',
         '[contenteditable="true"]',
         '[data-ui-element]',
-        '[data-ui-id]',
         '[data-testid]',
       ];
 
@@ -532,6 +561,13 @@ export class DefaultActionExecutor implements ActionExecutor {
     action: string,
     params?: Record<string, unknown>
   ): Promise<unknown> {
+    // Auto-hover parent if element is opacity-hidden (e.g., close button revealed on hover)
+    const computedStyle = window.getComputedStyle(element);
+    if (parseFloat(computedStyle.opacity) === 0 && element.parentElement) {
+      this.performHover(element.parentElement);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
     switch (action as StandardAction) {
       case 'click':
         return this.performClick(element, params as MouseAction);
@@ -539,6 +575,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performDoubleClick(element, params as MouseAction);
       case 'rightClick':
         return this.performRightClick(element, params as MouseAction);
+      case 'middleClick':
+        return this.performMiddleClick(element, params as MouseAction);
       case 'type':
         return this.performType(element, params as unknown as TypeAction);
       case 'clear':
@@ -595,6 +633,15 @@ export class DefaultActionExecutor implements ActionExecutor {
     element.dispatchEvent(createMouseEvent('mousedown', element, opts));
     element.dispatchEvent(createMouseEvent('mouseup', element, opts));
     element.dispatchEvent(createMouseEvent('contextmenu', element, opts));
+  }
+
+  private performMiddleClick(element: HTMLElement, options?: MouseAction): void {
+    const opts = { ...options, button: 'middle' as const };
+    element.dispatchEvent(createMouseEvent('mousedown', element, opts));
+    element.dispatchEvent(createMouseEvent('mouseup', element, opts));
+    // Browsers fire 'auxclick' (not 'click') for non-primary button clicks.
+    // React's onAuxClick handler listens for this event type.
+    element.dispatchEvent(createMouseEvent('auxclick', element, opts));
   }
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
@@ -936,7 +983,6 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private getElementId(element: HTMLElement): string {
     return (
-      element.getAttribute('data-ui-id') ||
       element.getAttribute('data-testid') ||
       element.id ||
       `${element.tagName.toLowerCase()}-${Math.random().toString(36).substr(2, 8)}`
@@ -944,11 +990,22 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private getElementLabel(element: HTMLElement): string | undefined {
+    const ariaLabel = element.getAttribute('aria-label');
+    if (ariaLabel) return ariaLabel;
+
+    // Resolve aria-labelledby
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const resolved = labelledBy
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent?.trim())
+        .filter(Boolean)
+        .join(' ');
+      if (resolved) return resolved;
+    }
+
     return (
-      element.getAttribute('aria-label') ||
-      element.getAttribute('title') ||
-      element.textContent?.trim().substring(0, 50) ||
-      undefined
+      element.getAttribute('title') || element.textContent?.trim().substring(0, 50) || undefined
     );
   }
 
@@ -1040,7 +1097,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     switch (type) {
       case 'button':
-        return [...baseActions, 'click', 'doubleClick', 'rightClick'];
+        return [...baseActions, 'click', 'doubleClick', 'rightClick', 'middleClick'];
       case 'input':
         return [...baseActions, 'click', 'type', 'clear'];
       case 'textarea':
@@ -1053,6 +1110,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         return [...baseActions, 'click', 'check'];
       case 'link':
         return [...baseActions, 'click'];
+      case 'tab':
+        return [...baseActions, 'click', 'middleClick'];
       default:
         return [...baseActions, 'click'];
     }

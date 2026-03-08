@@ -2,11 +2,13 @@
  * Element Identification Module
  *
  * Provides utilities for identifying DOM elements using multiple strategies:
- * 1. data-ui-id (explicit UI Bridge identifier - preferred)
- * 2. data-testid (testing library convention)
- * 3. data-awas-element (legacy support)
- * 4. id (HTML id attribute)
- * 5. Generated XPath/CSS selector (fallback)
+ * 1. data-testid (testing library convention)
+ * 2. data-awas-element (legacy support)
+ * 3. id (HTML id attribute)
+ * 4. Generated XPath/CSS selector (fallback)
+ *
+ * Note: data-ui-id is no longer used. Elements are identified through the
+ * internal bridge registry, not DOM attributes.
  */
 
 import type { ElementIdentifier } from './types';
@@ -14,7 +16,7 @@ import type { ElementIdentifier } from './types';
 /**
  * Data attributes used for element identification (in priority order)
  */
-export const ID_ATTRIBUTES = ['data-ui-id', 'data-testid', 'data-awas-element', 'id'] as const;
+export const ID_ATTRIBUTES = ['data-testid', 'data-awas-element', 'id'] as const;
 
 /**
  * Generate a unique XPath for an element
@@ -31,13 +33,6 @@ export function generateXPath(element: HTMLElement): string {
     let selector = current.nodeName.toLowerCase();
 
     // Check for identifying attributes
-    const uiId = current.getAttribute('data-ui-id');
-    if (uiId) {
-      selector += `[@data-ui-id="${uiId}"]`;
-      parts.unshift(selector);
-      break;
-    }
-
     const testId = current.getAttribute('data-testid');
     if (testId) {
       selector += `[@data-testid="${testId}"]`;
@@ -77,11 +72,6 @@ export function generateXPath(element: HTMLElement): string {
  */
 export function generateCSSSelector(element: HTMLElement): string {
   // Check for identifying attributes first
-  const uiId = element.getAttribute('data-ui-id');
-  if (uiId) {
-    return `[data-ui-id="${uiId}"]`;
-  }
-
   const testId = element.getAttribute('data-testid');
   if (testId) {
     return `[data-testid="${testId}"]`;
@@ -104,12 +94,6 @@ export function generateCSSSelector(element: HTMLElement): string {
     let selector = current.nodeName.toLowerCase();
 
     // Check for unique identifiers on ancestors
-    const parentUiId = current.getAttribute('data-ui-id');
-    if (parentUiId && current !== element) {
-      path.unshift(`[data-ui-id="${parentUiId}"]`);
-      break;
-    }
-
     const parentTestId = current.getAttribute('data-testid');
     if (parentTestId && current !== element) {
       path.unshift(`[data-testid="${parentTestId}"]`);
@@ -148,9 +132,6 @@ export function generateCSSSelector(element: HTMLElement): string {
  */
 export function getBestIdentifier(element: HTMLElement): string {
   // Priority order
-  const uiId = element.getAttribute('data-ui-id');
-  if (uiId) return uiId;
-
   const testId = element.getAttribute('data-testid');
   if (testId) return testId;
 
@@ -168,7 +149,6 @@ export function getBestIdentifier(element: HTMLElement): string {
  */
 export function createElementIdentifier(element: HTMLElement): ElementIdentifier {
   return {
-    uiId: element.getAttribute('data-ui-id') || undefined,
     testId: element.getAttribute('data-testid') || undefined,
     awasId: element.getAttribute('data-awas-element') || undefined,
     htmlId: element.id || undefined,
@@ -188,10 +168,6 @@ export function findElementByIdentifier(
 ): HTMLElement | null {
   // If string, try each identification method
   if (typeof identifier === 'string') {
-    // Try data-ui-id
-    const byUiId = root.querySelector<HTMLElement>(`[data-ui-id="${identifier}"]`);
-    if (byUiId) return byUiId;
-
     // Try data-testid
     const byTestId = root.querySelector<HTMLElement>(`[data-testid="${identifier}"]`);
     if (byTestId) return byTestId;
@@ -232,11 +208,6 @@ export function findElementByIdentifier(
   }
 
   // If ElementIdentifier object, try in priority order
-  if (identifier.uiId) {
-    const el = root.querySelector<HTMLElement>(`[data-ui-id="${identifier.uiId}"]`);
-    if (el) return el;
-  }
-
   if (identifier.testId) {
     const el = root.querySelector<HTMLElement>(`[data-testid="${identifier.testId}"]`);
     if (el) return el;
@@ -303,7 +274,6 @@ export function findAllElementsByIdentifier(
 
   // Try partial matching on data attributes
   const partials = [
-    `[data-ui-id*="${pattern}"]`,
     `[data-testid*="${pattern}"]`,
     `[data-awas-element*="${pattern}"]`,
     `[id*="${pattern}"]`,
@@ -334,7 +304,6 @@ export function elementMatchesIdentifier(
 ): boolean {
   if (typeof identifier === 'string') {
     return (
-      element.getAttribute('data-ui-id') === identifier ||
       element.getAttribute('data-testid') === identifier ||
       element.getAttribute('data-awas-element') === identifier ||
       element.id === identifier ||
@@ -343,7 +312,6 @@ export function elementMatchesIdentifier(
   }
 
   return (
-    (identifier.uiId && element.getAttribute('data-ui-id') === identifier.uiId) ||
     (identifier.testId && element.getAttribute('data-testid') === identifier.testId) ||
     (identifier.awasId && element.getAttribute('data-awas-element') === identifier.awasId) ||
     (identifier.htmlId && element.id === identifier.htmlId) ||

@@ -86,7 +86,6 @@ export interface CaptureOptions {
  * Attributes to capture for automation
  */
 const CAPTURE_ATTRIBUTES = [
-  'data-ui-id',
   'data-testid',
   'data-awas-element',
   'id',
@@ -133,7 +132,6 @@ const INTERACTIVE_SELECTORS = [
   '[role="switch"]',
   '[tabindex]:not([tabindex="-1"])',
   '[contenteditable="true"]',
-  '[data-ui-id]',
   '[data-ui-element]',
   '[data-testid]',
 ];

@@ -207,12 +207,6 @@ export function InfoPanel({ element, onClose, registeredElement }: InfoPanelProp
           <span style={labelKeyStyles}>Best ID:</span>
           <span style={valueStyles}>{bestId}</span>
         </div>
-        {identifier.uiId && (
-          <div>
-            <span style={labelKeyStyles}>data-ui-id:</span>
-            <span style={valueStyles}>{identifier.uiId}</span>
-          </div>
-        )}
         {identifier.testId && (
           <div>
             <span style={labelKeyStyles}>data-testid:</span>

@@ -74,7 +74,7 @@ export interface UseUIElementReturn {
  *   });
  *
  *   return (
- *     <button ref={ref} data-ui-id="submit-btn">
+ *     <button ref={ref}>
  *       Submit
  *     </button>
  *   );
@@ -189,16 +189,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
 /**
  * useUIElementRef hook
  *
- * A simpler version that just adds the data-ui-id attribute.
- * Useful when you only need identification without full registration.
+ * @deprecated data-ui-id is no longer used. Elements are identified through
+ * the bridge registry. Use useUIElement() for full registration instead.
+ * This hook is a no-op and will be removed in a future version.
  */
-export function useUIElementRef(id: string): React.RefCallback<HTMLElement> {
-  return useCallback(
-    (node: HTMLElement | null) => {
-      if (node) {
-        node.setAttribute('data-ui-id', id);
-      }
-    },
-    [id]
-  );
+export function useUIElementRef(_id: string): React.RefCallback<HTMLElement> {
+  return useCallback((_node: HTMLElement | null) => {
+    // No-op: data-ui-id is no longer set on DOM elements.
+    // Elements are identified through the internal bridge registry.
+  }, []);
 }

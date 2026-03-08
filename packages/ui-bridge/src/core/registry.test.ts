@@ -28,7 +28,6 @@ describe('UIBridgeRegistry', () => {
   describe('element registration', () => {
     it('should register an element', () => {
       const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'test-btn');
       container.appendChild(element);
 
       const registered = registry.registerElement('test-btn', element, {

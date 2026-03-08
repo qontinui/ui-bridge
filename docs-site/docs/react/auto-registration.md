@@ -131,7 +131,6 @@ function AppContent() {
 | ------------------- | ---------------------------------------------- | ------------------------------- |
 | `'prefer-existing'` | Use existing attributes, fall back to semantic | `submit-btn` (from data-testid) |
 | `'data-testid'`     | Only use data-testid                           | `submit-btn` or auto-generated  |
-| `'data-ui-id'`      | Only use data-ui-id                            | `my-button` or auto-generated   |
 | `'semantic'`        | Generate from element content                  | `button-submit-form`            |
 | `'auto'`            | Always auto-generate                           | `button-1705123456-abc123`      |
 
@@ -139,16 +138,11 @@ function AppContent() {
 
 When using `prefer-existing` strategy, IDs are generated in this order:
 
-1. `data-ui-id` attribute
-2. `data-testid` attribute
-3. `id` attribute
-4. Semantic (based on label/content)
-5. Auto-generated
+1. `data-testid` attribute
+2. `id` attribute (skips React auto-generated IDs like `:r1a:`)
+3. Semantic (generated from type + label/content + context)
 
 ```html
-<!-- Uses "my-button" -->
-<button data-ui-id="my-button">Submit</button>
-
 <!-- Uses "submit-btn" -->
 <button data-testid="submit-btn">Submit</button>
 

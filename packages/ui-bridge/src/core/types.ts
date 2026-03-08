@@ -16,7 +16,7 @@ export type { CapturedError } from '../debug/browser-capture-types';
  * Element identification using multiple strategies
  */
 export interface ElementIdentifier {
-  /** Explicit UI Bridge identifier (data-ui-id attribute) */
+  /** @deprecated No longer set. Elements are identified through the bridge registry. */
   uiId?: string;
   /** Testing library convention (data-testid attribute) */
   testId?: string;
@@ -65,6 +65,16 @@ export interface ElementState {
   href?: string;
   /** Route path from data-route attribute (navigation elements) */
   dataRoute?: string;
+  /** Whether element has opacity 0 (visually hidden but in DOM) */
+  opacityHidden?: boolean;
+  /** ARIA selected state (tabs, list items) */
+  ariaSelected?: boolean;
+  /** ARIA pressed state (toggle buttons) */
+  ariaPressed?: boolean | 'mixed';
+  /** ARIA current state (navigation) */
+  ariaCurrent?: string;
+  /** ARIA expanded state (expandable elements) */
+  ariaExpanded?: boolean;
   /** Computed styles relevant for automation */
   computedStyles?: {
     display: string;
@@ -162,6 +172,7 @@ export type StandardAction =
   | 'click'
   | 'doubleClick'
   | 'rightClick'
+  | 'middleClick'
   | 'type'
   | 'clear'
   | 'select'

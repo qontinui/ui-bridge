@@ -81,15 +81,6 @@
       "import": "./dist/server/handlers.mjs",
       "require": "./dist/server/handlers.js"
     },
-    "./babel-plugin": {
-      "import": "./dist/babel-plugin/index.mjs",
-      "require": "./dist/babel-plugin/index.js"
-    },
-    "./swc-plugin": {
-      "types": "./dist/swc-plugin/index.d.ts",
-      "import": "./dist/swc-plugin/index.mjs",
-      "require": "./dist/swc-plugin/index.js"
-    },
     "./native": {
       "types": "./dist/native/index.d.ts",
       "import": "./dist/native/index.mjs",
@@ -119,12 +110,10 @@
       "types": "./dist/native/debug/index.d.ts",
       "import": "./dist/native/debug/index.mjs",
       "require": "./dist/native/debug/index.js"
-    },
-    "./swc-plugin-wasm/ui_bridge_swc_plugin.wasm": "./swc-plugin-wasm/ui_bridge_swc_plugin.wasm"
+    }
   },
   "files": [
     "dist",
-    "swc-plugin-wasm/ui_bridge_swc_plugin.wasm",
     "README.md"
   ],
   "scripts": {
@@ -136,17 +125,13 @@
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
-  "dependencies": {
-    "@babel/helper-plugin-utils": "^7.22.0"
-  },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0",
     "react-native": ">=0.70.0",
     "express": "^4.18.0",
     "next": ">=13.0.0",
-    "ws": "^8.0.0",
-    "@babel/core": "^7.0.0"
+    "ws": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "react-dom": {
@@ -163,16 +148,10 @@
     },
     "ws": {
       "optional": true
-    },
-    "@babel/core": {
-      "optional": true
     }
   },
   "devDependencies": {
-    "@babel/core": "^7.23.0",
-    "@babel/types": "^7.23.0",
     "@testing-library/react": "^14.1.0",
-    "@types/babel__core": "^7.20.0",
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.0",
@@ -200,8 +179,6 @@
     "debugging",
     "hooks",
     "server",
-    "babel-plugin",
-    "swc-plugin",
     "react-native"
   ]
 }

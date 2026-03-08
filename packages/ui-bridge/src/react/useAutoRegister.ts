@@ -7,7 +7,8 @@
  * Features:
  * - Auto-discovers interactive elements (buttons, inputs, links, etc.)
  * - Uses MutationObserver to detect new elements
- * - Smart ID generation (data-testid > data-ui-id > semantic > auto-generated)
+ * - Generates stable, deterministic semantic IDs from element content/attributes
+ * - Registers elements via the internal bridge registry (no DOM attributes set)
  * - Debounced updates for performance
  * - Respects existing manually registered elements
  */
@@ -29,10 +30,9 @@ import {
  */
 export type IdStrategy =
   | 'data-testid' // Use data-testid attribute if present
-  | 'data-ui-id' // Use data-ui-id attribute if present
-  | 'semantic' // Generate semantic ID based on element content
-  | 'auto' // Auto-generate unique ID
-  | 'prefer-existing'; // Use existing attributes, fall back to auto
+  | 'semantic' // Generate stable semantic ID based on element content
+  | 'auto' // Auto-generate unique ID (unstable across renders)
+  | 'prefer-existing'; // Use existing attributes (data-testid, id), fall back to semantic
 
 /**
  * Options for auto-registration
@@ -86,7 +86,6 @@ const INTERACTIVE_SELECTORS = [
   '[role="textbox"]',
   '[tabindex]:not([tabindex="-1"])',
   '[contenteditable="true"]',
-  '[data-ui-id]', // UI Bridge identifier — always register
   '[data-ui-element]', // Explicitly marked for registration
   '[data-testid]', // Testing library convention
 ];
@@ -156,7 +155,7 @@ function inferActions(type: ElementType): StandardAction[] {
   const baseActions: StandardAction[] = ['focus', 'blur'];
 
   const typeActions: Record<ElementType, StandardAction[]> = {
-    button: [...baseActions, 'click', 'hover'],
+    button: [...baseActions, 'click', 'hover', 'middleClick'],
     link: [...baseActions, 'click', 'hover'],
     input: [...baseActions, 'type', 'clear', 'click'],
     textarea: [...baseActions, 'type', 'clear', 'click'],
@@ -169,7 +168,7 @@ function inferActions(type: ElementType): StandardAction[] {
     option: [...baseActions, 'select', 'click'],
     switch: [...baseActions, 'toggle', 'click'],
     slider: [...baseActions, 'setValue', 'click', 'drag'],
-    tab: [...baseActions, 'click', 'select'],
+    tab: [...baseActions, 'click', 'select', 'middleClick'],
     menuitem: [...baseActions, 'click'],
     dialog: [...baseActions],
     menu: [...baseActions],
@@ -233,31 +232,230 @@ function isElementVisible(element: HTMLElement): boolean {
 }
 
 /**
- * Generate semantic ID based on element
+ * Sanitize a string into a kebab-case slug suitable for an ID.
+ * Strips parenthetical hints like "(Ctrl+Shift+T)" and special chars.
+ */
+function slugify(text: string, maxLen = 30): string {
+  return text
+    .replace(/\s*\(.*?\)\s*/g, '') // strip parenthetical hints
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen);
+}
+
+/**
+ * Get a short, stable ancestor context slug for disambiguation.
+ * Walks up the DOM looking for the nearest ancestor with an id, data-testid,
+ * aria-label, or semantic landmark tag to provide positional context.
+ */
+function getAncestorContext(element: HTMLElement): string | undefined {
+  let current = element.parentElement;
+  let depth = 0;
+  while (current && depth < 5) {
+    // Check for explicit identifiers
+    const testId = current.getAttribute('data-testid');
+    if (testId) return slugify(testId, 20);
+
+    const id = current.id;
+    if (id && !/^:r[0-9a-z]+:$/.test(id)) return slugify(id, 20); // skip React auto-ids
+
+    // Check for semantic landmarks
+    const role = current.getAttribute('role');
+    if (
+      role &&
+      ['navigation', 'main', 'banner', 'dialog', 'tabpanel', 'toolbar', 'form'].includes(role)
+    ) {
+      const label = current.getAttribute('aria-label');
+      return label ? slugify(`${role}-${label}`, 20) : role;
+    }
+
+    // Check for landmark tags
+    const tag = current.tagName.toLowerCase();
+    if (['nav', 'main', 'header', 'footer', 'aside', 'form', 'dialog', 'section'].includes(tag)) {
+      const label = current.getAttribute('aria-label');
+      return label ? slugify(`${tag}-${label}`, 20) : tag;
+    }
+
+    current = current.parentElement;
+    depth++;
+  }
+  return undefined;
+}
+
+/**
+ * Get a sibling index among same-type elements in the same parent.
+ * Returns undefined if the element is the only one of its type.
+ */
+function getSiblingIndex(element: HTMLElement): number | undefined {
+  const parent = element.parentElement;
+  if (!parent) return undefined;
+
+  const tag = element.tagName;
+  const role = element.getAttribute('role');
+
+  // Count same-type siblings
+  const siblings = Array.from(parent.children).filter((child) => {
+    if (child.tagName !== tag) return false;
+    if (role && child.getAttribute('role') !== role) return false;
+    return true;
+  });
+
+  if (siblings.length <= 1) return undefined;
+  return siblings.indexOf(element);
+}
+
+/**
+ * Selector for interactive elements used to detect nesting.
+ * Matches the same elements as INTERACTIVE_SELECTORS but consolidated
+ * for use with Element.closest().
+ */
+const INTERACTIVE_CLOSEST_SELECTOR = [
+  'a[href]',
+  'button',
+  '[role="button"]',
+  '[role="tab"]',
+  '[role="menuitem"]',
+  '[role="link"]',
+  '[role="option"]',
+  '[role="switch"]',
+].join(', ');
+
+/**
+ * Find the nearest ancestor that is itself an interactive element.
+ * Returns null if the element is not nested inside another interactive element.
+ */
+function findParentInteractive(element: HTMLElement): HTMLElement | null {
+  const parent = element.parentElement;
+  if (!parent) return null;
+  const match = parent.closest(INTERACTIVE_CLOSEST_SELECTOR);
+  return match ? (match as HTMLElement) : null;
+}
+
+/**
+ * Try to infer a purpose label for an icon-only element (no text content).
+ * Checks for common close/action patterns: aria-label on the element,
+ * title attribute, small size heuristic, or SVG-only children.
+ */
+function inferIconAction(element: HTMLElement): string | undefined {
+  // aria-label or title would have been caught by getAccessibleLabel,
+  // but check for common class-name hints
+  const className = element.className;
+  if (typeof className === 'string') {
+    const lower = className.toLowerCase();
+    if (lower.includes('close')) return 'close';
+    if (lower.includes('delete') || lower.includes('remove')) return 'remove';
+    if (lower.includes('expand')) return 'expand';
+    if (lower.includes('collapse')) return 'collapse';
+    if (lower.includes('minimize')) return 'minimize';
+    if (lower.includes('maximize')) return 'maximize';
+  }
+
+  // Check if the element contains only SVG (icon-only button)
+  const children = element.children;
+  if (children.length === 1 && children[0].tagName.toLowerCase() === 'svg') {
+    // Check SVG for class hints
+    const svgClass = children[0].className;
+    const svgClassStr =
+      typeof svgClass === 'string' ? svgClass : ((svgClass as SVGAnimatedString)?.baseVal ?? '');
+    const svgLower = svgClassStr.toLowerCase();
+    if (svgLower.includes('close') || svgLower.includes('x-icon')) return 'close';
+    if (svgLower.includes('delete') || svgLower.includes('trash')) return 'remove';
+    if (svgLower.includes('chevron')) return 'toggle';
+    if (svgLower.includes('plus') || svgLower.includes('add')) return 'add';
+  }
+
+  // Small element heuristic: if the element is small (~24px or less)
+  // and nested, it's likely a close/dismiss/action button
+  const rect = element.getBoundingClientRect();
+  if (rect.width > 0 && rect.width <= 28 && rect.height > 0 && rect.height <= 28) {
+    return 'action';
+  }
+
+  return undefined;
+}
+
+/**
+ * Generate a stable, deterministic semantic ID based on element content,
+ * attributes, and position in the DOM hierarchy.
+ *
+ * ID format: {type}-{label}[-{context}][-{index}]
+ *
+ * For nested interactive elements (e.g., close button inside a tab):
+ *   {type}-{iconAction}-{parentLabel}  or  {type}-{parentLabel}-{index}
+ *
+ * Examples:
+ *   button with title "New terminal (Ctrl+Shift+T)" → "button-new-terminal"
+ *   button with text "Sessions" in toolbar           → "button-sessions"
+ *   input with placeholder "Search..."               → "input-search"
+ *   button with no label, 3rd in toolbar              → "button-toolbar-2"
+ *   close icon inside "Terminal 1" tab                → "button-close-terminal-1"
+ *   icon-only button inside "File" menu item          → "button-action-file"
  */
 function generateSemanticId(element: HTMLElement): string {
   const type = inferElementType(element);
   const label = getAccessibleLabel(element);
 
   if (label) {
-    // Convert label to kebab-case ID
-    const sanitized = label
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .slice(0, 30);
-    return `${type}-${sanitized}`;
+    const slug = slugify(label);
+    if (slug) {
+      const siblingIdx = getSiblingIndex(element);
+      if (siblingIdx !== undefined) {
+        // Multiple elements with same label in same parent — disambiguate
+        return `${type}-${slug}-${siblingIdx}`;
+      }
+      return `${type}-${slug}`;
+    }
   }
 
-  // Fall back to tag + index
+  // Check if this element is nested inside another interactive element.
+  // This handles cases like a close button (icon-only) inside a tab —
+  // the parent tab's label provides the missing context.
+  const parentInteractive = findParentInteractive(element);
+  if (parentInteractive) {
+    const parentLabel = getAccessibleLabel(parentInteractive);
+    if (parentLabel) {
+      const parentSlug = slugify(parentLabel, 20);
+      if (parentSlug) {
+        // Try to infer what this nested element does (close, remove, etc.)
+        const iconAction = inferIconAction(element);
+        if (iconAction) {
+          return `${type}-${iconAction}-${parentSlug}`;
+        }
+        // Fallback: use parent label + sibling index among nested interactive elements
+        const siblingIdx = getSiblingIndex(element);
+        if (siblingIdx !== undefined) {
+          return `${type}-${parentSlug}-${siblingIdx}`;
+        }
+        return `${type}-${parentSlug}-nested`;
+      }
+    }
+  }
+
+  // No label available — use ancestor context + sibling index
+  const context = getAncestorContext(element);
+  const siblingIdx = getSiblingIndex(element);
+
+  if (context && siblingIdx !== undefined) {
+    return `${type}-${context}-${siblingIdx}`;
+  }
+  if (context) {
+    return `${type}-${context}`;
+  }
+  if (siblingIdx !== undefined) {
+    return `${element.tagName.toLowerCase()}-${siblingIdx}`;
+  }
+
+  // Last resort: tag + DOM path position (still deterministic, no randomness)
   const parent = element.parentElement;
   if (parent) {
-    const siblings = Array.from(parent.querySelectorAll(element.tagName));
-    const index = siblings.indexOf(element);
-    return `${element.tagName.toLowerCase()}-${index}`;
+    const allChildren = Array.from(parent.children);
+    const idx = allChildren.indexOf(element);
+    return `${type}-child-${idx}`;
   }
 
-  return `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  return `${type}-root`;
 }
 
 /**
@@ -283,11 +481,7 @@ function generateIdForElement(
   switch (strategy) {
     case 'data-testid': {
       const testId = element.getAttribute('data-testid');
-      return testId || generateAutoId(element);
-    }
-    case 'data-ui-id': {
-      const uiId = element.getAttribute('data-ui-id');
-      return uiId || generateAutoId(element);
+      return testId || generateSemanticId(element);
     }
     case 'semantic':
       return generateSemanticId(element);
@@ -295,15 +489,14 @@ function generateIdForElement(
       return generateAutoId(element);
     case 'prefer-existing':
     default: {
-      // Priority: data-ui-id > data-testid > id > semantic > auto
-      const uiId = element.getAttribute('data-ui-id');
-      if (uiId) return uiId;
-
+      // Priority: data-testid > id > semantic
+      // Note: data-ui-id is not used — elements are identified via the bridge registry
       const testId = element.getAttribute('data-testid');
       if (testId) return testId;
 
       const htmlId = element.id;
-      if (htmlId) return htmlId;
+      // Skip React auto-generated IDs (e.g., ":r1a:")
+      if (htmlId && !/^:r[0-9a-z]+:$/.test(htmlId)) return htmlId;
 
       return generateSemanticId(element);
     }
@@ -389,7 +582,8 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
-   * Register a single element
+   * Register a single element with the bridge registry.
+   * Elements are identified through the internal registry, not DOM attributes.
    */
   const registerElement = useCallback(
     (element: HTMLElement): void => {
@@ -397,47 +591,39 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      const id = generateIdForElement(element, idStrategy, customGenerateId);
+      let id = generateIdForElement(element, idStrategy, customGenerateId);
 
-      // Check if ID already exists in registry
+      // Check if ID already exists in registry — disambiguate with sibling index
       const existing = bridge.registry.getElement(id);
       if (existing) {
-        // Generate a unique ID to avoid collision
-        const uniqueId = `${id}-${Date.now().toString(36)}`;
-        const type = inferElementType(element);
-        const actions = inferActions(type);
-        const label = getAccessibleLabel(element);
-
-        // Registry may use an existing data-ui-id if present, so use the returned registered element's ID
-        const registered = bridge.registry.registerElement(uniqueId, element, {
-          type,
-          actions,
-          label,
-        });
-
-        registeredElementsRef.current.set(element, registered.id);
-        onRegister?.(registered.id, element);
-      } else {
-        const type = inferElementType(element);
-        const actions = inferActions(type);
-        const label = getAccessibleLabel(element);
-
-        // Registry may use an existing data-ui-id if present, so use the returned registered element's ID
-        const registered = bridge.registry.registerElement(id, element, {
-          type,
-          actions,
-          label,
-        });
-
-        registeredElementsRef.current.set(element, registered.id);
-        onRegister?.(registered.id, element);
+        // Find a unique suffix by counting collisions
+        let suffix = 1;
+        while (bridge.registry.getElement(`${id}-${suffix}`)) {
+          suffix++;
+        }
+        id = `${id}-${suffix}`;
       }
+
+      const type = inferElementType(element);
+      const actions = inferActions(type);
+      const label = getAccessibleLabel(element);
+
+      const registered = bridge.registry.registerElement(id, element, {
+        type,
+        actions,
+        label,
+      });
+
+      const finalId = registered.id;
+      registeredElementsRef.current.set(element, finalId);
+
+      onRegister?.(finalId, element);
     },
     [bridge, idStrategy, customGenerateId, onRegister]
   );
 
   /**
-   * Unregister a single element
+   * Unregister a single element from the bridge registry.
    */
   const unregisterElement = useCallback(
     (element: HTMLElement): void => {
@@ -446,6 +632,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       bridge.registry.unregisterElement(id);
       registeredElementsRef.current.delete(element);
+
       onUnregister?.(id);
     },
     [bridge, onUnregister]

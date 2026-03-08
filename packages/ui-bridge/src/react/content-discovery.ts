@@ -256,7 +256,6 @@ function isInteractiveElement(element: HTMLElement): boolean {
   if (role && interactiveRoles.includes(role)) return true;
 
   if (element.getAttribute('contenteditable') === 'true') return true;
-  if (element.hasAttribute('data-ui-id')) return true;
   if (element.hasAttribute('data-ui-element')) return true;
 
   return false;
@@ -460,19 +459,14 @@ export function generateContentId(element: HTMLElement): string {
       const rowIndex = rows.indexOf(row);
       const cells = Array.from(row.children);
       const colIndex = cells.indexOf(element);
-      const tableAnchor =
-        table.getAttribute('data-ui-id') ||
-        table.getAttribute('data-testid') ||
-        table.id ||
-        'table';
+      const tableAnchor = table.getAttribute('data-testid') || table.id || 'table';
       return `cell-r${rowIndex}-c${colIndex}-${tableAnchor}`;
     }
   }
 
   // Other content: content-{type}-{anchorId}-{siblingIndex}
   const parent = element.parentElement;
-  const anchorId =
-    parent?.getAttribute('data-ui-id') || parent?.getAttribute('data-testid') || parent?.id || '';
+  const anchorId = parent?.getAttribute('data-testid') || parent?.id || '';
 
   // Sibling index among same-type siblings
   const siblings = parent ? Array.from(parent.querySelectorAll(`:scope > ${tag}`)) : [];

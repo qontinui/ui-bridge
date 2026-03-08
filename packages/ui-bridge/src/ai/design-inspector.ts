@@ -144,7 +144,7 @@ export function getElementDesignData(
   }
 
   return {
-    elementId: opts?.elementId || el.id || el.getAttribute('data-ui-id') || '',
+    elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
     label: opts?.label,
     type: opts?.type || el.tagName.toLowerCase(),
     styles,

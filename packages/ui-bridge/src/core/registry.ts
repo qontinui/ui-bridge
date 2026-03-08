@@ -63,6 +63,36 @@ function getElementState(element: HTMLElement): ElementState {
     },
   };
 
+  // Fallback for icon-only elements (no textContent but has aria-label/title)
+  if (!state.textContent) {
+    state.textContent =
+      element.getAttribute('aria-label') || element.getAttribute('title') || undefined;
+  }
+
+  // Opacity hidden detection
+  const opacityVal = parseFloat(computedStyle.opacity);
+  if (opacityVal === 0) {
+    state.opacityHidden = true;
+  }
+
+  // ARIA state attributes
+  const ariaSelected = element.getAttribute('aria-selected');
+  if (ariaSelected !== null) {
+    state.ariaSelected = ariaSelected === 'true';
+  }
+  const ariaPressed = element.getAttribute('aria-pressed');
+  if (ariaPressed !== null) {
+    state.ariaPressed = ariaPressed === 'mixed' ? 'mixed' : ariaPressed === 'true';
+  }
+  const ariaCurrent = element.getAttribute('aria-current');
+  if (ariaCurrent !== null && ariaCurrent !== 'false') {
+    state.ariaCurrent = ariaCurrent;
+  }
+  const ariaExpanded = element.getAttribute('aria-expanded');
+  if (ariaExpanded !== null) {
+    state.ariaExpanded = ariaExpanded === 'true';
+  }
+
   // Add input-specific state
   if (element instanceof HTMLInputElement) {
     state.value = element.value;
@@ -134,7 +164,7 @@ function inferActions(type: ElementType): StandardAction[] {
 
   switch (type) {
     case 'button':
-      return [...baseActions, 'click', 'doubleClick', 'rightClick'];
+      return [...baseActions, 'click', 'doubleClick', 'rightClick', 'middleClick'];
     case 'input':
       return [...baseActions, 'click', 'type', 'clear'];
     case 'textarea':
@@ -153,7 +183,7 @@ function inferActions(type: ElementType): StandardAction[] {
     case 'menuitem':
       return [...baseActions, 'click'];
     case 'tab':
-      return [...baseActions, 'click'];
+      return [...baseActions, 'click', 'middleClick'];
     case 'dialog':
       return ['focus', 'blur'];
     case 'custom':
@@ -322,17 +352,8 @@ export class UIBridgeRegistry {
     const type = options.type ?? inferElementType(element);
     const actions = options.actions ?? inferActions(type);
 
-    // Check if element has an explicitly-set data-ui-id attribute (e.g., from React props)
-    // If so, use that value as the ID to preserve developer intent
-    // This handles timing issues where React may apply props after MutationObserver fires
-    const existingUiId = element.getAttribute('data-ui-id');
-    const actualId = existingUiId || id;
-
-    // Only set data-ui-id if it wasn't already set
-    // This preserves explicitly-set IDs from React props
-    if (!existingUiId) {
-      element.setAttribute('data-ui-id', actualId);
-    }
+    // Elements are identified through the internal bridge registry, not DOM attributes
+    const actualId = id;
 
     const registered: RegisteredElement = {
       id: actualId,
@@ -397,8 +418,6 @@ export class UIBridgeRegistry {
     const registered = this.elements.get(id);
     if (registered) {
       registered.mounted = false;
-      // Remove data-ui-id attribute from DOM element
-      registered.element.removeAttribute('data-ui-id');
       this.elements.delete(id);
       this.emit('element:unregistered', { id });
       return true;

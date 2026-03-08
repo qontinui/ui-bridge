@@ -27,7 +27,7 @@ import { getGlobalAnnotationStore } from '../annotations';
  *     tags: ['auth', 'primary-action'],
  *   });
  *
- *   return <button data-ui-id="login-btn">Log In</button>;
+ *   return <button>Log In</button>;
  * }
  * ```
  *
@@ -46,7 +46,7 @@ import { getGlobalAnnotationStore } from '../annotations';
  *     relatedElements: ['search-results-panel', 'search-clear-btn'],
  *   });
  *
- *   return <input data-ui-id="search-input" placeholder="Search..." />;
+ *   return <input placeholder="Search..." />;
  * }
  *
  * // The annotation data is then available via:

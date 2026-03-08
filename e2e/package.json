@@ -12,9 +12,7 @@
     "preview:test-app": "vite preview"
   },
   "devDependencies": {
-    "@babel/core": "^7.23.0",
     "@qontinui/ui-bridge": "file:../packages/ui-bridge",
-    "@qontinui/ui-bridge-babel-plugin": "file:../packages/ui-bridge-babel-plugin",
     "@qontinui/ui-bridge-server": "file:../packages/ui-bridge-server",
     "@testing-library/dom": "^9.3.0",
     "@testing-library/react": "^14.1.0",

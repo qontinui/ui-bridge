@@ -26,14 +26,13 @@ describe('element-identifier', () => {
   });
 
   describe('createElementIdentifier', () => {
-    it('should create identifier with data-ui-id', () => {
+    it('should create identifier without uiId (data-ui-id no longer used)', () => {
       const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'submit-btn');
       container.appendChild(element);
 
       const identifier = createElementIdentifier(element);
 
-      expect(identifier.uiId).toBe('submit-btn');
+      expect(identifier.uiId).toBeUndefined();
     });
 
     it('should create identifier with data-testid', () => {
@@ -82,19 +81,7 @@ describe('element-identifier', () => {
   });
 
   describe('getBestIdentifier', () => {
-    it('should return data-ui-id when present', () => {
-      const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'my-button');
-      element.setAttribute('data-testid', 'test-button');
-      element.id = 'button-id';
-      container.appendChild(element);
-
-      const best = getBestIdentifier(element);
-
-      expect(best).toBe('my-button');
-    });
-
-    it('should return data-testid when no data-ui-id', () => {
+    it('should return data-testid as highest priority', () => {
       const element = document.createElement('button');
       element.setAttribute('data-testid', 'test-button');
       element.id = 'button-id';
@@ -182,16 +169,6 @@ describe('element-identifier', () => {
       expect(selector).toContain('button');
     });
 
-    it('should generate selector with data-ui-id', () => {
-      const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'submit');
-      container.appendChild(element);
-
-      const selector = generateCSSSelector(element);
-
-      expect(selector).toContain('[data-ui-id="submit"]');
-    });
-
     it('should generate selector with data-testid', () => {
       const element = document.createElement('input');
       element.setAttribute('data-testid', 'email');
@@ -204,16 +181,6 @@ describe('element-identifier', () => {
   });
 
   describe('findElementByIdentifier', () => {
-    it('should find element by data-ui-id string', () => {
-      const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'find-me');
-      container.appendChild(element);
-
-      const found = findElementByIdentifier('find-me', container);
-
-      expect(found).toBe(element);
-    });
-
     it('should find element by data-testid string', () => {
       const element = document.createElement('input');
       element.setAttribute('data-testid', 'email-field');
@@ -252,7 +219,7 @@ describe('element-identifier', () => {
 
     it('should find element by ElementIdentifier object', () => {
       const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'target-btn');
+      element.setAttribute('data-testid', 'target-btn');
       container.appendChild(element);
 
       const identifier = createElementIdentifier(element);
@@ -263,14 +230,6 @@ describe('element-identifier', () => {
   });
 
   describe('elementMatchesIdentifier', () => {
-    it('should match element with same data-ui-id', () => {
-      const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'test-btn');
-      container.appendChild(element);
-
-      expect(elementMatchesIdentifier(element, 'test-btn')).toBe(true);
-    });
-
     it('should match element with same data-testid', () => {
       const element = document.createElement('input');
       element.setAttribute('data-testid', 'email');
@@ -281,7 +240,7 @@ describe('element-identifier', () => {
 
     it('should not match element with different identifier', () => {
       const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'btn-1');
+      element.setAttribute('data-testid', 'btn-1');
       container.appendChild(element);
 
       expect(elementMatchesIdentifier(element, 'btn-2')).toBe(false);
@@ -289,7 +248,7 @@ describe('element-identifier', () => {
 
     it('should match element by ElementIdentifier object', () => {
       const element = document.createElement('button');
-      element.setAttribute('data-ui-id', 'target');
+      element.setAttribute('data-testid', 'target');
       container.appendChild(element);
 
       const identifier = createElementIdentifier(element);

@@ -4,54 +4,44 @@ sidebar_position: 1
 
 # Element Identification
 
-UI Bridge uses multiple strategies to uniquely identify DOM elements. Understanding these strategies helps you write more robust automation code.
+UI Bridge uses multiple strategies to uniquely identify DOM elements. The AutoRegisterProvider automatically discovers interactive elements and assigns stable semantic IDs — no manual attributes needed.
 
 ## Identification Priority
 
 When finding elements, UI Bridge tries these strategies in order:
 
-1. **`data-ui-id`** - Explicit UI Bridge identifier
-2. **`data-testid`** - Testing library convention
-3. **`data-awas-element`** - Legacy support
-4. **`id`** - HTML id attribute
-5. **CSS Selector** - Generated selector
-6. **XPath** - Generated XPath (last resort)
+1. **`data-testid`** - Testing library convention
+2. **`id`** - HTML id attribute (skips React auto-generated IDs like `:r1a:`)
+3. **Semantic ID** - Generated from element type + label/content
+4. **CSS Selector** - Generated selector
+5. **XPath** - Generated XPath (last resort)
 
-## Best Practices
+## AutoRegisterProvider (Recommended)
 
-### Use `data-ui-id` for Automation
-
-The most reliable way to identify elements is with explicit `data-ui-id` attributes:
+The easiest way to make elements discoverable is to use the `AutoRegisterProvider`. It automatically discovers all interactive elements (buttons, inputs, links, etc.) and assigns stable semantic IDs:
 
 ```tsx
-<button data-ui-id="checkout-btn">Checkout</button>
-<input data-ui-id="search-input" type="text" />
-<select data-ui-id="country-select">...</select>
+<AutoRegisterProvider>
+  <YourApp />
+</AutoRegisterProvider>
 ```
 
-This approach:
+IDs are generated deterministically from element content:
 
-- Won't break when class names change
-- Works even without an HTML `id`
-- Is explicit about automation intent
-- Separates automation concerns from styling
+- `button-save` (from `<button>Save</button>`)
+- `input-email` (from `<input aria-label="Email" />`)
+- `link-dashboard-sidebar` (with ancestor context for disambiguation)
 
-### Naming Conventions
+### How Semantic IDs Work
 
-Use descriptive, hierarchical IDs:
+The format is: `{type}-{label-slug}[-{context}][-{index}]`
 
-```tsx
-// Good - clear and descriptive
-<button data-ui-id="cart-checkout-btn">
-<input data-ui-id="login-email-input">
-<select data-ui-id="shipping-country-select">
+- **type**: Element type (button, input, link, select, etc.)
+- **label**: Slugified from text content, aria-label, title, placeholder, or name
+- **context**: Optional ancestor context (nearest id, data-testid, aria-label, or landmark tag) for disambiguation
+- **index**: Optional numeric suffix when siblings of the same type exist
 
-// Avoid - too generic
-<button data-ui-id="btn1">
-<input data-ui-id="input">
-```
-
-### Leverage Existing Test IDs
+## Leverage Existing Test IDs
 
 If your app already uses `data-testid` for testing, UI Bridge will use those:
 
@@ -71,9 +61,7 @@ When you need full identification details, UI Bridge provides an `ElementIdentif
 
 ```typescript
 interface ElementIdentifier {
-  uiId?: string; // data-ui-id value
   testId?: string; // data-testid value
-  awasId?: string; // data-awas-element value
   htmlId?: string; // id attribute value
   xpath: string; // Generated XPath
   selector: string; // Generated CSS selector
@@ -107,8 +95,8 @@ When explicit identifiers aren't available, UI Bridge generates CSS selectors an
 
 The generated selector prefers:
 
-1. Element ID: `#my-element`
-2. Data attributes: `[data-ui-id="my-element"]`
+1. Test ID: `[data-testid="my-element"]`
+2. Element ID: `#my-element`
 3. Ancestor with ID + path: `#container > div > button`
 4. nth-child for uniqueness: `div:nth-child(2) > button`
 
@@ -117,7 +105,7 @@ The generated selector prefers:
 The generated XPath uses:
 
 1. Element ID: `//*[@id="my-element"]`
-2. Data attributes: `//button[@data-ui-id="submit"]`
+2. Data attributes: `//button[@data-testid="submit"]`
 3. Positional path: `/html/body/div[2]/form/button[1]`
 
 ## Finding Elements
@@ -126,7 +114,7 @@ The generated XPath uses:
 
 ```python
 # UI Bridge tries all strategies automatically
-client.click('submit-btn')  # Tries data-ui-id, data-testid, id, then CSS/XPath
+client.click('submit-btn')  # Tries data-testid, id, then CSS/XPath
 ```
 
 ### By CSS Selector
@@ -159,7 +147,7 @@ If an element isn't found:
 
 If multiple elements match:
 
-1. Add a more specific `data-ui-id`
+1. Add a `data-testid` for explicit identification
 2. Use a more specific CSS selector
 3. Use XPath with position: `(//button[@class="btn"])[1]`
 
