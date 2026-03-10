@@ -66,13 +66,13 @@ const VERSION = '0.1.0';
  * WebSocket handler for UI Bridge server
  */
 export class UIBridgeWSHandler {
-  private handlers: UIBridgeServerHandlers;
+  private handlers: Partial<UIBridgeServerHandlers>;
   private clients = new Map<string, ConnectedClient>();
   private verbose: boolean;
   private log: (message: string) => void;
 
   constructor(
-    handlers: UIBridgeServerHandlers,
+    handlers: Partial<UIBridgeServerHandlers>,
     options: { verbose?: boolean; log?: (message: string) => void } = {}
   ) {
     this.handlers = handlers;
@@ -311,6 +311,10 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'find' }
   ): Promise<void> {
+    if (!this.handlers.find) {
+      this.sendResponse(clientId, message.id, false, undefined, 'find handler not available');
+      return;
+    }
     const result = await this.handlers.find(message.payload || {});
 
     if (result.success && result.data) {
@@ -328,6 +332,10 @@ export class UIBridgeWSHandler {
     message: WSClientMessage & { type: 'getElement' }
   ): Promise<void> {
     const { elementId } = message.payload;
+    if (!this.handlers.getElement) {
+      this.sendResponse(clientId, message.id, false, undefined, 'getElement handler not available');
+      return;
+    }
     const result = await this.handlers.getElement(elementId);
 
     if (result.success) {
@@ -344,6 +352,16 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'getSnapshot' }
   ): Promise<void> {
+    if (!this.handlers.getControlSnapshot) {
+      this.sendResponse(
+        clientId,
+        message.id,
+        false,
+        undefined,
+        'getControlSnapshot handler not available'
+      );
+      return;
+    }
     const result = await this.handlers.getControlSnapshot();
 
     if (result.success) {
@@ -361,6 +379,16 @@ export class UIBridgeWSHandler {
     message: WSClientMessage & { type: 'executeAction' }
   ): Promise<void> {
     const { elementId, action } = message.payload;
+    if (!this.handlers.executeElementAction) {
+      this.sendResponse(
+        clientId,
+        message.id,
+        false,
+        undefined,
+        'executeElementAction handler not available'
+      );
+      return;
+    }
     const result = await this.handlers.executeElementAction(elementId, action);
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
@@ -374,6 +402,16 @@ export class UIBridgeWSHandler {
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
     const { componentId, action, params } = message.payload;
+    if (!this.handlers.executeComponentAction) {
+      this.sendResponse(
+        clientId,
+        message.id,
+        false,
+        undefined,
+        'executeComponentAction handler not available'
+      );
+      return;
+    }
     const result = await this.handlers.executeComponentAction(componentId, { action, params });
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
@@ -390,6 +428,16 @@ export class UIBridgeWSHandler {
 
     // Note: Progress streaming would need to be added to the handlers interface
     // For now, we just run the workflow without progress callbacks
+    if (!this.handlers.runWorkflow) {
+      this.sendResponse(
+        clientId,
+        message.id,
+        false,
+        undefined,
+        'runWorkflow handler not available'
+      );
+      return;
+    }
     const result = await this.handlers.runWorkflow(workflowId, { params });
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
