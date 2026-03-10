@@ -1,0 +1,1329 @@
+/**
+ * Change Tracker
+ *
+ * Orchestrates element change diffing with:
+ * - Action-integrated diffing (snapshot → action → settle → snapshot → diff)
+ * - Conditional waits (waitForChange with declarative predicates)
+ * - Semantic change categorization
+ * - Scoped diffs (within a container)
+ * - Change buffer with drain
+ * - Snapshot bookmarks
+ */
+
+import type {
+  SemanticSnapshot,
+  SemanticDiff,
+  ChangeCategory,
+  CategorizedDiff,
+  ActionWithDiffRequest,
+  ActionDiffResult,
+  ChangePredicate,
+  WaitForChangeOptions,
+  BufferedChange,
+  ChangeBufferDrainResult,
+  SnapshotBookmark,
+  NLActionResponse,
+  ChangeTimeline,
+  TimelineEvent,
+  DiffSummaryOptions,
+  StructuredChangeAnalysis,
+  TableChangeAnalysis,
+  ListChangeAnalysis,
+} from './types';
+import type { ControlSnapshot } from '../control/types';
+import { computeDiff, hasSignificantChanges } from './semantic-diff';
+import type { SemanticDiffConfig } from './semantic-diff';
+import type { SemanticSnapshotManager } from './semantic-snapshot';
+import type { CompositeIdleDetector } from '../idle';
+import { detectTable, detectList } from './table-extraction';
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/** Dependencies injected into ChangeTracker */
+export interface ChangeTrackerDeps {
+  /** Creates semantic snapshots from control snapshots */
+  snapshotManager: SemanticSnapshotManager;
+  /** Idle detection (optional — falls back to timeout if null) */
+  idleDetector: CompositeIdleDetector | null;
+  /** Creates control snapshots from the current registry state */
+  createControlSnapshot: () => ControlSnapshot;
+  /** Executes a natural language action */
+  executeNLAction?: (instruction: string) => Promise<NLActionResponse>;
+  /** Executes an element action */
+  executeElementAction?: (
+    elementId: string,
+    request: { action: string; params?: Record<string, unknown> }
+  ) => Promise<unknown>;
+  /** Refresh element references before snapshotting */
+  refreshElements?: () => void;
+  /**
+   * Resolve element IDs within a CSS selector container (DOM containment).
+   * When running in a browser, this uses actual `document.querySelector` + DOM traversal.
+   * Returns the set of element IDs contained within the matched container.
+   * If not provided, falls back to string-based scope matching.
+   */
+  resolveScope?: (scope: string) => Set<string> | null;
+}
+
+/** ChangeTracker configuration */
+export interface ChangeTrackerConfig {
+  /** Default settle timeout for action-integrated diffing (ms) */
+  defaultSettleTimeout: number;
+  /** Default settle min stable time (ms) */
+  defaultSettleMinStable: number;
+  /** Default polling interval for waitForChange (ms) */
+  defaultPollInterval: number;
+  /** Default timeout for waitForChange (ms) */
+  defaultWaitTimeout: number;
+  /** Maximum buffer size before oldest entries are evicted */
+  maxBufferSize: number;
+  /** Maximum number of bookmarks */
+  maxBookmarks: number;
+  /** Diff configuration to use */
+  diffConfig?: Partial<SemanticDiffConfig>;
+}
+
+const DEFAULT_CONFIG: ChangeTrackerConfig = {
+  defaultSettleTimeout: 5000,
+  defaultSettleMinStable: 300,
+  defaultPollInterval: 200,
+  defaultWaitTimeout: 10000,
+  maxBufferSize: 1000,
+  maxBookmarks: 50,
+};
+
+// ============================================================================
+// ChangeTracker
+// ============================================================================
+
+export class ChangeTracker {
+  private deps: ChangeTrackerDeps;
+  private config: ChangeTrackerConfig;
+
+  // Bookmarks
+  private bookmarks = new Map<string, SnapshotBookmark>();
+
+  // Change buffer
+  private changeBuffer: BufferedChange[] = [];
+  private bufferEnabled = false;
+  private bufferSequence = 0;
+
+  // Last diff for categorization
+  private lastDiff: SemanticDiff | null = null;
+
+  constructor(deps: ChangeTrackerDeps, config?: Partial<ChangeTrackerConfig>) {
+    this.deps = deps;
+    this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  // ==========================================================================
+  // Feature 1: Action-Integrated Diffing
+  // ==========================================================================
+
+  /**
+   * Execute an action and return the diff of what changed.
+   *
+   * Flow: snapshot before → execute action → wait for idle → snapshot after → diff
+   */
+  async executeWithDiff(request: ActionWithDiffRequest): Promise<ActionDiffResult> {
+    const startTime = performance.now();
+
+    // Refresh elements for accurate snapshot
+    this.deps.refreshElements?.();
+
+    // 1. Snapshot before
+    const beforeControl = this.deps.createControlSnapshot();
+    const beforeSnapshot = this.deps.snapshotManager.createSnapshot(beforeControl);
+
+    // 2. Execute action
+    let actionResult: unknown;
+    let actionSuccess = false;
+
+    if (request.instruction && this.deps.executeNLAction) {
+      const nlResult = await this.deps.executeNLAction(request.instruction);
+      actionResult = nlResult;
+      actionSuccess = nlResult.success;
+    } else if (request.elementAction && this.deps.executeElementAction) {
+      const result = await this.deps.executeElementAction(request.elementAction.elementId, {
+        action: request.elementAction.action,
+        params: request.elementAction.params,
+      });
+      actionResult = result;
+      actionSuccess =
+        result !== null &&
+        typeof result === 'object' &&
+        'success' in result &&
+        (result as { success: boolean }).success;
+    } else {
+      throw new Error(
+        'Either instruction (with executeNLAction) or elementAction (with executeElementAction) must be provided'
+      );
+    }
+
+    // 3. Wait for idle / settle, optionally recording a timeline
+    const settleTimeout = request.settleTimeout ?? this.config.defaultSettleTimeout;
+    const settleMinStable = request.settleMinStable ?? this.config.defaultSettleMinStable;
+    let settleTimedOut = false;
+    let timeline: ChangeTimeline | undefined;
+
+    if (request.timeline) {
+      // Record intermediate snapshots during settling
+      timeline = await this.recordTimeline(
+        beforeSnapshot,
+        startTime,
+        settleTimeout,
+        settleMinStable,
+        request.timelineInterval ?? 100,
+        request.scope
+      );
+      settleTimedOut = !timeline.settled;
+    } else if (this.deps.idleDetector) {
+      try {
+        await this.deps.idleDetector.waitForIdle({
+          timeout: settleTimeout,
+          minStableMs: settleMinStable,
+        });
+      } catch {
+        settleTimedOut = true;
+      }
+    } else {
+      // Fallback: simple delay
+      await sleep(settleMinStable);
+    }
+
+    // 4. Snapshot after
+    this.deps.refreshElements?.();
+    const afterControl = this.deps.createControlSnapshot();
+    const afterSnapshot = this.deps.snapshotManager.createSnapshot(afterControl);
+
+    // 5. Compute diff (optionally scoped)
+    let diff: SemanticDiff;
+    if (request.scope) {
+      diff = this.computeScopedDiff(beforeSnapshot, afterSnapshot, request.scope);
+    } else {
+      diff = computeDiff(beforeSnapshot, afterSnapshot, this.config.diffConfig);
+    }
+
+    // 6. Categorize
+    const categorize = request.categorize !== false;
+    const categorized = categorize ? this.categorizeChanges(diff) : undefined;
+
+    // 7. Store in buffer if enabled
+    this.lastDiff = diff;
+    if (this.bufferEnabled) {
+      this.appendToBuffer(diff, categorized?.category ?? this.categorizeChanges(diff).category);
+    }
+
+    // 8. Optional budget-aware summary
+    const budgetSummary =
+      request.summaryBudget != null
+        ? this.summarizeDiff(diff, {
+            budget: request.summaryBudget,
+            includeCategory: !!categorized,
+          })
+        : undefined;
+
+    // 9. Optional structured change analysis
+    const structuredChanges = request.analyzeStructured
+      ? analyzeStructuredChanges(beforeSnapshot, afterSnapshot)
+      : undefined;
+
+    return {
+      actionSuccess,
+      actionResult,
+      beforeSnapshot,
+      afterSnapshot,
+      diff,
+      categorized,
+      timeline,
+      settleTimedOut,
+      budgetSummary,
+      structuredChanges,
+      durationMs: performance.now() - startTime,
+      timestamp: Date.now(),
+    };
+  }
+
+  // ==========================================================================
+  // Feature 2: waitForChange
+  // ==========================================================================
+
+  /**
+   * Wait for a specific change condition to be met.
+   *
+   * Polls at configurable intervals, computing diffs until the predicate matches.
+   */
+  async waitForChange(
+    predicate: ChangePredicate,
+    options?: WaitForChangeOptions
+  ): Promise<SemanticDiff> {
+    const timeout = options?.timeout ?? this.config.defaultWaitTimeout;
+    const interval = options?.interval ?? this.config.defaultPollInterval;
+    const startTime = performance.now();
+
+    // Take baseline snapshot
+    this.deps.refreshElements?.();
+    const baselineControl = this.deps.createControlSnapshot();
+    const baselineSnapshot = this.deps.snapshotManager.createSnapshot(baselineControl);
+
+    // Poll until predicate matches or timeout
+    while (performance.now() - startTime < timeout) {
+      await sleep(interval);
+
+      this.deps.refreshElements?.();
+      const currentControl = this.deps.createControlSnapshot();
+      const currentSnapshot = this.deps.snapshotManager.createSnapshot(currentControl);
+
+      let diff: SemanticDiff;
+      if (options?.scope) {
+        diff = this.computeScopedDiff(baselineSnapshot, currentSnapshot, options.scope);
+      } else {
+        diff = computeDiff(baselineSnapshot, currentSnapshot, this.config.diffConfig);
+      }
+
+      if (this.matchesPredicate(diff, predicate)) {
+        this.lastDiff = diff;
+        if (this.bufferEnabled) {
+          this.appendToBuffer(diff, this.categorizeChanges(diff).category);
+        }
+        return diff;
+      }
+    }
+
+    // Timeout — return the last diff even though predicate wasn't met
+    this.deps.refreshElements?.();
+    const finalControl = this.deps.createControlSnapshot();
+    const finalSnapshot = this.deps.snapshotManager.createSnapshot(finalControl);
+
+    const finalDiff = options?.scope
+      ? this.computeScopedDiff(baselineSnapshot, finalSnapshot, options.scope)
+      : computeDiff(baselineSnapshot, finalSnapshot, this.config.diffConfig);
+
+    this.lastDiff = finalDiff;
+    throw new Error(
+      `waitForChange timed out after ${timeout}ms. ` +
+        `Changes detected: ${finalDiff.changes.appeared.length} appeared, ` +
+        `${finalDiff.changes.disappeared.length} disappeared, ` +
+        `${finalDiff.changes.modified.length} modified`
+    );
+  }
+
+  /**
+   * Check if a diff matches a predicate
+   */
+  private matchesPredicate(diff: SemanticDiff, predicate: ChangePredicate): boolean {
+    // anySignificantChange
+    if (predicate.anySignificantChange) {
+      if (hasSignificantChanges(diff)) return true;
+    }
+
+    // elementAppeared
+    if (predicate.elementAppeared !== undefined) {
+      const matcher = predicate.elementAppeared;
+      if (typeof matcher === 'string') {
+        // Match by ID or description substring
+        const found = diff.changes.appeared.some(
+          (e) =>
+            e.elementId === matcher || e.description.toLowerCase().includes(matcher.toLowerCase())
+        );
+        if (found) return true;
+      } else {
+        // Match by criteria
+        const found = diff.changes.appeared.some((e) => {
+          if (matcher.text && !e.description.toLowerCase().includes(matcher.text.toLowerCase())) {
+            return false;
+          }
+          if (matcher.type && e.type !== matcher.type) {
+            return false;
+          }
+          return true;
+        });
+        if (found) return true;
+      }
+    }
+
+    // elementDisappeared
+    if (predicate.elementDisappeared !== undefined) {
+      const found = diff.changes.disappeared.some(
+        (e) =>
+          e.elementId === predicate.elementDisappeared ||
+          e.description.toLowerCase().includes(predicate.elementDisappeared!.toLowerCase())
+      );
+      if (found) return true;
+    }
+
+    // propertyChanged
+    if (predicate.propertyChanged) {
+      const { elementId, property, expectedValue } = predicate.propertyChanged;
+      const found = diff.changes.modified.some((m) => {
+        if (m.elementId !== elementId) return false;
+        if (m.property !== property) return false;
+        if (expectedValue !== undefined && m.to !== expectedValue) return false;
+        return true;
+      });
+      if (found) return true;
+    }
+
+    // textContains
+    if (predicate.textContains) {
+      const { elementId, text } = predicate.textContains;
+      const textLower = text.toLowerCase();
+
+      if (elementId) {
+        // Check specific element's text content change
+        const found = diff.changes.modified.some(
+          (m) =>
+            m.elementId === elementId &&
+            m.property === 'textContent' &&
+            m.to.toLowerCase().includes(textLower)
+        );
+        if (found) return true;
+
+        // Also check appeared elements
+        const appeared = diff.changes.appeared.some(
+          (e) => e.elementId === elementId && e.description.toLowerCase().includes(textLower)
+        );
+        if (appeared) return true;
+      } else {
+        // Check any element for text
+        const inModified = diff.changes.modified.some(
+          (m) => m.property === 'textContent' && m.to.toLowerCase().includes(textLower)
+        );
+        if (inModified) return true;
+
+        const inAppeared = diff.changes.appeared.some((e) =>
+          e.description.toLowerCase().includes(textLower)
+        );
+        if (inAppeared) return true;
+
+        // Check content changes
+        if (diff.contentChanges) {
+          const inText = diff.contentChanges.textChanges.some((t) =>
+            t.newText.toLowerCase().includes(textLower)
+          );
+          if (inText) return true;
+        }
+      }
+    }
+
+    // category
+    if (predicate.category) {
+      const categorized = this.categorizeChanges(diff);
+      if (
+        categorized.category === predicate.category ||
+        categorized.secondaryCategories.includes(predicate.category)
+      ) {
+        return true;
+      }
+    }
+
+    // elementCount — check that enough elements of a type/text exist in the "after" snapshot
+    if (predicate.elementCount) {
+      const { min, type, text } = predicate.elementCount;
+      // Count matching appeared elements
+      const matchingAppeared = diff.changes.appeared.filter((e) => {
+        if (type && e.type !== type) return false;
+        if (text && !e.description.toLowerCase().includes(text.toLowerCase())) return false;
+        return true;
+      });
+      if (matchingAppeared.length >= min) return true;
+    }
+
+    // urlChanged — wait for any URL change
+    if (predicate.urlChanged) {
+      if (diff.pageChanges?.urlChanged) return true;
+    }
+
+    // urlContains — wait for URL to contain a substring
+    if (predicate.urlContains) {
+      if (
+        diff.pageChanges?.urlChanged &&
+        diff.pageChanges.newUrl?.toLowerCase().includes(predicate.urlContains.toLowerCase())
+      ) {
+        return true;
+      }
+    }
+
+    // formValid — wait for error elements to disappear
+    if (predicate.formValid) {
+      const { formId } = predicate.formValid;
+      // Check that error-related elements have disappeared and none appeared
+      const errorAppeared = diff.changes.appeared.some((e) => {
+        const desc = e.description.toLowerCase();
+        const inScope = !formId || e.elementId.toLowerCase().includes(formId.toLowerCase());
+        return (
+          inScope &&
+          (desc.includes('error') || desc.includes('invalid') || desc.includes('validation'))
+        );
+      });
+      const errorDisappeared = diff.changes.disappeared.some((e) => {
+        const desc = e.description.toLowerCase();
+        const inScope = !formId || e.elementId.toLowerCase().includes(formId.toLowerCase());
+        return (
+          inScope &&
+          (desc.includes('error') || desc.includes('invalid') || desc.includes('validation'))
+        );
+      });
+      // Form became valid: errors disappeared and none new appeared
+      if (errorDisappeared && !errorAppeared) return true;
+    }
+
+    // statusChanged — wait for a status indicator to change direction
+    if (predicate.statusChanged) {
+      const { elementId, direction, newStatus } = predicate.statusChanged;
+      if (diff.contentChanges?.statusChanges) {
+        const found = diff.contentChanges.statusChanges.some((s) => {
+          if (elementId && s.elementId !== elementId) return false;
+          if (direction && s.direction !== direction) return false;
+          if (newStatus && !s.newStatus.toLowerCase().includes(newStatus.toLowerCase()))
+            return false;
+          return true;
+        });
+        if (found) return true;
+      }
+    }
+
+    return false;
+  }
+
+  // ==========================================================================
+  // Feature: Change Timeline
+  // ==========================================================================
+
+  /**
+   * Record a timeline of changes during the settle period.
+   *
+   * Takes intermediate snapshots at regular intervals and records what changed
+   * at each step, producing a time-ordered sequence of events.
+   */
+  private async recordTimeline(
+    beforeSnapshot: SemanticSnapshot,
+    actionStartTime: number,
+    settleTimeout: number,
+    settleMinStable: number,
+    intervalMs: number,
+    scope?: string
+  ): Promise<ChangeTimeline> {
+    const events: TimelineEvent[] = [];
+    let lastSnapshot = beforeSnapshot;
+    let stableMs = 0;
+    let settled = false;
+    const timelineStart = performance.now();
+
+    // Record the action event
+    events.push({
+      offsetMs: 0,
+      type: 'action',
+      summary: 'Action executed',
+    });
+
+    while (performance.now() - timelineStart < settleTimeout) {
+      await sleep(intervalMs);
+      const offsetMs = Math.round(performance.now() - actionStartTime);
+
+      this.deps.refreshElements?.();
+      const control = this.deps.createControlSnapshot();
+      const currentSnapshot = this.deps.snapshotManager.createSnapshot(control);
+
+      // Compute incremental diff from last snapshot
+      const incrementalDiff = scope
+        ? this.computeScopedDiff(lastSnapshot, currentSnapshot, scope)
+        : computeDiff(lastSnapshot, currentSnapshot, this.config.diffConfig);
+
+      const hasChanges = hasSignificantChanges(incrementalDiff);
+
+      if (hasChanges) {
+        stableMs = 0; // Reset stable counter
+
+        // Record appeared
+        if (incrementalDiff.changes.appeared.length > 0) {
+          events.push({
+            offsetMs,
+            type: 'elements-appeared',
+            summary: `${incrementalDiff.changes.appeared.length} element(s) appeared`,
+            elementIds: incrementalDiff.changes.appeared.map((e) => e.elementId),
+            count: incrementalDiff.changes.appeared.length,
+          });
+        }
+
+        // Record disappeared
+        if (incrementalDiff.changes.disappeared.length > 0) {
+          events.push({
+            offsetMs,
+            type: 'elements-disappeared',
+            summary: `${incrementalDiff.changes.disappeared.length} element(s) disappeared`,
+            elementIds: incrementalDiff.changes.disappeared.map((e) => e.elementId),
+            count: incrementalDiff.changes.disappeared.length,
+          });
+        }
+
+        // Record modified
+        const significantMods = incrementalDiff.changes.modified.filter((m) => m.significant);
+        if (significantMods.length > 0) {
+          events.push({
+            offsetMs,
+            type: 'elements-modified',
+            summary: `${significantMods.length} element(s) modified`,
+            elementIds: significantMods.map((m) => m.elementId),
+            count: significantMods.length,
+          });
+        }
+
+        // Record page changes
+        if (incrementalDiff.pageChanges?.urlChanged) {
+          events.push({
+            offsetMs,
+            type: 'page-changed',
+            summary: `URL changed to ${incrementalDiff.pageChanges.newUrl ?? 'unknown'}`,
+          });
+        }
+
+        lastSnapshot = currentSnapshot;
+      } else {
+        stableMs += intervalMs;
+        if (stableMs >= settleMinStable) {
+          settled = true;
+          events.push({
+            offsetMs,
+            type: 'settled',
+            summary: `UI settled after ${stableMs}ms of stability`,
+          });
+          break;
+        }
+      }
+    }
+
+    return {
+      events,
+      settleMs: Math.round(performance.now() - timelineStart),
+      settled,
+    };
+  }
+
+  // ==========================================================================
+  // Feature 3: Semantic Change Categories
+  // ==========================================================================
+
+  /**
+   * Classify a diff into a semantic category.
+   */
+  categorizeChanges(diff: SemanticDiff): CategorizedDiff {
+    const scores: Record<ChangeCategory, number> = {
+      navigation: 0,
+      feedback: 0,
+      'data-update': 0,
+      'ui-state': 0,
+      loading: 0,
+      'no-op': 0,
+    };
+
+    // No changes at all
+    if (!hasSignificantChanges(diff)) {
+      return {
+        category: 'no-op',
+        confidence: 1.0,
+        secondaryCategories: [],
+        diff,
+      };
+    }
+
+    // Navigation signals
+    if (diff.pageChanges?.urlChanged) {
+      scores.navigation += 0.8;
+    }
+    if (diff.changes.appeared.length > 10 && diff.changes.disappeared.length > 10) {
+      scores.navigation += 0.4;
+    }
+    if (diff.probableTrigger === 'Page navigation') {
+      scores.navigation += 0.6;
+    }
+
+    // Feedback signals (errors, success messages, toasts, validation)
+    const feedbackAppeared = diff.changes.appeared.filter((e) => {
+      const desc = e.description.toLowerCase();
+      return (
+        desc.includes('error') ||
+        desc.includes('success') ||
+        desc.includes('warning') ||
+        desc.includes('toast') ||
+        desc.includes('notification') ||
+        desc.includes('alert') ||
+        desc.includes('validation') ||
+        e.type === 'dialog'
+      );
+    });
+    if (feedbackAppeared.length > 0) {
+      scores.feedback += 0.3 + Math.min(feedbackAppeared.length * 0.2, 0.5);
+    }
+    if (diff.probableTrigger === 'Form validation') {
+      scores.feedback += 0.6;
+    }
+    if (diff.probableTrigger === 'Modal opened' || diff.probableTrigger === 'Modal closed') {
+      scores.feedback += 0.3;
+    }
+    if (diff.contentChanges?.statusChanges && diff.contentChanges.statusChanges.length > 0) {
+      scores.feedback += 0.3;
+    }
+
+    // Data-update signals
+    if (diff.contentChanges?.metricChanges && diff.contentChanges.metricChanges.length > 0) {
+      scores['data-update'] += 0.3 + Math.min(diff.contentChanges.metricChanges.length * 0.15, 0.5);
+    }
+    if (diff.contentChanges?.textChanges) {
+      const dataTextChanges = diff.contentChanges.textChanges.filter(
+        (t) => t.changeType === 'modified'
+      );
+      if (dataTextChanges.length > 0) {
+        scores['data-update'] += 0.2 + Math.min(dataTextChanges.length * 0.1, 0.4);
+      }
+    }
+
+    // UI-state signals (visibility, enabled, expanded toggling)
+    const visibilityMods = diff.changes.modified.filter(
+      (m) => m.property === 'visible' || m.property === 'enabled' || m.property === 'checked'
+    );
+    if (visibilityMods.length > 0) {
+      scores['ui-state'] += 0.3 + Math.min(visibilityMods.length * 0.15, 0.5);
+    }
+    if (
+      diff.probableTrigger === 'UI expansion/collapse' ||
+      diff.probableTrigger === 'Focus changed'
+    ) {
+      scores['ui-state'] += 0.4;
+    }
+
+    // Loading signals
+    const loadingAppeared = diff.changes.appeared.filter((e) => {
+      const desc = e.description.toLowerCase();
+      return (
+        desc.includes('loading') ||
+        desc.includes('spinner') ||
+        desc.includes('skeleton') ||
+        desc.includes('progress')
+      );
+    });
+    const loadingDisappeared = diff.changes.disappeared.filter((e) => {
+      const desc = e.description.toLowerCase();
+      return (
+        desc.includes('loading') ||
+        desc.includes('spinner') ||
+        desc.includes('skeleton') ||
+        desc.includes('progress')
+      );
+    });
+    if (loadingAppeared.length > 0 || loadingDisappeared.length > 0) {
+      scores.loading +=
+        0.5 + Math.min((loadingAppeared.length + loadingDisappeared.length) * 0.15, 0.4);
+    }
+    if (diff.probableTrigger === 'Loading state change') {
+      scores.loading += 0.5;
+    }
+
+    // Find primary and secondary categories
+    const sortedCategories = (Object.entries(scores) as [ChangeCategory, number][])
+      .filter(([, score]) => score > 0)
+      .sort(([, a], [, b]) => b - a);
+
+    if (sortedCategories.length === 0) {
+      // Something changed but doesn't match known patterns
+      return {
+        category: 'ui-state',
+        confidence: 0.3,
+        secondaryCategories: [],
+        diff,
+      };
+    }
+
+    const [primary, primaryScore] = sortedCategories[0];
+    const secondaryCategories = sortedCategories
+      .slice(1)
+      .filter(([, score]) => score > 0.2)
+      .map(([cat]) => cat);
+
+    // Confidence is the primary score normalized (capped at 1.0)
+    const confidence = Math.min(primaryScore, 1.0);
+
+    return {
+      category: primary,
+      confidence,
+      secondaryCategories,
+      diff,
+    };
+  }
+
+  /**
+   * Categorize the last computed diff (convenience for the server handler).
+   */
+  categorizeLastDiff(): CategorizedDiff | null {
+    if (!this.lastDiff) return null;
+    return this.categorizeChanges(this.lastDiff);
+  }
+
+  // ==========================================================================
+  // Feature: Budget-Aware Diff Summary
+  // ==========================================================================
+
+  /**
+   * Generate a text summary of a diff that fits within a character budget.
+   *
+   * Prioritizes information by importance:
+   * 1. Category header (if available)
+   * 2. Page changes (URL/title)
+   * 3. Appeared elements
+   * 4. Disappeared elements
+   * 5. Significant modifications
+   * 6. Content changes (metrics, statuses, text)
+   * 7. Minor modifications
+   *
+   * Each section is only included if there's remaining budget.
+   */
+  summarizeDiff(diff: SemanticDiff, options: DiffSummaryOptions): string {
+    const { budget, includeIds = false, includeCategory = true } = options;
+    const sections: string[] = [];
+    let remaining = budget;
+
+    const addSection = (text: string): boolean => {
+      if (text.length + 1 > remaining) return false; // +1 for newline
+      sections.push(text);
+      remaining -= text.length + 1;
+      return true;
+    };
+
+    const truncateText = (text: string, max: number): string => {
+      if (text.length <= max) return text;
+      return text.substring(0, max - 3) + '...';
+    };
+
+    // 1. Category header
+    if (includeCategory) {
+      const cat = this.categorizeChanges(diff);
+      const header = `[${cat.category}] (${Math.round(cat.confidence * 100)}% confidence)`;
+      addSection(header);
+    }
+
+    // 2. Page changes
+    if (diff.pageChanges?.urlChanged) {
+      addSection(`Page: navigated to ${diff.pageChanges.newUrl ?? 'new URL'}`);
+    } else if (diff.pageChanges?.titleChanged) {
+      addSection(`Page: title changed to "${diff.pageChanges.newTitle ?? ''}"`);
+    }
+
+    // 3. Appeared elements
+    if (diff.changes.appeared.length > 0) {
+      const count = diff.changes.appeared.length;
+      if (count <= 3 && remaining > 80) {
+        const details = diff.changes.appeared
+          .map((e) => {
+            const id = includeIds ? ` [${e.elementId}]` : '';
+            return `  + ${truncateText(e.description, 40)}${id}`;
+          })
+          .join('\n');
+        addSection(`Appeared (${count}):\n${details}`);
+      } else {
+        const firstFew = diff.changes.appeared
+          .slice(0, 2)
+          .map((e) => e.description)
+          .join(', ');
+        addSection(`Appeared: ${count} elements (${truncateText(firstFew, 50)}...)`);
+      }
+    }
+
+    // 4. Disappeared elements
+    if (diff.changes.disappeared.length > 0) {
+      const count = diff.changes.disappeared.length;
+      if (count <= 3 && remaining > 80) {
+        const details = diff.changes.disappeared
+          .map((e) => {
+            const id = includeIds ? ` [${e.elementId}]` : '';
+            return `  - ${truncateText(e.description, 40)}${id}`;
+          })
+          .join('\n');
+        addSection(`Disappeared (${count}):\n${details}`);
+      } else {
+        addSection(`Disappeared: ${count} elements`);
+      }
+    }
+
+    // 5. Significant modifications
+    const significantMods = diff.changes.modified.filter((m) => m.significant);
+    if (significantMods.length > 0 && remaining > 40) {
+      const maxItems = Math.min(significantMods.length, 3);
+      const details = significantMods
+        .slice(0, maxItems)
+        .map((m) => `  ~ ${m.description}: ${m.property} "${m.from}" -> "${m.to}"`)
+        .join('\n');
+      const suffix =
+        significantMods.length > maxItems
+          ? `\n  ... +${significantMods.length - maxItems} more`
+          : '';
+      addSection(
+        `Modified (${significantMods.length} significant):\n${truncateText(details + suffix, remaining - 30)}`
+      );
+    }
+
+    // 6. Content changes
+    if (diff.contentChanges && remaining > 30) {
+      const { metricChanges, statusChanges, textChanges } = diff.contentChanges;
+
+      if (metricChanges.length > 0) {
+        const metricSummary = metricChanges
+          .slice(0, 2)
+          .map((m) => `${m.label}: ${m.oldValue} -> ${m.newValue}`)
+          .join(', ');
+        addSection(`Metrics: ${truncateText(metricSummary, remaining - 12)}`);
+      }
+
+      if (statusChanges.length > 0 && remaining > 20) {
+        const statusSummary = statusChanges
+          .slice(0, 2)
+          .map((s) => `${s.label}: ${s.oldStatus} -> ${s.newStatus} (${s.direction})`)
+          .join(', ');
+        addSection(`Statuses: ${truncateText(statusSummary, remaining - 12)}`);
+      }
+
+      if (textChanges.length > 0 && remaining > 20) {
+        addSection(`Text changes: ${textChanges.length}`);
+      }
+    }
+
+    // 7. Minor modifications (only if plenty of budget left)
+    const minorMods = diff.changes.modified.filter((m) => !m.significant);
+    if (minorMods.length > 0 && remaining > 30) {
+      addSection(`Minor changes: ${minorMods.length}`);
+    }
+
+    if (sections.length === 0) {
+      return 'No changes detected';
+    }
+
+    return sections.join('\n');
+  }
+
+  // ==========================================================================
+  // Feature 4: Scoped Diffs
+  // ==========================================================================
+
+  /**
+   * Compute a diff scoped to elements within a CSS selector container.
+   *
+   * When `resolveScope` is provided (browser environment), uses actual DOM containment
+   * to determine which elements are inside the container. Falls back to string-based
+   * matching on parentContext, ID prefix, and description.
+   */
+  computeScopedDiff(
+    fromSnapshot: SemanticSnapshot,
+    toSnapshot: SemanticSnapshot,
+    scope: string
+  ): SemanticDiff {
+    // Try DOM containment first
+    const domScopedIds = this.deps.resolveScope?.(scope) ?? null;
+
+    const filterElements = (elements: SemanticSnapshot['elements']) => {
+      if (domScopedIds) {
+        // DOM containment: only include elements whose ID is in the resolved set
+        return elements.filter((el) => domScopedIds.has(el.id));
+      }
+
+      // Fallback: string-based matching
+      const scopeLower = scope.toLowerCase();
+      return elements.filter((el) => {
+        if (el.parentContext && el.parentContext.toLowerCase().includes(scopeLower)) {
+          return true;
+        }
+        if (el.id.toLowerCase().startsWith(scopeLower)) {
+          return true;
+        }
+        if (el.description.toLowerCase().includes(scopeLower)) {
+          return true;
+        }
+        return false;
+      });
+    };
+
+    const scopedFrom: SemanticSnapshot = {
+      ...fromSnapshot,
+      snapshotId: `${fromSnapshot.snapshotId}:scoped(${scope})`,
+      elements: filterElements(fromSnapshot.elements),
+    };
+
+    const scopedTo: SemanticSnapshot = {
+      ...toSnapshot,
+      snapshotId: `${toSnapshot.snapshotId}:scoped(${scope})`,
+      elements: filterElements(toSnapshot.elements),
+    };
+
+    return computeDiff(scopedFrom, scopedTo, this.config.diffConfig);
+  }
+
+  /**
+   * Get a scoped diff from the current state vs. a named bookmark.
+   */
+  scopedDiffFromBookmark(bookmarkName: string, scope: string): SemanticDiff | null {
+    const bookmark = this.bookmarks.get(bookmarkName);
+    if (!bookmark) return null;
+
+    this.deps.refreshElements?.();
+    const currentControl = this.deps.createControlSnapshot();
+    const currentSnapshot = this.deps.snapshotManager.createSnapshot(currentControl);
+
+    return this.computeScopedDiff(bookmark.snapshot, currentSnapshot, scope);
+  }
+
+  // ==========================================================================
+  // Feature 5: Change Buffer
+  // ==========================================================================
+
+  /** Enable change buffering */
+  enableBuffer(): void {
+    this.bufferEnabled = true;
+  }
+
+  /** Disable change buffering */
+  disableBuffer(): void {
+    this.bufferEnabled = false;
+  }
+
+  /** Whether the buffer is enabled */
+  isBufferEnabled(): boolean {
+    return this.bufferEnabled;
+  }
+
+  /** Get buffer size */
+  getBufferSize(): number {
+    return this.changeBuffer.length;
+  }
+
+  /**
+   * Drain all buffered changes and clear the buffer.
+   */
+  drainBuffer(): ChangeBufferDrainResult {
+    const changes = [...this.changeBuffer];
+    this.changeBuffer = [];
+
+    return {
+      changes,
+      count: changes.length,
+      fromTimestamp: changes.length > 0 ? changes[0].recordedAt : 0,
+      toTimestamp: changes.length > 0 ? changes[changes.length - 1].recordedAt : 0,
+    };
+  }
+
+  /** Append a diff to the buffer */
+  private appendToBuffer(diff: SemanticDiff, category: ChangeCategory): void {
+    if (!this.bufferEnabled) return;
+
+    this.changeBuffer.push({
+      diff,
+      category,
+      recordedAt: Date.now(),
+      sequence: this.bufferSequence++,
+    });
+
+    // Evict oldest if over limit
+    if (this.changeBuffer.length > this.config.maxBufferSize) {
+      this.changeBuffer = this.changeBuffer.slice(
+        this.changeBuffer.length - this.config.maxBufferSize
+      );
+    }
+  }
+
+  // ==========================================================================
+  // Feature 6: Snapshot Bookmarks
+  // ==========================================================================
+
+  /**
+   * Save a named snapshot of the current state.
+   */
+  saveBookmark(name: string): SnapshotBookmark {
+    this.deps.refreshElements?.();
+    const controlSnapshot = this.deps.createControlSnapshot();
+    const snapshot = this.deps.snapshotManager.createSnapshot(controlSnapshot);
+
+    const bookmark: SnapshotBookmark = {
+      name,
+      snapshot,
+      savedAt: Date.now(),
+    };
+
+    // Evict oldest if at limit
+    if (this.bookmarks.size >= this.config.maxBookmarks && !this.bookmarks.has(name)) {
+      const oldest = [...this.bookmarks.entries()].sort(([, a], [, b]) => a.savedAt - b.savedAt)[0];
+      if (oldest) {
+        this.bookmarks.delete(oldest[0]);
+      }
+    }
+
+    this.bookmarks.set(name, bookmark);
+    return bookmark;
+  }
+
+  /**
+   * Get a named bookmark.
+   */
+  getBookmark(name: string): SnapshotBookmark | null {
+    return this.bookmarks.get(name) ?? null;
+  }
+
+  /**
+   * Delete a named bookmark.
+   */
+  deleteBookmark(name: string): boolean {
+    return this.bookmarks.delete(name);
+  }
+
+  /**
+   * List all bookmark names.
+   */
+  listBookmarks(): string[] {
+    return [...this.bookmarks.keys()];
+  }
+
+  /**
+   * Compute a diff from a named bookmark to the current state.
+   */
+  diffFromBookmark(name: string): SemanticDiff | null {
+    const bookmark = this.bookmarks.get(name);
+    if (!bookmark) return null;
+
+    this.deps.refreshElements?.();
+    const currentControl = this.deps.createControlSnapshot();
+    const currentSnapshot = this.deps.snapshotManager.createSnapshot(currentControl);
+
+    const diff = computeDiff(bookmark.snapshot, currentSnapshot, this.config.diffConfig);
+    this.lastDiff = diff;
+    return diff;
+  }
+}
+
+// ============================================================================
+// Structured Change Analysis (List/Table-Aware Diffing)
+// ============================================================================
+
+/**
+ * Analyze structural changes between two snapshots at the table/list level.
+ *
+ * Detects tables and lists in both snapshots using spatial layout analysis,
+ * then compares them to identify added/removed/modified rows or items.
+ */
+export function analyzeStructuredChanges(
+  before: SemanticSnapshot,
+  after: SemanticSnapshot
+): StructuredChangeAnalysis {
+  const tableChanges: TableChangeAnalysis[] = [];
+  const listChanges: ListChangeAnalysis[] = [];
+
+  // Detect tables in before/after
+  const beforeTable = detectTable(before.elements as any);
+  const afterTable = detectTable(after.elements as any);
+
+  if (beforeTable || afterTable) {
+    const analysis = diffTables(beforeTable, afterTable);
+    if (analysis) {
+      tableChanges.push(analysis);
+    }
+  }
+
+  // Detect lists in before/after
+  const beforeList = detectList(before.elements as any);
+  const afterList = detectList(after.elements as any);
+
+  if (beforeList || afterList) {
+    const analysis = diffLists(beforeList, afterList);
+    if (analysis) {
+      listChanges.push(analysis);
+    }
+  }
+
+  return {
+    tableChanges,
+    listChanges,
+    hasStructuredData: tableChanges.length > 0 || listChanges.length > 0,
+  };
+}
+
+/**
+ * Diff two detected tables at the row level.
+ */
+function diffTables(
+  before: ReturnType<typeof detectTable>,
+  after: ReturnType<typeof detectTable>
+): TableChangeAnalysis | null {
+  // Table appeared
+  if (!before && after) {
+    return {
+      label: after.label,
+      columns: after.columns.map((c) => c.header),
+      addedRows: after.rows,
+      removedRows: [],
+      modifiedRows: [],
+      summary: `Table "${after.label}" appeared with ${after.rows.length} rows`,
+    };
+  }
+
+  // Table disappeared
+  if (before && !after) {
+    return {
+      label: before.label,
+      columns: before.columns.map((c) => c.header),
+      addedRows: [],
+      removedRows: before.rows,
+      modifiedRows: [],
+      summary: `Table "${before.label}" disappeared (had ${before.rows.length} rows)`,
+    };
+  }
+
+  // Both exist — compare rows
+  if (before && after) {
+    const columns = after.columns.map((c) => c.header);
+    const addedRows: string[][] = [];
+    const removedRows: string[][] = [];
+    const modifiedRows: TableChangeAnalysis['modifiedRows'] = [];
+
+    // Build row keys (first column as identifier, or full row stringified)
+    const keyFn = (row: string[]): string => row[0] ?? row.join('|');
+
+    const beforeRowMap = new Map<string, { row: string[]; index: number }>();
+    for (let i = 0; i < before.rows.length; i++) {
+      beforeRowMap.set(keyFn(before.rows[i]), { row: before.rows[i], index: i });
+    }
+
+    const afterRowMap = new Map<string, { row: string[]; index: number }>();
+    for (let i = 0; i < after.rows.length; i++) {
+      afterRowMap.set(keyFn(after.rows[i]), { row: after.rows[i], index: i });
+    }
+
+    // Find added rows
+    for (const [key, { row }] of afterRowMap) {
+      if (!beforeRowMap.has(key)) {
+        addedRows.push(row);
+      }
+    }
+
+    // Find removed rows
+    for (const [key, { row }] of beforeRowMap) {
+      if (!afterRowMap.has(key)) {
+        removedRows.push(row);
+      }
+    }
+
+    // Find modified rows (same key, different cell values)
+    for (const [key, afterEntry] of afterRowMap) {
+      const beforeEntry = beforeRowMap.get(key);
+      if (beforeEntry) {
+        const changes: { column: string; from: string; to: string }[] = [];
+        const maxCols = Math.max(beforeEntry.row.length, afterEntry.row.length);
+        for (let c = 0; c < maxCols; c++) {
+          const fromVal = beforeEntry.row[c] ?? '';
+          const toVal = afterEntry.row[c] ?? '';
+          if (fromVal !== toVal) {
+            changes.push({
+              column: columns[c] ?? `col_${c}`,
+              from: fromVal,
+              to: toVal,
+            });
+          }
+        }
+        if (changes.length > 0) {
+          modifiedRows.push({ rowIndex: afterEntry.index, changes });
+        }
+      }
+    }
+
+    if (addedRows.length === 0 && removedRows.length === 0 && modifiedRows.length === 0) {
+      return null; // No table-level changes
+    }
+
+    const parts: string[] = [];
+    if (addedRows.length > 0) parts.push(`${addedRows.length} rows added`);
+    if (removedRows.length > 0) parts.push(`${removedRows.length} rows removed`);
+    if (modifiedRows.length > 0) parts.push(`${modifiedRows.length} rows modified`);
+
+    return {
+      label: after.label,
+      columns,
+      addedRows,
+      removedRows,
+      modifiedRows,
+      summary: `Table "${after.label}": ${parts.join(', ')}`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Diff two detected lists at the item level.
+ */
+function diffLists(
+  before: ReturnType<typeof detectList>,
+  after: ReturnType<typeof detectList>
+): ListChangeAnalysis | null {
+  // List appeared
+  if (!before && after) {
+    return {
+      label: after.label,
+      addedItems: after.items,
+      removedItems: [],
+      summary: `List appeared with ${after.items.length} items`,
+    };
+  }
+
+  // List disappeared
+  if (before && !after) {
+    return {
+      label: before.label,
+      addedItems: [],
+      removedItems: before.items,
+      summary: `List disappeared (had ${before.items.length} items)`,
+    };
+  }
+
+  // Both exist — compare items
+  if (before && after) {
+    const itemKey = (item: Record<string, string>): string => Object.values(item).join('|');
+
+    const beforeKeys = new Set(before.items.map(itemKey));
+    const afterKeys = new Set(after.items.map(itemKey));
+
+    const addedItems = after.items.filter((item) => !beforeKeys.has(itemKey(item)));
+    const removedItems = before.items.filter((item) => !afterKeys.has(itemKey(item)));
+
+    if (addedItems.length === 0 && removedItems.length === 0) {
+      return null;
+    }
+
+    const parts: string[] = [];
+    if (addedItems.length > 0) parts.push(`${addedItems.length} items added`);
+    if (removedItems.length > 0) parts.push(`${removedItems.length} items removed`);
+
+    return {
+      label: after.label,
+      addedItems,
+      removedItems,
+      summary: `List: ${parts.join(', ')}`,
+    };
+  }
+
+  return null;
+}
+
+// ============================================================================
+// Factory
+// ============================================================================
+
+export function createChangeTracker(
+  deps: ChangeTrackerDeps,
+  config?: Partial<ChangeTrackerConfig>
+): ChangeTracker {
+  return new ChangeTracker(deps, config);
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

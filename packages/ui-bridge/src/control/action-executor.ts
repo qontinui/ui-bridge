@@ -5,9 +5,19 @@
  */
 
 import type { UIBridgeRegistry } from '../core/registry';
-import type { WaitOptions, ElementState, StandardAction } from '../core/types';
-import type { CapturedError } from '../debug/browser-capture-types';
+import type {
+  WaitOptions,
+  ElementState,
+  StandardAction,
+  ActionBrowserEvent,
+  ActionErrorDiff,
+} from '../core/types';
+import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
 import type { BrowserEventCapture } from '../debug/browser-capture';
+import { classifyEvent, filterBySeverity } from '../debug/error-severity';
+import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
+import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
+import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import type {
   ControlActionRequest,
@@ -194,10 +204,66 @@ function createMouseEventAt(type: string, clientX: number, clientY: number): Mou
  * Default action executor implementation
  */
 export class DefaultActionExecutor implements ActionExecutor {
+  private idleDetector?: CompositeIdleDetector;
+  private impactAssessor?: ErrorImpactAssessor;
+
   constructor(
     private registry: UIBridgeRegistry,
     private consoleCapture?: BrowserEventCapture
-  ) {}
+  ) {
+    // Initialize impact assessor if we're in a browser environment
+    if (typeof document !== 'undefined') {
+      this.impactAssessor = new ErrorImpactAssessor({
+        captureUIState: () => this.captureUIStateSnapshot(),
+      });
+    }
+  }
+
+  /**
+   * Set the idle detector for waitAfter support on actions.
+   */
+  setIdleDetector(detector: CompositeIdleDetector): void {
+    this.idleDetector = detector;
+  }
+
+  /**
+   * Capture a lightweight UI state snapshot for error impact assessment.
+   */
+  private captureUIStateSnapshot(): UIStateSnapshot {
+    const allElements = this.registry.getAllElements() as Array<{
+      id: string;
+      element?: HTMLElement;
+    }>;
+
+    const elementIds = new Set<string>();
+    const disabledIds = new Set<string>();
+    const errorBoundaryElements = new Set<string>();
+
+    for (const el of allElements) {
+      elementIds.add(el.id);
+      if (el.element) {
+        if (isDisabled(el.element)) {
+          disabledIds.add(el.id);
+        }
+        // Detect error boundary fallback patterns
+        if (
+          el.element.getAttribute('role') === 'alert' ||
+          el.element.dataset.errorBoundary !== undefined ||
+          el.element.classList.contains('error-boundary')
+        ) {
+          errorBoundaryElements.add(el.id);
+        }
+      }
+    }
+
+    return {
+      elementIds,
+      disabledIds,
+      errorBoundaryElements,
+      url: typeof window !== 'undefined' ? window.location.href : '',
+      timestamp: Date.now(),
+    };
+  }
 
   /**
    * Execute an action on an element
@@ -245,16 +311,64 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
       }
 
-      // Execute the action
+      // Capture browser events snapshot BEFORE the action (for diff)
       const actionStartTime = Date.now();
+      const eventsBefore = this.consoleCapture ? this.consoleCapture.getRecent(100) : [];
+      const fingerprintsBefore = new Set(eventsBefore.map(computeFingerprint));
+
+      // Capture UI state before action for impact assessment
+      this.impactAssessor?.captureBeforeState();
+
+      // Execute the action
       const result = await this.performAction(element, request.action, request.params);
 
       // Brief wait to catch immediate async errors (promise rejections from click handlers)
       let consoleErrors: CapturedError[] | undefined;
+      let browserEvents: ActionBrowserEvent[] | undefined;
+      let errorDiff: ActionErrorDiff | undefined;
+      let errorImpact: import('../debug/error-impact').ErrorImpact | undefined;
       if (this.consoleCapture) {
         await sleep(50);
+
+        // Legacy: console errors only (backward compat)
         const errors = this.consoleCapture.getConsoleSince(actionStartTime);
         if (errors.length > 0) consoleErrors = errors;
+
+        // Enhanced: all browser events since action, enriched
+        const allEventsSince = this.consoleCapture.getSince(actionStartTime);
+        if (allEventsSince.length > 0) {
+          // Filter out noise, enrich with severity/fingerprint/source
+          const significantEvents = filterBySeverity(allEventsSince, 'warning');
+          if (significantEvents.length > 0) {
+            browserEvents = enrichEvents(significantEvents);
+          }
+        }
+
+        // Compute error diff: what changed because of this action
+        const eventsAfter = this.consoleCapture.getRecent(100);
+        errorDiff = computeActionErrorDiff(fingerprintsBefore, eventsBefore, eventsAfter);
+
+        // Assess error impact on UI state if significant errors occurred
+        if (this.impactAssessor && errorDiff && errorDiff.newErrors.length > 0) {
+          // Use the most significant new error for impact assessment
+          const topNewError = errorDiff.newErrors[0];
+          errorImpact = this.impactAssessor.assessImpact(topNewError.event);
+        }
+      }
+
+      // Wait for idle after action if requested
+      let idleWaitMs: number | undefined;
+      if (request.waitAfter && this.idleDetector) {
+        const idleWaitStart = performance.now();
+        const waitTimeout = request.waitAfterTimeout ?? 10000;
+        const waitMinStable = request.waitAfterMinStable ?? 300;
+
+        try {
+          await this.waitAfterAction(request.waitAfter, waitTimeout, waitMinStable);
+        } catch {
+          // Idle wait timeout is non-fatal — the action itself succeeded
+        }
+        idleWaitMs = performance.now() - idleWaitStart;
       }
 
       return {
@@ -262,10 +376,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         elementState: getElementState(element),
         result,
         consoleErrors,
+        browserEvents,
+        errorDiff,
+        errorImpact,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
         waitDurationMs,
+        idleWaitMs,
       };
     } catch (error) {
       return {
@@ -553,6 +671,31 @@ export class DefaultActionExecutor implements ActionExecutor {
       state: getElementState(element),
       error: `Timeout waiting for conditions after ${opts.timeout}ms`,
     };
+  }
+
+  /**
+   * Wait for idle after an action based on the waitAfter specification.
+   */
+  private async waitAfterAction(
+    waitAfter: NonNullable<ControlActionRequest['waitAfter']>,
+    timeout: number,
+    minStableMs: number
+  ): Promise<void> {
+    if (!this.idleDetector) return;
+
+    if (waitAfter === 'idle') {
+      // Wait for composite idle
+      await this.idleDetector.waitForIdle({ timeout, minStableMs });
+    } else if (typeof waitAfter === 'string') {
+      // Wait for a specific signal
+      await this.idleDetector.waitForSignal(waitAfter, { timeout, minStableMs });
+    } else if (Array.isArray(waitAfter)) {
+      // Wait for multiple signals
+      await this.idleDetector.waitFor(waitAfter, { timeout, minStableMs });
+    } else if ('indicator' in waitAfter) {
+      // Wait for a CSS selector to disappear
+      await this.idleDetector.waitFor([waitAfter], { timeout, minStableMs });
+    }
   }
 
   /**
@@ -1118,6 +1261,88 @@ export class DefaultActionExecutor implements ActionExecutor {
         return [...baseActions, 'click'];
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Action-error enrichment helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Enrich raw browser events with severity, fingerprint, and source location.
+ */
+function enrichEvents(events: AnyCapturedEvent[]): ActionBrowserEvent[] {
+  return events.map((event) => {
+    const { severity, reason } = classifyEvent(event);
+    const fingerprint = computeFingerprint(event);
+    const stack = 'stack' in event ? (event as { stack?: string }).stack : undefined;
+    return {
+      event,
+      severity,
+      reason,
+      fingerprint,
+      sourceLocation: extractSourceLocation(stack),
+    };
+  });
+}
+
+/**
+ * Compute error diff between before and after event snapshots.
+ * "New" = fingerprints present after but not before.
+ * "Resolved" = fingerprints present before but not after.
+ */
+function computeActionErrorDiff(
+  fingerprintsBefore: Set<string>,
+  eventsBefore: AnyCapturedEvent[],
+  eventsAfter: AnyCapturedEvent[]
+): ActionErrorDiff | undefined {
+  const fingerprintsAfter = new Set(eventsAfter.map(computeFingerprint));
+
+  // Find new fingerprints (in after but not in before)
+  const newFingerprints = new Set<string>();
+  for (const fp of fingerprintsAfter) {
+    if (!fingerprintsBefore.has(fp)) newFingerprints.add(fp);
+  }
+
+  // Find resolved fingerprints (in before but not in after)
+  const resolvedFingerprints = new Set<string>();
+  for (const fp of fingerprintsBefore) {
+    if (!fingerprintsAfter.has(fp)) resolvedFingerprints.add(fp);
+  }
+
+  // No changes — skip the diff entirely
+  if (newFingerprints.size === 0 && resolvedFingerprints.size === 0) {
+    return undefined;
+  }
+
+  // Build enriched lists: pick representative event per fingerprint
+  const newErrors = enrichEvents(
+    eventsAfter.filter((e) => newFingerprints.has(computeFingerprint(e)))
+  );
+  const resolvedErrors = enrichEvents(
+    eventsBefore.filter((e) => resolvedFingerprints.has(computeFingerprint(e)))
+  );
+
+  // Deduplicate: keep one per fingerprint
+  const deduped = (list: ActionBrowserEvent[]) => {
+    const seen = new Set<string>();
+    return list.filter((e) => {
+      if (seen.has(e.fingerprint)) return false;
+      seen.add(e.fingerprint);
+      return true;
+    });
+  };
+
+  const dedupedNew = deduped(newErrors);
+  const dedupedResolved = deduped(resolvedErrors);
+
+  const countErrors = (list: ActionBrowserEvent[]) =>
+    list.filter((e) => e.severity === 'crash' || e.severity === 'error').length;
+
+  return {
+    newErrors: dedupedNew,
+    resolvedErrors: dedupedResolved,
+    errorDelta: countErrors(dedupedNew) - countErrors(dedupedResolved),
+  };
 }
 
 /**

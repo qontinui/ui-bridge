@@ -39,6 +39,7 @@ export type {
   SemanticSnapshot,
   FormState,
   FormFieldState,
+  FormsResponse,
   ModalState,
 
   // Diff types
@@ -49,6 +50,23 @@ export type {
   TextChange,
   MetricChange,
   StatusChange,
+
+  // Change tracking types
+  ChangeCategory,
+  CategorizedDiff,
+  ActionWithDiffRequest,
+  ActionDiffResult,
+  ChangePredicate,
+  WaitForChangeOptions,
+  BufferedChange,
+  ChangeBufferDrainResult,
+  SnapshotBookmark,
+  ChangeTimeline,
+  TimelineEvent,
+  DiffSummaryOptions,
+  StructuredChangeAnalysis,
+  TableChangeAnalysis,
+  ListChangeAnalysis,
 
   // Error types
   AIErrorContext,
@@ -161,6 +179,10 @@ export {
 } from './summary-generator';
 export type { SummaryConfig } from './summary-generator';
 
+// Validation scanner
+export { scanValidationErrors } from './validation-scanner';
+export type { DetectedValidationError } from './validation-scanner';
+
 // NL Action Parser
 export {
   parseNLInstruction,
@@ -203,6 +225,10 @@ export {
   DEFAULT_DIFF_CONFIG,
 } from './semantic-diff';
 export type { SemanticDiffConfig } from './semantic-diff';
+
+// Change Tracker
+export { ChangeTracker, createChangeTracker, analyzeStructuredChanges } from './change-tracker';
+export type { ChangeTrackerDeps, ChangeTrackerConfig } from './change-tracker';
 
 // Error Context
 export {

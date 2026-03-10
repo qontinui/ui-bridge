@@ -16,6 +16,7 @@ export default defineConfig([
       'server/nextjs': 'src/server/nextjs.ts',
       'server/standalone': 'src/server/standalone.ts',
       'server/handlers': 'src/server/handlers.ts',
+      'idle/index': 'src/idle/index.ts',
       'annotations/index': 'src/annotations/index.ts',
       'specs/index': 'src/specs/index.ts',
     },

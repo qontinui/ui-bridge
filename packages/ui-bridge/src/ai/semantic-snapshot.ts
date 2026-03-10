@@ -319,6 +319,12 @@ export class SemanticSnapshotManager {
       activeModals: partial?.activeModals || activeModals,
       focusedElement: partial?.focusedElement || elements.find((el) => el.state.focused)?.id,
       navigation: partial?.navigation,
+      pathname: partial?.pathname,
+      pageName: partial?.pageName,
+      section: partial?.section,
+      breadcrumb: partial?.breadcrumb,
+      routePattern: partial?.routePattern,
+      routeParams: partial?.routeParams,
     };
   }
 
@@ -381,7 +387,7 @@ export class SemanticSnapshotManager {
       fields,
       isValid: !hasErrors,
       submitButton: submitButton?.id,
-      isDirty: fields.some((f) => f.value !== '' && f.touched),
+      isDirty: fields.some((f) => f.isDirty),
     };
   }
 
@@ -413,7 +419,7 @@ export class SemanticSnapshotManager {
       fields,
       isValid: !hasErrors,
       submitButton: submitButton?.id,
-      isDirty: fields.some((f) => f.value !== ''),
+      isDirty: fields.some((f) => f.isDirty),
     };
   }
 
@@ -421,15 +427,26 @@ export class SemanticSnapshotManager {
    * Analyze form fields
    */
   private analyzeFormFields(inputs: AIDiscoveredElement[]): FormFieldState[] {
-    return inputs.map((input) => ({
-      id: input.id,
-      label: input.accessibleName || input.label || input.id,
-      type: input.type,
-      value: input.state.value || '',
-      valid: true, // Would need validation state
-      required: false, // Would need DOM access
-      touched: input.state.focused || (input.state.value?.length || 0) > 0,
-    }));
+    return inputs.map((input) => {
+      const valid = input.state.validationState ? input.state.validationState.valid : true;
+      const error = input.state.validationState?.validationMessage || undefined;
+
+      return {
+        id: input.id,
+        label: input.accessibleName || input.label || input.id,
+        type: input.type,
+        value: input.state.value || '',
+        valid,
+        error,
+        required: input.state.required ?? false,
+        touched: input.state.focused || (input.state.value?.length || 0) > 0,
+        placeholder: undefined, // Not available from AIDiscoveredElement
+        isDirty: (input.state.value?.length || 0) > 0,
+        checked: input.state.checked,
+        selectedOptions: input.state.selectedOptions,
+        constraints: input.state.constraints,
+      };
+    });
   }
 
   /**

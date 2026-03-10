@@ -35,6 +35,8 @@ import { createMetricsCollector, MetricsCollector } from '../debug/metrics';
 import { BrowserEventCapture } from '../debug/browser-capture';
 import type { OnBrowserEventCallback, BrowserCaptureConfig } from '../debug/browser-capture-types';
 import type { ActionExecutor, WorkflowEngine } from '../control/types';
+import { NavigationTracker } from '../navigation';
+import type { NavigationEventData } from '../navigation';
 
 /**
  * UI Bridge context value
@@ -70,6 +72,8 @@ export interface UIBridgeContextValue {
   on: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => () => void;
   /** Unsubscribe from events */
   off: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => void;
+  /** Navigation tracker for page/route awareness */
+  navigationTracker: NavigationTracker;
   /** Whether the provider is initialized */
   initialized: boolean;
   /** Connect to WebSocket server */
@@ -125,6 +129,7 @@ export function UIBridgeProvider({
   const renderLogRef = useRef<RenderLogManager | null>(null);
   const metricsRef = useRef<MetricsCollector | null>(null);
   const browserCaptureRef = useRef<BrowserEventCapture | null>(null);
+  const navigationTrackerRef = useRef<NavigationTracker | null>(null);
   const wsClientRef = useRef<UIBridgeWSClient | null>(null);
   const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
   const prevWsStateRef = useRef<WSConnectionState>('disconnected');
@@ -151,6 +156,12 @@ export function UIBridgeProvider({
     browserCaptureRef.current = new BrowserEventCapture(browserCaptureConfig);
     browserCaptureRef.current.install();
 
+    // Install navigation tracker for page/route awareness
+    navigationTrackerRef.current = new NavigationTracker();
+    navigationTrackerRef.current.install((data: NavigationEventData) => {
+      registryRef.current?.dispatchEvent('navigation:change', data);
+    });
+
     // Initialize WebSocket client if enabled
     if (config.websocket) {
       const wsPort = config.websocketPort || config.serverPort || 9876;
@@ -176,12 +187,14 @@ export function UIBridgeProvider({
       (w.__UI_BRIDGE__ as Record<string, unknown>).browserCapture = browserCaptureRef.current;
       // Backward-compat: also expose as consoleCapture (same instance supports getSince/getRecent)
       (w.__UI_BRIDGE__ as Record<string, unknown>).consoleCapture = browserCaptureRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).navigationTracker = navigationTrackerRef.current;
     }
   }
 
   const registry = registryRef.current;
   const renderLog = renderLogRef.current || undefined;
   const metrics = metricsRef.current || undefined;
+  const navigationTracker = navigationTrackerRef.current!;
   const wsClient = wsClientRef.current || undefined;
 
   // Create executor and workflow engine
@@ -245,6 +258,7 @@ export function UIBridgeProvider({
       renderLog?.stop();
       browserCaptureRef.current?.setOnEvent(null);
       browserCaptureRef.current?.uninstall();
+      navigationTrackerRef.current?.uninstall();
       wsClient?.disconnect();
       resetGlobalRegistry();
     };
@@ -314,6 +328,7 @@ export function UIBridgeProvider({
       workflowEngine,
       renderLog,
       metrics,
+      navigationTracker,
       wsClient,
       wsConnectionState,
       getElements,
@@ -336,6 +351,7 @@ export function UIBridgeProvider({
       workflowEngine,
       renderLog,
       metrics,
+      navigationTracker,
       wsClient,
       wsConnectionState,
       getElements,

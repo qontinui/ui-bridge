@@ -95,7 +95,7 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
  * Create Express router with UI Bridge routes
  */
 export function createExpressRouter(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   config: ExpressAdapterConfig = {}
 ): Router {
   // Dynamic import to avoid bundling Express if not used
@@ -192,7 +192,7 @@ function createRouteHandler(
  * Convenience function that creates a complete Express app with UI Bridge.
  */
 export function createExpressApp(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   config: ExpressAdapterConfig = {}
 ): unknown {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -218,7 +218,7 @@ export function createExpressApp(
  * Express middleware that adds UI Bridge to an existing app
  */
 export function uiBridgeMiddleware(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   config: ExpressAdapterConfig = {}
 ): Router {
   return createExpressRouter(handlers, config);

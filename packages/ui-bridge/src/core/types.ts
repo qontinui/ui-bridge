@@ -5,8 +5,10 @@
  * plus ui-bridge-specific types (WebSocket protocol, accessibility, extended workflow types).
  */
 
-import type { CapturedError } from '../debug/browser-capture-types';
+import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
 export type { CapturedError } from '../debug/browser-capture-types';
+import type { ErrorSeverity } from '../debug/error-severity';
+import type { ErrorImpact } from '../debug/error-impact';
 
 // ============================================================================
 // Core Element Types
@@ -81,6 +83,31 @@ export interface ElementState {
     visibility: string;
     opacity: string;
     pointerEvents: string;
+  };
+  /** Whether the element is required (form controls only) */
+  required?: boolean;
+  /** HTML5 constraint validation state (form controls only) */
+  validationState?: {
+    valid: boolean;
+    validationMessage?: string;
+    valueMissing?: boolean;
+    typeMismatch?: boolean;
+    patternMismatch?: boolean;
+    tooShort?: boolean;
+    tooLong?: boolean;
+    rangeUnderflow?: boolean;
+    rangeOverflow?: boolean;
+    stepMismatch?: boolean;
+    customError?: boolean;
+  };
+  /** HTML5 constraint attributes (form controls only) */
+  constraints?: {
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
+    min?: string;
+    max?: string;
+    step?: string;
   };
 }
 
@@ -523,6 +550,42 @@ export interface ActionResponse {
   timestamp: number;
   /** Console errors/warnings captured during action execution */
   consoleErrors?: CapturedError[];
+  /** All browser events captured during action execution, enriched with severity and source info */
+  browserEvents?: ActionBrowserEvent[];
+  /** Error diff: what changed as a result of this action */
+  errorDiff?: ActionErrorDiff;
+  /** Error impact assessment: how errors affected the UI (only present when significant errors occurred) */
+  errorImpact?: ErrorImpact;
+}
+
+/**
+ * An enriched browser event captured during action execution.
+ * Includes classification metadata that the raw CapturedError lacks.
+ */
+export interface ActionBrowserEvent {
+  /** The raw captured event */
+  event: AnyCapturedEvent;
+  /** Classified severity */
+  severity: ErrorSeverity;
+  /** Reason for the classification */
+  reason: string;
+  /** Stable fingerprint for deduplication */
+  fingerprint: string;
+  /** Extracted source file:line, if available */
+  sourceLocation?: string;
+}
+
+/**
+ * Error diff: what changed as a result of an action.
+ * Compares browser events before vs after the action.
+ */
+export interface ActionErrorDiff {
+  /** Events that appeared after the action (new fingerprints) */
+  newErrors: ActionBrowserEvent[];
+  /** Events present before that disappeared after */
+  resolvedErrors: ActionBrowserEvent[];
+  /** Net change: positive means more errors, negative means fewer */
+  errorDelta: number;
 }
 
 // ============================================================================
@@ -664,7 +727,30 @@ export type BridgeEventType =
   | 'workflow:completed'
   | 'workflow:failed'
   | 'render:snapshot'
-  | 'error';
+  | 'error'
+  // Idle detection — composite
+  | 'app:busy'
+  | 'app:idle'
+  // Idle detection — network signal
+  | 'network:busy'
+  | 'network:idle'
+  | 'network:requestStart'
+  | 'network:requestEnd'
+  // Idle detection — DOM settling signal
+  | 'dom:mutating'
+  | 'dom:settled'
+  // Idle detection — loading indicator signal
+  | 'loading:detected'
+  | 'loading:cleared'
+  // Idle detection — form mutation signal
+  | 'form:mutating'
+  | 'form:settled'
+  // Navigation — page/route changes
+  | 'navigation:change'
+  // Browser event capture — error/warning events
+  | 'browser:error'
+  | 'browser:warning'
+  | 'browser:crash';
 
 /**
  * Event payload structure

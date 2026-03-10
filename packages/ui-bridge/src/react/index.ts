@@ -73,3 +73,7 @@ export { type ContentDiscoveryOptions } from './content-discovery';
 
 // Annotation hook
 export { useUIAnnotation } from './useUIAnnotation';
+
+// Page/route awareness hooks
+export { usePageContext } from './usePageContext';
+export { useRouteAwareness } from './useRouteAwareness';

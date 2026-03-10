@@ -34,6 +34,76 @@ import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 
 /**
+ * Capture form-specific state (required, validation, constraints) for a form control element.
+ */
+function captureFormControlState(
+  element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  state: ElementState
+): void {
+  // Required
+  if (element.required || element.getAttribute('aria-required') === 'true') {
+    state.required = true;
+  }
+
+  // HTML5 Constraint Validation API
+  if ('validity' in element) {
+    const v = element.validity;
+    if (!v.valid || element.validationMessage) {
+      state.validationState = {
+        valid: v.valid,
+        validationMessage: element.validationMessage || undefined,
+        valueMissing: v.valueMissing || undefined,
+        typeMismatch: v.typeMismatch || undefined,
+        patternMismatch: v.patternMismatch || undefined,
+        tooShort: v.tooShort || undefined,
+        tooLong: v.tooLong || undefined,
+        rangeUnderflow: v.rangeUnderflow || undefined,
+        rangeOverflow: v.rangeOverflow || undefined,
+        stepMismatch: v.stepMismatch || undefined,
+        customError: v.customError || undefined,
+      };
+    }
+  }
+
+  // Constraint attributes
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    const constraints: ElementState['constraints'] = {};
+    let hasConstraint = false;
+
+    if (element instanceof HTMLInputElement) {
+      if (element.pattern) {
+        constraints.pattern = element.pattern;
+        hasConstraint = true;
+      }
+      if (element.min) {
+        constraints.min = element.min;
+        hasConstraint = true;
+      }
+      if (element.max) {
+        constraints.max = element.max;
+        hasConstraint = true;
+      }
+      if (element.step && element.step !== 'any') {
+        constraints.step = element.step;
+        hasConstraint = true;
+      }
+    }
+    if (element.minLength > 0) {
+      constraints.minLength = element.minLength;
+      hasConstraint = true;
+    }
+    if (element.maxLength >= 0 && element.maxLength < 524288) {
+      constraints.maxLength = element.maxLength;
+      hasConstraint = true;
+    }
+
+    if (hasConstraint) {
+      state.constraints = constraints;
+    }
+  }
+}
+
+/**
  * Get the current state of an element
  */
 function getElementState(element: HTMLElement): ElementState {
@@ -99,11 +169,14 @@ function getElementState(element: HTMLElement): ElementState {
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
+    captureFormControlState(element, state);
   } else if (element instanceof HTMLTextAreaElement) {
     state.value = element.value;
+    captureFormControlState(element, state);
   } else if (element instanceof HTMLSelectElement) {
     state.value = element.value;
     state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    captureFormControlState(element, state);
   }
 
   // Capture href for anchor elements
@@ -325,6 +398,14 @@ export class UIBridgeRegistry {
     return () => {
       this.eventListeners.get(type)?.delete(listener as BridgeEventListener);
     };
+  }
+
+  /**
+   * Dispatch an event from external sources (e.g., NavigationTracker).
+   * Prefer using registry methods (registerElement, etc.) for internal events.
+   */
+  dispatchEvent<T>(type: BridgeEventType, data: T): void {
+    this.emit(type, data);
   }
 
   /**

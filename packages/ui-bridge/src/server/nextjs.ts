@@ -78,7 +78,7 @@ export type NextRouteHandler = (
  * ```
  */
 export function createNextRouteHandlers(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   config: NextJSAdapterConfig = {}
 ): {
   GET: NextRouteHandler;

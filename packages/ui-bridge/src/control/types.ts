@@ -11,6 +11,7 @@ import type {
   WaitOptions,
   ContentMetadata,
 } from '../core/types';
+import type { SnapshotPageContext } from '../navigation/types';
 
 /**
  * Extended action request with additional options
@@ -26,6 +27,19 @@ export interface ControlActionRequest extends ActionRequest {
     retryDelay: number;
     retryOn?: ('timeout' | 'notFound' | 'disabled' | 'error')[];
   };
+  /**
+   * Wait for idle after the action completes.
+   *
+   * - `'idle'` — wait for composite idle (all signals)
+   * - `string` — wait for a specific signal (e.g., `'network'`, `'dom'`)
+   * - `string[]` — wait for multiple signals
+   * - `{ indicator: string }` — wait for a CSS selector to disappear
+   */
+  waitAfter?: 'idle' | string | string[] | { indicator: string };
+  /** Timeout for waitAfter in ms (default: 10000) */
+  waitAfterTimeout?: number;
+  /** Minimum stable time for waitAfter in ms (default: 300) */
+  waitAfterMinStable?: number;
 }
 
 /**
@@ -40,6 +54,8 @@ export interface ControlActionResponse extends ActionResponse {
   retryCount?: number;
   /** Wait duration before action */
   waitDurationMs?: number;
+  /** Time spent waiting for idle after action (ms) */
+  idleWaitMs?: number;
 }
 
 /**
@@ -226,6 +242,26 @@ export type DiscoveryRequest = FindRequest;
 export type DiscoveryResponse = FindResponse;
 
 /**
+ * Error summary included in control snapshots.
+ * Gives AI agents a quick health overview without a separate API call.
+ */
+export interface SnapshotErrorSummary {
+  /** Number of errors in the last 30 seconds */
+  errorCount: number;
+  /** Number of warnings in the last 30 seconds */
+  warningCount: number;
+  /** Most recent critical error, if any */
+  mostRecentError?: {
+    message: string;
+    timestamp: number;
+    /** Extracted source file:line, if available */
+    sourceLocation?: string;
+  };
+  /** Overall health assessment */
+  health: 'healthy' | 'degraded' | 'broken';
+}
+
+/**
  * Control snapshot - full state of controllable UI
  */
 export interface ControlSnapshot {
@@ -261,6 +297,10 @@ export interface ControlSnapshot {
     currentStep: number;
     totalSteps: number;
   }>;
+  /** Error/warning summary from browser event capture (populated by server handlers) */
+  errorSummary?: SnapshotErrorSummary;
+  /** Current page/route context (populated by server handlers via NavigationTracker) */
+  page?: SnapshotPageContext;
 }
 
 /**

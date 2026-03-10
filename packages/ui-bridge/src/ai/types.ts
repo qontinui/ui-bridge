@@ -169,6 +169,18 @@ export interface PageContext {
   focusedElement?: string;
   /** Detected navigation elements */
   navigation?: string[];
+  /** Pathname (from NavigationTracker) */
+  pathname?: string;
+  /** Semantic page name (from usePageContext) */
+  pageName?: string;
+  /** Application section (from usePageContext) */
+  section?: string;
+  /** Breadcrumb trail (from usePageContext) */
+  breadcrumb?: string[];
+  /** Route pattern (from useRouteAwareness, e.g., "/tasks/:id") */
+  routePattern?: string;
+  /** Route parameters (from useRouteAwareness, e.g., { id: "123" }) */
+  routeParams?: Record<string, string>;
 }
 
 /**
@@ -554,6 +566,37 @@ export interface FormFieldState {
   required: boolean;
   /** Touched flag */
   touched: boolean;
+  /** Placeholder text */
+  placeholder?: string;
+  /** Whether the field value differs from the default */
+  isDirty?: boolean;
+  /** Checked state for checkboxes/radios */
+  checked?: boolean;
+  /** Selected options for select elements */
+  selectedOptions?: string[];
+  /** HTML5 constraint attributes */
+  constraints?: {
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
+    min?: string;
+    max?: string;
+    step?: string;
+  };
+  /** Source of the detected validation error */
+  errorSource?: 'html5' | 'aria' | 'adjacent-element' | 'css-class';
+}
+
+/**
+ * Response from the /control/forms endpoint
+ */
+export interface FormsResponse {
+  /** All detected forms on the page */
+  forms: FormState[];
+  /** LLM-readable summary */
+  summary: string;
+  /** Timestamp */
+  timestamp: number;
 }
 
 /**
@@ -714,6 +757,261 @@ export interface ElementModification {
   to: string;
   /** Whether this is a significant change */
   significant: boolean;
+}
+
+// ============================================================================
+// Element Change Diffing Types
+// ============================================================================
+
+/** Semantic category for a set of changes */
+export type ChangeCategory =
+  | 'navigation'
+  | 'feedback'
+  | 'data-update'
+  | 'ui-state'
+  | 'loading'
+  | 'no-op';
+
+/** Result of categorizing a diff */
+export interface CategorizedDiff {
+  /** Primary category */
+  category: ChangeCategory;
+  /** Confidence in the categorization (0-1) */
+  confidence: number;
+  /** Secondary categories if the diff spans multiple */
+  secondaryCategories: ChangeCategory[];
+  /** The underlying diff */
+  diff: SemanticDiff;
+}
+
+/** Request for action-integrated diffing */
+export interface ActionWithDiffRequest {
+  /** Natural language instruction (mutually exclusive with elementAction) */
+  instruction?: string;
+  /** Direct element action (mutually exclusive with instruction) */
+  elementAction?: {
+    elementId: string;
+    action: string;
+    params?: Record<string, unknown>;
+  };
+  /** Timeout for idle settling after action (ms, default: 5000) */
+  settleTimeout?: number;
+  /** Min stable time for idle (ms, default: 300) */
+  settleMinStable?: number;
+  /** CSS selector to scope the diff to a container */
+  scope?: string;
+  /** Whether to categorize the diff (default: true) */
+  categorize?: boolean;
+  /** Whether to record a change timeline during settling (default: false) */
+  timeline?: boolean;
+  /** Timeline polling interval during settling (ms, default: 100) */
+  timelineInterval?: number;
+  /** If set, include a budget-aware text summary capped at this many characters */
+  summaryBudget?: number;
+  /** If true, detect and analyze table/list structural changes */
+  analyzeStructured?: boolean;
+}
+
+/** Result from action-integrated diffing */
+export interface ActionDiffResult {
+  /** Whether the action succeeded */
+  actionSuccess: boolean;
+  /** Action result details */
+  actionResult: unknown;
+  /** Snapshot before action */
+  beforeSnapshot: SemanticSnapshot;
+  /** Snapshot after action + settling */
+  afterSnapshot: SemanticSnapshot;
+  /** Computed diff */
+  diff: SemanticDiff;
+  /** Semantic category (if categorize was true) */
+  categorized?: CategorizedDiff;
+  /** Change timeline (if timeline was requested) */
+  timeline?: ChangeTimeline;
+  /** Whether idle settling timed out */
+  settleTimedOut: boolean;
+  /** Budget-aware text summary (if summaryBudget was set) */
+  budgetSummary?: string;
+  /** Structured change analysis (if analyzeStructured was true) */
+  structuredChanges?: StructuredChangeAnalysis;
+  /** Total duration (action + settle + diff) */
+  durationMs: number;
+  /** Timestamp */
+  timestamp: number;
+}
+
+/** A timeline of changes during the settle period */
+export interface ChangeTimeline {
+  /** Individual timestamped events */
+  events: TimelineEvent[];
+  /** Total settle duration (ms) */
+  settleMs: number;
+  /** Whether the UI reached a stable state */
+  settled: boolean;
+}
+
+/** A single event in the change timeline */
+export interface TimelineEvent {
+  /** Time offset from action start (ms) */
+  offsetMs: number;
+  /** Type of event */
+  type:
+    | 'action'
+    | 'elements-appeared'
+    | 'elements-disappeared'
+    | 'elements-modified'
+    | 'page-changed'
+    | 'settled';
+  /** Human-readable summary */
+  summary: string;
+  /** Element IDs involved (if applicable) */
+  elementIds?: string[];
+  /** Number of elements affected */
+  count?: number;
+}
+
+/** Predicate for waitForChange — declarative conditions for detecting specific changes */
+export interface ChangePredicate {
+  /** Wait for a specific element to appear (by ID or description matcher) */
+  elementAppeared?: string | { text?: string; type?: string };
+  /** Wait for a specific element to disappear (by ID) */
+  elementDisappeared?: string;
+  /** Wait for an element's property to change to a value */
+  propertyChanged?: {
+    elementId: string;
+    property: string;
+    expectedValue?: string;
+  };
+  /** Wait for text content matching a pattern anywhere on the page */
+  textContains?: {
+    elementId?: string;
+    text: string;
+  };
+  /** Wait for a specific change category */
+  category?: ChangeCategory;
+  /** Wait for any significant change */
+  anySignificantChange?: boolean;
+  /** Wait until at least N elements match (appeared + existing matching type/text) */
+  elementCount?: {
+    /** Minimum count required */
+    min: number;
+    /** Element type to count */
+    type?: string;
+    /** Text to match (case-insensitive substring) */
+    text?: string;
+  };
+  /** Wait for URL/route to change */
+  urlChanged?: boolean;
+  /** Wait for URL to contain a specific substring */
+  urlContains?: string;
+  /** Wait for form to become valid (no error elements visible) */
+  formValid?: {
+    /** Form element ID or container scope */
+    formId?: string;
+  };
+  /** Wait for a status change with a specific direction */
+  statusChanged?: {
+    /** Element ID of the status indicator */
+    elementId?: string;
+    /** Required direction of change */
+    direction?: 'improved' | 'degraded';
+    /** Specific new status text (case-insensitive) */
+    newStatus?: string;
+  };
+}
+
+/** Options for waitForChange */
+export interface WaitForChangeOptions {
+  /** Maximum time to wait (ms, default: 10000) */
+  timeout?: number;
+  /** Polling interval (ms, default: 200) */
+  interval?: number;
+  /** CSS selector to scope the diff */
+  scope?: string;
+}
+
+/** A buffered change entry */
+export interface BufferedChange {
+  /** Diff */
+  diff: SemanticDiff;
+  /** Semantic category */
+  category: ChangeCategory;
+  /** Timestamp when the change was recorded */
+  recordedAt: number;
+  /** Sequence number */
+  sequence: number;
+}
+
+/** Response from draining the change buffer */
+export interface ChangeBufferDrainResult {
+  /** Changes since last drain */
+  changes: BufferedChange[];
+  /** Total changes drained */
+  count: number;
+  /** Time span covered */
+  fromTimestamp: number;
+  toTimestamp: number;
+}
+
+/** Named snapshot bookmark */
+export interface SnapshotBookmark {
+  /** Bookmark name */
+  name: string;
+  /** The snapshot */
+  snapshot: SemanticSnapshot;
+  /** When the bookmark was saved */
+  savedAt: number;
+}
+
+/** Options for budget-aware diff summary generation */
+export interface DiffSummaryOptions {
+  /** Maximum character count for the summary */
+  budget: number;
+  /** Include element IDs in the summary (default: false) */
+  includeIds?: boolean;
+  /** Include the category in the summary header (default: true) */
+  includeCategory?: boolean;
+}
+
+/** Result of structured change analysis (table/list-level diffing) */
+export interface StructuredChangeAnalysis {
+  /** Table-level changes detected */
+  tableChanges: TableChangeAnalysis[];
+  /** List-level changes detected */
+  listChanges: ListChangeAnalysis[];
+  /** Whether any structured data was detected */
+  hasStructuredData: boolean;
+}
+
+/** Analysis of changes to a detected table */
+export interface TableChangeAnalysis {
+  /** Table label/identifier */
+  label: string;
+  /** Column headers */
+  columns: string[];
+  /** Rows that were added */
+  addedRows: string[][];
+  /** Rows that were removed */
+  removedRows: string[][];
+  /** Rows with cell value changes */
+  modifiedRows: {
+    rowIndex: number;
+    changes: { column: string; from: string; to: string }[];
+  }[];
+  /** Summary of table changes */
+  summary: string;
+}
+
+/** Analysis of changes to a detected list */
+export interface ListChangeAnalysis {
+  /** List label/identifier */
+  label: string;
+  /** Items that were added */
+  addedItems: Record<string, string>[];
+  /** Items that were removed */
+  removedItems: Record<string, string>[];
+  /** Summary of list changes */
+  summary: string;
 }
 
 // ============================================================================

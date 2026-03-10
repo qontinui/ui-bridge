@@ -41,6 +41,11 @@
       "import": "./dist/ai/index.mjs",
       "require": "./dist/ai/index.js"
     },
+    "./idle": {
+      "types": "./dist/idle/index.d.ts",
+      "import": "./dist/idle/index.mjs",
+      "require": "./dist/idle/index.js"
+    },
     "./annotations": {
       "types": "./dist/annotations/index.d.ts",
       "import": "./dist/annotations/index.mjs",

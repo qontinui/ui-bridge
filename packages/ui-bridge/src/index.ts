@@ -29,3 +29,9 @@ export * from './annotations';
 
 // Specs module - declarative UI element specifications
 export * from './specs';
+
+// Idle detection module - app idle/busy detection
+export * from './idle';
+
+// Navigation module - page/route awareness
+export * from './navigation';

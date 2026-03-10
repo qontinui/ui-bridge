@@ -42,6 +42,16 @@ import type {
   StructuredDataExtraction,
   CrossAppComparisonReport,
   ComponentInfo,
+  ActionWithDiffRequest,
+  ActionDiffResult,
+  ChangePredicate,
+  WaitForChangeOptions,
+  CategorizedDiff,
+  ChangeBufferDrainResult,
+  SnapshotBookmark,
+  FormsResponse,
+  DiffSummaryOptions,
+  StructuredChangeAnalysis,
 } from '../ai';
 import type {
   InteractionStateName,
@@ -65,7 +75,22 @@ import type {
   StateSnapshot,
 } from '../core';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
-import type { CapturedError } from '../debug/browser-capture-types';
+import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
+import type { FingerprintedEvent } from '../debug/error-fingerprint';
+import type { ErrorSeverity } from '../debug/error-severity';
+import type { TimelineEntry } from '../debug/error-timeline';
+import type { HealthReport } from '../debug/health-score';
+import type { ErrorSessionSummary, BaselineComparison } from '../debug/error-session';
+import type { NetworkChain } from '../debug/network-chain';
+import type { ErrorSnapshot } from '../debug/error-snapshot';
+import type {
+  CompositeIdleStatus,
+  NetworkSignalStatus,
+  DOMSignalStatus,
+  LoadingIndicatorSignalStatus,
+  FormMutationSignalStatus,
+  SignalStatus,
+} from '../idle';
 
 /**
  * Server configuration
@@ -139,6 +164,20 @@ export interface RenderLogQuery {
   until?: number;
   /** Limit number of results */
   limit?: number;
+}
+
+/**
+ * Browser events response — returned by GET /control/browser-events
+ */
+export interface BrowserEventsResponse {
+  /** Raw events (filtered by params) */
+  events: AnyCapturedEvent[] | CapturedError[];
+  /** Total count of returned events */
+  count: number;
+  /** Deduplicated event groups (only when deduplicate=true) */
+  deduplicated?: FingerprintedEvent[];
+  /** Number of unique fingerprints (only when deduplicate=true) */
+  uniqueCount?: number;
 }
 
 /**
@@ -216,6 +255,42 @@ export interface UIBridgeServerHandlers {
   getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
   getPageSummary: () => Promise<APIResponse<string>>;
 
+  // Change tracking endpoints
+  executeWithDiff: (request: ActionWithDiffRequest) => Promise<APIResponse<ActionDiffResult>>;
+  waitForChange: (request: {
+    predicate: ChangePredicate;
+    options?: WaitForChangeOptions;
+  }) => Promise<APIResponse<SemanticDiff>>;
+  categorizeLastDiff: () => Promise<APIResponse<CategorizedDiff | null>>;
+  getScopedDiff: (request: {
+    scope: string;
+    fromBookmark?: string;
+  }) => Promise<APIResponse<SemanticDiff | null>>;
+  // Budget-aware diff summary
+  summarizeDiff: (request: {
+    budget: number;
+    includeIds?: boolean;
+    includeCategory?: boolean;
+    fromBookmark?: string;
+  }) => Promise<APIResponse<{ summary: string }>>;
+  // Structured change analysis (table/list-aware)
+  analyzeStructuredChanges: (request: {
+    fromBookmark?: string;
+  }) => Promise<APIResponse<StructuredChangeAnalysis>>;
+
+  // Change buffer endpoints
+  enableChangeBuffer: () => Promise<APIResponse<{ enabled: boolean }>>;
+  disableChangeBuffer: () => Promise<APIResponse<{ enabled: boolean }>>;
+  drainChangeBuffer: () => Promise<APIResponse<ChangeBufferDrainResult>>;
+  getChangeBufferSize: () => Promise<APIResponse<{ size: number; enabled: boolean }>>;
+
+  // Snapshot bookmark endpoints
+  saveBookmark: (request: { name: string }) => Promise<APIResponse<SnapshotBookmark>>;
+  getBookmark: (name: string) => Promise<APIResponse<SnapshotBookmark>>;
+  deleteBookmark: (name: string) => Promise<APIResponse<{ deleted: boolean }>>;
+  listBookmarks: () => Promise<APIResponse<string[]>>;
+  diffFromBookmark: (name: string) => Promise<APIResponse<SemanticDiff | null>>;
+
   // Semantic search (embedding-based)
   aiSemanticSearch: (
     criteria: SemanticSearchCriteria
@@ -291,7 +366,51 @@ export interface UIBridgeServerHandlers {
     type?: string;
     since?: number;
     limit?: number;
-  }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
+    severity?: string;
+    deduplicate?: boolean;
+  }) => Promise<APIResponse<BrowserEventsResponse>>;
+  getTimeline: (params?: {
+    since?: number;
+    limit?: number;
+    minSeverity?: string;
+  }) => Promise<APIResponse<{ entries: TimelineEntry[]; count: number }>>;
+
+  // Health score endpoint
+  getHealthReport: (params?: { windowMs?: number }) => Promise<APIResponse<HealthReport>>;
+
+  // Network chain endpoints
+  getNetworkChains: (params?: {
+    since?: number;
+    limit?: number;
+    failuresOnly?: boolean;
+    url?: string;
+  }) => Promise<APIResponse<{ chains: NetworkChain[]; count: number }>>;
+
+  // Error session endpoints
+  startErrorSession: (request: { label?: string }) => Promise<APIResponse<{ sessionId: string }>>;
+  endErrorSession: () => Promise<APIResponse<ErrorSessionSummary | null>>;
+  getErrorSessions: () => Promise<APIResponse<ErrorSessionSummary[]>>;
+  captureErrorBaseline: (request: {
+    label: string;
+  }) => Promise<APIResponse<{ label: string; capturedAt: number; fingerprintCount: number }>>;
+  compareErrorBaseline: (request: {
+    label: string;
+  }) => Promise<APIResponse<BaselineComparison | null>>;
+
+  // Error snapshots (auto-captured on significant errors)
+  getErrorSnapshots: (params?: {
+    limit?: number;
+  }) => Promise<APIResponse<{ snapshots: ErrorSnapshot[]; count: number }>>;
+
+  // Composite error report (health + recent errors + session in one call)
+  getErrorReport: () => Promise<
+    APIResponse<{
+      health: HealthReport;
+      recentErrors: AnyCapturedEvent[];
+      activeSession: ErrorSessionSummary | null;
+      snapshots: ErrorSnapshot[];
+    }>
+  >;
 
   // Design review endpoints
   getElementStyles: (id: string) => Promise<APIResponse<ElementDesignData>>;
@@ -325,6 +444,27 @@ export interface UIBridgeServerHandlers {
     elementIds?: string[];
   }) => Promise<APIResponse<{ saved: boolean; elementCount: number }>>;
   diffBaseline: (request?: { elementIds?: string[] }) => Promise<APIResponse<SnapshotDiffReport>>;
+
+  // Form state awareness endpoints
+  getForms: () => Promise<APIResponse<FormsResponse>>;
+
+  // Idle detection endpoints
+  getIdleStatus: () => Promise<APIResponse<CompositeIdleStatus>>;
+  getIdleSignalStatus: (signal: string) => Promise<APIResponse<SignalStatus>>;
+  waitForIdle: (request?: {
+    timeout?: number;
+    minStableMs?: number;
+    exclude?: string[];
+  }) => Promise<APIResponse<CompositeIdleStatus>>;
+  waitForSignalIdle: (
+    signal: string,
+    request?: { timeout?: number; minStableMs?: number }
+  ) => Promise<APIResponse<SignalStatus>>;
+  waitForTargets: (request: {
+    targets: Array<string | { indicator: string }>;
+    timeout?: number;
+    minStableMs?: number;
+  }) => Promise<APIResponse<Record<string, SignalStatus>>>;
 }
 
 /**
@@ -409,6 +549,56 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
+
+  // Change tracking
+  {
+    method: 'POST',
+    path: '/ai/execute-with-diff',
+    handler: 'executeWithDiff',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/ai/wait-for-change',
+    handler: 'waitForChange',
+    bodyRequired: true,
+  },
+  { method: 'GET', path: '/ai/categorize-last-diff', handler: 'categorizeLastDiff' },
+  { method: 'POST', path: '/ai/scoped-diff', handler: 'getScopedDiff', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/ai/summarize-diff',
+    handler: 'summarizeDiff',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/ai/structured-changes',
+    handler: 'analyzeStructuredChanges',
+  },
+
+  // Change buffer
+  { method: 'POST', path: '/ai/change-buffer/enable', handler: 'enableChangeBuffer' },
+  { method: 'POST', path: '/ai/change-buffer/disable', handler: 'disableChangeBuffer' },
+  { method: 'POST', path: '/ai/change-buffer/drain', handler: 'drainChangeBuffer' },
+  { method: 'GET', path: '/ai/change-buffer/size', handler: 'getChangeBufferSize' },
+
+  // Snapshot bookmarks (static routes before parameterized)
+  { method: 'POST', path: '/ai/bookmarks', handler: 'saveBookmark', bodyRequired: true },
+  { method: 'GET', path: '/ai/bookmarks', handler: 'listBookmarks' },
+  { method: 'GET', path: '/ai/bookmark/:name', handler: 'getBookmark', params: ['name'] },
+  {
+    method: 'DELETE',
+    path: '/ai/bookmark/:name',
+    handler: 'deleteBookmark',
+    params: ['name'],
+  },
+  {
+    method: 'GET',
+    path: '/ai/bookmark/:name/diff',
+    handler: 'diffFromBookmark',
+    params: ['name'],
+  },
 
   // State management (static routes before parameterized)
   { method: 'GET', path: '/control/states', handler: 'getStates' },
@@ -511,6 +701,26 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'clearPerformanceEntries',
   },
   { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
+  { method: 'GET', path: '/control/timeline', handler: 'getTimeline' },
+  { method: 'GET', path: '/control/health', handler: 'getHealthReport' },
+  { method: 'GET', path: '/control/network-chains', handler: 'getNetworkChains' },
+  { method: 'POST', path: '/control/error-sessions/start', handler: 'startErrorSession' },
+  { method: 'POST', path: '/control/error-sessions/end', handler: 'endErrorSession' },
+  { method: 'GET', path: '/control/error-sessions', handler: 'getErrorSessions' },
+  {
+    method: 'POST',
+    path: '/control/error-baselines/capture',
+    handler: 'captureErrorBaseline',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/error-baselines/compare',
+    handler: 'compareErrorBaseline',
+    bodyRequired: true,
+  },
+  { method: 'GET', path: '/control/error-snapshots', handler: 'getErrorSnapshots' },
+  { method: 'GET', path: '/control/error-report', handler: 'getErrorReport' },
 
   // Design review
   {
@@ -547,6 +757,31 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/design/evaluate/contexts', handler: 'getQualityContexts' },
   { method: 'POST', path: '/design/evaluate/baseline', handler: 'saveBaseline' },
   { method: 'POST', path: '/design/evaluate/diff', handler: 'diffBaseline' },
+
+  // Form state awareness
+  { method: 'GET', path: '/control/forms', handler: 'getForms' },
+
+  // Idle detection (static routes before parameterized)
+  { method: 'GET', path: '/control/idle-status', handler: 'getIdleStatus' },
+  { method: 'POST', path: '/control/wait-for-idle', handler: 'waitForIdle' },
+  {
+    method: 'POST',
+    path: '/control/wait-for-targets',
+    handler: 'waitForTargets',
+    bodyRequired: true,
+  },
+  {
+    method: 'GET',
+    path: '/control/idle-status/:signal',
+    handler: 'getIdleSignalStatus',
+    params: ['signal'],
+  },
+  {
+    method: 'POST',
+    path: '/control/wait-for-idle/:signal',
+    handler: 'waitForSignalIdle',
+    params: ['signal'],
+  },
 ];
 
 /**

@@ -67,11 +67,11 @@ export class StandaloneServer {
     Pick<StandaloneServerConfig, 'host' | 'port' | 'websocket' | 'websocketPort' | 'log'>
   > &
     StandaloneServerConfig;
-  private handlers: UIBridgeServerHandlers;
+  private handlers: Partial<UIBridgeServerHandlers>;
   private wsHandler: UIBridgeWSHandler | null = null;
   private wsConnections: Set<WebSocketLike> = new Set();
 
-  constructor(handlers: UIBridgeServerHandlers, config: StandaloneServerConfig = {}) {
+  constructor(handlers: Partial<UIBridgeServerHandlers>, config: StandaloneServerConfig = {}) {
     this.handlers = handlers;
     this.config = { ...DEFAULT_CONFIG, ...config };
 
@@ -437,7 +437,7 @@ export class StandaloneServer {
  * Create and start a standalone server
  */
 export async function createStandaloneServer(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   config?: StandaloneServerConfig
 ): Promise<StandaloneServer> {
   const server = new StandaloneServer(handlers, config);
@@ -449,7 +449,7 @@ export async function createStandaloneServer(
  * CLI entry point
  */
 export async function startCLI(
-  handlers: UIBridgeServerHandlers,
+  handlers: Partial<UIBridgeServerHandlers>,
   args: string[] = process.argv.slice(2)
 ): Promise<void> {
   const config: StandaloneServerConfig = {};
