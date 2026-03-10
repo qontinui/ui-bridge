@@ -1,8 +1,13 @@
 /**
  * Network Idle Detector
  *
- * Intercepts fetch() and XMLHttpRequest to track in-flight network requests.
- * Reports idle when no requests have been pending for `debounceMs`.
+ * Tracks in-flight network requests and reports idle when no requests have
+ * been pending for `debounceMs`.
+ *
+ * Two modes of operation:
+ * 1. **Standalone** (default) — patches fetch/XHR directly.
+ * 2. **Tracker-driven** — subscribes to a `NetworkRequestTracker` for events,
+ *    eliminating redundant fetch/XHR patching when a tracker already exists.
  */
 
 import type {
@@ -13,6 +18,8 @@ import type {
   SignalWaitOptions,
   SignalTransitionCallback,
 } from './types';
+
+import type { NetworkRequestTracker } from '../network/tracker';
 
 interface TrackedRequest {
   url: string;
@@ -34,10 +41,14 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
   private listeners: Array<SignalTransitionCallback<NetworkSignalStatus>> = [];
   private installed = false;
 
-  // Saved originals for cleanup
+  // Saved originals for cleanup (standalone mode only)
   private originalFetch: typeof globalThis.fetch | null = null;
   private originalXHROpen: typeof XMLHttpRequest.prototype.open | null = null;
   private originalXHRSend: typeof XMLHttpRequest.prototype.send | null = null;
+
+  // Tracker-driven mode
+  private tracker: NetworkRequestTracker | null = null;
+  private trackerUnsubscribe: (() => void) | null = null;
 
   // Event callbacks for external consumers (e.g., composite emitting bridge events)
   onRequestStart?: (data: { url: string; method: string; pendingCount: number }) => void;
@@ -49,20 +60,27 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
     pendingCount: number;
   }) => void;
 
-  constructor(config: NetworkIdleConfig & { weight?: number } = {}) {
+  constructor(
+    config: NetworkIdleConfig & { weight?: number; tracker?: NetworkRequestTracker } = {}
+  ) {
     this.weight = config.weight ?? 0.9;
     this.debounceMs = config.debounceMs ?? 500;
     this.ignorePatterns = (config.ignorePatterns ?? []).map((p) => new RegExp(p));
     this.trackXHR = config.trackXHR ?? true;
+    this.tracker = config.tracker ?? null;
   }
 
   install(): void {
     if (this.installed) return;
     this.installed = true;
 
-    this.installFetchInterceptor();
-    if (this.trackXHR) {
-      this.installXHRInterceptor();
+    if (this.tracker) {
+      this.installTrackerSubscription();
+    } else {
+      this.installFetchInterceptor();
+      if (this.trackXHR) {
+        this.installXHRInterceptor();
+      }
     }
   }
 
@@ -70,20 +88,24 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
     if (!this.installed) return;
     this.installed = false;
 
-    // Restore fetch
-    if (this.originalFetch) {
-      globalThis.fetch = this.originalFetch;
-      this.originalFetch = null;
-    }
-
-    // Restore XHR
-    if (this.originalXHROpen) {
-      XMLHttpRequest.prototype.open = this.originalXHROpen;
-      this.originalXHROpen = null;
-    }
-    if (this.originalXHRSend) {
-      XMLHttpRequest.prototype.send = this.originalXHRSend;
-      this.originalXHRSend = null;
+    if (this.trackerUnsubscribe) {
+      // Tracker-driven mode: just unsubscribe
+      this.trackerUnsubscribe();
+      this.trackerUnsubscribe = null;
+    } else {
+      // Standalone mode: restore patched globals
+      if (this.originalFetch) {
+        globalThis.fetch = this.originalFetch;
+        this.originalFetch = null;
+      }
+      if (this.originalXHROpen) {
+        XMLHttpRequest.prototype.open = this.originalXHROpen;
+        this.originalXHROpen = null;
+      }
+      if (this.originalXHRSend) {
+        XMLHttpRequest.prototype.send = this.originalXHRSend;
+        this.originalXHRSend = null;
+      }
     }
 
     if (this.idleTimer) {
@@ -168,6 +190,46 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
   // Private
   // ==========================================================================
 
+  /**
+   * Subscribe to a NetworkRequestTracker's events instead of patching
+   * fetch/XHR directly. The idle detector only cares about request
+   * start/end — not the full request metadata.
+   */
+  private installTrackerSubscription(): void {
+    this.trackerUnsubscribe = this.tracker!.onEvent((event) => {
+      const url = event.entry.request.url;
+      const method = event.entry.request.method;
+
+      // Apply the same ignore patterns used in standalone mode
+      if (this.shouldIgnore(url)) return;
+
+      if (event.type === 'request-start') {
+        this.trackRequest(url, method);
+      } else {
+        // request-complete or request-error
+        // Find the matching pending request by URL+method (since the tracker
+        // uses its own IDs, we match by identity in our pending map).
+        // We use a simple strategy: find the oldest pending request with the
+        // same URL and method.
+        let matchedId: number | null = null;
+        for (const [id, tracked] of this.pending) {
+          if (tracked.url === url && tracked.method === method) {
+            matchedId = id;
+            break;
+          }
+        }
+
+        if (matchedId !== null) {
+          const statusCode =
+            event.type === 'request-error'
+              ? (event.entry.response?.statusCode ?? 0)
+              : event.entry.response?.statusCode;
+          this.completeRequest(matchedId, statusCode);
+        }
+      }
+    });
+  }
+
   private shouldIgnore(url: string): boolean {
     return this.ignorePatterns.some((re) => re.test(url));
   }
@@ -241,6 +303,7 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
 
   private installFetchInterceptor(): void {
     this.originalFetch = globalThis.fetch;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     const original = this.originalFetch;
 
@@ -270,6 +333,7 @@ export class NetworkIdleDetector implements IdleSignal<NetworkSignalStatus> {
   private installXHRInterceptor(): void {
     this.originalXHROpen = XMLHttpRequest.prototype.open;
     this.originalXHRSend = XMLHttpRequest.prototype.send;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     // Patch open to capture URL and method

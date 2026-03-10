@@ -13,6 +13,7 @@ import type {
   FormState,
   FormFieldState,
   ModalState,
+  FormsResponse,
 } from './types';
 import { SearchEngine } from './search-engine';
 import { generatePageSummary, inferPageType } from './summary-generator';
@@ -40,6 +41,8 @@ export interface SemanticSnapshotConfig {
   maxElements: number;
   /** Merge annotations from the annotation store (default: true) */
   useAnnotations: boolean;
+  /** Include detailed form state via DOM-level form discovery (default: false) */
+  includeForms: boolean;
 }
 
 /**
@@ -52,6 +55,7 @@ export const DEFAULT_SNAPSHOT_CONFIG: SemanticSnapshotConfig = {
   generateDescriptions: true,
   maxElements: 500,
   useAnnotations: true,
+  includeForms: false,
 };
 
 /**
@@ -78,11 +82,18 @@ export class SemanticSnapshotManager {
   }
 
   /**
-   * Create a semantic snapshot from a control snapshot
+   * Create a semantic snapshot from a control snapshot.
+   *
+   * @param controlSnapshot - The control-level snapshot of registered elements.
+   * @param pageContext - Optional partial page context to merge in.
+   * @param formsResponse - Pre-built FormsResponse from `discoverForms()`.
+   *   When provided **and** `config.includeForms` is `true`, this is
+   *   attached to the snapshot as `formsDetail`.
    */
   createSnapshot(
     controlSnapshot: ControlSnapshot,
-    pageContext?: Partial<PageContext>
+    pageContext?: Partial<PageContext>,
+    formsResponse?: FormsResponse
   ): SemanticSnapshot {
     const snapshotId = `snapshot-${++this.snapshotCounter}-${Date.now()}`;
 
@@ -121,6 +132,12 @@ export class SemanticSnapshotManager {
       summary,
       elementCounts,
     };
+
+    // Attach detailed form state when provided (caller opted in via
+    // the includeForms option or constructed the FormsResponse directly)
+    if (formsResponse) {
+      snapshot.formsDetail = formsResponse;
+    }
 
     // Add to history
     this.addToHistory(snapshot);

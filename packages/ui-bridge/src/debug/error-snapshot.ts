@@ -230,7 +230,7 @@ export class ErrorSnapshotBuffer {
     if (this.snapshots.length <= this.maxSnapshots) return;
 
     // Remove oldest snapshots
-    const removed = this.snapshots.splice(0, this.snapshots.length - this.maxSnapshots);
+    this.snapshots.splice(0, this.snapshots.length - this.maxSnapshots);
 
     // Rebuild the fingerprint set from remaining snapshots
     // (removed fingerprints should be eligible for re-capture)

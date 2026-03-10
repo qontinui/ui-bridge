@@ -13,6 +13,7 @@ import type {
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
+import { createWSStreamBroadcast } from './ws-stream-adapter';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -77,7 +78,7 @@ export class StandaloneServer {
 
     // Create WebSocket handler if enabled
     if (this.config.websocket) {
-      this.wsHandler = new UIBridgeWSHandler(handlers, {
+      this.wsHandler = new UIBridgeWSHandler(handlers as UIBridgeServerHandlers, {
         verbose: true,
         log: this.config.log,
       });
@@ -407,6 +408,33 @@ export class StandaloneServer {
     if (this.wsHandler) {
       this.wsHandler.broadcastEvent(event);
     }
+  }
+
+  /**
+   * Create an `onBrowserEvent` callback wired to the WS handler's broadcast.
+   *
+   * Call this **before** `createHandlers()` to get a callback you can pass as
+   * `config.onBrowserEvent`. The internal BrowserEventStream in handlers.ts
+   * will auto-subscribe and forward classified events through this callback
+   * to all connected WebSocket clients.
+   *
+   * Returns `undefined` if WebSocket is not enabled, so it's safe to spread
+   * into the config unconditionally.
+   *
+   * @example
+   * ```ts
+   * const server = new StandaloneServer({}, { websocket: true, port: 9876 });
+   * const handlers = createHandlers(registry, executor, {
+   *   onBrowserEvent: server.createBrowserEventCallback(),
+   * });
+   * ```
+   */
+  createBrowserEventCallback(): ((event: BridgeEvent) => void) | undefined {
+    if (!this.wsHandler) {
+      return undefined;
+    }
+
+    return createWSStreamBroadcast(this.wsHandler, { log: this.config.log });
   }
 
   /**

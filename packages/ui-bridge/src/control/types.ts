@@ -10,8 +10,15 @@ import type {
   ElementState,
   WaitOptions,
   ContentMetadata,
+  FillResult,
 } from '../core/types';
 import type { SnapshotPageContext } from '../navigation/types';
+import type { SnapshotShortcutContext } from '../shortcuts/types';
+import type { SnapshotModalContext } from '../modal/types';
+import type { SnapshotToastContext } from '../toast/types';
+import type { SnapshotRelationshipContext } from '../relationships/types';
+import type { SnapshotDragDropContext } from '../drag-drop/types';
+import type { SnapshotUndoContext } from '../undo/types';
 
 /**
  * Extended action request with additional options
@@ -242,6 +249,28 @@ export type DiscoveryRequest = FindRequest;
 export type DiscoveryResponse = FindResponse;
 
 /**
+ * Viewport and page scroll context included in ControlSnapshot.
+ */
+export interface SnapshotViewportContext {
+  /** Viewport (window) width in pixels */
+  viewportWidth: number;
+  /** Viewport (window) height in pixels */
+  viewportHeight: number;
+  /** Page horizontal scroll offset */
+  scrollX: number;
+  /** Page vertical scroll offset */
+  scrollY: number;
+  /** Full document width */
+  documentWidth: number;
+  /** Full document height */
+  documentHeight: number;
+  /** Whether the page can scroll further down */
+  canScrollDown: boolean;
+  /** Whether the page can scroll further right */
+  canScrollRight: boolean;
+}
+
+/**
  * Error summary included in control snapshots.
  * Gives AI agents a quick health overview without a separate API call.
  */
@@ -301,6 +330,20 @@ export interface ControlSnapshot {
   errorSummary?: SnapshotErrorSummary;
   /** Current page/route context (populated by server handlers via NavigationTracker) */
   page?: SnapshotPageContext;
+  /** Keyboard shortcuts discovered in the application (populated by server handlers via ShortcutTracker) */
+  shortcuts?: SnapshotShortcutContext;
+  /** Modal/dialog stack — active modals/dialogs/drawers (populated by server handlers via ModalDetector) */
+  modalStack?: SnapshotModalContext;
+  /** Toast/notification snapshot — active and recently dismissed toasts (populated by server handlers via ToastCapture) */
+  toasts?: SnapshotToastContext;
+  /** Viewport dimensions and page scroll position */
+  viewport?: SnapshotViewportContext;
+  /** Element relationships — declared + auto-detected from ARIA/HTML (populated by server handlers via RelationshipTracker) */
+  relationships?: SnapshotRelationshipContext;
+  /** Drag sources and drop zones detected in the UI (populated by server handlers via DragDropDetector) */
+  dragDrop?: SnapshotDragDropContext;
+  /** Undo/redo availability and state (populated by server handlers via UndoTracker) */
+  undoRedo?: SnapshotUndoContext;
 }
 
 /**
@@ -443,6 +486,18 @@ export interface PageNavigationResponse {
 }
 
 /**
+ * Fill form request - fill multiple form fields atomically
+ */
+export interface FillFormRequest {
+  /** Map of element ID (or selector) to value */
+  fields: Record<string, string | boolean | string[]>;
+  /** Whether to trigger validation after filling (default: true) */
+  triggerValidation?: boolean;
+  /** Whether to clear existing values first (default: true) */
+  clearFirst?: boolean;
+}
+
+/**
  * Action executor interface
  */
 export interface ActionExecutor {
@@ -468,6 +523,9 @@ export interface ActionExecutor {
 
   /** Get control snapshot */
   getSnapshot(): Promise<ControlSnapshot>;
+
+  /** Fill multiple form fields atomically */
+  fillForm(request: FillFormRequest): Promise<FillResult>;
 }
 
 /**

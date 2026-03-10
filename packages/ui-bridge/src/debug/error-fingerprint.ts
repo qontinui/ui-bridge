@@ -6,7 +6,7 @@
  * 50 identical errors in a render loop become 1 error with count=50.
  */
 
-import type { AnyCapturedEvent, BrowserEventType } from './browser-capture-types';
+import type { AnyCapturedEvent } from './browser-capture-types';
 import { getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ const SKIP_FRAME_PATTERNS = [
 /**
  * V8 stack frame: "    at FunctionName (file:line:col)" or "    at file:line:col"
  */
-const V8_FRAME_RE = /^\s+at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
+const V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
 
 /**
  * SpiderMonkey (Firefox): "functionName@file:line:col"

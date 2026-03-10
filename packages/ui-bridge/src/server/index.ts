@@ -44,3 +44,10 @@ export {
 
 // WebSocket handler
 export { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
+
+// WebSocket stream adapter
+export {
+  createWSStreamBroadcast,
+  WSStreamAdapter,
+  type WSStreamAdapterConfig,
+} from './ws-stream-adapter';

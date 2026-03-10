@@ -46,6 +46,7 @@ export class CompositeIdleDetector {
           debounceMs: config.network?.debounceMs,
           ignorePatterns: config.network?.ignorePatterns,
           trackXHR: config.network?.trackXHR,
+          tracker: config.network?.tracker,
         })
       );
     }

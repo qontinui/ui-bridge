@@ -524,6 +524,21 @@ export interface SemanticSnapshot {
   summary: string;
   /** Element count by type */
   elementCounts: Record<string, number>;
+  /** Detailed form state (included when `includeForms` option is set) */
+  formsDetail?: FormsResponse;
+  /** Network activity summary (when network monitoring is enabled) */
+  networkActivity?: {
+    inFlightCount: number;
+    inFlightRequests: Array<{ url: string; method: string; durationMs: number }>;
+    recentFailures: Array<{
+      url: string;
+      method: string;
+      statusCode: number;
+      durationMs: number;
+      error?: string;
+    }>;
+    recentFailureCount: number;
+  };
 }
 
 /**

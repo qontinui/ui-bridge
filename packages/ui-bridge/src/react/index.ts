@@ -77,3 +77,15 @@ export { useUIAnnotation } from './useUIAnnotation';
 // Page/route awareness hooks
 export { usePageContext } from './usePageContext';
 export { useRouteAwareness } from './useRouteAwareness';
+
+// Keyboard shortcut registration hook
+export { useKeyboardShortcuts, type ShortcutDef } from './useKeyboardShortcuts';
+
+// Relationship hooks
+export { useUIRelationship, useUIRelationships } from './useUIRelationship';
+
+// Drag-drop discovery hooks
+export { useDragSource, useDropZone } from './useDragDrop';
+
+// Undo/redo awareness hook
+export { useUndoRedo } from './useUndoRedo';

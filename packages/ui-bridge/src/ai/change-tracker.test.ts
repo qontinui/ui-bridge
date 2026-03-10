@@ -358,8 +358,8 @@ describe('ChangeTracker', () => {
       // Instead, test the internal logic by diffing from bookmarks which also appends
       const snap1 = createMockSnapshot([{ id: 'a' }]);
       const snap2 = createMockSnapshot([{ id: 'a' }, { id: 'b' }]);
-      const snap3 = createMockSnapshot([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
-      const snap4 = createMockSnapshot([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]);
+      const _snap3 = createMockSnapshot([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+      const _snap4 = createMockSnapshot([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]);
 
       // Save 3 bookmarks, diff from each triggers buffer append
       (deps.snapshotManager.createSnapshot as any).mockReturnValueOnce(snap1);

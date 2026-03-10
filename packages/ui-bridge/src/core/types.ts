@@ -109,6 +109,31 @@ export interface ElementState {
     max?: string;
     step?: string;
   };
+  /** Whether this element is within the viewport bounds (separate from `visible` which also checks display/opacity) */
+  inViewport?: boolean;
+  /** Scroll container info — only present if this element has overflowing scrollable content */
+  scrollInfo?: {
+    /** Current vertical scroll offset */
+    scrollTop: number;
+    /** Current horizontal scroll offset */
+    scrollLeft: number;
+    /** Total scrollable height */
+    scrollHeight: number;
+    /** Total scrollable width */
+    scrollWidth: number;
+    /** Visible (client) height */
+    clientHeight: number;
+    /** Visible (client) width */
+    clientWidth: number;
+    /** Whether more content exists above */
+    canScrollUp: boolean;
+    /** Whether more content exists below */
+    canScrollDown: boolean;
+    /** Whether more content exists to the left */
+    canScrollLeft: boolean;
+    /** Whether more content exists to the right */
+    canScrollRight: boolean;
+  };
 }
 
 /**
@@ -589,6 +614,49 @@ export interface ActionErrorDiff {
 }
 
 // ============================================================================
+// Form Fill Types
+// ============================================================================
+
+/**
+ * Fill multiple form fields atomically
+ */
+export interface FillAction {
+  type: 'fill';
+  /** Map of element ID (or selector) to value */
+  fields: Record<string, string | boolean | string[]>;
+  /** Whether to trigger validation after filling (default: true) */
+  triggerValidation?: boolean;
+  /** Whether to clear existing values first (default: true) */
+  clearFirst?: boolean;
+}
+
+/**
+ * Result of filling a single form field
+ */
+export interface FillFieldResult {
+  /** Whether this field was filled successfully */
+  success: boolean;
+  /** Error message if failed */
+  error?: string;
+  /** Validation error message if validation failed */
+  validationError?: string;
+}
+
+/**
+ * Result of filling multiple form fields
+ */
+export interface FillResult {
+  /** Whether all fields were filled successfully */
+  success: boolean;
+  /** Number of fields that were filled */
+  filledCount: number;
+  /** Number of fields that encountered errors */
+  errorCount: number;
+  /** Per-field results keyed by field ID */
+  fields: Record<string, FillFieldResult>;
+}
+
+// ============================================================================
 // Action Failure Types
 // ============================================================================
 
@@ -747,6 +815,9 @@ export type BridgeEventType =
   | 'form:settled'
   // Navigation — page/route changes
   | 'navigation:change'
+  // Toast/notification events
+  | 'toast:appeared'
+  | 'toast:dismissed'
   // Browser event capture — error/warning events
   | 'browser:error'
   | 'browser:warning'

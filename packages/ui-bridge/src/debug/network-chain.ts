@@ -8,11 +8,18 @@
  * Unlike `captures/network.ts` which only captures *failures*, this tracks
  * ALL requests and correlates them with console errors.
  *
+ * Two modes of operation:
+ * 1. **Standalone** (default) — patches fetch/XHR directly.
+ * 2. **Tracker-driven** — subscribes to a `NetworkRequestTracker` for events,
+ *    eliminating redundant fetch/XHR patching when a tracker already exists.
+ *
  * Implements Phase 3.10 (network chains) and Phase 4.16 (request ID correlation)
  * from the console capture plan.
  */
 
 import type { AnyCapturedEvent, ConsoleCapturedEvent } from './browser-capture-types';
+import type { NetworkRequestTracker } from '../network/tracker';
+import type { NetworkRequestEntry } from '../network/types';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,9 +96,15 @@ export interface NetworkChainConfig {
   maxChains?: number;
   /** Whether to capture request/response headers (default: false for perf) */
   captureHeaders?: boolean;
+  /**
+   * Optional NetworkRequestTracker to subscribe to instead of patching
+   * fetch/XHR directly. When provided, install() subscribes to tracker
+   * events rather than installing its own interceptors.
+   */
+  tracker?: NetworkRequestTracker;
 }
 
-const DEFAULT_CONFIG: Required<NetworkChainConfig> = {
+const DEFAULT_CONFIG: Required<Omit<NetworkChainConfig, 'tracker'>> = {
   maxBodyPreview: 500,
   errorBodiesOnly: true,
   correlationWindowMs: 200,
@@ -107,17 +120,36 @@ const DEFAULT_CONFIG: Required<NetworkChainConfig> = {
 };
 
 // ---------------------------------------------------------------------------
+// XHR metadata (stored per-instance via WeakMap)
+// ---------------------------------------------------------------------------
+
+interface XHRMeta {
+  method: string;
+  url: string;
+  requestHeaders: Record<string, string>;
+}
+
+/** WeakMap so metadata is GC'd when the XHR instance is collected. */
+const xhrMetaMap = new WeakMap<XMLHttpRequest, XHRMeta>();
+
+// ---------------------------------------------------------------------------
 // NetworkChainTracker
 // ---------------------------------------------------------------------------
 
 export class NetworkChainTracker {
   private chains: NetworkChain[] = [];
-  private config: Required<NetworkChainConfig>;
+  private config: Required<Omit<NetworkChainConfig, 'tracker'>>;
   private installed = false;
   private cleanup: (() => void) | null = null;
 
+  // Tracker-driven mode
+  private tracker: NetworkRequestTracker | null = null;
+  private trackerUnsubscribe: (() => void) | null = null;
+
   constructor(config?: NetworkChainConfig) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    const { tracker, ...rest } = config ?? {};
+    this.config = { ...DEFAULT_CONFIG, ...rest };
+    this.tracker = tracker ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -125,19 +157,31 @@ export class NetworkChainTracker {
   // -------------------------------------------------------------------------
 
   /**
-   * Install the fetch interceptor.
-   * Wraps `window.fetch` to capture all requests and responses.
+   * Install the fetch and XHR interceptors (standalone mode), or subscribe
+   * to a NetworkRequestTracker (tracker-driven mode).
    * No-ops in non-browser environments (SSR / Node).
    */
   install(): void {
     if (this.installed) return;
+
+    // Tracker-driven mode: subscribe to events instead of patching globals
+    if (this.tracker) {
+      this.installTrackerSubscription();
+      this.installed = true;
+      return;
+    }
 
     // Guard against SSR / Node environments
     if (typeof window === 'undefined' || typeof window.fetch !== 'function') {
       return;
     }
 
+    const cleanups: Array<() => void> = [];
+
+    // ----- Fetch interceptor ------------------------------------------------
+
     const originalFetch = window.fetch;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     window.fetch = async function (
@@ -225,17 +269,180 @@ export class NetworkChainTracker {
       }
     };
 
-    this.cleanup = () => {
+    cleanups.push(() => {
       window.fetch = originalFetch;
+    });
+
+    // ----- XHR interceptor --------------------------------------------------
+
+    if (typeof XMLHttpRequest !== 'undefined') {
+      const originalOpen = XMLHttpRequest.prototype.open;
+      const originalSend = XMLHttpRequest.prototype.send;
+      const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+      XMLHttpRequest.prototype.open = function (
+        this: XMLHttpRequest,
+        method: string,
+        url: string | URL,
+        ...rest: unknown[]
+      ) {
+        // Stash method and url on the instance for use in `send`
+        const meta: XHRMeta = {
+          method: method.toUpperCase(),
+          url: typeof url === 'object' && url instanceof URL ? url.href : String(url),
+          requestHeaders: {},
+        };
+        xhrMetaMap.set(this, meta);
+
+        // Call the original open with all arguments (async, user, pass are optional)
+        return (originalOpen as (...args: unknown[]) => void).apply(this, [method, url, ...rest]);
+      };
+
+      XMLHttpRequest.prototype.setRequestHeader = function (
+        this: XMLHttpRequest,
+        name: string,
+        value: string
+      ) {
+        const meta = xhrMetaMap.get(this);
+        if (meta) {
+          meta.requestHeaders[name.toLowerCase()] = value;
+        }
+        return originalSetRequestHeader.call(this, name, value);
+      };
+
+      XMLHttpRequest.prototype.send = function (
+        this: XMLHttpRequest,
+        body?: Document | XMLHttpRequestBodyInit | null
+      ) {
+        const meta = xhrMetaMap.get(this);
+
+        // If we have no metadata (open wasn't intercepted) or URL is ignored,
+        // just pass through.
+        if (!meta || self.shouldIgnore(meta.url)) {
+          return originalSend.call(this, body);
+        }
+
+        const request: NetworkRequest = {
+          id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          method: meta.method,
+          url: meta.url,
+          startTime: Date.now(),
+        };
+
+        // Capture body preview for non-GET requests
+        if (body && typeof body === 'string') {
+          request.bodyPreview = self.truncateBody(body);
+        }
+
+        // Capture request headers if configured
+        if (self.config.captureHeaders && Object.keys(meta.requestHeaders).length > 0) {
+          request.headers = self.extractSelectedHeadersFromRecord(meta.requestHeaders);
+        }
+
+        const pushChain = (chain: NetworkChain) => {
+          self.chains.push(chain);
+          self.trim();
+        };
+
+        // --- Event handlers ---
+
+        this.addEventListener('load', function () {
+          const durationMs = Date.now() - request.startTime;
+          const isError = this.status >= 400;
+
+          const chain: NetworkChain = {
+            request,
+            response: {
+              status: this.status,
+              statusText: this.statusText,
+              durationMs,
+            },
+            correlatedErrors: [],
+            isFailure: isError,
+            timestamp: request.startTime,
+          };
+
+          // Extract request ID from response headers
+          chain.requestId = self.extractRequestIdFromXHR(this);
+
+          // Capture response body preview
+          if (isError || !self.config.errorBodiesOnly) {
+            try {
+              const text = typeof this.responseText === 'string' ? this.responseText : '';
+              if (text) {
+                chain.response!.bodyPreview = self.truncateBody(text);
+              }
+            } catch {
+              /* responseText may throw for non-text responses */
+            }
+          }
+
+          // Capture response headers if configured
+          if (self.config.captureHeaders) {
+            chain.response!.headers = self.extractSelectedHeadersFromXHR(this);
+          }
+
+          pushChain(chain);
+        });
+
+        this.addEventListener('error', function () {
+          pushChain({
+            request,
+            error: 'Network error',
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime,
+          });
+        });
+
+        this.addEventListener('timeout', function () {
+          pushChain({
+            request,
+            error: `Timeout after ${this.timeout}ms`,
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime,
+          });
+        });
+
+        this.addEventListener('abort', function () {
+          pushChain({
+            request,
+            error: 'Request aborted',
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime,
+          });
+        });
+
+        return originalSend.call(this, body);
+      };
+
+      cleanups.push(() => {
+        XMLHttpRequest.prototype.open = originalOpen;
+        XMLHttpRequest.prototype.send = originalSend;
+        XMLHttpRequest.prototype.setRequestHeader = originalSetRequestHeader;
+      });
+    }
+
+    this.cleanup = () => {
+      for (const fn of cleanups) fn();
     };
     this.installed = true;
   }
 
-  /** Uninstall the fetch interceptor and restore the original `window.fetch`. */
+  /** Uninstall the fetch and XHR interceptors, restoring originals. */
   uninstall(): void {
     if (!this.installed) return;
-    this.cleanup?.();
-    this.cleanup = null;
+
+    if (this.trackerUnsubscribe) {
+      this.trackerUnsubscribe();
+      this.trackerUnsubscribe = null;
+    } else {
+      this.cleanup?.();
+      this.cleanup = null;
+    }
+
     this.installed = false;
   }
 
@@ -376,6 +583,78 @@ export class NetworkChainTracker {
   // Private helpers
   // -------------------------------------------------------------------------
 
+  /**
+   * Subscribe to a NetworkRequestTracker's events instead of patching
+   * fetch/XHR directly. Converts each completed/errored event entry into
+   * a NetworkChain and pushes it to the buffer.
+   */
+  private installTrackerSubscription(): void {
+    this.trackerUnsubscribe = this.tracker!.onEvent((event) => {
+      // We only care about completed/errored requests — not starts
+      if (event.type === 'request-start') return;
+
+      const url = event.entry.request.url;
+      if (this.shouldIgnore(url)) return;
+
+      const chain = this.entryToChain(event.entry);
+      this.chains.push(chain);
+      this.trim();
+    });
+  }
+
+  /**
+   * Convert a NetworkRequestEntry (from the tracker) to a NetworkChain.
+   */
+  private entryToChain(entry: NetworkRequestEntry): NetworkChain {
+    const request: NetworkRequest = {
+      id: entry.request.id,
+      method: entry.request.method,
+      url: entry.request.url,
+      startTime: entry.request.startedAt,
+      bodyPreview: entry.request.bodyPreview,
+    };
+
+    // Capture request headers if configured and available
+    if (this.config.captureHeaders && entry.request.headers) {
+      request.headers = this.extractSelectedHeadersFromRecord(entry.request.headers);
+    }
+
+    const chain: NetworkChain = {
+      request,
+      correlatedErrors: [],
+      isFailure: entry.isFailure,
+      timestamp: entry.request.startedAt,
+    };
+
+    if (entry.error) {
+      chain.error = entry.error;
+    }
+
+    if (entry.response) {
+      chain.response = {
+        status: entry.response.statusCode,
+        statusText: entry.response.statusText,
+        durationMs: entry.response.durationMs,
+      };
+
+      // Capture response body preview according to this tracker's config
+      if (entry.response.bodyPreview && (entry.isFailure || !this.config.errorBodiesOnly)) {
+        chain.response.bodyPreview = this.truncateBody(entry.response.bodyPreview);
+      }
+
+      // Capture response headers if configured
+      if (this.config.captureHeaders && entry.response.headers) {
+        chain.response.headers = this.extractSelectedHeadersFromRecord(entry.response.headers);
+      }
+    }
+
+    if (entry.requestId) {
+      chain.requestId = entry.requestId;
+    }
+
+    return chain;
+  }
+
   private shouldIgnore(url: string): boolean {
     return this.config.ignorePatterns.some((p) => url.includes(p));
   }
@@ -403,6 +682,61 @@ export class NetworkChainTracker {
     }
     const ct = headers.get('content-type');
     if (ct) selected['content-type'] = ct;
+    return selected;
+  }
+
+  /**
+   * Extract selected headers from a plain record (used by XHR interceptor for
+   * request headers captured via setRequestHeader).
+   */
+  private extractSelectedHeadersFromRecord(
+    headers: Record<string, string>
+  ): Record<string, string> {
+    const selected: Record<string, string> = {};
+    for (const name of REQUEST_ID_HEADERS) {
+      const value = headers[name];
+      if (value) selected[name] = value;
+    }
+    const ct = headers['content-type'];
+    if (ct) selected['content-type'] = ct;
+    return selected;
+  }
+
+  /**
+   * Extract a request ID from XHR response headers.
+   * Uses `getResponseHeader` to check `REQUEST_ID_HEADERS` in priority order.
+   */
+  private extractRequestIdFromXHR(xhr: XMLHttpRequest): string | undefined {
+    for (const name of REQUEST_ID_HEADERS) {
+      try {
+        const value = xhr.getResponseHeader(name);
+        if (value) return value;
+      } catch {
+        /* getResponseHeader may throw if state is wrong */
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Extract selected response headers from an XHR instance.
+   */
+  private extractSelectedHeadersFromXHR(xhr: XMLHttpRequest): Record<string, string> {
+    const selected: Record<string, string> = {};
+    for (const name of REQUEST_ID_HEADERS) {
+      try {
+        const value = xhr.getResponseHeader(name);
+        if (value) selected[name] = value;
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      const ct = xhr.getResponseHeader('content-type');
+      if (ct) selected['content-type'] = ct;
+    } catch {
+      /* ignore */
+    }
     return selected;
   }
 

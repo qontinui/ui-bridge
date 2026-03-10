@@ -693,6 +693,36 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Scan ARIA/HTML relationships for all currently registered elements.
+   * Called after each batch of element registrations so relationship data
+   * is always up-to-date for snapshot queries.
+   */
+  const refreshRelationships = useCallback(() => {
+    if (!bridge?.relationshipTracker) return;
+    const elements = Array.from(registeredElementsRef.current.entries()).map(([element, id]) => ({
+      id,
+      element: element as Element,
+    }));
+    if (elements.length === 0) return;
+    bridge.relationshipTracker.refreshAutoDetected(elements);
+  }, [bridge]);
+
+  /**
+   * Scan DOM/ARIA for drag sources and drop zones.
+   * Called after each batch of element registrations so drag-drop data
+   * is always up-to-date for snapshot queries.
+   */
+  const refreshDragDrop = useCallback(() => {
+    if (!bridge?.dragDropDetector) return;
+    const elements = Array.from(registeredElementsRef.current.entries()).map(([element, id]) => ({
+      id,
+      element: element as Element,
+    }));
+    if (elements.length === 0) return;
+    bridge.dragDropDetector.refreshAutoDetected(elements);
+  }, [bridge]);
+
+  /**
    * Process pending registrations (debounced)
    */
   const processPendingRegistrations = useCallback(() => {
@@ -702,7 +732,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
     });
     pendingRegistrationsRef.current.clear();
-  }, [shouldRegister, registerElement]);
+    // After registering a batch of elements, refresh ARIA/HTML relationships and drag-drop
+    refreshRelationships();
+    refreshDragDrop();
+  }, [shouldRegister, registerElement, refreshRelationships, refreshDragDrop]);
 
   /**
    * Process pending content registrations (debounced, separate timer)

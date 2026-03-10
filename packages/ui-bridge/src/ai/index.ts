@@ -183,6 +183,10 @@ export type { SummaryConfig } from './summary-generator';
 export { scanValidationErrors } from './validation-scanner';
 export type { DetectedValidationError } from './validation-scanner';
 
+// Form Discovery
+export { discoverForms } from './form-discovery';
+export type { FormDiscoveryElement } from './form-discovery';
+
 // NL Action Parser
 export {
   parseNLInstruction,
@@ -329,3 +333,23 @@ export {
   DEFAULT_VIEWPORTS,
 } from './design-inspector';
 export type { DesignRegistryLike } from './design-inspector';
+
+// Form Diff Tracking
+export { captureFormSnapshot, diffFormSnapshots, summarizeFormDiff } from './form-diff';
+export type { FormSnapshot, FormFieldDiff, FormDiff } from './form-diff';
+
+// Target Decomposer
+export { decomposeTarget } from './target-decomposer';
+export type { DecomposedTarget, SpatialRelation } from './target-decomposer';
+
+// Unified Find API
+export { find } from './find';
+export type {
+  FindContext,
+  FindOptions,
+  FindResult,
+  FindResultMatch,
+  FindResultAmbiguous,
+  FindResultNotFound,
+  FindCandidate,
+} from './find';

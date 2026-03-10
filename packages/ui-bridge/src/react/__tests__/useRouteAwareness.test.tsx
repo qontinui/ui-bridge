@@ -4,7 +4,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import React from 'react';
 import { useRouteAwareness } from '../useRouteAwareness';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 import type { RouteInfo } from '../../navigation/types';

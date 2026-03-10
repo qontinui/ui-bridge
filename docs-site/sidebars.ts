@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         'concepts/registry',
         'concepts/actions',
         'concepts/workflows',
+        'concepts/drag-drop',
       ],
     },
     {

@@ -37,6 +37,13 @@ import type { OnBrowserEventCallback, BrowserCaptureConfig } from '../debug/brow
 import type { ActionExecutor, WorkflowEngine } from '../control/types';
 import { NavigationTracker } from '../navigation';
 import type { NavigationEventData } from '../navigation';
+import { ShortcutTracker } from '../shortcuts';
+import { ModalDetector } from '../modal';
+import { ToastCapture } from '../toast';
+import type { ToastEventData } from '../toast';
+import { RelationshipTracker } from '../relationships';
+import { DragDropDetector } from '../drag-drop';
+import { UndoTracker } from '../undo';
 
 /**
  * UI Bridge context value
@@ -74,6 +81,18 @@ export interface UIBridgeContextValue {
   off: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => void;
   /** Navigation tracker for page/route awareness */
   navigationTracker: NavigationTracker;
+  /** Shortcut tracker for keyboard shortcut discovery */
+  shortcutTracker: ShortcutTracker;
+  /** Modal detector for modal/dialog stack detection */
+  modalDetector: ModalDetector;
+  /** Toast capture for notification detection */
+  toastCapture: ToastCapture;
+  /** Relationship tracker for element relationship management */
+  relationshipTracker: RelationshipTracker;
+  /** Drag-drop detector for drag source and drop zone discovery */
+  dragDropDetector: DragDropDetector;
+  /** Undo/redo tracker for undo awareness */
+  undoTracker: UndoTracker;
   /** Whether the provider is initialized */
   initialized: boolean;
   /** Connect to WebSocket server */
@@ -130,6 +149,12 @@ export function UIBridgeProvider({
   const metricsRef = useRef<MetricsCollector | null>(null);
   const browserCaptureRef = useRef<BrowserEventCapture | null>(null);
   const navigationTrackerRef = useRef<NavigationTracker | null>(null);
+  const shortcutTrackerRef = useRef<ShortcutTracker | null>(null);
+  const modalDetectorRef = useRef<ModalDetector | null>(null);
+  const toastCaptureRef = useRef<ToastCapture | null>(null);
+  const relationshipTrackerRef = useRef<RelationshipTracker | null>(null);
+  const dragDropDetectorRef = useRef<DragDropDetector | null>(null);
+  const undoTrackerRef = useRef<UndoTracker | null>(null);
   const wsClientRef = useRef<UIBridgeWSClient | null>(null);
   const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
   const prevWsStateRef = useRef<WSConnectionState>('disconnected');
@@ -162,6 +187,31 @@ export function UIBridgeProvider({
       registryRef.current?.dispatchEvent('navigation:change', data);
     });
 
+    // Install shortcut tracker for keyboard shortcut discovery
+    shortcutTrackerRef.current = new ShortcutTracker();
+    shortcutTrackerRef.current.install();
+
+    // Install modal detector (stateless — no install needed)
+    modalDetectorRef.current = new ModalDetector();
+
+    // Install toast capture for notification detection
+    toastCaptureRef.current = new ToastCapture();
+    toastCaptureRef.current.install((data: ToastEventData) => {
+      registryRef.current?.dispatchEvent(
+        data.action === 'appeared' ? 'toast:appeared' : 'toast:dismissed',
+        data
+      );
+    });
+
+    // Install relationship tracker for element relationship management
+    relationshipTrackerRef.current = new RelationshipTracker();
+
+    // Install drag-drop detector for drag source and drop zone discovery
+    dragDropDetectorRef.current = new DragDropDetector();
+
+    // Install undo/redo tracker (stateless detector + action correlation)
+    undoTrackerRef.current = new UndoTracker();
+
     // Initialize WebSocket client if enabled
     if (config.websocket) {
       const wsPort = config.websocketPort || config.serverPort || 9876;
@@ -188,6 +238,13 @@ export function UIBridgeProvider({
       // Backward-compat: also expose as consoleCapture (same instance supports getSince/getRecent)
       (w.__UI_BRIDGE__ as Record<string, unknown>).consoleCapture = browserCaptureRef.current;
       (w.__UI_BRIDGE__ as Record<string, unknown>).navigationTracker = navigationTrackerRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).shortcutTracker = shortcutTrackerRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).modalDetector = modalDetectorRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).toastCapture = toastCaptureRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).relationshipTracker =
+        relationshipTrackerRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).dragDropDetector = dragDropDetectorRef.current;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).undoTracker = undoTrackerRef.current;
     }
   }
 
@@ -195,6 +252,12 @@ export function UIBridgeProvider({
   const renderLog = renderLogRef.current || undefined;
   const metrics = metricsRef.current || undefined;
   const navigationTracker = navigationTrackerRef.current!;
+  const shortcutTracker = shortcutTrackerRef.current!;
+  const modalDetector = modalDetectorRef.current!;
+  const toastCapture = toastCaptureRef.current!;
+  const relationshipTracker = relationshipTrackerRef.current!;
+  const dragDropDetector = dragDropDetectorRef.current!;
+  const undoTracker = undoTrackerRef.current!;
   const wsClient = wsClientRef.current || undefined;
 
   // Create executor and workflow engine
@@ -259,6 +322,8 @@ export function UIBridgeProvider({
       browserCaptureRef.current?.setOnEvent(null);
       browserCaptureRef.current?.uninstall();
       navigationTrackerRef.current?.uninstall();
+      shortcutTrackerRef.current?.uninstall();
+      toastCaptureRef.current?.uninstall();
       wsClient?.disconnect();
       resetGlobalRegistry();
     };
@@ -329,6 +394,12 @@ export function UIBridgeProvider({
       renderLog,
       metrics,
       navigationTracker,
+      shortcutTracker,
+      modalDetector,
+      toastCapture,
+      relationshipTracker,
+      dragDropDetector,
+      undoTracker,
       wsClient,
       wsConnectionState,
       getElements,
@@ -352,6 +423,12 @@ export function UIBridgeProvider({
       renderLog,
       metrics,
       navigationTracker,
+      shortcutTracker,
+      modalDetector,
+      toastCapture,
+      relationshipTracker,
+      dragDropDetector,
+      undoTracker,
       wsClient,
       wsConnectionState,
       getElements,

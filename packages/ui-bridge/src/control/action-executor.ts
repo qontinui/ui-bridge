@@ -11,11 +11,14 @@ import type {
   StandardAction,
   ActionBrowserEvent,
   ActionErrorDiff,
+  FillResult,
+  FillFieldResult,
 } from '../core/types';
 import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
 import type { BrowserEventCapture } from '../debug/browser-capture';
 import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
+import { fillSingleField } from './fill-form';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
@@ -35,6 +38,7 @@ import type {
   ScrollAction,
   MouseAction,
   DragAction,
+  FillFormRequest,
 } from './types';
 
 /**
@@ -623,6 +627,68 @@ export class DefaultActionExecutor implements ActionExecutor {
         stepCount: wf.steps.length,
       })),
       activeRuns: [], // Workflow engine manages this
+    };
+  }
+
+  /**
+   * Fill multiple form fields atomically.
+   *
+   * For each field entry, finds the element by registered ID or DOM query,
+   * sets the value based on element type, dispatches proper events, and
+   * optionally triggers validation.
+   */
+  async fillForm(request: FillFormRequest): Promise<FillResult> {
+    const fields: Record<string, FillFieldResult> = {};
+    let filledCount = 0;
+    let errorCount = 0;
+
+    const triggerValidation = request.triggerValidation !== false;
+    const clearFirst = request.clearFirst !== false;
+
+    for (const [fieldId, value] of Object.entries(request.fields)) {
+      try {
+        // Resolve element: try registry first, then DOM query
+        const registered = this.registry.getElement(fieldId);
+        let element: HTMLElement | null = registered?.element ?? null;
+        if (!element) {
+          element = findElementByIdentifier(fieldId);
+        }
+
+        if (!element) {
+          fields[fieldId] = { success: false, error: `Element not found: ${fieldId}` };
+          errorCount++;
+          continue;
+        }
+
+        // Fill based on element type and value type
+        fillSingleField(element, value, clearFirst);
+
+        // Trigger validation if requested
+        let validationError: string | undefined;
+        if (triggerValidation && 'reportValidity' in element) {
+          const isValid = (element as HTMLInputElement).reportValidity();
+          if (!isValid) {
+            validationError =
+              (element as HTMLInputElement).validationMessage || 'Validation failed';
+          }
+        }
+
+        fields[fieldId] = { success: true, validationError };
+        filledCount++;
+      } catch (err) {
+        fields[fieldId] = {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+        errorCount++;
+      }
+    }
+
+    return {
+      success: errorCount === 0,
+      filledCount,
+      errorCount,
+      fields,
     };
   }
 

@@ -10,5 +10,8 @@ export * from './types';
 // Action executor
 export { DefaultActionExecutor, createActionExecutor } from './action-executor';
 
+// Form fill utility
+export { fillFormFields } from './fill-form';
+
 // Workflow engine
 export { DefaultWorkflowEngine, createWorkflowEngine } from './workflow-engine';

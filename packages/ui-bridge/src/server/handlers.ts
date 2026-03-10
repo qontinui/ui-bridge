@@ -10,9 +10,14 @@ import type {
   RenderLogQuery,
   BrowserEventsResponse,
 } from './types';
-import type { ControlSnapshot, PageNavigateRequest, PageNavigationResponse } from '../control';
+import type {
+  ControlSnapshot,
+  PageNavigateRequest,
+  PageNavigationResponse,
+  FillFormRequest,
+} from '../control';
 import type { RenderLogEntry } from '../render-log';
-import type { ActionFailureDetails, ActionErrorCode } from '../core';
+import type { ActionFailureDetails, ActionErrorCode, FillResult } from '../core';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -46,12 +51,16 @@ import type {
   ChangePredicate,
   WaitForChangeOptions,
   FormsResponse,
-  FormState,
-  FormFieldState,
-  DiffSummaryOptions,
   StructuredChangeAnalysis,
+  FormSnapshot,
+  FormDiff,
+  FindResult,
+  FindContext,
 } from '../ai';
-import { scanValidationErrors } from '../ai/validation-scanner';
+import { find } from '../ai/find';
+import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
+import { discoverForms } from '../ai/form-discovery';
+import type { FormDiscoveryElement } from '../ai/form-discovery';
 import type {
   UIState,
   UIStateGroup,
@@ -86,6 +95,12 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import type { NavigationTracker } from '../navigation';
+import type { ShortcutTracker } from '../shortcuts';
+import type { ModalDetector } from '../modal';
+import type { ToastCapture } from '../toast';
+import type { RelationshipTracker } from '../relationships';
+import type { DragDropDetector } from '../drag-drop';
+import type { UndoTracker } from '../undo';
 import type { StyleGuideConfig, StyleAuditReport } from '../specs/style-types';
 import { runStyleAudit } from '../specs/style-validator';
 import type {
@@ -120,6 +135,8 @@ import type { ErrorSnapshot } from '../debug/error-snapshot';
 import { BrowserEventStream } from '../debug/ws-streaming';
 import { CompositeIdleDetector } from '../idle';
 import type { CompositeIdleConfig } from '../idle';
+import { NetworkRequestTracker } from '../network';
+import type { NetworkRequestFilter, NetworkTrackerConfig } from '../network';
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -175,6 +192,7 @@ export interface ActionExecutorLike {
     componentId: string,
     request: { action: string; params?: Record<string, unknown> }
   ): Promise<unknown>;
+  fillForm?(request: FillFormRequest): Promise<FillResult>;
 }
 
 /**
@@ -214,6 +232,18 @@ export interface CreateHandlersConfig {
   consoleCapture?: BrowserEventCaptureLike | ConsoleCapturelike;
   /** Navigation tracker instance for page/route awareness in snapshots */
   navigationTracker?: NavigationTracker;
+  /** Shortcut tracker instance for keyboard shortcut discovery in snapshots */
+  shortcutTracker?: ShortcutTracker;
+  /** Modal detector instance for modal/dialog stack detection in snapshots */
+  modalDetector?: ModalDetector;
+  /** Toast capture instance for toast/notification detection in snapshots */
+  toastCapture?: ToastCapture;
+  /** Relationship tracker instance for element relationship hints in snapshots */
+  relationshipTracker?: RelationshipTracker;
+  /** Drag-drop detector instance for drag source and drop zone discovery in snapshots */
+  dragDropDetector?: DragDropDetector;
+  /** Undo tracker instance for undo/redo awareness in snapshots */
+  undoTracker?: UndoTracker;
   /** Idle detection configuration. Set to false to disable. */
   idleDetection?: CompositeIdleConfig | false;
   /**
@@ -227,6 +257,12 @@ export interface CreateHandlersConfig {
    * Events are classified by severity before being emitted.
    */
   onBrowserEvent?: (event: import('../core').BridgeEvent) => void;
+  /**
+   * Network request monitoring configuration.
+   * Set to `false` to disable, or provide a `NetworkTrackerConfig` object.
+   * Defaults to enabled with default settings.
+   */
+  networkMonitoring?: NetworkTrackerConfig | false;
 }
 
 /**
@@ -250,122 +286,6 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
     code,
     timestamp: Date.now(),
   };
-}
-
-/**
- * Build FormFieldState[] from registered input elements, enriched with validation errors.
- */
-function buildFormFields(
-  inputs: Array<{
-    id: string;
-    element: HTMLElement;
-    type: string;
-    label?: string;
-    getState: () => import('../core').ElementState;
-  }>,
-  errorsByField: Map<string, import('../ai/validation-scanner').DetectedValidationError>
-): FormFieldState[] {
-  return inputs.map((input) => {
-    const state = input.getState();
-    const el = input.element;
-    const detectedError = errorsByField.get(input.id);
-
-    // Determine validity: HTML5 validation > heuristic scanner
-    let valid = true;
-    let errorMsg: string | undefined;
-    let errorSource: FormFieldState['errorSource'];
-
-    if (state.validationState && !state.validationState.valid) {
-      valid = false;
-      errorMsg = state.validationState.validationMessage;
-      errorSource = 'html5';
-    } else if (detectedError) {
-      valid = false;
-      errorMsg = detectedError.message || undefined;
-      errorSource = detectedError.source;
-    }
-
-    // Determine dirty state
-    const defaultValue = el.getAttribute('value') ?? '';
-    const isDirty = state.value !== undefined && state.value !== defaultValue;
-
-    return {
-      id: input.id,
-      label:
-        el.getAttribute('aria-label') ||
-        input.label ||
-        getLabelText(el) ||
-        el.getAttribute('placeholder') ||
-        input.id,
-      type: el instanceof HTMLInputElement ? el.type : input.type,
-      value: state.value ?? '',
-      valid,
-      error: errorMsg,
-      errorSource,
-      required: state.required ?? false,
-      touched: state.focused || (state.value?.length ?? 0) > 0,
-      placeholder: el.getAttribute('placeholder') || undefined,
-      isDirty,
-      checked: state.checked,
-      selectedOptions: state.selectedOptions,
-      constraints: state.constraints,
-    };
-  });
-}
-
-/**
- * Get label text for a form element by checking associated <label> elements.
- */
-function getLabelText(element: HTMLElement): string | undefined {
-  if (typeof document === 'undefined') return undefined;
-
-  // Check for <label for="id">
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-
-  // Check for wrapping <label>
-  const parentLabel = element.closest('label');
-  if (parentLabel) {
-    // Get label text without the input's own text
-    const clone = parentLabel.cloneNode(true) as HTMLElement;
-    const inputs = clone.querySelectorAll('input, textarea, select');
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-
-  return undefined;
-}
-
-/**
- * Infer form purpose from field labels.
- */
-function inferFormPurpose(fields: Array<{ element: HTMLElement; label?: string }>): string {
-  const labels = fields
-    .map((f) =>
-      (
-        f.element.getAttribute('aria-label') ||
-        f.label ||
-        f.element.getAttribute('name') ||
-        ''
-      ).toLowerCase()
-    )
-    .join(' ');
-
-  if (labels.includes('email') && labels.includes('password')) {
-    if (labels.includes('confirm') || labels.includes('name') || labels.includes('register')) {
-      return 'Registration';
-    }
-    return 'Login';
-  }
-  if (labels.includes('search')) return 'Search';
-  if (labels.includes('address') || labels.includes('city')) return 'Address';
-  if (labels.includes('card') || labels.includes('payment')) return 'Payment';
-  if (labels.includes('contact') || labels.includes('message')) return 'Contact';
-  return 'Form';
 }
 
 /**
@@ -581,14 +501,47 @@ export function createHandlers(
   // Navigation tracker for page/route awareness
   const navigationTracker = config.navigationTracker ?? null;
 
+  // Shortcut tracker for keyboard shortcut discovery
+  const shortcutTracker = config.shortcutTracker ?? null;
+
+  // Modal detector for modal/dialog stack
+  const modalDetector = config.modalDetector ?? null;
+
+  // Toast capture for notification detection
+  const toastCapture = config.toastCapture ?? null;
+
+  // Relationship tracker for element relationship hints
+  const relationshipTracker = config.relationshipTracker ?? null;
+
+  // Drag-drop detector for drag source and drop zone discovery
+  const dragDropDetector = config.dragDropDetector ?? null;
+
+  // Undo tracker for undo/redo awareness
+  const undoTracker = config.undoTracker ?? null;
+
   // Timeline buffer for action/error timeline
   const timelineBuffer = new TimelineBuffer(500);
 
   // Error session manager
   const errorSessionManager = new ErrorSessionManager();
 
-  // Network chain tracker — auto-install to intercept fetch calls
-  const networkChainTracker = new NetworkChainTracker();
+  // Network request monitoring — create early so idle detector and chain tracker
+  // can subscribe to events instead of independently patching fetch/XHR.
+  const networkTracker =
+    config.networkMonitoring !== false
+      ? new NetworkRequestTracker(
+          typeof config.networkMonitoring === 'object' ? config.networkMonitoring : undefined
+        )
+      : null;
+  if (networkTracker) {
+    networkTracker.install();
+  }
+
+  // Network chain tracker — uses the shared tracker when available to avoid
+  // redundant fetch/XHR interception.
+  const networkChainTracker = new NetworkChainTracker(
+    networkTracker ? { tracker: networkTracker } : undefined
+  );
   networkChainTracker.install();
 
   // Error snapshot buffer — captures app state on significant errors
@@ -621,6 +574,16 @@ export function createHandlers(
 
   // Browser event stream for real-time WebSocket broadcasting
   const browserEventStream = new BrowserEventStream();
+
+  // When onBrowserEvent is provided, create a default subscription so events
+  // actually flow through the stream's filters to the callback. Without this,
+  // processEvent() returns an empty Map and the callback is never invoked.
+  if (config.onBrowserEvent) {
+    browserEventStream.subscribe({
+      minSeverity: 'warning',
+      deduplicate: true,
+    });
+  }
 
   // Detect if the capture instance supports the full browser event API
   function hasFullEventAPI(
@@ -671,11 +634,19 @@ export function createHandlers(
   let loadedStyleGuide: StyleGuideConfig | null = null;
   let savedBaseline: SnapshotBaseline | null = null;
 
-  // Idle detection
+  // Idle detection — pass the shared network tracker so the idle detector
+  // subscribes to events instead of independently patching fetch/XHR.
   const idleDetector =
     config.idleDetection !== false
       ? CompositeIdleDetector.create(
-          typeof config.idleDetection === 'object' ? config.idleDetection : {}
+          (() => {
+            const idleConfig =
+              typeof config.idleDetection === 'object' ? { ...config.idleDetection } : {};
+            if (networkTracker) {
+              idleConfig.network = { ...idleConfig.network, tracker: networkTracker };
+            }
+            return idleConfig;
+          })()
         )
       : null;
 
@@ -926,6 +897,22 @@ export function createHandlers(
           waitOptions: request.waitOptions,
         });
 
+        // Record successful action for undo correlation
+        if (
+          undoTracker &&
+          result &&
+          typeof result === 'object' &&
+          'success' in result &&
+          (result as { success: boolean }).success
+        ) {
+          undoTracker.recordAction({
+            id: `action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            target: id,
+            action: request.action,
+            params: request.params,
+          });
+        }
+
         // If the action executor returned a failure, enhance with structured details
         if (result && typeof result === 'object' && 'success' in result && !result.success) {
           const actionResult = result as {
@@ -1159,6 +1146,64 @@ export function createHandlers(
           snapshot.page = navigationTracker.getSnapshotPageContext();
         }
 
+        // Enrich snapshot with keyboard shortcuts if shortcut tracker is available
+        if (shortcutTracker) {
+          snapshot.shortcuts = shortcutTracker.getSnapshotShortcutContext();
+        }
+
+        // Enrich snapshot with modal/dialog stack if detector is available
+        if (modalDetector) {
+          snapshot.modalStack = modalDetector.getSnapshotModalContext();
+        }
+
+        // Enrich snapshot with toast/notification state if capture is available
+        if (toastCapture) {
+          snapshot.toasts = toastCapture.getSnapshotToastContext();
+        }
+
+        // Enrich snapshot with element relationships if tracker is available
+        if (relationshipTracker) {
+          const allElements = registry.getAllElements() as Array<{ id: string; element: Element }>;
+          const elementPairs = allElements.map((el) => ({
+            id: el.id,
+            element: el.element,
+          }));
+          snapshot.relationships = relationshipTracker.getSnapshotRelationshipContext(elementPairs);
+        }
+
+        // Enrich snapshot with drag source and drop zone discovery if detector is available
+        if (dragDropDetector) {
+          const allElementsForDnD = registry.getAllElements() as Array<{
+            id: string;
+            element: Element;
+          }>;
+          const elementPairsForDnD = allElementsForDnD.map((el) => ({
+            id: el.id,
+            element: el.element,
+          }));
+          snapshot.dragDrop = dragDropDetector.getSnapshotDragDropContext(elementPairsForDnD);
+        }
+
+        // Enrich snapshot with undo/redo awareness if tracker is available
+        if (undoTracker) {
+          snapshot.undoRedo = undoTracker.getSnapshotUndoContext();
+        }
+
+        // Enrich snapshot with viewport/scroll context
+        if (typeof window !== 'undefined') {
+          const docEl = document.documentElement;
+          snapshot.viewport = {
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            documentWidth: docEl.scrollWidth,
+            documentHeight: docEl.scrollHeight,
+            canScrollDown: window.scrollY + window.innerHeight < docEl.scrollHeight - 1,
+            canScrollRight: window.scrollX + window.innerWidth < docEl.scrollWidth - 1,
+          };
+        }
+
         return success(snapshot);
       } catch (err) {
         return error((err as Error).message, 'SNAPSHOT_ERROR');
@@ -1304,6 +1349,41 @@ export function createHandlers(
       }
     },
 
+    aiFind: async (request: {
+      query: string;
+      context?: FindContext;
+      confidenceThreshold?: number;
+    }): Promise<APIResponse<FindResult>> => {
+      try {
+        // Refresh elements before search
+        refreshElements();
+
+        // Build context, auto-detecting active modal if not provided
+        const context: FindContext = { ...request.context };
+        if (!context.activeModalId && modalDetector) {
+          try {
+            const modalStack = modalDetector.detect();
+            if (modalStack.modals.length > 0) {
+              const topModal = modalStack.modals[modalStack.modals.length - 1];
+              context.activeModalId = topModal.id;
+            }
+          } catch {
+            // Modal detection failed — proceed without modal context
+          }
+        }
+
+        const result = find(request.query, searchEngine, {
+          context,
+          confidenceThreshold: request.confidenceThreshold,
+          pickFirst: true,
+        });
+
+        return success(result);
+      } catch (err) {
+        return error((err as Error).message, 'AI_FIND_ERROR');
+      }
+    },
+
     aiExecute: async (request: NLActionRequest): Promise<APIResponse<NLActionResponse>> => {
       try {
         // Refresh elements before execution
@@ -1365,10 +1445,41 @@ export function createHandlers(
       }
     },
 
-    getSemanticSnapshot: async (): Promise<APIResponse<SemanticSnapshot>> => {
+    getSemanticSnapshot: async (options?: {
+      includeForms?: string | boolean;
+    }): Promise<APIResponse<SemanticSnapshot>> => {
       try {
         const controlSnapshot = registry.createSnapshot();
-        const snapshot = snapshotManager.createSnapshot(controlSnapshot);
+        const wantForms = options?.includeForms === true || options?.includeForms === 'true';
+        const formsResponse = wantForms
+          ? discoverForms(registry.getAllElements() as FormDiscoveryElement[])
+          : undefined;
+        const snapshot = snapshotManager.createSnapshot(controlSnapshot, undefined, formsResponse);
+
+        // Enrich with network activity if network monitoring is enabled
+        if (networkTracker) {
+          const inFlight = networkTracker.getInFlight();
+          const failures = networkTracker.getCompleted({ failuresOnly: true, limit: 10 });
+          const now = Date.now();
+
+          snapshot.networkActivity = {
+            inFlightCount: inFlight.length,
+            inFlightRequests: inFlight.map((e) => ({
+              url: e.request.url,
+              method: e.request.method,
+              durationMs: now - e.request.startedAt,
+            })),
+            recentFailures: failures.map((e) => ({
+              url: e.request.url,
+              method: e.request.method,
+              statusCode: e.response?.statusCode ?? 0,
+              durationMs: e.response?.durationMs ?? 0,
+              error: e.error,
+            })),
+            recentFailureCount: failures.length,
+          };
+        }
+
         return success(snapshot);
       } catch (err) {
         return error((err as Error).message, 'SEMANTIC_SNAPSHOT_ERROR');
@@ -2952,110 +3063,188 @@ export function createHandlers(
     getForms: async (): Promise<APIResponse<FormsResponse>> => {
       try {
         refreshElements();
-        const snapshot = registry.createSnapshot();
-        const elements = registry.getAllElements() as Array<{
-          id: string;
-          element: HTMLElement;
-          type: string;
-          label?: string;
-          getState: () => import('../core').ElementState;
-        }>;
-
-        // Scan for validation errors using DOM heuristics
-        const validationErrors = scanValidationErrors(
-          elements.map((el) => ({ id: el.id, element: el.element }))
-        );
-        const errorsByField = new Map(validationErrors.map((e) => [e.fieldId, e]));
-
-        // Build form-centric view
-        const formElements = elements.filter((el) => el.type === 'form');
-        const inputTypes = new Set(['input', 'textarea', 'select', 'checkbox', 'radio']);
-        const allInputs = elements.filter((el) => inputTypes.has(el.type));
-
-        const forms: FormState[] = [];
-
-        if (formElements.length > 0) {
-          // Analyze each <form> element
-          for (const formEl of formElements) {
-            const formDom = formEl.element;
-            // Find inputs inside this form
-            const formInputs = allInputs.filter((input) => formDom.contains(input.element));
-            const fields = buildFormFields(formInputs, errorsByField);
-
-            // Find submit button
-            const submitButton = elements.find(
-              (el) =>
-                el.type === 'button' &&
-                formDom.contains(el.element) &&
-                (el.element.getAttribute('type') === 'submit' ||
-                  el.element.textContent
-                    ?.toLowerCase()
-                    .match(/submit|save|send|continue|sign in|log in/))
-            );
-
-            forms.push({
-              id: formEl.id,
-              name: formEl.label || formDom.getAttribute('name') || undefined,
-              purpose: inferFormPurpose(formInputs),
-              fields,
-              isValid: fields.every((f) => f.valid),
-              submitButton: submitButton?.id,
-              isDirty: fields.some((f) => f.isDirty),
-            });
-          }
-        }
-
-        // Check for implicit form (inputs not inside any <form>)
-        const inputsInForms = new Set(
-          formElements.flatMap((f) =>
-            allInputs.filter((i) => f.element.contains(i.element)).map((i) => i.id)
-          )
-        );
-        const orphanInputs = allInputs.filter((i) => !inputsInForms.has(i.id));
-
-        if (orphanInputs.length > 0) {
-          const fields = buildFormFields(orphanInputs, errorsByField);
-          const submitButton = elements.find(
-            (el) =>
-              el.type === 'button' &&
-              !formElements.some((f) => f.element.contains(el.element)) &&
-              el.element.textContent
-                ?.toLowerCase()
-                .match(/submit|save|send|continue|sign in|log in/)
-          );
-
-          forms.push({
-            id: 'implicit-form',
-            purpose: inferFormPurpose(orphanInputs),
-            fields,
-            isValid: fields.every((f) => f.valid),
-            submitButton: submitButton?.id,
-            isDirty: fields.some((f) => f.isDirty),
-          });
-        }
-
-        // Generate summary
-        const totalFields = forms.reduce((sum, f) => sum + f.fields.length, 0);
-        const totalErrors = forms.reduce(
-          (sum, f) => sum + f.fields.filter((ff) => !ff.valid).length,
-          0
-        );
-        const filledFields = forms.reduce(
-          (sum, f) => sum + f.fields.filter((ff) => ff.value !== '' || ff.checked).length,
-          0
-        );
-        const summaryParts = [`${forms.length} form(s), ${totalFields} field(s)`];
-        if (filledFields > 0) summaryParts.push(`${filledFields} filled`);
-        if (totalErrors > 0) summaryParts.push(`${totalErrors} error(s)`);
-
-        return success<FormsResponse>({
-          forms,
-          summary: summaryParts.join(', '),
-          timestamp: Date.now(),
-        });
+        const elements = registry.getAllElements() as FormDiscoveryElement[];
+        return success<FormsResponse>(discoverForms(elements));
       } catch (err) {
         return error((err as Error).message, 'FORMS_ERROR');
       }
+    },
+
+    fillForm: async (request: FillFormRequest): Promise<APIResponse<FillResult>> => {
+      try {
+        if (!request?.fields || Object.keys(request.fields).length === 0) {
+          return error('Request must include a non-empty "fields" map', 'VALIDATION_ERROR');
+        }
+        if (actionExecutor.fillForm) {
+          const result = await actionExecutor.fillForm(request);
+          return success<FillResult>(result);
+        }
+        return error('fillForm is not supported by the current action executor', 'UNSUPPORTED');
+      } catch (err) {
+        return error((err as Error).message, 'FILL_FORM_ERROR');
+      }
+    },
+
+    snapshotForms: async (): Promise<APIResponse<FormSnapshot>> => {
+      try {
+        const snapshot = captureFormSnapshot();
+        return success<FormSnapshot>(snapshot);
+      } catch (err) {
+        return error((err as Error).message, 'FORM_SNAPSHOT_ERROR');
+      }
+    },
+
+    diffForms: async (request: {
+      before: FormSnapshot;
+      after: FormSnapshot;
+    }): Promise<APIResponse<FormDiff>> => {
+      try {
+        if (!request.before || !request.after) {
+          return error('Both "before" and "after" snapshots are required', 'INVALID_REQUEST');
+        }
+        const diff = diffFormSnapshots(request.before, request.after);
+        return success<FormDiff>(diff);
+      } catch (err) {
+        return error((err as Error).message, 'FORM_DIFF_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Clipboard Handlers
+    // =========================================================================
+
+    getClipboard: async (): Promise<APIResponse<{ text: string | null; formats: string[] }>> => {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.clipboard) {
+          return error('Clipboard API not available in this environment', 'CLIPBOARD_UNAVAILABLE');
+        }
+
+        try {
+          const perm = await navigator.permissions.query({
+            name: 'clipboard-read' as PermissionName,
+          });
+          if (perm.state === 'denied') {
+            return error('Clipboard read permission denied', 'CLIPBOARD_PERMISSION_DENIED');
+          }
+        } catch {
+          // Permissions API may not support clipboard-read query in all browsers
+        }
+
+        const text = await navigator.clipboard.readText();
+        const formats: string[] = ['text/plain'];
+
+        return success({ text, formats });
+      } catch (err) {
+        return error((err as Error).message, 'CLIPBOARD_READ_ERROR');
+      }
+    },
+
+    setClipboard: async (request: {
+      text: string;
+      html?: string;
+    }): Promise<APIResponse<{ written: boolean; formats: string[] }>> => {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.clipboard) {
+          return error('Clipboard API not available in this environment', 'CLIPBOARD_UNAVAILABLE');
+        }
+
+        if (!request?.text && !request?.html) {
+          return error('Request must include "text" or "html"', 'VALIDATION_ERROR');
+        }
+
+        const formats: string[] = [];
+
+        if (request.html) {
+          const items = [
+            new ClipboardItem({
+              'text/html': new Blob([request.html], { type: 'text/html' }),
+              'text/plain': new Blob([request.text || ''], { type: 'text/plain' }),
+            }),
+          ];
+          await navigator.clipboard.write(items);
+          formats.push('text/html', 'text/plain');
+        } else {
+          await navigator.clipboard.writeText(request.text);
+          formats.push('text/plain');
+        }
+
+        return success({ written: true, formats });
+      } catch (err) {
+        return error((err as Error).message, 'CLIPBOARD_WRITE_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Network Request Monitoring Handlers
+    // =========================================================================
+
+    getNetworkRequests: async (params) => {
+      if (!networkTracker) {
+        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+      }
+      const filter: NetworkRequestFilter = {};
+      if (params?.status) filter.status = params.status as any;
+      if (params?.method) filter.method = params.method;
+      if (params?.urlPattern) filter.urlPattern = params.urlPattern;
+      if (params?.failuresOnly) filter.failuresOnly = params.failuresOnly;
+      if (params?.since) filter.since = params.since;
+      if (params?.limit) filter.limit = params.limit;
+
+      const requests = networkTracker.getAll(filter);
+      const inFlight = networkTracker.getInFlight();
+      return {
+        success: true,
+        data: { requests, count: requests.length, inFlightCount: inFlight.length },
+        timestamp: Date.now(),
+      };
+    },
+
+    getNetworkRequestsInFlight: async () => {
+      if (!networkTracker) {
+        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+      }
+      const requests = networkTracker.getInFlight();
+      return {
+        success: true,
+        data: { requests, count: requests.length },
+        timestamp: Date.now(),
+      };
+    },
+
+    waitForNetworkRequest: async (request) => {
+      if (!networkTracker) {
+        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+      }
+      try {
+        const result = await networkTracker.waitForRequest(request);
+        return {
+          success: true,
+          data: result,
+          timestamp: Date.now(),
+        };
+      } catch (err) {
+        return error((err as Error).message, 'NETWORK_WAIT_ERROR');
+      }
+    },
+
+    getNetworkRequest: async (id) => {
+      if (!networkTracker) {
+        return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
+      }
+      const entry = networkTracker.getById(id);
+      if (!entry) {
+        return {
+          success: false,
+          error: `Request not found: ${id}`,
+          code: 'NOT_FOUND',
+          timestamp: Date.now(),
+        };
+      }
+      return {
+        success: true,
+        data: entry,
+        timestamp: Date.now(),
+      };
     },
 
     // =========================================================================
@@ -3139,6 +3328,43 @@ export function createHandlers(
         return error((err as Error).message, 'IDLE_TIMEOUT');
       }
     },
+
+    // Undo/redo awareness endpoints
+    getUndoState: async () => {
+      if (!undoTracker) {
+        return error('Undo tracking is not available', 'UNDO_UNAVAILABLE');
+      }
+      try {
+        const state = undoTracker.getState();
+        return success(state);
+      } catch (err) {
+        return error((err as Error).message, 'UNDO_ERROR');
+      }
+    },
+
+    executeUndo: async () => {
+      if (!undoTracker) {
+        return error('Undo tracking is not available', 'UNDO_UNAVAILABLE');
+      }
+      try {
+        const executed = undoTracker.executeUndo();
+        return success({ executed });
+      } catch (err) {
+        return error((err as Error).message, 'UNDO_ERROR');
+      }
+    },
+
+    executeRedo: async () => {
+      if (!undoTracker) {
+        return error('Undo tracking is not available', 'UNDO_UNAVAILABLE');
+      }
+      try {
+        const executed = undoTracker.executeRedo();
+        return success({ executed });
+      } catch (err) {
+        return error((err as Error).message, 'UNDO_ERROR');
+      }
+    },
   };
 }
 
@@ -3153,6 +3379,7 @@ export function createAIHandlers(
 ): Pick<
   UIBridgeServerHandlers,
   | 'aiSearch'
+  | 'aiFind'
   | 'aiExecute'
   | 'aiAssert'
   | 'aiAssertBatch'
@@ -3185,6 +3412,29 @@ export function createAIHandlers(
           success: false,
           error: (err as Error).message,
           code: 'AI_SEARCH_ERROR',
+          timestamp: Date.now(),
+        };
+      }
+    },
+
+    aiFind: async (request: {
+      query: string;
+      context?: FindContext;
+      confidenceThreshold?: number;
+    }): Promise<APIResponse<FindResult>> => {
+      try {
+        refreshElements();
+        const result = find(request.query, searchEngine, {
+          context: request.context,
+          confidenceThreshold: request.confidenceThreshold,
+          pickFirst: true,
+        });
+        return { success: true, data: result, timestamp: Date.now() };
+      } catch (err) {
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'AI_FIND_ERROR',
           timestamp: Date.now(),
         };
       }
@@ -3237,10 +3487,16 @@ export function createAIHandlers(
       }
     },
 
-    getSemanticSnapshot: async (): Promise<APIResponse<SemanticSnapshot>> => {
+    getSemanticSnapshot: async (options?: {
+      includeForms?: string | boolean;
+    }): Promise<APIResponse<SemanticSnapshot>> => {
       try {
         const controlSnapshot = registry.createSnapshot();
-        const snapshot = snapshotManager.createSnapshot(controlSnapshot);
+        const wantForms = options?.includeForms === true || options?.includeForms === 'true';
+        const formsResponse = wantForms
+          ? discoverForms(registry.getAllElements() as FormDiscoveryElement[])
+          : undefined;
+        const snapshot = snapshotManager.createSnapshot(controlSnapshot, undefined, formsResponse);
         return { success: true, data: snapshot, timestamp: Date.now() };
       } catch (err) {
         return {

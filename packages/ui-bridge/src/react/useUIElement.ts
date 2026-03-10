@@ -13,6 +13,7 @@ import type {
   ElementIdentifier,
   RegisteredElement,
 } from '../core/types';
+import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
 /**
@@ -33,6 +34,13 @@ export interface UseUIElementOptions {
   autoRegister?: boolean;
   /** Callback when state changes */
   onStateChange?: (state: ElementState) => void;
+  /** Declare relationships from this element to other elements */
+  relationships?: Array<{
+    targetId: string;
+    type: RelationshipType;
+    bidirectional?: boolean;
+    metadata?: Record<string, unknown>;
+  }>;
 }
 
 /**
@@ -86,7 +94,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const elementRef = useRef<HTMLElement | null>(null);
   const registeredRef = useRef(false);
 
-  const { id, type, label, actions, customActions, autoRegister = true } = options;
+  const { id, type, label, actions, customActions, autoRegister = true, relationships } = options;
 
   // Register the element
   const register = useCallback(() => {
@@ -133,6 +141,25 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       unregister();
     };
   }, [unregister]);
+
+  // Declare relationships when registered
+  const serializedRelationships = JSON.stringify(relationships);
+  useEffect(() => {
+    if (!bridge || !relationships || relationships.length === 0) return;
+
+    for (const rel of relationships) {
+      const opts =
+        rel.bidirectional !== undefined || rel.metadata !== undefined
+          ? { bidirectional: rel.bidirectional, metadata: rel.metadata }
+          : undefined;
+      bridge.relationshipTracker.declare(id, rel.targetId, rel.type, opts);
+    }
+
+    return () => {
+      bridge.relationshipTracker.undeclareAll(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, id, serializedRelationships]);
 
   // Get state
   const getState = useCallback((): ElementState | null => {

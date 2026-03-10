@@ -5,6 +5,8 @@
  * independently-accessible detector that also feeds into a composite.
  */
 
+import type { NetworkRequestTracker } from '../network/tracker';
+
 // ============================================================================
 // Signal Interface
 // ============================================================================
@@ -218,6 +220,12 @@ export interface NetworkIdleConfig {
   ignorePatterns?: string[];
   /** Whether to track XHR in addition to fetch (default: true) */
   trackXHR?: boolean;
+  /**
+   * Optional NetworkRequestTracker instance. When provided, the idle detector
+   * subscribes to tracker events instead of patching fetch/XHR directly.
+   * This avoids redundant fetch interception when a tracker already exists.
+   */
+  tracker?: NetworkRequestTracker;
 }
 
 /** DOM settling detector configuration */

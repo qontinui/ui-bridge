@@ -110,8 +110,16 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const computedStyle = window.getComputedStyle(element);
 
+  const inViewport =
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.top < window.innerHeight &&
+    rect.bottom > 0 &&
+    rect.left < window.innerWidth &&
+    rect.right > 0;
+
   const state: ElementState = {
-    visible: isElementVisible(element, rect, computedStyle),
+    visible: isElementVisible(rect, computedStyle, inViewport),
     enabled: !isElementDisabled(element),
     focused: document.activeElement === element,
     rect: {
@@ -131,7 +139,24 @@ function getElementState(element: HTMLElement): ElementState {
       opacity: computedStyle.opacity,
       pointerEvents: computedStyle.pointerEvents,
     },
+    inViewport,
   };
+
+  // Scroll container info — only for elements with overflowing scrollable content
+  if (isScrollContainer(element, computedStyle)) {
+    state.scrollInfo = {
+      scrollTop: element.scrollTop,
+      scrollLeft: element.scrollLeft,
+      scrollHeight: element.scrollHeight,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      canScrollUp: element.scrollTop > 0,
+      canScrollDown: element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+      canScrollLeft: element.scrollLeft > 0,
+      canScrollRight: element.scrollLeft + element.clientWidth < element.scrollWidth - 1,
+    };
+  }
 
   // Fallback for icon-only elements (no textContent but has aria-label/title)
   if (!state.textContent) {
@@ -194,26 +219,30 @@ function getElementState(element: HTMLElement): ElementState {
 }
 
 /**
- * Check if an element is visible
+ * Check if an element is visible (display/opacity/visibility + in viewport)
  */
-function isElementVisible(
-  element: HTMLElement,
-  rect: DOMRect,
-  style: CSSStyleDeclaration
-): boolean {
+function isElementVisible(rect: DOMRect, style: CSSStyleDeclaration, inViewport: boolean): boolean {
   if (rect.width === 0 || rect.height === 0) return false;
   if (style.display === 'none') return false;
   if (style.visibility === 'hidden') return false;
   if (parseFloat(style.opacity) === 0) return false;
 
-  // Check if in viewport
-  const inViewport =
-    rect.top < window.innerHeight &&
-    rect.bottom > 0 &&
-    rect.left < window.innerWidth &&
-    rect.right > 0;
-
   return inViewport;
+}
+
+/**
+ * Check if an element is a scroll container (has overflowing scrollable content).
+ * Reuses the already-computed style to avoid an extra getComputedStyle call.
+ */
+function isScrollContainer(element: HTMLElement, style: CSSStyleDeclaration): boolean {
+  // Quick check: if content doesn't overflow, skip
+  if (element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth) {
+    return false;
+  }
+
+  const oy = style.overflowY;
+  const ox = style.overflowX;
+  return oy === 'auto' || oy === 'scroll' || ox === 'auto' || ox === 'scroll';
 }
 
 /**

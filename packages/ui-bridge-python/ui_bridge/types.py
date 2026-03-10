@@ -421,6 +421,47 @@ class RegisteredWorkflow(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class DragSourceInfo(BaseModel):
+    """A detected drag source element."""
+
+    id: str
+    label: str | None = None
+    data_type: str | None = Field(None, alias="dataType")
+    origin: str
+    native_draggable: bool = Field(alias="nativeDraggable")
+    has_grab_cursor: bool = Field(alias="hasGrabCursor")
+    metadata: dict[str, Any] | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class DropZoneInfo(BaseModel):
+    """A detected drop zone element."""
+
+    id: str
+    label: str | None = None
+    accepts: list[str] | None = None
+    effect: str | None = None
+    origin: str
+    aria_drop_effect: str | None = Field(None, alias="ariaDropEffect")
+    is_sortable: bool = Field(alias="isSortable")
+    contained_drag_sources: list[str] | None = Field(None, alias="containedDragSources")
+    metadata: dict[str, Any] | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class SnapshotDragDropContext(BaseModel):
+    """Drag source and drop zone discovery context."""
+
+    drag_sources: list[DragSourceInfo] = Field(alias="dragSources")
+    drop_zones: list[DropZoneInfo] = Field(alias="dropZones")
+    count: dict[str, int]
+    by_origin: dict[str, int] = Field(alias="byOrigin")
+
+    model_config = {"populate_by_name": True}
+
+
 class ControlSnapshot(BaseModel):
     """Control snapshot - full state of controllable UI."""
 
@@ -429,6 +470,7 @@ class ControlSnapshot(BaseModel):
     components: list[RegisteredComponent]
     workflows: list[RegisteredWorkflow]
     active_runs: list[dict[str, Any]] = Field(default_factory=list, alias="activeRuns")
+    drag_drop: SnapshotDragDropContext | None = Field(None, alias="dragDrop")
 
     model_config = {"populate_by_name": True}
 

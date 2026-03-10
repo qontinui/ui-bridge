@@ -17,7 +17,9 @@ import type {
   WorkflowRunResponse,
   PageNavigateRequest,
   PageNavigationResponse,
+  FillFormRequest,
 } from '../control';
+import type { FillResult } from '../core/types';
 import type { RenderLogEntry, RenderLogEntryType } from '../render-log';
 import type {
   SearchCriteria,
@@ -50,8 +52,11 @@ import type {
   ChangeBufferDrainResult,
   SnapshotBookmark,
   FormsResponse,
-  DiffSummaryOptions,
   StructuredChangeAnalysis,
+  FormSnapshot,
+  FormDiff,
+  FindResult,
+  FindContext,
 } from '../ai';
 import type {
   InteractionStateName,
@@ -77,20 +82,14 @@ import type {
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
 import type { FingerprintedEvent } from '../debug/error-fingerprint';
-import type { ErrorSeverity } from '../debug/error-severity';
 import type { TimelineEntry } from '../debug/error-timeline';
 import type { HealthReport } from '../debug/health-score';
 import type { ErrorSessionSummary, BaselineComparison } from '../debug/error-session';
 import type { NetworkChain } from '../debug/network-chain';
 import type { ErrorSnapshot } from '../debug/error-snapshot';
-import type {
-  CompositeIdleStatus,
-  NetworkSignalStatus,
-  DOMSignalStatus,
-  LoadingIndicatorSignalStatus,
-  FormMutationSignalStatus,
-  SignalStatus,
-} from '../idle';
+import type { CompositeIdleStatus, SignalStatus } from '../idle';
+import type { NetworkRequestEntry, WaitForRequestOptions, WaitForRequestResult } from '../network';
+import type { UndoRedoState } from '../undo';
 
 /**
  * Server configuration
@@ -248,10 +247,17 @@ export interface UIBridgeServerHandlers {
 
   // AI-native endpoints
   aiSearch: (criteria: SearchCriteria) => Promise<APIResponse<SearchResponse>>;
+  aiFind: (request: {
+    query: string;
+    context?: FindContext;
+    confidenceThreshold?: number;
+  }) => Promise<APIResponse<FindResult>>;
   aiExecute: (request: NLActionRequest) => Promise<APIResponse<NLActionResponse>>;
   aiAssert: (request: AssertionRequest) => Promise<APIResponse<AssertionResult>>;
   aiAssertBatch: (request: BatchAssertionRequest) => Promise<APIResponse<BatchAssertionResult>>;
-  getSemanticSnapshot: () => Promise<APIResponse<SemanticSnapshot>>;
+  getSemanticSnapshot: (options?: {
+    includeForms?: string | boolean;
+  }) => Promise<APIResponse<SemanticSnapshot>>;
   getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
   getPageSummary: () => Promise<APIResponse<string>>;
 
@@ -447,6 +453,41 @@ export interface UIBridgeServerHandlers {
 
   // Form state awareness endpoints
   getForms: () => Promise<APIResponse<FormsResponse>>;
+  fillForm: (request: FillFormRequest) => Promise<APIResponse<FillResult>>;
+  snapshotForms: () => Promise<APIResponse<FormSnapshot>>;
+  diffForms: (request: {
+    before: FormSnapshot;
+    after: FormSnapshot;
+  }) => Promise<APIResponse<FormDiff>>;
+
+  // Clipboard endpoints
+  getClipboard: () => Promise<APIResponse<{ text: string | null; formats: string[] }>>;
+  setClipboard: (request: {
+    text: string;
+    html?: string;
+  }) => Promise<APIResponse<{ written: boolean; formats: string[] }>>;
+
+  // Network request monitoring endpoints
+  getNetworkRequests: (params?: {
+    status?: string;
+    method?: string;
+    urlPattern?: string;
+    failuresOnly?: boolean;
+    since?: number;
+    limit?: number;
+  }) => Promise<
+    APIResponse<{ requests: NetworkRequestEntry[]; count: number; inFlightCount: number }>
+  >;
+
+  getNetworkRequestsInFlight: () => Promise<
+    APIResponse<{ requests: NetworkRequestEntry[]; count: number }>
+  >;
+
+  waitForNetworkRequest: (
+    request: WaitForRequestOptions
+  ) => Promise<APIResponse<WaitForRequestResult>>;
+
+  getNetworkRequest: (id: string) => Promise<APIResponse<NetworkRequestEntry>>;
 
   // Idle detection endpoints
   getIdleStatus: () => Promise<APIResponse<CompositeIdleStatus>>;
@@ -465,6 +506,11 @@ export interface UIBridgeServerHandlers {
     timeout?: number;
     minStableMs?: number;
   }) => Promise<APIResponse<Record<string, SignalStatus>>>;
+
+  // Undo/redo awareness endpoints
+  getUndoState: () => Promise<APIResponse<UndoRedoState>>;
+  executeUndo: () => Promise<APIResponse<{ executed: boolean }>>;
+  executeRedo: () => Promise<APIResponse<{ executed: boolean }>>;
 }
 
 /**
@@ -542,6 +588,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // AI-native endpoints
   { method: 'POST', path: '/ai/search', handler: 'aiSearch', bodyRequired: true },
+  { method: 'POST', path: '/ai/find', handler: 'aiFind', bodyRequired: true },
   { method: 'POST', path: '/ai/execute', handler: 'aiExecute', bodyRequired: true },
   { method: 'POST', path: '/ai/assert', handler: 'aiAssert', bodyRequired: true },
   { method: 'POST', path: '/ai/assert/batch', handler: 'aiAssertBatch', bodyRequired: true },
@@ -760,6 +807,38 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Form state awareness
   { method: 'GET', path: '/control/forms', handler: 'getForms' },
+  { method: 'POST', path: '/control/fill', handler: 'fillForm', bodyRequired: true },
+  { method: 'POST', path: '/control/forms/snapshot', handler: 'snapshotForms' },
+  {
+    method: 'POST',
+    path: '/control/forms/diff',
+    handler: 'diffForms',
+    bodyRequired: true,
+  },
+
+  // Clipboard
+  { method: 'GET', path: '/control/clipboard', handler: 'getClipboard' },
+  { method: 'POST', path: '/control/clipboard', handler: 'setClipboard', bodyRequired: true },
+
+  // Network request monitoring (static routes before parameterized)
+  { method: 'GET', path: '/control/network-requests', handler: 'getNetworkRequests' },
+  {
+    method: 'GET',
+    path: '/control/network-requests/in-flight',
+    handler: 'getNetworkRequestsInFlight',
+  },
+  {
+    method: 'POST',
+    path: '/control/network-requests/wait',
+    handler: 'waitForNetworkRequest',
+    bodyRequired: true,
+  },
+  {
+    method: 'GET',
+    path: '/control/network-request/:id',
+    handler: 'getNetworkRequest',
+    params: ['id'],
+  },
 
   // Idle detection (static routes before parameterized)
   { method: 'GET', path: '/control/idle-status', handler: 'getIdleStatus' },
@@ -782,6 +861,11 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'waitForSignalIdle',
     params: ['signal'],
   },
+
+  // Undo/redo awareness
+  { method: 'GET', path: '/control/undo-state', handler: 'getUndoState' },
+  { method: 'POST', path: '/control/undo', handler: 'executeUndo' },
+  { method: 'POST', path: '/control/redo', handler: 'executeRedo' },
 ];
 
 /**

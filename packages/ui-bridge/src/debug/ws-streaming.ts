@@ -28,7 +28,7 @@ import { getEventStack } from './shared-utils';
 function extractSourceLocationFromStack(stack?: string): string | undefined {
   if (!stack) return undefined;
 
-  const V8_FRAME_RE = /^\s+at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
+  const V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
   const SPIDERMONKEY_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)$/;
 
   const SKIP_PATTERNS = [

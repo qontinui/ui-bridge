@@ -4,7 +4,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import React from 'react';
 import { usePageContext } from '../usePageContext';
 import type { UIBridgeContextValue } from '../UIBridgeProvider';
 import type { DeveloperPageContext } from '../../navigation/types';

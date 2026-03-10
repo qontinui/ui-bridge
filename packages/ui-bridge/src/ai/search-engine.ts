@@ -80,6 +80,8 @@ interface SearchableElement {
   rect: ElementState['rect'];
   labelText?: string;
   value?: string;
+  /** Nearest semantic container (e.g., "form[login-form]", "dialog", "nav") */
+  parentContext?: string;
 }
 
 /**
@@ -249,6 +251,20 @@ export class SearchEngine {
       }
     }
 
+    // Resolve parent context (nearest semantic container)
+    const parentContext = this.resolveParentContext(element);
+
+    // Infer icon meaning for icon-only buttons and add to aliases
+    const iconAliases = this.inferIconAliases(element);
+    if (iconAliases.length > 0 && !textContent && !ariaLabel) {
+      const aliasSet = new Set([...aliases, ...iconAliases]);
+      aliases = [...aliasSet];
+      // Use the first icon alias as textContent for matching
+      if (!textContent) {
+        textContent = iconAliases[0];
+      }
+    }
+
     return {
       id: element.id,
       element,
@@ -265,6 +281,7 @@ export class SearchEngine {
       rect: state.rect,
       labelText,
       value,
+      parentContext,
     };
   }
 
@@ -548,6 +565,20 @@ export class SearchEngine {
         weightedScore += 1.0 * this.config.textWeight;
         totalWeight += this.config.textWeight;
       }
+    }
+
+    // Within/containment matching (hard filter + small bonus)
+    if (criteria.within) {
+      const containmentScore = this.scoreContainmentMatch(searchable, criteria.within);
+      if (containmentScore.score === 0) {
+        // Hard filter: element is NOT inside the specified container — reject
+        const aiElement = this.toAIDiscoveredElement(searchable);
+        return { element: aiElement, confidence: 0, matchReasons: [], scores: {} };
+      }
+      matchReasons.push(...containmentScore.reasons);
+      // Containment is primarily a filter; add a small scoring bonus
+      weightedScore += 0.1;
+      totalWeight += 0.1;
     }
 
     // Alias matching (always applied as a bonus)
@@ -840,6 +871,224 @@ export class SearchEngine {
   }
 
   /**
+   * Score containment match (is this element inside the specified container?)
+   */
+  private scoreContainmentMatch(
+    searchable: SearchableElement,
+    containerId: string
+  ): { score: number; reasons: string[] } {
+    // 1. Check parentContext string
+    if (searchable.parentContext) {
+      const ctx = searchable.parentContext.toLowerCase();
+      if (ctx.includes(containerId.toLowerCase()) || containerId.toLowerCase().includes(ctx)) {
+        return { score: 1.0, reasons: [`inside ${searchable.parentContext}`] };
+      }
+    }
+
+    // 2. Try DOM containment if we have access to the actual elements
+    const container = this.cachedElements.find((el) => el.id === containerId);
+    if (container) {
+      // Try actual DOM containment
+      try {
+        if ('getState' in searchable.element && 'getState' in container.element) {
+          const containerEl = (container.element as RegisteredElement).element;
+          const targetEl = (searchable.element as RegisteredElement).element;
+          if (containerEl && targetEl && containerEl.contains(targetEl)) {
+            return { score: 1.0, reasons: [`DOM child of ${containerId}`] };
+          }
+        }
+      } catch {
+        // DOM access failed, fall through to spatial check
+      }
+
+      // 3. Spatial containment fallback (element rect inside container rect)
+      const cRect = container.rect;
+      const eRect = searchable.rect;
+      if (
+        eRect.x >= cRect.x - 5 &&
+        eRect.y >= cRect.y - 5 &&
+        eRect.x + eRect.width <= cRect.x + cRect.width + 5 &&
+        eRect.y + eRect.height <= cRect.y + cRect.height + 5
+      ) {
+        return { score: 0.8, reasons: [`spatially within ${containerId}`] };
+      }
+    }
+
+    // 4. Check if the element's parentContext mentions the container by text match
+    // (container might not be in the cache but the parentContext string might reference it)
+    const containerLower = containerId.toLowerCase();
+    if (searchable.parentContext) {
+      const contextLower = searchable.parentContext.toLowerCase();
+      for (const part of containerLower.split(/[\s-_]+/)) {
+        if (part.length > 2 && contextLower.includes(part)) {
+          return { score: 0.6, reasons: [`parent context partially matches ${containerId}`] };
+        }
+      }
+    }
+
+    return { score: 0, reasons: [] };
+  }
+
+  /**
+   * Resolve the nearest semantic container for an element.
+   * Walks up the DOM tree looking for forms, dialogs, nav, sections, etc.
+   */
+  private resolveParentContext(element: DiscoveredElement | RegisteredElement): string | undefined {
+    try {
+      let el: HTMLElement | null = null;
+
+      if ('getState' in element && typeof element.getState === 'function') {
+        el = (element as RegisteredElement).element;
+      }
+      if (!el) return undefined;
+
+      let ancestor = el.parentElement;
+      while (ancestor) {
+        const role = ancestor.getAttribute('role');
+        const tag = ancestor.tagName.toLowerCase();
+
+        // Check for semantic containers
+        const isContainer =
+          role === 'dialog' ||
+          role === 'alertdialog' ||
+          role === 'form' ||
+          role === 'navigation' ||
+          role === 'region' ||
+          role === 'group' ||
+          role === 'tabpanel' ||
+          role === 'toolbar' ||
+          role === 'complementary' ||
+          tag === 'form' ||
+          tag === 'nav' ||
+          tag === 'section' ||
+          tag === 'aside' ||
+          tag === 'dialog' ||
+          tag === 'details' ||
+          tag === 'fieldset' ||
+          tag === 'main' ||
+          tag === 'header' ||
+          tag === 'footer';
+
+        if (isContainer) {
+          const label =
+            ancestor.getAttribute('aria-label') ||
+            ancestor.getAttribute('data-testid') ||
+            ancestor.id ||
+            '';
+          return label ? `${role || tag}[${label}]` : role || tag;
+        }
+
+        ancestor = ancestor.parentElement;
+      }
+    } catch {
+      // DOM access failed
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Known icon class patterns → semantic meaning
+   */
+  private static readonly ICON_CLASS_MAP: Record<string, string[]> = {
+    close: [
+      'close',
+      'x-mark',
+      'times',
+      'dismiss',
+      'lucide-x',
+      'fa-times',
+      'mdi-close',
+      'ri-close-line',
+      'icon-x',
+    ],
+    delete: [
+      'trash',
+      'delete',
+      'remove',
+      'lucide-trash',
+      'fa-trash',
+      'mdi-delete',
+      'ri-delete-bin',
+    ],
+    edit: ['edit', 'pencil', 'pen', 'lucide-pencil', 'fa-edit', 'mdi-pencil', 'ri-edit'],
+    search: ['search', 'magnify', 'lucide-search', 'fa-search', 'mdi-magnify', 'ri-search'],
+    menu: ['menu', 'hamburger', 'bars', 'lucide-menu', 'fa-bars', 'mdi-menu', 'ri-menu'],
+    more: ['more', 'dots', 'ellipsis', 'lucide-more', 'fa-ellipsis', 'mdi-dots', 'ri-more'],
+    add: ['plus', 'add', 'lucide-plus', 'fa-plus', 'mdi-plus', 'ri-add'],
+    back: [
+      'arrow-left',
+      'chevron-left',
+      'back',
+      'lucide-arrow-left',
+      'fa-arrow-left',
+      'ri-arrow-left',
+    ],
+    forward: ['arrow-right', 'chevron-right', 'forward', 'lucide-arrow-right', 'ri-arrow-right'],
+    expand: ['chevron-down', 'expand', 'caret-down', 'lucide-chevron-down', 'fa-caret-down'],
+    collapse: ['chevron-up', 'collapse', 'caret-up', 'lucide-chevron-up', 'fa-caret-up'],
+    settings: ['gear', 'cog', 'settings', 'lucide-settings', 'fa-cog', 'mdi-cog', 'ri-settings'],
+    info: ['info', 'circle-info', 'lucide-info', 'fa-info-circle', 'ri-information'],
+    warning: [
+      'warning',
+      'alert-triangle',
+      'exclamation',
+      'lucide-alert-triangle',
+      'fa-exclamation-triangle',
+    ],
+    copy: ['copy', 'clipboard', 'lucide-copy', 'fa-copy', 'mdi-content-copy', 'ri-file-copy'],
+    download: ['download', 'lucide-download', 'fa-download', 'mdi-download', 'ri-download'],
+    upload: ['upload', 'lucide-upload', 'fa-upload', 'mdi-upload', 'ri-upload'],
+    refresh: ['refresh', 'reload', 'rotate', 'lucide-refresh-cw', 'fa-sync', 'mdi-refresh'],
+    save: ['save', 'floppy', 'lucide-save', 'fa-save', 'mdi-content-save'],
+    home: ['home', 'house', 'lucide-home', 'fa-home', 'mdi-home', 'ri-home'],
+    user: ['user', 'person', 'avatar', 'lucide-user', 'fa-user', 'mdi-account', 'ri-user'],
+    lock: ['lock', 'lucide-lock', 'fa-lock', 'mdi-lock', 'ri-lock'],
+    unlock: ['unlock', 'lucide-unlock', 'fa-unlock', 'mdi-lock-open'],
+    star: ['star', 'favorite', 'lucide-star', 'fa-star', 'mdi-star', 'ri-star'],
+    heart: ['heart', 'like', 'lucide-heart', 'fa-heart', 'mdi-heart'],
+    filter: ['filter', 'funnel', 'lucide-filter', 'fa-filter', 'mdi-filter', 'ri-filter'],
+    sort: ['sort', 'lucide-arrow-up-down', 'fa-sort', 'mdi-sort'],
+    share: ['share', 'lucide-share', 'fa-share', 'mdi-share', 'ri-share'],
+    play: ['play', 'lucide-play', 'fa-play', 'mdi-play', 'ri-play'],
+    pause: ['pause', 'lucide-pause', 'fa-pause', 'mdi-pause', 'ri-pause'],
+    stop: ['stop', 'square', 'lucide-square', 'fa-stop', 'mdi-stop'],
+  };
+
+  /**
+   * Infer aliases from icon CSS classes for icon-only elements.
+   */
+  private inferIconAliases(element: DiscoveredElement | RegisteredElement): string[] {
+    try {
+      let el: HTMLElement | null = null;
+      if ('getState' in element && typeof element.getState === 'function') {
+        el = (element as RegisteredElement).element;
+      }
+      if (!el) return [];
+
+      // Collect classes from the element and its direct icon children
+      const classSource = [Array.from(el.classList).join(' ')];
+      const iconChild = el.querySelector('svg, [class*="icon"], i[class]');
+      if (iconChild) {
+        classSource.push(Array.from(iconChild.classList).join(' '));
+      }
+
+      const allClasses = classSource.join(' ').toLowerCase();
+      if (!allClasses) return [];
+
+      const foundAliases: string[] = [];
+      for (const [meaning, patterns] of Object.entries(SearchEngine.ICON_CLASS_MAP)) {
+        if (patterns.some((p) => allClasses.includes(p))) {
+          foundAliases.push(meaning);
+        }
+      }
+      return foundAliases;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Match a string against a pattern (supports * wildcard)
    */
   private matchPattern(str: string, pattern: string): boolean {
@@ -876,7 +1125,7 @@ export class SearchEngine {
         elementType: searchable.type,
         tagName: searchable.tagName,
       }),
-      parentContext: undefined, // Would need DOM traversal
+      parentContext: searchable.parentContext,
       suggestedActions: generateSuggestedActions({
         textContent: searchable.textContent,
         ariaLabel: searchable.ariaLabel,
