@@ -462,6 +462,166 @@ class SnapshotDragDropContext(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ============================================================================
+# Shortcut Types
+# ============================================================================
+
+
+class KeyboardShortcut(BaseModel):
+    """A single keyboard shortcut discovered on the page."""
+
+    combo: str
+    description: str | None = None
+    element_id: str | None = Field(None, alias="elementId")
+    source: str
+    scope: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class SnapshotShortcutContext(BaseModel):
+    """Keyboard shortcut context included in ControlSnapshot.shortcuts."""
+
+    shortcuts: list[KeyboardShortcut]
+    total_count: int = Field(alias="totalCount")
+    last_scan_timestamp: int = Field(alias="lastScanTimestamp")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Modal/Dialog Stack Types
+# ============================================================================
+
+
+class ModalInfo(BaseModel):
+    """Information about a detected modal/dialog."""
+
+    id: str
+    title: str | None = None
+    type: str
+    blocking: bool
+    z_index: int = Field(alias="zIndex")
+    has_backdrop: bool = Field(alias="hasBackdrop")
+    close_button: str | None = Field(None, alias="closeButton")
+    primary_action: str | None = Field(None, alias="primaryAction")
+    esc_dismiss: bool = Field(alias="escDismiss")
+    role: str | None = None
+    aria_label: str | None = Field(None, alias="ariaLabel")
+    detected_at: int = Field(alias="detectedAt")
+    selector: str
+
+    model_config = {"populate_by_name": True}
+
+
+class SnapshotModalContext(BaseModel):
+    """Modal/dialog stack context included in ControlSnapshot.modalStack."""
+
+    modals: list[ModalInfo]
+    top_modal: ModalInfo | None = Field(None, alias="topModal")
+    has_blocking_modal: bool = Field(alias="hasBlockingModal")
+    count: int
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Toast/Notification Types
+# ============================================================================
+
+
+class CapturedToast(BaseModel):
+    """A captured toast/notification message."""
+
+    id: str
+    message: str
+    level: str
+    appeared_at: int = Field(alias="appearedAt")
+    dismissed_at: int | None = Field(None, alias="dismissedAt")
+    visible: bool
+    duration_ms: float = Field(alias="durationMs")
+    source: str | None = None
+    has_action: bool | None = Field(None, alias="hasAction")
+    action_text: str | None = Field(None, alias="actionText")
+
+    model_config = {"populate_by_name": True}
+
+
+class SnapshotToastContext(BaseModel):
+    """Toast/notification context included in ControlSnapshot.toasts."""
+
+    active: list[CapturedToast]
+    recent: list[CapturedToast]
+    total_captured: int = Field(alias="totalCaptured")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Viewport Types
+# ============================================================================
+
+
+class SnapshotViewportContext(BaseModel):
+    """Viewport scroll and dimension info included in ControlSnapshot.viewport."""
+
+    viewport_width: float = Field(alias="viewportWidth")
+    viewport_height: float = Field(alias="viewportHeight")
+    scroll_x: float = Field(alias="scrollX")
+    scroll_y: float = Field(alias="scrollY")
+    document_width: float = Field(alias="documentWidth")
+    document_height: float = Field(alias="documentHeight")
+    can_scroll_down: bool = Field(alias="canScrollDown")
+    can_scroll_right: bool = Field(alias="canScrollRight")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Relationship Types
+# ============================================================================
+
+
+class ElementRelationship(BaseModel):
+    """A semantic relationship between two UI elements."""
+
+    source: str
+    target: str
+    type: str
+    origin: str
+    bidirectional: bool | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class SnapshotRelationshipContext(BaseModel):
+    """Element relationship context included in ControlSnapshot.relationships."""
+
+    relationships: list[ElementRelationship]
+    count: int
+    by_origin: dict[str, int] = Field(alias="byOrigin")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================================================
+# Undo/Redo Types
+# ============================================================================
+
+
+class SnapshotUndoContext(BaseModel):
+    """Undo/redo availability context included in ControlSnapshot.undoRedo."""
+
+    undo_available: bool = Field(alias="undoAvailable")
+    redo_available: bool = Field(alias="redoAvailable")
+    undo_description: str | None = Field(None, alias="undoDescription")
+    redo_description: str | None = Field(None, alias="redoDescription")
+    undo_depth: int | None = Field(None, alias="undoDepth")
+    redo_depth: int | None = Field(None, alias="redoDepth")
+    summary: str
+
+    model_config = {"populate_by_name": True}
+
+
 class ControlSnapshot(BaseModel):
     """Control snapshot - full state of controllable UI."""
 
@@ -470,7 +630,13 @@ class ControlSnapshot(BaseModel):
     components: list[RegisteredComponent]
     workflows: list[RegisteredWorkflow]
     active_runs: list[dict[str, Any]] = Field(default_factory=list, alias="activeRuns")
+    shortcuts: SnapshotShortcutContext | None = None
+    modal_stack: SnapshotModalContext | None = Field(None, alias="modalStack")
+    toasts: SnapshotToastContext | None = None
+    viewport: SnapshotViewportContext | None = None
+    relationships: SnapshotRelationshipContext | None = None
     drag_drop: SnapshotDragDropContext | None = Field(None, alias="dragDrop")
+    undo_redo: SnapshotUndoContext | None = Field(None, alias="undoRedo")
 
     model_config = {"populate_by_name": True}
 
