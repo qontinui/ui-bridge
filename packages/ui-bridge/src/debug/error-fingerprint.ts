@@ -7,6 +7,7 @@
  */
 
 import type { AnyCapturedEvent, BrowserEventType } from './browser-capture-types';
+import { getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,10 +32,12 @@ export interface FingerprintedEvent {
 // Normalization helpers
 // ---------------------------------------------------------------------------
 
-/** UUID v4 pattern */
+/** UUID v4 pattern (global + case-insensitive for replace-all) */
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+/** UUID v4 pattern (non-global, safe for .test() calls) */
+const UUID_TEST_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-/** Hex addresses like 0x1a2b3c or standalone hex strings 8+ chars */
+/** Hex addresses like 0x1a2b3c or standalone hex strings 8+ chars (global for replace-all) */
 const HEX_RE = /\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b/gi;
 
 /** ISO timestamps: 2024-01-15T10:30:00.000Z and similar */
@@ -68,8 +71,7 @@ function normalizeUrlPath(url: string): string {
   try {
     const parsed = new URL(url);
     const segments = parsed.pathname.split('/').map((seg) => {
-      if (UUID_RE.test(seg)) {
-        UUID_RE.lastIndex = 0;
+      if (UUID_TEST_RE.test(seg)) {
         return '<uuid>';
       }
       if (/^\d+$/.test(seg)) return '<id>';
@@ -315,14 +317,6 @@ export function computeFingerprint(event: AnyCapturedEvent): string {
 // ---------------------------------------------------------------------------
 // Deduplication
 // ---------------------------------------------------------------------------
-
-/**
- * Extract the stack from an event if it has one.
- */
-function getEventStack(event: AnyCapturedEvent): string | undefined {
-  if ('stack' in event) return event.stack;
-  return undefined;
-}
 
 /**
  * Deduplicate a list of events into fingerprinted groups.

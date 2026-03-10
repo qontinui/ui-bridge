@@ -10,7 +10,7 @@
 import type { AnyCapturedEvent } from './browser-capture-types';
 import type { BrowserEventCaptureLike } from './error-timeline';
 import type { ErrorSeverity } from './error-severity';
-import { classifyEvent } from './error-severity';
+import { classifyEvent, SEVERITY_RANK } from './error-severity';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,17 +64,6 @@ const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_CRASH_IS_BROKEN = true;
 const DEFAULT_DEGRADED_THRESHOLD = 3;
 const DEFAULT_BROKEN_THRESHOLD = 8;
-
-// ---------------------------------------------------------------------------
-// Severity ranking (crash is most severe)
-// ---------------------------------------------------------------------------
-
-const SEVERITY_RANK: Record<ErrorSeverity, number> = {
-  crash: 0,
-  error: 1,
-  warning: 2,
-  noise: 3,
-};
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -12,15 +12,7 @@ import type { BrowserEventCaptureLike, ClassifiedBrowserEvent } from './error-ti
 import type { ErrorSeverity } from './error-severity';
 import { classifyEvent } from './error-severity';
 import { computeFingerprint, extractSourceLocation } from './error-fingerprint';
-
-// ---------------------------------------------------------------------------
-// Helper: extract stack from an event (if present)
-// ---------------------------------------------------------------------------
-
-function getEventStack(event: AnyCapturedEvent): string | undefined {
-  if ('stack' in event) return event.stack;
-  return undefined;
-}
+import { getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Helper: classify and enrich a single event

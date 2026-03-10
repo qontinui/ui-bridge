@@ -583,7 +583,10 @@ describe('DOMSettlingDetector', () => {
 
     const status1 = detector.getStatus();
     expect(status1.lastMutationAt).toBe(0);
-    expect(status1.msSinceLastMutation).toBe(Infinity);
+    // When no mutations have occurred, msSinceLastMutation returns Date.now()
+    // (time since epoch) to signal "never mutated" while remaining JSON-serializable.
+    expect(status1.msSinceLastMutation).toBeGreaterThan(0);
+    expect(Number.isFinite(status1.msSinceLastMutation)).toBe(true);
     expect(status1.recentMutationCount).toBe(0);
 
     const child = document.createElement('p');

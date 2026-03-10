@@ -10,19 +10,9 @@
 
 import type { AnyCapturedEvent, BrowserEventType } from './browser-capture-types';
 import type { ErrorSeverity } from './error-severity';
-import { classifyEvent } from './error-severity';
+import { classifyEvent, SEVERITY_RANK } from './error-severity';
 import { computeFingerprint, extractSourceLocation } from './error-fingerprint';
-
-// ---------------------------------------------------------------------------
-// Severity ordering (not exported from error-severity, so defined locally)
-// ---------------------------------------------------------------------------
-
-const SEVERITY_RANK: Record<ErrorSeverity, number> = {
-  crash: 0,
-  error: 1,
-  warning: 2,
-  noise: 3,
-};
+import { getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // BrowserEventCaptureLike — duck-type interface for the capture instance
@@ -114,15 +104,6 @@ export interface TimelineQueryOptions {
   limit?: number;
   /** Minimum severity for browser events (actions are always included) */
   minSeverity?: ErrorSeverity;
-}
-
-// ---------------------------------------------------------------------------
-// Helper: extract stack from an event (if present)
-// ---------------------------------------------------------------------------
-
-function getEventStack(event: AnyCapturedEvent): string | undefined {
-  if ('stack' in event) return event.stack;
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------

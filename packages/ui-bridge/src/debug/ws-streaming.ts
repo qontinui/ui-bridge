@@ -11,28 +11,9 @@
 
 import type { AnyCapturedEvent } from './browser-capture-types';
 import type { ErrorSeverity } from './error-severity';
-import { classifyEvent } from './error-severity';
+import { classifyEvent, SEVERITY_RANK } from './error-severity';
 import { computeFingerprint } from './error-fingerprint';
-
-// ---------------------------------------------------------------------------
-// Severity ranking (crash > error > warning > noise)
-// ---------------------------------------------------------------------------
-
-const SEVERITY_RANK: Record<ErrorSeverity, number> = {
-  crash: 0,
-  error: 1,
-  warning: 2,
-  noise: 3,
-};
-
-// ---------------------------------------------------------------------------
-// Helper: extract stack from an event (if present)
-// ---------------------------------------------------------------------------
-
-function getEventStack(event: AnyCapturedEvent): string | undefined {
-  if ('stack' in event) return event.stack;
-  return undefined;
-}
+import { getEventStack } from './shared-utils';
 
 // ---------------------------------------------------------------------------
 // Helper: extract source location from stack (inline to avoid circular dep)

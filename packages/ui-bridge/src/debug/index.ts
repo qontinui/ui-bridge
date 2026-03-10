@@ -55,6 +55,7 @@ export {
   classifyEvent,
   classifyEvents,
   filterBySeverity,
+  SEVERITY_RANK,
   DEFAULT_NOISE_PATTERNS,
   type ErrorSeverity,
   type ClassifiedEvent,
@@ -127,6 +128,9 @@ export {
   type UIStateSnapshot,
   type ErrorImpactConfig,
 } from './error-impact';
+
+// Shared utilities
+export { getEventStack } from './shared-utils';
 
 // Metrics
 export {

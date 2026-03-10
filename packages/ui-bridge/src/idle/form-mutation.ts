@@ -10,25 +10,11 @@
 
 import type {
   IdleSignal,
+  FormMutationSignalStatus,
+  FormMutationConfig,
   SignalWaitOptions,
   SignalTransitionCallback,
-  SignalStatus,
 } from './types';
-
-export interface FormMutationSignalStatus extends SignalStatus {
-  settled: boolean;
-  lastMutationAt: number;
-  msSinceLastMutation: number;
-  recentMutationCount: number;
-  activeFieldId?: string;
-}
-
-export interface FormMutationConfig {
-  /** Time with no form changes before considered settled (default: 800) */
-  settleMs?: number;
-  /** Weight for composite idle score (default: 0.5) */
-  weight?: number;
-}
 
 export class FormMutationDetector implements IdleSignal<FormMutationSignalStatus> {
   readonly name = 'form-mutation';
@@ -49,7 +35,7 @@ export class FormMutationDetector implements IdleSignal<FormMutationSignalStatus
   private handleFocusIn: (e: FocusEvent) => void;
   private handleFocusOut: (e: FocusEvent) => void;
 
-  constructor(config: FormMutationConfig = {}) {
+  constructor(config: FormMutationConfig & { weight?: number } = {}) {
     this.weight = config.weight ?? 0.5;
     this.settleMs = config.settleMs ?? 800;
 
@@ -101,7 +87,7 @@ export class FormMutationDetector implements IdleSignal<FormMutationSignalStatus
       idle: this._isSettled,
       settled: this._isSettled,
       lastMutationAt: this.lastMutationAt,
-      msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : Infinity,
+      msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
       recentMutationCount: recentCount,
       activeFieldId: this.activeFieldId,
       timestamp: now,

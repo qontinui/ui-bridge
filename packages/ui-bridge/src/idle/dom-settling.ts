@@ -106,7 +106,7 @@ export class DOMSettlingDetector implements IdleSignal<DOMSignalStatus> {
       idle: this._isSettled,
       settled: this._isSettled,
       lastMutationAt: this.lastMutationAt,
-      msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : Infinity,
+      msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
       recentMutationCount: recentCount,
       timestamp: now,
     };

@@ -26,7 +26,7 @@ export interface ClassifiedEvent {
 // Severity ordering (used by filterBySeverity)
 // ---------------------------------------------------------------------------
 
-const SEVERITY_RANK: Record<ErrorSeverity, number> = {
+export const SEVERITY_RANK: Record<ErrorSeverity, number> = {
   crash: 0,
   error: 1,
   warning: 2,
