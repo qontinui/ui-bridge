@@ -27,6 +27,7 @@ export {
 // Next.js adapter
 export {
   createNextRouteHandlers,
+  createUIBridgeHandler,
   createRenderLogHandlers,
   createControlHandlers,
   createDebugHandlers,

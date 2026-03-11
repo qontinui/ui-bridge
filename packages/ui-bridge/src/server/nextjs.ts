@@ -22,6 +22,7 @@ import type {
   FindRequest,
   WorkflowRunRequest,
 } from '../control';
+import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
 
 /**
  * Next.js specific configuration
@@ -342,4 +343,60 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
   };
+}
+
+/**
+ * Zero-config convenience wrapper for Next.js App Router.
+ *
+ * Creates a single route handler with server-safe stub implementations.
+ * Read operations return empty data; write operations return errors.
+ *
+ * For full control API access (live snapshots, element actions, AI search),
+ * use the runtime injection proxy or implement a custom client-server relay.
+ *
+ * @example
+ * ```ts
+ * // app/api/ui-bridge/[...path]/route.ts
+ * import { createUIBridgeHandler } from '@qontinui/ui-bridge/server';
+ *
+ * const handler = createUIBridgeHandler();
+ *
+ * export const GET = handler;
+ * export const POST = handler;
+ * export const DELETE = handler;
+ * ```
+ */
+export function createUIBridgeHandler(config?: NextJSAdapterConfig): NextRouteHandler {
+  const registry: RegistryLike = {
+    getAllElements: () => [],
+    getElement: () => undefined,
+    getAllComponents: () => [],
+    getComponent: () => undefined,
+    createSnapshot: () =>
+      ({
+        timestamp: Date.now(),
+        elements: [],
+        components: [],
+        workflows: [],
+        activeRuns: [],
+      }) as ReturnType<RegistryLike['createSnapshot']>,
+  };
+
+  const executor: ActionExecutorLike = {
+    executeAction: async () => ({
+      success: false,
+      error: 'Server-side action execution not available. Use the runtime injection proxy.',
+      timestamp: Date.now(),
+    }),
+    executeComponentAction: async () => ({
+      success: false,
+      error: 'Server-side action execution not available. Use the runtime injection proxy.',
+      timestamp: Date.now(),
+    }),
+  };
+
+  const handlers = createHandlers(registry, executor);
+  const routeHandlers = createNextRouteHandlers(handlers, config);
+  // All three handlers point to the same internal handleRequest function
+  return routeHandlers.GET;
 }

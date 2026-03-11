@@ -9,8 +9,10 @@ Complete guide for integrating UI Bridge with Next.js and other web applications
 ## Installation
 
 ```bash
-npm install ui-bridge ui-bridge-server
+npm install @qontinui/ui-bridge
 ```
+
+> **Note:** The server adapter is bundled in `@qontinui/ui-bridge` — no separate server package needed.
 
 ## Basic Setup
 
@@ -18,7 +20,7 @@ npm install ui-bridge ui-bridge-server
 
 ```tsx
 // app/layout.tsx (App Router)
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge/react';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge/react';
 
 export default function RootLayout({ children }) {
   return (
@@ -45,13 +47,15 @@ export default function RootLayout({ children }) {
 
 ```tsx
 // app/api/ui-bridge/[...path]/route.ts
-import { createUIBridgeHandler } from 'ui-bridge-server/nextjs';
+import { createUIBridgeHandler } from '@qontinui/ui-bridge/server';
 
 const handler = createUIBridgeHandler();
 
 export const GET = handler;
 export const POST = handler;
 export const DELETE = handler;
+
+export const dynamic = 'force-dynamic';
 ```
 
 ### 3. Add Render Logging (Optional but Recommended)
@@ -64,7 +68,7 @@ Create a wrapper component that captures DOM snapshots on navigation:
 
 import { useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useUIBridgeOptional } from 'ui-bridge/react';
+import { useUIBridgeOptional } from '@qontinui/ui-bridge/react';
 
 export function RenderLogWrapper({
   children,
@@ -84,7 +88,6 @@ export function RenderLogWrapper({
 
   const lastPathRef = useRef<string | null>(null);
   const mutationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const observerRef = useRef<MutationObserver | null>(null);
 
   const fullPath = pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : '');
 
@@ -154,7 +157,6 @@ export function RenderLogWrapper({
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
-    observerRef.current = observer;
 
     return () => {
       observer.disconnect();
@@ -170,7 +172,7 @@ Update your layout to include it:
 
 ```tsx
 // app/layout.tsx
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge/react';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge/react';
 import { RenderLogWrapper } from '@/lib/ui-bridge/RenderLogWrapper';
 
 export default function RootLayout({ children }) {
@@ -194,7 +196,7 @@ Here's a full example showing all features:
 
 ```tsx
 // app/layout.tsx
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge/react';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge/react';
 import { RenderLogWrapper } from '@/lib/ui-bridge/RenderLogWrapper';
 
 const UI_BRIDGE_ENABLED =
@@ -246,6 +248,26 @@ export default function RootLayout({ children }) {
 }
 ```
 
+## Enabled Features
+
+When `UIBridgeProvider` is configured with all features, the following capabilities are active:
+
+| Feature                   | Description                                                                       |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| **Auto-Registration**     | Discovers and registers interactive elements automatically                        |
+| **Render Logging**        | Captures DOM snapshots on navigation and mutations                                |
+| **Control API**           | HTTP endpoints for element interaction and snapshots                              |
+| **Debug Tools**           | Inspector overlay, performance metrics, browser event capture                     |
+| **Idle Detection**        | Detects when the app has settled after actions (network, DOM, loading indicators) |
+| **Browser Event Capture** | Captures console errors, network failures, long tasks, HMR errors                 |
+| **Modal Detection**       | Tracks modal/dialog stack with z-index ordering                                   |
+| **Toast Capture**         | Captures toast/notification messages (aria-live, role=status)                     |
+| **Navigation Tracking**   | Tracks page/route changes via History API                                         |
+| **Keyboard Shortcuts**    | Discovers keyboard shortcuts from ARIA, accesskey, data attributes                |
+| **Drag-Drop Detection**   | Discovers drag sources and drop zones                                             |
+| **Undo/Redo Awareness**   | Detects undo/redo availability                                                    |
+| **Relationship Tracking** | Tracks element relationships (parent/child, controls, label-for)                  |
+
 ## Using with Server Components
 
 UI Bridge hooks require client components. For server components, use the "use client" directive:
@@ -254,7 +276,7 @@ UI Bridge hooks require client components. For server components, use the "use c
 // components/InteractiveButton.tsx
 'use client';
 
-import { useUIElement } from 'ui-bridge/react';
+import { useUIElement } from '@qontinui/ui-bridge/react';
 
 export function InteractiveButton({ id, children, onClick }) {
   const { ref } = useUIElement({
@@ -273,6 +295,66 @@ export function InteractiveButton({ id, children, onClick }) {
 }
 ```
 
+## Optional Enhancements
+
+### Form Library Adapters
+
+Register adapters for accurate form state extraction:
+
+```tsx
+import {
+  createAdapterRegistry,
+  ReactHookFormAdapter,
+  FormikAdapter,
+} from '@qontinui/ui-bridge/adapters';
+
+const registry = createAdapterRegistry();
+registry.register(new ReactHookFormAdapter());
+registry.register(new FormikAdapter());
+```
+
+### Element Relationships
+
+Declare semantic relationships for richer AI context:
+
+```tsx
+import { useUIRelationship } from '@qontinui/ui-bridge/react';
+
+// Declare that a filter controls a data table
+useUIRelationship('filter-panel', [{ relatedElementId: 'data-table', type: 'controls' }]);
+```
+
+### Component Registration
+
+Register higher-level components with custom actions:
+
+```tsx
+import { useUIComponent } from '@qontinui/ui-bridge/react';
+
+const { context, performAction } = useUIComponent({
+  id: 'user-table',
+  name: 'User Table',
+  actions: [
+    { id: 'sort', label: 'Sort', handler: (params) => handleSort(params.column) },
+    { id: 'filter', label: 'Filter', handler: (params) => handleFilter(params.query) },
+  ],
+});
+```
+
+### Page Context
+
+Provide route metadata for navigation-aware AI:
+
+```tsx
+import { usePageContext } from '@qontinui/ui-bridge/react';
+
+usePageContext({
+  route: '/users/:id',
+  name: 'User Detail',
+  section: 'admin',
+});
+```
+
 ## Environment Variables
 
 ```bash
@@ -284,38 +366,24 @@ NEXT_PUBLIC_UI_BRIDGE_ENABLED=true  # Enable in production if needed
 
 Once configured, these endpoints are available:
 
-| Endpoint                             | Method | Description                |
-| ------------------------------------ | ------ | -------------------------- |
-| `/api/ui-bridge/elements`            | GET    | List registered elements   |
-| `/api/ui-bridge/elements/:id`        | GET    | Get element details        |
-| `/api/ui-bridge/elements/:id/action` | POST   | Execute element action     |
-| `/api/ui-bridge/components`          | GET    | List registered components |
-| `/api/ui-bridge/discover`            | GET    | Auto-discover elements     |
-| `/api/ui-bridge/render-log`          | GET    | Get render log entries     |
-| `/api/ui-bridge/snapshot`            | GET    | Get current DOM snapshot   |
-
-## Python Client Usage
-
-```python
-from ui_bridge import UIBridgeClient
-
-client = UIBridgeClient("http://localhost:3000")
-
-# List all registered elements
-elements = client.get_elements()
-for el in elements:
-    print(f"{el.id}: {el.type}")
-
-# Click a button
-client.click("submit-btn")
-
-# Type in an input
-client.type("email-input", "user@example.com")
-
-# Get render log
-snapshot = client.get_latest_snapshot()
-print(f"Page title: {snapshot.data.page.title}")
-```
+| Endpoint                                    | Method | Description                                       |
+| ------------------------------------------- | ------ | ------------------------------------------------- |
+| `/api/ui-bridge/control/snapshot`           | GET    | Full page snapshot (elements, components, states) |
+| `/api/ui-bridge/control/elements`           | GET    | List registered elements                          |
+| `/api/ui-bridge/control/element/:id`        | GET    | Get element details                               |
+| `/api/ui-bridge/control/element/:id/action` | POST   | Execute element action                            |
+| `/api/ui-bridge/control/components`         | GET    | List registered components                        |
+| `/api/ui-bridge/control/find`               | POST   | Find elements by criteria                         |
+| `/api/ui-bridge/control/idle-status`        | GET    | Get composite idle status                         |
+| `/api/ui-bridge/control/wait-for-idle`      | POST   | Wait for app to settle                            |
+| `/api/ui-bridge/ai/search`                  | POST   | Natural language element search                   |
+| `/api/ui-bridge/ai/execute`                 | POST   | Execute natural language instruction              |
+| `/api/ui-bridge/ai/assert`                  | POST   | Run assertion on UI state                         |
+| `/api/ui-bridge/ai/snapshot`                | GET    | Get semantic page snapshot                        |
+| `/api/ui-bridge/ai/forms`                   | GET    | Get form state                                    |
+| `/api/ui-bridge/render-log`                 | GET    | Get render log entries                            |
+| `/api/ui-bridge/debug/metrics`              | GET    | Get performance metrics                           |
+| `/api/ui-bridge/debug/action-history`       | GET    | Get action execution history                      |
 
 ## Troubleshooting
 
@@ -323,7 +391,7 @@ print(f"Page title: {snapshot.data.page.title}")
 
 1. Verify `AutoRegisterProvider` is enabled
 2. Check element matches interactive selectors
-3. Add `data-testid` or `data-ui-id` attribute
+3. Add `data-testid` attribute for explicit identification
 4. Check browser console for registration logs
 
 ### Render Log Empty
