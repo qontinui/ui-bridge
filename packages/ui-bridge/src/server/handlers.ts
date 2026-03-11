@@ -213,6 +213,7 @@ export interface BrowserEventCaptureLike extends ConsoleCapturelike {
   getSince(ts: number): AnyCapturedEvent[];
   getRecent(n?: number): AnyCapturedEvent[];
   getByType(type: BrowserEventType): AnyCapturedEvent[];
+  getFrameworkOverlays?(): import('../debug/captures/framework-overlays').DetectedErrorOverlay[];
 }
 
 /**
@@ -1123,11 +1124,9 @@ export function createHandlers(
           );
 
           // Detect framework error overlays (Next.js, Vite, React error boundary)
-          const errorOverlays =
-            'getFrameworkOverlays' in consoleCapture &&
-            typeof (consoleCapture as any).getFrameworkOverlays === 'function'
-              ? (consoleCapture as any).getFrameworkOverlays()
-              : [];
+          const errorOverlays = hasFullEventAPI(consoleCapture)
+            ? (consoleCapture.getFrameworkOverlays?.() ?? [])
+            : [];
           const hasVisibleOverlay = errorOverlays.length > 0;
 
           snapshot.errorSummary = {
@@ -2617,15 +2616,12 @@ export function createHandlers(
         });
 
         // Factor in visible framework error overlays — any visible overlay means broken
-        if (
-          'getFrameworkOverlays' in consoleCapture &&
-          typeof (consoleCapture as any).getFrameworkOverlays === 'function'
-        ) {
-          const overlays = (consoleCapture as any).getFrameworkOverlays();
+        if (hasFullEventAPI(consoleCapture)) {
+          const overlays = consoleCapture.getFrameworkOverlays?.() ?? [];
           if (overlays.length > 0) {
             report.status = 'broken';
             report.score = Math.min(report.score, 10);
-            const overlayNames = overlays.map((o: any) => o.framework).join(', ');
+            const overlayNames = overlays.map((o) => o.framework).join(', ');
             report.summary = `Broken: ${overlayNames} error overlay visible. ${report.summary}`;
           }
         }
