@@ -288,6 +288,14 @@ export interface SnapshotErrorSummary {
   };
   /** Overall health assessment */
   health: 'healthy' | 'degraded' | 'broken';
+  /** Framework error overlays currently visible on the page */
+  errorOverlays?: Array<{
+    framework: 'nextjs' | 'vite' | 'react-error-boundary';
+    visible: boolean;
+    title?: string;
+    message?: string;
+    file?: string;
+  }>;
 }
 
 /**

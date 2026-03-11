@@ -1122,6 +1122,14 @@ export function createHandlers(
             (e) => e.level === 'error' || e.level === 'unhandledrejection'
           );
 
+          // Detect framework error overlays (Next.js, Vite, React error boundary)
+          const errorOverlays =
+            'getFrameworkOverlays' in consoleCapture &&
+            typeof (consoleCapture as any).getFrameworkOverlays === 'function'
+              ? (consoleCapture as any).getFrameworkOverlays()
+              : [];
+          const hasVisibleOverlay = errorOverlays.length > 0;
+
           snapshot.errorSummary = {
             errorCount,
             warningCount,
@@ -1132,12 +1140,14 @@ export function createHandlers(
                   sourceLocation: extractSourceLocation(criticalError.stack),
                 }
               : undefined,
-            health:
-              errorCount === 0
+            health: hasVisibleOverlay
+              ? 'broken'
+              : errorCount === 0
                 ? 'healthy'
                 : errorCount <= 2 && !recentErrors.some((e) => e.level === 'unhandledrejection')
                   ? 'degraded'
                   : 'broken',
+            errorOverlays: hasVisibleOverlay ? errorOverlays : undefined,
           };
         }
 
@@ -2605,6 +2615,21 @@ export function createHandlers(
         const report = computeHealthReport(consoleCapture, {
           windowMs: params?.windowMs,
         });
+
+        // Factor in visible framework error overlays — any visible overlay means broken
+        if (
+          'getFrameworkOverlays' in consoleCapture &&
+          typeof (consoleCapture as any).getFrameworkOverlays === 'function'
+        ) {
+          const overlays = (consoleCapture as any).getFrameworkOverlays();
+          if (overlays.length > 0) {
+            report.status = 'broken';
+            report.score = Math.min(report.score, 10);
+            const overlayNames = overlays.map((o: any) => o.framework).join(', ');
+            report.summary = `Broken: ${overlayNames} error overlay visible. ${report.summary}`;
+          }
+        }
+
         return success(report);
       } catch (err) {
         return error((err as Error).message, 'HEALTH_REPORT_ERROR');

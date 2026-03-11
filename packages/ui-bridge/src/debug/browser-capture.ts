@@ -22,6 +22,11 @@ import { installWebVitalsCapture } from './captures/web-vitals';
 import { installMemoryCapture } from './captures/memory';
 import { installHmrCapture } from './captures/hmr';
 import { installLoafCapture } from './captures/long-animation-frames';
+import {
+  installFrameworkOverlayCapture,
+  getActiveOverlays,
+  type DetectedErrorOverlay,
+} from './captures/framework-overlays';
 
 export class BrowserEventCapture {
   private buffer: AnyCapturedEvent[] = [];
@@ -80,6 +85,9 @@ export class BrowserEventCapture {
     }
     if (cfg.hmr) {
       this.cleanups.push(installHmrCapture(emit));
+    }
+    if (cfg.frameworkOverlays) {
+      this.cleanups.push(installFrameworkOverlayCapture(emit));
     }
 
     this.installed = true;
@@ -185,6 +193,14 @@ export class BrowserEventCapture {
         message: (e as { message: string }).message,
         stack: (e as { stack?: string }).stack,
       }));
+  }
+
+  /**
+   * Get currently visible framework error overlays (Next.js, Vite, React error boundary).
+   * Returns empty array if no overlays are detected.
+   */
+  getFrameworkOverlays(): DetectedErrorOverlay[] {
+    return getActiveOverlays();
   }
 
   clear(): void {

@@ -184,6 +184,8 @@ export interface BrowserCaptureConfig {
   wsDisconnections?: boolean;
   /** Capture Next.js HMR compilation errors/warnings via EventSource. Default: true */
   hmr?: boolean;
+  /** Detect framework error overlays (Next.js, Vite, React error boundary). Default: true */
+  frameworkOverlays?: boolean;
   /** Capture Web Vitals (LCP, CLS). Default: false (opt-in) */
   webVitals?: boolean;
   /** Capture Chrome memory snapshots. Default: false (opt-in) */
@@ -211,6 +213,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
     | 'resourceErrors'
     | 'wsDisconnections'
     | 'hmr'
+    | 'frameworkOverlays'
     | 'webVitals'
     | 'memory'
     | 'memoryIntervalMs'
@@ -225,6 +228,7 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
   resourceErrors: true,
   wsDisconnections: true,
   hmr: true,
+  frameworkOverlays: true,
   webVitals: false,
   memory: false,
   memoryIntervalMs: 30000,

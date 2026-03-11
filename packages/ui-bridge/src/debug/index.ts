@@ -42,6 +42,13 @@ export {
   DEFAULT_CAPTURE_CONFIG,
 } from './browser-capture-types';
 
+// Framework Error Overlay Detection
+export {
+  getActiveOverlays,
+  installFrameworkOverlayCapture,
+  type DetectedErrorOverlay,
+} from './captures/framework-overlays';
+
 // Error Fingerprinting & Deduplication
 export {
   computeFingerprint,
