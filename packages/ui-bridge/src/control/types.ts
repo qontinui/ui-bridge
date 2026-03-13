@@ -220,6 +220,10 @@ export interface FindRequest {
   contentOnly?: boolean;
   /** Filter by content role */
   contentRole?: string;
+  /** Skip waiting for DOM to settle (default: false — endpoints wait by default) */
+  skipSettle?: boolean;
+  /** Max ms to wait for DOM settle (default: 500). Non-fatal on timeout. */
+  settleTimeout?: number;
 }
 
 /**
@@ -366,6 +370,21 @@ export interface KeyboardAction {
 }
 
 /**
+ * SendKeys action — dispatches real KeyboardEvent sequences on an element.
+ *
+ * Unlike `type` (which sets input/textarea values via the DOM), `sendKeys`
+ * fires keydown → keypress → keyup events.  This is required for elements
+ * that consume keyboard events directly (e.g. xterm.js terminals, canvas
+ * games, custom editors).
+ */
+export interface SendKeysAction {
+  /** Sequence of key descriptors to dispatch */
+  keys: KeyboardAction[];
+  /** Delay between each key (ms, default 0) */
+  delay?: number;
+}
+
+/**
  * Drag action parameters
  *
  * Drags the source element to a target element or position by dispatching
@@ -425,6 +444,23 @@ export interface ScrollAction {
   toElement?: string;
   /** Smooth scroll */
   smooth?: boolean;
+}
+
+/**
+ * Vertical/horizontal alignment for scrollIntoView (standard Web API type).
+ */
+export type ScrollLogicalPosition = 'start' | 'center' | 'end' | 'nearest';
+
+/**
+ * Action types for scrollIntoView — scrolls the target element into the visible area
+ */
+export interface ScrollIntoViewAction {
+  /** Smooth scroll animation */
+  smooth?: boolean;
+  /** Vertical alignment: 'start' | 'center' | 'end' | 'nearest' (default: 'center') */
+  block?: ScrollLogicalPosition;
+  /** Horizontal alignment: 'start' | 'center' | 'end' | 'nearest' (default: 'nearest') */
+  inline?: ScrollLogicalPosition;
 }
 
 /**

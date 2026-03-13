@@ -34,10 +34,12 @@ import type {
   ControlSnapshot,
   ActionExecutor,
   TypeAction,
+  SendKeysAction,
   SelectAction,
   ScrollAction,
   MouseAction,
   DragAction,
+  ScrollIntoViewAction,
   FillFormRequest,
 } from './types';
 
@@ -210,6 +212,14 @@ function createMouseEventAt(type: string, clientX: number, clientY: number): Mou
 export class DefaultActionExecutor implements ActionExecutor {
   private idleDetector?: CompositeIdleDetector;
   private impactAssessor?: ErrorImpactAssessor;
+  /**
+   * Cache of DOM elements found during discover/find that aren't in the
+   * registry.  Keyed by the deterministic ID returned to the caller so that
+   * a subsequent executeAction(id, …) can resolve the same element.
+   * Cleared at the start of each find() call so stale references don't
+   * accumulate.
+   */
+  private discoveryCache = new Map<string, HTMLElement>();
 
   constructor(
     private registry: UIBridgeRegistry,
@@ -287,6 +297,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       // If not registered, try to find by identifier
       if (!element) {
         element = findElementByIdentifier(elementId);
+      }
+
+      // If still not found, check the discovery cache (elements found via
+      // find()/discover() that weren't in the registry)
+      if (!element) {
+        const cached = this.discoveryCache.get(elementId);
+        if (cached && cached.isConnected) {
+          element = cached;
+        } else if (cached) {
+          // Clean up stale entry
+          this.discoveryCache.delete(elementId);
+        }
       }
 
       if (!element) {
@@ -481,6 +503,10 @@ export class DefaultActionExecutor implements ActionExecutor {
    * Find controllable elements
    */
   async find(options?: FindRequest): Promise<FindResponse> {
+    // Clear the discovery cache so IDs are re-generated deterministically
+    // from the current DOM state and stale element references are dropped.
+    this.discoveryCache.clear();
+
     const startTime = performance.now();
     const elements: DiscoveredElement[] = [];
 
@@ -533,8 +559,15 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Check if registered
         const registered = this.registry.findByDOMElement(el);
 
+        const id = registered?.id || this.getElementId(el);
+
+        // Cache unregistered elements so executeAction can resolve them later
+        if (!registered) {
+          this.discoveryCache.set(id, el);
+        }
+
         elements.push({
-          id: registered?.id || this.getElementId(el),
+          id,
           type: registered?.type || this.inferElementType(el),
           label: registered?.label || this.getElementLabel(el),
           tagName: el.tagName.toLowerCase(),
@@ -790,6 +823,8 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performMiddleClick(element, params as MouseAction);
       case 'type':
         return this.performType(element, params as unknown as TypeAction);
+      case 'sendKeys':
+        return this.performSendKeys(element, params as unknown as SendKeysAction);
       case 'clear':
         return this.performClear(element);
       case 'select':
@@ -802,6 +837,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performHover(element);
       case 'scroll':
         return this.performScroll(element, params as ScrollAction);
+      case 'scrollIntoView': {
+        const scrollParams = params as ScrollIntoViewAction | undefined;
+        return element.scrollIntoView({
+          behavior: scrollParams?.smooth ? 'smooth' : 'auto',
+          block: scrollParams?.block || 'center',
+          inline: scrollParams?.inline || 'nearest',
+        });
+      }
       case 'check':
         return this.performCheck(element, true);
       case 'uncheck':
@@ -901,6 +944,89 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (options?.triggerEvents !== false) {
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
+  }
+
+  /**
+   * Dispatch real KeyboardEvent sequences on an element.
+   *
+   * For each key descriptor, fires keydown → keypress → keyup (keypress is
+   * skipped for non-printable keys like Enter, Escape, Arrow*, etc.).
+   * This is the correct way to interact with elements that consume raw
+   * keyboard events (xterm.js terminals, CodeMirror, Monaco, canvas games).
+   */
+  private async performSendKeys(element: HTMLElement, options?: SendKeysAction): Promise<void> {
+    if (!options?.keys?.length) return;
+
+    element.focus();
+    const delay = options.delay || 0;
+
+    // Keys where browsers don't fire keypress
+    const NON_PRINTABLE = new Set([
+      'Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Insert',
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Home', 'End', 'PageUp', 'PageDown',
+      'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+      'Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock',
+    ]);
+
+    for (const keyDesc of options.keys) {
+      const { key } = keyDesc;
+      const mods = keyDesc.modifiers || {};
+      const eventInit: KeyboardEventInit = {
+        key,
+        code: this.keyToCode(key),
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: mods.ctrl || false,
+        shiftKey: mods.shift || false,
+        altKey: mods.alt || false,
+        metaKey: mods.meta || false,
+      };
+
+      element.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+
+      // Fire keypress for printable characters only (no modifiers except shift)
+      if (
+        key.length === 1 &&
+        !NON_PRINTABLE.has(key) &&
+        !mods.ctrl &&
+        !mods.alt &&
+        !mods.meta
+      ) {
+        element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      }
+
+      element.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+
+      if (delay > 0) {
+        await sleep(delay);
+      }
+    }
+  }
+
+  /**
+   * Map a key name to a KeyboardEvent.code value.
+   */
+  private keyToCode(key: string): string {
+    if (key.length === 1) {
+      const upper = key.toUpperCase();
+      if (upper >= 'A' && upper <= 'Z') return `Key${upper}`;
+      if (upper >= '0' && upper <= '9') return `Digit${upper}`;
+    }
+    // Named keys map to themselves as code
+    const codeMap: Record<string, string> = {
+      Enter: 'Enter',
+      Tab: 'Tab',
+      Escape: 'Escape',
+      Backspace: 'Backspace',
+      Delete: 'Delete',
+      ' ': 'Space',
+      ArrowUp: 'ArrowUp',
+      ArrowDown: 'ArrowDown',
+      ArrowLeft: 'ArrowLeft',
+      ArrowRight: 'ArrowRight',
+    };
+    return codeMap[key] || key;
   }
 
   private performClear(element: HTMLElement): void {
@@ -1192,12 +1318,47 @@ export class DefaultActionExecutor implements ActionExecutor {
     return null;
   }
 
+  /**
+   * Generate a deterministic, semantic ID for an unregistered element.
+   *
+   * Priority:
+   *  1. data-testid attribute
+   *  2. HTML id attribute (skip React auto-generated IDs like `:r1a:`)
+   *  3. Semantic ID: {tagName}-{slugified label}[-{index}]
+   *
+   * The semantic fallback produces stable IDs across discover() calls as
+   * long as the element's label and DOM position don't change, making
+   * them usable with executeAction().
+   */
   private getElementId(element: HTMLElement): string {
-    return (
-      element.getAttribute('data-testid') ||
-      element.id ||
-      `${element.tagName.toLowerCase()}-${Math.random().toString(36).substr(2, 8)}`
-    );
+    const testId = element.getAttribute('data-testid');
+    if (testId) return testId;
+
+    const htmlId = element.id;
+    if (htmlId && !/^:r[0-9a-z]+:$/i.test(htmlId)) return htmlId;
+
+    // Build a semantic ID from the tag name + accessible label
+    const tag = element.tagName.toLowerCase();
+    const label =
+      element.getAttribute('aria-label') ||
+      element.getAttribute('title') ||
+      element.textContent?.trim().slice(0, 40) ||
+      '';
+    const slug = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 30);
+
+    const base = slug ? `${tag}-${slug}` : tag;
+
+    // Disambiguate: check how many identical IDs we've already cached
+    if (!this.discoveryCache.has(base)) return base;
+
+    // Look for a free numeric suffix
+    let i = 1;
+    while (this.discoveryCache.has(`${base}-${i}`)) i++;
+    return `${base}-${i}`;
   }
 
   private getElementLabel(element: HTMLElement): string | undefined {
@@ -1304,7 +1465,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private inferActions(element: HTMLElement): string[] {
     const type = this.inferElementType(element);
-    const baseActions = ['focus', 'blur', 'hover'];
+    const baseActions = ['focus', 'blur', 'hover', 'sendKeys'];
 
     switch (type) {
       case 'button':
