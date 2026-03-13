@@ -27,6 +27,9 @@ import {
   getActiveOverlays,
   type DetectedErrorOverlay,
 } from './captures/framework-overlays';
+import { installFreezeDetectorCapture } from './captures/freeze-detector';
+import { installDomMetricsCapture } from './captures/dom-metrics';
+import { MemoryTrendAnalyzer, type MemoryTrendResult } from './memory-trend';
 
 export class BrowserEventCapture {
   private buffer: AnyCapturedEvent[] = [];
@@ -35,6 +38,7 @@ export class BrowserEventCapture {
   private cleanups: (() => void)[] = [];
   private onEvent: OnBrowserEventCallback | null = null;
   private config: BrowserCaptureConfig;
+  private memoryTrend: MemoryTrendAnalyzer | null = null;
 
   constructor(config?: BrowserCaptureConfig) {
     this.config = config ?? {};
@@ -54,6 +58,10 @@ export class BrowserEventCapture {
 
     const cfg = { ...DEFAULT_CAPTURE_CONFIG, ...this.config };
     const emit = (event: AnyCapturedEvent) => {
+      // Feed memory events to the trend analyzer
+      if (event.type === 'memory' && this.memoryTrend) {
+        this.memoryTrend.addSnapshot(event.timestamp, event.usedJSHeapSize, event.jsHeapSizeLimit);
+      }
       this.buffer.push(event);
       this.trim();
       this.onEvent?.(event);
@@ -81,6 +89,7 @@ export class BrowserEventCapture {
       this.cleanups.push(installWebVitalsCapture(emit));
     }
     if (cfg.memory) {
+      this.memoryTrend = new MemoryTrendAnalyzer();
       this.cleanups.push(installMemoryCapture(emit, cfg.memoryIntervalMs));
     }
     if (cfg.hmr) {
@@ -88,6 +97,14 @@ export class BrowserEventCapture {
     }
     if (cfg.frameworkOverlays) {
       this.cleanups.push(installFrameworkOverlayCapture(emit));
+    }
+    if (cfg.freezeDetector) {
+      this.cleanups.push(
+        installFreezeDetectorCapture(emit, cfg.freezeIntervalMs, cfg.freezeThresholdMs),
+      );
+    }
+    if (cfg.domMetrics) {
+      this.cleanups.push(installDomMetricsCapture(emit, cfg.domMetricsIntervalMs));
     }
 
     this.installed = true;
@@ -201,6 +218,13 @@ export class BrowserEventCapture {
    */
   getFrameworkOverlays(): DetectedErrorOverlay[] {
     return getActiveOverlays();
+  }
+
+  /**
+   * Get the latest memory trend analysis, if memory capture is enabled.
+   */
+  getMemoryTrend(): MemoryTrendResult | null {
+    return this.memoryTrend?.getLatestTrend() ?? null;
   }
 
   clear(): void {

@@ -315,6 +315,14 @@ export function classifyEvent(event: AnyCapturedEvent): {
       return { severity: 'noise', reason: 'web vital metric' };
     case 'memory':
       return { severity: 'noise', reason: 'memory snapshot' };
+    case 'freeze':
+      return event.gapMs >= 5000
+        ? { severity: 'error', reason: `UI freeze ${Math.round(event.gapMs)}ms` }
+        : { severity: 'warning', reason: `UI freeze ${Math.round(event.gapMs)}ms` };
+    case 'dom-metrics':
+      return event.nodeCount > 50000
+        ? { severity: 'warning', reason: `high DOM node count: ${event.nodeCount}` }
+        : { severity: 'noise', reason: 'DOM metrics snapshot' };
     default: {
       const _exhaustive: never = event;
       return {

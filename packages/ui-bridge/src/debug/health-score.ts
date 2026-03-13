@@ -99,6 +99,10 @@ function extractMessage(event: AnyCapturedEvent): string {
       return `${event.metric}: ${event.value}`;
     case 'memory':
       return `Memory: ${Math.round(event.usedJSHeapSize / 1024 / 1024)}MB used`;
+    case 'freeze':
+      return `UI freeze: ${Math.round(event.gapMs)}ms`;
+    case 'dom-metrics':
+      return `DOM nodes: ${event.nodeCount}`;
     default: {
       const _exhaustive: never = event;
       return `Unknown event: ${(_exhaustive as AnyCapturedEvent).type}`;

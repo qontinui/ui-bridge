@@ -19,7 +19,9 @@ export type BrowserEventType =
   | 'web-vital'
   | 'memory'
   | 'ws-disconnection'
-  | 'hmr';
+  | 'hmr'
+  | 'freeze'
+  | 'dom-metrics';
 
 // ---------------------------------------------------------------------------
 // Base interface (all events share these fields)
@@ -80,7 +82,7 @@ export interface ResourceErrorCapturedEvent extends BrowserCapturedEvent {
 
 export interface WebVitalCapturedEvent extends BrowserCapturedEvent {
   type: 'web-vital';
-  metric: 'LCP' | 'CLS';
+  metric: 'LCP' | 'CLS' | 'INP';
   value: number;
 }
 
@@ -106,6 +108,18 @@ export interface HmrCapturedEvent extends BrowserCapturedEvent {
   moduleName?: string;
   /** Source location (line:col), if available */
   loc?: string;
+}
+
+export interface FreezeCapturedEvent extends BrowserCapturedEvent {
+  type: 'freeze';
+  gapMs: number;
+  expectedMs: number;
+}
+
+export interface DomMetricsCapturedEvent extends BrowserCapturedEvent {
+  type: 'dom-metrics';
+  nodeCount: number;
+  listenerCount?: number;
 }
 
 export interface LoafScriptAttribution {
@@ -138,7 +152,9 @@ export type AnyCapturedEvent =
   | WebVitalCapturedEvent
   | MemoryCapturedEvent
   | WsDisconnectionCapturedEvent
-  | HmrCapturedEvent;
+  | HmrCapturedEvent
+  | FreezeCapturedEvent
+  | DomMetricsCapturedEvent;
 
 // ---------------------------------------------------------------------------
 // Callback
@@ -198,6 +214,16 @@ export interface BrowserCaptureConfig {
   };
   /** Advanced: memory polling interval in ms. Default: 30000 */
   memoryIntervalMs?: number;
+  /** Capture UI freeze detection (main thread stalls). Default: false (opt-in) */
+  freezeDetector?: boolean;
+  /** Freeze detection: threshold in ms to consider a freeze. Default: 3000 */
+  freezeThresholdMs?: number;
+  /** Freeze detection: check interval in ms. Default: 200 */
+  freezeIntervalMs?: number;
+  /** Capture DOM node count metrics. Default: false (opt-in) */
+  domMetrics?: boolean;
+  /** DOM metrics: polling interval in ms. Default: 10000 */
+  domMetricsIntervalMs?: number;
   /** Maximum buffer size. Default: 200 */
   maxEntries?: number;
 }
@@ -217,6 +243,11 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
     | 'webVitals'
     | 'memory'
     | 'memoryIntervalMs'
+    | 'freezeDetector'
+    | 'freezeThresholdMs'
+    | 'freezeIntervalMs'
+    | 'domMetrics'
+    | 'domMetricsIntervalMs'
     | 'maxEntries'
   >
 > = {
@@ -232,5 +263,10 @@ export const DEFAULT_CAPTURE_CONFIG: Required<
   webVitals: false,
   memory: false,
   memoryIntervalMs: 30000,
+  freezeDetector: false,
+  freezeThresholdMs: 3000,
+  freezeIntervalMs: 200,
+  domMetrics: false,
+  domMetricsIntervalMs: 10000,
   maxEntries: 200,
 };

@@ -306,6 +306,10 @@ export function computeFingerprint(event: AnyCapturedEvent): string {
       return `web-vital:${event.metric}`;
     case 'memory':
       return `memory:snapshot`;
+    case 'freeze':
+      return `freeze:${Math.round(event.gapMs / 500) * 500}ms`;
+    case 'dom-metrics':
+      return `dom-metrics:${Math.round(event.nodeCount / 1000) * 1000}`;
     default: {
       // Exhaustive check: ensures all BrowserEventType variants are handled
       const _exhaustive: never = event;

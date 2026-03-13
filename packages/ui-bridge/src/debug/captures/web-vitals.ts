@@ -61,6 +61,30 @@ export function installWebVitalsCapture(emit: Emit): () => void {
     // Not supported
   }
 
+  // INP — track worst-case interaction duration
+  try {
+    let worstInp = 0;
+    const inpObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const duration = entry.duration;
+        if (duration > worstInp) {
+          worstInp = duration;
+          emit({
+            type: 'web-vital',
+            timestamp: Date.now(),
+            url: window.location.href,
+            metric: 'INP',
+            value: Math.round(duration),
+          });
+        }
+      }
+    });
+    inpObserver.observe({ type: 'event', durationThreshold: 104, buffered: true } as PerformanceObserverInit);
+    observers.push(inpObserver);
+  } catch {
+    // Not supported
+  }
+
   return () => {
     for (const obs of observers) {
       obs.disconnect();

@@ -33,6 +33,8 @@ export {
   type MemoryCapturedEvent,
   type WsDisconnectionCapturedEvent,
   type HmrCapturedEvent,
+  type FreezeCapturedEvent,
+  type DomMetricsCapturedEvent,
   type AnyCapturedEvent,
   type OnBrowserEventCallback,
   type BrowserCaptureConfig,
@@ -135,6 +137,9 @@ export {
   type UIStateSnapshot,
   type ErrorImpactConfig,
 } from './error-impact';
+
+// Memory Trend Analysis
+export { MemoryTrendAnalyzer, type MemoryTrendResult } from './memory-trend';
 
 // Shared utilities
 export { getEventStack } from './shared-utils';
