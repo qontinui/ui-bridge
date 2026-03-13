@@ -23,6 +23,7 @@ import type {
   WorkflowRunRequest,
 } from '../control';
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
+import { SSEManager } from './sse-handler';
 
 /**
  * Next.js specific configuration
@@ -30,6 +31,8 @@ import { createHandlers, type RegistryLike, type ActionExecutorLike } from './ha
 export interface NextJSAdapterConfig extends UIBridgeServerConfig {
   /** Runtime for edge/serverless */
   runtime?: 'edge' | 'nodejs';
+  /** SSE manager for streaming events to clients */
+  sseManager?: SSEManager;
 }
 
 /**
@@ -106,6 +109,11 @@ export function createNextRouteHandlers(
       const pathParam = context.params.path;
       const path = Array.isArray(pathParam) ? '/' + pathParam.join('/') : '/' + pathParam;
       const method = request.method;
+
+      // Intercept SSE event stream before normal routing
+      if (method === 'GET' && path === '/control/events/stream' && config.sseManager) {
+        return createSSEStreamResponse(request, config.sseManager);
+      }
 
       // Find matching route
       const route = findMatchingRoute(path, method);
@@ -399,4 +407,82 @@ export function createUIBridgeHandler(config?: NextJSAdapterConfig): NextRouteHa
   const routeHandlers = createNextRouteHandlers(handlers, config);
   // All three handlers point to the same internal handleRequest function
   return routeHandlers.GET;
+}
+
+// SSE heartbeat interval (15 seconds)
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Create an SSE streaming response for the Next.js adapter.
+ * Follows the same pattern as the web app's command stream route.
+ */
+function createSSEStreamResponse(request: NextRequest, sseManager: SSEManager): Response {
+  const url = new URL(request.url);
+  const typeFilter = url.searchParams.get('types') ?? undefined;
+  const elementFilter = url.searchParams.get('elements') ?? undefined;
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      let clientId: string | null = null;
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
+      let closed = false;
+
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        if (heartbeat) {
+          clearInterval(heartbeat);
+          heartbeat = null;
+        }
+        if (clientId) {
+          sseManager.removeClient(clientId);
+          clientId = null;
+        }
+      };
+
+      // Register SSE client with the manager
+      clientId = sseManager.addClient(
+        (data: string) => {
+          try {
+            controller.enqueue(encoder.encode(data));
+            return true;
+          } catch {
+            cleanup();
+            return false;
+          }
+        },
+        () => {
+          cleanup();
+          try { controller.close(); } catch { /* already closed */ }
+        },
+        typeFilter,
+        elementFilter
+      );
+
+      // Heartbeat to keep connection alive and detect dead connections
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(`: heartbeat\n\n`));
+        } catch {
+          cleanup();
+        }
+      }, SSE_HEARTBEAT_INTERVAL_MS);
+
+      // Clean up when the client disconnects
+      request.signal.addEventListener('abort', () => {
+        cleanup();
+        try { controller.close(); } catch { /* already closed */ }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }

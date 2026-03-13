@@ -52,3 +52,6 @@ export {
   WSStreamAdapter,
   type WSStreamAdapterConfig,
 } from './ws-stream-adapter';
+
+// SSE handler
+export { SSEManager } from './sse-handler';

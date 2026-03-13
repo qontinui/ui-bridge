@@ -14,6 +14,7 @@ import type {
 import { UI_BRIDGE_ROUTES } from './types';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
+import { SSEManager } from './sse-handler';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -71,10 +72,12 @@ export class StandaloneServer {
   private handlers: Partial<UIBridgeServerHandlers>;
   private wsHandler: UIBridgeWSHandler | null = null;
   private wsConnections: Set<WebSocketLike> = new Set();
+  private sseManager: SSEManager;
 
   constructor(handlers: Partial<UIBridgeServerHandlers>, config: StandaloneServerConfig = {}) {
     this.handlers = handlers;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.sseManager = new SSEManager();
 
     // Create WebSocket handler if enabled
     if (this.config.websocket) {
@@ -89,7 +92,12 @@ export class StandaloneServer {
    * Get enabled capabilities based on handlers
    */
   private getCapabilities(): string[] {
-    return ['elements', 'components', 'actions', 'search', 'workflows'];
+    return [
+      'elements', 'components', 'discovery', 'navigation',
+      'ai', 'change_tracking', 'idle_detection', 'network',
+      'forms', 'design', 'debug', 'events', 'annotations',
+      'state_management', 'clipboard', 'undo_redo', 'recovery', 'intents',
+    ];
   }
 
   /**
@@ -196,6 +204,9 @@ export class StandaloneServer {
     }
     this.wsConnections.clear();
 
+    // Close SSE manager
+    this.sseManager.dispose();
+
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();
@@ -269,6 +280,31 @@ export class StandaloneServer {
     let path = url.pathname;
     if (path.startsWith(basePath)) {
       path = path.slice(basePath.length) || '/';
+    }
+
+    // SSE streaming endpoint — handled before normal routing
+    if (path === '/control/events/stream' && method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const types = url.searchParams.get('types') || undefined;
+      const elements = url.searchParams.get('elements') || undefined;
+
+      const clientId = this.sseManager.addClient(
+        (data: string) => { res.write(data); return true; },
+        () => { if (!res.writableEnded) res.end(); },
+        types,
+        elements
+      );
+
+      req.on('close', () => {
+        this.sseManager.removeClient(clientId);
+      });
+      return;
     }
 
     // Find matching route
@@ -402,12 +438,20 @@ export class StandaloneServer {
   }
 
   /**
-   * Broadcast an event to all subscribed WebSocket clients
+   * Broadcast an event to all subscribed WebSocket and SSE clients
    */
   broadcastEvent(event: BridgeEvent): void {
     if (this.wsHandler) {
       this.wsHandler.broadcastEvent(event);
     }
+    this.sseManager.broadcast(event);
+  }
+
+  /**
+   * Get the SSE manager for direct access (e.g., wiring to registry.onEvent)
+   */
+  getSSEManager(): SSEManager {
+    return this.sseManager;
   }
 
   /**

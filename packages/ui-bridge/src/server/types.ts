@@ -224,6 +224,8 @@ export interface UIBridgeServerHandlers {
   getControlSnapshot: (request?: {
     targetTabId?: string;
     url?: string;
+    skipSettle?: boolean;
+    settleTimeout?: number;
   }) => Promise<APIResponse<ControlSnapshot>>;
 
   // Workflow endpoints
@@ -511,6 +513,37 @@ export interface UIBridgeServerHandlers {
   getUndoState: () => Promise<APIResponse<UndoRedoState>>;
   executeUndo: () => Promise<APIResponse<{ executed: boolean }>>;
   executeRedo: () => Promise<APIResponse<{ executed: boolean }>>;
+
+  // API discovery
+  getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
+
+  // Heartbeat (app health detection)
+  receiveHeartbeat: () => Promise<APIResponse<{ received: boolean }>>;
+}
+
+/**
+ * Endpoint description for API discovery
+ */
+export interface EndpointInfo {
+  method: string;
+  path: string;
+  description: string;
+}
+
+/**
+ * Category of related endpoints
+ */
+export interface EndpointCategory {
+  description: string;
+  endpoints: EndpointInfo[];
+}
+
+/**
+ * Response from the /capabilities endpoint
+ */
+export interface CapabilitiesResponse {
+  version: string;
+  categories: Record<string, EndpointCategory>;
 }
 
 /**
@@ -866,6 +899,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/control/undo-state', handler: 'getUndoState' },
   { method: 'POST', path: '/control/undo', handler: 'executeUndo' },
   { method: 'POST', path: '/control/redo', handler: 'executeRedo' },
+
+  // API discovery
+  { method: 'GET', path: '/capabilities', handler: 'getCapabilities' },
+
+  // Heartbeat
+  { method: 'POST', path: '/heartbeat', handler: 'receiveHeartbeat' },
 ];
 
 /**

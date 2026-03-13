@@ -13,6 +13,7 @@ import type {
   CORSOptions,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import type { SSEManager } from './sse-handler';
 
 /**
  * Express-specific configuration
@@ -20,6 +21,8 @@ import { UI_BRIDGE_ROUTES } from './types';
 export interface ExpressAdapterConfig extends UIBridgeServerConfig {
   /** Use JSON body parser (if not already configured) */
   useBodyParser?: boolean;
+  /** SSE manager for streaming events (pass to enable GET /control/events/stream) */
+  sseManager?: SSEManager;
 }
 
 /**
@@ -145,6 +148,36 @@ export function createExpressRouter(
       path,
       createRouteHandler(route, handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)
     );
+  }
+
+  // SSE streaming endpoint (outside normal route pattern — holds connection open)
+  if (config.sseManager) {
+    const sse = config.sseManager;
+    router.get('/control/events/stream', (req: Request, res: Response) => {
+      // Set SSE headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+      res.flushHeaders();
+
+      const types = req.query.types as string | undefined;
+      const elements = req.query.elements as string | undefined;
+
+      const clientId = sse.addClient(
+        (data: string) => res.write(data),
+        () => {
+          if (!res.writableEnded) res.end();
+        },
+        types,
+        elements
+      );
+
+      // Clean up on disconnect
+      req.on('close', () => {
+        sse.removeClient(clientId);
+      });
+    });
   }
 
   return router;
