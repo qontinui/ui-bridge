@@ -871,6 +871,8 @@ export interface UIBridgeConfig {
   logFilePath?: string;
   /** Maximum number of render log entries to keep */
   maxLogEntries?: number;
+  /** Enable DOM change tracking in render log. Default: true. Disable to reduce memory usage. */
+  captureChanges?: boolean;
   /** Enable verbose logging */
   verbose?: boolean;
   /** Application info for discovery */

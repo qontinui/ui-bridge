@@ -228,6 +228,11 @@ export class RenderLogManager {
       this.changeObserver = new DOMChangeObserver({
         callback: (change) => {
           this.pendingChanges.push(change);
+          // Cap pending changes to prevent unbounded memory growth
+          // when no snapshot is triggered for a long time
+          if (this.pendingChanges.length > 2000) {
+            this.pendingChanges = this.pendingChanges.slice(-1000);
+          }
         },
       });
       this.changeObserver.start();

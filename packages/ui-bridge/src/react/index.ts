@@ -89,3 +89,7 @@ export { useDragSource, useDropZone } from './useDragDrop';
 
 // Undo/redo awareness hook
 export { useUndoRedo } from './useUndoRedo';
+
+// Command relay
+export { useCommandRelay, type UseCommandRelayOptions } from './useCommandRelay';
+export { CommandRelayListener, type CommandRelayListenerProps } from './CommandRelayListener';

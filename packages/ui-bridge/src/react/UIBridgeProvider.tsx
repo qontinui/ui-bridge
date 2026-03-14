@@ -170,6 +170,7 @@ export function UIBridgeProvider({
     if (features.renderLog) {
       renderLogRef.current = createRenderLogManager({
         maxEntries: config.maxLogEntries,
+        captureChanges: config.captureChanges,
       });
     }
 

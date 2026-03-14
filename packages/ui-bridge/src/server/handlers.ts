@@ -13,6 +13,7 @@ import type {
 } from './types';
 import type {
   ControlSnapshot,
+  FindRequest,
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
@@ -1101,9 +1102,7 @@ export function createHandlers(
 
     find: async (request?: unknown) => {
       try {
-        const findRequest = request as
-          | { types?: string[]; selector?: string; limit?: number; skipSettle?: boolean; settleTimeout?: number }
-          | undefined;
+        const findRequest = request as FindRequest | undefined;
         if (!findRequest?.skipSettle) {
           await awaitDOMSettled(findRequest?.settleTimeout);
         }
@@ -1122,9 +1121,7 @@ export function createHandlers(
     discover: async (request?: unknown) => {
       // Deprecated, delegates to find
       try {
-        const findRequest = request as
-          | { types?: string[]; selector?: string; limit?: number; skipSettle?: boolean; settleTimeout?: number }
-          | undefined;
+        const findRequest = request as FindRequest | undefined;
         if (!findRequest?.skipSettle) {
           await awaitDOMSettled(findRequest?.settleTimeout);
         }
@@ -1151,7 +1148,7 @@ export function createHandlers(
         const shouldSkip = request?.skipSettle === true || request?.skipSettle === 'true';
         if (!shouldSkip) {
           const timeout = typeof request?.settleTimeout === 'string'
-            ? parseInt(request.settleTimeout, 10)
+            ? parseInt(request.settleTimeout, 10) || undefined
             : request?.settleTimeout;
           await awaitDOMSettled(timeout);
         }

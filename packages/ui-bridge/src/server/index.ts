@@ -55,3 +55,22 @@ export {
 
 // SSE handler
 export { SSEManager } from './sse-handler';
+
+// Command relay
+export {
+  CommandRelay,
+  type QueuedCommand,
+  type CommandListener,
+  type TabListener,
+  type PendingCommand,
+  type WebSocketClient,
+  type TabInfo,
+  type TransportDiagnostics,
+  type CommandRelayOptions,
+} from './command-relay';
+
+// Relay handlers
+export {
+  createRelayHandlers,
+  type RelayHandlersOptions,
+} from './relay-handlers';

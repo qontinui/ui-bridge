@@ -24,6 +24,7 @@ import type {
 } from '../control';
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
 import { SSEManager } from './sse-handler';
+import type { CommandRelay } from './command-relay';
 
 /**
  * Next.js specific configuration
@@ -33,6 +34,8 @@ export interface NextJSAdapterConfig extends UIBridgeServerConfig {
   runtime?: 'edge' | 'nodejs';
   /** SSE manager for streaming events to clients */
   sseManager?: SSEManager;
+  /** CommandRelay instance for relay route support */
+  relay?: CommandRelay;
 }
 
 /**
@@ -113,6 +116,12 @@ export function createNextRouteHandlers(
       // Intercept SSE event stream before normal routing
       if (method === 'GET' && path === '/control/events/stream' && config.sseManager) {
         return createSSEStreamResponse(request, config.sseManager);
+      }
+
+      // Intercept relay routes before normal routing
+      if (config.relay) {
+        const relayResponse = handleRelayRoute(method, path, request, config.relay);
+        if (relayResponse) return await relayResponse;
       }
 
       // Find matching route
@@ -306,9 +315,13 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       async GET(request: NextRequest): Promise<Response> {
         const url = request.nextUrl?.searchParams?.get('url') ?? undefined;
         const targetTabId = request.nextUrl?.searchParams?.get('targetTabId') ?? undefined;
+        const skipSettle = request.nextUrl?.searchParams?.get('skipSettle') ?? undefined;
+        const settleTimeout = request.nextUrl?.searchParams?.get('settleTimeout') ?? undefined;
         const result = await handlers.getControlSnapshot({
           targetTabId,
           url,
+          skipSettle,
+          settleTimeout,
         });
         return jsonResponse(result);
       },
@@ -411,6 +424,161 @@ export function createUIBridgeHandler(config?: NextJSAdapterConfig): NextRouteHa
 
 // SSE heartbeat interval (15 seconds)
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+
+// ============================================================================
+// Relay Routes
+// ============================================================================
+
+const RELAY_COMMAND_STREAM_HEARTBEAT_MS = 30_000;
+
+/**
+ * Handle relay-specific routes. Returns a Response (or Promise<Response>)
+ * if the route matches, or null to fall through to normal routing.
+ */
+function handleRelayRoute(
+  method: string,
+  path: string,
+  request: NextRequest,
+  relay: CommandRelay
+): Response | Promise<Response> | null {
+  // GET /commands/stream — SSE command delivery to browser
+  if (method === 'GET' && path === '/commands/stream') {
+    return createCommandStreamResponse(request, relay);
+  }
+
+  // POST /commands — browser sends command responses
+  if (method === 'POST' && path === '/commands') {
+    return handleCommandResponse(request, relay);
+  }
+
+  // POST /heartbeat — browser heartbeat
+  if (method === 'POST' && path === '/heartbeat') {
+    relay.receiveHeartbeat();
+    return jsonResponse({ success: true, data: { received: true }, timestamp: Date.now() });
+  }
+
+  // GET /health — transport diagnostics + heartbeat freshness
+  if (method === 'GET' && path === '/health') {
+    const diagnostics = relay.getTransportDiagnostics();
+    return jsonResponse({
+      success: true,
+      data: {
+        responsive: relay.isAppResponsive(),
+        lastHeartbeat: relay.getLastHeartbeat(),
+        ...diagnostics,
+      },
+      timestamp: Date.now(),
+    });
+  }
+
+  // GET /tabs — connected tab info
+  if (method === 'GET' && path === '/tabs') {
+    const url = new URL(request.url);
+    const detailed = url.searchParams.get('detailed') === 'true';
+    if (detailed) {
+      return (async () => {
+        const tabs = await relay.getTabsWithInfo();
+        return jsonResponse({ success: true, data: { tabs }, timestamp: Date.now() });
+      })();
+    }
+    return jsonResponse({
+      success: true,
+      data: { tabs: relay.getConnectedTabs() },
+      timestamp: Date.now(),
+    });
+  }
+
+  return null;
+}
+
+/**
+ * SSE stream that delivers commands from the relay to browser tabs.
+ */
+function createCommandStreamResponse(request: NextRequest, relay: CommandRelay): Response {
+  const url = new URL(request.url);
+  const tabId = url.searchParams.get('tabId') ?? undefined;
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      let closed = false;
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+        unsubscribe();
+      };
+
+      // Send initial connection event
+      try {
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({ type: 'connected', buildId: relay.buildId, timestamp: Date.now() })}\n\n`
+        ));
+      } catch { /* ignore */ }
+
+      // Subscribe to commands
+      const unsubscribe = relay.subscribeToCommands((command) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(command)}\n\n`));
+        } catch {
+          cleanup();
+        }
+      }, tabId);
+
+      // Heartbeat to keep connection alive
+      heartbeat = setInterval(() => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`: heartbeat\n\n`));
+        } catch {
+          cleanup();
+        }
+      }, RELAY_COMMAND_STREAM_HEARTBEAT_MS);
+
+      // Clean up on disconnect
+      request.signal.addEventListener('abort', () => {
+        cleanup();
+        try { controller.close(); } catch { /* already closed */ }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
+/**
+ * Handle command responses from the browser (POST /commands).
+ */
+async function handleCommandResponse(request: NextRequest, relay: CommandRelay): Promise<Response> {
+  try {
+    const body = await request.json();
+    const { commandId, success: ok, result, error: errorMsg } = body;
+
+    if (!commandId) {
+      return jsonResponse({ success: false, error: 'Missing commandId', timestamp: Date.now() }, 400);
+    }
+
+    if (ok) {
+      relay.resolveCommand(commandId, result);
+    } else {
+      relay.rejectCommand(commandId, errorMsg || (result as { error?: string })?.error || 'Unknown error');
+    }
+
+    return jsonResponse({ success: true, timestamp: Date.now() });
+  } catch {
+    return jsonResponse({ success: false, error: 'Invalid request body', timestamp: Date.now() }, 400);
+  }
+}
 
 /**
  * Create an SSE streaming response for the Next.js adapter.

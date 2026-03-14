@@ -224,8 +224,8 @@ export interface UIBridgeServerHandlers {
   getControlSnapshot: (request?: {
     targetTabId?: string;
     url?: string;
-    skipSettle?: boolean;
-    settleTimeout?: number;
+    skipSettle?: boolean | string;
+    settleTimeout?: number | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
 
   // Workflow endpoints
