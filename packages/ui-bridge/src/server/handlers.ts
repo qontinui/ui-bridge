@@ -115,6 +115,7 @@ import type {
 import { evaluateQuality } from '../specs/quality-evaluator';
 import { listContexts } from '../specs/quality-contexts';
 import { createBaseline, diffSnapshots } from '../specs/quality-diff';
+import { getGlobalSpecStore } from '../specs/store';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
 import type {
@@ -247,6 +248,8 @@ export interface CreateHandlersConfig {
   dragDropDetector?: DragDropDetector;
   /** Undo tracker instance for undo/redo awareness in snapshots */
   undoTracker?: UndoTracker;
+  /** Spec store instance for serving loaded specs (defaults to global singleton) */
+  specStore?: import('../specs/store').SpecStore;
   /** Idle detection configuration. Set to false to disable. */
   idleDetection?: CompositeIdleConfig | false;
   /**
@@ -538,6 +541,9 @@ export function createHandlers(
 
   // Undo tracker for undo/redo awareness
   const undoTracker = config.undoTracker ?? null;
+
+  // Spec store for /control/specs
+  const specStore = config.specStore ?? getGlobalSpecStore();
 
   // Timeline buffer for action/error timeline
   const timelineBuffer = new TimelineBuffer(500);
@@ -3656,8 +3662,31 @@ export function createHandlers(
                 { method: 'POST', path: '/ai/intents/execute-from-query', description: 'Find and execute intent from query' },
               ],
             },
+            specs: {
+              description: 'Loaded spec configurations for runner discovery',
+              endpoints: [
+                { method: 'GET', path: '/control/specs', description: 'List all loaded specs' },
+              ],
+            },
           },
         },
+        timestamp: Date.now(),
+      };
+    },
+
+    // =========================================================================
+    // Specs
+    // =========================================================================
+
+    getSpecs: async (): Promise<APIResponse<Record<string, unknown>>> => {
+      const allSpecs = specStore.getAll();
+      const result: Record<string, unknown> = {};
+      for (const [specId, config] of allSpecs) {
+        result[specId] = config;
+      }
+      return {
+        success: true,
+        data: result,
         timestamp: Date.now(),
       };
     },

@@ -517,6 +517,9 @@ export interface UIBridgeServerHandlers {
   // API discovery
   getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
 
+  // Specs endpoint — serves all loaded specs for runner discovery
+  getSpecs: () => Promise<APIResponse<Record<string, unknown>>>;
+
   // Heartbeat (app health detection)
   receiveHeartbeat: () => Promise<APIResponse<{ received: boolean }>>;
 }
@@ -902,6 +905,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // API discovery
   { method: 'GET', path: '/capabilities', handler: 'getCapabilities' },
+
+  // Specs
+  { method: 'GET', path: '/control/specs', handler: 'getSpecs' },
 
   // Heartbeat
   { method: 'POST', path: '/heartbeat', handler: 'receiveHeartbeat' },

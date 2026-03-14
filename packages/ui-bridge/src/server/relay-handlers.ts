@@ -793,6 +793,10 @@ export function createRelayHandlers(
       relay.receiveHeartbeat();
       return success({ received: true });
     },
+
+    async getSpecs() {
+      return success({} as Record<string, unknown>);
+    },
   };
 
   // Expose render log entry addition for external use

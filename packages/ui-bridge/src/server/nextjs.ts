@@ -120,7 +120,7 @@ export function createNextRouteHandlers(
 
       // Intercept relay routes before normal routing
       if (config.relay) {
-        const relayResponse = handleRelayRoute(method, path, request, config.relay);
+        const relayResponse = handleRelayRoute(method, path, request, config.relay, config);
         if (relayResponse) return await relayResponse;
       }
 
@@ -439,7 +439,8 @@ function handleRelayRoute(
   method: string,
   path: string,
   request: NextRequest,
-  relay: CommandRelay
+  relay: CommandRelay,
+  config: NextJSAdapterConfig
 ): Response | Promise<Response> | null {
   // GET /commands/stream — SSE command delivery to browser
   if (method === 'GET' && path === '/commands/stream') {
@@ -457,10 +458,10 @@ function handleRelayRoute(
     return jsonResponse({ success: true, data: { received: true }, timestamp: Date.now() });
   }
 
-  // GET /health — transport diagnostics + heartbeat freshness
+  // GET /health — transport diagnostics + heartbeat freshness + discovery metadata
   if (method === 'GET' && path === '/health') {
     const diagnostics = relay.getTransportDiagnostics();
-    return jsonResponse({
+    const response: Record<string, unknown> = {
       success: true,
       data: {
         responsive: relay.isAppResponsive(),
@@ -468,7 +469,15 @@ function handleRelayRoute(
         ...diagnostics,
       },
       timestamp: Date.now(),
-    });
+    };
+    // Include uiBridge metadata for app discovery scanner
+    if (config.appInfo) {
+      response.uiBridge = {
+        ...config.appInfo,
+        capabilities: ['control', 'renderLog', 'debug'],
+      };
+    }
+    return jsonResponse(response);
   }
 
   // GET /tabs — connected tab info
