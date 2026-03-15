@@ -71,6 +71,9 @@ export { AutoRegisterProvider, type AutoRegisterProviderProps } from './AutoRegi
 // Content discovery
 export { type ContentDiscoveryOptions } from './content-discovery';
 
+// Media discovery
+export { type MediaDiscoveryOptions } from './media-discovery';
+
 // Annotation hook
 export { useUIAnnotation } from './useUIAnnotation';
 

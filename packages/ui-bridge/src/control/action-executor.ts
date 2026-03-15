@@ -631,6 +631,69 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
     }
 
+    // Include media elements from registry when requested
+    if (options?.includeMedia || options?.mediaOnly) {
+      const mediaElements = this.registry.getAllMediaElements();
+      for (const el of mediaElements) {
+        if (options?.limit && elements.length >= options.limit) break;
+
+        const state = el.getState();
+
+        // Filter by visibility
+        if (!options?.includeHidden && !state.visible) continue;
+
+        // Re-capture media metadata to detect loading transitions
+        const meta = el.mediaMetadata;
+
+        // Filter by media type
+        if (options?.mediaType && meta?.mediaType !== options.mediaType) continue;
+
+        // Filter broken only
+        if (options?.brokenOnly && meta?.loadingState !== 'error') continue;
+
+        // Filter missing alt only
+        if (options?.missingAltOnly) {
+          if (meta?.altText !== undefined && meta?.altText !== null) continue;
+          if (meta?.isDecorative) continue; // decorative images intentionally have no alt
+        }
+
+        // Filter by source pattern (with ReDoS protection)
+        if (options?.srcPattern && meta?.src) {
+          if (options.srcPattern.length > 200) {
+            // Pattern too long for safe regex — fall back to substring match
+            if (!meta.src.includes(options.srcPattern)) continue;
+          } else {
+            try {
+              const regex = new RegExp(options.srcPattern);
+              if (!regex.test(meta.src)) continue;
+            } catch {
+              // Invalid regex — fall back to substring match
+              if (!meta.src.includes(options.srcPattern)) continue;
+            }
+          }
+        }
+
+        // Filter oversized
+        if (options?.oversizeThreshold && meta?.oversizeRatio) {
+          if (meta.oversizeRatio < options.oversizeThreshold) continue;
+        }
+
+        elements.push({
+          id: el.id,
+          type: el.type,
+          label: el.label,
+          tagName: el.element.tagName.toLowerCase(),
+          role: el.element.getAttribute('role') || undefined,
+          accessibleName: el.label || meta?.altText,
+          actions: [],
+          state,
+          registered: true,
+          category: 'media',
+          mediaMetadata: meta,
+        });
+      }
+    }
+
     return {
       elements,
       total: elements.length,
@@ -665,6 +728,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         state: el.getState(),
         category: el.category,
         contentMetadata: el.contentMetadata,
+        mediaMetadata: el.mediaMetadata,
       })),
       components: components.map((comp) => ({
         id: comp.id,
@@ -1070,20 +1134,67 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     const values = Array.isArray(options?.value) ? options.value : [options?.value];
 
+    // Save the old value before any changes — needed for React's value tracker
+    const previousValue = element.value;
+
     if (!options?.additive) {
-      // Clear existing selection for single select or when not additive
       for (const option of element.options) {
         option.selected = false;
       }
     }
 
+    let selectedValue: string | undefined;
     for (const option of element.options) {
       const matchValue = options?.byLabel ? option.text : option.value;
       if (values.includes(matchValue)) {
         option.selected = true;
+        selectedValue = option.value;
       }
     }
 
+    // React uses _valueTracker to compare old vs new values when handling
+    // change events. Setting option.selected updates the DOM value through
+    // React's intercepted setter, which also updates the tracker — making
+    // React think old === new and skip the onChange call.
+    // Fix: reset the tracker to the previous value so React detects the diff.
+    const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })._valueTracker;
+    if (tracker) {
+      tracker.setValue(previousValue);
+    }
+    // Also try calling React's onChange handler directly via internal props.
+    // React 18+ stores event handlers on __reactProps$<key> on the DOM element.
+    const el = element as unknown as Record<string, unknown>;
+    const reactPropsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+    if (reactPropsKey) {
+      const props = el[reactPropsKey] as Record<string, unknown> | undefined;
+      if (props?.onChange && typeof props.onChange === 'function') {
+        const syntheticEvent = {
+          target: element,
+          currentTarget: element,
+          type: 'change',
+          bubbles: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new Event('change'),
+        };
+        (props.onChange as (e: unknown) => void)(syntheticEvent);
+        return; // React handler called directly, no need for native events
+      }
+    }
+
+    // Use the native setter as well, for non-React environments
+    if (selectedValue !== undefined) {
+      const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set;
+      if (nativeSelectValueSetter) {
+        nativeSelectValueSetter.call(element, selectedValue);
+      }
+    }
+
+    // Dispatch events — React's event delegation will pick these up
+    element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
 

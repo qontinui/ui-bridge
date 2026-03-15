@@ -90,6 +90,18 @@ export function createRelayHandlers(
     }
   }
 
+  // Helper: refresh the cached control snapshot if stale or if the given array is empty
+  const CACHE_TTL_MS = 5000;
+  async function refreshSnapshotIfStale(isEmpty: boolean): Promise<void> {
+    const isStale = Date.now() - latestControlSnapshot.timestamp > CACHE_TTL_MS;
+    if (isEmpty || isStale) {
+      try {
+        const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
+        latestControlSnapshot = result;
+      } catch { /* use cached fallback */ }
+    }
+  }
+
   const handlers: UIBridgeServerHandlers = {
     // ========================================================================
     // Render Log (server-side)
@@ -122,12 +134,7 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getElements() {
-      if (latestControlSnapshot.elements.length === 0) {
-        try {
-          const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
-          latestControlSnapshot = result;
-        } catch { /* use cached */ }
-      }
+      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
       return success(latestControlSnapshot.elements);
     },
 
@@ -150,6 +157,7 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getComponents() {
+      await refreshSnapshotIfStale(latestControlSnapshot.components.length === 0);
       return success(latestControlSnapshot.components);
     },
 
@@ -200,6 +208,7 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getWorkflows() {
+      await refreshSnapshotIfStale(latestControlSnapshot.workflows.length === 0);
       return success(latestControlSnapshot.workflows);
     },
 
@@ -773,6 +782,19 @@ export function createRelayHandlers(
               { method: 'GET', path: '/ai/snapshot', description: 'Semantic snapshot' },
             ],
           },
+          media: {
+            description: 'Media element discovery and analysis',
+            endpoints: [
+              { method: 'POST', path: '/ai/media/find', description: 'Find media elements with filters' },
+              { method: 'POST', path: '/ai/media/audit/accessibility', description: 'Alt text audit' },
+              { method: 'POST', path: '/ai/media/audit/performance', description: 'Oversized/transfer size audit' },
+              { method: 'POST', path: '/ai/media/snapshot', description: 'Capture media snapshot' },
+              { method: 'POST', path: '/ai/media/compare', description: 'Compare two snapshots' },
+              { method: 'POST', path: '/ai/media/analyze', description: 'Capture image + context for AI analysis' },
+              { method: 'POST', path: '/ai/media/analyze/batch', description: 'Capture multiple images for comparison' },
+              { method: 'POST', path: '/ai/media/analyze/page', description: 'Capture all visible media on page' },
+            ],
+          },
           debug: {
             description: 'Debugging and diagnostics',
             endpoints: [
@@ -792,6 +814,42 @@ export function createRelayHandlers(
     async receiveHeartbeat() {
       relay.receiveHeartbeat();
       return success({ received: true });
+    },
+
+    // ========================================================================
+    // Media Discovery & Analysis
+    // ========================================================================
+
+    async findMedia(request) {
+      return relayCommand('findMedia', request ?? {});
+    },
+
+    async mediaAuditAccessibility() {
+      return relayCommand('mediaAuditAccessibility');
+    },
+
+    async mediaAuditPerformance() {
+      return relayCommand('mediaAuditPerformance');
+    },
+
+    async captureMediaSnapshot(request) {
+      return relayCommand('captureMediaSnapshot', request);
+    },
+
+    async compareMediaSnapshots(request) {
+      return relayCommand('compareMediaSnapshots', request);
+    },
+
+    async analyzeMedia(request) {
+      return relayCommand('analyzeMedia', request);
+    },
+
+    async analyzeMediaBatch(request) {
+      return relayCommand('analyzeMediaBatch', request);
+    },
+
+    async analyzeMediaPage(request) {
+      return relayCommand('analyzeMediaPage', request ?? {});
     },
 
     async getSpecs() {

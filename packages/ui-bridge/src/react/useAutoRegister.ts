@@ -24,6 +24,13 @@ import {
   inferContentMetadata,
   generateContentId,
 } from './content-discovery';
+import type { MediaDiscoveryOptions } from './media-discovery';
+import {
+  MEDIA_SELECTORS,
+  shouldRegisterMedia,
+  captureMediaMetadata,
+  generateMediaId,
+} from './media-discovery';
 
 /**
  * ID generation strategy
@@ -60,6 +67,8 @@ export interface AutoRegisterOptions {
   onUnregister?: (id: string) => void;
   /** Content discovery options (enabled by default) */
   contentDiscovery?: ContentDiscoveryOptions;
+  /** Media discovery options (enabled by default) */
+  mediaDiscovery?: MediaDiscoveryOptions;
   /** Log level for auto-registered elements (uses global default if not set) */
   logLevel?: ElementLogLevel;
 }
@@ -177,6 +186,11 @@ function inferActions(type: ElementType): StandardAction[] {
     form: [...baseActions, 'submit', 'reset'],
     custom: [...baseActions, 'click'],
     generic: [...baseActions, 'click'],
+    image: [],
+    video: [],
+    canvas: [],
+    svg: [],
+    picture: [],
   };
 
   return typeActions[type] || baseActions;
@@ -536,18 +550,23 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     onRegister,
     onUnregister,
     contentDiscovery,
+    mediaDiscovery,
     logLevel,
   } = options;
 
   const contentEnabled = contentDiscovery?.enabled !== false;
+  const mediaEnabled = mediaDiscovery?.enabled !== false;
 
   const bridge = useUIBridgeOptional();
   const registeredElementsRef = useRef(new Map<HTMLElement, string>());
   const registeredContentElementsRef = useRef(new Map<HTMLElement, string>());
+  const registeredMediaElementsRef = useRef(new Map<HTMLElement, string>());
   const pendingRegistrationsRef = useRef(new Set<HTMLElement>());
   const pendingContentRegistrationsRef = useRef(new Set<HTMLElement>());
+  const pendingMediaRegistrationsRef = useRef(new Set<HTMLElement>());
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contentDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * Check if element should be registered
@@ -700,6 +719,57 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Register a single media element
+   */
+  const registerMediaElement = useCallback(
+    (element: HTMLElement): void => {
+      if (!bridge?.registry || registeredMediaElementsRef.current.has(element)) {
+        return;
+      }
+
+      const maxElements = mediaDiscovery?.maxMediaElements ?? 200;
+      if (registeredMediaElementsRef.current.size >= maxElements) {
+        return;
+      }
+
+      const id = generateMediaId(element);
+
+      // Check if ID already exists in registry
+      const existing = bridge.registry.getElement(id);
+      if (existing) {
+        return; // Media IDs are deterministic — skip duplicates
+      }
+
+      const metadata = captureMediaMetadata(element);
+      const label = metadata.altText || metadata.src?.split('/').pop() || undefined;
+
+      bridge.registry.registerMediaElement(id, element, {
+        mediaType: metadata.mediaType,
+        mediaMetadata: metadata,
+        label,
+        refreshMetadata: captureMediaMetadata,
+      });
+
+      registeredMediaElementsRef.current.set(element, id);
+    },
+    [bridge, mediaDiscovery?.maxMediaElements]
+  );
+
+  /**
+   * Unregister a single media element
+   */
+  const unregisterMediaElement = useCallback(
+    (element: HTMLElement): void => {
+      const id = registeredMediaElementsRef.current.get(element);
+      if (!id || !bridge?.registry) return;
+
+      bridge.registry.unregisterElement(id);
+      registeredMediaElementsRef.current.delete(element);
+    },
+    [bridge]
+  );
+
+  /**
    * Scan ARIA/HTML relationships for all currently registered elements.
    * Called after each batch of element registrations so relationship data
    * is always up-to-date for snapshot queries.
@@ -758,6 +828,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   }, [contentDiscovery, registerContentElement]);
 
   /**
+   * Process pending media registrations (debounced, separate timer)
+   */
+  const processPendingMediaRegistrations = useCallback(() => {
+    const registeredIds = new Set(registeredMediaElementsRef.current.values());
+    pendingMediaRegistrationsRef.current.forEach((element) => {
+      if (shouldRegisterMedia(element, mediaDiscovery, registeredIds)) {
+        registerMediaElement(element);
+      }
+    });
+    pendingMediaRegistrationsRef.current.clear();
+  }, [mediaDiscovery, registerMediaElement]);
+
+  /**
    * Queue element for registration (with debounce)
    */
   const queueRegistration = useCallback(
@@ -794,6 +877,26 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
+   * Queue media element for registration (separate debounce timer)
+   */
+  const queueMediaRegistration = useCallback(
+    (element: HTMLElement): void => {
+      pendingMediaRegistrationsRef.current.add(element);
+
+      if (mediaDebounceTimeoutRef.current) {
+        clearTimeout(mediaDebounceTimeoutRef.current);
+      }
+
+      const mediaDebounceMs = mediaDiscovery?.mediaDebounceMs ?? 200;
+      mediaDebounceTimeoutRef.current = setTimeout(
+        processPendingMediaRegistrations,
+        mediaDebounceMs
+      );
+    },
+    [mediaDiscovery?.mediaDebounceMs, processPendingMediaRegistrations]
+  );
+
+  /**
    * Scan and register all existing interactive elements
    */
   const scanAndRegister = useCallback(
@@ -823,6 +926,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           }
         });
       }
+
+      // Scan media elements
+      if (mediaEnabled) {
+        const mediaSelectors = MEDIA_SELECTORS.join(', ');
+        const mediaElements = rootElement.querySelectorAll<HTMLElement>(mediaSelectors);
+        const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
+
+        mediaElements.forEach((element) => {
+          if (shouldRegisterMedia(element, mediaDiscovery, registeredMediaIds)) {
+            queueMediaRegistration(element);
+          }
+        });
+      }
     },
     [
       includeSelectors,
@@ -831,6 +947,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       contentEnabled,
       contentDiscovery,
       queueContentRegistration,
+      mediaEnabled,
+      mediaDiscovery,
+      queueMediaRegistration,
     ]
   );
 
@@ -840,6 +959,55 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const handleMutations = useCallback(
     (mutations: MutationRecord[]): void => {
       mutations.forEach((mutation) => {
+        // Handle attribute changes that may reveal hidden elements
+        if (mutation.type === 'attributes' && mutation.target.nodeType === Node.ELEMENT_NODE) {
+          const target = mutation.target as HTMLElement;
+          // Rescan the target and its descendants for newly-visible interactive elements
+          const allSelectors = [...INTERACTIVE_SELECTORS, ...includeSelectors].join(', ');
+          if (shouldRegister(target)) {
+            queueRegistration(target);
+          }
+          const descendants = target.querySelectorAll<HTMLElement>(allSelectors);
+          descendants.forEach((descendant) => {
+            if (shouldRegister(descendant)) {
+              queueRegistration(descendant);
+            }
+          });
+
+          // Content discovery for newly-visible elements
+          if (contentEnabled) {
+            const contentSelectors = [
+              ...CONTENT_SELECTORS,
+              ...(contentDiscovery?.includeContentSelectors || []),
+            ].join(', ');
+            const registeredIds = new Set(registeredContentElementsRef.current.values());
+            if (shouldRegisterContent(target, contentDiscovery, registeredIds)) {
+              queueContentRegistration(target);
+            }
+            const contentDescendants = target.querySelectorAll<HTMLElement>(contentSelectors);
+            contentDescendants.forEach((descendant) => {
+              if (shouldRegisterContent(descendant, contentDiscovery, registeredIds)) {
+                queueContentRegistration(descendant);
+              }
+            });
+          }
+
+          // Media discovery for newly-visible elements
+          if (mediaEnabled) {
+            const mediaSelectors = MEDIA_SELECTORS.join(', ');
+            const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
+            if (shouldRegisterMedia(target, mediaDiscovery, registeredMediaIds)) {
+              queueMediaRegistration(target);
+            }
+            const mediaDescendants = target.querySelectorAll<HTMLElement>(mediaSelectors);
+            mediaDescendants.forEach((descendant) => {
+              if (shouldRegisterMedia(descendant, mediaDiscovery, registeredMediaIds)) {
+                queueMediaRegistration(descendant);
+              }
+            });
+          }
+        }
+
         // Handle added nodes
         mutation.addedNodes.forEach((node) => {
           if (node.nodeType === Node.ELEMENT_NODE) {
@@ -880,6 +1048,25 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
                 }
               });
             }
+
+            // Media discovery for added nodes
+            if (mediaEnabled) {
+              const mediaSelectors = MEDIA_SELECTORS.join(', ');
+              const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
+
+              // Check the element itself
+              if (shouldRegisterMedia(element, mediaDiscovery, registeredMediaIds)) {
+                queueMediaRegistration(element);
+              }
+
+              // Check descendants
+              const mediaDescendants = element.querySelectorAll<HTMLElement>(mediaSelectors);
+              mediaDescendants.forEach((descendant) => {
+                if (shouldRegisterMedia(descendant, mediaDiscovery, registeredMediaIds)) {
+                  queueMediaRegistration(descendant);
+                }
+              });
+            }
           }
         });
 
@@ -898,6 +1085,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               unregisterContentElement(element);
             }
 
+            // Unregister the element itself (media)
+            if (registeredMediaElementsRef.current.has(element)) {
+              unregisterMediaElement(element);
+            }
+
             // Unregister descendants
             const descendants = element.querySelectorAll<HTMLElement>('*');
             descendants.forEach((descendant) => {
@@ -906,6 +1098,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               }
               if (registeredContentElementsRef.current.has(descendant)) {
                 unregisterContentElement(descendant);
+              }
+              if (registeredMediaElementsRef.current.has(descendant)) {
+                unregisterMediaElement(descendant);
               }
             });
           }
@@ -921,6 +1116,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       contentDiscovery,
       queueContentRegistration,
       unregisterContentElement,
+      mediaEnabled,
+      mediaDiscovery,
+      queueMediaRegistration,
+      unregisterMediaElement,
     ]
   );
 
@@ -940,6 +1139,8 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     observer.observe(rootElement, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
     });
 
     return () => {
@@ -950,6 +1151,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
       if (contentDebounceTimeoutRef.current) {
         clearTimeout(contentDebounceTimeoutRef.current);
+      }
+      if (mediaDebounceTimeoutRef.current) {
+        clearTimeout(mediaDebounceTimeoutRef.current);
       }
 
       // Unregister all interactive elements
@@ -963,6 +1167,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         bridge.registry.unregisterElement(id);
       });
       registeredContentElementsRef.current.clear();
+
+      // Unregister all media elements
+      registeredMediaElementsRef.current.forEach((id, _element) => {
+        bridge.registry.unregisterElement(id);
+      });
+      registeredMediaElementsRef.current.clear();
     };
   }, [enabled, bridge, root, scanAndRegister, handleMutations]);
 }

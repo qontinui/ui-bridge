@@ -342,6 +342,30 @@ export type { FormSnapshot, FormFieldDiff, FormDiff } from './form-diff';
 export { decomposeTarget } from './target-decomposer';
 export type { DecomposedTarget, SpatialRelation } from './target-decomposer';
 
+// Media Queries
+export {
+  createMediaFindRequest,
+  createBrokenImagesFindRequest,
+  createMissingAltFindRequest,
+  createOversizedImagesFindRequest,
+  buildAccessibilityAudit,
+  buildPerformanceAudit,
+} from './media-queries';
+export type { MediaAccessibilityAudit, MediaPerformanceAudit } from './media-queries';
+
+// Media Snapshot
+export { captureMediaSnapshot, compareMediaSnapshots } from './media-snapshot';
+export type { MediaSnapshotData, MediaComparisonResult } from './media-snapshot';
+
+// Media Analysis
+export { analyzeMediaElement, analyzeMediaBatch, analyzeMediaPage } from './media-analysis';
+export type {
+  MediaAnalysisResult,
+  MediaAnalyzeRequest,
+  MediaAnalyzeBatchRequest,
+  MediaAnalyzePageRequest,
+} from './media-analysis';
+
 // Unified Find API
 export { find } from './find';
 export type {

@@ -10,6 +10,7 @@ import type {
   ElementState,
   WaitOptions,
   ContentMetadata,
+  MediaMetadata,
   FillResult,
 } from '../core/types';
 import type { SnapshotPageContext } from '../navigation/types';
@@ -190,10 +191,12 @@ export interface DiscoveredElement {
   state: ElementState;
   /** Whether registered with UI Bridge */
   registered: boolean;
-  /** Whether this is an interactive element or static content */
-  category?: 'interactive' | 'content';
+  /** Whether this is an interactive element, static content, or media */
+  category?: 'interactive' | 'content' | 'media';
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
+  /** Metadata for media elements */
+  mediaMetadata?: MediaMetadata;
 }
 
 /**
@@ -224,6 +227,20 @@ export interface FindRequest {
   skipSettle?: boolean;
   /** Max ms to wait for DOM settle (default: 500). Non-fatal on timeout. */
   settleTimeout?: number;
+  /** Include media elements in results */
+  includeMedia?: boolean;
+  /** Only return media elements */
+  mediaOnly?: boolean;
+  /** Filter media by type (e.g., 'image', 'video', 'svg') */
+  mediaType?: string;
+  /** Only return media elements that failed to load */
+  brokenOnly?: boolean;
+  /** Only return images missing alt text */
+  missingAltOnly?: boolean;
+  /** Regex pattern to match against source URL */
+  srcPattern?: string;
+  /** Filter oversized images by ratio threshold (default: 2.0) */
+  oversizeThreshold?: number;
 }
 
 /**
@@ -309,8 +326,9 @@ export interface ControlSnapshot {
     label?: string;
     actions: string[];
     state: ElementState;
-    category?: 'interactive' | 'content';
+    category?: 'interactive' | 'content' | 'media';
     contentMetadata?: ContentMetadata;
+    mediaMetadata?: MediaMetadata;
   }>;
   /** All registered components */
   components: Array<{

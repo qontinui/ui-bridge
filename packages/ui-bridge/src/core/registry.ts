@@ -27,6 +27,7 @@ import type {
   ComponentStateResponse,
   StateGetter,
   ContentMetadata,
+  MediaMetadata,
   ElementLogLevel,
   ElementHistoryOptions,
   ElementLogEntry,
@@ -480,8 +481,9 @@ export class UIBridgeRegistry {
       label?: string;
       actions?: StandardAction[];
       customActions?: Record<string, CustomAction>;
-      category?: 'interactive' | 'content';
+      category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
+      mediaMetadata?: MediaMetadata;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -503,6 +505,7 @@ export class UIBridgeRegistry {
       mounted: true,
       category: options.category ?? 'interactive',
       contentMetadata: options.contentMetadata,
+      mediaMetadata: options.mediaMetadata,
     };
 
     this.elements.set(actualId, registered);
@@ -540,10 +543,57 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Register a media element (image, video, canvas, SVG, etc.)
+   *
+   * If a `refreshMetadata` callback is provided, mediaMetadata is re-captured
+   * on every `getState()` call so loading transitions and video state stay fresh.
+   */
+  registerMediaElement(
+    id: string,
+    element: HTMLElement,
+    options: {
+      mediaType: string;
+      mediaMetadata: MediaMetadata;
+      label?: string;
+      refreshMetadata?: (el: HTMLElement) => MediaMetadata;
+    }
+  ): RegisteredElement {
+    const registered = this.registerElement(id, element, {
+      type: options.mediaType as ElementType,
+      label: options.label,
+      actions: [],
+      category: 'media',
+      mediaMetadata: options.mediaMetadata,
+    });
+
+    // Override getState to re-capture media metadata on each call
+    if (options.refreshMetadata) {
+      const originalGetState = registered.getState;
+      const refreshFn = options.refreshMetadata;
+      registered.getState = () => {
+        const state = originalGetState();
+        const freshMeta = refreshFn(element);
+        registered.mediaMetadata = freshMeta;
+        state.mediaMetadata = freshMeta;
+        return state;
+      };
+    }
+
+    return registered;
+  }
+
+  /**
    * Get all interactive elements
    */
   getAllInteractiveElements(): RegisteredElement[] {
-    return Array.from(this.elements.values()).filter((el) => el.category !== 'content');
+    return Array.from(this.elements.values()).filter((el) => el.category !== 'content' && el.category !== 'media');
+  }
+
+  /**
+   * Get all media elements
+   */
+  getAllMediaElements(): RegisteredElement[] {
+    return Array.from(this.elements.values()).filter((el) => el.category === 'media');
   }
 
   /**
@@ -852,6 +902,11 @@ export class UIBridgeRegistry {
       option: 'option',
       textbox: 'textbox',
       generic: undefined,
+      image: 'img',
+      video: undefined,
+      canvas: undefined,
+      svg: 'img',
+      picture: 'img',
     };
     return roleMap[type];
   }
@@ -1403,6 +1458,7 @@ export class UIBridgeRegistry {
       elements: this.getAllElements().map((el) => ({
         id: el.id,
         type: el.type,
+        tagName: el.element.tagName.toLowerCase(),
         label: el.label,
         identifier: el.getIdentifier(),
         state: el.getState(),
@@ -1410,6 +1466,7 @@ export class UIBridgeRegistry {
         customActions: el.customActions ? Object.keys(el.customActions) : undefined,
         category: el.category,
         contentMetadata: el.contentMetadata,
+        mediaMetadata: el.mediaMetadata,
       })),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,
@@ -1443,6 +1500,7 @@ export class UIBridgeRegistry {
         elementSnapshots.push({
           id: el.id,
           type: el.type,
+          tagName: el.element.tagName.toLowerCase(),
           label: el.label,
           identifier: el.getIdentifier(),
           state: el.getState(),
@@ -1450,6 +1508,7 @@ export class UIBridgeRegistry {
           customActions: el.customActions ? Object.keys(el.customActions) : undefined,
           category: el.category,
           contentMetadata: el.contentMetadata,
+          mediaMetadata: el.mediaMetadata,
         });
       }
       // Yield to main thread between batches to keep UI responsive

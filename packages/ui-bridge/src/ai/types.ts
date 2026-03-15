@@ -120,8 +120,8 @@ export interface AIDiscoveredElement extends DiscoveredElement {
   title?: string;
   /** ARIA description */
   ariaDescription?: string;
-  /** Whether this is an interactive element or static content */
-  category?: 'interactive' | 'content';
+  /** Whether this is an interactive element, static content, or media */
+  category?: 'interactive' | 'content' | 'media';
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
 }

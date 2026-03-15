@@ -528,6 +528,16 @@ export interface UIBridgeServerHandlers {
     elementId: string,
     options?: ElementHistoryOptions
   ) => Promise<APIResponse<unknown[]>>;
+
+  // Media discovery & analysis endpoints
+  findMedia: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
+  mediaAuditAccessibility: () => Promise<APIResponse<unknown>>;
+  mediaAuditPerformance: () => Promise<APIResponse<unknown>>;
+  captureMediaSnapshot: (request: { elementId: string; maxSize?: number }) => Promise<APIResponse<unknown>>;
+  compareMediaSnapshots: (request: { snapshotA: unknown; snapshotB: unknown }) => Promise<APIResponse<unknown>>;
+  analyzeMedia: (request: { elementId: string; maxSize?: number }) => Promise<APIResponse<unknown>>;
+  analyzeMediaBatch: (request: { elementIds: string[]; maxSize?: number }) => Promise<APIResponse<unknown>>;
+  analyzeMediaPage: (request?: { maxElements?: number; maxSize?: number; includeContext?: boolean }) => Promise<APIResponse<unknown>>;
 }
 
 /**

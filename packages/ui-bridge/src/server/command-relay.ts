@@ -84,7 +84,7 @@ export interface CommandRelayOptions {
   globalPrefix?: string;
   /** WebSocket command timeout in ms (default: 10000) */
   wsTimeoutMs?: number;
-  /** SSE/HTTP command timeout in ms (default: 15000) */
+  /** SSE/HTTP command timeout in ms (default: 8000) */
   sseTimeoutMs?: number;
   /** Multi-tab grace period in ms (default: 3000) */
   multiTabGraceMs?: number;
@@ -121,10 +121,14 @@ export class CommandRelay {
   private lastHeartbeat: number;
   readonly buildId: string;
 
+  // Connection readiness gate
+  private connectionReadyResolve: (() => void) | null;
+  private connectionReady: Promise<void>;
+
   constructor(options?: CommandRelayOptions) {
     this.prefix = options?.globalPrefix ?? '__uiBridge';
     this.wsTimeoutMs = options?.wsTimeoutMs ?? 10_000;
-    this.sseTimeoutMs = options?.sseTimeoutMs ?? 15_000;
+    this.sseTimeoutMs = options?.sseTimeoutMs ?? 8_000;
     this.multiTabGraceMs = options?.multiTabGraceMs ?? 3_000;
     this.maxPendingCommands = options?.maxPendingCommands ?? 200;
     this.heartbeatStaleMs = options?.heartbeatStaleMs ?? 30_000;
@@ -142,6 +146,15 @@ export class CommandRelay {
     if (!g[key('LastHeartbeat')]) g[key('LastHeartbeat')] = 0;
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
+    if (!g[key('ConnectionReady')]) {
+      let resolve: (() => void) | null = null;
+      const promise = new Promise<void>((r) => { resolve = r; });
+      g[key('ConnectionReady')] = promise;
+      g[key('ConnectionReadyResolve')] = resolve;
+    }
+    this.connectionReady = g[key('ConnectionReady')];
+    this.connectionReadyResolve = g[key('ConnectionReadyResolve')];
+
     this.pendingCommands = g[key('PendingCommands')];
     this.tabListeners = g[key('TabListeners')];
     this.wsClients = g[key('WsClients')];
@@ -150,6 +163,24 @@ export class CommandRelay {
     this.primaryTabId = g[key('PrimaryTabId')];
     this.lastHeartbeat = g[key('LastHeartbeat')];
     this.buildId = g[key('BuildId')];
+  }
+
+  /**
+   * Reset the connection readiness gate when all transports have disconnected.
+   * The next call to queueCommand() will block until a new transport connects.
+   */
+  private resetConnectionGateIfEmpty(): void {
+    if (this.tabListeners.size === 0 && this.wsClients.size === 0 && !this.connectionReadyResolve) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const g = globalThis as any;
+      const key = (suffix: string) => `${this.prefix}${suffix}`;
+      let resolve: (() => void) | null = null;
+      const promise = new Promise<void>((r) => { resolve = r; });
+      g[key('ConnectionReady')] = promise;
+      g[key('ConnectionReadyResolve')] = resolve;
+      this.connectionReady = promise;
+      this.connectionReadyResolve = resolve;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -217,11 +248,24 @@ export class CommandRelay {
   /**
    * Queue a command with primary tab routing and automatic failover.
    */
-  queueCommand<T>(
+  async queueCommand<T>(
     action: string,
     payload: unknown,
     options?: { targetTabId?: string }
   ): Promise<T> {
+    // Wait for at least one transport if none available
+    if (!options?.targetTabId && this.tabListeners.size === 0 && this.wsClients.size === 0) {
+      await Promise.race([
+        this.connectionReady,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error(
+            'No browser connected — no WebSocket clients and no SSE listeners. ' +
+            'Ensure the web app is open in a browser tab.'
+          )), 3000)
+        ),
+      ]);
+    }
+
     const targetTabId = options?.targetTabId;
 
     // Explicit target — send directly, no failover
@@ -421,6 +465,13 @@ export class CommandRelay {
   registerWebSocketClient(client: WebSocketClient): void {
     const now = Date.now();
     this.wsClients.set(client.clientId, { client, connectedAt: now, lastActivity: now });
+
+    // Signal that a transport is ready
+    if (this.connectionReadyResolve) {
+      this.connectionReadyResolve();
+      this.connectionReadyResolve = null;
+    }
+
     console.log(`[UIBridge] WebSocket client registered: ${client.clientId}`);
 
     // Proactive snapshot capture
@@ -445,6 +496,7 @@ export class CommandRelay {
   unregisterWebSocketClient(clientId: string): void {
     this.wsClients.delete(clientId);
     console.log(`[UIBridge] WebSocket client unregistered: ${clientId}`);
+    this.resetConnectionGateIfEmpty();
   }
 
   /**
@@ -553,6 +605,12 @@ export class CommandRelay {
     this.demotedTabs.delete(id);
     this.setPrimaryTab(id);
 
+    // Signal that a transport is ready
+    if (this.connectionReadyResolve) {
+      this.connectionReadyResolve();
+      this.connectionReadyResolve = null;
+    }
+
     console.log(`[ui-bridge] SSE listener connected: ${id} (total: ${this.tabListeners.size})`);
 
     // Proactive snapshot capture
@@ -586,6 +644,7 @@ export class CommandRelay {
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
       console.log(`[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`);
+      this.resetConnectionGateIfEmpty();
     };
   }
 

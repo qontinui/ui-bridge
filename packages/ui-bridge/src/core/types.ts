@@ -133,6 +133,8 @@ export interface ElementState {
     max?: string;
     step?: string;
   };
+  /** Media metadata for images, video, canvas, SVG elements */
+  mediaMetadata?: MediaMetadata;
   /** Whether this element is within the viewport bounds (separate from `visible` which also checks display/opacity) */
   inViewport?: boolean;
   /** Scroll container info — only present if this element has overflowing scrollable content */
@@ -183,7 +185,12 @@ export type ElementType =
   | 'listbox'
   | 'option'
   | 'textbox'
-  | 'generic';
+  | 'generic'
+  | 'image'
+  | 'video'
+  | 'canvas'
+  | 'svg'
+  | 'picture';
 
 /**
  * Types of static content elements (non-interactive)
@@ -239,6 +246,59 @@ export interface ContentMetadata {
   stableTextPrefix?: string;
   /** Structural context (e.g., "table > tbody > tr:nth-child(2)") */
   structuralContext?: string;
+}
+
+/**
+ * Types of media elements
+ */
+export type MediaType = 'image' | 'video' | 'canvas' | 'svg' | 'picture' | 'background-image';
+
+/**
+ * Metadata for media elements (images, video, canvas, SVG, etc.)
+ */
+export interface MediaMetadata {
+  /** Type of media element */
+  mediaType: MediaType;
+  /** Source URL */
+  src?: string;
+  /** Alt text for accessibility */
+  altText?: string;
+  /** Whether the image is decorative (empty alt or role="presentation") */
+  isDecorative: boolean;
+  /** Natural (intrinsic) width in pixels */
+  naturalWidth?: number;
+  /** Natural (intrinsic) height in pixels */
+  naturalHeight?: number;
+  /** Rendered width in pixels */
+  renderedWidth: number;
+  /** Rendered height in pixels */
+  renderedHeight: number;
+  /** Ratio of natural to rendered size (> 2.0 indicates oversized) */
+  oversizeRatio?: number;
+  /** Current loading state */
+  loadingState: 'pending' | 'loaded' | 'error' | 'lazy';
+  /** Whether the element uses lazy loading */
+  lazyLoading: boolean;
+  /** Image format (e.g., 'png', 'jpg', 'webp', 'svg+xml') */
+  format?: string;
+  /** Transfer size in bytes (from Performance API) */
+  transferSize?: number;
+  /** srcset attribute value */
+  srcset?: string;
+  /** sizes attribute value */
+  sizes?: string;
+  /** Source elements from <picture> */
+  sources?: Array<{ srcset: string; media?: string; type?: string }>;
+  /** SVG viewBox attribute */
+  svgViewBox?: string;
+  /** Video-specific state */
+  videoState?: {
+    poster?: string;
+    currentTime: number;
+    duration: number;
+    paused: boolean;
+    muted: boolean;
+  };
 }
 
 /**
@@ -313,10 +373,12 @@ export interface RegisteredElement {
   mounted: boolean;
 
   // Category
-  /** Whether this is an interactive element or static content */
-  category?: 'interactive' | 'content';
+  /** Whether this is an interactive element, static content, or media */
+  category?: 'interactive' | 'content' | 'media';
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
+  /** Metadata for media elements */
+  mediaMetadata?: MediaMetadata;
 
   // AI-Native metadata
   /** Alternative names for natural language matching */
@@ -779,13 +841,15 @@ export interface BridgeSnapshot {
   elements: Array<{
     id: string;
     type: ElementType | string;
+    tagName: string;
     label?: string;
     identifier: ElementIdentifier;
     state: ElementState;
     actions: StandardAction[];
     customActions?: string[];
-    category?: 'interactive' | 'content';
+    category?: 'interactive' | 'content' | 'media';
     contentMetadata?: ContentMetadata;
+    mediaMetadata?: MediaMetadata;
   }>;
   /** All registered components */
   components: Array<{

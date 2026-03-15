@@ -188,11 +188,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
+        // Reconnect if SSE was dropped for any reason
         if (!eventSourceRef.current) connect();
-      } else {
-        if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
-        if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
+        // Proactive refresh could be added here
       }
+      // Do NOT disconnect on hide — automation tools need background access
     };
 
     if (document.visibilityState === 'visible') connect();

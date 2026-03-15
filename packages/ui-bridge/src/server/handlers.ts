@@ -3717,6 +3717,42 @@ export function createHandlers(
         return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
       }
     },
+
+    // =========================================================================
+    // Media Discovery & Analysis (delegated to browser via relay in relay-handlers)
+    // =========================================================================
+
+    findMedia: async (request) => {
+      return error('findMedia not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    mediaAuditAccessibility: async () => {
+      return error('mediaAuditAccessibility not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    mediaAuditPerformance: async () => {
+      return error('mediaAuditPerformance not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    captureMediaSnapshot: async (request) => {
+      return error('captureMediaSnapshot not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    compareMediaSnapshots: async (request) => {
+      return error('compareMediaSnapshots not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    analyzeMedia: async (request) => {
+      return error('analyzeMedia not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    analyzeMediaBatch: async (request) => {
+      return error('analyzeMediaBatch not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    analyzeMediaPage: async (request) => {
+      return error('analyzeMediaPage not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
   };
 }
 
