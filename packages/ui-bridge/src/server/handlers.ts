@@ -1288,18 +1288,45 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (id: string, _request?: unknown) => {
+    runWorkflow: async (id: string, request?: unknown) => {
       try {
+        // Soft check — the runner has its own workflow database,
+        // so a missing registry entry is not a blocker.
         const workflow = registry.getWorkflow?.(id);
         if (!workflow) {
-          return error(`Workflow not found: ${id}`, 'NOT_FOUND');
+          console.warn(`[handlers] Workflow "${id}" not in local registry — proxying to runner anyway`);
         }
-        // TODO: Implement actual workflow execution
-        const runId = `run-${Date.now()}`;
+
+        // Proxy to runner's unified workflow execution engine
+        const runnerPort = 9876;
+        const body = {
+          force_fresh_start: false,
+          ...(request && typeof request === 'object' ? request : {}),
+        };
+
+        const response = await fetch(
+          `http://127.0.0.1:${runnerPort}/unified-workflows/${encodeURIComponent(id)}/run`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }
+        );
+
+        const result = await response.json();
+
+        if (!response.ok || result.success === false) {
+          return error(
+            result.error || `Runner returned ${response.status}`,
+            'WORKFLOW_ERROR'
+          );
+        }
+
+        const data = result.data || result;
         return success({
-          runId,
+          runId: data.task_run_id || data.execution_id || `run-${Date.now()}`,
           workflowId: id,
-          status: 'pending',
+          status: 'running' as const,
           startedAt: Date.now(),
           steps: [],
           totalSteps: 0,
@@ -1311,15 +1338,45 @@ export function createHandlers(
 
     getWorkflowStatus: async (runId: string) => {
       try {
-        // TODO: Implement workflow status tracking
+        // Proxy to runner's task run status
+        const runnerPort = 9876;
+        const response = await fetch(
+          `http://127.0.0.1:${runnerPort}/task-runs/${encodeURIComponent(runId)}`
+        );
+
+        const result = await response.json();
+
+        if (!response.ok || result.success === false) {
+          return error(
+            result.error || `Runner returned ${response.status}`,
+            'WORKFLOW_STATUS_ERROR'
+          );
+        }
+
+        const data = result.data || result;
+        const statusMap: Record<string, string> = {
+          'in_progress': 'running',
+          'running': 'running',
+          'completed': 'completed',
+          'success': 'completed',
+          'failed': 'failed',
+          'error': 'failed',
+          'cancelled': 'cancelled',
+          'stopped': 'cancelled',
+        };
+
         return success({
           runId,
-          workflowId: '',
-          status: 'completed',
-          completedAt: Date.now(),
-          startedAt: Date.now(),
-          steps: [],
-          totalSteps: 0,
+          workflowId: data.workflow_id || data.workflowId || '',
+          status: (statusMap[data.status] || 'pending') as any,
+          steps: data.steps || [],
+          totalSteps: data.total_steps || data.totalSteps || 0,
+          currentStep: data.current_step || data.currentStep,
+          startedAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
+          completedAt: data.completed_at ? new Date(data.completed_at).getTime() : undefined,
+          durationMs: data.duration_ms || data.durationMs,
+          success: data.status === 'completed' || data.status === 'success',
+          error: data.error,
         }) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');
