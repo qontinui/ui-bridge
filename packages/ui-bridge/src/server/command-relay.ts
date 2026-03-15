@@ -92,6 +92,8 @@ export interface CommandRelayOptions {
   maxPendingCommands?: number;
   /** Heartbeat stale threshold in ms (default: 30000) */
   heartbeatStaleMs?: number;
+  /** Time after which a demoted tab with no heartbeat is cleaned up (default: 60000) */
+  tabDemotionTtlMs?: number;
 }
 
 // Commands that cause the page to unload — resolved immediately after delivery
@@ -108,6 +110,7 @@ export class CommandRelay {
   private readonly multiTabGraceMs: number;
   private readonly maxPendingCommands: number;
   private readonly heartbeatStaleMs: number;
+  private readonly tabDemotionTtlMs: number;
 
   // All state lives on globalThis for HMR survival
   private readonly pendingCommands: Map<string, PendingCommand>;
@@ -115,11 +118,15 @@ export class CommandRelay {
   private readonly wsClients: Map<string, WebSocketClientEntry>;
   private readonly demotedTabs: Set<string>;
   private readonly commandQueue: QueuedCommand[];
+  private readonly tabHeartbeats: Map<string, number>;
+  private readonly tabLastSuccess: Map<string, number>;
 
   // Simple value state
   private primaryTabId: string | null;
-  private lastHeartbeat: number;
   readonly buildId: string;
+
+  // Cleanup interval handle
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
   // Connection readiness gate
   private connectionReadyResolve: (() => void) | null;
@@ -132,6 +139,7 @@ export class CommandRelay {
     this.multiTabGraceMs = options?.multiTabGraceMs ?? 3_000;
     this.maxPendingCommands = options?.maxPendingCommands ?? 200;
     this.heartbeatStaleMs = options?.heartbeatStaleMs ?? 30_000;
+    this.tabDemotionTtlMs = options?.tabDemotionTtlMs ?? 60_000;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const g = globalThis as any;
@@ -143,7 +151,8 @@ export class CommandRelay {
     if (!g[key('DemotedTabs')]) g[key('DemotedTabs')] = new Set();
     if (!g[key('CommandQueue')]) g[key('CommandQueue')] = [];
     if (!g[key('PrimaryTabId')]) g[key('PrimaryTabId')] = null;
-    if (!g[key('LastHeartbeat')]) g[key('LastHeartbeat')] = 0;
+    if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
+    if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
     if (!g[key('ConnectionReady')]) {
@@ -161,8 +170,42 @@ export class CommandRelay {
     this.demotedTabs = g[key('DemotedTabs')];
     this.commandQueue = g[key('CommandQueue')];
     this.primaryTabId = g[key('PrimaryTabId')];
-    this.lastHeartbeat = g[key('LastHeartbeat')];
+    this.tabHeartbeats = g[key('TabHeartbeats')];
+    this.tabLastSuccess = g[key('TabLastSuccess')];
     this.buildId = g[key('BuildId')];
+
+    // Periodic cleanup of stale tab entries (every 30s)
+    if (!g[key('CleanupInterval')]) {
+      g[key('CleanupInterval')] = setInterval(() => {
+        this.cleanupStaleTabs();
+      }, 30_000);
+    }
+    this.cleanupInterval = g[key('CleanupInterval')];
+  }
+
+  /**
+   * Remove entries from tabHeartbeats and demotedTabs for tabs no longer connected.
+   */
+  private cleanupStaleTabs(): void {
+    const now = Date.now();
+    for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
+      const hasListener = this.tabListeners.has(tabId);
+      const hasWs = this.wsClients.has(tabId);
+      if (!hasListener && !hasWs) {
+        // Tab is no longer connected — remove if heartbeat is stale
+        if (now - lastBeat > this.tabDemotionTtlMs) {
+          this.tabHeartbeats.delete(tabId);
+          this.demotedTabs.delete(tabId);
+          this.tabLastSuccess.delete(tabId);
+        }
+      }
+    }
+    // Also clean demoted tabs that have no heartbeat entry and no connection
+    for (const tabId of this.demotedTabs) {
+      if (!this.tabListeners.has(tabId) && !this.wsClients.has(tabId) && !this.tabHeartbeats.has(tabId)) {
+        this.demotedTabs.delete(tabId);
+      }
+    }
   }
 
   /**
@@ -188,6 +231,18 @@ export class CommandRelay {
   // --------------------------------------------------------------------------
 
   private getPrimaryTabId(): string | null {
+    // Re-promote demoted tabs whose heartbeat is fresh AND still have an active connection
+    const now = Date.now();
+    for (const tabId of Array.from(this.demotedTabs)) {
+      const lastBeat = this.tabHeartbeats.get(tabId);
+      if (lastBeat && (now - lastBeat) < this.heartbeatStaleMs) {
+        if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) {
+          this.demotedTabs.delete(tabId);
+          console.log(`[ui-bridge] Re-promoted tab with fresh heartbeat: ${tabId}`);
+        }
+      }
+    }
+
     if (this.primaryTabId && !this.demotedTabs.has(this.primaryTabId)) {
       if (this.tabListeners.has(this.primaryTabId) || this.wsClients.has(this.primaryTabId)) {
         return this.primaryTabId;
@@ -196,25 +251,30 @@ export class CommandRelay {
       this.persistPrimaryTab();
     }
 
-    // Auto-promote newest non-demoted tab
-    const tabs = Array.from(this.tabListeners.keys());
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      const tab = tabs[i]!;
+    // Collect all candidate tabs (non-demoted, connected)
+    const candidates: string[] = [];
+    for (const tab of this.tabListeners.keys()) {
       if (!this.demotedTabs.has(tab)) {
-        this.setPrimaryTab(tab);
-        return this.primaryTabId;
+        candidates.push(tab);
       }
     }
-
-    // Check WebSocket clients
     for (const [clientId, entry] of this.wsClients.entries()) {
-      if (entry.client.isConnected() && !this.demotedTabs.has(clientId)) {
-        this.setPrimaryTab(clientId);
-        return this.primaryTabId;
+      if (entry.client.isConnected() && !this.demotedTabs.has(clientId) && !candidates.includes(clientId)) {
+        candidates.push(clientId);
       }
     }
 
-    return null;
+    if (candidates.length === 0) return null;
+
+    // Sort candidates by tabLastSuccess (most recent first), then by insertion order
+    candidates.sort((a, b) => {
+      const aSuccess = this.tabLastSuccess.get(a) ?? 0;
+      const bSuccess = this.tabLastSuccess.get(b) ?? 0;
+      return bSuccess - aSuccess;
+    });
+
+    this.setPrimaryTab(candidates[0]!);
+    return this.primaryTabId;
   }
 
   private setPrimaryTab(tabId: string): void {
@@ -543,7 +603,7 @@ export class CommandRelay {
   /**
    * Resolve a pending command with a response from the browser.
    */
-  resolveCommand(commandId: string, result: unknown): boolean {
+  resolveCommand(commandId: string, result: unknown, tabId?: string): boolean {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) return false;
 
@@ -551,6 +611,13 @@ export class CommandRelay {
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
     this.pendingCommands.delete(commandId);
     pending.resolve(result);
+
+    // Track per-tab command success and remove from demoted set
+    if (tabId) {
+      this.tabLastSuccess.set(tabId, Date.now());
+      this.demotedTabs.delete(tabId);
+    }
+
     return true;
   }
 
@@ -691,26 +758,39 @@ export class CommandRelay {
   // --------------------------------------------------------------------------
 
   /**
-   * Record a heartbeat from the browser.
+   * Record a heartbeat from the browser, optionally per-tab.
    */
-  receiveHeartbeat(): void {
-    this.lastHeartbeat = Date.now();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any)[`${this.prefix}LastHeartbeat`] = this.lastHeartbeat;
+  receiveHeartbeat(tabId?: string): void {
+    const now = Date.now();
+    if (tabId) {
+      this.tabHeartbeats.set(tabId, now);
+    } else {
+      // Anonymous heartbeat — store under a synthetic key
+      this.tabHeartbeats.set('__anonymous__', now);
+    }
   }
 
   /**
    * Check if the browser app is responsive based on heartbeat freshness.
+   * Returns true if ANY tab has a heartbeat within the stale threshold.
    */
   isAppResponsive(): boolean {
-    return this.lastHeartbeat > 0 && Date.now() - this.lastHeartbeat < this.heartbeatStaleMs;
+    const now = Date.now();
+    for (const lastBeat of this.tabHeartbeats.values()) {
+      if (now - lastBeat < this.heartbeatStaleMs) return true;
+    }
+    return false;
   }
 
   /**
-   * Get the last heartbeat timestamp.
+   * Get the last heartbeat timestamp (max across all tabs).
    */
   getLastHeartbeat(): number {
-    return this.lastHeartbeat;
+    let max = 0;
+    for (const lastBeat of this.tabHeartbeats.values()) {
+      if (lastBeat > max) max = lastBeat;
+    }
+    return max;
   }
 
   // --------------------------------------------------------------------------
@@ -740,5 +820,17 @@ export class CommandRelay {
    */
   getPendingCommands(): QueuedCommand[] {
     return this.commandQueue.splice(0, this.commandQueue.length);
+  }
+
+  destroy(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    this.tabHeartbeats.clear();
+    this.tabLastSuccess.clear();
+    this.demotedTabs.clear();
+    this.tabListeners.clear();
+    this.commandQueue.length = 0;
   }
 }

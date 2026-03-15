@@ -193,6 +193,10 @@ export interface DiscoveredElement {
   registered: boolean;
   /** Whether this is an interactive element, static content, or media */
   category?: 'interactive' | 'content' | 'media';
+  /** CSS className attribute */
+  className?: string;
+  /** CSS class list as array */
+  classes?: string[];
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
   /** Metadata for media elements */

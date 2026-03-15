@@ -44,6 +44,18 @@ import type {
 } from './types';
 
 /**
+ * Set of supported built-in action names for early validation.
+ */
+const SUPPORTED_ACTIONS = new Set<string>([
+  'click', 'doubleClick', 'rightClick', 'middleClick',
+  'type', 'sendKeys', 'clear', 'select',
+  'focus', 'blur', 'hover',
+  'scroll', 'scrollIntoView',
+  'check', 'uncheck', 'toggle',
+  'drag', 'setValue', 'submit', 'reset',
+]);
+
+/**
  * Default wait options
  */
 const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
@@ -305,6 +317,22 @@ export class DefaultActionExecutor implements ActionExecutor {
   ): Promise<ControlActionResponse> {
     const startTime = performance.now();
     let waitDurationMs = 0;
+
+    // Validate action name early — check built-in actions first
+    const actionName = request.action;
+    if (!SUPPORTED_ACTIONS.has(actionName)) {
+      // Check if it could be a custom action (we'll verify on the element later)
+      const registered = this.registry.getElement(elementId);
+      if (!registered?.customActions?.[actionName]) {
+        return {
+          success: false,
+          error: `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`,
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
+    }
 
     try {
       // Find the element
@@ -594,6 +622,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: !!registered,
           category: registered?.category || 'interactive',
+          className: el.className || undefined,
+          classes: el.classList?.length > 0 ? Array.from(el.classList) : undefined,
           contentMetadata: registered?.contentMetadata,
         });
       }
@@ -626,6 +656,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: true,
           category: 'content',
+          className: el.element.className || undefined,
+          classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
           contentMetadata: el.contentMetadata,
         });
       }
@@ -689,6 +721,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: true,
           category: 'media',
+          className: el.element.className || undefined,
+          classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
           mediaMetadata: meta,
         });
       }
@@ -955,6 +989,13 @@ export class DefaultActionExecutor implements ActionExecutor {
     element.dispatchEvent(createMouseEvent('mousedown', element, options));
     element.dispatchEvent(createMouseEvent('mouseup', element, options));
     element.dispatchEvent(createMouseEvent('click', element, options));
+
+    // Synthetic click events don't trigger default <a> navigation in all browsers.
+    // If the element (or an ancestor) is an anchor with href, invoke the native click.
+    const anchor = element.closest('a');
+    if (anchor && anchor.hasAttribute('href')) {
+      anchor.click();
+    }
   }
 
   private performDoubleClick(element: HTMLElement, options?: MouseAction): void {

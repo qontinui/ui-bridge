@@ -297,6 +297,103 @@ export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
 }
 
 /**
+ * Capture metadata for an element with a CSS background image
+ */
+export function captureBackgroundImageMetadata(element: HTMLElement): MediaMetadata | null {
+  const style = window.getComputedStyle(element);
+  const bgImage = style.backgroundImage;
+
+  if (!bgImage || bgImage === 'none') return null;
+
+  // Extract URL from url("...")
+  const urlMatch = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
+  if (!urlMatch) return null;
+
+  const src = urlMatch[1];
+  const rect = element.getBoundingClientRect();
+
+  return {
+    mediaType: 'background-image',
+    src,
+    isDecorative: true, // background images are decorative by default
+    renderedWidth: rect.width,
+    renderedHeight: rect.height,
+    loadingState: 'loaded',
+    lazyLoading: false,
+    format: inferFormat(src),
+    transferSize: getTransferSize(src),
+  };
+}
+
+/**
+ * Find elements with CSS background images in a subtree.
+ *
+ * Walks visible elements checking `getComputedStyle(el).backgroundImage`.
+ * Skips elements already matched by standard media selectors.
+ */
+export function findBackgroundImageElements(
+  root: HTMLElement,
+  maxElements: number = 50
+): HTMLElement[] {
+  const results: HTMLElement[] = [];
+  const mediaTags = new Set(['img', 'svg', 'picture', 'video', 'canvas']);
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node) {
+      const el = node as HTMLElement;
+      // Skip standard media elements — they're handled by MEDIA_SELECTORS
+      if (mediaTags.has(el.tagName.toLowerCase())) return NodeFilter.FILTER_SKIP;
+      // Skip invisible/excluded
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_SKIP;
+      if (parseFloat(style.opacity) === 0) return NodeFilter.FILTER_SKIP;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let node: Node | null;
+  while ((node = walker.nextNode()) && results.length < maxElements) {
+    const el = node as HTMLElement;
+    const bgImage = window.getComputedStyle(el).backgroundImage;
+    if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
+      results.push(el);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Generate a stable ID for a background-image element
+ */
+export function generateBackgroundImageId(element: HTMLElement): string {
+  const explicitId = element.getAttribute('data-media-id');
+  if (explicitId) return explicitId;
+
+  const src = window.getComputedStyle(element).backgroundImage;
+  const urlMatch = src?.match(/url\(["']?([^"')]+)["']?\)/);
+  if (urlMatch) {
+    const filename = urlMatch[1].split('/').pop()?.split('?')[0]?.split('#')[0];
+    if (filename) {
+      const name = filename.replace(/\.[^.]+$/, '');
+      const slug = slugify(name, 20);
+      if (slug) return `bg-${slug}`;
+    }
+  }
+
+  const context = getAncestorContext(element);
+  if (context) return `bg-${context}`;
+
+  const parent = element.parentElement;
+  if (parent) {
+    const idx = Array.from(parent.children).indexOf(element);
+    return `bg-child-${idx}`;
+  }
+
+  return `bg-root`;
+}
+
+/**
  * Infer the media type from a DOM element
  */
 function inferMediaType(element: HTMLElement): MediaType {

@@ -143,12 +143,15 @@ export function getElementDesignData(
     }
   }
 
+  const customProperties = getCSSCustomProperties(el);
+
   return {
     elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
     label: opts?.label,
     type: opts?.type || el.tagName.toLowerCase(),
     styles,
     pseudoElements: pseudoElements.length > 0 ? pseudoElements : undefined,
+    customProperties: Object.keys(customProperties).length > 0 ? customProperties : undefined,
     rect: {
       x: rect.x,
       y: rect.y,
@@ -334,6 +337,65 @@ export function checkContrastCompliance(
     passesAA: ratio >= (isLargeText ? 3 : 4.5),
     passesAAA: ratio >= (isLargeText ? 4.5 : 7),
   };
+}
+
+// ============================================================================
+// CSS Custom Properties
+// ============================================================================
+
+/**
+ * Extract CSS custom properties (--var-name) applied to an element.
+ *
+ * Reads inline style custom properties and walks document.styleSheets
+ * for rules matching the element. Returns resolved values.
+ */
+export function getCSSCustomProperties(el: HTMLElement): Record<string, string> {
+  const result: Record<string, string> = {};
+  const computed = window.getComputedStyle(el);
+
+  // 1. Inline style custom properties
+  for (let i = 0; i < el.style.length; i++) {
+    const prop = el.style[i];
+    if (prop.startsWith('--')) {
+      result[prop] = computed.getPropertyValue(prop).trim();
+    }
+  }
+
+  // 2. Walk stylesheets for rules matching this element
+  try {
+    for (const sheet of document.styleSheets) {
+      let rules: CSSRuleList;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        // Cross-origin stylesheet — skip
+        continue;
+      }
+
+      for (const rule of rules) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+
+        try {
+          if (!el.matches(rule.selectorText)) continue;
+        } catch {
+          // Invalid selector — skip
+          continue;
+        }
+
+        for (let i = 0; i < rule.style.length; i++) {
+          const prop = rule.style[i];
+          if (prop.startsWith('--')) {
+            // Use getComputedStyle for resolved value
+            result[prop] = computed.getPropertyValue(prop).trim();
+          }
+        }
+      }
+    }
+  } catch {
+    // Stylesheet access failed — return what we have
+  }
+
+  return result;
 }
 
 // ============================================================================

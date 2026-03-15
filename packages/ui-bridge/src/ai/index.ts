@@ -326,6 +326,7 @@ export type { ComparisonReportConfig } from './comparison-report';
 export {
   getExtendedComputedStyles,
   getElementDesignData,
+  getCSSCustomProperties,
   captureStateVariations,
   captureResponsiveSnapshots,
   computeContrastRatio,

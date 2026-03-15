@@ -454,8 +454,16 @@ function handleRelayRoute(
 
   // POST /heartbeat — browser heartbeat
   if (method === 'POST' && path === '/heartbeat') {
-    relay.receiveHeartbeat();
-    return jsonResponse({ success: true, data: { received: true }, timestamp: Date.now() });
+    return (async () => {
+      try {
+        const body = await request.json();
+        const heartbeatTabId = body?.tabId as string | undefined;
+        relay.receiveHeartbeat(heartbeatTabId);
+      } catch {
+        relay.receiveHeartbeat();
+      }
+      return jsonResponse({ success: true, data: { received: true }, timestamp: Date.now() });
+    })();
   }
 
   // GET /health — transport diagnostics + heartbeat freshness + discovery metadata
@@ -571,14 +579,14 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
 async function handleCommandResponse(request: NextRequest, relay: CommandRelay): Promise<Response> {
   try {
     const body = await request.json();
-    const { commandId, success: ok, result, error: errorMsg } = body;
+    const { commandId, success: ok, result, error: errorMsg, tabId: responseTabId } = body;
 
     if (!commandId) {
       return jsonResponse({ success: false, error: 'Missing commandId', timestamp: Date.now() }, 400);
     }
 
     if (ok) {
-      relay.resolveCommand(commandId, result);
+      relay.resolveCommand(commandId, result, responseTabId as string | undefined);
     } else {
       relay.rejectCommand(commandId, errorMsg || (result as { error?: string })?.error || 'Unknown error');
     }

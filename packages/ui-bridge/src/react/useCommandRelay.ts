@@ -87,6 +87,19 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Stable per-tab identifier, persisted across re-renders but unique per browser tab
+  const tabIdRef = useRef<string | null>(null);
+  if (tabIdRef.current === null) {
+    const STORAGE_KEY = '__uiBridge_tabId';
+    let stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STORAGE_KEY) : null;
+    if (!stored) {
+      stored = crypto.randomUUID();
+      try { sessionStorage.setItem(STORAGE_KEY, stored); } catch { /* SSR or quota */ }
+    }
+    tabIdRef.current = stored;
+  }
+  const tabId = tabIdRef.current;
+
   // ========================================================================
   // Response Sender
   // ========================================================================
@@ -98,7 +111,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            commandId, success: ok, result,
+            commandId, success: ok, result, tabId,
             error: ok ? undefined : (result as { error?: string })?.error,
           }),
         });
@@ -106,7 +119,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         console.error('[UIBridge] Failed to send command response:', e);
       }
     },
-    [basePath]
+    [basePath, tabId]
   );
 
   // ========================================================================
@@ -162,7 +175,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const connect = () => {
       if (!isMounted) return;
-      const es = new EventSource(`${basePath}/commands/stream`);
+      const es = new EventSource(`${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`);
       eventSourceRef.current = es;
 
       es.onmessage = (event) => {
@@ -210,6 +223,20 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // Heartbeat
   // ========================================================================
 
+  // Include tabId as SSE query param when connecting
+  useEffect(() => {
+    if (!enabled) return;
+    // Patch the SSE connect to include tabId — reconnect if already connected
+    const existingEs = eventSourceRef.current;
+    if (existingEs) {
+      const currentUrl = new URL(existingEs.url);
+      if (currentUrl.searchParams.get('tabId') !== tabId) {
+        existingEs.close();
+        eventSourceRef.current = null;
+      }
+    }
+  }, [enabled, tabId]);
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -217,12 +244,12 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
       fetch(`${basePath}/heartbeat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: Date.now() }),
+        body: JSON.stringify({ timestamp: Date.now(), tabId }),
       }).catch(() => { /* non-fatal */ });
     };
 
     sendHeartbeat();
     const interval = setInterval(sendHeartbeat, heartbeatIntervalMs);
     return () => clearInterval(interval);
-  }, [enabled, basePath, heartbeatIntervalMs]);
+  }, [enabled, basePath, heartbeatIntervalMs, tabId]);
 }

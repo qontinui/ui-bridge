@@ -30,6 +30,9 @@ import {
   shouldRegisterMedia,
   captureMediaMetadata,
   generateMediaId,
+  findBackgroundImageElements,
+  captureBackgroundImageMetadata,
+  generateBackgroundImageId,
 } from './media-discovery';
 
 /**
@@ -719,7 +722,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   );
 
   /**
-   * Register a single media element
+   * Register a single media element (standard or background-image)
    */
   const registerMediaElement = useCallback(
     (element: HTMLElement): void => {
@@ -732,7 +735,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      const id = generateMediaId(element);
+      // Detect whether this is a background-image element or standard media
+      const isStandardMedia = element.matches(MEDIA_SELECTORS.join(', '));
+      const id = isStandardMedia ? generateMediaId(element) : generateBackgroundImageId(element);
 
       // Check if ID already exists in registry
       const existing = bridge.registry.getElement(id);
@@ -740,14 +745,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return; // Media IDs are deterministic — skip duplicates
       }
 
-      const metadata = captureMediaMetadata(element);
+      const metadata = isStandardMedia
+        ? captureMediaMetadata(element)
+        : captureBackgroundImageMetadata(element);
+      if (!metadata) return; // background image capture can return null
+
       const label = metadata.altText || metadata.src?.split('/').pop() || undefined;
+      const refreshFn = isStandardMedia
+        ? captureMediaMetadata
+        : (el: HTMLElement) => captureBackgroundImageMetadata(el) || metadata;
 
       bridge.registry.registerMediaElement(id, element, {
         mediaType: metadata.mediaType,
         mediaMetadata: metadata,
         label,
-        refreshMetadata: captureMediaMetadata,
+        refreshMetadata: refreshFn,
       });
 
       registeredMediaElementsRef.current.set(element, id);
@@ -938,6 +950,18 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             queueMediaRegistration(element);
           }
         });
+
+        // Scan CSS background images when enabled
+        if (mediaDiscovery?.includeBackgroundImages) {
+          const maxBg = Math.max(0, (mediaDiscovery.maxMediaElements ?? 200) - registeredMediaElementsRef.current.size);
+          const bgElements = findBackgroundImageElements(rootElement, Math.min(maxBg, 50));
+          for (const el of bgElements) {
+            const bgId = generateBackgroundImageId(el);
+            if (!registeredMediaIds.has(bgId) && !registeredMediaElementsRef.current.has(el)) {
+              queueMediaRegistration(el);
+            }
+          }
+        }
       }
     },
     [

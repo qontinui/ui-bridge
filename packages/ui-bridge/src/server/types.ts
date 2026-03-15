@@ -935,6 +935,16 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Heartbeat
   { method: 'POST', path: '/heartbeat', handler: 'receiveHeartbeat' },
+
+  // Media discovery & analysis
+  { method: 'POST', path: '/ai/media/find', handler: 'findMedia' },
+  { method: 'POST', path: '/ai/media/audit/accessibility', handler: 'mediaAuditAccessibility' },
+  { method: 'POST', path: '/ai/media/audit/performance', handler: 'mediaAuditPerformance' },
+  { method: 'POST', path: '/ai/media/snapshot', handler: 'captureMediaSnapshot' },
+  { method: 'POST', path: '/ai/media/compare', handler: 'compareMediaSnapshots' },
+  { method: 'POST', path: '/ai/media/analyze', handler: 'analyzeMedia' },
+  { method: 'POST', path: '/ai/media/analyze/batch', handler: 'analyzeMediaBatch' },
+  { method: 'POST', path: '/ai/media/analyze/page', handler: 'analyzeMediaPage' },
 ];
 
 /**
