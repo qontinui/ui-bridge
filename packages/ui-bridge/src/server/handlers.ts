@@ -1299,9 +1299,11 @@ export function createHandlers(
 
         // Proxy to runner's unified workflow execution engine
         const runnerPort = 9876;
+        const req = (request && typeof request === 'object' ? request : {}) as Record<string, unknown>;
         const body = {
-          force_fresh_start: false,
-          ...(request && typeof request === 'object' ? request : {}),
+          force_fresh_start: req.forceFreshStart ?? req.force_fresh_start ?? false,
+          task_run_id: req.taskRunId ?? req.task_run_id,
+          monitor_index: req.monitorIndex ?? req.monitor_index,
         };
 
         const response = await fetch(

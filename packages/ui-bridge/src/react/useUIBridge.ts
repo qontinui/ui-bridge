@@ -61,6 +61,8 @@ export interface UseUIBridgeReturn {
   discover: (options?: FindRequest) => Promise<FindResponse>;
   /** Run a workflow */
   runWorkflow: (workflowId: string, request?: WorkflowRunRequest) => Promise<WorkflowRunResponse>;
+  /** Get workflow run status */
+  getWorkflowStatus: (runId: string) => Promise<WorkflowRunResponse | null>;
   /** Get element by ID */
   getElement: (id: string) => RegisteredElement | undefined;
   /** Get component by ID */
@@ -236,6 +238,15 @@ export function useUIBridge(): UseUIBridgeReturn {
     [context]
   );
 
+  // Get workflow run status
+  const getWorkflowStatus = useCallback(
+    async (runId: string): Promise<WorkflowRunResponse | null> => {
+      if (!context) return null;
+      return context.workflowEngine.getRunStatus(runId);
+    },
+    [context]
+  );
+
   // Get element by ID
   const getElement = useCallback(
     (id: string): RegisteredElement | undefined => {
@@ -312,6 +323,7 @@ export function useUIBridge(): UseUIBridgeReturn {
     find,
     discover, // deprecated - use find
     runWorkflow,
+    getWorkflowStatus,
     getElement,
     getComponent,
     getElementState,

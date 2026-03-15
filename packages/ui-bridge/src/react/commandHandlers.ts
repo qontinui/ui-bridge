@@ -42,6 +42,7 @@ export interface BridgeAccess {
   executeAction?: (elementId: string, request: unknown) => Promise<unknown>;
   executeComponentAction?: (componentId: string, request: unknown) => Promise<unknown>;
   runWorkflow?: (workflowId: string, request?: unknown) => Promise<unknown>;
+  getWorkflowStatus?: (runId: string) => Promise<unknown>;
   captureRenderLog?: () => Promise<void>;
   getRenderLogEntries?: () => Promise<unknown[]>;
   clearRenderLog?: () => Promise<void>;
@@ -551,8 +552,17 @@ export async function executeCommand(
       return { success: false, error: 'Workflows not available' };
     }
 
-    case 'getWorkflowStatus':
-      return { status: 'unknown', runId: payload.runId, timestamp: Date.now() };
+    case 'getWorkflowStatus': {
+      const statusRunId = payload.runId as string;
+      if (bridge.getWorkflowStatus) {
+        try {
+          const status = await bridge.getWorkflowStatus(statusRunId);
+          if (status) return status;
+          return { success: false, error: `Run not found: ${statusRunId}` };
+        } catch (err) { return { success: false, error: (err as Error).message }; }
+      }
+      return { success: false, error: 'Workflow status not available' };
+    }
 
     // ======================================================================
     // Render Log
