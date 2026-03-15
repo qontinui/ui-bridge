@@ -35,6 +35,10 @@ export type {
   DOMSettlingConfig,
   LoadingIndicatorConfig,
   CompositeIdleConfig,
+  StuckVerdict,
+  StuckScreenEvidence,
+  StuckScreenDiagnosis,
+  StuckScreenConfig,
 } from './types';
 
 // Signal detectors
@@ -46,3 +50,6 @@ export { FormMutationDetector } from './form-mutation';
 // Composite
 export { CompositeIdleDetector } from './composite-idle';
 export type { CompositeTransitionCallback } from './composite-idle';
+
+// Stuck screen diagnostic
+export { StuckScreenDetector } from './stuck-screen';

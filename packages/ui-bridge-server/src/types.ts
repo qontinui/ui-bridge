@@ -4,7 +4,7 @@
  * Shared types for server adapters.
  */
 
-import type { UIBridgeConfig } from '@qontinui/ui-bridge/core';
+import type { UIBridgeConfig, ElementHistoryOptions } from '@qontinui/ui-bridge/core';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -180,6 +180,12 @@ export interface UIBridgeServerHandlers {
     criteria: SemanticSearchCriteria
   ) => Promise<APIResponse<SemanticSearchResponse>>;
 
+  // Element event log
+  getElementHistory: (
+    elementId: string,
+    options?: ElementHistoryOptions
+  ) => Promise<APIResponse<unknown[]>>;
+
   // Performance diagnostics
   getPerformanceEntries: () => Promise<APIResponse<unknown>>;
   clearPerformanceEntries: () => Promise<APIResponse<{ cleared: boolean }>>;
@@ -253,6 +259,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/workflow/:runId/status',
     handler: 'getWorkflowStatus',
     params: ['runId'],
+  },
+
+  // Element event log
+  {
+    method: 'GET',
+    path: '/debug/element-history/:id',
+    handler: 'getElementHistory',
+    params: ['id'],
   },
 
   // Debug

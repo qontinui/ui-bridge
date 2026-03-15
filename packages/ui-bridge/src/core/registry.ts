@@ -27,7 +27,11 @@ import type {
   ComponentStateResponse,
   StateGetter,
   ContentMetadata,
+  ElementLogLevel,
+  ElementHistoryOptions,
+  ElementLogEntry,
 } from './types';
+import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
@@ -138,6 +142,23 @@ function getElementState(element: HTMLElement): ElementState {
       visibility: computedStyle.visibility,
       opacity: computedStyle.opacity,
       pointerEvents: computedStyle.pointerEvents,
+      cursor: computedStyle.cursor,
+      color: computedStyle.color,
+      backgroundColor: computedStyle.backgroundColor,
+      colorScheme: computedStyle.colorScheme,
+      fontSize: computedStyle.fontSize,
+      fontWeight: computedStyle.fontWeight,
+      lineHeight: computedStyle.lineHeight,
+      overflow: computedStyle.overflow,
+      textOverflow: computedStyle.textOverflow,
+      whiteSpace: computedStyle.whiteSpace,
+      position: computedStyle.position,
+      zIndex: computedStyle.zIndex,
+      padding: computedStyle.padding,
+      margin: computedStyle.margin,
+      borderColor: computedStyle.borderColor,
+      borderWidth: computedStyle.borderWidth,
+      borderRadius: computedStyle.borderRadius,
     },
     inViewport,
   };
@@ -360,6 +381,8 @@ export interface RegistryOptions {
   verbose?: boolean;
   /** Callback when an event occurs */
   onEvent?: BridgeEventListener;
+  /** Element event log for per-element observability */
+  elementEventLog?: ElementEventLog;
 }
 
 /**
@@ -412,6 +435,8 @@ export class UIBridgeRegistry {
     if (this.options.verbose) {
       console.log('[UIBridge]', type, data);
     }
+
+    this.options.elementEventLog?.ingest(event as BridgeEvent);
   }
 
   /**
@@ -530,6 +555,7 @@ export class UIBridgeRegistry {
       registered.mounted = false;
       this.elements.delete(id);
       this.emit('element:unregistered', { id });
+      this.options.elementEventLog?.removeElement(id);
       return true;
     }
     return false;
@@ -559,6 +585,27 @@ export class UIBridgeRegistry {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Get element event history from the element event log.
+   */
+  getElementHistory(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[] {
+    return this.options.elementEventLog?.getHistory(elementId, options) ?? [];
+  }
+
+  /**
+   * Set the log level override for a specific element.
+   */
+  setElementLogLevel(elementId: string, level: ElementLogLevel): void {
+    this.options.elementEventLog?.setElementLogLevel(elementId, level);
+  }
+
+  /**
+   * Get the effective log level for an element.
+   */
+  getElementLogLevel(elementId: string): ElementLogLevel {
+    return this.options.elementEventLog?.getElementLogLevel(elementId) ?? 'silent';
   }
 
   /**

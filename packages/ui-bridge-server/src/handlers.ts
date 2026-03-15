@@ -7,7 +7,7 @@
 import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
 import type { ControlSnapshot } from '@qontinui/ui-bridge/control';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
-import type { ActionFailureDetails, ActionErrorCode } from '@qontinui/ui-bridge/core';
+import type { ActionFailureDetails, ActionErrorCode, ElementHistoryOptions, ElementLogEntry } from '@qontinui/ui-bridge/core';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -57,6 +57,9 @@ export interface RegistryLike {
   getMetrics?(): unknown;
   highlightElement?(id: string): void;
   getElementTree?(): unknown;
+
+  // Element event log
+  getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
 }
 
 /**
@@ -1018,6 +1021,18 @@ export function createHandlers(
       limit?: number;
     }): Promise<APIResponse<{ events: unknown[]; count: number }>> => {
       return { success: true, data: { events: [], count: 0 }, timestamp: Date.now() };
+    },
+
+    getElementHistory: async (
+      elementId: string,
+      options?: ElementHistoryOptions
+    ): Promise<APIResponse<ElementLogEntry[]>> => {
+      try {
+        const entries = registry.getElementHistory?.(elementId, options) ?? [];
+        return success(entries);
+      } catch (err) {
+        return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
+      }
     },
   };
 }

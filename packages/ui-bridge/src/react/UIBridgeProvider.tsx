@@ -32,6 +32,7 @@ import { getGlobalSpecStore } from '../specs/store';
 import { createWorkflowEngine } from '../control/workflow-engine';
 import { createRenderLogManager, RenderLogManager } from '../render-log/snapshot';
 import { createMetricsCollector, MetricsCollector } from '../debug/metrics';
+import { ElementEventLog } from '../debug/element-event-log';
 import { BrowserEventCapture } from '../debug/browser-capture';
 import type { OnBrowserEventCallback, BrowserCaptureConfig } from '../debug/browser-capture-types';
 import type { ActionExecutor, WorkflowEngine } from '../control/types';
@@ -93,6 +94,8 @@ export interface UIBridgeContextValue {
   dragDropDetector: DragDropDetector;
   /** Undo/redo tracker for undo awareness */
   undoTracker: UndoTracker;
+  /** Element event log for per-element observability (if enabled) */
+  elementEventLog?: ElementEventLog;
   /** Whether the provider is initialized */
   initialized: boolean;
   /** Connect to WebSocket server */
@@ -155,15 +158,21 @@ export function UIBridgeProvider({
   const relationshipTrackerRef = useRef<RelationshipTracker | null>(null);
   const dragDropDetectorRef = useRef<DragDropDetector | null>(null);
   const undoTrackerRef = useRef<UndoTracker | null>(null);
+  const elementEventLogRef = useRef<ElementEventLog | null>(null);
   const wsClientRef = useRef<UIBridgeWSClient | null>(null);
   const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
   const prevWsStateRef = useRef<WSConnectionState>('disconnected');
 
   // Initialize on first render
   if (!registryRef.current) {
+    if (config.elementLog?.enabled) {
+      elementEventLogRef.current = new ElementEventLog(config.elementLog);
+    }
+
     registryRef.current = new UIBridgeRegistry({
       verbose: config.verbose,
       onEvent,
+      elementEventLog: elementEventLogRef.current ?? undefined,
     });
     setGlobalRegistry(registryRef.current);
 
@@ -259,6 +268,7 @@ export function UIBridgeProvider({
   const relationshipTracker = relationshipTrackerRef.current!;
   const dragDropDetector = dragDropDetectorRef.current!;
   const undoTracker = undoTrackerRef.current!;
+  const elementEventLog = elementEventLogRef.current || undefined;
   const wsClient = wsClientRef.current || undefined;
 
   // Create executor and workflow engine
@@ -401,6 +411,7 @@ export function UIBridgeProvider({
       relationshipTracker,
       dragDropDetector,
       undoTracker,
+      elementEventLog,
       wsClient,
       wsConnectionState,
       getElements,
@@ -430,6 +441,7 @@ export function UIBridgeProvider({
       relationshipTracker,
       dragDropDetector,
       undoTracker,
+      elementEventLog,
       wsClient,
       wsConnectionState,
       getElements,

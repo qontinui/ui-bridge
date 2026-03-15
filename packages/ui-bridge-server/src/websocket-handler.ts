@@ -205,6 +205,10 @@ export class UIBridgeWSHandler {
           await this.handleExecuteWorkflow(clientId, message);
           break;
 
+        case 'getElementHistory':
+          await this.handleGetElementHistory(clientId, message);
+          break;
+
         default:
           this.sendError(
             clientId,
@@ -393,6 +397,23 @@ export class UIBridgeWSHandler {
     const result = await this.handlers.runWorkflow(workflowId, { params });
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
+  }
+
+  /**
+   * Handle getElementHistory message
+   */
+  private async handleGetElementHistory(
+    clientId: string,
+    message: WSClientMessage & { type: 'getElementHistory' }
+  ): Promise<void> {
+    const { elementId, options } = message.payload;
+    const result = await this.handlers.getElementHistory(elementId, options);
+
+    if (result.success) {
+      this.sendResponse(clientId, message.id, true, { entries: result.data });
+    } else {
+      this.sendResponse(clientId, message.id, false, undefined, result.error);
+    }
   }
 
   /**

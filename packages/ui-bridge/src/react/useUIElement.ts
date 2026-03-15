@@ -12,6 +12,9 @@ import type {
   ElementState,
   ElementIdentifier,
   RegisteredElement,
+  ElementLogLevel,
+  ElementHistoryOptions,
+  ElementLogEntry,
 } from '../core/types';
 import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
@@ -34,6 +37,8 @@ export interface UseUIElementOptions {
   autoRegister?: boolean;
   /** Callback when state changes */
   onStateChange?: (state: ElementState) => void;
+  /** Log level override for element-scoped event logging */
+  logLevel?: ElementLogLevel;
   /** Declare relationships from this element to other elements */
   relationships?: Array<{
     targetId: string;
@@ -65,6 +70,10 @@ export interface UseUIElementReturn {
   unregister: () => void;
   /** The registered element info */
   registeredElement: RegisteredElement | null;
+  /** Get element event history */
+  getHistory: (options?: ElementHistoryOptions) => ElementLogEntry[];
+  /** Set log level for this element */
+  setLogLevel: (level: ElementLogLevel) => void;
 }
 
 /**
@@ -94,7 +103,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const elementRef = useRef<HTMLElement | null>(null);
   const registeredRef = useRef(false);
 
-  const { id, type, label, actions, customActions, autoRegister = true, relationships } = options;
+  const { id, type, label, actions, customActions, autoRegister = true, logLevel, relationships } = options;
 
   // Register the element
   const register = useCallback(() => {
@@ -107,7 +116,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       customActions,
     });
     registeredRef.current = true;
-  }, [bridge, id, type, label, actions, customActions]);
+
+    if (logLevel) {
+      bridge.registry.setElementLogLevel(id, logLevel);
+    }
+  }, [bridge, id, type, label, actions, customActions, logLevel]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -194,6 +207,23 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [bridge, id]
   );
 
+  // Get element history
+  const getHistory = useCallback(
+    (historyOptions?: ElementHistoryOptions): ElementLogEntry[] => {
+      if (!bridge) return [];
+      return bridge.registry.getElementHistory(id, historyOptions);
+    },
+    [bridge, id]
+  );
+
+  // Set log level
+  const setLogLevel = useCallback(
+    (level: ElementLogLevel): void => {
+      bridge?.registry.setElementLogLevel(id, level);
+    },
+    [bridge, id]
+  );
+
   // Get registered element
   const registeredElement = useMemo(() => {
     if (!bridge) return null;
@@ -210,6 +240,8 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     register,
     unregister,
     registeredElement,
+    getHistory,
+    setLogLevel,
   };
 }
 

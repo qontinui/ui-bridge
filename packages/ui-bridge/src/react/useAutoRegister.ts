@@ -15,7 +15,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
-import type { ElementType, StandardAction } from '../core/types';
+import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
   CONTENT_SELECTORS,
@@ -60,6 +60,8 @@ export interface AutoRegisterOptions {
   onUnregister?: (id: string) => void;
   /** Content discovery options (enabled by default) */
   contentDiscovery?: ContentDiscoveryOptions;
+  /** Log level for auto-registered elements (uses global default if not set) */
+  logLevel?: ElementLogLevel;
 }
 
 /**
@@ -534,6 +536,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     onRegister,
     onUnregister,
     contentDiscovery,
+    logLevel,
   } = options;
 
   const contentEnabled = contentDiscovery?.enabled !== false;
@@ -617,9 +620,13 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const finalId = registered.id;
       registeredElementsRef.current.set(element, finalId);
 
+      if (logLevel) {
+        bridge.registry.setElementLogLevel(finalId, logLevel);
+      }
+
       onRegister?.(finalId, element);
     },
-    [bridge, idStrategy, customGenerateId, onRegister]
+    [bridge, idStrategy, customGenerateId, onRegister, logLevel]
   );
 
   /**

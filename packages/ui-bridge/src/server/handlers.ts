@@ -71,6 +71,8 @@ import type {
   TransitionResult,
   NavigationResult,
   StateSnapshot,
+  ElementHistoryOptions,
+  ElementLogEntry,
 } from '../core';
 import {
   SearchEngine,
@@ -181,6 +183,9 @@ export interface RegistryLike {
   findPath?(targetStates: string[]): PathResult;
   navigateTo?(targetStates: string[]): Promise<NavigationResult>;
   getStateSnapshot?(): StateSnapshot;
+
+  // Element event log
+  getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
 }
 
 /**
@@ -3699,6 +3704,18 @@ export function createHandlers(
         data: { received: true },
         timestamp: Date.now(),
       };
+    },
+
+    getElementHistory: async (
+      elementId: string,
+      options?: ElementHistoryOptions
+    ): Promise<APIResponse<ElementLogEntry[]>> => {
+      try {
+        const entries = registry.getElementHistory?.(elementId, options) ?? [];
+        return success(entries);
+      } catch (err) {
+        return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
+      }
     },
   };
 }

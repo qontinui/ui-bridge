@@ -4,7 +4,7 @@
  * Shared types for server adapters.
  */
 
-import type { UIBridgeConfig } from '../core';
+import type { UIBridgeConfig, ElementHistoryOptions } from '../core';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -522,6 +522,12 @@ export interface UIBridgeServerHandlers {
 
   // Heartbeat (app health detection)
   receiveHeartbeat: () => Promise<APIResponse<{ received: boolean }>>;
+
+  // Element event log
+  getElementHistory: (
+    elementId: string,
+    options?: ElementHistoryOptions
+  ) => Promise<APIResponse<unknown[]>>;
 }
 
 /**
@@ -612,6 +618,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/workflow/:runId/status',
     handler: 'getWorkflowStatus',
     params: ['runId'],
+  },
+
+  // Element event log
+  {
+    method: 'GET',
+    path: '/debug/element-history/:id',
+    handler: 'getElementHistory',
+    params: ['id'],
   },
 
   // Debug

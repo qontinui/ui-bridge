@@ -252,6 +252,67 @@ export interface FormMutationConfig {
   settleMs?: number;
 }
 
+// ============================================================================
+// Stuck Screen Diagnostic Types
+// ============================================================================
+
+export type StuckVerdict = 'stuck' | 'loading' | 'idle' | 'unknown';
+
+export interface StuckScreenEvidence {
+  /** Loading indicators found in the DOM */
+  loadingIndicators: DetectedLoadingIndicator[];
+  /** Whether network requests are in flight */
+  networkBusy: boolean;
+  /** Number of pending network requests */
+  pendingNetworkRequests: number;
+  /** Screenshot similarity between start and end of observation (0-1). Native capture only. */
+  screenshotSimilarity?: number;
+  /** Whether the screenshot changed during observation. Native capture only. */
+  screenshotChanged?: boolean;
+  /** Whether the UI Bridge DOM signals were available */
+  uiBridgeResponsive?: boolean;
+  /** Whether the DOM changed meaningfully during observation. DOM mode only. */
+  domChanged?: boolean;
+  /** Number of DOM mutations observed during window. DOM mode only. */
+  domMutationCount?: number;
+  /** Composite idle score at start of observation. DOM mode only. */
+  idleScoreStart?: number;
+  /** Composite idle score at end of observation. DOM mode only. */
+  idleScoreEnd?: number;
+}
+
+export interface StuckScreenDiagnosis {
+  /** The verdict: stuck, loading, idle, or unknown */
+  verdict: StuckVerdict;
+  /** Confidence in the verdict (0-1) */
+  confidence: number;
+  /** Human-readable explanation */
+  summary: string;
+  /** Detailed evidence supporting the verdict */
+  evidence: StuckScreenEvidence;
+  /** How long the observation took (ms) */
+  observationWindowMs: number;
+  /** Suggested recovery actions */
+  suggestions: string[];
+  /** Timestamp of diagnosis */
+  timestamp: number;
+  /** Screenshot at end of observation (base64 PNG). Native capture only. */
+  screenshot?: string;
+  /** Screenshot width in pixels */
+  screenshotWidth?: number;
+  /** Screenshot height in pixels */
+  screenshotHeight?: number;
+  /** Source of screenshot capture ('runner_window' or 'primary_monitor') */
+  captureSource?: string;
+}
+
+export interface StuckScreenConfig {
+  /** Observation window in ms (default: 3000) */
+  observationWindowMs?: number;
+  /** DOM mutation threshold — fewer than this = "not changing" (default: 3) */
+  domMutationThreshold?: number;
+}
+
 /** Composite detector configuration */
 export interface CompositeIdleConfig {
   /** Network detector config */

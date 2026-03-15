@@ -77,12 +77,36 @@ export interface ElementState {
   ariaCurrent?: string;
   /** ARIA expanded state (expandable elements) */
   ariaExpanded?: boolean;
-  /** Computed styles relevant for automation */
+  /** Computed styles relevant for automation and visual debugging */
   computedStyles?: {
+    // Visibility & interaction
     display: string;
     visibility: string;
     opacity: string;
     pointerEvents: string;
+    cursor: string;
+    // Color & theming
+    color: string;
+    backgroundColor: string;
+    colorScheme: string;
+    // Typography
+    fontSize: string;
+    fontWeight: string;
+    lineHeight: string;
+    // Overflow & clipping
+    overflow: string;
+    textOverflow: string;
+    whiteSpace: string;
+    // Layout & layering
+    position: string;
+    zIndex: string;
+    // Spacing
+    padding: string;
+    margin: string;
+    // Borders
+    borderColor: string;
+    borderWidth: string;
+    borderRadius: string;
   };
   /** Whether the element is required (form controls only) */
   required?: boolean;
@@ -882,6 +906,65 @@ export interface UIBridgeConfig {
     appType: 'web' | 'desktop' | 'mobile' | 'other';
     framework?: string;
   };
+  /** Element-scoped event log configuration (opt-in) */
+  elementLog?: ElementEventLogConfig;
+}
+
+// ============================================================================
+// Element-Scoped Logging Types
+// ============================================================================
+
+/**
+ * Log level for element-scoped event logging
+ */
+export type ElementLogLevel = 'silent' | 'error' | 'info' | 'debug';
+
+/**
+ * A single element-scoped log entry
+ */
+export interface ElementLogEntry {
+  /** Unique entry ID */
+  id: string;
+  /** The element this entry relates to */
+  elementId: string;
+  /** The bridge event type that produced this entry */
+  eventType: BridgeEventType;
+  /** Classified log level */
+  level: ElementLogLevel;
+  /** Timestamp (ms) */
+  timestamp: number;
+  /** Human-readable summary */
+  message: string;
+  /** Optional event payload */
+  data?: unknown;
+}
+
+/**
+ * Options for querying element history
+ */
+export interface ElementHistoryOptions {
+  /** Filter by event types */
+  eventTypes?: BridgeEventType[];
+  /** Minimum log level to include */
+  minLevel?: ElementLogLevel;
+  /** Only entries after this timestamp */
+  since?: number;
+  /** Maximum number of entries to return */
+  limit?: number;
+  /** Sort order (default: 'asc') */
+  order?: 'asc' | 'desc';
+}
+
+/**
+ * Configuration for the element event log
+ */
+export interface ElementEventLogConfig {
+  /** Maximum entries in the shared ring buffer (default: 2000) */
+  maxEntries?: number;
+  /** Default log level for elements without an explicit override (default: 'error') */
+  defaultLogLevel?: ElementLogLevel;
+  /** Enable element event logging (default: false — opt-in) */
+  enabled?: boolean;
 }
 
 // ============================================================================
@@ -1074,7 +1157,8 @@ export type WSClientMessageType =
   | 'getSnapshot'
   | 'executeAction'
   | 'executeComponentAction'
-  | 'executeWorkflow';
+  | 'executeWorkflow'
+  | 'getElementHistory';
 
 /**
  * WebSocket message types from server to client
@@ -1213,6 +1297,17 @@ export interface WSExecuteWorkflowMessage extends WSMessageBase {
 }
 
 /**
+ * Client message: Get element history from the element event log
+ */
+export interface WSGetElementHistoryMessage extends WSMessageBase {
+  type: 'getElementHistory';
+  payload: {
+    elementId: string;
+    options?: ElementHistoryOptions;
+  };
+}
+
+/**
  * Union type for all client messages
  */
 export type WSClientMessage =
@@ -1225,7 +1320,8 @@ export type WSClientMessage =
   | WSGetSnapshotMessage
   | WSExecuteActionMessage
   | WSExecuteComponentActionMessage
-  | WSExecuteWorkflowMessage;
+  | WSExecuteWorkflowMessage
+  | WSGetElementHistoryMessage;
 
 /**
  * Server message: Welcome (sent on connection)

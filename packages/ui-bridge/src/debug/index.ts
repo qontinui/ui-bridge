@@ -144,6 +144,9 @@ export { MemoryTrendAnalyzer, type MemoryTrendResult } from './memory-trend';
 // Shared utilities
 export { getEventStack } from './shared-utils';
 
+// Element Event Log
+export { ElementEventLog, type ElementEventLogConfig } from './element-event-log';
+
 // Metrics
 export {
   MetricsCollector,

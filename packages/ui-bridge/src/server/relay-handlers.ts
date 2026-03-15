@@ -797,6 +797,10 @@ export function createRelayHandlers(
     async getSpecs() {
       return success({} as Record<string, unknown>);
     },
+
+    async getElementHistory(elementId, options) {
+      return relayWithFallback('getElementHistory', { elementId, options }, [] as unknown[]);
+    },
   };
 
   // Expose render log entry addition for external use
