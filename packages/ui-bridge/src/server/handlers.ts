@@ -1375,7 +1375,9 @@ export function createHandlers(
           startedAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
           completedAt: data.completed_at ? new Date(data.completed_at).getTime() : undefined,
           durationMs: data.duration_ms || data.durationMs,
-          success: data.status === 'completed' || data.status === 'success',
+          success: ['completed', 'success', 'failed', 'error', 'cancelled', 'stopped'].includes(data.status)
+            ? (data.status === 'completed' || data.status === 'success')
+            : undefined,
           error: data.error,
         }) as APIResponse<any>;
       } catch (err) {
