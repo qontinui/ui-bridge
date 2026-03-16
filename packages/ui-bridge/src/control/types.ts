@@ -387,6 +387,8 @@ export interface ReactStateInfo {
   fiberState: unknown[];
   /** Display name of the nearest React component */
   componentName?: string;
+  /** Informational note (e.g. when no React internals found) */
+  note?: string;
 }
 
 /**
