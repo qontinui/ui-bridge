@@ -141,9 +141,14 @@ async function executeWorkflowStep(
         const mismatches: string[] = [];
 
         for (const [key, value] of Object.entries(expected)) {
-          if (stateRecord[key] !== value) {
+          const actual = stateRecord[key];
+          const isEqual =
+            typeof value === 'object' && value !== null
+              ? JSON.stringify(actual) === JSON.stringify(value)
+              : actual === value;
+          if (!isEqual) {
             mismatches.push(
-              `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(stateRecord[key])}`
+              `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(actual)}`
             );
           }
         }
@@ -170,12 +175,22 @@ async function executeWorkflowStep(
         }
 
         const result = await step.handler();
+        // Allow handlers to signal failure by returning { success: false, error: '...' }
+        const failed =
+          result &&
+          typeof result === 'object' &&
+          'success' in result &&
+          (result as Record<string, unknown>).success === false;
 
         return {
           stepId: step.id,
           type: step.type,
-          status: 'completed',
+          status: failed ? 'failed' : 'completed',
           result,
+          error: failed
+            ? ((result as Record<string, unknown>).error as string) ||
+              'Custom handler returned failure'
+            : undefined,
           durationMs: Date.now() - startTime,
         };
       }
@@ -429,7 +444,7 @@ export function createServerHandlers(
         return error(`Workflow not found: ${id}`, 'WORKFLOW_NOT_FOUND');
       }
 
-      const runId = `run-${Date.now()}`;
+      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const startTime = Date.now();
       const stepResults: WorkflowStepResult[] = [];
       let status: 'completed' | 'failed' = 'completed';

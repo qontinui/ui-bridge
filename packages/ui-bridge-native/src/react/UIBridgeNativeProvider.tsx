@@ -141,7 +141,8 @@ export function UIBridgeNativeProvider({
       `[ui-bridge-native] HTTP server not available: requires a React Native HTTP server library ` +
         `(e.g., react-native-http-bridge). Server would listen on port ${config.serverPort || 8087}.`
     );
-    setServerRunning(true);
+    // Do not set serverRunning to true — the server is not actually running since
+    // no React Native HTTP server library is installed. Reporting true would be misleading.
   }, [features.server, config.serverPort]);
 
   const stopServer = useCallback(() => {

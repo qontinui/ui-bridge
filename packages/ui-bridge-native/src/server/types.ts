@@ -217,7 +217,23 @@ export interface NativeServerHandlers {
 
   // Workflows
   getWorkflows: HandlerFunction<{ workflows: unknown[] }>;
-  runWorkflow: HandlerFunction<{ runId: string; status: string }>;
+  runWorkflow: HandlerFunction<{
+    runId: string;
+    status: string;
+    steps: Array<{
+      stepId: string;
+      type: string;
+      status: string;
+      result?: unknown;
+      error?: string;
+      durationMs: number;
+    }>;
+    totalSteps: number;
+    completedSteps: number;
+    failedSteps: number;
+    skippedSteps: number;
+    durationMs: number;
+  }>;
 
   // Page Navigation
   pageRefresh: HandlerFunction<PageNavigationResponse>;
