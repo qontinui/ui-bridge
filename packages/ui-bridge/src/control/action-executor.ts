@@ -48,12 +48,26 @@ import type {
  * Set of supported built-in action names for early validation.
  */
 const SUPPORTED_ACTIONS = new Set<string>([
-  'click', 'doubleClick', 'rightClick', 'middleClick',
-  'type', 'sendKeys', 'clear', 'select',
-  'focus', 'blur', 'hover',
-  'scroll', 'scrollIntoView',
-  'check', 'uncheck', 'toggle',
-  'drag', 'setValue', 'submit', 'reset',
+  'click',
+  'doubleClick',
+  'rightClick',
+  'middleClick',
+  'type',
+  'sendKeys',
+  'clear',
+  'select',
+  'focus',
+  'blur',
+  'hover',
+  'scroll',
+  'scrollIntoView',
+  'check',
+  'uncheck',
+  'toggle',
+  'drag',
+  'setValue',
+  'submit',
+  'reset',
 ]);
 
 /**
@@ -161,6 +175,10 @@ function getElementState(element: HTMLElement): ElementState {
   } else if (element instanceof HTMLSelectElement) {
     state.value = element.value;
     state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.availableOptions = Array.from(element.options).map((opt) => ({
+      value: opt.value,
+      label: opt.text,
+    }));
   }
 
   return state;
@@ -600,6 +618,33 @@ export class DefaultActionExecutor implements ActionExecutor {
         if (options?.types) {
           const type = this.inferElementType(el);
           if (!options.types.includes(type)) continue;
+        }
+
+        // Filter by element_type (single string alias for types)
+        if (options?.element_type) {
+          const type = this.inferElementType(el);
+          if (type !== options.element_type) continue;
+        }
+
+        // Filter by role
+        if (options?.role) {
+          const elRole = el.getAttribute('role');
+          if (!elRole || elRole.toLowerCase() !== options.role.toLowerCase()) continue;
+        }
+
+        // Filter by text (matches label, textContent, or accessible name)
+        if (options?.text) {
+          const searchText = options.text.toLowerCase();
+          const label = this.getElementLabel(el)?.toLowerCase() || '';
+          const textContent = (state.textContent || '').toLowerCase();
+          const accessibleName = this.getAccessibleName(el)?.toLowerCase() || '';
+          if (
+            !label.includes(searchText) &&
+            !textContent.includes(searchText) &&
+            !accessibleName.includes(searchText)
+          ) {
+            continue;
+          }
         }
 
         // Check if registered
@@ -1091,11 +1136,39 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     // Keys where browsers don't fire keypress
     const NON_PRINTABLE = new Set([
-      'Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Insert',
-      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Home', 'End', 'PageUp', 'PageDown',
-      'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
-      'Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock',
+      'Enter',
+      'Tab',
+      'Escape',
+      'Backspace',
+      'Delete',
+      'Insert',
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      'Home',
+      'End',
+      'PageUp',
+      'PageDown',
+      'F1',
+      'F2',
+      'F3',
+      'F4',
+      'F5',
+      'F6',
+      'F7',
+      'F8',
+      'F9',
+      'F10',
+      'F11',
+      'F12',
+      'Control',
+      'Shift',
+      'Alt',
+      'Meta',
+      'CapsLock',
+      'NumLock',
+      'ScrollLock',
     ]);
 
     for (const keyDesc of options.keys) {
@@ -1115,13 +1188,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       element.dispatchEvent(new KeyboardEvent('keydown', eventInit));
 
       // Fire keypress for printable characters only (no modifiers except shift)
-      if (
-        key.length === 1 &&
-        !NON_PRINTABLE.has(key) &&
-        !mods.ctrl &&
-        !mods.alt &&
-        !mods.meta
-      ) {
+      if (key.length === 1 && !NON_PRINTABLE.has(key) && !mods.ctrl && !mods.alt && !mods.meta) {
         element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
       }
 
@@ -1205,14 +1272,15 @@ export class DefaultActionExecutor implements ActionExecutor {
     // React's intercepted setter, which also updates the tracker — making
     // React think old === new and skip the onChange call.
     // Fix: reset the tracker to the previous value so React detects the diff.
-    const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })._valueTracker;
+    const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
+      ._valueTracker;
     if (tracker) {
       tracker.setValue(previousValue);
     }
     // Also try calling React's onChange handler directly via internal props.
     // React 18+ stores event handlers on __reactProps$<key> on the DOM element.
     const el = element as unknown as Record<string, unknown>;
-    const reactPropsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+    const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
     if (reactPropsKey) {
       const props = el[reactPropsKey] as Record<string, unknown> | undefined;
       if (props?.onChange && typeof props.onChange === 'function') {
@@ -1234,7 +1302,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (selectedValue !== undefined) {
       const nativeSelectValueSetter = Object.getOwnPropertyDescriptor(
         HTMLSelectElement.prototype,
-        'value',
+        'value'
       )?.set;
       if (nativeSelectValueSetter) {
         nativeSelectValueSetter.call(element, selectedValue);
@@ -1270,8 +1338,11 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
     }
 
+    // Find the nearest scrollable element (the element itself or an ancestor)
+    const scrollTarget = this.findScrollableElement(element);
+
     if (options?.position) {
-      element.scrollTo({
+      scrollTarget.scrollTo({
         left: options.position.x,
         top: options.position.y,
         behavior: options.smooth ? 'smooth' : 'auto',
@@ -1284,18 +1355,36 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     switch (direction) {
       case 'up':
-        element.scrollBy({ top: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
+        scrollTarget.scrollBy({ top: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
         break;
       case 'down':
-        element.scrollBy({ top: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
+        scrollTarget.scrollBy({ top: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
         break;
       case 'left':
-        element.scrollBy({ left: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
+        scrollTarget.scrollBy({ left: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
         break;
       case 'right':
-        element.scrollBy({ left: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
+        scrollTarget.scrollBy({ left: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
         break;
     }
+  }
+
+  private findScrollableElement(element: HTMLElement): HTMLElement {
+    let current: HTMLElement | null = element;
+    while (current && current !== document.body) {
+      const style = getComputedStyle(current);
+      const overflowY = style.overflowY;
+      const overflowX = style.overflowX;
+      const isScrollable =
+        (overflowY === 'auto' ||
+          overflowY === 'scroll' ||
+          overflowX === 'auto' ||
+          overflowX === 'scroll') &&
+        (current.scrollHeight > current.clientHeight || current.scrollWidth > current.clientWidth);
+      if (isScrollable) return current;
+      current = current.parentElement;
+    }
+    return document.documentElement;
   }
 
   private performCheck(element: HTMLElement, checked: boolean): void {
@@ -1641,7 +1730,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private inferActions(element: HTMLElement): string[] {
     const type = this.inferElementType(element);
-    const baseActions = ['focus', 'blur', 'hover', 'sendKeys'];
+    const baseActions = ['focus', 'blur', 'hover', 'sendKeys', 'scroll', 'scrollIntoView'];
 
     switch (type) {
       case 'button':
@@ -1761,7 +1850,7 @@ function safeSerialize(value: unknown, seen = new WeakSet<object>()): unknown {
   seen.add(obj);
 
   if (Array.isArray(obj)) {
-    return obj.map(item => safeSerialize(item, seen));
+    return obj.map((item) => safeSerialize(item, seen));
   }
 
   const result: Record<string, unknown> = {};
@@ -1785,8 +1874,8 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
   const el = element as unknown as Record<string, unknown>;
 
   // Find React internal keys
-  const reactPropsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
-  const reactFiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+  const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+  const reactFiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
 
   if (!reactPropsKey && !reactFiberKey) {
     return null; // Not a React-managed element
@@ -1794,7 +1883,7 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
 
   // Extract props (replace functions with marker strings)
   const rawProps = reactPropsKey
-    ? (el[reactPropsKey] as Record<string, unknown> | undefined) ?? {}
+    ? ((el[reactPropsKey] as Record<string, unknown> | undefined) ?? {})
     : {};
   const props = safeSerialize(rawProps) as Record<string, unknown>;
 
@@ -1810,9 +1899,10 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
       while (current) {
         const type = current.type;
         if (typeof type === 'function') {
-          componentName = (type as { displayName?: string; name?: string }).displayName
-            || (type as { name?: string }).name
-            || undefined;
+          componentName =
+            (type as { displayName?: string; name?: string }).displayName ||
+            (type as { name?: string }).name ||
+            undefined;
           break;
         }
         current = current.return as Record<string, unknown> | undefined;

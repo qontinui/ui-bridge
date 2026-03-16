@@ -157,7 +157,9 @@ export class CommandRelay {
 
     if (!g[key('ConnectionReady')]) {
       let resolve: (() => void) | null = null;
-      const promise = new Promise<void>((r) => { resolve = r; });
+      const promise = new Promise<void>((r) => {
+        resolve = r;
+      });
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
     }
@@ -202,7 +204,11 @@ export class CommandRelay {
     }
     // Also clean demoted tabs that have no heartbeat entry and no connection
     for (const tabId of this.demotedTabs) {
-      if (!this.tabListeners.has(tabId) && !this.wsClients.has(tabId) && !this.tabHeartbeats.has(tabId)) {
+      if (
+        !this.tabListeners.has(tabId) &&
+        !this.wsClients.has(tabId) &&
+        !this.tabHeartbeats.has(tabId)
+      ) {
         this.demotedTabs.delete(tabId);
       }
     }
@@ -218,7 +224,9 @@ export class CommandRelay {
       const g = globalThis as any;
       const key = (suffix: string) => `${this.prefix}${suffix}`;
       let resolve: (() => void) | null = null;
-      const promise = new Promise<void>((r) => { resolve = r; });
+      const promise = new Promise<void>((r) => {
+        resolve = r;
+      });
       g[key('ConnectionReady')] = promise;
       g[key('ConnectionReadyResolve')] = resolve;
       this.connectionReady = promise;
@@ -235,7 +243,7 @@ export class CommandRelay {
     const now = Date.now();
     for (const tabId of Array.from(this.demotedTabs)) {
       const lastBeat = this.tabHeartbeats.get(tabId);
-      if (lastBeat && (now - lastBeat) < this.heartbeatStaleMs) {
+      if (lastBeat && now - lastBeat < this.heartbeatStaleMs) {
         if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) {
           this.demotedTabs.delete(tabId);
           console.log(`[ui-bridge] Re-promoted tab with fresh heartbeat: ${tabId}`);
@@ -259,7 +267,11 @@ export class CommandRelay {
       }
     }
     for (const [clientId, entry] of this.wsClients.entries()) {
-      if (entry.client.isConnected() && !this.demotedTabs.has(clientId) && !candidates.includes(clientId)) {
+      if (
+        entry.client.isConnected() &&
+        !this.demotedTabs.has(clientId) &&
+        !candidates.includes(clientId)
+      ) {
         candidates.push(clientId);
       }
     }
@@ -318,10 +330,16 @@ export class CommandRelay {
       await Promise.race([
         this.connectionReady,
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error(
-            'No browser connected — no WebSocket clients and no SSE listeners. ' +
-            'Ensure the web app is open in a browser tab.'
-          )), 3000)
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  'No browser connected — no WebSocket clients and no SSE listeners. ' +
+                    'Ensure the web app is open in a browser tab.'
+                )
+              ),
+            3000
+          )
         ),
       ]);
     }
@@ -372,7 +390,12 @@ export class CommandRelay {
 
     return new Promise((resolve, reject) => {
       // Try WebSocket delivery first
-      const sentViaWebSocket = this.sendCommandViaWebSocket(commandId, action, payload, targetTabId);
+      const sentViaWebSocket = this.sendCommandViaWebSocket(
+        commandId,
+        action,
+        payload,
+        targetTabId
+      );
 
       let transport = 'none';
       let timeoutMs = this.sseTimeoutMs;
@@ -386,8 +409,9 @@ export class CommandRelay {
       if (!sentViaWebSocket && this.tabListeners.size === 0) {
         reject(
           new Error(
-            'No browser connected — no WebSocket clients and no SSE listeners. ' +
-            'Ensure the web app is open in a browser tab.'
+            `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
+              'No WebSocket clients and no SSE listeners registered. ' +
+              'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
           )
         );
         return;
@@ -406,8 +430,15 @@ export class CommandRelay {
       const timeout = setTimeout(() => {
         const pending = this.pendingCommands.get(commandId);
         if (pending?.graceTimeout) clearTimeout(pending.graceTimeout);
+        const notified = pending?.tabsNotified ?? 0;
         this.pendingCommands.delete(commandId);
-        reject(new Error(`Command ${action} timed out after ${timeoutMs}ms (${transport})`));
+        reject(
+          new Error(
+            `Command ${action} timed out after ${timeoutMs}ms (${transport}). ` +
+              `${notified} client(s) were notified but none responded. ` +
+              'The UI Bridge SDK may not be loaded or the page may be unresponsive.'
+          )
+        );
       }, timeoutMs);
 
       // Evict oldest if at capacity
@@ -440,6 +471,20 @@ export class CommandRelay {
         if (this.tabListeners.size > 0) {
           transport = 'SSE';
           pending.tabsNotified = this.broadcastToListeners(command, targetTabId);
+
+          // If broadcast reached no listeners, fail immediately
+          if (pending.tabsNotified === 0) {
+            clearTimeout(timeout);
+            this.pendingCommands.delete(commandId);
+            reject(
+              new Error(
+                `No active UI Bridge SDK client received the ${action} command. ` +
+                  `${this.tabListeners.size} SSE listener(s) registered but none accepted the command. ` +
+                  'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+              )
+            );
+            return;
+          }
         } else {
           transport = 'HTTP-poll';
           this.commandQueue.push(command);
@@ -463,13 +508,23 @@ export class CommandRelay {
     if (targetTabId) {
       const listener = this.tabListeners.get(targetTabId);
       if (listener) {
-        try { listener.callback(command); return 1; } catch { /* self-cleaning */ }
+        try {
+          listener.callback(command);
+          return 1;
+        } catch {
+          /* self-cleaning */
+        }
       }
       return 0;
     }
     let notified = 0;
     for (const listener of this.tabListeners.values()) {
-      try { listener.callback(command); notified++; } catch { /* self-cleaning */ }
+      try {
+        listener.callback(command);
+        notified++;
+      } catch {
+        /* self-cleaning */
+      }
     }
     return notified;
   }
@@ -488,13 +543,15 @@ export class CommandRelay {
     if (!clientEntry) return false;
 
     try {
-      clientEntry.client.send(JSON.stringify({
-        type: 'command',
-        commandId,
-        action,
-        payload,
-        timestamp: Date.now(),
-      }));
+      clientEntry.client.send(
+        JSON.stringify({
+          type: 'command',
+          commandId,
+          action,
+          payload,
+          timestamp: Date.now(),
+        })
+      );
       clientEntry.lastActivity = Date.now();
       return true;
     } catch (e) {
@@ -544,9 +601,13 @@ export class CommandRelay {
           { targetTabId: client.clientId }
         );
         if (result.elements && result.elements.length > 0) {
-          console.log(`[ui-bridge] Proactive WS snapshot captured: ${result.elements.length} elements`);
+          console.log(
+            `[ui-bridge] Proactive WS snapshot captured: ${result.elements.length} elements`
+          );
         }
-      } catch { /* Client may have disconnected */ }
+      } catch {
+        /* Client may have disconnected */
+      }
     }, 500);
   }
 
@@ -691,10 +752,14 @@ export class CommandRelay {
           { targetTabId: id }
         );
         if (result.elements && result.elements.length > 0) {
-          console.log(`[ui-bridge] Proactive snapshot captured: ${result.elements.length} elements`);
+          console.log(
+            `[ui-bridge] Proactive snapshot captured: ${result.elements.length} elements`
+          );
           return true;
         }
-      } catch { /* Tab may have disconnected */ }
+      } catch {
+        /* Tab may have disconnected */
+      }
       return false;
     };
 
@@ -710,7 +775,9 @@ export class CommandRelay {
       if (retryTimer) clearTimeout(retryTimer);
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
-      console.log(`[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`);
+      console.log(
+        `[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`
+      );
       this.resetConnectionGateIfEmpty();
     };
   }

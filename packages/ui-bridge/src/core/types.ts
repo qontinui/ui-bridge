@@ -59,6 +59,8 @@ export interface ElementState {
   checked?: boolean;
   /** Selected options for select elements */
   selectedOptions?: string[];
+  /** Available options for select elements ({value, label} pairs) */
+  availableOptions?: Array<{ value: string; label: string }>;
   /** Text content of the element */
   textContent?: string;
   /** Inner HTML of the element (sanitized) */

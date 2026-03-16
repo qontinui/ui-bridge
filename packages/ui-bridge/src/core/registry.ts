@@ -284,7 +284,7 @@ function isElementDisabled(element: HTMLElement): boolean {
  * Infer available actions based on element type
  */
 function inferActions(type: ElementType): StandardAction[] {
-  const baseActions: StandardAction[] = ['focus', 'blur', 'hover'];
+  const baseActions: StandardAction[] = ['focus', 'blur', 'hover', 'scroll', 'scrollIntoView'];
 
   switch (type) {
     case 'button':
@@ -586,7 +586,9 @@ export class UIBridgeRegistry {
    * Get all interactive elements
    */
   getAllInteractiveElements(): RegisteredElement[] {
-    return Array.from(this.elements.values()).filter((el) => el.category !== 'content' && el.category !== 'media');
+    return Array.from(this.elements.values()).filter(
+      (el) => el.category !== 'content' && el.category !== 'media'
+    );
   }
 
   /**

@@ -221,6 +221,12 @@ export interface FindRequest {
   limit?: number;
   /** Filter by element type */
   types?: string[];
+  /** Filter by text content, label, or accessible name (substring match, case-insensitive) */
+  text?: string;
+  /** Filter by ARIA role */
+  role?: string;
+  /** Filter by element type (single type — alias for types with one value) */
+  element_type?: string;
   /** Filter by selector */
   selector?: string;
   /** Include content (non-interactive) elements in results */

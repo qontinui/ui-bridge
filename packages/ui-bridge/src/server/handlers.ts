@@ -800,6 +800,31 @@ export function createHandlers(
     assertionExecutor.updateElements(elements as any[]);
   }
 
+  function applyFindFilters(elements: any[], request: FindRequest): any[] {
+    return elements.filter((el: any) => {
+      if (request.types && el.type && !request.types.includes(el.type)) return false;
+      if (request.element_type && el.type && el.type !== request.element_type) return false;
+      if (request.role) {
+        const elRole = (el.role || '').toLowerCase();
+        if (elRole !== request.role.toLowerCase()) return false;
+      }
+      if (request.text) {
+        const searchText = request.text.toLowerCase();
+        const label = (el.label || '').toLowerCase();
+        const textContent = (el.state?.textContent || el.textContent || '').toLowerCase();
+        const accessibleName = (el.accessibleName || '').toLowerCase();
+        if (
+          !label.includes(searchText) &&
+          !textContent.includes(searchText) &&
+          !accessibleName.includes(searchText)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
   return {
     // =========================================================================
     // Render Log Handlers
@@ -914,7 +939,12 @@ export function createHandlers(
         }
         const reactState = extractReactState(element.element);
         if (!reactState) {
-          return success({ props: {}, fiberState: [], componentName: undefined, note: 'No React internals found on this element' });
+          return success({
+            props: {},
+            fiberState: [],
+            componentName: undefined,
+            note: 'No React internals found on this element',
+          });
         }
         return success(reactState);
       } catch (err) {
@@ -924,7 +954,12 @@ export function createHandlers(
 
     executeElementAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown; captureAfter?: boolean }
+      request: {
+        action: string;
+        params?: Record<string, unknown>;
+        waitOptions?: unknown;
+        captureAfter?: boolean;
+      }
     ) => {
       const startTime = Date.now();
       try {
@@ -1035,16 +1070,26 @@ export function createHandlers(
 
         // Compute changes diff when captureAfter was requested
         if (request.captureAfter && preActionStates && result && typeof result === 'object') {
-          const postElements = registry.getAllElements() as Array<{ id: string; getState?: () => unknown }>;
-          const postIds = new Set(postElements.map(el => el.id));
+          const postElements = registry.getAllElements() as Array<{
+            id: string;
+            getState?: () => unknown;
+          }>;
+          const postIds = new Set(postElements.map((el) => el.id));
           const preIds = new Set(preActionStates.keys());
 
-          const appeared = [...postIds].filter(eid => !preIds.has(eid));
-          const disappeared = [...preIds].filter(eid => !postIds.has(eid));
+          const appeared = [...postIds].filter((eid) => !preIds.has(eid));
+          const disappeared = [...preIds].filter((eid) => !postIds.has(eid));
           const stateChanged: ElementFieldChange[] = [];
 
           // Compare state fields for elements that exist in both
-          const compareFields = ['visible', 'enabled', 'focused', 'value', 'checked', 'textContent'] as const;
+          const compareFields = [
+            'visible',
+            'enabled',
+            'focused',
+            'value',
+            'checked',
+            'textContent',
+          ] as const;
           for (const el of postElements) {
             const pre = preActionStates.get(el.id);
             if (!pre || !el.getState) continue;
@@ -1191,7 +1236,13 @@ export function createHandlers(
         if (!findRequest?.skipSettle) {
           await awaitDOMSettled(findRequest?.settleTimeout);
         }
-        const elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+        let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+
+        // Apply filters when registry doesn't implement findElements
+        if (!registry.findElements && findRequest) {
+          elements = applyFindFilters(elements as any[], findRequest) as unknown[];
+        }
+
         return success({
           elements,
           timestamp: Date.now(),
@@ -1210,7 +1261,13 @@ export function createHandlers(
         if (!findRequest?.skipSettle) {
           await awaitDOMSettled(findRequest?.settleTimeout);
         }
-        const elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+        let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+
+        // Apply filters when registry doesn't implement findElements
+        if (!registry.findElements && findRequest) {
+          elements = applyFindFilters(elements as any[], findRequest) as unknown[];
+        }
+
         return success({
           elements,
           timestamp: Date.now(),
@@ -1232,9 +1289,10 @@ export function createHandlers(
         // GET query params arrive as strings from standalone server
         const shouldSkip = request?.skipSettle === true || request?.skipSettle === 'true';
         if (!shouldSkip) {
-          const timeout = typeof request?.settleTimeout === 'string'
-            ? parseInt(request.settleTimeout, 10) || undefined
-            : request?.settleTimeout;
+          const timeout =
+            typeof request?.settleTimeout === 'string'
+              ? parseInt(request.settleTimeout, 10) || undefined
+              : request?.settleTimeout;
           await awaitDOMSettled(timeout);
         }
         const snapshot = registry.createSnapshot();
@@ -1368,12 +1426,17 @@ export function createHandlers(
         // so a missing registry entry is not a blocker.
         const workflow = registry.getWorkflow?.(id);
         if (!workflow) {
-          console.warn(`[handlers] Workflow "${id}" not in local registry — proxying to runner anyway`);
+          console.warn(
+            `[handlers] Workflow "${id}" not in local registry — proxying to runner anyway`
+          );
         }
 
         // Proxy to runner's unified workflow execution engine
         const runnerPort = 9876;
-        const req = (request && typeof request === 'object' ? request : {}) as Record<string, unknown>;
+        const req = (request && typeof request === 'object' ? request : {}) as Record<
+          string,
+          unknown
+        >;
         const body = {
           force_fresh_start: req.forceFreshStart ?? req.force_fresh_start ?? false,
           task_run_id: req.taskRunId ?? req.task_run_id,
@@ -1392,10 +1455,7 @@ export function createHandlers(
         const result = await response.json();
 
         if (!response.ok || result.success === false) {
-          return error(
-            result.error || `Runner returned ${response.status}`,
-            'WORKFLOW_ERROR'
-          );
+          return error(result.error || `Runner returned ${response.status}`, 'WORKFLOW_ERROR');
         }
 
         const data = result.data || result;
@@ -1431,14 +1491,14 @@ export function createHandlers(
 
         const data = result.data || result;
         const statusMap: Record<string, string> = {
-          'in_progress': 'running',
-          'running': 'running',
-          'completed': 'completed',
-          'success': 'completed',
-          'failed': 'failed',
-          'error': 'failed',
-          'cancelled': 'cancelled',
-          'stopped': 'cancelled',
+          in_progress: 'running',
+          running: 'running',
+          completed: 'completed',
+          success: 'completed',
+          failed: 'failed',
+          error: 'failed',
+          cancelled: 'cancelled',
+          stopped: 'cancelled',
         };
 
         return success({
@@ -1451,8 +1511,10 @@ export function createHandlers(
           startedAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
           completedAt: data.completed_at ? new Date(data.completed_at).getTime() : undefined,
           durationMs: data.duration_ms || data.durationMs,
-          success: ['completed', 'success', 'failed', 'error', 'cancelled', 'stopped'].includes(data.status)
-            ? (data.status === 'completed' || data.status === 'success')
+          success: ['completed', 'success', 'failed', 'error', 'cancelled', 'stopped'].includes(
+            data.status
+          )
+            ? data.status === 'completed' || data.status === 'success'
             : undefined,
           error: data.error,
         }) as APIResponse<any>;
@@ -3591,37 +3653,97 @@ export function createHandlers(
             elements: {
               description: 'Discover, inspect, and interact with UI elements',
               endpoints: [
-                { method: 'GET', path: '/control/elements', description: 'List all registered elements' },
-                { method: 'GET', path: '/control/element/:id', description: 'Get element details by ID' },
-                { method: 'GET', path: '/control/element/:id/state', description: 'Get element state' },
-                { method: 'GET', path: '/control/element/:id/react-state', description: 'Get React props and fiber state for element' },
-                { method: 'POST', path: '/control/element/:id/action', description: 'Execute action on element' },
+                {
+                  method: 'GET',
+                  path: '/control/elements',
+                  description: 'List all registered elements',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/element/:id',
+                  description: 'Get element details by ID',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/element/:id/state',
+                  description: 'Get element state',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/element/:id/react-state',
+                  description: 'Get React props and fiber state for element',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/element/:id/action',
+                  description: 'Execute action on element',
+                },
               ],
             },
             components: {
               description: 'Inspect and interact with UI components',
               endpoints: [
-                { method: 'GET', path: '/control/components', description: 'List all registered components' },
-                { method: 'GET', path: '/control/component/:id', description: 'Get component details by ID' },
-                { method: 'GET', path: '/control/component/:id/state', description: 'Get component state' },
-                { method: 'POST', path: '/control/component/:id/action/:actionId', description: 'Execute action on component' },
+                {
+                  method: 'GET',
+                  path: '/control/components',
+                  description: 'List all registered components',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/component/:id',
+                  description: 'Get component details by ID',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/component/:id/state',
+                  description: 'Get component state',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/component/:id/action/:actionId',
+                  description: 'Execute action on component',
+                },
               ],
             },
             discovery: {
               description: 'Find elements and capture page snapshots',
               endpoints: [
-                { method: 'POST', path: '/control/find', description: 'Find elements matching criteria' },
-                { method: 'POST', path: '/control/discover', description: 'Discover elements (deprecated, use /control/find)' },
-                { method: 'GET', path: '/control/snapshot', description: 'Capture full control snapshot' },
+                {
+                  method: 'POST',
+                  path: '/control/find',
+                  description: 'Find elements matching criteria',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/discover',
+                  description: 'Discover elements (deprecated, use /control/find)',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/snapshot',
+                  description: 'Capture full control snapshot',
+                },
                 { method: 'GET', path: '/control/workflows', description: 'List all workflows' },
-                { method: 'POST', path: '/control/workflow/:id/run', description: 'Run a workflow' },
-                { method: 'GET', path: '/control/workflow/:runId/status', description: 'Get workflow run status' },
+                {
+                  method: 'POST',
+                  path: '/control/workflow/:id/run',
+                  description: 'Run a workflow',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/workflow/:runId/status',
+                  description: 'Get workflow run status',
+                },
               ],
             },
             navigation: {
               description: 'Page navigation controls',
               endpoints: [
-                { method: 'POST', path: '/control/page/refresh', description: 'Refresh current page' },
+                {
+                  method: 'POST',
+                  path: '/control/page/refresh',
+                  description: 'Refresh current page',
+                },
                 { method: 'POST', path: '/control/page/navigate', description: 'Navigate to URL' },
                 { method: 'POST', path: '/control/page/back', description: 'Navigate back' },
                 { method: 'POST', path: '/control/page/forward', description: 'Navigate forward' },
@@ -3630,55 +3752,171 @@ export function createHandlers(
             ai: {
               description: 'AI-native search, execution, assertions, and semantic analysis',
               endpoints: [
-                { method: 'POST', path: '/ai/search', description: 'Search elements using natural language' },
-                { method: 'POST', path: '/ai/find', description: 'Find element by natural language query' },
-                { method: 'POST', path: '/ai/execute', description: 'Execute action via natural language' },
+                {
+                  method: 'POST',
+                  path: '/ai/search',
+                  description: 'Search elements using natural language',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/find',
+                  description: 'Find element by natural language query',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/execute',
+                  description: 'Execute action via natural language',
+                },
                 { method: 'POST', path: '/ai/assert', description: 'Assert UI condition' },
-                { method: 'POST', path: '/ai/assert/batch', description: 'Assert multiple UI conditions' },
-                { method: 'GET', path: '/ai/snapshot', description: 'Get semantic snapshot of current page' },
-                { method: 'GET', path: '/ai/diff', description: 'Get semantic diff since last snapshot' },
-                { method: 'GET', path: '/ai/summary', description: 'Get natural language page summary' },
-                { method: 'POST', path: '/ai/semantic-search', description: 'Search using semantic embeddings' },
+                {
+                  method: 'POST',
+                  path: '/ai/assert/batch',
+                  description: 'Assert multiple UI conditions',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/snapshot',
+                  description: 'Get semantic snapshot of current page',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/diff',
+                  description: 'Get semantic diff since last snapshot',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/summary',
+                  description: 'Get natural language page summary',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/semantic-search',
+                  description: 'Search using semantic embeddings',
+                },
               ],
             },
             change_tracking: {
               description: 'Track, diff, and analyze UI changes',
               endpoints: [
-                { method: 'POST', path: '/ai/execute-with-diff', description: 'Execute action and capture diff' },
-                { method: 'POST', path: '/ai/wait-for-change', description: 'Wait for UI change matching predicate' },
-                { method: 'GET', path: '/ai/categorize-last-diff', description: 'Categorize the last diff' },
-                { method: 'POST', path: '/ai/scoped-diff', description: 'Get diff scoped to element/region' },
-                { method: 'POST', path: '/ai/summarize-diff', description: 'Summarize diff within token budget' },
-                { method: 'POST', path: '/ai/structured-changes', description: 'Analyze structured changes (tables, lists)' },
-                { method: 'POST', path: '/ai/change-buffer/enable', description: 'Enable change buffer' },
-                { method: 'POST', path: '/ai/change-buffer/disable', description: 'Disable change buffer' },
-                { method: 'POST', path: '/ai/change-buffer/drain', description: 'Drain buffered changes' },
-                { method: 'GET', path: '/ai/change-buffer/size', description: 'Get change buffer size' },
+                {
+                  method: 'POST',
+                  path: '/ai/execute-with-diff',
+                  description: 'Execute action and capture diff',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/wait-for-change',
+                  description: 'Wait for UI change matching predicate',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/categorize-last-diff',
+                  description: 'Categorize the last diff',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/scoped-diff',
+                  description: 'Get diff scoped to element/region',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/summarize-diff',
+                  description: 'Summarize diff within token budget',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/structured-changes',
+                  description: 'Analyze structured changes (tables, lists)',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/change-buffer/enable',
+                  description: 'Enable change buffer',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/change-buffer/disable',
+                  description: 'Disable change buffer',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/change-buffer/drain',
+                  description: 'Drain buffered changes',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/change-buffer/size',
+                  description: 'Get change buffer size',
+                },
                 { method: 'POST', path: '/ai/bookmarks', description: 'Save snapshot bookmark' },
                 { method: 'GET', path: '/ai/bookmarks', description: 'List all bookmarks' },
                 { method: 'GET', path: '/ai/bookmark/:name', description: 'Get bookmark by name' },
                 { method: 'DELETE', path: '/ai/bookmark/:name', description: 'Delete bookmark' },
-                { method: 'GET', path: '/ai/bookmark/:name/diff', description: 'Get diff from bookmark' },
+                {
+                  method: 'GET',
+                  path: '/ai/bookmark/:name/diff',
+                  description: 'Get diff from bookmark',
+                },
               ],
             },
             idle_detection: {
               description: 'Detect and wait for UI idle states',
               endpoints: [
-                { method: 'GET', path: '/control/idle-status', description: 'Get composite idle status' },
-                { method: 'POST', path: '/control/wait-for-idle', description: 'Wait for UI to become idle' },
-                { method: 'POST', path: '/control/wait-for-targets', description: 'Wait for specific idle targets' },
-                { method: 'GET', path: '/control/idle-status/:signal', description: 'Get idle status for specific signal' },
-                { method: 'POST', path: '/control/wait-for-idle/:signal', description: 'Wait for specific signal to become idle' },
+                {
+                  method: 'GET',
+                  path: '/control/idle-status',
+                  description: 'Get composite idle status',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/wait-for-idle',
+                  description: 'Wait for UI to become idle',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/wait-for-targets',
+                  description: 'Wait for specific idle targets',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/idle-status/:signal',
+                  description: 'Get idle status for specific signal',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/wait-for-idle/:signal',
+                  description: 'Wait for specific signal to become idle',
+                },
               ],
             },
             network: {
               description: 'Monitor network requests',
               endpoints: [
-                { method: 'GET', path: '/control/network-requests', description: 'List network requests' },
-                { method: 'GET', path: '/control/network-requests/in-flight', description: 'List in-flight requests' },
-                { method: 'POST', path: '/control/network-requests/wait', description: 'Wait for network request matching criteria' },
-                { method: 'GET', path: '/control/network-request/:id', description: 'Get network request details' },
-                { method: 'GET', path: '/control/network-chains', description: 'Get network request chains' },
+                {
+                  method: 'GET',
+                  path: '/control/network-requests',
+                  description: 'List network requests',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/network-requests/in-flight',
+                  description: 'List in-flight requests',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/network-requests/wait',
+                  description: 'Wait for network request matching criteria',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/network-request/:id',
+                  description: 'Get network request details',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/network-chains',
+                  description: 'Get network request chains',
+                },
               ],
             },
             forms: {
@@ -3686,25 +3924,69 @@ export function createHandlers(
               endpoints: [
                 { method: 'GET', path: '/control/forms', description: 'Get all form states' },
                 { method: 'POST', path: '/control/fill', description: 'Fill form fields' },
-                { method: 'POST', path: '/control/forms/snapshot', description: 'Capture form snapshot' },
-                { method: 'POST', path: '/control/forms/diff', description: 'Diff two form snapshots' },
+                {
+                  method: 'POST',
+                  path: '/control/forms/snapshot',
+                  description: 'Capture form snapshot',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/forms/diff',
+                  description: 'Diff two form snapshots',
+                },
               ],
             },
             design: {
               description: 'Design review, style auditing, and quality evaluation',
               endpoints: [
-                { method: 'GET', path: '/design/element/:id/styles', description: 'Get element computed styles' },
-                { method: 'POST', path: '/design/element/:id/state-styles', description: 'Get element styles across interaction states' },
-                { method: 'POST', path: '/design/snapshot', description: 'Capture design snapshot' },
-                { method: 'POST', path: '/design/responsive', description: 'Capture responsive snapshots at viewports' },
+                {
+                  method: 'GET',
+                  path: '/design/element/:id/styles',
+                  description: 'Get element computed styles',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/element/:id/state-styles',
+                  description: 'Get element styles across interaction states',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/snapshot',
+                  description: 'Capture design snapshot',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/responsive',
+                  description: 'Capture responsive snapshots at viewports',
+                },
                 { method: 'POST', path: '/design/audit', description: 'Run design style audit' },
-                { method: 'POST', path: '/design/style-guide/load', description: 'Load style guide configuration' },
-                { method: 'GET', path: '/design/style-guide', description: 'Get current style guide' },
+                {
+                  method: 'POST',
+                  path: '/design/style-guide/load',
+                  description: 'Load style guide configuration',
+                },
+                {
+                  method: 'GET',
+                  path: '/design/style-guide',
+                  description: 'Get current style guide',
+                },
                 { method: 'DELETE', path: '/design/style-guide', description: 'Clear style guide' },
                 { method: 'POST', path: '/design/evaluate', description: 'Evaluate UI quality' },
-                { method: 'GET', path: '/design/evaluate/contexts', description: 'List quality evaluation contexts' },
-                { method: 'POST', path: '/design/evaluate/baseline', description: 'Save quality baseline' },
-                { method: 'POST', path: '/design/evaluate/diff', description: 'Diff against quality baseline' },
+                {
+                  method: 'GET',
+                  path: '/design/evaluate/contexts',
+                  description: 'List quality evaluation contexts',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/evaluate/baseline',
+                  description: 'Save quality baseline',
+                },
+                {
+                  method: 'POST',
+                  path: '/design/evaluate/diff',
+                  description: 'Diff against quality baseline',
+                },
               ],
             },
             debug: {
@@ -3712,45 +3994,137 @@ export function createHandlers(
               endpoints: [
                 { method: 'GET', path: '/debug/action-history', description: 'Get action history' },
                 { method: 'GET', path: '/debug/metrics', description: 'Get bridge metrics' },
-                { method: 'POST', path: '/debug/highlight/:id', description: 'Highlight element in UI' },
-                { method: 'GET', path: '/debug/element-tree', description: 'Get element tree structure' },
-                { method: 'GET', path: '/control/console-errors', description: 'Get captured console errors' },
-                { method: 'POST', path: '/control/console-errors/clear', description: 'Clear captured console errors' },
-                { method: 'GET', path: '/control/performance-entries', description: 'Get performance entries' },
-                { method: 'POST', path: '/control/performance-entries/clear', description: 'Clear performance entries' },
-                { method: 'GET', path: '/control/browser-events', description: 'Get captured browser events' },
+                {
+                  method: 'POST',
+                  path: '/debug/highlight/:id',
+                  description: 'Highlight element in UI',
+                },
+                {
+                  method: 'GET',
+                  path: '/debug/element-tree',
+                  description: 'Get element tree structure',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/console-errors',
+                  description: 'Get captured console errors',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/console-errors/clear',
+                  description: 'Clear captured console errors',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/performance-entries',
+                  description: 'Get performance entries',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/performance-entries/clear',
+                  description: 'Clear performance entries',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/browser-events',
+                  description: 'Get captured browser events',
+                },
                 { method: 'GET', path: '/control/timeline', description: 'Get error timeline' },
                 { method: 'GET', path: '/control/health', description: 'Get health score report' },
-                { method: 'POST', path: '/control/error-sessions/start', description: 'Start error tracking session' },
-                { method: 'POST', path: '/control/error-sessions/end', description: 'End error tracking session' },
-                { method: 'GET', path: '/control/error-sessions', description: 'List error sessions' },
-                { method: 'POST', path: '/control/error-baselines/capture', description: 'Capture error baseline' },
-                { method: 'POST', path: '/control/error-baselines/compare', description: 'Compare against error baseline' },
-                { method: 'GET', path: '/control/error-snapshots', description: 'Get auto-captured error snapshots' },
-                { method: 'GET', path: '/control/error-report', description: 'Get composite error report' },
+                {
+                  method: 'POST',
+                  path: '/control/error-sessions/start',
+                  description: 'Start error tracking session',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/error-sessions/end',
+                  description: 'End error tracking session',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/error-sessions',
+                  description: 'List error sessions',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/error-baselines/capture',
+                  description: 'Capture error baseline',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/error-baselines/compare',
+                  description: 'Compare against error baseline',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/error-snapshots',
+                  description: 'Get auto-captured error snapshots',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/error-report',
+                  description: 'Get composite error report',
+                },
                 { method: 'GET', path: '/render-log', description: 'Get render log entries' },
                 { method: 'DELETE', path: '/render-log', description: 'Clear render log' },
-                { method: 'POST', path: '/render-log/snapshot', description: 'Capture render snapshot' },
-                { method: 'GET', path: '/render-log/path', description: 'Get render log file path' },
+                {
+                  method: 'POST',
+                  path: '/render-log/snapshot',
+                  description: 'Capture render snapshot',
+                },
+                {
+                  method: 'GET',
+                  path: '/render-log/path',
+                  description: 'Get render log file path',
+                },
               ],
             },
             events: {
               description: 'Real-time event streaming via SSE and browser event capture',
               endpoints: [
-                { method: 'GET', path: '/control/events/stream', description: 'SSE stream of bridge events' },
-                { method: 'GET', path: '/control/browser-events', description: 'Get captured browser events' },
+                {
+                  method: 'GET',
+                  path: '/control/events/stream',
+                  description: 'SSE stream of bridge events',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/browser-events',
+                  description: 'Get captured browser events',
+                },
               ],
             },
             annotations: {
               description: 'Element annotation CRUD, import/export, and coverage',
               endpoints: [
                 { method: 'GET', path: '/annotations', description: 'Get all annotations' },
-                { method: 'GET', path: '/annotations/:id', description: 'Get annotation by element ID' },
-                { method: 'PUT', path: '/annotations/:id', description: 'Set annotation for element' },
+                {
+                  method: 'GET',
+                  path: '/annotations/:id',
+                  description: 'Get annotation by element ID',
+                },
+                {
+                  method: 'PUT',
+                  path: '/annotations/:id',
+                  description: 'Set annotation for element',
+                },
                 { method: 'DELETE', path: '/annotations/:id', description: 'Delete annotation' },
-                { method: 'POST', path: '/annotations/import', description: 'Import annotations from config' },
-                { method: 'GET', path: '/annotations/export', description: 'Export all annotations' },
-                { method: 'GET', path: '/annotations/coverage', description: 'Get annotation coverage report' },
+                {
+                  method: 'POST',
+                  path: '/annotations/import',
+                  description: 'Import annotations from config',
+                },
+                {
+                  method: 'GET',
+                  path: '/annotations/export',
+                  description: 'Export all annotations',
+                },
+                {
+                  method: 'GET',
+                  path: '/annotations/coverage',
+                  description: 'Get annotation coverage report',
+                },
               ],
             },
             state_management: {
@@ -3758,24 +4132,68 @@ export function createHandlers(
               endpoints: [
                 { method: 'GET', path: '/control/states', description: 'List all states' },
                 { method: 'GET', path: '/control/states/active', description: 'Get active states' },
-                { method: 'GET', path: '/control/states/snapshot', description: 'Get state snapshot' },
-                { method: 'POST', path: '/control/states/find-path', description: 'Find path to target states' },
-                { method: 'POST', path: '/control/states/navigate', description: 'Navigate to target states' },
+                {
+                  method: 'GET',
+                  path: '/control/states/snapshot',
+                  description: 'Get state snapshot',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/states/find-path',
+                  description: 'Find path to target states',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/states/navigate',
+                  description: 'Navigate to target states',
+                },
                 { method: 'GET', path: '/control/state/:id', description: 'Get state by ID' },
-                { method: 'POST', path: '/control/state/:id/activate', description: 'Activate state' },
-                { method: 'POST', path: '/control/state/:id/deactivate', description: 'Deactivate state' },
+                {
+                  method: 'POST',
+                  path: '/control/state/:id/activate',
+                  description: 'Activate state',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/state/:id/deactivate',
+                  description: 'Deactivate state',
+                },
                 { method: 'GET', path: '/control/state-groups', description: 'List state groups' },
-                { method: 'POST', path: '/control/state-group/:id/activate', description: 'Activate state group' },
-                { method: 'POST', path: '/control/state-group/:id/deactivate', description: 'Deactivate state group' },
-                { method: 'GET', path: '/control/transitions', description: 'List all transitions' },
-                { method: 'GET', path: '/control/transition/:id/can-execute', description: 'Check if transition can execute' },
-                { method: 'POST', path: '/control/transition/:id/execute', description: 'Execute transition' },
+                {
+                  method: 'POST',
+                  path: '/control/state-group/:id/activate',
+                  description: 'Activate state group',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/state-group/:id/deactivate',
+                  description: 'Deactivate state group',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/transitions',
+                  description: 'List all transitions',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/transition/:id/can-execute',
+                  description: 'Check if transition can execute',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/transition/:id/execute',
+                  description: 'Execute transition',
+                },
               ],
             },
             clipboard: {
               description: 'Read and write clipboard contents',
               endpoints: [
-                { method: 'GET', path: '/control/clipboard', description: 'Read clipboard contents' },
+                {
+                  method: 'GET',
+                  path: '/control/clipboard',
+                  description: 'Read clipboard contents',
+                },
                 { method: 'POST', path: '/control/clipboard', description: 'Write to clipboard' },
               ],
             },
@@ -3790,17 +4208,37 @@ export function createHandlers(
             recovery: {
               description: 'Error recovery attempts',
               endpoints: [
-                { method: 'POST', path: '/ai/recovery/attempt', description: 'Attempt error recovery' },
+                {
+                  method: 'POST',
+                  path: '/ai/recovery/attempt',
+                  description: 'Attempt error recovery',
+                },
               ],
             },
             intents: {
               description: 'Intent-based action discovery and execution',
               endpoints: [
                 { method: 'GET', path: '/ai/intents', description: 'List available intents' },
-                { method: 'POST', path: '/ai/intents/execute', description: 'Execute intent by ID' },
-                { method: 'POST', path: '/ai/intents/find', description: 'Find intent matching query' },
-                { method: 'POST', path: '/ai/intents/register', description: 'Register new intent' },
-                { method: 'POST', path: '/ai/intents/execute-from-query', description: 'Find and execute intent from query' },
+                {
+                  method: 'POST',
+                  path: '/ai/intents/execute',
+                  description: 'Execute intent by ID',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/intents/find',
+                  description: 'Find intent matching query',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/intents/register',
+                  description: 'Register new intent',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/intents/execute-from-query',
+                  description: 'Find and execute intent from query',
+                },
               ],
             },
             specs: {
@@ -3858,36 +4296,60 @@ export function createHandlers(
     // Media Discovery & Analysis (delegated to browser via relay in relay-handlers)
     // =========================================================================
 
-    findMedia: async (request) => {
-      return error('findMedia not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    findMedia: async (_request) => {
+      return error(
+        'findMedia not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
     mediaAuditAccessibility: async () => {
-      return error('mediaAuditAccessibility not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+      return error(
+        'mediaAuditAccessibility not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
     mediaAuditPerformance: async () => {
-      return error('mediaAuditPerformance not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+      return error(
+        'mediaAuditPerformance not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
-    captureMediaSnapshot: async (request) => {
-      return error('captureMediaSnapshot not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    captureMediaSnapshot: async (_request) => {
+      return error(
+        'captureMediaSnapshot not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
-    compareMediaSnapshots: async (request) => {
-      return error('compareMediaSnapshots not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    compareMediaSnapshots: async (_request) => {
+      return error(
+        'compareMediaSnapshots not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
-    analyzeMedia: async (request) => {
-      return error('analyzeMedia not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    analyzeMedia: async (_request) => {
+      return error(
+        'analyzeMedia not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
-    analyzeMediaBatch: async (request) => {
-      return error('analyzeMediaBatch not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    analyzeMediaBatch: async (_request) => {
+      return error(
+        'analyzeMediaBatch not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
 
-    analyzeMediaPage: async (request) => {
-      return error('analyzeMediaPage not implemented in direct handlers — use relay-handlers', 'NOT_IMPLEMENTED');
+    analyzeMediaPage: async (_request) => {
+      return error(
+        'analyzeMediaPage not implemented in direct handlers — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
     },
   };
 }
