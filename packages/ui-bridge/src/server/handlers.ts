@@ -17,7 +17,10 @@ import type {
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
+  ActionChanges,
+  ElementFieldChange,
 } from '../control';
+import { extractReactState } from '../control/action-executor';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, ActionErrorCode, FillResult } from '../core';
 import type {
@@ -900,9 +903,28 @@ export function createHandlers(
       }
     },
 
+    getElementReactState: async (id: string): Promise<APIResponse<unknown>> => {
+      try {
+        const element = registry.getElement(id) as { element?: HTMLElement } | undefined;
+        if (!element) {
+          return error(`Element not found: ${id}`, 'NOT_FOUND');
+        }
+        if (!element.element) {
+          return error(`Element ${id} has no DOM node`, 'NO_DOM_NODE');
+        }
+        const reactState = extractReactState(element.element);
+        if (!reactState) {
+          return success({ props: {}, fiberState: [], componentName: undefined, note: 'No React internals found on this element' });
+        }
+        return success(reactState);
+      } catch (err) {
+        return error((err as Error).message, 'REACT_STATE_ERROR');
+      }
+    },
+
     executeElementAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
+      request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown; captureAfter?: boolean }
     ) => {
       const startTime = Date.now();
       try {
@@ -931,6 +953,24 @@ export function createHandlers(
             },
             timestamp: Date.now(),
           } as APIResponse<any>;
+        }
+
+        // Capture pre-action element states for diffing if captureAfter is requested
+        type ElementStateSnapshot = { id: string; state: Record<string, unknown> };
+        let preActionStates: Map<string, ElementStateSnapshot> | undefined;
+        if (request.captureAfter) {
+          preActionStates = new Map();
+          for (const rawEl of registry.getAllElements()) {
+            const el = rawEl as { id: string; getState?: () => unknown };
+            try {
+              if (el.getState) {
+                const state = el.getState();
+                preActionStates.set(el.id, { id: el.id, state: state as Record<string, unknown> });
+              }
+            } catch {
+              // Skip elements whose state can't be captured
+            }
+          }
         }
 
         const result = await actionExecutor.executeAction(id, {
@@ -991,6 +1031,40 @@ export function createHandlers(
             ...actionResult,
             failureDetails,
           }) as APIResponse<any>;
+        }
+
+        // Compute changes diff when captureAfter was requested
+        if (request.captureAfter && preActionStates && result && typeof result === 'object') {
+          const postElements = registry.getAllElements() as Array<{ id: string; getState?: () => unknown }>;
+          const postIds = new Set(postElements.map(el => el.id));
+          const preIds = new Set(preActionStates.keys());
+
+          const appeared = [...postIds].filter(eid => !preIds.has(eid));
+          const disappeared = [...preIds].filter(eid => !postIds.has(eid));
+          const stateChanged: ElementFieldChange[] = [];
+
+          // Compare state fields for elements that exist in both
+          const compareFields = ['visible', 'enabled', 'focused', 'value', 'checked', 'textContent'] as const;
+          for (const el of postElements) {
+            const pre = preActionStates.get(el.id);
+            if (!pre || !el.getState) continue;
+            try {
+              const postState = el.getState() as Record<string, unknown>;
+              const preState = pre.state;
+              for (const field of compareFields) {
+                const before = preState[field];
+                const after = postState[field];
+                if (before !== after && (before !== undefined || after !== undefined)) {
+                  stateChanged.push({ elementId: el.id, field, before, after });
+                }
+              }
+            } catch {
+              // Skip elements whose state can't be read
+            }
+          }
+
+          const changes: ActionChanges = { appeared, disappeared, stateChanged };
+          (result as Record<string, unknown>).changes = changes;
         }
 
         return success(result) as APIResponse<any>;
@@ -3520,6 +3594,7 @@ export function createHandlers(
                 { method: 'GET', path: '/control/elements', description: 'List all registered elements' },
                 { method: 'GET', path: '/control/element/:id', description: 'Get element details by ID' },
                 { method: 'GET', path: '/control/element/:id/state', description: 'Get element state' },
+                { method: 'GET', path: '/control/element/:id/react-state', description: 'Get React props and fiber state for element' },
                 { method: 'POST', path: '/control/element/:id/action', description: 'Execute action on element' },
               ],
             },

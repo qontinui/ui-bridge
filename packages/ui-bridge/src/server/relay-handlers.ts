@@ -148,6 +148,10 @@ export function createRelayHandlers(
       return relayCommand('getElementState', { id });
     },
 
+    async getElementReactState(id) {
+      return relayCommand('getElementReactState', { id });
+    },
+
     async executeElementAction(id, request) {
       return relayCommand('executeElementAction', { id, request });
     },

@@ -195,6 +195,7 @@ export interface UIBridgeServerHandlers {
   getElements: () => Promise<APIResponse<ControlSnapshot['elements']>>;
   getElement: (id: string) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
   getElementState: (id: string) => Promise<APIResponse<unknown>>;
+  getElementReactState: (id: string) => Promise<APIResponse<unknown>>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest
@@ -590,6 +591,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/control/elements', handler: 'getElements' },
   { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
   { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
+  { method: 'GET', path: '/control/element/:id/react-state', handler: 'getElementReactState', params: ['id'] },
   {
     method: 'POST',
     path: '/control/element/:id/action',

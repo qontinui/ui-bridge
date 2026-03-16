@@ -64,6 +64,8 @@ export interface ControlActionResponse extends ActionResponse {
   waitDurationMs?: number;
   /** Time spent waiting for idle after action (ms) */
   idleWaitMs?: number;
+  /** DOM changes caused by the action (populated when captureAfter: true) */
+  changes?: ActionChanges;
 }
 
 /**
@@ -372,6 +374,45 @@ export interface ControlSnapshot {
   dragDrop?: SnapshotDragDropContext;
   /** Undo/redo availability and state (populated by server handlers via UndoTracker) */
   undoRedo?: SnapshotUndoContext;
+}
+
+/**
+ * React state extracted from a DOM element's React fiber internals.
+ * Used by the `/control/element/:id/react-state` endpoint.
+ */
+export interface ReactStateInfo {
+  /** Props from __reactProps$ (functions replaced with "[Function]") */
+  props: Record<string, unknown>;
+  /** useState / useReducer values from the fiber memoizedState chain */
+  fiberState: unknown[];
+  /** Display name of the nearest React component */
+  componentName?: string;
+}
+
+/**
+ * Describes a single field-level change between pre- and post-action snapshots.
+ */
+export interface ElementFieldChange {
+  /** Element ID */
+  elementId: string;
+  /** Field that changed (e.g. "value", "textContent", "visible") */
+  field: string;
+  /** Value before the action */
+  before: unknown;
+  /** Value after the action */
+  after: unknown;
+}
+
+/**
+ * Summary of DOM changes caused by an action, returned when `captureAfter: true`.
+ */
+export interface ActionChanges {
+  /** Element IDs that appeared after the action */
+  appeared: string[];
+  /** Element IDs that disappeared after the action */
+  disappeared: string[];
+  /** Fields that changed on existing elements */
+  stateChanged: ElementFieldChange[];
 }
 
 /**

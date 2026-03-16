@@ -41,6 +41,7 @@ import type {
   DragAction,
   ScrollIntoViewAction,
   FillFormRequest,
+  ReactStateInfo,
 } from './types';
 
 /**
@@ -986,14 +987,20 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performClick(element: HTMLElement, options?: MouseAction): void {
+    // Dispatch mouse events for listeners that depend on the full sequence
     element.dispatchEvent(createMouseEvent('mousedown', element, options));
     element.dispatchEvent(createMouseEvent('mouseup', element, options));
-    element.dispatchEvent(createMouseEvent('click', element, options));
 
-    // Synthetic click events don't trigger default <a> navigation in all browsers.
-    // If the element (or an ancestor) is an anchor with href, invoke the native click.
+    // Use native click() which works with React's event delegation.
+    // dispatchEvent(new MouseEvent('click')) does NOT trigger React onClick
+    // because React 17+ delegates events at the root and doesn't intercept
+    // programmatically dispatched events.
+    element.click();
+
+    // Anchor navigation fallback (native click already handles this,
+    // but keep for elements inside anchors where element !== anchor)
     const anchor = element.closest('a');
-    if (anchor && anchor.hasAttribute('href')) {
+    if (anchor && anchor !== element && anchor.hasAttribute('href')) {
       anchor.click();
     }
   }
@@ -1739,6 +1746,92 @@ function computeActionErrorDiff(
     resolvedErrors: dedupedResolved,
     errorDelta: countErrors(dedupedNew) - countErrors(dedupedResolved),
   };
+}
+
+/**
+ * Safely serialize a value, replacing functions and handling circular references.
+ */
+function safeSerialize(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'function') return '[Function]';
+  if (typeof value !== 'object') return value;
+
+  const obj = value as object;
+  if (seen.has(obj)) return '[Circular]';
+  seen.add(obj);
+
+  if (Array.isArray(obj)) {
+    return obj.map(item => safeSerialize(item, seen));
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(obj)) {
+    try {
+      result[key] = safeSerialize((obj as Record<string, unknown>)[key], seen);
+    } catch {
+      result[key] = '[Error reading property]';
+    }
+  }
+  return result;
+}
+
+/**
+ * Extract React state from a DOM element's React fiber internals.
+ *
+ * Walks the `__reactFiber$` key to extract `memoizedState` (useState values)
+ * and the `__reactProps$` key for current props.
+ */
+export function extractReactState(element: HTMLElement): ReactStateInfo | null {
+  const el = element as unknown as Record<string, unknown>;
+
+  // Find React internal keys
+  const reactPropsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+  const reactFiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+
+  if (!reactPropsKey && !reactFiberKey) {
+    return null; // Not a React-managed element
+  }
+
+  // Extract props (replace functions with marker strings)
+  const rawProps = reactPropsKey
+    ? (el[reactPropsKey] as Record<string, unknown> | undefined) ?? {}
+    : {};
+  const props = safeSerialize(rawProps) as Record<string, unknown>;
+
+  // Walk the memoizedState linked list to extract useState/useReducer values
+  const fiberState: unknown[] = [];
+  let componentName: string | undefined;
+
+  if (reactFiberKey) {
+    const fiber = el[reactFiberKey] as Record<string, unknown> | undefined;
+    if (fiber) {
+      // Walk up to find the nearest function/class component
+      let current: Record<string, unknown> | undefined = fiber;
+      while (current) {
+        const type = current.type;
+        if (typeof type === 'function') {
+          componentName = (type as { displayName?: string; name?: string }).displayName
+            || (type as { name?: string }).name
+            || undefined;
+          break;
+        }
+        current = current.return as Record<string, unknown> | undefined;
+      }
+
+      // Extract memoizedState chain from the component fiber (not the DOM fiber)
+      const componentFiber = current || fiber;
+      let stateNode = componentFiber?.memoizedState as Record<string, unknown> | null;
+      let stateCount = 0;
+      const maxStates = 20; // Safety limit
+      while (stateNode && stateCount < maxStates) {
+        fiberState.push(safeSerialize(stateNode.memoizedState));
+        stateNode = stateNode.next as Record<string, unknown> | null;
+        stateCount++;
+      }
+    }
+  }
+
+  return { props, fiberState, componentName };
 }
 
 /**
