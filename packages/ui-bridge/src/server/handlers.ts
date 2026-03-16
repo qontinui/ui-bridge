@@ -2042,6 +2042,21 @@ export function createHandlers(
         if (!request.url) {
           return error('URL is required', 'INVALID_REQUEST');
         }
+        // Validate URL scheme to prevent javascript:/data: injection
+        try {
+          const parsed = new URL(request.url, window.location.origin);
+          if (!['http:', 'https:'].includes(parsed.protocol) && !request.url.startsWith('/')) {
+            return error(
+              'Invalid URL protocol — only http/https and relative paths allowed',
+              'INVALID_REQUEST'
+            );
+          }
+        } catch {
+          // Relative URLs like "/foo" won't parse without a base — they're safe
+          if (!request.url.startsWith('/')) {
+            return error('Invalid URL format', 'INVALID_REQUEST');
+          }
+        }
         window.location.href = request.url;
         return success({ success: true, url: request.url, timestamp: Date.now() });
       } catch (err) {
