@@ -5,9 +5,225 @@
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
+import type { WorkflowStep } from '../core/types';
 import type { NativeActionExecutor } from '../control/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
 import { createDesignHandlers } from './design-handlers';
+
+/**
+ * Result of executing a single workflow step
+ */
+interface WorkflowStepResult {
+  stepId: string;
+  type: string;
+  status: 'completed' | 'failed' | 'skipped';
+  result?: unknown;
+  error?: string;
+  durationMs: number;
+}
+
+/**
+ * Execute a single workflow step using the registry and executor
+ */
+async function executeWorkflowStep(
+  step: WorkflowStep,
+  registry: NativeUIBridgeRegistry,
+  executor: NativeActionExecutor
+): Promise<WorkflowStepResult> {
+  const startTime = Date.now();
+
+  try {
+    switch (step.type) {
+      case 'element-action': {
+        if (!step.target || !step.action) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: 'element-action step requires target and action',
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const response = await executor.executeAction(step.target, {
+          action: step.action,
+          params: step.params,
+          waitOptions: step.waitOptions,
+        });
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: response.success ? 'completed' : 'failed',
+          result: response.result,
+          error: response.error,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'component-action': {
+        if (!step.target || !step.action) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: 'component-action step requires target and action',
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const response = await executor.executeComponentAction(step.target, {
+          action: step.action,
+          params: step.params,
+        });
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: response.success ? 'completed' : 'failed',
+          result: response.result,
+          error: response.error,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'wait': {
+        if (!step.target) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: 'wait step requires target element id',
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const waitResult = await executor.waitForElement(
+          step.target,
+          step.waitOptions || { visible: true, timeout: 10000, interval: 100 }
+        );
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: waitResult.met ? 'completed' : 'failed',
+          result: waitResult.state,
+          error: waitResult.error,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'assert': {
+        if (!step.target) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: 'assert step requires target element id',
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const element = registry.getElement(step.target);
+        if (!element) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: `Element not found: ${step.target}`,
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const state = element.getState();
+        const expected = step.params || {};
+        const stateRecord = state as unknown as Record<string, unknown>;
+        const mismatches: string[] = [];
+
+        for (const [key, value] of Object.entries(expected)) {
+          if (stateRecord[key] !== value) {
+            mismatches.push(
+              `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(stateRecord[key])}`
+            );
+          }
+        }
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: mismatches.length === 0 ? 'completed' : 'failed',
+          result: { state, mismatches },
+          error: mismatches.length > 0 ? `Assertion failed: ${mismatches.join('; ')}` : undefined,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'custom': {
+        if (!step.handler) {
+          return {
+            stepId: step.id,
+            type: step.type,
+            status: 'failed',
+            error: 'custom step requires a handler function',
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        const result = await step.handler();
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: 'completed',
+          result,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'log': {
+        const message = step.params?.message ?? step.params?.text ?? `[workflow] step ${step.id}`;
+        console.log(`[ui-bridge-native] workflow log: ${message}`);
+
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: 'completed',
+          result: { message },
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      case 'navigate':
+      case 'branch':
+      case 'loop':
+      case 'extract':
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: 'skipped',
+          error: `Step type "${step.type}" is not yet supported in native workflow execution`,
+          durationMs: Date.now() - startTime,
+        };
+
+      default:
+        return {
+          stepId: step.id,
+          type: step.type,
+          status: 'failed',
+          error: `Unknown step type: ${step.type}`,
+          durationMs: Date.now() - startTime,
+        };
+    }
+  } catch (err) {
+    return {
+      stepId: step.id,
+      type: step.type,
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
 
 /**
  * Create a success response
@@ -213,10 +429,61 @@ export function createServerHandlers(
         return error(`Workflow not found: ${id}`, 'WORKFLOW_NOT_FOUND');
       }
 
-      // TODO: Implement workflow execution
+      const runId = `run-${Date.now()}`;
+      const startTime = Date.now();
+      const stepResults: WorkflowStepResult[] = [];
+      let status: 'completed' | 'failed' = 'completed';
+
+      registry.emit('workflow:started', {
+        runId,
+        workflowId: id,
+        workflowName: workflow.name,
+        totalSteps: workflow.steps.length,
+      });
+
+      for (const step of workflow.steps) {
+        const stepResult = await executeWorkflowStep(step, registry, executor);
+        stepResults.push(stepResult);
+
+        if (stepResult.status === 'completed' || stepResult.status === 'skipped') {
+          registry.emit('workflow:stepCompleted', {
+            runId,
+            workflowId: id,
+            step: stepResult,
+          });
+        }
+
+        if (stepResult.status === 'failed') {
+          status = 'failed';
+          registry.emit('workflow:failed', {
+            runId,
+            workflowId: id,
+            failedStep: stepResult,
+            completedSteps: stepResults.length - 1,
+            totalSteps: workflow.steps.length,
+          });
+          break;
+        }
+      }
+
+      if (status === 'completed') {
+        registry.emit('workflow:completed', {
+          runId,
+          workflowId: id,
+          steps: stepResults,
+          totalDurationMs: Date.now() - startTime,
+        });
+      }
+
       return success({
-        runId: `run-${Date.now()}`,
-        status: 'pending',
+        runId,
+        status,
+        steps: stepResults,
+        totalSteps: workflow.steps.length,
+        completedSteps: stepResults.filter((s) => s.status === 'completed').length,
+        failedSteps: stepResults.filter((s) => s.status === 'failed').length,
+        skippedSteps: stepResults.filter((s) => s.status === 'skipped').length,
+        durationMs: Date.now() - startTime,
       });
     },
 

@@ -451,7 +451,7 @@ export class NativeUIBridgeRegistry {
   /**
    * Emit an event
    */
-  private emit(type: BridgeEventType, data: unknown): void {
+  emit(type: BridgeEventType, data: unknown): void {
     const event: BridgeEvent = {
       type,
       timestamp: Date.now(),
