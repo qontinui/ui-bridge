@@ -161,13 +161,21 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getComponents() {
+      // Refresh snapshot to get the latest component list from the browser
       await refreshSnapshotIfStale(latestControlSnapshot.components.length === 0);
       return success(latestControlSnapshot.components);
     },
 
     async getComponent(id) {
+      // Refresh snapshot before looking up — components mount/unmount with page navigation
+      await refreshSnapshotIfStale(true);
       const component = latestControlSnapshot.components.find((c) => c.id === id);
-      if (!component) return error(`Component ${id} not found`, 'NOT_FOUND');
+      if (!component) {
+        return error(
+          `Component "${id}" not found. Components are only available when their page is active — navigate to the page that contains this component and try again.`,
+          'NOT_FOUND'
+        );
+      }
       return success(component);
     },
 

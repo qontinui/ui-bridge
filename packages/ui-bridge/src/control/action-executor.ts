@@ -358,7 +358,12 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       let element: HTMLElement | null = registered?.element ?? null;
 
-      // If not registered, try to find by identifier
+      // Verify element is still in the live DOM (React re-renders can detach elements)
+      if (element && !element.isConnected) {
+        element = null;
+      }
+
+      // If not registered or detached, try to find by identifier
       if (!element) {
         element = findElementByIdentifier(elementId);
       }
@@ -502,7 +507,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       if (!component) {
         return {
           success: false,
-          error: `Component not found: ${componentId}`,
+          error: `Component "${componentId}" not found. Components are only available when their page is active.`,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,

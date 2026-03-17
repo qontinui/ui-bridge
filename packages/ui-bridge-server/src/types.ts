@@ -30,6 +30,7 @@ import type {
   SemanticDiff,
   SemanticSearchCriteria,
   SemanticSearchResponse,
+  ScreenAnalysis,
 } from '@qontinui/ui-bridge/ai';
 
 /**
@@ -175,6 +176,9 @@ export interface UIBridgeServerHandlers {
   getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
   getPageSummary: () => Promise<APIResponse<string>>;
 
+  // Screen analysis
+  getScreenAnalysis: () => Promise<APIResponse<ScreenAnalysis>>;
+
   // Semantic search (embedding-based)
   aiSemanticSearch: (
     criteria: SemanticSearchCriteria
@@ -283,6 +287,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/ai/snapshot', handler: 'getSemanticSnapshot' },
   { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
+  { method: 'GET', path: '/ai/analyze', handler: 'getScreenAnalysis' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
 
   // Performance diagnostics

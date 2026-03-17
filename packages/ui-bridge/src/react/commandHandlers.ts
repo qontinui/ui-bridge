@@ -7,6 +7,7 @@
  */
 
 import type { RegisteredElement } from '../core/types';
+import { getGlobalRegistry } from '../core/registry';
 
 // ============================================================================
 // Types
@@ -328,8 +329,18 @@ export async function executeCommand(
   payload: P,
   bridge: BridgeAccess,
 ): Promise<unknown> {
-  const { elements, getElement, components, workflows } = bridge;
   const g = getBridge();
+
+  // Read elements, components, and workflows from the live global registry
+  // instead of the stale memoized bridge arrays. The bridge collections are
+  // captured via useMemo in useUIBridge and never update when
+  // AutoRegisterProvider registers elements, because registry mutations
+  // don't trigger React re-renders.
+  const registry = getGlobalRegistry();
+  const elements = registry.getAllElements();
+  const components = registry.getAllComponents();
+  const workflows = registry.getAllWorkflows();
+  const getElement = (id: string) => registry.getElement(id);
 
   switch (action) {
     // ======================================================================
@@ -522,21 +533,48 @@ export async function executeCommand(
     // ======================================================================
 
     case 'getComponentState': {
-      const comp = components.find(c => c.id === (payload.id as string));
-      return { state: comp?.getState?.() ?? {}, computed: {}, timestamp: Date.now() };
+      const compId = payload.id as string;
+      const comp = registry.getComponent(compId);
+      if (!comp) {
+        return {
+          success: false,
+          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          timestamp: Date.now(),
+        };
+      }
+      return {
+        success: true,
+        state: comp.getState?.() ?? {},
+        computed: comp.getComputed?.() ?? {},
+        timestamp: Date.now(),
+      };
     }
 
     case 'executeComponentAction': {
-      const { id, request } = payload as { id: string; request: { actionId: string; params?: P } };
-      if (bridge.executeComponentAction) {
-        try {
-          const result = await bridge.executeComponentAction(id, request);
-          return result;
-        } catch (err) {
-          return { success: false, error: (err as Error).message, timestamp: Date.now() };
-        }
+      const { id, request } = payload as { id: string; request: { action: string; actionId?: string; params?: P } };
+      const actionId = request.actionId ?? request.action;
+      const comp = registry.getComponent(id);
+      if (!comp) {
+        return {
+          success: false,
+          error: `Component "${id}" not found. Components are only available when their page is active.`,
+          timestamp: Date.now(),
+        };
       }
-      return { success: false, error: `Component ${id} action not supported`, timestamp: Date.now() };
+      const action = comp.actions.find(a => a.id === actionId);
+      if (!action) {
+        return {
+          success: false,
+          error: `Action "${actionId}" not found on component "${id}". Available actions: ${comp.actions.map(a => a.id).join(', ')}`,
+          timestamp: Date.now(),
+        };
+      }
+      try {
+        const result = await action.handler(request.params);
+        return { success: true, result, timestamp: Date.now() };
+      } catch (err) {
+        return { success: false, error: (err as Error).message, timestamp: Date.now() };
+      }
     }
 
     // ======================================================================

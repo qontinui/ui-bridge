@@ -1030,6 +1030,121 @@ export interface ListChangeAnalysis {
 }
 
 // ============================================================================
+// Screen Analysis Types (GET /ai/analyze)
+// ============================================================================
+
+/**
+ * Compact element representation — flat, minimal, ~11 fields vs AIDiscoveredElement's 20+.
+ * Bounds as [x,y,w,h] tuple saves ~60% vs full rect object.
+ * Text truncated to 200 chars.
+ */
+export interface CompactElement {
+  id: string;
+  type: string;
+  label?: string;
+  visible: boolean;
+  enabled: boolean;
+  text?: string;
+  value?: string;
+  actions: string[];
+  semanticType?: string;
+  /** Bounds as [x, y, width, height] tuple */
+  bounds?: [number, number, number, number];
+}
+
+/**
+ * Elements pre-grouped by category so agents can skip irrelevant sections.
+ */
+export interface GroupedElements {
+  interactive: CompactElement[];
+  content: CompactElement[];
+  media: CompactElement[];
+}
+
+/**
+ * Compact modal representation
+ */
+export interface CompactModal {
+  id: string;
+  title?: string;
+  type: string;
+  blocking: boolean;
+  closeButton?: string;
+  primaryAction?: string;
+}
+
+/**
+ * Compact toast representation
+ */
+export interface CompactToast {
+  id: string;
+  message: string;
+  level?: string;
+  dismissible: boolean;
+}
+
+/**
+ * Aggregated error information
+ */
+export interface AggregatedErrors {
+  count: number;
+  health: 'healthy' | 'degraded' | 'broken';
+  validationErrors: string[];
+  runtimeError?: string;
+  hasErrorOverlay: boolean;
+}
+
+/**
+ * Loading/in-flight state
+ */
+export interface LoadingState {
+  isLoading: boolean;
+  inFlightRequests: number;
+  activeWorkflows: number;
+}
+
+/**
+ * Comprehensive screen analysis — single response combining all actionable
+ * information about the current screen.
+ */
+export interface ScreenAnalysis {
+  /** Page info (url, title, type) */
+  page: {
+    url: string;
+    title: string;
+    type?: string;
+  };
+  /** Viewport dimensions and scroll state */
+  viewport?: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    canScrollDown: boolean;
+  };
+  /** LLM-readable summary */
+  summary: string;
+  /** Elements grouped by category */
+  elements: GroupedElements;
+  /** Form states */
+  forms: FormState[];
+  /** Active modals */
+  modals: CompactModal[];
+  /** Aggregated errors */
+  errors: AggregatedErrors;
+  /** Active toasts */
+  toasts: CompactToast[];
+  /** Loading state */
+  loading: LoadingState;
+  /** Currently focused element ID */
+  focusedElement?: string;
+  /** Element counts by type */
+  elementCounts: Record<string, number>;
+  /** Snapshot timestamp */
+  timestamp: number;
+}
+
+// ============================================================================
 // Semantic Search Types
 // ============================================================================
 

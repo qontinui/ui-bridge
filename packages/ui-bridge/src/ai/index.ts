@@ -75,6 +75,15 @@ export type {
   // Registration types
   AIElementRegistrationOptions,
 
+  // Screen analysis types
+  CompactElement,
+  GroupedElements,
+  CompactModal,
+  CompactToast,
+  AggregatedErrors,
+  LoadingState,
+  ScreenAnalysis,
+
   // Semantic search types
   SemanticSearchCriteria,
   SemanticSearchResult,

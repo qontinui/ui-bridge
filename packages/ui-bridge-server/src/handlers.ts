@@ -23,6 +23,13 @@ import type {
   SemanticSearchResponse,
   SemanticSearchResult,
   AIDiscoveredElement,
+  ScreenAnalysis,
+  CompactElement,
+  GroupedElements,
+  CompactModal,
+  CompactToast,
+  AggregatedErrors,
+  LoadingState,
 } from '@qontinui/ui-bridge/ai';
 import {
   SearchEngine,
@@ -274,6 +281,161 @@ function createFailureDetails(
     retryRecommended: retryableErrors.includes(errorCode),
     durationMs: options.durationMs,
     timeoutMs: options.timeoutMs,
+  };
+}
+
+/**
+ * Transform an AIDiscoveredElement into a CompactElement.
+ * Truncates text to 200 chars, uses [x,y,w,h] bounds tuple.
+ */
+function toCompactElement(el: AIDiscoveredElement): CompactElement {
+  const compact: CompactElement = {
+    id: el.id,
+    type: el.type,
+    visible: el.state.visible,
+    enabled: el.state.enabled,
+    actions: el.actions,
+  };
+  if (el.label) compact.label = el.label;
+  if (el.state.textContent) {
+    compact.text =
+      el.state.textContent.length > 200
+        ? el.state.textContent.slice(0, 200)
+        : el.state.textContent;
+  }
+  if (el.state.value !== undefined) compact.value = el.state.value;
+  if (el.semanticType) compact.semanticType = el.semanticType;
+  if (el.state.rect) {
+    compact.bounds = [el.state.rect.x, el.state.rect.y, el.state.rect.width, el.state.rect.height];
+  }
+  return compact;
+}
+
+/**
+ * Build a ScreenAnalysis from a registry + snapshot manager + summary generator.
+ * Shared between createHandlers and createAIHandlers.
+ */
+function buildScreenAnalysis(
+  registry: RegistryLike,
+  snapshotManager: { createSnapshot(cs: ControlSnapshot): SemanticSnapshot }
+): ScreenAnalysis {
+  const controlSnapshot = registry.createSnapshot();
+  const semanticSnapshot = snapshotManager.createSnapshot(controlSnapshot);
+
+  // Convert snapshot elements to AI elements format for summary
+  const aiElements = controlSnapshot.elements.map((el) => ({
+    ...el,
+    description: el.label || el.id,
+    aliases: [],
+    suggestedActions: [],
+    tagName: el.type,
+    accessibleName: el.label,
+    registered: true,
+  })) as any[];
+  const summary = generatePageSummary(aiElements);
+
+  // Transform elements into compact grouped format
+  const interactive: CompactElement[] = [];
+  const content: CompactElement[] = [];
+  const media: CompactElement[] = [];
+
+  for (const el of semanticSnapshot.elements) {
+    const compact = toCompactElement(el);
+    const category = el.category || 'content';
+    if (category === 'interactive') {
+      interactive.push(compact);
+    } else if (category === 'media') {
+      media.push(compact);
+    } else {
+      content.push(compact);
+    }
+  }
+
+  const elements: GroupedElements = { interactive, content, media };
+
+  // Page info — prefer semantic, fallback to control
+  const page = {
+    url: semanticSnapshot.page?.url || controlSnapshot.page?.url || '',
+    title: semanticSnapshot.page?.title || controlSnapshot.page?.title || '',
+    type: semanticSnapshot.page?.pageType,
+  };
+
+  // Viewport from control snapshot
+  const viewport = controlSnapshot.viewport
+    ? {
+        width: controlSnapshot.viewport.viewportWidth,
+        height: controlSnapshot.viewport.viewportHeight,
+        scrollX: controlSnapshot.viewport.scrollX,
+        scrollY: controlSnapshot.viewport.scrollY,
+        canScrollDown: controlSnapshot.viewport.canScrollDown,
+      }
+    : undefined;
+
+  // Modals from semantic snapshot
+  const modals: CompactModal[] = semanticSnapshot.activeModals.map((m) => {
+    const compact: CompactModal = {
+      id: m.id,
+      type: m.type,
+      blocking: m.blocking,
+    };
+    if (m.title) compact.title = m.title;
+    if (m.closeButton) compact.closeButton = m.closeButton;
+    if (m.primaryAction) compact.primaryAction = m.primaryAction;
+    return compact;
+  });
+
+  // Aggregate errors from forms + control snapshot errorSummary
+  const validationErrors: string[] = [];
+  for (const form of semanticSnapshot.forms) {
+    for (const field of form.fields) {
+      if (field.error) {
+        validationErrors.push(`${field.label}: ${field.error}`);
+      }
+    }
+  }
+  const errorSummary = controlSnapshot.errorSummary;
+  const errors: AggregatedErrors = {
+    count: errorSummary?.errorCount ?? 0,
+    health: errorSummary?.health ?? 'healthy',
+    validationErrors,
+    runtimeError: errorSummary?.mostRecentError?.message,
+    hasErrorOverlay: (errorSummary?.errorOverlays?.length ?? 0) > 0,
+  };
+
+  // Toasts from control snapshot (CapturedToast typed via SnapshotToastContext)
+  const toasts: CompactToast[] =
+    controlSnapshot.toasts?.active.map((t) => {
+      const compact: CompactToast = {
+        id: t.id,
+        message: t.message,
+        dismissible: t.hasAction ?? false,
+      };
+      if (t.level) compact.level = t.level;
+      return compact;
+    }) ?? [];
+
+  // Loading state
+  const inFlightRequests = semanticSnapshot.networkActivity?.inFlightCount ?? 0;
+  const activeWorkflows = controlSnapshot.activeRuns?.length ?? 0;
+  const loading: LoadingState = {
+    isLoading: inFlightRequests > 0 || activeWorkflows > 0,
+    inFlightRequests,
+    activeWorkflows,
+  };
+
+  return {
+    page,
+    viewport,
+    summary,
+    elements,
+    forms: semanticSnapshot.forms,
+    modals,
+    errors,
+    toasts,
+    loading,
+    focusedElement: semanticSnapshot.focusedElement,
+    elementCounts: semanticSnapshot.elementCounts,
+    timestamp: Date.now(),
   };
 }
 
@@ -853,6 +1015,15 @@ export function createHandlers(
       }
     },
 
+    getScreenAnalysis: async (): Promise<APIResponse<ScreenAnalysis>> => {
+      try {
+        const analysis = buildScreenAnalysis(registry, snapshotManager);
+        return success(analysis);
+      } catch (err) {
+        return error((err as Error).message, 'SCREEN_ANALYSIS_ERROR');
+      }
+    },
+
     // =========================================================================
     // Semantic Search Handler (Embedding-based)
     // =========================================================================
@@ -1054,6 +1225,7 @@ export function createAIHandlers(
   | 'getSemanticSnapshot'
   | 'getSemanticDiff'
   | 'getPageSummary'
+  | 'getScreenAnalysis'
   | 'getPerformanceEntries'
   | 'clearPerformanceEntries'
   | 'getBrowserEvents'
@@ -1186,6 +1358,20 @@ export function createAIHandlers(
           success: false,
           error: (err as Error).message,
           code: 'PAGE_SUMMARY_ERROR',
+          timestamp: Date.now(),
+        };
+      }
+    },
+
+    getScreenAnalysis: async (): Promise<APIResponse<ScreenAnalysis>> => {
+      try {
+        const analysis = buildScreenAnalysis(registry, snapshotManager);
+        return { success: true, data: analysis, timestamp: Date.now() };
+      } catch (err) {
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'SCREEN_ANALYSIS_ERROR',
           timestamp: Date.now(),
         };
       }
