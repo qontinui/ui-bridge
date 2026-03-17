@@ -839,22 +839,32 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (id: string, _request?: unknown) => {
+    runWorkflow: async (id: string, request?: unknown) => {
       try {
-        const workflow = registry.getWorkflow?.(id);
-        if (!workflow) {
-          return error(`Workflow not found: ${id}`, 'NOT_FOUND');
+        const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
+        const runnerUrl = `http://localhost:${runnerPort}`;
+        let response: Response;
+        try {
+          response = await fetch(`${runnerUrl}/api/unified-workflows/${encodeURIComponent(id)}/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request ?? {}),
+          });
+        } catch (fetchErr) {
+          return error(
+            `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
+            'RUNNER_UNAVAILABLE'
+          ) as APIResponse<any>;
         }
-        // TODO: Implement actual workflow execution
-        const runId = `run-${Date.now()}`;
-        return success({
-          runId,
-          workflowId: id,
-          status: 'pending',
-          startedAt: Date.now(),
-          steps: [],
-          totalSteps: 0,
-        }) as APIResponse<any>;
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          return error(
+            `Runner returned ${response.status}: ${body}`,
+            'RUNNER_ERROR'
+          ) as APIResponse<any>;
+        }
+        const data = await response.json() as any;
+        return success(data) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_ERROR');
       }
@@ -862,16 +872,26 @@ export function createHandlers(
 
     getWorkflowStatus: async (runId: string) => {
       try {
-        // TODO: Implement workflow status tracking
-        return success({
-          runId,
-          workflowId: '',
-          status: 'completed',
-          completedAt: Date.now(),
-          startedAt: Date.now(),
-          steps: [],
-          totalSteps: 0,
-        }) as APIResponse<any>;
+        const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
+        const runnerUrl = `http://localhost:${runnerPort}`;
+        let response: Response;
+        try {
+          response = await fetch(`${runnerUrl}/api/task-runs/${encodeURIComponent(runId)}`);
+        } catch (fetchErr) {
+          return error(
+            `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
+            'RUNNER_UNAVAILABLE'
+          ) as APIResponse<any>;
+        }
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          return error(
+            `Runner returned ${response.status}: ${body}`,
+            'RUNNER_ERROR'
+          ) as APIResponse<any>;
+        }
+        const data = await response.json() as any;
+        return success(data) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');
       }
