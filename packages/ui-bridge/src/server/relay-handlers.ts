@@ -257,15 +257,14 @@ export function createRelayHandlers(
       return relayCommand('getComponentState', { id });
     },
 
-    async executeComponentAction(id, request) {
+    async executeComponentAction(id, request, body?: Record<string, unknown>) {
       // The Express adapter passes (id, actionId, body) based on route params ['id', 'actionId'].
-      // When called from Express: id=componentId, request=actionId (string), third arg=body.
+      // When called from Express: id=componentId, request=actionId (string), body=req.body.
       // When called from Next.js/WebSocket: id=componentId, request={action, params}.
       // Normalize both calling conventions into the relay command format.
       let normalizedRequest: ComponentActionRequest;
       if (typeof request === 'string') {
         // Express path: request is actually the actionId string, body is the 3rd argument
-        const body = arguments[2] as Record<string, unknown> | undefined;
         normalizedRequest = { action: request, params: body?.params as Record<string, unknown> };
       } else {
         normalizedRequest = request;
