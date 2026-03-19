@@ -1209,6 +1209,7 @@ export class DefaultActionExecutor implements ActionExecutor {
    * Map a key name to a KeyboardEvent.code value.
    */
   private keyToCode(key: string): string {
+    if (!key || typeof key !== 'string') return '';
     if (key.length === 1) {
       const upper = key.toUpperCase();
       if (upper >= 'A' && upper <= 'Z') return `Key${upper}`;
@@ -1334,44 +1335,89 @@ export class DefaultActionExecutor implements ActionExecutor {
     element.dispatchEvent(createMouseEvent('mouseover', element));
   }
 
-  private performScroll(element: HTMLElement, options?: ScrollAction): void {
+  private async performScroll(
+    element: HTMLElement,
+    options?: ScrollAction
+  ): Promise<{
+    scrollInfo: {
+      before: { scrollTop: number; scrollLeft: number };
+      after: { scrollTop: number; scrollLeft: number };
+      changed: boolean;
+    };
+  }> {
+    const scrollTarget = this.findScrollableElement(element);
+    const isSmooth = !!options?.smooth;
+
+    // Capture pre-scroll state
+    const before = { scrollTop: scrollTarget.scrollTop, scrollLeft: scrollTarget.scrollLeft };
+
     if (options?.toElement) {
       const target = document.querySelector<HTMLElement>(options.toElement);
       if (target) {
-        target.scrollIntoView({ behavior: options.smooth ? 'smooth' : 'auto' });
-        return;
+        target.scrollIntoView({ behavior: isSmooth ? 'smooth' : 'auto' });
       }
-    }
-
-    // Find the nearest scrollable element (the element itself or an ancestor)
-    const scrollTarget = this.findScrollableElement(element);
-
-    if (options?.position) {
+    } else if (options?.position) {
       scrollTarget.scrollTo({
         left: options.position.x,
         top: options.position.y,
-        behavior: options.smooth ? 'smooth' : 'auto',
+        behavior: isSmooth ? 'smooth' : 'auto',
       });
-      return;
+    } else {
+      const amount = options?.amount || 100;
+      const direction = options?.direction || 'down';
+
+      switch (direction) {
+        case 'up':
+          scrollTarget.scrollBy({ top: -amount, behavior: isSmooth ? 'smooth' : 'auto' });
+          break;
+        case 'down':
+          scrollTarget.scrollBy({ top: amount, behavior: isSmooth ? 'smooth' : 'auto' });
+          break;
+        case 'left':
+          scrollTarget.scrollBy({ left: -amount, behavior: isSmooth ? 'smooth' : 'auto' });
+          break;
+        case 'right':
+          scrollTarget.scrollBy({ left: amount, behavior: isSmooth ? 'smooth' : 'auto' });
+          break;
+      }
     }
 
-    const amount = options?.amount || 100;
-    const direction = options?.direction || 'down';
-
-    switch (direction) {
-      case 'up':
-        scrollTarget.scrollBy({ top: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
-        break;
-      case 'down':
-        scrollTarget.scrollBy({ top: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
-        break;
-      case 'left':
-        scrollTarget.scrollBy({ left: -amount, behavior: options?.smooth ? 'smooth' : 'auto' });
-        break;
-      case 'right':
-        scrollTarget.scrollBy({ left: amount, behavior: options?.smooth ? 'smooth' : 'auto' });
-        break;
+    // For smooth scrolling, wait for the animation to complete before capturing
+    if (isSmooth) {
+      await new Promise<void>((resolve) => {
+        let lastTop = scrollTarget.scrollTop;
+        let lastLeft = scrollTarget.scrollLeft;
+        let stableFrames = 0;
+        const check = () => {
+          if (scrollTarget.scrollTop === lastTop && scrollTarget.scrollLeft === lastLeft) {
+            stableFrames++;
+            if (stableFrames >= 3) {
+              resolve();
+              return;
+            }
+          } else {
+            stableFrames = 0;
+            lastTop = scrollTarget.scrollTop;
+            lastLeft = scrollTarget.scrollLeft;
+          }
+          requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+        // Safety timeout: don't wait more than 1s
+        setTimeout(resolve, 1000);
+      });
     }
+
+    // Capture post-scroll state
+    const after = { scrollTop: scrollTarget.scrollTop, scrollLeft: scrollTarget.scrollLeft };
+
+    return {
+      scrollInfo: {
+        before,
+        after,
+        changed: before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft,
+      },
+    };
   }
 
   private findScrollableElement(element: HTMLElement): HTMLElement {
@@ -1469,7 +1515,20 @@ export class DefaultActionExecutor implements ActionExecutor {
    * Optionally dispatches HTML5 drag events (dragstart/dragover/drop/dragend)
    * for apps that use the HTML5 Drag and Drop API instead of mouse events.
    */
-  private async performDrag(sourceElement: HTMLElement, options?: DragAction): Promise<void> {
+  private async performDrag(
+    sourceElement: HTMLElement,
+    options?: DragAction
+  ): Promise<{ warning?: string }> {
+    // Check if element appears to be draggable
+    const computedStyle = window.getComputedStyle(sourceElement);
+    const isDraggable =
+      sourceElement.draggable ||
+      sourceElement.getAttribute('aria-grabbed') !== null ||
+      sourceElement.getAttribute('role') === 'slider' ||
+      computedStyle.cursor === 'grab' ||
+      computedStyle.cursor === 'move' ||
+      computedStyle.cursor === 'grabbing';
+
     const sourceRect = sourceElement.getBoundingClientRect();
     const sourceX = sourceRect.left + (options?.sourceOffset?.x ?? sourceRect.width / 2);
     const sourceY = sourceRect.top + (options?.sourceOffset?.y ?? sourceRect.height / 2);
@@ -1570,6 +1629,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (releaseDelay > 0) {
       await sleep(releaseDelay);
     }
+
+    return {
+      warning: isDraggable
+        ? undefined
+        : 'Element does not appear to be draggable (no draggable attribute, aria-grabbed, or grab/move cursor). Drag events were dispatched but may have no effect.',
+    };
   }
 
   /**

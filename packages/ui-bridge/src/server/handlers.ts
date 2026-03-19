@@ -802,6 +802,25 @@ export function createHandlers(
 
   function applyFindFilters(elements: any[], request: FindRequest): any[] {
     return elements.filter((el: any) => {
+      // Filter by interactiveOnly (support both camelCase and snake_case)
+      if (request.interactiveOnly || (request as any).interactive_only) {
+        const interactiveTypes = new Set([
+          'button',
+          'input',
+          'select',
+          'textarea',
+          'link',
+          'checkbox',
+          'radio',
+          'switch',
+          'tab',
+          'slider',
+          'menuitem',
+        ]);
+        const isInteractive =
+          interactiveTypes.has(el.type) || (el.actions && el.actions.length > 0);
+        if (!isInteractive) return false;
+      }
       if (request.types && el.type && !request.types.includes(el.type)) return false;
       if (request.element_type && el.type && el.type !== request.element_type) return false;
       if (request.role) {
@@ -1238,8 +1257,8 @@ export function createHandlers(
         }
         let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
 
-        // Apply filters when registry doesn't implement findElements
-        if (!registry.findElements && findRequest) {
+        // Always apply filters — registry.findElements may not handle all filter types
+        if (findRequest) {
           elements = applyFindFilters(elements as any[], findRequest) as unknown[];
         }
 
@@ -1254,6 +1273,17 @@ export function createHandlers(
       }
     },
 
+    getElementImages: async (request?: Record<string, unknown>) => {
+      // This handler is a stub for direct-mode (non-relay) usage.
+      // In relay mode, the command goes to the browser via commandHandlers.ts.
+      // In direct mode, we scan the registry but can't access DOM img elements.
+      return success({
+        images: [],
+        total: 0,
+        note: 'Use relay mode for DOM image scanning',
+      }) as APIResponse<any>;
+    },
+
     discover: async (request?: unknown) => {
       // Deprecated, delegates to find
       try {
@@ -1263,8 +1293,8 @@ export function createHandlers(
         }
         let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
 
-        // Apply filters when registry doesn't implement findElements
-        if (!registry.findElements && findRequest) {
+        // Always apply filters — registry.findElements may not handle all filter types
+        if (findRequest) {
           elements = applyFindFilters(elements as any[], findRequest) as unknown[];
         }
 

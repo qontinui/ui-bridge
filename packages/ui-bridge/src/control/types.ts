@@ -326,6 +326,22 @@ export interface SnapshotErrorSummary {
 }
 
 /**
+ * Fallback screenshot captured when the UI Bridge relay cannot reach the browser.
+ * Provides visual context (via an external screenshot service) even when
+ * the in-browser SDK is unresponsive, disconnected, or erroring.
+ */
+export interface FallbackScreenshot {
+  /** Base64-encoded PNG screenshot */
+  base64: string;
+  /** Screenshot width in pixels */
+  width: number;
+  /** Screenshot height in pixels */
+  height: number;
+  /** Why the fallback was triggered */
+  reason: 'timeout' | 'no_listeners' | 'empty_response';
+}
+
+/**
  * Control snapshot - full state of controllable UI
  */
 export interface ControlSnapshot {
@@ -380,6 +396,8 @@ export interface ControlSnapshot {
   dragDrop?: SnapshotDragDropContext;
   /** Undo/redo availability and state (populated by server handlers via UndoTracker) */
   undoRedo?: SnapshotUndoContext;
+  /** Fallback screenshot when the browser is unresponsive (populated by relay handlers) */
+  fallbackScreenshot?: FallbackScreenshot;
 }
 
 /**

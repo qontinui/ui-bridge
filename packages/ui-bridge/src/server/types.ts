@@ -228,6 +228,7 @@ export interface UIBridgeServerHandlers {
     skipSettle?: boolean | string;
     settleTimeout?: number | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
+  getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
   getWorkflows: () => Promise<APIResponse<ControlSnapshot['workflows']>>;
@@ -534,11 +535,24 @@ export interface UIBridgeServerHandlers {
   findMedia: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
   mediaAuditAccessibility: () => Promise<APIResponse<unknown>>;
   mediaAuditPerformance: () => Promise<APIResponse<unknown>>;
-  captureMediaSnapshot: (request: { elementId: string; maxSize?: number }) => Promise<APIResponse<unknown>>;
-  compareMediaSnapshots: (request: { snapshotA: unknown; snapshotB: unknown }) => Promise<APIResponse<unknown>>;
+  captureMediaSnapshot: (request: {
+    elementId: string;
+    maxSize?: number;
+  }) => Promise<APIResponse<unknown>>;
+  compareMediaSnapshots: (request: {
+    snapshotA: unknown;
+    snapshotB: unknown;
+  }) => Promise<APIResponse<unknown>>;
   analyzeMedia: (request: { elementId: string; maxSize?: number }) => Promise<APIResponse<unknown>>;
-  analyzeMediaBatch: (request: { elementIds: string[]; maxSize?: number }) => Promise<APIResponse<unknown>>;
-  analyzeMediaPage: (request?: { maxElements?: number; maxSize?: number; includeContext?: boolean }) => Promise<APIResponse<unknown>>;
+  analyzeMediaBatch: (request: {
+    elementIds: string[];
+    maxSize?: number;
+  }) => Promise<APIResponse<unknown>>;
+  analyzeMediaPage: (request?: {
+    maxElements?: number;
+    maxSize?: number;
+    includeContext?: boolean;
+  }) => Promise<APIResponse<unknown>>;
 }
 
 /**
@@ -591,7 +605,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/control/elements', handler: 'getElements' },
   { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
   { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
-  { method: 'GET', path: '/control/element/:id/react-state', handler: 'getElementReactState', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/element/:id/react-state',
+    handler: 'getElementReactState',
+    params: ['id'],
+  },
   {
     method: 'POST',
     path: '/control/element/:id/action',
@@ -621,6 +640,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/find', handler: 'find' },
   { method: 'POST', path: '/control/discover', handler: 'discover' }, // @deprecated Use /control/find
   { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
+  { method: 'POST', path: '/control/get-element-images', handler: 'getElementImages' },
 
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },

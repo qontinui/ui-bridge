@@ -39,6 +39,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Credentials
+cookies.txt
+*.cookies
+
 # Misc
 *.tgz
 .npmrc

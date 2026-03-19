@@ -429,7 +429,7 @@ const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 // Relay Routes
 // ============================================================================
 
-const RELAY_COMMAND_STREAM_HEARTBEAT_MS = 30_000;
+const RELAY_COMMAND_STREAM_HEARTBEAT_MS = 15_000;
 
 /**
  * Handle relay-specific routes. Returns a Response (or Promise<Response>)
@@ -524,16 +524,23 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
       const cleanup = () => {
         if (closed) return;
         closed = true;
-        if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+        if (heartbeat) {
+          clearInterval(heartbeat);
+          heartbeat = null;
+        }
         unsubscribe();
       };
 
       // Send initial connection event
       try {
-        controller.enqueue(encoder.encode(
-          `data: ${JSON.stringify({ type: 'connected', buildId: relay.buildId, timestamp: Date.now() })}\n\n`
-        ));
-      } catch { /* ignore */ }
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: 'connected', buildId: relay.buildId, timestamp: Date.now() })}\n\n`
+          )
+        );
+      } catch {
+        /* ignore */
+      }
 
       // Subscribe to commands
       const unsubscribe = relay.subscribeToCommands((command) => {
@@ -558,7 +565,11 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
       // Clean up on disconnect
       request.signal.addEventListener('abort', () => {
         cleanup();
-        try { controller.close(); } catch { /* already closed */ }
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
       });
     },
   });
@@ -567,7 +578,7 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     },
   });
@@ -582,18 +593,27 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
     const { commandId, success: ok, result, error: errorMsg, tabId: responseTabId } = body;
 
     if (!commandId) {
-      return jsonResponse({ success: false, error: 'Missing commandId', timestamp: Date.now() }, 400);
+      return jsonResponse(
+        { success: false, error: 'Missing commandId', timestamp: Date.now() },
+        400
+      );
     }
 
     if (ok) {
       relay.resolveCommand(commandId, result, responseTabId as string | undefined);
     } else {
-      relay.rejectCommand(commandId, errorMsg || (result as { error?: string })?.error || 'Unknown error');
+      relay.rejectCommand(
+        commandId,
+        errorMsg || (result as { error?: string })?.error || 'Unknown error'
+      );
     }
 
     return jsonResponse({ success: true, timestamp: Date.now() });
   } catch {
-    return jsonResponse({ success: false, error: 'Invalid request body', timestamp: Date.now() }, 400);
+    return jsonResponse(
+      { success: false, error: 'Invalid request body', timestamp: Date.now() },
+      400
+    );
   }
 }
 
@@ -639,7 +659,11 @@ function createSSEStreamResponse(request: NextRequest, sseManager: SSEManager): 
         },
         () => {
           cleanup();
-          try { controller.close(); } catch { /* already closed */ }
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
         },
         typeFilter,
         elementFilter
@@ -657,7 +681,11 @@ function createSSEStreamResponse(request: NextRequest, sseManager: SSEManager): 
       // Clean up when the client disconnects
       request.signal.addEventListener('abort', () => {
         cleanup();
-        try { controller.close(); } catch { /* already closed */ }
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
       });
     },
   });
@@ -666,7 +694,7 @@ function createSSEStreamResponse(request: NextRequest, sseManager: SSEManager): 
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     },
   });

@@ -56,36 +56,42 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const context = useUIBridgeOptional();
 
   // Build BridgeAccess with registry from context
-  const bridge = useMemo<BridgeAccess>(() => ({
-    ...uiBridge as unknown as BridgeAccess,
-    registry: context?.registry ? {
-      getAllStates: () => context.registry.getAllStates(),
-      getState: (id: string) => context.registry.getState(id),
-      getActiveStates: () => context.registry.getActiveStates(),
-      activateState: (id: string) => context.registry.activateState(id),
-      deactivateState: (id: string) => context.registry.deactivateState(id),
-      getAllStateGroups: () => context.registry.getAllStateGroups(),
-      getStateGroup: (id: string) => context.registry.getStateGroup(id),
-      activateStateGroup: (id: string) => context.registry.activateStateGroup(id),
-      deactivateStateGroup: (id: string) => context.registry.deactivateStateGroup(id),
-      getAllTransitions: () => context.registry.getAllTransitions(),
-      getTransition: (id: string) => context.registry.getTransition(id),
-      canExecuteTransition: (id: string) => context.registry.canExecuteTransition(id),
-      executeTransition: (id: string) => context.registry.executeTransition(id),
-      findPath: (targets: string[]) => context.registry.findPath(targets),
-      navigateTo: (targets: string[]) => context.registry.navigateTo(targets),
-      getStateSnapshot: () => ({
-        timestamp: Date.now(),
-        activeStates: context.registry.getActiveStates(),
-        states: context.registry.getAllStates(),
-        groups: context.registry.getAllStateGroups(),
-        transitions: context.registry.getAllTransitions(),
-      }),
-    } : undefined,
-  }), [uiBridge, context]);
+  const bridge = useMemo<BridgeAccess>(
+    () => ({
+      ...(uiBridge as unknown as BridgeAccess),
+      registry: context?.registry
+        ? {
+            getAllStates: () => context.registry.getAllStates(),
+            getState: (id: string) => context.registry.getState(id),
+            getActiveStates: () => context.registry.getActiveStates(),
+            activateState: (id: string) => context.registry.activateState(id),
+            deactivateState: (id: string) => context.registry.deactivateState(id),
+            getAllStateGroups: () => context.registry.getAllStateGroups(),
+            getStateGroup: (id: string) => context.registry.getStateGroup(id),
+            activateStateGroup: (id: string) => context.registry.activateStateGroup(id),
+            deactivateStateGroup: (id: string) => context.registry.deactivateStateGroup(id),
+            getAllTransitions: () => context.registry.getAllTransitions(),
+            getTransition: (id: string) => context.registry.getTransition(id),
+            canExecuteTransition: (id: string) => context.registry.canExecuteTransition(id),
+            executeTransition: (id: string) => context.registry.executeTransition(id),
+            findPath: (targets: string[]) => context.registry.findPath(targets),
+            navigateTo: (targets: string[]) => context.registry.navigateTo(targets),
+            getStateSnapshot: () => ({
+              timestamp: Date.now(),
+              activeStates: context.registry.getActiveStates(),
+              states: context.registry.getAllStates(),
+              groups: context.registry.getAllStateGroups(),
+              transitions: context.registry.getAllTransitions(),
+            }),
+          }
+        : undefined,
+    }),
+    [uiBridge, context]
+  );
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processCommandRef = useRef<(command: QueuedCommand) => void>(() => {});
 
   // Stable per-tab identifier, persisted across re-renders but unique per browser tab
   const tabIdRef = useRef<string | null>(null);
@@ -94,7 +100,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     let stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STORAGE_KEY) : null;
     if (!stored) {
       stored = crypto.randomUUID();
-      try { sessionStorage.setItem(STORAGE_KEY, stored); } catch { /* SSR or quota */ }
+      try {
+        sessionStorage.setItem(STORAGE_KEY, stored);
+      } catch {
+        /* SSR or quota */
+      }
     }
     tabIdRef.current = stored;
   }
@@ -111,7 +121,10 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            commandId, success: ok, result, tabId,
+            commandId,
+            success: ok,
+            result,
+            tabId,
             error: ok ? undefined : (result as { error?: string })?.error,
           }),
         });
@@ -132,7 +145,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         const result = await executeCommand(
           command.action,
           command.payload as Record<string, unknown>,
-          bridge as unknown as BridgeAccess,
+          bridge as unknown as BridgeAccess
         );
         const resultObj = result as { success?: boolean };
         if (resultObj && resultObj.success === false) {
@@ -148,17 +161,23 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
 
         await sendResponse(command.commandId, false, {
-          success: false, error: errorMessage,
+          success: false,
+          error: errorMessage,
           failureDetails: {
-            errorCode, message: errorMessage,
+            errorCode,
+            message: errorMessage,
             timestamp: Date.now(),
           },
-          durationMs: 0, timestamp: Date.now(),
+          durationMs: 0,
+          timestamp: Date.now(),
         });
       }
     },
     [bridge, sendResponse]
   );
+
+  // Keep processCommand ref current without triggering SSE reconnect
+  processCommandRef.current = processCommand;
 
   // ========================================================================
   // SSE Connection
@@ -166,8 +185,14 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
   useEffect(() => {
     if (!enabled) {
-      if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
-      if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       return;
     }
 
@@ -175,14 +200,16 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const connect = () => {
       if (!isMounted) return;
-      const es = new EventSource(`${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`);
+      const es = new EventSource(
+        `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`
+      );
       eventSourceRef.current = es;
 
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'connected') return;
-          if (data.commandId && data.action) processCommand(data as QueuedCommand);
+          if (data.commandId && data.action) processCommandRef.current(data as QueuedCommand);
         } catch (e) {
           console.error('[UIBridge] Failed to parse SSE message:', e);
         }
@@ -190,9 +217,12 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
       es.onerror = () => {
         es.close();
-        eventSourceRef.current = null;
-        if (isMounted && document.visibilityState === 'visible') {
+        // Only nullify ref if it still points to this EventSource (avoid race with new connection)
+        if (eventSourceRef.current === es) eventSourceRef.current = null;
+        // Always reconnect — automation tools need SSE even in background tabs
+        if (isMounted) {
           reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
             if (isMounted) connect();
           }, SSE_RECONNECT_DELAY_MS);
         }
@@ -201,41 +231,41 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        // Reconnect if SSE was dropped for any reason
-        if (!eventSourceRef.current) connect();
-        // Proactive refresh could be added here
+        // Reconnect immediately if SSE was dropped while hidden.
+        // Clear any pending reconnect timeout to prevent the error handler's
+        // delayed reconnect from racing with this immediate one.
+        if (!eventSourceRef.current) {
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
+          }
+          connect();
+        }
       }
       // Do NOT disconnect on hide — automation tools need background access
     };
 
-    if (document.visibilityState === 'visible') connect();
+    // Always connect immediately — automation tools need background tab access
+    connect();
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       isMounted = false;
-      if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
-      if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [enabled, basePath, processCommand]);
+  }, [enabled, basePath, tabId]);
 
   // ========================================================================
   // Heartbeat
   // ========================================================================
-
-  // Include tabId as SSE query param when connecting
-  useEffect(() => {
-    if (!enabled) return;
-    // Patch the SSE connect to include tabId — reconnect if already connected
-    const existingEs = eventSourceRef.current;
-    if (existingEs) {
-      const currentUrl = new URL(existingEs.url);
-      if (currentUrl.searchParams.get('tabId') !== tabId) {
-        existingEs.close();
-        eventSourceRef.current = null;
-      }
-    }
-  }, [enabled, tabId]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -245,7 +275,9 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ timestamp: Date.now(), tabId }),
-      }).catch(() => { /* non-fatal */ });
+      }).catch(() => {
+        /* non-fatal */
+      });
     };
 
     sendHeartbeat();

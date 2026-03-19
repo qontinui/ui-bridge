@@ -12,7 +12,7 @@
 import type { CommandRelay } from './command-relay';
 import type { UIBridgeServerHandlers, APIResponse, CapabilitiesResponse } from './types';
 import type { RenderLogEntry } from '../render-log';
-import type { ControlSnapshot } from '../control';
+import type { ControlSnapshot, FallbackScreenshot } from '../control';
 import type { SemanticSnapshot } from '../ai';
 
 // ============================================================================
@@ -27,6 +27,60 @@ function error(message: string, code?: string): APIResponse<never> {
   return { success: false, error: message, code, timestamp: Date.now() };
 }
 
+/** Maximum allowed response size for fallback screenshots (10 MB) */
+const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Fetch a fallback screenshot from an external screenshot service.
+ * Returns null if the service is unavailable or the request fails.
+ *
+ * Only http: and https: URLs are allowed to prevent SSRF via exotic protocols.
+ */
+async function fetchFallbackScreenshot(
+  url: string,
+  reason: FallbackScreenshot['reason']
+): Promise<FallbackScreenshot | null> {
+  try {
+    // Validate URL scheme — only allow http and https to prevent SSRF
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!response.ok) return null;
+
+    // Guard against oversized responses
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > MAX_SCREENSHOT_RESPONSE_BYTES) {
+      return null;
+    }
+
+    const text = await response.text();
+    if (text.length > MAX_SCREENSHOT_RESPONSE_BYTES) {
+      return null;
+    }
+
+    const body = JSON.parse(text);
+    if (body?.success && body?.data?.screenshot) {
+      return {
+        base64: body.data.screenshot,
+        width: body.data.width ?? 0,
+        height: body.data.height ?? 0,
+        reason,
+      };
+    }
+    return null;
+  } catch {
+    // Screenshot service unavailable — not an error, just no fallback
+    return null;
+  }
+}
+
 // ============================================================================
 // Factory
 // ============================================================================
@@ -34,6 +88,15 @@ function error(message: string, code?: string): APIResponse<never> {
 export interface RelayHandlersOptions {
   /** SDK version string for capabilities endpoint (default: '0.1.0') */
   version?: string;
+  /**
+   * URL of an external screenshot endpoint to call when the relay cannot
+   * reach the browser (timeout, no listeners, empty response).
+   *
+   * Expected response shape: `{ success: true, data: { screenshot: "<base64>", width: N, height: N } }`
+   *
+   * Example: `'http://localhost:9876/ui-bridge/sdk/screenshot'`
+   */
+  screenshotFallbackUrl?: string;
 }
 
 /**
@@ -55,6 +118,7 @@ export function createRelayHandlers(
   options?: RelayHandlersOptions
 ): UIBridgeServerHandlers {
   const version = options?.version ?? '0.1.0';
+  const screenshotFallbackUrl = options?.screenshotFallbackUrl;
 
   // Server-side render log cache
   let renderLogEntries: RenderLogEntry[] = [];
@@ -71,7 +135,11 @@ export function createRelayHandlers(
   let latestSemanticSnapshot: SemanticSnapshot | null = null;
 
   // Helper: relay a command, return success/error
-  async function relayCommand<T>(action: string, payload: unknown = {}, opts?: { targetTabId?: string }): Promise<APIResponse<T>> {
+  async function relayCommand<T>(
+    action: string,
+    payload: unknown = {},
+    opts?: { targetTabId?: string }
+  ): Promise<APIResponse<T>> {
     try {
       const result = await relay.queueCommand<T>(action, payload, opts);
       return success(result);
@@ -81,7 +149,11 @@ export function createRelayHandlers(
   }
 
   // Helper: relay with empty-array fallback
-  async function relayWithFallback<T>(action: string, payload: unknown = {}, fallback: T): Promise<APIResponse<T>> {
+  async function relayWithFallback<T>(
+    action: string,
+    payload: unknown = {},
+    fallback: T
+  ): Promise<APIResponse<T>> {
     try {
       const result = await relay.queueCommand<T>(action, payload);
       return success(result);
@@ -98,7 +170,9 @@ export function createRelayHandlers(
       try {
         const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
         latestControlSnapshot = result;
-      } catch { /* use cached fallback */ }
+      } catch {
+        /* use cached fallback */
+      }
     }
   }
 
@@ -192,16 +266,39 @@ export function createRelayHandlers(
     // ========================================================================
 
     async find(request) {
-      const { targetTabId, ...payload } = (request as Record<string, unknown> & { targetTabId?: string }) || {};
+      const { targetTabId, ...payload } =
+        (request as Record<string, unknown> & { targetTabId?: string }) || {};
       return relayCommand('find', payload, { targetTabId });
     },
 
     async discover(request) {
-      const { targetTabId, ...payload } = (request as Record<string, unknown> & { targetTabId?: string }) || {};
+      const { targetTabId, ...payload } =
+        (request as Record<string, unknown> & { targetTabId?: string }) || {};
       return relayCommand('discover', payload, { targetTabId });
     },
 
+    async getElementImages(request) {
+      const { targetTabId, ...payload } =
+        (request as Record<string, unknown> & { targetTabId?: string }) || {};
+      return relayCommand('getElementImages', payload, { targetTabId });
+    },
+
     async getControlSnapshot(request) {
+      // Check for no listeners before attempting the command
+      const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
+
+      if (!hasListeners) {
+        // No browser connected — return cached snapshot with fallback screenshot
+        const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
+        if (screenshotFallbackUrl) {
+          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'no_listeners');
+          if (fallback) {
+            snapshot.fallbackScreenshot = fallback;
+          }
+        }
+        return success(snapshot);
+      }
+
       try {
         const result = await relay.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -209,9 +306,28 @@ export function createRelayHandlers(
           { targetTabId: request?.targetTabId }
         );
         latestControlSnapshot = result;
+
+        // If the snapshot came back empty (no elements, no components), the app
+        // may be in an error state — attach a fallback screenshot for context
+        const isEmpty = result.elements.length === 0 && result.components.length === 0;
+        if (isEmpty && screenshotFallbackUrl) {
+          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
+          if (fallback) {
+            return success({ ...result, fallbackScreenshot: fallback });
+          }
+        }
+
         return success(result);
-      } catch {
-        return success(latestControlSnapshot);
+      } catch (e) {
+        // Command timed out or failed — return cached snapshot with fallback screenshot
+        const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
+        if (screenshotFallbackUrl) {
+          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'timeout');
+          if (fallback) {
+            snapshot.fallbackScreenshot = fallback;
+          }
+        }
+        return success(snapshot);
       }
     },
 
@@ -292,7 +408,10 @@ export function createRelayHandlers(
 
     async getSemanticSnapshot(options) {
       try {
-        const result = await relay.queueCommand<SemanticSnapshot>('getSemanticSnapshot', options ?? {});
+        const result = await relay.queueCommand<SemanticSnapshot>(
+          'getSemanticSnapshot',
+          options ?? {}
+        );
         latestSemanticSnapshot = result;
         return success(result);
       } catch (e) {
@@ -446,13 +565,17 @@ export function createRelayHandlers(
     },
 
     async getStateSnapshot() {
-      return relayWithFallback('getStateSnapshot', {}, {
-        timestamp: Date.now(),
-        activeStates: [],
-        states: [],
-        groups: [],
-        transitions: [],
-      });
+      return relayWithFallback(
+        'getStateSnapshot',
+        {},
+        {
+          timestamp: Date.now(),
+          activeStates: [],
+          states: [],
+          groups: [],
+          transitions: [],
+        }
+      );
     },
 
     // ========================================================================
@@ -516,7 +639,9 @@ export function createRelayHandlers(
     },
 
     async pageNavigate(request) {
-      const { targetTabId, ...payload } = request as unknown as Record<string, unknown> & { targetTabId?: string };
+      const { targetTabId, ...payload } = request as unknown as Record<string, unknown> & {
+        targetTabId?: string;
+      };
       return relayCommand('pageNavigate', payload, { targetTabId });
     },
 
@@ -782,14 +907,22 @@ export function createRelayHandlers(
               { method: 'GET', path: '/control/elements', description: 'List registered elements' },
               { method: 'GET', path: '/control/snapshot', description: 'Get control snapshot' },
               { method: 'POST', path: '/control/find', description: 'Find elements' },
-              { method: 'POST', path: '/control/element/:id/action', description: 'Execute element action' },
+              {
+                method: 'POST',
+                path: '/control/element/:id/action',
+                description: 'Execute element action',
+              },
             ],
           },
           ai: {
             description: 'AI-native search and execution',
             endpoints: [
               { method: 'POST', path: '/ai/search', description: 'Semantic element search' },
-              { method: 'POST', path: '/ai/execute', description: 'Natural language action execution' },
+              {
+                method: 'POST',
+                path: '/ai/execute',
+                description: 'Natural language action execution',
+              },
               { method: 'POST', path: '/ai/assert', description: 'UI assertion' },
               { method: 'GET', path: '/ai/snapshot', description: 'Semantic snapshot' },
             ],
@@ -797,14 +930,38 @@ export function createRelayHandlers(
           media: {
             description: 'Media element discovery and analysis',
             endpoints: [
-              { method: 'POST', path: '/ai/media/find', description: 'Find media elements with filters' },
-              { method: 'POST', path: '/ai/media/audit/accessibility', description: 'Alt text audit' },
-              { method: 'POST', path: '/ai/media/audit/performance', description: 'Oversized/transfer size audit' },
+              {
+                method: 'POST',
+                path: '/ai/media/find',
+                description: 'Find media elements with filters',
+              },
+              {
+                method: 'POST',
+                path: '/ai/media/audit/accessibility',
+                description: 'Alt text audit',
+              },
+              {
+                method: 'POST',
+                path: '/ai/media/audit/performance',
+                description: 'Oversized/transfer size audit',
+              },
               { method: 'POST', path: '/ai/media/snapshot', description: 'Capture media snapshot' },
               { method: 'POST', path: '/ai/media/compare', description: 'Compare two snapshots' },
-              { method: 'POST', path: '/ai/media/analyze', description: 'Capture image + context for AI analysis' },
-              { method: 'POST', path: '/ai/media/analyze/batch', description: 'Capture multiple images for comparison' },
-              { method: 'POST', path: '/ai/media/analyze/page', description: 'Capture all visible media on page' },
+              {
+                method: 'POST',
+                path: '/ai/media/analyze',
+                description: 'Capture image + context for AI analysis',
+              },
+              {
+                method: 'POST',
+                path: '/ai/media/analyze/batch',
+                description: 'Capture multiple images for comparison',
+              },
+              {
+                method: 'POST',
+                path: '/ai/media/analyze/page',
+                description: 'Capture all visible media on page',
+              },
             ],
           },
           debug: {
@@ -874,12 +1031,16 @@ export function createRelayHandlers(
   };
 
   // Expose render log entry addition for external use
-  (handlers as unknown as Record<string, unknown>).__addRenderLogEntry = (entry: RenderLogEntry) => {
+  (handlers as unknown as Record<string, unknown>).__addRenderLogEntry = (
+    entry: RenderLogEntry
+  ) => {
     renderLogEntries.push(entry);
     while (renderLogEntries.length > MAX_ENTRIES) renderLogEntries.shift();
   };
 
-  (handlers as unknown as Record<string, unknown>).__addRenderLogEntries = (entries: RenderLogEntry[]) => {
+  (handlers as unknown as Record<string, unknown>).__addRenderLogEntries = (
+    entries: RenderLogEntry[]
+  ) => {
     for (const entry of entries) {
       renderLogEntries.push(entry);
       while (renderLogEntries.length > MAX_ENTRIES) renderLogEntries.shift();
