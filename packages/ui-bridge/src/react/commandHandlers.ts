@@ -824,6 +824,68 @@ export async function executeCommand(
     // Control — Components
     // ======================================================================
 
+    // Tauri runner sends these command names (snake_case) directly via IPC
+    case 'get_components': {
+      return {
+        count: components.length,
+        components: components.map(c => ({
+          id: c.id, name: c.name, description: c.description,
+          actions: c.actions.map(a => ({ id: a.id, label: a.label, description: a.description })),
+          elementIds: c.elementIds,
+          state: c.getState?.() ?? {},
+          mounted: true,
+        })),
+        timestamp: Date.now(),
+      };
+    }
+
+    case 'get_component': {
+      const compId = (payload.componentId ?? payload.id) as string;
+      const comp = registry.getComponent(compId);
+      if (!comp) {
+        return {
+          success: false,
+          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          timestamp: Date.now(),
+        };
+      }
+      return {
+        id: comp.id, name: comp.name, description: comp.description,
+        actions: comp.actions.map(a => ({ id: a.id, label: a.label, description: a.description })),
+        elementIds: comp.elementIds,
+        state: comp.getState?.() ?? {},
+        mounted: true,
+        timestamp: Date.now(),
+      };
+    }
+
+    case 'execute_component_action': {
+      const compId = (payload.componentId ?? payload.id) as string;
+      const actionId = (payload.actionId ?? payload.action) as string;
+      const comp = registry.getComponent(compId);
+      if (!comp) {
+        return {
+          success: false,
+          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          timestamp: Date.now(),
+        };
+      }
+      const compAction = comp.actions.find(a => a.id === actionId);
+      if (!compAction) {
+        return {
+          success: false,
+          error: `Action "${actionId}" not found on component "${compId}". Available actions: ${comp.actions.map(a => a.id).join(', ')}`,
+          timestamp: Date.now(),
+        };
+      }
+      try {
+        const result = await compAction.handler(payload.params as Record<string, unknown>);
+        return { success: true, result, timestamp: Date.now() };
+      } catch (err) {
+        return { success: false, error: (err as Error).message, timestamp: Date.now() };
+      }
+    }
+
     case 'getComponentState': {
       const compId = payload.id as string;
       const comp = registry.getComponent(compId);

@@ -57,10 +57,13 @@ export function resolveTokenValue(tokenPath: string, tokens: DesignTokens): stri
 export function evaluateConstraint(
   constraint: StyleConstraint,
   styles: ExtendedComputedStyles,
-  tokens: DesignTokens
+  tokens: DesignTokens,
+  customProperties?: Record<string, string>
 ): StyleConstraintResult {
-  const prop = constraint.property as keyof ExtendedComputedStyles;
-  const actualValue = styles[prop] || '';
+  const isCustomProp = constraint.property.startsWith('--');
+  const actualValue = isCustomProp
+    ? (customProperties?.[constraint.property] ?? '')
+    : (styles[constraint.property as keyof ExtendedComputedStyles] || '');
 
   switch (constraint.type) {
     case 'exact': {
@@ -156,7 +159,7 @@ export function evaluateConstraint(
         };
       }
       // Nested constraint
-      return evaluateConstraint(expectedVal, styles, tokens);
+      return evaluateConstraint(expectedVal, styles, tokens, customProperties);
     }
   }
 }
@@ -177,8 +180,12 @@ function ruleMatchesElement(rule: StyleRule, elementData: ElementDesignData): bo
     // Full CSS selector matching would require DOM access
     const id = elementData.elementId.toLowerCase();
     const sel = rule.selector.toLowerCase();
-    if (sel.startsWith('.') && !id.includes(sel.slice(1))) {
-      return false;
+    if (sel.startsWith('.')) {
+      const targetClass = sel.slice(1);
+      if (elementData.classes) {
+        return elementData.classes.some((c) => c.toLowerCase() === targetClass);
+      }
+      return id.includes(targetClass);
     }
     if (sel.startsWith('#') && id !== sel.slice(1)) {
       return false;
@@ -207,7 +214,7 @@ export function validateElement(
     let allPassed = true;
 
     for (const constraint of rule.constraints) {
-      const result = evaluateConstraint(constraint, data.styles, tokens);
+      const result = evaluateConstraint(constraint, data.styles, tokens, data.customProperties);
       constraintResults.push(result);
       if (!result.passed) allPassed = false;
     }

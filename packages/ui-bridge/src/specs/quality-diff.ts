@@ -127,7 +127,7 @@ export function diffSnapshots(
     const baseEl = baseMap.get(el.elementId);
     if (!baseEl) continue;
 
-    const styleChanges = diffStyles(baseEl.styles, el.styles);
+    const styleChanges = diffStyles(baseEl.styles, el.styles, baseEl.customProperties, el.customProperties);
     const layoutShift = diffLayout(baseEl, el, layoutThreshold);
 
     if (styleChanges.length > 0 || layoutShift) {
@@ -171,7 +171,9 @@ export function diffSnapshots(
 
 function diffStyles(
   oldStyles: ExtendedComputedStyles,
-  newStyles: ExtendedComputedStyles
+  newStyles: ExtendedComputedStyles,
+  oldCustomProps?: Record<string, string>,
+  newCustomProps?: Record<string, string>
 ): StyleChange[] {
   const changes: StyleChange[] = [];
 
@@ -180,6 +182,19 @@ function diffStyles(
     const newVal = newStyles[prop] ?? '';
     if (oldVal !== newVal) {
       changes.push({ property: prop, oldValue: oldVal, newValue: newVal });
+    }
+  }
+
+  // Custom property diff
+  const allCustomKeys = new Set([
+    ...Object.keys(oldCustomProps ?? {}),
+    ...Object.keys(newCustomProps ?? {}),
+  ]);
+  for (const key of allCustomKeys) {
+    const oldVal = oldCustomProps?.[key] ?? '';
+    const newVal = newCustomProps?.[key] ?? '';
+    if (oldVal !== newVal) {
+      changes.push({ property: key, oldValue: oldVal, newValue: newVal });
     }
   }
 

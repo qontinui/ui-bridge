@@ -197,6 +197,7 @@ const METRIC_CATEGORIES: Record<QualityMetricId, MetricResult['category']> = {
   cardConsistency: 'consistency',
   inputConsistency: 'consistency',
   touchTargetCompliance: 'consistency',
+  customPropertyConsistency: 'consistency',
 };
 
 function getCategoryForMetric(metricId: QualityMetricId): MetricResult['category'] {

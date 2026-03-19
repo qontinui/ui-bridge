@@ -1654,6 +1654,8 @@ export interface ElementDesignData {
   stateVariations?: StateStyles[];
   pseudoElements?: PseudoElementStyles[];
   customProperties?: Record<string, string>;
+  className?: string;
+  classes?: string[];
   rect: {
     x: number;
     y: number;

@@ -69,11 +69,12 @@ const general = defineContext(
     fontWeightConsistency: { weight: 0.04 },
     headingHierarchy: { weight: 0.04 },
     fontFamilyCount: { weight: 0.04 },
-    // Consistency (4) — total ~0.16
+    // Consistency (5) — total ~0.19
     buttonConsistency: { weight: 0.04 },
     cardConsistency: { weight: 0.04 },
     inputConsistency: { weight: 0.04 },
     touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.03 },
   }
 );
 
@@ -114,6 +115,7 @@ const minimal = defineContext(
     cardConsistency: { weight: 0.015 },
     inputConsistency: { weight: 0.025 },
     touchTargetCompliance: { weight: 0.035 },
+    customPropertyConsistency: { weight: 0.035 },
   }
 );
 
@@ -154,6 +156,7 @@ const dataDense = defineContext(
     cardConsistency: { weight: 0.045 },
     inputConsistency: { weight: 0.045 },
     touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.04 },
   }
 );
 
@@ -194,6 +197,7 @@ const mobile = defineContext(
     cardConsistency: { weight: 0.03 },
     inputConsistency: { weight: 0.04 },
     touchTargetCompliance: { weight: 0.07, thresholds: { good: 90, warning: 70 } },
+    customPropertyConsistency: { weight: 0.03 },
   }
 );
 
@@ -234,6 +238,7 @@ const accessibility = defineContext(
     cardConsistency: { weight: 0.015 },
     inputConsistency: { weight: 0.015 },
     touchTargetCompliance: { weight: 0.12, thresholds: { good: 95, warning: 80 } },
+    customPropertyConsistency: { enabled: false, weight: 0 },
   }
 );
 

@@ -1422,6 +1422,106 @@ export const touchTargetCompliance: MetricFunction = (elements) => {
 };
 
 // ============================================================================
+// Custom Property Consistency
+// ============================================================================
+
+const COLOR_PROPERTIES = [
+  'color',
+  'backgroundColor',
+  'borderColor',
+  'outlineColor',
+] as const;
+
+export const customPropertyConsistency: MetricFunction = (elements) => {
+  const findings: MetricFinding[] = [];
+
+  // Track which elements use custom properties
+  const elementsWithVars = elements.filter(
+    (el) => el.customProperties && Object.keys(el.customProperties).length > 0
+  );
+
+  // 1. Adoption rate (50% weight) — what % of elements use CSS variables
+  const adoptionRate = elements.length > 0 ? elementsWithVars.length / elements.length : 0;
+  const adoptionScore = Math.min(adoptionRate * 200, 100); // 50%+ adoption → 100
+
+  if (adoptionRate < 0.1 && elements.length > 5) {
+    findings.push({
+      severity: 'info',
+      message: `Only ${(adoptionRate * 100).toFixed(0)}% of elements use CSS custom properties`,
+      recommendation: 'Consider using CSS variables for consistent theming',
+    });
+  }
+
+  // 2. Consistency (30% weight) — same variable resolves to same value everywhere
+  const varValues = new Map<string, Set<string>>();
+  for (const el of elementsWithVars) {
+    for (const [prop, val] of Object.entries(el.customProperties!)) {
+      if (!varValues.has(prop)) varValues.set(prop, new Set());
+      varValues.get(prop)!.add(val);
+    }
+  }
+  const totalVars = varValues.size;
+  const inconsistentVars = [...varValues.entries()].filter(([, vals]) => vals.size > 1);
+  const consistencyRate = totalVars > 0 ? 1 - inconsistentVars.length / totalVars : 1;
+  const consistencyScore = consistencyRate * 100;
+
+  if (inconsistentVars.length > 0) {
+    const varNames = inconsistentVars.slice(0, 3).map(([name]) => name);
+    findings.push({
+      severity: 'warning',
+      message: `${inconsistentVars.length} CSS variable(s) resolve to different values: ${varNames.join(', ')}`,
+      recommendation: 'Ensure CSS variables resolve consistently across components',
+    });
+  }
+
+  // 3. Hardcoded color avoidance (20% weight) — color properties without variables
+  let totalColorProps = 0;
+  let hardcodedColors = 0;
+  for (const el of elements) {
+    const customProps = el.customProperties ?? {};
+    const customVals = new Set(Object.values(customProps));
+    for (const prop of COLOR_PROPERTIES) {
+      const val = el.styles[prop as keyof typeof el.styles];
+      if (val && val !== 'transparent' && val !== 'inherit' && val !== 'initial') {
+        totalColorProps++;
+        // Check if this color value is NOT backed by a variable
+        if (!customVals.has(val)) {
+          hardcodedColors++;
+        }
+      }
+    }
+  }
+  const avoidanceRate = totalColorProps > 0 ? 1 - hardcodedColors / totalColorProps : 1;
+  const avoidanceScore = avoidanceRate * 100;
+
+  if (hardcodedColors > 5) {
+    findings.push({
+      severity: 'info',
+      message: `${hardcodedColors} color properties appear hardcoded without CSS variable backing`,
+      recommendation: 'Use CSS custom properties for color values to support theming',
+    });
+  }
+
+  const score = adoptionScore * 0.5 + consistencyScore * 0.3 + avoidanceScore * 0.2;
+
+  return makeResult(
+    'customPropertyConsistency',
+    'Custom Property Consistency',
+    'consistency',
+    score,
+    findings,
+    {
+      totalElements: elements.length,
+      elementsWithVars: elementsWithVars.length,
+      adoptionRate: Math.round(adoptionRate * 100),
+      totalVars,
+      inconsistentVars: inconsistentVars.length,
+      hardcodedColors,
+    }
+  );
+};
+
+// ============================================================================
 // Metric Registry
 // ============================================================================
 
@@ -1459,4 +1559,5 @@ export const METRIC_FUNCTIONS: Record<QualityMetricId, MetricFunction> = {
   cardConsistency,
   inputConsistency,
   touchTargetCompliance,
+  customPropertyConsistency,
 };

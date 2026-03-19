@@ -61,7 +61,9 @@ export type QualityMetricId =
   | 'buttonConsistency'
   | 'cardConsistency'
   | 'inputConsistency'
-  | 'touchTargetCompliance';
+  | 'touchTargetCompliance'
+  // Custom Properties
+  | 'customPropertyConsistency';
 
 // ============================================================================
 // Metric Results
