@@ -6,7 +6,6 @@
  * performs the actual inference.
  */
 
-import type { MediaMetadata } from '../core/types';
 import type { RegisteredElement } from '../core/types';
 import { captureMediaSnapshot } from './media-snapshot';
 
@@ -124,7 +123,11 @@ function getParentContext(element: HTMLElement): string | undefined {
     }
 
     // Check for semantic containers
-    if (['article', 'section', 'aside', 'nav', 'main', 'header', 'footer', 'dialog', 'form'].includes(tag)) {
+    if (
+      ['article', 'section', 'aside', 'nav', 'main', 'header', 'footer', 'dialog', 'form'].includes(
+        tag
+      )
+    ) {
       return `inside a ${tag}`;
     }
 

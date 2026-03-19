@@ -101,7 +101,7 @@ function isInteractiveElement(element: HTMLElement): boolean {
  */
 export function shouldRegisterMedia(
   element: HTMLElement,
-  options: MediaDiscoveryOptions = {},
+  _options: MediaDiscoveryOptions = {},
   registeredIds: Set<string>
 ): boolean {
   // Check exclusion selectors
@@ -156,8 +156,15 @@ function inferFormat(src: string | undefined): string | undefined {
   if (extMatch) {
     const ext = extMatch[1].toLowerCase();
     const formatMap: Record<string, string> = {
-      jpg: 'jpeg', jpeg: 'jpeg', png: 'png', gif: 'gif',
-      webp: 'webp', avif: 'avif', svg: 'svg+xml', bmp: 'bmp', ico: 'ico',
+      jpg: 'jpeg',
+      jpeg: 'jpeg',
+      png: 'png',
+      gif: 'gif',
+      webp: 'webp',
+      avif: 'avif',
+      svg: 'svg+xml',
+      bmp: 'bmp',
+      ico: 'ico',
     };
     return formatMap[ext] || ext;
   }
@@ -250,8 +257,13 @@ export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
 
   if (tag === 'svg') {
     base.svgViewBox = element.getAttribute('viewBox') || undefined;
-    base.altText = element.getAttribute('aria-label') || element.querySelector('title')?.textContent || undefined;
-    base.isDecorative = element.getAttribute('aria-hidden') === 'true' || element.getAttribute('role') === 'presentation';
+    base.altText =
+      element.getAttribute('aria-label') ||
+      element.querySelector('title')?.textContent ||
+      undefined;
+    base.isDecorative =
+      element.getAttribute('aria-hidden') === 'true' ||
+      element.getAttribute('role') === 'presentation';
     // SVGs are always "loaded"
     base.loadingState = 'loaded';
   }
@@ -399,12 +411,18 @@ export function generateBackgroundImageId(element: HTMLElement): string {
 function inferMediaType(element: HTMLElement): MediaType {
   const tag = element.tagName.toLowerCase();
   switch (tag) {
-    case 'img': return 'image';
-    case 'svg': return 'svg';
-    case 'video': return 'video';
-    case 'canvas': return 'canvas';
-    case 'picture': return 'picture';
-    default: return 'image'; // role="img" or other
+    case 'img':
+      return 'image';
+    case 'svg':
+      return 'svg';
+    case 'video':
+      return 'video';
+    case 'canvas':
+      return 'canvas';
+    case 'picture':
+      return 'picture';
+    default:
+      return 'image'; // role="img" or other
   }
 }
 
@@ -438,7 +456,10 @@ function getAncestorContext(element: HTMLElement): string | undefined {
     if (id && !/^:r[0-9a-z]+:$/.test(id)) return slugify(id, 20);
 
     const role = current.getAttribute('role');
-    if (role && ['main', 'banner', 'navigation', 'dialog', 'tabpanel', 'article', 'section'].includes(role)) {
+    if (
+      role &&
+      ['main', 'banner', 'navigation', 'dialog', 'tabpanel', 'article', 'section'].includes(role)
+    ) {
       const label = current.getAttribute('aria-label');
       return label ? slugify(`${role}-${label}`, 20) : role;
     }

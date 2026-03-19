@@ -54,8 +54,6 @@ export class StuckScreenDetector {
    * ambiguous state.
    */
   async diagnose(): Promise<StuckScreenDiagnosis> {
-    const startTime = Date.now();
-
     // Phase 1: initial snapshot
     const snap1 = this.captureSnapshot();
 
@@ -87,8 +85,10 @@ export class StuckScreenDetector {
     };
 
     // Determine verdict
-    const hasLoadingIndicators = snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
-    const hadLoadingIndicators = snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
+    const hasLoadingIndicators =
+      snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
+    const hadLoadingIndicators =
+      snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
 
     let verdict: StuckVerdict;
     let confidence: number;
@@ -140,7 +140,8 @@ export class StuckScreenDetector {
     } else {
       verdict = 'unknown';
       confidence = 0.4;
-      summary = 'The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.';
+      summary =
+        'The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.';
       suggestions.push('Try running the diagnosis again with a longer observation window.');
     }
 

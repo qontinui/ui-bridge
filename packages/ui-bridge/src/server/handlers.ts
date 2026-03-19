@@ -1273,7 +1273,7 @@ export function createHandlers(
       }
     },
 
-    getElementImages: async (request?: Record<string, unknown>) => {
+    getElementImages: async (_request?: Record<string, unknown>) => {
       // This handler is a stub for direct-mode (non-relay) usage.
       // In relay mode, the command goes to the browser via commandHandlers.ts.
       // In direct mode, we scan the registry but can't access DOM img elements.
