@@ -46,3 +46,4 @@ cookies.txt
 # Misc
 *.tgz
 .npmrc
+.worktrees/

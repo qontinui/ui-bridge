@@ -2363,27 +2363,50 @@ export async function executeCommand(
       };
 
     case 'runDesignAudit': {
-      const issues: Array<{ element: string; issue: string; severity: string }> = [];
+      const issues: Array<{ element: string; issue: string; severity: string; fix?: string }> = [];
       elements.slice(0, 100).forEach((e) => {
         const dom = e.element as HTMLElement;
         const cs = getComputedStyle(dom);
-        // Check contrast — compare parsed RGB values, not raw strings
+        // Check contrast using WCAG 2.1 contrast ratio
         const textColor = cs.color;
         const bgColor = cs.backgroundColor;
-        if (
-          textColor &&
-          bgColor &&
-          textColor !== 'rgba(0, 0, 0, 0)' &&
-          bgColor !== 'rgba(0, 0, 0, 0)'
-        ) {
-          // Normalize both to comparable format
-          const normalize = (c: string) => c.replace(/\s/g, '').toLowerCase();
-          if (normalize(textColor) === normalize(bgColor)) {
-            issues.push({
-              element: e.id,
-              issue: `Text color matches background: ${textColor} on ${bgColor}`,
-              severity: 'warning',
-            });
+        if (textColor && bgColor && textColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'rgba(0, 0, 0, 0)') {
+          const fgLum = parseLuminance(textColor);
+          const bgLum = parseLuminance(bgColor);
+          if (fgLum >= 0 && bgLum >= 0) {
+            const lighter = Math.max(fgLum, bgLum);
+            const darker = Math.min(fgLum, bgLum);
+            // WCAG contrast ratio: (L1 + 0.05) / (L2 + 0.05)
+            const ratio = (lighter + 0.05) / (darker + 0.05);
+            if (ratio < 1.15) {
+              // Nearly identical colors — text is invisible
+              issues.push({
+                element: e.id,
+                issue: `Text nearly invisible: contrast ratio ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor})`,
+                severity: 'error',
+                fix: `Add explicit text color with sufficient contrast against ${bgColor}`,
+              });
+            } else if (ratio < 3.0) {
+              // Below WCAG AA for large text
+              const fontSize = parseFloat(cs.fontSize);
+              issues.push({
+                element: e.id,
+                issue: `Low contrast: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — fails WCAG AA${fontSize >= 18 ? ' for large text (3:1)' : ' (4.5:1)'}`,
+                severity: 'warning',
+                fix: `Increase contrast to at least ${fontSize >= 18 ? '3:1' : '4.5:1'} for WCAG AA compliance`,
+              });
+            } else if (ratio < 4.5) {
+              // Passes large text AA but fails normal text AA
+              const fontSize = parseFloat(cs.fontSize);
+              if (fontSize < 18) {
+                issues.push({
+                  element: e.id,
+                  issue: `Insufficient contrast for normal text: ${ratio.toFixed(2)}:1 (${textColor} on ${bgColor}) — WCAG AA requires 4.5:1`,
+                  severity: 'info',
+                  fix: `Increase contrast to 4.5:1, or increase font size to 18px+`,
+                });
+              }
+            }
           }
         }
         // Check select elements for dark-mode dropdown visibility issues
@@ -2396,20 +2419,27 @@ export async function executeCommand(
               element: e.id,
               issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
               severity: 'warning',
+              fix: `Add style={{ colorScheme: "dark" }} to the <select> element and set option colors explicitly: [&>option]:text-black [&>option]:bg-white`,
             });
           }
           // Check if options explicitly have styling
           const firstOption = dom.querySelector('option');
           if (firstOption) {
             const optCs = getComputedStyle(firstOption);
-            const optNormColor = optCs.color?.replace(/\s/g, '').toLowerCase() || '';
-            const optNormBg = optCs.backgroundColor?.replace(/\s/g, '').toLowerCase() || '';
-            if (optNormColor && optNormBg && optNormColor === optNormBg) {
-              issues.push({
-                element: e.id,
-                issue: `Select option text invisible: color ${optCs.color} matches background ${optCs.backgroundColor}`,
-                severity: 'error',
-              });
+            const optFgLum = parseLuminance(optCs.color || '');
+            const optBgLum = parseLuminance(optCs.backgroundColor || '');
+            if (optFgLum >= 0 && optBgLum >= 0) {
+              const optLighter = Math.max(optFgLum, optBgLum);
+              const optDarker = Math.min(optFgLum, optBgLum);
+              const optRatio = (optLighter + 0.05) / (optDarker + 0.05);
+              if (optRatio < 3.0) {
+                issues.push({
+                  element: e.id,
+                  issue: `Select option text has low contrast: ${optRatio.toFixed(2)}:1 (${optCs.color} on ${optCs.backgroundColor})`,
+                  severity: 'error',
+                  fix: `Add explicit option colors: select option { color: #000; background-color: #fff; } or use [&>option]:text-black [&>option]:bg-white`,
+                });
+              }
             }
           }
         }
