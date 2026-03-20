@@ -139,7 +139,7 @@ export function useUIBridge(): UseUIBridgeReturn {
     () => context?.registry.getSnapshot() ?? emptySnapshot,
     [context, emptySnapshot]
   );
-  const registrySnapshot = useSyncExternalStore(subscribe, getSnapshot);
+  const registrySnapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const elements = registrySnapshot.elements;
   const components = registrySnapshot.components;

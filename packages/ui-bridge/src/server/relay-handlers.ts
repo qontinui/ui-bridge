@@ -12,7 +12,12 @@
 import type { CommandRelay } from './command-relay';
 import type { UIBridgeServerHandlers, APIResponse, CapabilitiesResponse } from './types';
 import type { RenderLogEntry } from '../render-log';
-import type { ControlSnapshot, FallbackScreenshot, ComponentActionRequest } from '../control';
+import type {
+  ControlSnapshot,
+  FallbackScreenshot,
+  ComponentActionRequest,
+  FindResponse,
+} from '../control';
 import type { SemanticSnapshot } from '../ai';
 
 // ============================================================================
@@ -208,6 +213,62 @@ export function createRelayHandlers(
         reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.`,
       });
     }
+  }
+
+  // Helper: filter cached snapshot elements using find/discover criteria.
+  // Returns elements with enough fields to satisfy FindResponse shape.
+  function filterCachedElements(
+    elements: ControlSnapshot['elements'],
+    criteria: Record<string, unknown>
+  ): Array<Record<string, unknown>> {
+    const interactiveTypes = new Set([
+      'button',
+      'input',
+      'select',
+      'textarea',
+      'link',
+      'checkbox',
+      'radio',
+    ]);
+    let filtered = [...elements];
+
+    if (criteria.interactive_only || criteria.interactiveOnly) {
+      filtered = filtered.filter(
+        (e) => interactiveTypes.has(e.type) || (e.actions && e.actions.length > 0)
+      );
+    }
+    if (criteria.element_type) {
+      const t = criteria.element_type as string;
+      filtered = filtered.filter((e) => e.type === t);
+    }
+    if (criteria.types && Array.isArray(criteria.types)) {
+      const ts = criteria.types as string[];
+      filtered = filtered.filter((e) => ts.includes(e.type));
+    }
+    if (criteria.text) {
+      const lc = (criteria.text as string).toLowerCase();
+      filtered = filtered.filter(
+        (e) => (e.label ?? '').toLowerCase().includes(lc) || e.id.toLowerCase().includes(lc)
+      );
+    }
+    if (criteria.exact_text) {
+      const lc = (criteria.exact_text as string).toLowerCase();
+      filtered = filtered.filter((e) => (e.label ?? '').toLowerCase() === lc);
+    }
+    if (criteria.role) {
+      const r = (criteria.role as string).toLowerCase();
+      filtered = filtered.filter((e) => e.type.toLowerCase() === r);
+    }
+    if (criteria.label) {
+      const lc = (criteria.label as string).toLowerCase();
+      filtered = filtered.filter((e) => (e.label ?? '').toLowerCase().includes(lc));
+    }
+    // Map to DiscoveredElement-compatible shape (add missing fields)
+    return filtered.map((e) => ({
+      ...e,
+      tagName: e.type,
+      registered: true,
+    }));
   }
 
   // Helper: refresh the cached control snapshot if stale or if the given array is empty
@@ -416,13 +477,45 @@ export function createRelayHandlers(
     async find(request) {
       const { targetTabId, ...payload } =
         (request as Record<string, unknown> & { targetTabId?: string }) || {};
-      return relayCommand('find', payload, { targetTabId });
+      try {
+        return await relayCommand('find', payload, { targetTabId });
+      } catch {
+        // Relay failed — fall back to filtering cached snapshot elements
+        await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+        const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
+        const _meta = staleMeta();
+        return success(
+          {
+            elements: filtered as unknown as FindResponse['elements'],
+            total: filtered.length,
+            durationMs: 0,
+            timestamp: Date.now(),
+          },
+          _meta
+        ) as APIResponse<FindResponse>;
+      }
     },
 
     async discover(request) {
       const { targetTabId, ...payload } =
         (request as Record<string, unknown> & { targetTabId?: string }) || {};
-      return relayCommand('discover', payload, { targetTabId });
+      try {
+        return await relayCommand('discover', payload, { targetTabId });
+      } catch {
+        // Relay failed — fall back to filtering cached snapshot elements
+        await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+        const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
+        const _meta = staleMeta();
+        return success(
+          {
+            elements: filtered as unknown as FindResponse['elements'],
+            total: filtered.length,
+            durationMs: 0,
+            timestamp: Date.now(),
+          },
+          _meta
+        ) as APIResponse<FindResponse>;
+      }
     },
 
     async getElementImages(request) {
