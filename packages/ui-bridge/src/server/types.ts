@@ -601,6 +601,7 @@ export interface RouteDefinition {
 export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Render log
   { method: 'GET', path: '/render-log', handler: 'getRenderLog' },
+  { method: 'GET', path: '/control/render-log', handler: 'getRenderLog' }, // Alias under /control/
   { method: 'DELETE', path: '/render-log', handler: 'clearRenderLog' },
   { method: 'POST', path: '/render-log/snapshot', handler: 'captureSnapshot' },
   { method: 'GET', path: '/render-log/path', handler: 'getRenderLogPath' },

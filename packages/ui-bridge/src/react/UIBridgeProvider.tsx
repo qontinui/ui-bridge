@@ -112,7 +112,7 @@ export interface UIBridgeContextValue {
 }
 
 /**
- * UI Bridge context
+ * Main UI Bridge context (stable — never changes after mount).
  */
 const UIBridgeContext = createContext<UIBridgeContextValue | null>(null);
 

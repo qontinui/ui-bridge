@@ -19,14 +19,23 @@ import type { SemanticSnapshot } from '../ai';
 // Helpers
 // ============================================================================
 
-function success<T>(data: T, _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string }): APIResponse<T> {
+function success<T>(
+  data: T,
+  _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string }
+): APIResponse<T> {
   const response: APIResponse<T> = { success: true, data, timestamp: Date.now() };
   if (_meta) response._meta = _meta;
   return response;
 }
 
 function error(message: string, code?: string, suggestions?: string[]): APIResponse<never> {
-  return { success: false, error: message, code, timestamp: Date.now(), ...(suggestions ? { suggestions } : {}) };
+  return {
+    success: false,
+    error: message,
+    code,
+    timestamp: Date.now(),
+    ...(suggestions ? { suggestions } : {}),
+  };
 }
 
 /** Maximum allowed response size for fallback screenshots (10 MB) */
@@ -138,6 +147,9 @@ export function createRelayHandlers(
   };
   let latestSemanticSnapshot: SemanticSnapshot | null = null;
 
+  // Cache for console errors (returned when browser disconnects)
+  let lastConsoleErrorsCache: APIResponse<unknown> | null = null;
+
   // Helper: relay a command, return success/error
   async function relayCommand<T>(
     action: string,
@@ -156,13 +168,25 @@ export function createRelayHandlers(
         : isTimeout
           ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
           : '';
-      const isUnsupported = msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
+      const isUnsupported =
+        msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
       const suggestions = isTimeout
-        ? ['Check if the browser tab is responsive', 'The page may be navigating or loading heavy content', 'Try again after the page settles']
+        ? [
+            'Check if the browser tab is responsive',
+            'The page may be navigating or loading heavy content',
+            'Try again after the page settles',
+          ]
         : !hasListeners
-          ? ['Ensure the app is open in a browser tab', 'Verify the UI Bridge SDK is loaded in the app']
+          ? [
+              'Ensure the app is open in a browser tab',
+              'Verify the UI Bridge SDK is loaded in the app',
+            ]
           : isUnsupported
-            ? ['Check that the action is supported for this element type', 'Use getControlSnapshot() to see element capabilities', 'Supported actions: click, type, select, toggle, scroll, focus']
+            ? [
+                'Check that the action is supported for this element type',
+                'Use getControlSnapshot() to see element capabilities',
+                'Supported actions: click, type, select, toggle, scroll, focus',
+              ]
             : undefined;
       const code = isTimeout ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED_ACTION' : 'COMMAND_FAILED';
       return error(`${msg}${hint}`, code, suggestions);
@@ -179,7 +203,10 @@ export function createRelayHandlers(
       const result = await relay.queueCommand<T>(action, payload);
       return success(result);
     } catch {
-      return success(fallback, { fallback: true, reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.` });
+      return success(fallback, {
+        fallback: true,
+        reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.`,
+      });
     }
   }
 
@@ -230,6 +257,19 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getRenderLog(query) {
+      // Try relaying to the browser first for live render log data
+      try {
+        const result = await relay.queueCommand('getRenderLog', query ?? {});
+        if (
+          result &&
+          typeof result === 'object' &&
+          'entries' in (result as Record<string, unknown>)
+        ) {
+          return success((result as Record<string, unknown>).entries as RenderLogEntry[]);
+        }
+      } catch {
+        // Relay failed — fall back to server-side cache
+      }
       let results = [...renderLogEntries];
       if (query?.type) results = results.filter((e) => e.type === query.type);
       if (query?.since) results = results.filter((e) => e.timestamp >= query.since!);
@@ -240,6 +280,12 @@ export function createRelayHandlers(
 
     async clearRenderLog() {
       renderLogEntries = [];
+      // Also relay the clear to the browser so live render log entries are cleared
+      try {
+        await relay.queueCommand('clearRenderLog', {});
+      } catch {
+        // Browser may be disconnected — server-side cache already cleared above
+      }
       return success(undefined);
     },
 
@@ -262,6 +308,13 @@ export function createRelayHandlers(
     },
 
     async getElement(id) {
+      // Try relay first for live element data when browser is connected
+      try {
+        const result = await relay.queueCommand('getElement', { id });
+        if (result) return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
+      } catch {
+        // Relay failed — fall back to cached snapshot
+      }
       let element = latestControlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
@@ -284,7 +337,15 @@ export function createRelayHandlers(
     },
 
     async getElementState(id) {
-      return relayCommand('getElementState', { id });
+      try {
+        const result = await relay.queueCommand('getElementState', { id });
+        if (result) return success(result);
+      } catch {
+        // Relay failed — fall back to state from cached snapshot
+      }
+      const element = latestControlSnapshot.elements.find((e) => e.id === id);
+      if (element && 'state' in element) return success((element as any).state);
+      return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
     },
 
     async getElementReactState(id) {
@@ -467,7 +528,26 @@ export function createRelayHandlers(
     },
 
     async getConsoleErrors(params) {
-      return relayCommand('getConsoleErrors', params ?? {});
+      type ConsoleErrorsResult = {
+        errors: import('../debug/browser-capture-types').CapturedError[];
+        count: number;
+      };
+      try {
+        const result = await relay.queueCommand<ConsoleErrorsResult>(
+          'getConsoleErrors',
+          params ?? {}
+        );
+        // Cache successful result for fallback when browser disconnects
+        if (result && typeof result === 'object') {
+          lastConsoleErrorsCache = success(result as ConsoleErrorsResult);
+        }
+        return success(result as ConsoleErrorsResult);
+      } catch {
+        // Relay failed — return cached data if available
+        if (lastConsoleErrorsCache)
+          return lastConsoleErrorsCache as APIResponse<ConsoleErrorsResult>;
+        return success({ errors: [], count: 0 } as ConsoleErrorsResult);
+      }
     },
 
     async clearConsoleErrors() {
@@ -734,6 +814,37 @@ export function createRelayHandlers(
       const { targetTabId, ...payload } = request as unknown as Record<string, unknown> & {
         targetTabId?: string;
       };
+      // Reject dangerous URL protocols before relaying to the browser.
+      // A javascript: or data: URL relayed to the browser executes arbitrary JS
+      // and can permanently break the SSE relay connection.
+      const url = (payload as { url?: string }).url;
+      if (!url) {
+        return error('URL is required', 'INVALID_REQUEST');
+      }
+      const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
+      try {
+        const parsed = new URL(url);
+        if (dangerousProtocols.includes(parsed.protocol)) {
+          return error(
+            `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
+            'INVALID_URL_PROTOCOL'
+          );
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          return error(
+            `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
+            'INVALID_URL_PROTOCOL'
+          );
+        }
+      } catch {
+        // URL failed to parse as absolute — only allow relative paths starting with "/"
+        if (!url.startsWith('/')) {
+          return error(
+            'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
+            'INVALID_URL_FORMAT'
+          );
+        }
+      }
       return relayCommand('pageNavigate', payload, { targetTabId });
     },
 
@@ -1114,7 +1225,7 @@ export function createRelayHandlers(
     },
 
     async getSpecs() {
-      return success({} as Record<string, unknown>);
+      return relayWithFallback('getSpecs', {}, {} as Record<string, unknown>);
     },
 
     async getElementHistory(elementId, options) {

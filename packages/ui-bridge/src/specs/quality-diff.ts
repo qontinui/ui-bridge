@@ -127,7 +127,12 @@ export function diffSnapshots(
     const baseEl = baseMap.get(el.elementId);
     if (!baseEl) continue;
 
-    const styleChanges = diffStyles(baseEl.styles, el.styles, baseEl.customProperties, el.customProperties);
+    const styleChanges = diffStyles(
+      baseEl.styles,
+      el.styles,
+      baseEl.customProperties,
+      el.customProperties
+    );
     const layoutShift = diffLayout(baseEl, el, layoutThreshold);
 
     if (styleChanges.length > 0 || layoutShift) {

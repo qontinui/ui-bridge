@@ -32,7 +32,7 @@ export class MemoryTrendAnalyzer {
   addSnapshot(
     timestamp: number,
     usedJSHeapSize: number,
-    jsHeapSizeLimit: number,
+    jsHeapSizeLimit: number
   ): MemoryTrendResult {
     this.snapshots.push({ timestamp, usedJSHeapSize, jsHeapSizeLimit });
 
@@ -62,9 +62,8 @@ export class MemoryTrendAnalyzer {
     }
 
     const latest = snaps[snaps.length - 1];
-    const heapUsagePercent = latest.jsHeapSizeLimit > 0
-      ? latest.usedJSHeapSize / latest.jsHeapSizeLimit
-      : 0;
+    const heapUsagePercent =
+      latest.jsHeapSizeLimit > 0 ? latest.usedJSHeapSize / latest.jsHeapSizeLimit : 0;
 
     // Count consecutive growth from the end
     let consecutiveGrowth = 0;

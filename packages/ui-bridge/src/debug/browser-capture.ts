@@ -100,7 +100,7 @@ export class BrowserEventCapture {
     }
     if (cfg.freezeDetector) {
       this.cleanups.push(
-        installFreezeDetectorCapture(emit, cfg.freezeIntervalMs, cfg.freezeThresholdMs),
+        installFreezeDetectorCapture(emit, cfg.freezeIntervalMs, cfg.freezeThresholdMs)
       );
     }
     if (cfg.domMetrics) {

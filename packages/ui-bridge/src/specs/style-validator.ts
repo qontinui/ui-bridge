@@ -63,7 +63,7 @@ export function evaluateConstraint(
   const isCustomProp = constraint.property.startsWith('--');
   const actualValue = isCustomProp
     ? (customProperties?.[constraint.property] ?? '')
-    : (styles[constraint.property as keyof ExtendedComputedStyles] || '');
+    : styles[constraint.property as keyof ExtendedComputedStyles] || '';
 
   switch (constraint.type) {
     case 'exact': {

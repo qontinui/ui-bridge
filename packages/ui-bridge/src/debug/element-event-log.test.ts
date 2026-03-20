@@ -239,9 +239,7 @@ describe('ElementEventLog', () => {
     it('handles 10k events without exceeding buffer cap', () => {
       const capped = new ElementEventLog({ maxEntries: 500, defaultLogLevel: 'error' });
       for (let i = 0; i < 10000; i++) {
-        capped.ingest(
-          makeEvent('action:failed', { elementId: `el-${i % 500}`, error: 'err' }, i)
-        );
+        capped.ingest(makeEvent('action:failed', { elementId: `el-${i % 500}`, error: 'err' }, i));
       }
       expect(capped.getStats().totalEntries).toBe(500);
     });

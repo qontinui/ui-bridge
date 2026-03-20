@@ -93,10 +93,24 @@ export class StandaloneServer {
    */
   private getCapabilities(): string[] {
     return [
-      'elements', 'components', 'discovery', 'navigation',
-      'ai', 'change_tracking', 'idle_detection', 'network',
-      'forms', 'design', 'debug', 'events', 'annotations',
-      'state_management', 'clipboard', 'undo_redo', 'recovery', 'intents',
+      'elements',
+      'components',
+      'discovery',
+      'navigation',
+      'ai',
+      'change_tracking',
+      'idle_detection',
+      'network',
+      'forms',
+      'design',
+      'debug',
+      'events',
+      'annotations',
+      'state_management',
+      'clipboard',
+      'undo_redo',
+      'recovery',
+      'intents',
     ];
   }
 
@@ -287,7 +301,7 @@ export class StandaloneServer {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
 
@@ -295,8 +309,13 @@ export class StandaloneServer {
       const elements = url.searchParams.get('elements') || undefined;
 
       const clientId = this.sseManager.addClient(
-        (data: string) => { res.write(data); return true; },
-        () => { if (!res.writableEnded) res.end(); },
+        (data: string) => {
+          res.write(data);
+          return true;
+        },
+        () => {
+          if (!res.writableEnded) res.end();
+        },
         types,
         elements
       );

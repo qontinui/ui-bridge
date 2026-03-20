@@ -26,7 +26,15 @@ export interface MediaAccessibilityAudit {
  */
 export interface MediaPerformanceAudit {
   /** Images where natural size is significantly larger than rendered size */
-  oversized: Array<{ id: string; src?: string; oversizeRatio: number; naturalWidth: number; naturalHeight: number; renderedWidth: number; renderedHeight: number }>;
+  oversized: Array<{
+    id: string;
+    src?: string;
+    oversizeRatio: number;
+    naturalWidth: number;
+    naturalHeight: number;
+    renderedWidth: number;
+    renderedHeight: number;
+  }>;
   /** Images with large transfer size (> 500KB) */
   largeTransferSize: Array<{ id: string; src?: string; transferSize: number }>;
   /** Above-the-fold images not using lazy loading (which is fine) vs below-fold not lazy */
@@ -36,9 +44,18 @@ export interface MediaPerformanceAudit {
 }
 
 const GENERIC_ALT_PATTERNS = [
-  /^image$/i, /^photo$/i, /^img$/i, /^picture$/i, /^icon$/i,
-  /^logo$/i, /^banner$/i, /^untitled$/i, /^placeholder$/i,
-  /^thumbnail$/i, /^screen\s*shot$/i, /^\d+$/,
+  /^image$/i,
+  /^photo$/i,
+  /^img$/i,
+  /^picture$/i,
+  /^icon$/i,
+  /^logo$/i,
+  /^banner$/i,
+  /^untitled$/i,
+  /^placeholder$/i,
+  /^thumbnail$/i,
+  /^screen\s*shot$/i,
+  /^\d+$/,
 ];
 
 /**
@@ -155,11 +172,7 @@ export function buildPerformanceAudit(
     }
 
     // Not lazy loaded (below the fold)
-    if (
-      !meta.lazyLoading &&
-      meta.mediaType === 'image' &&
-      el.state.inViewport === false
-    ) {
+    if (!meta.lazyLoading && meta.mediaType === 'image' && el.state.inViewport === false) {
       result.notLazyLoaded.push({
         id: el.id,
         src: meta.src,

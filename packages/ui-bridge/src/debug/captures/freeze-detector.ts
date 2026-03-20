@@ -13,7 +13,7 @@ type Emit = (event: AnyCapturedEvent) => void;
 export function installFreezeDetectorCapture(
   emit: Emit,
   intervalMs = 200,
-  thresholdMs = 3000,
+  thresholdMs = 3000
 ): () => void {
   if (typeof window === 'undefined') {
     return () => {};

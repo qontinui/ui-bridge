@@ -103,7 +103,16 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const elementRef = useRef<HTMLElement | null>(null);
   const registeredRef = useRef(false);
 
-  const { id, type, label, actions, customActions, autoRegister = true, logLevel, relationships } = options;
+  const {
+    id,
+    type,
+    label,
+    actions,
+    customActions,
+    autoRegister = true,
+    logLevel,
+    relationships,
+  } = options;
 
   // Register the element
   const register = useCallback(() => {

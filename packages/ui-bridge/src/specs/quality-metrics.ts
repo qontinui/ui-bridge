@@ -1425,12 +1425,7 @@ export const touchTargetCompliance: MetricFunction = (elements) => {
 // Custom Property Consistency
 // ============================================================================
 
-const COLOR_PROPERTIES = [
-  'color',
-  'backgroundColor',
-  'borderColor',
-  'outlineColor',
-] as const;
+const COLOR_PROPERTIES = ['color', 'backgroundColor', 'borderColor', 'outlineColor'] as const;
 
 export const customPropertyConsistency: MetricFunction = (elements) => {
   const findings: MetricFinding[] = [];

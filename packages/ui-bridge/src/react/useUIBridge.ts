@@ -122,7 +122,15 @@ export function useUIBridge(): UseUIBridgeReturn {
   const initialized = context?.initialized ?? false;
 
   // Subscribe to registry mutations via useSyncExternalStore
-  const emptySnapshot = useMemo(() => ({ elements: [] as RegisteredElement[], components: [] as RegisteredComponent[], workflows: [] as Workflow[], version: -1 }), []);
+  const emptySnapshot = useMemo(
+    () => ({
+      elements: [] as RegisteredElement[],
+      components: [] as RegisteredComponent[],
+      workflows: [] as Workflow[],
+      version: -1,
+    }),
+    []
+  );
   const subscribe = useCallback(
     (cb: () => void) => context?.registry.subscribe(cb) ?? (() => {}),
     [context]

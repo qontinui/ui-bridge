@@ -840,6 +840,20 @@ export function createHandlers(
           return false;
         }
       }
+      if (request.exact_text) {
+        const exactLc = request.exact_text.toLowerCase();
+        const elLabel = (el.label || '').toLowerCase();
+        const textContent = (el.state?.textContent || el.textContent || '').trim().toLowerCase();
+        const accessibleName = (el.accessibleName || '').toLowerCase();
+        if (elLabel !== exactLc && textContent !== exactLc && accessibleName !== exactLc) {
+          return false;
+        }
+      }
+      if (request.label) {
+        const labelSearch = request.label.toLowerCase();
+        const elLabel = (el.label || '').toLowerCase();
+        if (!elLabel.includes(labelSearch)) return false;
+      }
       return true;
     });
   }
@@ -982,8 +996,12 @@ export function createHandlers(
     ) => {
       const startTime = Date.now();
       try {
-        // Check if element exists first
-        const element = registry.getElement(id);
+        // Check if element exists first.
+        // Page-level sentinel IDs ("document", "body", "window") bypass the registry
+        // check — the action executor resolves them to document.documentElement directly.
+        const isPageScrollSentinel =
+          request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+        const element = isPageScrollSentinel ? true : registry.getElement(id);
         if (!element) {
           const failureDetails = createFailureDetails(
             'ELEMENT_NOT_FOUND',

@@ -72,6 +72,10 @@ interface UIBridgeGlobal {
   dragDropDetector?: DragDropDetector;
   undoTracker?: UndoTracker;
   specs?: { getGlobalSpecStore: () => SpecStore };
+  /** Optional client-side navigation handler (e.g., Next.js router.push) */
+  navigateHandler?: (url: string) => void;
+  /** Render log access for getRenderLog relay command */
+  renderLog?: { getEntries?: () => unknown[] };
 }
 
 interface BrowserCapture {
@@ -475,10 +479,17 @@ export async function executeCommand(
         id: el.id,
         isVisible: state.visible,
         isEnabled: state.enabled,
+        focused: state.focused,
         text: state.textContent,
         value: state.value,
         checked: state.checked,
         rect: state.rect,
+        ariaExpanded: state.ariaExpanded,
+        ariaSelected: state.ariaSelected,
+        ariaPressed: state.ariaPressed,
+        ariaChecked: state.ariaChecked,
+        inViewport: state.inViewport,
+        computedStyles: state.computedStyles,
       };
     }
 
@@ -488,36 +499,48 @@ export async function executeCommand(
         id: string;
         request: { action: string; value?: string; params?: P; text?: string; clear?: boolean };
       };
-      const el = getElement(id);
-      if (!el)
-        return createActionFailure(id, 'ELEMENT_NOT_FOUND', `Element ${id} not found`, startTime);
-      const dom = (el.element ?? null) as HTMLElement | null;
-      if (!dom)
-        return createActionFailure(
-          id,
-          'ELEMENT_NOT_FOUND',
-          `DOM element for ${id} not found`,
-          startTime,
-          el
-        );
-      const isVis =
-        dom.offsetParent !== null &&
-        getComputedStyle(dom).visibility !== 'hidden' &&
-        getComputedStyle(dom).display !== 'none';
-      if (!isVis)
-        return createActionFailure(
-          id,
-          'ELEMENT_NOT_VISIBLE',
-          `Element ${id} exists but is not visible`,
-          startTime
-        );
-      if ((dom as HTMLButtonElement).disabled)
-        return createActionFailure(
-          id,
-          'ELEMENT_NOT_ENABLED',
-          `Element ${id} is disabled`,
-          startTime
-        );
+
+      // Page-level sentinel IDs ("document", "body", "window") resolve to
+      // document.documentElement for scroll actions, bypassing the element registry.
+      const isPageScrollSentinel =
+        request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
+
+      let dom: HTMLElement;
+      if (isPageScrollSentinel) {
+        dom = document.documentElement;
+      } else {
+        const el = getElement(id);
+        if (!el)
+          return createActionFailure(id, 'ELEMENT_NOT_FOUND', `Element ${id} not found`, startTime);
+        const domEl = (el.element ?? null) as HTMLElement | null;
+        if (!domEl)
+          return createActionFailure(
+            id,
+            'ELEMENT_NOT_FOUND',
+            `DOM element for ${id} not found`,
+            startTime,
+            el
+          );
+        const isVis =
+          domEl.offsetParent !== null &&
+          getComputedStyle(domEl).visibility !== 'hidden' &&
+          getComputedStyle(domEl).display !== 'none';
+        if (!isVis)
+          return createActionFailure(
+            id,
+            'ELEMENT_NOT_VISIBLE',
+            `Element ${id} exists but is not visible`,
+            startTime
+          );
+        if ((domEl as HTMLButtonElement).disabled)
+          return createActionFailure(
+            id,
+            'ELEMENT_NOT_ENABLED',
+            `Element ${id} is disabled`,
+            startTime
+          );
+        dom = domEl;
+      }
 
       try {
         switch (request.action) {
@@ -534,9 +557,107 @@ export async function executeCommand(
             dom.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
             dom.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
             break;
-          case 'scrollIntoView':
-            dom.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          case 'scrollIntoView': {
+            type ScrollLogicalPos = 'start' | 'center' | 'end' | 'nearest';
+            const sivParams = request.params as
+              | { smooth?: boolean; block?: ScrollLogicalPos; inline?: ScrollLogicalPos }
+              | undefined;
+            const sivBehavior =
+              sivParams?.smooth !== false ? ('smooth' as const) : ('auto' as const);
+            const sivBlock = sivParams?.block || 'center';
+            const sivInline = sivParams?.inline || 'nearest';
+            dom.scrollIntoView({ behavior: sivBehavior, block: sivBlock, inline: sivInline });
+            // For smooth scrollIntoView, wait for the animation to settle before returning.
+            // Use setTimeout instead of rAF — rAF doesn't fire when the tab is backgrounded.
+            if (sivBehavior === 'smooth') {
+              await new Promise<void>((r) => setTimeout(r, 400));
+            } else {
+              await new Promise<void>((r) => setTimeout(r, 16));
+            }
             break;
+          }
+          case 'scroll': {
+            type ScrollDir = 'up' | 'down' | 'left' | 'right';
+            const scrollParams = request.params as
+              | {
+                  direction?: ScrollDir;
+                  amount?: number;
+                  deltaY?: number;
+                  deltaX?: number;
+                  smooth?: boolean;
+                }
+              | undefined;
+            const behavior = scrollParams?.smooth ? ('smooth' as const) : ('auto' as const);
+            // Find scrollable ancestor
+            let scrollTarget: HTMLElement = dom;
+            let p = dom.parentElement;
+            while (p && p !== document.body) {
+              const st = getComputedStyle(p);
+              if (
+                (st.overflowY === 'auto' ||
+                  st.overflowY === 'scroll' ||
+                  st.overflowX === 'auto' ||
+                  st.overflowX === 'scroll') &&
+                (p.scrollHeight > p.clientHeight || p.scrollWidth > p.clientWidth)
+              ) {
+                scrollTarget = p;
+                break;
+              }
+              p = p.parentElement;
+            }
+            if (scrollTarget === dom && document.body.scrollHeight > document.body.clientHeight) {
+              scrollTarget = document.body;
+            }
+            const before = {
+              scrollTop: scrollTarget.scrollTop,
+              scrollLeft: scrollTarget.scrollLeft,
+            };
+            let dx: number;
+            let dy: number;
+            if (scrollParams?.deltaY !== undefined || scrollParams?.deltaX !== undefined) {
+              // deltaY/deltaX use wheel-event semantics: positive = down/right, negative = up/left.
+              dx = scrollParams.deltaX ?? 0;
+              dy = scrollParams.deltaY ?? 0;
+            } else {
+              const direction = scrollParams?.direction || 'down';
+              const amount = scrollParams?.amount || 300;
+              dx = direction === 'right' ? amount : direction === 'left' ? -amount : 0;
+              dy = direction === 'down' ? amount : direction === 'up' ? -amount : 0;
+            }
+            scrollTarget.scrollBy({ left: dx, top: dy, behavior });
+            // Use setTimeout instead of requestAnimationFrame — rAF doesn't fire
+            // when the tab is backgrounded, which causes SSE relay timeouts.
+            // scrollBy with behavior:'auto' is synchronous, so a minimal yield suffices.
+            await new Promise<void>((r) => setTimeout(r, 16));
+            const after = {
+              scrollTop: scrollTarget.scrollTop,
+              scrollLeft: scrollTarget.scrollLeft,
+            };
+            return {
+              success: true,
+              action: 'scroll',
+              elementId: id,
+              durationMs: performance.now() - startTime,
+              scrollInfo: {
+                before,
+                after,
+                changed:
+                  before.scrollTop !== after.scrollTop || before.scrollLeft !== after.scrollLeft,
+              },
+              timestamp: Date.now(),
+            };
+          }
+          case 'toggle': {
+            if (dom instanceof HTMLInputElement && dom.type === 'checkbox') {
+              dom.checked = !dom.checked;
+              dom.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (dom.getAttribute('role') === 'switch') {
+              dom.click();
+            } else {
+              dom.click(); // generic toggle via click
+            }
+            break;
+          }
           case 'doubleClick':
             dom.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
             break;
@@ -548,16 +669,48 @@ export async function executeCommand(
                   : HTMLInputElement.prototype;
               const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
               const text = (request.params?.text as string) || request.text || '';
+
+              // React 17+ stores props on the DOM node under __reactProps$<key>.
+              // In embedded WebViews (e.g. Tauri), React's event delegation may not
+              // receive bubbled events — call onChange directly as a reliable fallback.
+              const domEl = dom as unknown as Record<string, unknown>;
+              const rPropsKey = Object.keys(domEl).find((k) => k.startsWith('__reactProps$'));
+              const rProps = rPropsKey
+                ? (domEl[rPropsKey] as Record<string, unknown> | undefined)
+                : undefined;
+
+              // Notify React of a value change: reset _valueTracker, dispatch input
+              // event, and also invoke __reactProps$.onChange directly for WebViews.
+              const notifyReactType = (oldValue: string) => {
+                const tracker = (
+                  dom as unknown as { _valueTracker?: { setValue(v: string): void } }
+                )._valueTracker;
+                if (tracker) tracker.setValue(oldValue);
+                dom.dispatchEvent(new Event('input', { bubbles: true }));
+                if (rProps?.onChange && typeof rProps.onChange === 'function') {
+                  (rProps.onChange as (e: unknown) => void)({
+                    target: dom,
+                    currentTarget: dom,
+                    type: 'change',
+                    bubbles: true,
+                    preventDefault: () => {},
+                    stopPropagation: () => {},
+                    nativeEvent: new Event('input'),
+                  });
+                }
+              };
+
               if (request.params?.clear || request.clear) {
+                const prevClear = dom.value;
                 if (setter) setter.call(dom, '');
                 else dom.value = '';
-                dom.dispatchEvent(new Event('input', { bubbles: true }));
+                notifyReactType(prevClear);
               }
               dom.focus();
               const cur = dom.value;
               if (setter) setter.call(dom, cur + text);
               else dom.value = cur + text;
-              dom.dispatchEvent(new Event('input', { bubbles: true }));
+              notifyReactType(cur);
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else
               return createActionFailure(
@@ -570,6 +723,7 @@ export async function executeCommand(
           }
           case 'clear': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
+              const prevClr = dom.value;
               const proto =
                 dom instanceof HTMLTextAreaElement
                   ? HTMLTextAreaElement.prototype
@@ -577,7 +731,28 @@ export async function executeCommand(
               const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
               if (setter) setter.call(dom, '');
               else dom.value = '';
+              // Reset _valueTracker so React detects old !== new
+              const vtClr = (dom as unknown as { _valueTracker?: { setValue(v: string): void } })
+                ._valueTracker;
+              if (vtClr) vtClr.setValue(prevClr);
               dom.dispatchEvent(new Event('input', { bubbles: true }));
+              // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
+              const domElClr = dom as unknown as Record<string, unknown>;
+              const rPropsKeyClr = Object.keys(domElClr).find((k) => k.startsWith('__reactProps$'));
+              const rPropsClr = rPropsKeyClr
+                ? (domElClr[rPropsKeyClr] as Record<string, unknown> | undefined)
+                : undefined;
+              if (rPropsClr?.onChange && typeof rPropsClr.onChange === 'function') {
+                (rPropsClr.onChange as (e: unknown) => void)({
+                  target: dom,
+                  currentTarget: dom,
+                  type: 'change',
+                  bubbles: true,
+                  preventDefault: () => {},
+                  stopPropagation: () => {},
+                  nativeEvent: new Event('input'),
+                });
+              }
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else
               return createActionFailure(
@@ -590,6 +765,7 @@ export async function executeCommand(
           }
           case 'setValue': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
+              const prevSv = dom.value;
               const proto =
                 dom instanceof HTMLTextAreaElement
                   ? HTMLTextAreaElement.prototype
@@ -598,7 +774,28 @@ export async function executeCommand(
               const val = request.value || (request.params?.value as string) || '';
               if (setter) setter.call(dom, val);
               else dom.value = val;
+              // Reset _valueTracker so React detects old !== new
+              const vtSv = (dom as unknown as { _valueTracker?: { setValue(v: string): void } })
+                ._valueTracker;
+              if (vtSv) vtSv.setValue(prevSv);
               dom.dispatchEvent(new Event('input', { bubbles: true }));
+              // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
+              const domElSv = dom as unknown as Record<string, unknown>;
+              const rPropsKeySv = Object.keys(domElSv).find((k) => k.startsWith('__reactProps$'));
+              const rPropsSv = rPropsKeySv
+                ? (domElSv[rPropsKeySv] as Record<string, unknown> | undefined)
+                : undefined;
+              if (rPropsSv?.onChange && typeof rPropsSv.onChange === 'function') {
+                (rPropsSv.onChange as (e: unknown) => void)({
+                  target: dom,
+                  currentTarget: dom,
+                  type: 'change',
+                  bubbles: true,
+                  preventDefault: () => {},
+                  stopPropagation: () => {},
+                  nativeEvent: new Event('input'),
+                });
+              }
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else
               return createActionFailure(
@@ -706,7 +903,27 @@ export async function executeCommand(
             break;
           }
           case 'drag': {
-            const { targetId } = (request.params as { targetId?: string }) ?? {};
+            // Accept params from either request.params or the request root (flat format)
+            const req = request as unknown as Record<string, unknown>;
+            const dragParams = {
+              ...(req.params as Record<string, unknown> | undefined),
+              ...Object.fromEntries(
+                [
+                  'targetPosition',
+                  'target',
+                  'targetId',
+                  'targetOffset',
+                  'sourceOffset',
+                  'steps',
+                  'holdDelay',
+                  'releaseDelay',
+                  'html5',
+                ]
+                  .filter((k) => req[k] !== undefined)
+                  .map((k) => [k, req[k]])
+              ),
+            } as { targetId?: string; targetPosition?: { x: number; y: number } };
+            const { targetId, targetPosition } = dragParams;
             const targetEl = targetId ? (getElement(targetId)?.element as HTMLElement) : null;
             const srcRect = dom.getBoundingClientRect();
             dom.dispatchEvent(
@@ -730,6 +947,23 @@ export async function executeCommand(
                   bubbles: true,
                   clientX: tgtRect.x + tgtRect.width / 2,
                   clientY: tgtRect.y + tgtRect.height / 2,
+                })
+              );
+            } else if (targetPosition) {
+              const dropTarget =
+                document.elementFromPoint(targetPosition.x, targetPosition.y) || dom;
+              dropTarget.dispatchEvent(
+                new DragEvent('dragover', {
+                  bubbles: true,
+                  clientX: targetPosition.x,
+                  clientY: targetPosition.y,
+                })
+              );
+              dropTarget.dispatchEvent(
+                new DragEvent('drop', {
+                  bubbles: true,
+                  clientX: targetPosition.x,
+                  clientY: targetPosition.y,
                 })
               );
             }
@@ -781,14 +1015,26 @@ export async function executeCommand(
       const {
         interactive_only,
         include_hidden,
-        type: filterType,
+        type: filterTypeLegacy,
+        element_type,
+        types,
         text: filterText,
+        exact_text,
+        role: filterRole,
+        label: filterLabel,
       } = payload as {
         interactive_only?: boolean;
         include_hidden?: boolean;
         type?: string;
+        element_type?: string;
+        types?: string[];
         text?: string;
+        exact_text?: string;
+        role?: string;
+        label?: string;
       };
+      // Resolve the type filter: element_type takes precedence, then legacy `type`
+      const filterType = element_type ?? filterTypeLegacy;
       let filtered = elements;
       if (interactive_only) {
         const interactiveTypes = new Set([
@@ -809,12 +1055,33 @@ export async function executeCommand(
         });
       }
       if (filterType) filtered = filtered.filter((e) => e.type === filterType);
+      if (types && types.length > 0) filtered = filtered.filter((e) => types.includes(e.type));
+      if (filterRole) {
+        const roleLc = filterRole.toLowerCase();
+        filtered = filtered.filter((e) => {
+          const domRole = (e.element.getAttribute('role') ?? '').toLowerCase();
+          const inferredRole = e.type.toLowerCase();
+          return domRole === roleLc || inferredRole === roleLc;
+        });
+      }
+      if (filterLabel) {
+        const labelLc = filterLabel.toLowerCase();
+        filtered = filtered.filter((e) => (e.label ?? '').toLowerCase().includes(labelLc));
+      }
       if (filterText) {
         const lc = filterText.toLowerCase();
         filtered = filtered.filter(
           (e) =>
             (e.label ?? '').toLowerCase().includes(lc) ||
             (e.element.textContent ?? '').toLowerCase().includes(lc)
+        );
+      }
+      if (exact_text) {
+        const exactLc = exact_text.toLowerCase();
+        filtered = filtered.filter(
+          (e) =>
+            (e.label ?? '').toLowerCase() === exactLc ||
+            (e.element.textContent ?? '').trim().toLowerCase() === exactLc
         );
       }
       return {
@@ -852,9 +1119,11 @@ export async function executeCommand(
     case 'get_components': {
       return {
         count: components.length,
-        components: components.map(c => ({
-          id: c.id, name: c.name, description: c.description,
-          actions: c.actions.map(a => ({ id: a.id, label: a.label, description: a.description })),
+        components: components.map((c) => ({
+          id: c.id,
+          name: c.name,
+          description: c.description,
+          actions: c.actions.map((a) => ({ id: a.id, label: a.label, description: a.description })),
           elementIds: c.elementIds,
           state: c.getState?.() ?? {},
           mounted: true,
@@ -874,8 +1143,14 @@ export async function executeCommand(
         };
       }
       return {
-        id: comp.id, name: comp.name, description: comp.description,
-        actions: comp.actions.map(a => ({ id: a.id, label: a.label, description: a.description })),
+        id: comp.id,
+        name: comp.name,
+        description: comp.description,
+        actions: comp.actions.map((a) => ({
+          id: a.id,
+          label: a.label,
+          description: a.description,
+        })),
         elementIds: comp.elementIds,
         state: comp.getState?.() ?? {},
         mounted: true,
@@ -894,11 +1169,11 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       }
-      const compAction = comp.actions.find(a => a.id === actionId);
+      const compAction = comp.actions.find((a) => a.id === actionId);
       if (!compAction) {
         return {
           success: false,
-          error: `Action "${actionId}" not found on component "${compId}". Available actions: ${comp.actions.map(a => a.id).join(', ')}`,
+          error: `Action "${actionId}" not found on component "${compId}". Available actions: ${comp.actions.map((a) => a.id).join(', ')}`,
           timestamp: Date.now(),
         };
       }
@@ -995,6 +1270,29 @@ export async function executeCommand(
     case 'captureSnapshot':
       if (bridge.captureRenderLog) await bridge.captureRenderLog();
       return { captured: true, timestamp: Date.now() };
+
+    // ======================================================================
+    // Specs
+    // ======================================================================
+
+    case 'getSpecs': {
+      const g = getBridge();
+      const store = g.specs?.getGlobalSpecStore?.();
+      const result: Record<string, unknown> = {};
+      if (store) {
+        const all = store.getAll?.();
+        if (all instanceof Map) {
+          for (const [specId, config] of all) {
+            result[specId] = config;
+          }
+        } else if (all && typeof all === 'object') {
+          for (const [specId, config] of Object.entries(all)) {
+            result[specId] = config;
+          }
+        }
+      }
+      return result;
+    }
 
     // ======================================================================
     // Debug — Action History & Metrics
@@ -1610,6 +1908,53 @@ export async function executeCommand(
 
     case 'pageNavigate': {
       const { url } = payload as { url: string };
+      // Reject dangerous URL protocols that can execute JS or break the SSE relay.
+      // Only allow http:, https:, and relative paths starting with "/".
+      try {
+        const parsed = new URL(url, window.location.origin);
+        const dangerousProtocols = ['javascript:', 'data:', 'blob:', 'vbscript:'];
+        if (dangerousProtocols.includes(parsed.protocol)) {
+          return {
+            success: false,
+            error: `Dangerous URL protocol rejected: "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
+            timestamp: Date.now(),
+          };
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol) && !url.startsWith('/')) {
+          return {
+            success: false,
+            error: `Invalid URL protocol "${parsed.protocol}". Only http, https, and relative paths are allowed.`,
+            timestamp: Date.now(),
+          };
+        }
+      } catch {
+        // URL failed to parse — only allow if it looks like a relative path
+        if (!url.startsWith('/')) {
+          return {
+            success: false,
+            error:
+              'Invalid URL format. Only http, https, and relative paths starting with "/" are allowed.',
+            timestamp: Date.now(),
+          };
+        }
+      }
+      const g = getBridge();
+      // Use client-side navigation for same-origin URLs when a handler is registered
+      // (e.g., Next.js router.push). This avoids destroying the SSE/WebSocket connection.
+      try {
+        const target = new URL(url, window.location.origin);
+        if (target.origin === window.location.origin && g.navigateHandler) {
+          g.navigateHandler(target.pathname + target.search + target.hash);
+          return {
+            success: true,
+            url: target.pathname,
+            clientSideNavigation: true,
+            timestamp: Date.now(),
+          };
+        }
+      } catch {
+        // Invalid URL — fall through to hard navigation
+      }
       window.location.href = url;
       return { success: true, url, timestamp: Date.now() };
     }
@@ -1671,7 +2016,10 @@ export async function executeCommand(
     case 'getAnnotationCoverage': {
       const store = await getAnnotationStore();
       if (!store) return { total: 0, annotated: 0, coverage: 0 };
-      return (store as unknown as { getCoverage: () => unknown }).getCoverage();
+      const allElementIds = elements.map((el: { id: string }) => el.id);
+      return (store as unknown as { getCoverage: (ids: string[]) => unknown }).getCoverage(
+        allElementIds
+      );
     }
 
     // ======================================================================
@@ -1736,6 +2084,34 @@ export async function executeCommand(
         frameworkOverlays: overlays,
         timestamp: Date.now(),
       };
+    }
+
+    // ======================================================================
+    // Render Log
+    // ======================================================================
+
+    case 'getRenderLog': {
+      const entries = g.renderLog?.getEntries?.() ?? bridge?.getRenderLogEntries?.() ?? [];
+      const resolvedEntries = entries instanceof Promise ? await entries : entries;
+      const {
+        type: filterType,
+        since,
+        limit,
+      } = payload as { type?: string; since?: number; limit?: number };
+      let results = [...(resolvedEntries as unknown[])];
+      if (filterType) results = results.filter((e: any) => e.type === filterType);
+      if (since) results = results.filter((e: any) => e.timestamp >= since);
+      if (limit) results = results.slice(-limit);
+      return { count: results.length, entries: results };
+    }
+
+    case 'clearRenderLog': {
+      const clearFn = bridge?.clearRenderLog;
+      if (clearFn) {
+        const result = clearFn();
+        if (result instanceof Promise) await result;
+      }
+      return { success: true, timestamp: Date.now() };
     }
 
     // ======================================================================
@@ -1994,7 +2370,12 @@ export async function executeCommand(
         // Check contrast — compare parsed RGB values, not raw strings
         const textColor = cs.color;
         const bgColor = cs.backgroundColor;
-        if (textColor && bgColor && textColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'rgba(0, 0, 0, 0)') {
+        if (
+          textColor &&
+          bgColor &&
+          textColor !== 'rgba(0, 0, 0, 0)' &&
+          bgColor !== 'rgba(0, 0, 0, 0)'
+        ) {
           // Normalize both to comparable format
           const normalize = (c: string) => c.replace(/\s/g, '').toLowerCase();
           if (normalize(textColor) === normalize(bgColor)) {

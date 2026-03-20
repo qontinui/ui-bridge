@@ -70,7 +70,4 @@ export {
 } from './command-relay';
 
 // Relay handlers
-export {
-  createRelayHandlers,
-  type RelayHandlersOptions,
-} from './relay-handlers';
+export { createRelayHandlers, type RelayHandlersOptions } from './relay-handlers';

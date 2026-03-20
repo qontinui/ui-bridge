@@ -964,7 +964,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
         // Scan CSS background images when enabled
         if (mediaDiscovery?.includeBackgroundImages) {
-          const maxBg = Math.max(0, (mediaDiscovery.maxMediaElements ?? 200) - registeredMediaElementsRef.current.size);
+          const maxBg = Math.max(
+            0,
+            (mediaDiscovery.maxMediaElements ?? 200) - registeredMediaElementsRef.current.size
+          );
           const bgElements = findBackgroundImageElements(rootElement, Math.min(maxBg, 50));
           for (const el of bgElements) {
             const bgId = generateBackgroundImageId(el);

@@ -217,7 +217,10 @@ export async function compareMediaSnapshots(
     const diffData = diffCtx.createImageData(width, height);
 
     let diffCount = 0;
-    let minX = width, minY = height, maxX = 0, maxY = 0;
+    let minX = width,
+      minY = height,
+      maxX = 0,
+      maxY = 0;
     const totalPixels = width * height;
     const threshold = 10; // Color difference threshold
 
@@ -229,7 +232,7 @@ export async function compareMediaSnapshots(
       if (rDiff > threshold || gDiff > threshold || bDiff > threshold) {
         diffCount++;
         const px = (i / 4) % width;
-        const py = Math.floor((i / 4) / width);
+        const py = Math.floor(i / 4 / width);
         minX = Math.min(minX, px);
         minY = Math.min(minY, py);
         maxX = Math.max(maxX, px);
@@ -255,13 +258,19 @@ export async function compareMediaSnapshots(
     return {
       identical: diffCount === 0,
       diffPercentage: Math.round(diffPercentage * 100) / 100,
-      diffRegion: diffCount > 0 ? {
-        x: minX,
-        y: minY,
-        width: maxX - minX + 1,
-        height: maxY - minY + 1,
-      } : undefined,
-      diffImage: diffCount > 0 ? diffCanvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '') : undefined,
+      diffRegion:
+        diffCount > 0
+          ? {
+              x: minX,
+              y: minY,
+              width: maxX - minX + 1,
+              height: maxY - minY + 1,
+            }
+          : undefined,
+      diffImage:
+        diffCount > 0
+          ? diffCanvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '')
+          : undefined,
     };
   } catch {
     return { identical: false, diffPercentage: 100 };

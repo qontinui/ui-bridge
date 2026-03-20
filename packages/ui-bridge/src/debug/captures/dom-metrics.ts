@@ -19,7 +19,7 @@ function countAndEmit(emit: Emit): void {
   schedule(() => {
     const nodeCount = document.querySelectorAll('*').length;
     const listenerCount = document.querySelectorAll(
-      'button, a, input, select, textarea, [onclick], [onchange], [onkeydown]',
+      'button, a, input, select, textarea, [onclick], [onchange], [onkeydown]'
     ).length;
     emit({
       type: 'dom-metrics',

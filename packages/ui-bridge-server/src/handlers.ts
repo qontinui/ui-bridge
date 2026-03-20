@@ -7,7 +7,12 @@
 import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
 import type { ControlSnapshot } from '@qontinui/ui-bridge/control';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
-import type { ActionFailureDetails, ActionErrorCode, ElementHistoryOptions, ElementLogEntry } from '@qontinui/ui-bridge/core';
+import type {
+  ActionFailureDetails,
+  ActionErrorCode,
+  ElementHistoryOptions,
+  ElementLogEntry,
+} from '@qontinui/ui-bridge/core';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -81,6 +86,8 @@ export interface ActionExecutorLike {
     componentId: string,
     request: { action: string; params?: Record<string, unknown> }
   ): Promise<unknown>;
+  /** Optional find method for filtered element discovery */
+  find?(request?: unknown): Promise<unknown>;
 }
 
 /**
@@ -299,9 +306,7 @@ function toCompactElement(el: AIDiscoveredElement): CompactElement {
   if (el.label) compact.label = el.label;
   if (el.state.textContent) {
     compact.text =
-      el.state.textContent.length > 200
-        ? el.state.textContent.slice(0, 200)
-        : el.state.textContent;
+      el.state.textContent.length > 200 ? el.state.textContent.slice(0, 200) : el.state.textContent;
   }
   if (el.state.value !== undefined) compact.value = el.state.value;
   if (el.semanticType) compact.semanticType = el.semanticType;
@@ -610,11 +615,8 @@ export function createHandlers(
             error: `Element not found: ${id}`,
             code: 'ELEMENT_NOT_FOUND',
             data: {
-              success: false,
-              error: `Element not found: ${id}`,
               failureDetails,
               durationMs: Date.now() - startTime,
-              timestamp: Date.now(),
             },
             timestamp: Date.now(),
           } as APIResponse<any>;
@@ -658,10 +660,15 @@ export function createHandlers(
             }
           );
 
-          return success({
-            ...actionResult,
-            failureDetails,
-          }) as APIResponse<any>;
+          // Return a proper failure envelope — don't wrap in success() which
+          // creates double-wrapping: {success: true, data: {success: false}}
+          return {
+            success: false,
+            error: actionResult.error || 'Action failed',
+            code: errorCode,
+            data: { ...actionResult, failureDetails },
+            timestamp: Date.now(),
+          } as APIResponse<any>;
         }
 
         return success(result) as APIResponse<any>;
@@ -687,11 +694,8 @@ export function createHandlers(
           error: errorMessage,
           code: errorCode,
           data: {
-            success: false,
-            error: errorMessage,
             failureDetails,
             durationMs: Date.now() - startTime,
-            timestamp: Date.now(),
           },
           timestamp: Date.now(),
         } as APIResponse<any>;
@@ -784,6 +788,13 @@ export function createHandlers(
 
     find: async (request?: unknown) => {
       try {
+        // Use actionExecutor.find() when available — it supports text, role,
+        // and other filters that registry.findElements() doesn't handle
+        if (actionExecutor.find) {
+          const result = await actionExecutor.find(request);
+          return success(result) as APIResponse<any>;
+        }
+        // Fallback to registry
         const findRequest = request as
           | { types?: string[]; selector?: string; limit?: number }
           | undefined;
@@ -800,8 +811,13 @@ export function createHandlers(
     },
 
     discover: async (request?: unknown) => {
-      // Deprecated, delegates to find
       try {
+        // Use actionExecutor.find() when available for proper filtering
+        if (actionExecutor.find) {
+          const result = await actionExecutor.find(request);
+          return success(result) as APIResponse<any>;
+        }
+        // Fallback to registry
         const findRequest = request as
           | { types?: string[]; selector?: string; limit?: number }
           | undefined;
@@ -845,11 +861,14 @@ export function createHandlers(
         const runnerUrl = `http://localhost:${runnerPort}`;
         let response: Response;
         try {
-          response = await fetch(`${runnerUrl}/api/unified-workflows/${encodeURIComponent(id)}/run`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request ?? {}),
-          });
+          response = await fetch(
+            `${runnerUrl}/api/unified-workflows/${encodeURIComponent(id)}/run`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(request ?? {}),
+            }
+          );
         } catch (fetchErr) {
           return error(
             `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
@@ -863,7 +882,7 @@ export function createHandlers(
             'RUNNER_ERROR'
           ) as APIResponse<any>;
         }
-        const data = await response.json() as any;
+        const data = (await response.json()) as any;
         return success(data) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_ERROR');
@@ -890,7 +909,7 @@ export function createHandlers(
             'RUNNER_ERROR'
           ) as APIResponse<any>;
         }
-        const data = await response.json() as any;
+        const data = (await response.json()) as any;
         return success(data) as APIResponse<any>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');

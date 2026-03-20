@@ -79,7 +79,11 @@ export function installWebVitalsCapture(emit: Emit): () => void {
         }
       }
     });
-    inpObserver.observe({ type: 'event', durationThreshold: 104, buffered: true } as PerformanceObserverInit);
+    inpObserver.observe({
+      type: 'event',
+      durationThreshold: 104,
+      buffered: true,
+    } as PerformanceObserverInit);
     observers.push(inpObserver);
   } catch {
     // Not supported

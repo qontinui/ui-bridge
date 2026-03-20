@@ -227,6 +227,10 @@ export interface FindRequest {
   role?: string;
   /** Filter by element type (single type — alias for types with one value) */
   element_type?: string;
+  /** Filter by label (substring match, case-insensitive) */
+  label?: string;
+  /** Filter by exact text content or label (case-insensitive, trimmed) */
+  exact_text?: string;
   /** Filter by selector */
   selector?: string;
   /** Include content (non-interactive) elements in results */
@@ -527,6 +531,18 @@ export interface ScrollAction {
   direction?: 'up' | 'down' | 'left' | 'right';
   /** Scroll amount in pixels */
   amount?: number;
+  /**
+   * Vertical scroll delta in pixels, using wheel-event semantics:
+   * positive = scroll DOWN, negative = scroll UP.
+   * Takes precedence over direction+amount when provided.
+   */
+  deltaY?: number;
+  /**
+   * Horizontal scroll delta in pixels, using wheel-event semantics:
+   * positive = scroll RIGHT, negative = scroll LEFT.
+   * Takes precedence over direction+amount when provided.
+   */
+  deltaX?: number;
   /** Scroll to specific position */
   position?: { x: number; y: number };
   /** Scroll to element */
