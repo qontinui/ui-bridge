@@ -250,6 +250,8 @@ function getComputedStylesSafe(el: HTMLElement) {
     'boxShadow',
     'cursor',
     'zIndex',
+    'colorScheme',
+    'appearance',
   ];
   const styles: Record<string, string> = {};
   for (const k of keys)
@@ -258,6 +260,28 @@ function getComputedStylesSafe(el: HTMLElement) {
       (cs as unknown as Record<string, string>)[k] ||
       '';
   return styles;
+}
+
+/**
+ * Parse an rgb/rgba color string and return approximate luminance (0=dark, 1=light).
+ * Returns -1 if unparseable.
+ */
+function parseLuminance(color: string): number {
+  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (!m) return -1;
+  const [r, g, b] = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+  // Relative luminance (simplified sRGB)
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function isLikelyDarkColor(color: string): boolean {
+  const l = parseLuminance(color);
+  return l >= 0 && l < 0.4;
+}
+
+function isLikelyLightColor(color: string): boolean {
+  const l = parseLuminance(color);
+  return l >= 0 && l > 0.6;
 }
 
 // Idle detector singleton (lazy-initialized)
@@ -1967,13 +1991,46 @@ export async function executeCommand(
       elements.slice(0, 100).forEach((e) => {
         const dom = e.element as HTMLElement;
         const cs = getComputedStyle(dom);
-        // Check contrast (simplified)
-        if (cs.color === cs.backgroundColor && cs.color !== 'rgba(0, 0, 0, 0)') {
-          issues.push({
-            element: e.id,
-            issue: 'Text color matches background',
-            severity: 'warning',
-          });
+        // Check contrast — compare parsed RGB values, not raw strings
+        const textColor = cs.color;
+        const bgColor = cs.backgroundColor;
+        if (textColor && bgColor && textColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'rgba(0, 0, 0, 0)') {
+          // Normalize both to comparable format
+          const normalize = (c: string) => c.replace(/\s/g, '').toLowerCase();
+          if (normalize(textColor) === normalize(bgColor)) {
+            issues.push({
+              element: e.id,
+              issue: `Text color matches background: ${textColor} on ${bgColor}`,
+              severity: 'warning',
+            });
+          }
+        }
+        // Check select elements for dark-mode dropdown visibility issues
+        if (dom.tagName === 'SELECT') {
+          const scheme = cs.colorScheme || '';
+          const isDarkBg = isLikelyDarkColor(bgColor);
+          const hasLightText = isLikelyLightColor(textColor);
+          if (isDarkBg && hasLightText && !scheme.includes('dark')) {
+            issues.push({
+              element: e.id,
+              issue: `Select has light text (${textColor}) on dark bg (${bgColor}) without color-scheme:dark — native <option> dropdowns may be invisible`,
+              severity: 'warning',
+            });
+          }
+          // Check if options explicitly have styling
+          const firstOption = dom.querySelector('option');
+          if (firstOption) {
+            const optCs = getComputedStyle(firstOption);
+            const optNormColor = optCs.color?.replace(/\s/g, '').toLowerCase() || '';
+            const optNormBg = optCs.backgroundColor?.replace(/\s/g, '').toLowerCase() || '';
+            if (optNormColor && optNormBg && optNormColor === optNormBg) {
+              issues.push({
+                element: e.id,
+                issue: `Select option text invisible: color ${optCs.color} matches background ${optCs.backgroundColor}`,
+                severity: 'error',
+              });
+            }
+          }
         }
         // Check font size
         if (parseFloat(cs.fontSize) < 12) {
