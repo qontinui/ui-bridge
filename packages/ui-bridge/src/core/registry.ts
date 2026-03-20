@@ -391,6 +391,13 @@ export interface RegistryOptions {
  *
  * Central registry for managing elements, components, and workflows.
  */
+export interface RegistrySnapshot {
+  elements: RegisteredElement[];
+  components: RegisteredComponent[];
+  workflows: Workflow[];
+  version: number;
+}
+
 export class UIBridgeRegistry {
   private elements = new Map<string, RegisteredElement>();
   private components = new Map<string, RegisteredComponent>();
@@ -404,8 +411,46 @@ export class UIBridgeRegistry {
   private transitions = new Map<string, UITransition>();
   private activeStates = new Set<string>();
 
+  // External store pattern for useSyncExternalStore
+  private storeVersion = 0;
+  private storeListeners = new Set<() => void>();
+  private cachedSnapshot: RegistrySnapshot | null = null;
+
   constructor(options: RegistryOptions = {}) {
     this.options = options;
+  }
+
+  /**
+   * Subscribe to registry changes (for useSyncExternalStore).
+   * Returns an unsubscribe function.
+   */
+  subscribe(callback: () => void): () => void {
+    this.storeListeners.add(callback);
+    return () => { this.storeListeners.delete(callback); };
+  }
+
+  /**
+   * Get a stable snapshot reference that changes only when the registry mutates.
+   * Designed for useSyncExternalStore.
+   */
+  getSnapshot(): RegistrySnapshot {
+    if (!this.cachedSnapshot || this.cachedSnapshot.version !== this.storeVersion) {
+      this.cachedSnapshot = {
+        elements: Array.from(this.elements.values()),
+        components: Array.from(this.components.values()),
+        workflows: Array.from(this.workflows.values()),
+        version: this.storeVersion,
+      };
+    }
+    return this.cachedSnapshot;
+  }
+
+  private notifyStoreListeners(): void {
+    this.storeVersion++;
+    this.cachedSnapshot = null;
+    for (const listener of this.storeListeners) {
+      listener();
+    }
   }
 
   /**
@@ -435,6 +480,13 @@ export class UIBridgeRegistry {
 
     if (this.options.verbose) {
       console.log('[UIBridge]', type, data);
+    }
+
+    // Notify external store subscribers on mutation events
+    if (typeof type === 'string' && (
+      type.startsWith('element:') || type.startsWith('component:') || type.startsWith('workflow:')
+    )) {
+      this.notifyStoreListeners();
     }
 
     this.options.elementEventLog?.ingest(event as BridgeEvent);
@@ -1005,6 +1057,7 @@ export class UIBridgeRegistry {
    */
   registerWorkflow(workflow: Workflow): Workflow {
     this.workflows.set(workflow.id, workflow);
+    this.notifyStoreListeners();
     return workflow;
   }
 
@@ -1012,7 +1065,9 @@ export class UIBridgeRegistry {
    * Unregister a workflow
    */
   unregisterWorkflow(id: string): boolean {
-    return this.workflows.delete(id);
+    const deleted = this.workflows.delete(id);
+    if (deleted) this.notifyStoreListeners();
+    return deleted;
   }
 
   /**

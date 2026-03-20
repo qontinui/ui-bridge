@@ -19,12 +19,14 @@ import type { SemanticSnapshot } from '../ai';
 // Helpers
 // ============================================================================
 
-function success<T>(data: T): APIResponse<T> {
-  return { success: true, data, timestamp: Date.now() };
+function success<T>(data: T, _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string }): APIResponse<T> {
+  const response: APIResponse<T> = { success: true, data, timestamp: Date.now() };
+  if (_meta) response._meta = _meta;
+  return response;
 }
 
-function error(message: string, code?: string): APIResponse<never> {
-  return { success: false, error: message, code, timestamp: Date.now() };
+function error(message: string, code?: string, suggestions?: string[]): APIResponse<never> {
+  return { success: false, error: message, code, timestamp: Date.now(), ...(suggestions ? { suggestions } : {}) };
 }
 
 /** Maximum allowed response size for fallback screenshots (10 MB) */
@@ -97,6 +99,8 @@ export interface RelayHandlersOptions {
    * Example: `'http://localhost:9876/ui-bridge/sdk/screenshot'`
    */
   screenshotFallbackUrl?: string;
+  /** Cache TTL in milliseconds for snapshot staleness checks (default: 5000) */
+  cacheTtlMs?: number;
 }
 
 /**
@@ -122,7 +126,7 @@ export function createRelayHandlers(
 
   // Server-side render log cache
   let renderLogEntries: RenderLogEntry[] = [];
-  const MAX_ENTRIES = 5;
+  const MAX_ENTRIES = 50;
 
   // Cached snapshots
   let latestControlSnapshot: ControlSnapshot = {
@@ -144,11 +148,28 @@ export function createRelayHandlers(
       const result = await relay.queueCommand<T>(action, payload, opts);
       return success(result);
     } catch (e) {
-      return error((e as Error).message, 'COMMAND_FAILED');
+      const msg = e instanceof Error ? e.message : String(e);
+      const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
+      const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
+      const hint = !hasListeners
+        ? ' No browser tab is connected — ensure the app is open and the UI Bridge SDK is loaded.'
+        : isTimeout
+          ? ' The browser did not respond in time — the page may be unresponsive or navigating.'
+          : '';
+      const isUnsupported = msg.includes('unsupported') || msg.includes('Unsupported') || msg.includes('not supported');
+      const suggestions = isTimeout
+        ? ['Check if the browser tab is responsive', 'The page may be navigating or loading heavy content', 'Try again after the page settles']
+        : !hasListeners
+          ? ['Ensure the app is open in a browser tab', 'Verify the UI Bridge SDK is loaded in the app']
+          : isUnsupported
+            ? ['Check that the action is supported for this element type', 'Use getControlSnapshot() to see element capabilities', 'Supported actions: click, type, select, toggle, scroll, focus']
+            : undefined;
+      const code = isTimeout ? 'TIMEOUT' : isUnsupported ? 'UNSUPPORTED_ACTION' : 'COMMAND_FAILED';
+      return error(`${msg}${hint}`, code, suggestions);
     }
   }
 
-  // Helper: relay with empty-array fallback
+  // Helper: relay with empty-array fallback — includes metadata when fallback is used
   async function relayWithFallback<T>(
     action: string,
     payload: unknown = {},
@@ -158,20 +179,47 @@ export function createRelayHandlers(
       const result = await relay.queueCommand<T>(action, payload);
       return success(result);
     } catch {
-      return success(fallback);
+      return success(fallback, { fallback: true, reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.` });
     }
   }
 
   // Helper: refresh the cached control snapshot if stale or if the given array is empty
-  const CACHE_TTL_MS = 5000;
+  const cacheTtlMs = options?.cacheTtlMs ?? 5000;
+  let snapshotStaleSince: number | null = null;
+
+  function staleMeta(): { stale: boolean; staleSinceMs?: number } {
+    if (snapshotStaleSince) {
+      return { stale: true, staleSinceMs: Date.now() - snapshotStaleSince };
+    }
+    return { stale: false };
+  }
+
+  let inflightRefresh: Promise<void> | null = null;
+
   async function refreshSnapshotIfStale(isEmpty: boolean): Promise<void> {
-    const isStale = Date.now() - latestControlSnapshot.timestamp > CACHE_TTL_MS;
+    const isStale = Date.now() - latestControlSnapshot.timestamp > cacheTtlMs;
     if (isEmpty || isStale) {
+      // Deduplicate concurrent refresh requests — all callers await the same promise
+      if (inflightRefresh) {
+        await inflightRefresh;
+        return;
+      }
+
+      inflightRefresh = (async () => {
+        try {
+          const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
+          latestControlSnapshot = result;
+          snapshotStaleSince = null;
+        } catch {
+          // Track when we first started returning stale data
+          if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+        }
+      })();
+
       try {
-        const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
-        latestControlSnapshot = result;
-      } catch {
-        /* use cached fallback */
+        await inflightRefresh;
+      } finally {
+        inflightRefresh = null;
       }
     }
   }
@@ -209,12 +257,29 @@ export function createRelayHandlers(
 
     async getElements() {
       await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
-      return success(latestControlSnapshot.elements);
+      const _meta = staleMeta();
+      return success(latestControlSnapshot.elements, _meta);
     },
 
     async getElement(id) {
-      const element = latestControlSnapshot.elements.find((e) => e.id === id);
-      if (!element) return error(`Element ${id} not found`, 'NOT_FOUND');
+      let element = latestControlSnapshot.elements.find((e) => e.id === id);
+      if (!element) {
+        // Refresh and retry — element may have been registered after the cached snapshot
+        await refreshSnapshotIfStale(true);
+        element = latestControlSnapshot.elements.find((e) => e.id === id);
+      }
+      if (!element) {
+        const count = latestControlSnapshot.elements.length;
+        return error(
+          `Element "${id}" not found (${count} elements registered). Use find() or getControlSnapshot() to see available elements.`,
+          'ELEMENT_NOT_FOUND',
+          [
+            'Use find() to search for elements by description or type',
+            'Use getControlSnapshot() to see all available elements',
+            'The element may not be rendered yet — wait for the page to fully load',
+          ]
+        );
+      }
       return success(element);
     },
 
@@ -237,17 +302,28 @@ export function createRelayHandlers(
     async getComponents() {
       // Refresh snapshot to get the latest component list from the browser
       await refreshSnapshotIfStale(latestControlSnapshot.components.length === 0);
-      return success(latestControlSnapshot.components);
+      const _meta = staleMeta();
+      return success(latestControlSnapshot.components, _meta);
     },
 
     async getComponent(id) {
       // Refresh snapshot before looking up — components mount/unmount with page navigation
-      await refreshSnapshotIfStale(true);
-      const component = latestControlSnapshot.components.find((c) => c.id === id);
+      // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
+      let component = latestControlSnapshot.components.find((c) => c.id === id);
       if (!component) {
+        await refreshSnapshotIfStale(true);
+        component = latestControlSnapshot.components.find((c) => c.id === id);
+      }
+      if (!component) {
+        const available = latestControlSnapshot.components.map((c) => c.id);
         return error(
-          `Component "${id}" not found. Components are only available when their page is active — navigate to the page that contains this component and try again.`,
-          'NOT_FOUND'
+          `Component "${id}" not found. Available components: [${available.join(', ')}]. Components are only available when their page is active — navigate to the page that contains this component and try again.`,
+          'NOT_FOUND',
+          [
+            'Use getControlSnapshot() to see all available components',
+            'Navigate to the page containing this component first',
+            'Components mount/unmount with page navigation — ensure the correct page is active',
+          ]
         );
       }
       return success(component);
@@ -307,7 +383,8 @@ export function createRelayHandlers(
             snapshot.fallbackScreenshot = fallback;
           }
         }
-        return success(snapshot);
+        const _meta = staleMeta();
+        return success(snapshot, _meta);
       }
 
       try {
@@ -317,6 +394,7 @@ export function createRelayHandlers(
           { targetTabId: request?.targetTabId }
         );
         latestControlSnapshot = result;
+        snapshotStaleSince = null;
 
         // If the snapshot came back empty (no elements, no components), the app
         // may be in an error state — attach a fallback screenshot for context
@@ -324,13 +402,14 @@ export function createRelayHandlers(
         if (isEmpty && screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
           if (fallback) {
-            return success({ ...result, fallbackScreenshot: fallback });
+            return success({ ...result, fallbackScreenshot: fallback }, { stale: false });
           }
         }
 
-        return success(result);
+        return success(result, { stale: false });
       } catch (e) {
         // Command timed out or failed — return cached snapshot with fallback screenshot
+        if (!snapshotStaleSince) snapshotStaleSince = Date.now();
         const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'timeout');
@@ -338,7 +417,8 @@ export function createRelayHandlers(
             snapshot.fallbackScreenshot = fallback;
           }
         }
-        return success(snapshot);
+        const _meta = staleMeta();
+        return success(snapshot, _meta);
       }
     },
 
@@ -348,7 +428,8 @@ export function createRelayHandlers(
 
     async getWorkflows() {
       await refreshSnapshotIfStale(latestControlSnapshot.workflows.length === 0);
-      return success(latestControlSnapshot.workflows);
+      const _meta = staleMeta();
+      return success(latestControlSnapshot.workflows, _meta);
     },
 
     async runWorkflow(id, request) {

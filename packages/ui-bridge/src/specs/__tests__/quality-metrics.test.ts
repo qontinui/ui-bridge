@@ -398,9 +398,9 @@ describe('admin dashboard scenario', () => {
 // ============================================================================
 
 describe('METRIC_FUNCTIONS registry', () => {
-  it('contains all 27 metrics (5 UX + 22 existing)', () => {
+  it('contains all 28 metrics (5 UX + 23 existing)', () => {
     const keys = Object.keys(METRIC_FUNCTIONS);
-    expect(keys).toHaveLength(27);
+    expect(keys).toHaveLength(28);
   });
 
   it('UX metrics are first in the registry', () => {

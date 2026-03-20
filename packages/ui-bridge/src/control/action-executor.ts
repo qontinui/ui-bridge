@@ -268,11 +268,14 @@ export class DefaultActionExecutor implements ActionExecutor {
    * accumulate.
    */
   private discoveryCache = new Map<string, HTMLElement>();
+  private maxDiscoveryCacheSize: number;
 
   constructor(
     private registry: UIBridgeRegistry,
-    private consoleCapture?: BrowserEventCapture
+    private consoleCapture?: BrowserEventCapture,
+    options?: { maxDiscoveryCacheSize?: number }
   ) {
+    this.maxDiscoveryCacheSize = options?.maxDiscoveryCacheSize ?? 500;
     // Initialize impact assessor if we're in a browser environment
     if (typeof document !== 'undefined') {
       this.impactAssessor = new ErrorImpactAssessor({
@@ -286,6 +289,20 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   setIdleDetector(detector: CompositeIdleDetector): void {
     this.idleDetector = detector;
+  }
+
+  /**
+   * Evict oldest entries from the discovery cache when it exceeds the size limit.
+   * Map iterates in insertion order, so the first entries are the oldest.
+   */
+  private evictDiscoveryCache(): void {
+    if (this.discoveryCache.size <= this.maxDiscoveryCacheSize) return;
+    const excess = this.discoveryCache.size - this.maxDiscoveryCacheSize;
+    const iter = this.discoveryCache.keys();
+    for (let i = 0; i < excess; i++) {
+      const key = iter.next().value;
+      if (key !== undefined) this.discoveryCache.delete(key);
+    }
   }
 
   /**
@@ -381,9 +398,20 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
 
       if (!element) {
+        // Build diagnostic hint for AI consumers
+        const wasRegistered = this.registry.getElement(elementId);
+        const wasInCache = this.discoveryCache.has(elementId);
+        let hint: string;
+        if (wasRegistered && !wasRegistered.element?.isConnected) {
+          hint = `Element '${elementId}' was registered but is no longer in the DOM (component may have unmounted). Try re-discovering with find() or navigate to the page containing this element.`;
+        } else if (wasInCache) {
+          hint = `Element '${elementId}' was previously discovered but its DOM node was detached. Run find() again to get a fresh reference.`;
+        } else {
+          hint = `Element '${elementId}' was never registered or discovered. Check the ID is correct, ensure the page containing it is mounted, or use find()/discover() to locate it first.`;
+        }
         return {
           success: false,
-          error: `Element not found: ${elementId}`,
+          error: `Element not found: ${elementId}. ${hint}`,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -660,6 +688,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Cache unregistered elements so executeAction can resolve them later
         if (!registered) {
           this.discoveryCache.set(id, el);
+          this.evictDiscoveryCache();
         }
 
         elements.push({

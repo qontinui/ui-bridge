@@ -224,9 +224,20 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
   const title = element.getAttribute('title');
   if (title) return title;
 
-  // Inner text (limited)
-  const text = element.textContent?.trim();
-  if (text && text.length <= 50) return text;
+  // Inner text — use innerText which respects visual formatting (adds spaces
+  // between block elements and hidden content is excluded), falling back to
+  // textContent for elements not in the DOM or where innerText is unavailable.
+  // Collapse runs of whitespace so adjacent inline spans get proper separation.
+  const rawText = (element.innerText ?? element.textContent)?.trim();
+  const text = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
+  if (text) {
+    // For short labels, return as-is
+    if (text.length <= 50) return text;
+    // For longer text, truncate to first meaningful segment (up to 80 chars)
+    // This handles list items, cards, etc. that have rich content
+    const truncated = text.slice(0, 80).replace(/\s+\S*$/, '');
+    if (truncated.length >= 8) return truncated;
+  }
 
   // Placeholder for inputs
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {

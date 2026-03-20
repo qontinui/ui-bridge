@@ -149,6 +149,10 @@ export interface APIResponse<T = unknown> {
   code?: string;
   /** Request timestamp */
   timestamp: number;
+  /** Response metadata (staleness, diagnostics) */
+  _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string };
+  /** Recovery suggestions for error responses */
+  suggestions?: string[];
 }
 
 /**

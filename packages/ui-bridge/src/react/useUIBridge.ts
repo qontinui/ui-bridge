@@ -4,7 +4,7 @@
  * Main hook for accessing UI Bridge functionality.
  */
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import type {
   RegisteredElement,
   RegisteredComponent,
@@ -121,12 +121,21 @@ export function useUIBridge(): UseUIBridgeReturn {
   const available = !!context;
   const initialized = context?.initialized ?? false;
 
-  // Get collections
-  const elements = useMemo(() => context?.getElements() ?? [], [context]);
+  // Subscribe to registry mutations via useSyncExternalStore
+  const emptySnapshot = useMemo(() => ({ elements: [] as RegisteredElement[], components: [] as RegisteredComponent[], workflows: [] as Workflow[], version: -1 }), []);
+  const subscribe = useCallback(
+    (cb: () => void) => context?.registry.subscribe(cb) ?? (() => {}),
+    [context]
+  );
+  const getSnapshot = useCallback(
+    () => context?.registry.getSnapshot() ?? emptySnapshot,
+    [context, emptySnapshot]
+  );
+  const registrySnapshot = useSyncExternalStore(subscribe, getSnapshot);
 
-  const components = useMemo(() => context?.getComponents() ?? [], [context]);
-
-  const workflows = useMemo(() => context?.registry.getAllWorkflows() ?? [], [context]);
+  const elements = registrySnapshot.elements;
+  const components = registrySnapshot.components;
+  const workflows = registrySnapshot.workflows;
 
   // Create snapshot
   const createSnapshot = useCallback((): BridgeSnapshot => {

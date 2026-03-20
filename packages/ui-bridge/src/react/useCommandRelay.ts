@@ -154,7 +154,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         }
         await sendResponse(command.commandId, true, result);
       } catch (e: unknown) {
-        const errorMessage = (e as Error).message;
+        const errorMessage = e instanceof Error ? e.message : String(e);
         let errorCode = 'UNKNOWN_ERROR';
         if (errorMessage.includes('not found')) errorCode = 'ELEMENT_NOT_FOUND';
         else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
