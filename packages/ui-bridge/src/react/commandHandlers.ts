@@ -267,15 +267,52 @@ function getComputedStylesSafe(el: HTMLElement) {
 }
 
 /**
- * Parse an rgb/rgba color string and return approximate luminance (0=dark, 1=light).
+ * Contrast ratio below this means foreground and background are nearly identical,
+ * making text effectively invisible (WCAG contrast ratio scale starts at 1:1).
+ */
+const NEARLY_INVISIBLE_CONTRAST_THRESHOLD = 1.15;
+
+/**
+ * Linearize a single sRGB channel value (0–1) per WCAG 2.1 spec.
+ */
+function srgbToLinear(c: number): number {
+  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/**
+ * Parse an rgb/rgba or hex color string and return WCAG 2.1 relative luminance (0–1).
+ * Supports: rgb(r,g,b), rgba(r,g,b,a), #rgb, #rgba, #rrggbb, #rrggbbaa.
  * Returns -1 if unparseable.
  */
 function parseLuminance(color: string): number {
-  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (!m) return -1;
-  const [r, g, b] = [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
-  // Relative luminance (simplified sRGB)
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  let r: number, g: number, b: number;
+
+  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) {
+    r = parseInt(rgbMatch[1]) / 255;
+    g = parseInt(rgbMatch[2]) / 255;
+    b = parseInt(rgbMatch[3]) / 255;
+  } else {
+    const hexMatch = color.match(/^#([0-9a-fA-F]{3,8})$/);
+    if (!hexMatch) return -1;
+    const hex = hexMatch[1];
+    if (hex.length === 3 || hex.length === 4) {
+      // #rgb or #rgba — expand each digit
+      r = parseInt(hex[0] + hex[0], 16) / 255;
+      g = parseInt(hex[1] + hex[1], 16) / 255;
+      b = parseInt(hex[2] + hex[2], 16) / 255;
+    } else if (hex.length === 6 || hex.length === 8) {
+      // #rrggbb or #rrggbbaa
+      r = parseInt(hex.slice(0, 2), 16) / 255;
+      g = parseInt(hex.slice(2, 4), 16) / 255;
+      b = parseInt(hex.slice(4, 6), 16) / 255;
+    } else {
+      return -1;
+    }
+  }
+
+  // WCAG 2.1 relative luminance
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
 }
 
 function isLikelyDarkColor(color: string): boolean {
@@ -2378,7 +2415,7 @@ export async function executeCommand(
             const darker = Math.min(fgLum, bgLum);
             // WCAG contrast ratio: (L1 + 0.05) / (L2 + 0.05)
             const ratio = (lighter + 0.05) / (darker + 0.05);
-            if (ratio < 1.15) {
+            if (ratio < NEARLY_INVISIBLE_CONTRAST_THRESHOLD) {
               // Nearly identical colors — text is invisible
               issues.push({
                 element: e.id,
