@@ -122,11 +122,20 @@ export function useUIBridge(): UseUIBridgeReturn {
   const initialized = context?.initialized ?? false;
 
   // Get collections
-  const elements = useMemo(() => context?.getElements() ?? [], [context]);
+  const elements = useMemo(
+    () => context?.getElements() ?? [],
+    [context]
+  );
 
-  const components = useMemo(() => context?.getComponents() ?? [], [context]);
+  const components = useMemo(
+    () => context?.getComponents() ?? [],
+    [context]
+  );
 
-  const workflows = useMemo(() => context?.registry.getAllWorkflows() ?? [], [context]);
+  const workflows = useMemo(
+    () => context?.registry.getAllWorkflows() ?? [],
+    [context]
+  );
 
   // Create snapshot
   const createSnapshot = useCallback((): BridgeSnapshot => {

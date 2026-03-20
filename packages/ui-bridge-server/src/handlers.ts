@@ -81,6 +81,8 @@ export interface ActionExecutorLike {
     componentId: string,
     request: { action: string; params?: Record<string, unknown> }
   ): Promise<unknown>;
+  /** Optional find method for filtered element discovery */
+  find?(request?: unknown): Promise<unknown>;
 }
 
 /**
@@ -610,11 +612,8 @@ export function createHandlers(
             error: `Element not found: ${id}`,
             code: 'ELEMENT_NOT_FOUND',
             data: {
-              success: false,
-              error: `Element not found: ${id}`,
               failureDetails,
               durationMs: Date.now() - startTime,
-              timestamp: Date.now(),
             },
             timestamp: Date.now(),
           } as APIResponse<any>;
@@ -658,10 +657,15 @@ export function createHandlers(
             }
           );
 
-          return success({
-            ...actionResult,
-            failureDetails,
-          }) as APIResponse<any>;
+          // Return a proper failure envelope — don't wrap in success() which
+          // creates double-wrapping: {success: true, data: {success: false}}
+          return {
+            success: false,
+            error: actionResult.error || 'Action failed',
+            code: errorCode,
+            data: { ...actionResult, failureDetails },
+            timestamp: Date.now(),
+          } as APIResponse<any>;
         }
 
         return success(result) as APIResponse<any>;
@@ -687,11 +691,8 @@ export function createHandlers(
           error: errorMessage,
           code: errorCode,
           data: {
-            success: false,
-            error: errorMessage,
             failureDetails,
             durationMs: Date.now() - startTime,
-            timestamp: Date.now(),
           },
           timestamp: Date.now(),
         } as APIResponse<any>;
@@ -784,6 +785,13 @@ export function createHandlers(
 
     find: async (request?: unknown) => {
       try {
+        // Use actionExecutor.find() when available — it supports text, role,
+        // and other filters that registry.findElements() doesn't handle
+        if (actionExecutor.find) {
+          const result = await actionExecutor.find(request);
+          return success(result) as APIResponse<any>;
+        }
+        // Fallback to registry
         const findRequest = request as
           | { types?: string[]; selector?: string; limit?: number }
           | undefined;
@@ -800,8 +808,13 @@ export function createHandlers(
     },
 
     discover: async (request?: unknown) => {
-      // Deprecated, delegates to find
       try {
+        // Use actionExecutor.find() when available for proper filtering
+        if (actionExecutor.find) {
+          const result = await actionExecutor.find(request);
+          return success(result) as APIResponse<any>;
+        }
+        // Fallback to registry
         const findRequest = request as
           | { types?: string[]; selector?: string; limit?: number }
           | undefined;

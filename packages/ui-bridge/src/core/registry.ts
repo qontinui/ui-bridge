@@ -209,6 +209,15 @@ function getElementState(element: HTMLElement): ElementState {
   if (ariaExpanded !== null) {
     state.ariaExpanded = ariaExpanded === 'true';
   }
+  const ariaCheckedAttr = element.getAttribute('aria-checked');
+  if (ariaCheckedAttr !== null) {
+    state.ariaChecked = ariaCheckedAttr === 'mixed' ? 'mixed' : ariaCheckedAttr === 'true';
+    // Also populate checked for switch/checkbox roles so callers get a boolean
+    const role = element.getAttribute('role');
+    if (role === 'switch' || role === 'checkbox' || role === 'menuitemcheckbox' || role === 'menuitemradio' || role === 'radio') {
+      state.checked = ariaCheckedAttr === 'true';
+    }
+  }
 
   // Add input-specific state
   if (element instanceof HTMLInputElement) {

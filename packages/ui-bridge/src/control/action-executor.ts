@@ -164,6 +164,16 @@ function getElementState(element: HTMLElement): ElementState {
   if (ariaExpanded !== null) {
     state.ariaExpanded = ariaExpanded === 'true';
   }
+  // Capture aria-checked for role="switch" and similar toggle elements
+  const ariaCheckedAttr = element.getAttribute('aria-checked');
+  if (ariaCheckedAttr !== null) {
+    state.ariaChecked = ariaCheckedAttr === 'mixed' ? 'mixed' : ariaCheckedAttr === 'true';
+    // Also populate checked for switch/checkbox roles so callers get a consistent boolean
+    const role = element.getAttribute('role');
+    if (role === 'switch' || role === 'checkbox' || role === 'menuitemcheckbox' || role === 'menuitemradio' || role === 'radio') {
+      state.checked = ariaCheckedAttr === 'true';
+    }
+  }
 
   if (element instanceof HTMLInputElement) {
     state.value = element.value;
@@ -380,6 +390,16 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
       }
 
+      // Resolve page-level sentinel IDs for scroll actions.
+      // "document", "body", and "window" are virtual element IDs that target
+      // the page scroll container directly, without requiring a registered element.
+      if (!element && request.action === 'scroll') {
+        const sentinel = elementId.toLowerCase();
+        if (sentinel === 'document' || sentinel === 'body' || sentinel === 'window') {
+          element = document.documentElement;
+        }
+      }
+
       if (!element) {
         return {
           success: false,
@@ -414,8 +434,32 @@ export class DefaultActionExecutor implements ActionExecutor {
       // Capture UI state before action for impact assessment
       this.impactAssessor?.captureBeforeState();
 
-      // Execute the action
-      const result = await this.performAction(element, request.action, request.params);
+      // Execute the action.
+      // For drag, accept params from either request.params or the request root (flat format).
+      // Other actions already use flat params at the root, so drag should be consistent.
+      let actionParams = request.params;
+      if (request.action === 'drag') {
+        const req = request as unknown as Record<string, unknown>;
+        const dragRootFields: Record<string, unknown> = {};
+        for (const key of [
+          'targetPosition',
+          'target',
+          'targetOffset',
+          'sourceOffset',
+          'steps',
+          'holdDelay',
+          'releaseDelay',
+          'html5',
+        ]) {
+          if (req[key] !== undefined) {
+            dragRootFields[key] = req[key];
+          }
+        }
+        if (Object.keys(dragRootFields).length > 0) {
+          actionParams = { ...dragRootFields, ...request.params };
+        }
+      }
+      const result = await this.performAction(element, request.action, actionParams);
 
       // Brief wait to catch immediate async errors (promise rejections from click handlers)
       let consoleErrors: CapturedError[] | undefined;
@@ -652,6 +696,37 @@ export class DefaultActionExecutor implements ActionExecutor {
           }
         }
 
+        // Filter by label (case-insensitive partial match)
+        if (options?.label) {
+          const labelLc = options.label.toLowerCase();
+          const elLabel = (this.getElementLabel(el) || '').toLowerCase();
+          if (!elLabel.includes(labelLc)) continue;
+        }
+
+        // Filter by exact_text (case-insensitive exact match on label or textContent)
+        if (options?.exact_text) {
+          const exactLc = options.exact_text.toLowerCase();
+          const elLabel = (this.getElementLabel(el) || '').toLowerCase();
+          const elText = (state.textContent || '').trim().toLowerCase();
+          if (elLabel !== exactLc && elText !== exactLc) continue;
+        }
+
+        // Filter by interactiveOnly — keep only elements that are interactive by type or have actions
+        if (options?.interactiveOnly) {
+          const interactiveTypes = new Set([
+            'button',
+            'input',
+            'select',
+            'textarea',
+            'link',
+            'checkbox',
+            'radio',
+          ]);
+          const elType = this.inferElementType(el);
+          const elActions = this.inferActions(el);
+          if (!interactiveTypes.has(elType) && elActions.length === 0) continue;
+        }
+
         // Check if registered
         const registered = this.registry.findByDOMElement(el);
 
@@ -680,8 +755,8 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
     }
 
-    // Include content elements from registry when requested
-    if (options?.includeContent || options?.contentOnly) {
+    // Include content elements when explicitly requested or when interactiveOnly is false
+    if (options?.includeContent || options?.contentOnly || options?.interactiveOnly === false) {
       const contentElements = this.registry.getAllContentElements();
       for (const el of contentElements) {
         if (options?.limit && elements.length >= options.limit) break;
@@ -694,6 +769,21 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Filter by content role
         if (options?.contentRole && el.contentMetadata?.contentRole !== options.contentRole) {
           continue;
+        }
+
+        // Filter by label (case-insensitive partial match)
+        if (options?.label) {
+          const labelLc = options.label.toLowerCase();
+          const elLabel = (el.label || '').toLowerCase();
+          if (!elLabel.includes(labelLc)) continue;
+        }
+
+        // Filter by exact_text (case-insensitive exact match on label or textContent)
+        if (options?.exact_text) {
+          const exactLc = options.exact_text.toLowerCase();
+          const elLabel = (el.label || '').toLowerCase();
+          const elText = (state.textContent || '').trim().toLowerCase();
+          if (elLabel !== exactLc && elText !== exactLc) continue;
         }
 
         elements.push({
@@ -759,6 +849,21 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Filter oversized
         if (options?.oversizeThreshold && meta?.oversizeRatio) {
           if (meta.oversizeRatio < options.oversizeThreshold) continue;
+        }
+
+        // Filter by label (case-insensitive partial match)
+        if (options?.label) {
+          const labelLc = options.label.toLowerCase();
+          const elLabel = (el.label || '').toLowerCase();
+          if (!elLabel.includes(labelLc)) continue;
+        }
+
+        // Filter by exact_text (case-insensitive exact match on label or alt text)
+        if (options?.exact_text) {
+          const exactLc = options.exact_text.toLowerCase();
+          const elLabel = (el.label || '').toLowerCase();
+          const altText = (meta?.altText || '').toLowerCase();
+          if (elLabel !== exactLc && altText !== exactLc) continue;
         }
 
         elements.push({
@@ -1091,15 +1196,61 @@ export class DefaultActionExecutor implements ActionExecutor {
         : HTMLInputElement.prototype;
     const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
 
+    // React 17+ stores props directly on the DOM node under __reactProps$<key>.
+    // In embedded WebViews (e.g. Tauri), React's event delegation may not receive
+    // bubbled synthetic events because the React root is mounted differently.
+    // Directly invoking the onChange prop is the most reliable way to notify
+    // React of value changes in these environments.
+    const el = element as unknown as Record<string, unknown>;
+    const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+    const reactProps = reactPropsKey
+      ? (el[reactPropsKey] as Record<string, unknown> | undefined)
+      : undefined;
+
+    /**
+     * Notify React of a value change on the element.
+     * Strategy:
+     * 1. Reset _valueTracker so React detects old !== new when it processes
+     *    the event (React skips onChange when tracker value === new value).
+     * 2. Dispatch a native 'input' event — React's event delegation picks this
+     *    up in normal browser contexts.
+     * 3. Also call __reactProps$.onChange directly — this is the reliable path
+     *    in embedded WebViews (Tauri) where event delegation may be bypassed.
+     */
+    const notifyReact = (oldValue: string) => {
+      // Step 1: Reset _valueTracker to the old value so React detects the change
+      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
+        ._valueTracker;
+      if (tracker) tracker.setValue(oldValue);
+
+      // Step 2: Dispatch native input event (works in standard browser contexts)
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Step 3: Directly invoke React's onChange prop if available (Tauri WebView fix)
+      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
+        const syntheticEvent = {
+          target: element,
+          currentTarget: element,
+          type: 'change',
+          bubbles: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new Event('input'),
+        };
+        (reactProps.onChange as (e: unknown) => void)(syntheticEvent);
+      }
+    };
+
     element.focus();
 
     if (options?.clear) {
+      const prevClear = element.value;
       if (nativeSetter) {
         nativeSetter.call(element, '');
       } else {
         element.value = '';
       }
-      element.dispatchEvent(new Event('input', { bubbles: true }));
+      notifyReact(prevClear);
     }
 
     const text = options?.text || '';
@@ -1113,7 +1264,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         element.value = current + char;
       }
       if (options?.triggerEvents !== false) {
-        element.dispatchEvent(new Event('input', { bubbles: true }));
+        notifyReact(current);
       }
       if (delay > 0) {
         await sleep(delay);
@@ -1178,6 +1329,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     for (const keyDesc of options.keys) {
       const { key } = keyDesc;
+      if (!key || typeof key !== 'string') continue;
       const mods = keyDesc.modifiers || {};
       const eventInit: KeyboardEventInit = {
         key,
@@ -1233,6 +1385,8 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private performClear(element: HTMLElement): void {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const previousValue = element.value;
+
       const proto =
         element instanceof HTMLTextAreaElement
           ? HTMLTextAreaElement.prototype
@@ -1243,7 +1397,32 @@ export class DefaultActionExecutor implements ActionExecutor {
       } else {
         element.value = '';
       }
+
+      // Reset _valueTracker so React detects old !== new
+      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
+        ._valueTracker;
+      if (tracker) tracker.setValue(previousValue);
+
       element.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
+      const el = element as unknown as Record<string, unknown>;
+      const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+      const reactProps = reactPropsKey
+        ? (el[reactPropsKey] as Record<string, unknown> | undefined)
+        : undefined;
+      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
+        (reactProps.onChange as (e: unknown) => void)({
+          target: element,
+          currentTarget: element,
+          type: 'change',
+          bubbles: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new Event('input'),
+        });
+      }
+
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }
@@ -1362,6 +1541,11 @@ export class DefaultActionExecutor implements ActionExecutor {
         top: options.position.y,
         behavior: isSmooth ? 'smooth' : 'auto',
       });
+    } else if (options?.deltaY !== undefined || options?.deltaX !== undefined) {
+      // deltaY/deltaX use wheel-event semantics: positive = down/right, negative = up/left.
+      const dx = options.deltaX ?? 0;
+      const dy = options.deltaY ?? 0;
+      scrollTarget.scrollBy({ left: dx, top: dy, behavior: isSmooth ? 'smooth' : 'auto' });
     } else {
       const amount = options?.amount || 100;
       const direction = options?.direction || 'down';
@@ -1408,6 +1592,12 @@ export class DefaultActionExecutor implements ActionExecutor {
       });
     }
 
+    // For non-smooth (instant) scrolls, yield one frame so the browser
+    // applies the scroll position before we read it
+    if (!isSmooth) {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }
+
     // Capture post-scroll state
     const after = { scrollTop: scrollTarget.scrollTop, scrollLeft: scrollTarget.scrollLeft };
 
@@ -1435,6 +1625,13 @@ export class DefaultActionExecutor implements ActionExecutor {
       if (isScrollable) return current;
       current = current.parentElement;
     }
+    // Check body first — many Tauri/SPA apps make body the scroll container
+    if (
+      document.body.scrollHeight > document.body.clientHeight ||
+      document.body.scrollWidth > document.body.clientWidth
+    ) {
+      return document.body;
+    }
     return document.documentElement;
   }
 
@@ -1447,6 +1644,12 @@ export class DefaultActionExecutor implements ActionExecutor {
         element.checked = checked;
         element.dispatchEvent(new Event('change', { bubbles: true }));
       }
+    } else if (element.getAttribute('role') === 'switch') {
+      // React switch components toggle via click
+      const isChecked = element.getAttribute('aria-checked') === 'true';
+      if (isChecked !== checked) {
+        element.click();
+      }
     }
   }
 
@@ -1454,6 +1657,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (element instanceof HTMLInputElement && element.type === 'checkbox') {
       element.checked = !element.checked;
       element.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (element.getAttribute('role') === 'switch') {
+      element.click();
     }
   }
 
@@ -1463,6 +1668,8 @@ export class DefaultActionExecutor implements ActionExecutor {
       throw new Error('setValue requires a "value" parameter');
     }
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const previousValue = element.value;
+
       // Use native setter to work with React controlled inputs
       const nativeSetter = Object.getOwnPropertyDescriptor(
         element instanceof HTMLTextAreaElement
@@ -1475,7 +1682,32 @@ export class DefaultActionExecutor implements ActionExecutor {
       } else {
         element.value = value;
       }
+
+      // Reset _valueTracker so React detects old !== new
+      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
+        ._valueTracker;
+      if (tracker) tracker.setValue(previousValue);
+
       element.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
+      const el = element as unknown as Record<string, unknown>;
+      const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+      const reactProps = reactPropsKey
+        ? (el[reactPropsKey] as Record<string, unknown> | undefined)
+        : undefined;
+      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
+        (reactProps.onChange as (e: unknown) => void)({
+          target: element,
+          currentTarget: element,
+          type: 'change',
+          bubbles: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new Event('input'),
+        });
+      }
+
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (element instanceof HTMLSelectElement) {
       element.value = value;

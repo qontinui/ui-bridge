@@ -79,6 +79,8 @@ export interface ElementState {
   ariaCurrent?: string;
   /** ARIA expanded state (expandable elements) */
   ariaExpanded?: boolean;
+  /** ARIA checked state (switches, checkboxes with role="switch"/"checkbox", can be true/false/'mixed') */
+  ariaChecked?: boolean | 'mixed';
   /** Computed styles relevant for automation and visual debugging */
   computedStyles?: {
     // Visibility & interaction
