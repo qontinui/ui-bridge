@@ -15,6 +15,24 @@ import type { ErrorImpact } from '../debug/error-impact';
 // ============================================================================
 
 /**
+ * Resolution-independent coordinates normalized to 0–1 range relative to the viewport.
+ * Inspired by AirtestProject/Poco's coordinate system for cross-resolution targeting.
+ *
+ * Values are computed as: rect.{x,y,width,height} / viewport.{width,height}
+ * so (0,0) is top-left and (1,1) is bottom-right of the viewport.
+ */
+export interface NormalizedRect {
+  /** Normalized left edge (0–1) */
+  x: number;
+  /** Normalized top edge (0–1) */
+  y: number;
+  /** Normalized width (0–1) */
+  width: number;
+  /** Normalized height (0–1) */
+  height: number;
+}
+
+/**
  * Element identification using multiple strategies
  */
 export interface ElementIdentifier {
@@ -53,6 +71,8 @@ export interface ElementState {
     bottom: number;
     left: number;
   };
+  /** Resolution-independent bounding rect normalized to 0–1 viewport coordinates */
+  normalizedRect?: NormalizedRect;
   /** Current value for inputs */
   value?: string;
   /** Checked state for checkboxes/radios */
@@ -915,7 +935,9 @@ export type BridgeEventType =
   // Browser event capture — error/warning events
   | 'browser:error'
   | 'browser:warning'
-  | 'browser:crash';
+  | 'browser:crash'
+  // Push-based change observation (allio-inspired)
+  | 'snapshot:changed';
 
 /**
  * Event payload structure

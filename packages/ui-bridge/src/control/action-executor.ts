@@ -128,6 +128,18 @@ function getElementState(element: HTMLElement): ElementState {
     },
   };
 
+  // Normalized 0–1 viewport coordinates for resolution-independent targeting
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (vw > 0 && vh > 0) {
+    state.normalizedRect = {
+      x: rect.x / vw,
+      y: rect.y / vh,
+      width: rect.width / vw,
+      height: rect.height / vh,
+    };
+  }
+
   // Populate textContent from the element's visible text
   const rawText = element.textContent?.trim();
   if (rawText) {

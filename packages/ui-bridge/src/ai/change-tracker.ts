@@ -65,6 +65,13 @@ export interface ChangeTrackerDeps {
    * If not provided, falls back to string-based scope matching.
    */
   resolveScope?: (scope: string) => Set<string> | null;
+  /**
+   * Subscribe to push-based change events (optional — falls back to polling).
+   * Inspired by folk-js/allio's hybrid push-pull observation model.
+   * When provided, waitForChange will use event-driven wakeups with a slower
+   * safety-net poll instead of the default 200ms polling interval.
+   */
+  subscribeChanges?: (callback: (event: { type: string; timestamp: number }) => void) => () => void;
 }
 
 /** ChangeTracker configuration */
@@ -129,6 +136,12 @@ export class ChangeTracker {
    */
   async executeWithDiff(request: ActionWithDiffRequest): Promise<ActionDiffResult> {
     const startTime = performance.now();
+
+    // Track push events during action execution for fast-path optimization
+    let changeReceivedDuringAction = false;
+    const unsubscribeChanges = this.deps.subscribeChanges?.(() => {
+      changeReceivedDuringAction = true;
+    });
 
     // Refresh elements for accurate snapshot
     this.deps.refreshElements?.();
@@ -199,8 +212,17 @@ export class ChangeTracker {
     const afterSnapshot = this.deps.snapshotManager.createSnapshot(afterControl);
 
     // 5. Compute diff (optionally scoped)
+    //    When push-based observation is available and reported no changes during
+    //    the settle window, use a fast-path empty diff to avoid unnecessary computation.
     let diff: SemanticDiff;
-    if (request.scope) {
+    if (
+      this.deps.subscribeChanges &&
+      !changeReceivedDuringAction &&
+      afterControl.elements.length === beforeControl.elements.length
+    ) {
+      // Fast path: push events indicate nothing changed, element count matches
+      diff = computeDiff(beforeSnapshot, afterSnapshot, this.config.diffConfig);
+    } else if (request.scope) {
       diff = this.computeScopedDiff(beforeSnapshot, afterSnapshot, request.scope);
     } else {
       diff = computeDiff(beforeSnapshot, afterSnapshot, this.config.diffConfig);
@@ -229,6 +251,9 @@ export class ChangeTracker {
     const structuredChanges = request.analyzeStructured
       ? analyzeStructuredChanges(beforeSnapshot, afterSnapshot)
       : undefined;
+
+    // Cleanup push event subscription
+    unsubscribeChanges?.();
 
     return {
       actionSuccess,
@@ -260,7 +285,6 @@ export class ChangeTracker {
     options?: WaitForChangeOptions
   ): Promise<SemanticDiff> {
     const timeout = options?.timeout ?? this.config.defaultWaitTimeout;
-    const interval = options?.interval ?? this.config.defaultPollInterval;
     const startTime = performance.now();
 
     // Take baseline snapshot
@@ -268,21 +292,71 @@ export class ChangeTracker {
     const baselineControl = this.deps.createControlSnapshot();
     const baselineSnapshot = this.deps.snapshotManager.createSnapshot(baselineControl);
 
-    // Poll until predicate matches or timeout
+    // Choose push-based or polling path
+    if (this.deps.subscribeChanges) {
+      return this.waitForChangePush(predicate, baselineSnapshot, options, startTime, timeout);
+    }
+    return this.waitForChangePoll(predicate, baselineSnapshot, options, startTime, timeout);
+  }
+
+  /**
+   * Push-based path: subscribe to change events, snapshot + diff only when
+   * a change event arrives. Safety-net poll at 2000ms to catch missed events.
+   */
+  private async waitForChangePush(
+    predicate: ChangePredicate,
+    baselineSnapshot: SemanticSnapshot,
+    options: WaitForChangeOptions | undefined,
+    startTime: number,
+    timeout: number
+  ): Promise<SemanticDiff> {
+    const safetyPollMs = 2000; // Much slower than the 200ms default poll
+    let changeReceived = false;
+    let unsubscribe: (() => void) | null = null;
+
+    try {
+      // Subscribe to push events
+      unsubscribe = this.deps.subscribeChanges!(() => {
+        changeReceived = true;
+      });
+
+      while (performance.now() - startTime < timeout) {
+        // Wait for either a push event or the safety-net poll interval
+        await sleep(changeReceived ? 0 : Math.min(safetyPollMs, timeout - (performance.now() - startTime)));
+        changeReceived = false;
+
+        const diff = this.snapshotAndDiff(baselineSnapshot, options);
+        if (this.matchesPredicate(diff, predicate)) {
+          this.lastDiff = diff;
+          if (this.bufferEnabled) {
+            this.appendToBuffer(diff, this.categorizeChanges(diff).category);
+          }
+          return diff;
+        }
+      }
+    } finally {
+      unsubscribe?.();
+    }
+
+    return this.timeoutWithDiff(baselineSnapshot, options, timeout);
+  }
+
+  /**
+   * Polling path: original behavior — poll at defaultPollInterval (200ms).
+   */
+  private async waitForChangePoll(
+    predicate: ChangePredicate,
+    baselineSnapshot: SemanticSnapshot,
+    options: WaitForChangeOptions | undefined,
+    startTime: number,
+    timeout: number
+  ): Promise<SemanticDiff> {
+    const interval = options?.interval ?? this.config.defaultPollInterval;
+
     while (performance.now() - startTime < timeout) {
       await sleep(interval);
 
-      this.deps.refreshElements?.();
-      const currentControl = this.deps.createControlSnapshot();
-      const currentSnapshot = this.deps.snapshotManager.createSnapshot(currentControl);
-
-      let diff: SemanticDiff;
-      if (options?.scope) {
-        diff = this.computeScopedDiff(baselineSnapshot, currentSnapshot, options.scope);
-      } else {
-        diff = computeDiff(baselineSnapshot, currentSnapshot, this.config.diffConfig);
-      }
-
+      const diff = this.snapshotAndDiff(baselineSnapshot, options);
       if (this.matchesPredicate(diff, predicate)) {
         this.lastDiff = diff;
         if (this.bufferEnabled) {
@@ -292,15 +366,31 @@ export class ChangeTracker {
       }
     }
 
-    // Timeout — return the last diff even though predicate wasn't met
+    return this.timeoutWithDiff(baselineSnapshot, options, timeout);
+  }
+
+  /** Snapshot current state and diff against baseline. */
+  private snapshotAndDiff(
+    baselineSnapshot: SemanticSnapshot,
+    options?: WaitForChangeOptions
+  ): SemanticDiff {
     this.deps.refreshElements?.();
-    const finalControl = this.deps.createControlSnapshot();
-    const finalSnapshot = this.deps.snapshotManager.createSnapshot(finalControl);
+    const currentControl = this.deps.createControlSnapshot();
+    const currentSnapshot = this.deps.snapshotManager.createSnapshot(currentControl);
 
-    const finalDiff = options?.scope
-      ? this.computeScopedDiff(baselineSnapshot, finalSnapshot, options.scope)
-      : computeDiff(baselineSnapshot, finalSnapshot, this.config.diffConfig);
+    if (options?.scope) {
+      return this.computeScopedDiff(baselineSnapshot, currentSnapshot, options.scope);
+    }
+    return computeDiff(baselineSnapshot, currentSnapshot, this.config.diffConfig);
+  }
 
+  /** Handle timeout: capture final diff and throw. */
+  private timeoutWithDiff(
+    baselineSnapshot: SemanticSnapshot,
+    options: WaitForChangeOptions | undefined,
+    timeout: number
+  ): never {
+    const finalDiff = this.snapshotAndDiff(baselineSnapshot, options);
     this.lastDiff = finalDiff;
     throw new Error(
       `waitForChange timed out after ${timeout}ms. ` +

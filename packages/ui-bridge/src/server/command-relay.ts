@@ -17,6 +17,7 @@
  */
 
 import type { ControlSnapshot } from '../control';
+import type { DOMChangeEvent } from './types';
 
 // ============================================================================
 // Types
@@ -889,6 +890,43 @@ export class CommandRelay {
     return this.commandQueue.splice(0, this.commandQueue.length);
   }
 
+  // --------------------------------------------------------------------------
+  // Push-Based Change Events
+  // --------------------------------------------------------------------------
+
+  private changeEventBuffer: DOMChangeEvent[] = [];
+  private changeEventSubscribers = new Set<(event: DOMChangeEvent) => void>();
+  private readonly maxChangeEvents = 5000;
+
+  /**
+   * Push a change event from a browser tab into the relay's ring buffer
+   * and notify all subscribers.
+   */
+  pushChangeEvent(event: DOMChangeEvent): void {
+    this.changeEventBuffer.push(event);
+    if (this.changeEventBuffer.length > this.maxChangeEvents) {
+      this.changeEventBuffer.splice(0, this.changeEventBuffer.length - this.maxChangeEvents);
+    }
+    for (const sub of this.changeEventSubscribers) {
+      try { sub(event); } catch { /* subscriber errors are non-fatal */ }
+    }
+  }
+
+  /**
+   * Subscribe to push-based change events. Returns an unsubscribe function.
+   */
+  subscribeChanges(callback: (event: DOMChangeEvent) => void): () => void {
+    this.changeEventSubscribers.add(callback);
+    return () => { this.changeEventSubscribers.delete(callback); };
+  }
+
+  /**
+   * Get buffered change events since a timestamp.
+   */
+  getChangeEventsSince(since: number, limit = 100): DOMChangeEvent[] {
+    return this.changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);
+  }
+
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
@@ -899,5 +937,7 @@ export class CommandRelay {
     this.demotedTabs.clear();
     this.tabListeners.clear();
     this.commandQueue.length = 0;
+    this.changeEventBuffer.length = 0;
+    this.changeEventSubscribers.clear();
   }
 }

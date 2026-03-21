@@ -150,7 +150,7 @@ export interface APIResponse<T = unknown> {
   /** Request timestamp */
   timestamp: number;
   /** Response metadata (staleness, diagnostics) */
-  _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string };
+  _meta?: { stale?: boolean; staleSinceMs?: number; cacheAgeMs?: number; fallback?: boolean; reason?: string };
   /** Recovery suggestions for error responses */
   suggestions?: string[];
 }
@@ -196,8 +196,8 @@ export interface UIBridgeServerHandlers {
   getRenderLogPath: () => Promise<APIResponse<{ path: string }>>;
 
   // Control endpoints
-  getElements: () => Promise<APIResponse<ControlSnapshot['elements']>>;
-  getElement: (id: string) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
+  getElements: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['elements']>>;
+  getElement: (id: string, options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
   getElementState: (id: string) => Promise<APIResponse<unknown>>;
   getElementReactState: (id: string) => Promise<APIResponse<unknown>>;
   executeElementAction: (
@@ -206,8 +206,8 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<ControlActionResponse>>;
 
   // Component endpoints
-  getComponents: () => Promise<APIResponse<ControlSnapshot['components']>>;
-  getComponent: (id: string) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
+  getComponents: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['components']>>;
+  getComponent: (id: string, options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
   getComponentState: (id: string) => Promise<
     APIResponse<{
       state: Record<string, unknown>;
@@ -221,21 +221,22 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<ComponentActionResponse>>;
 
   // Find endpoints
-  find: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
+  find: (request?: FindRequest & { recency?: string }) => Promise<APIResponse<FindResponse>>;
   /**
    * @deprecated Use find() instead
    */
-  discover: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
+  discover: (request?: FindRequest & { recency?: string }) => Promise<APIResponse<FindResponse>>;
   getControlSnapshot: (request?: {
     targetTabId?: string;
     url?: string;
     skipSettle?: boolean | string;
     settleTimeout?: number | string;
+    recency?: string;
   }) => Promise<APIResponse<ControlSnapshot>>;
   getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
-  getWorkflows: () => Promise<APIResponse<ControlSnapshot['workflows']>>;
+  getWorkflows: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['workflows']>>;
   runWorkflow: (
     id: string,
     request?: WorkflowRunRequest
@@ -557,6 +558,26 @@ export interface UIBridgeServerHandlers {
     maxSize?: number;
     includeContext?: boolean;
   }) => Promise<APIResponse<unknown>>;
+
+  // Change observation (push-based)
+  getChangesSince: (params?: {
+    since?: number;
+    limit?: number;
+  }) => Promise<APIResponse<{ events: DOMChangeEvent[]; count: number }>>;
+}
+
+/**
+ * Push-based DOM change event.
+ *
+ * Batched subtree-change events emitted by the ChangeObserver and relayed
+ * through the CommandRelay. Inspired by folk-js/allio's SubtreeChanged event.
+ */
+export interface DOMChangeEvent {
+  type: 'subtreeChanged';
+  timestamp: number;
+  added: string[];
+  removed: string[];
+  modified: string[];
 }
 
 /**
@@ -972,6 +993,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/ai/media/analyze', handler: 'analyzeMedia' },
   { method: 'POST', path: '/ai/media/analyze/batch', handler: 'analyzeMediaBatch' },
   { method: 'POST', path: '/ai/media/analyze/page', handler: 'analyzeMediaPage' },
+
+  // Change observation (push-based)
+  { method: 'GET', path: '/control/changes/since', handler: 'getChangesSince' },
 ];
 
 /**

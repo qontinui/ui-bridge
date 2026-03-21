@@ -10,7 +10,7 @@
  */
 
 import type { CommandRelay } from './command-relay';
-import type { UIBridgeServerHandlers, APIResponse, CapabilitiesResponse } from './types';
+import type { UIBridgeServerHandlers, APIResponse, CapabilitiesResponse, DOMChangeEvent } from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
   ControlSnapshot,
@@ -19,6 +19,8 @@ import type {
   FindResponse,
 } from '../control';
 import type { SemanticSnapshot } from '../ai';
+import type { Recency as RecencyType } from '../core/recency';
+import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 
 // ============================================================================
 // Helpers
@@ -26,7 +28,7 @@ import type { SemanticSnapshot } from '../ai';
 
 function success<T>(
   data: T,
-  _meta?: { stale?: boolean; staleSinceMs?: number; fallback?: boolean; reason?: string }
+  _meta?: { stale?: boolean; staleSinceMs?: number; cacheAgeMs?: number; fallback?: boolean; reason?: string }
 ): APIResponse<T> {
   const response: APIResponse<T> = { success: true, data, timestamp: Date.now() };
   if (_meta) response._meta = _meta;
@@ -287,44 +289,81 @@ export function createRelayHandlers(
     }));
   }
 
-  // Helper: refresh the cached control snapshot if stale or if the given array is empty
-  const cacheTtlMs = options?.cacheTtlMs ?? 5000;
+  // Helper: refresh the cached control snapshot based on Recency requirements
+  const defaultRecency = Recency.MaxAge(options?.cacheTtlMs ?? 5000);
   let snapshotStaleSince: number | null = null;
 
-  function staleMeta(): { stale: boolean; staleSinceMs?: number } {
+  function staleMeta(): { stale: boolean; staleSinceMs?: number; cacheAgeMs: number } {
+    const cacheAgeMs = Date.now() - latestControlSnapshot.timestamp;
     if (snapshotStaleSince) {
-      return { stale: true, staleSinceMs: Date.now() - snapshotStaleSince };
+      return { stale: true, staleSinceMs: Date.now() - snapshotStaleSince, cacheAgeMs };
     }
-    return { stale: false };
+    return { stale: false, cacheAgeMs };
   }
 
   let inflightRefresh: Promise<void> | null = null;
 
-  async function refreshSnapshotIfStale(isEmpty: boolean): Promise<void> {
-    const isStale = Date.now() - latestControlSnapshot.timestamp > cacheTtlMs;
-    if (isEmpty || isStale) {
-      // Deduplicate concurrent refresh requests — all callers await the same promise
-      if (inflightRefresh) {
-        await inflightRefresh;
-        return;
-      }
+  /**
+   * Refresh the cached snapshot if the given Recency requirement is not satisfied.
+   *
+   * - `Any` + non-empty → return cache immediately (no relay command)
+   * - `Current` → always fetch fresh from the browser
+   * - `MaxAge(ms)` → fetch only if cache is older than `ms`
+   */
+  async function refreshSnapshotIfNeeded(
+    recency: RecencyType,
+    isEmpty: boolean
+  ): Promise<void> {
+    // Fast path: Recency.Any accepts any cached value as long as it's non-empty
+    if (recency.kind === 'any' && !isEmpty) return;
 
-      inflightRefresh = (async () => {
-        try {
-          const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
-          latestControlSnapshot = result;
-          snapshotStaleSince = null;
-        } catch {
-          // Track when we first started returning stale data
-          if (!snapshotStaleSince) snapshotStaleSince = Date.now();
-        }
-      })();
+    const ageMs = Date.now() - latestControlSnapshot.timestamp;
+    if (!isEmpty && isSatisfiedBy(recency, ageMs)) return;
 
+    // Need to fetch — deduplicate concurrent refresh requests
+    if (inflightRefresh) {
+      await inflightRefresh;
+      return;
+    }
+
+    inflightRefresh = (async () => {
       try {
-        await inflightRefresh;
-      } finally {
-        inflightRefresh = null;
+        const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
+        latestControlSnapshot = result;
+        snapshotStaleSince = null;
+      } catch {
+        // Track when we first started returning stale data
+        if (!snapshotStaleSince) snapshotStaleSince = Date.now();
       }
+    })();
+
+    try {
+      await inflightRefresh;
+    } finally {
+      inflightRefresh = null;
+    }
+  }
+
+  // Backward-compatible wrapper: resolves recency from options or uses default
+  function resolveRecency(opts?: { recency?: string }): RecencyType {
+    return opts?.recency ? parseRecency(opts.recency) : defaultRecency;
+  }
+
+  // Change event ring buffer for push-based observation
+  const changeEventBuffer: DOMChangeEvent[] = [];
+  const MAX_CHANGE_EVENTS = 5000;
+  const changeEventSubscribers = new Set<(event: DOMChangeEvent) => void>();
+
+  function pushChangeEvent(event: DOMChangeEvent): void {
+    changeEventBuffer.push(event);
+    if (changeEventBuffer.length > MAX_CHANGE_EVENTS) {
+      changeEventBuffer.splice(0, changeEventBuffer.length - MAX_CHANGE_EVENTS);
+    }
+    // Mark snapshot as stale when a change event arrives
+    if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+    // Notify subscribers
+    for (const sub of changeEventSubscribers) {
+      try { sub(event); } catch { /* subscriber errors are non-fatal */ }
     }
   }
 
@@ -378,13 +417,14 @@ export function createRelayHandlers(
     // Control — Elements
     // ========================================================================
 
-    async getElements() {
-      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+    async getElements(options) {
+      const recency = resolveRecency(options);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const _meta = staleMeta();
       return success(latestControlSnapshot.elements, _meta);
     },
 
-    async getElement(id) {
+    async getElement(id, options) {
       // Try relay first for live element data when browser is connected
       try {
         const result = await relay.queueCommand('getElement', { id });
@@ -395,7 +435,8 @@ export function createRelayHandlers(
       let element = latestControlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
-        await refreshSnapshotIfStale(true);
+        const recency = resolveRecency(options);
+        await refreshSnapshotIfNeeded(recency.kind === 'any' ? Recency.Current : recency, true);
         element = latestControlSnapshot.elements.find((e) => e.id === id);
       }
       if (!element) {
@@ -437,19 +478,20 @@ export function createRelayHandlers(
     // Control — Components
     // ========================================================================
 
-    async getComponents() {
-      // Refresh snapshot to get the latest component list from the browser
-      await refreshSnapshotIfStale(latestControlSnapshot.components.length === 0);
+    async getComponents(options) {
+      const recency = resolveRecency(options);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.components.length === 0);
       const _meta = staleMeta();
       return success(latestControlSnapshot.components, _meta);
     },
 
-    async getComponent(id) {
+    async getComponent(id, options) {
       // Refresh snapshot before looking up — components mount/unmount with page navigation
       // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
       let component = latestControlSnapshot.components.find((c) => c.id === id);
       if (!component) {
-        await refreshSnapshotIfStale(true);
+        const recency = resolveRecency(options);
+        await refreshSnapshotIfNeeded(recency.kind === 'any' ? Recency.Current : recency, true);
         component = latestControlSnapshot.components.find((c) => c.id === id);
       }
       if (!component) {
@@ -491,12 +533,13 @@ export function createRelayHandlers(
     // ========================================================================
 
     async find(request) {
-      const { targetTabId, ...payload } =
-        (request as Record<string, unknown> & { targetTabId?: string }) || {};
+      const { targetTabId, recency: recencyParam, ...payload } =
+        (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId });
       if (result.success) return result;
       // Relay failed — fall back to filtering cached snapshot elements
-      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+      const recency = parseRecency(recencyParam);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
       const _meta = staleMeta();
       return success(
@@ -511,12 +554,13 @@ export function createRelayHandlers(
     },
 
     async discover(request) {
-      const { targetTabId, ...payload } =
-        (request as Record<string, unknown> & { targetTabId?: string }) || {};
+      const { targetTabId, recency: recencyParam, ...payload } =
+        (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
       const result = await relayCommand<FindResponse>('discover', payload, { targetTabId });
       if (result.success) return result;
       // Relay failed — fall back to filtering cached snapshot elements
-      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+      const recency = parseRecency(recencyParam);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
       const _meta = staleMeta();
       return success(
@@ -537,6 +581,14 @@ export function createRelayHandlers(
     },
 
     async getControlSnapshot(request) {
+      const recency = parseRecency(request?.recency);
+
+      // Fast path: Recency.Any returns cached snapshot immediately
+      if (recency.kind === 'any' && latestControlSnapshot.elements.length > 0) {
+        const _meta = staleMeta();
+        return success(latestControlSnapshot, _meta);
+      }
+
       // Check for no listeners before attempting the command
       const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
 
@@ -551,6 +603,15 @@ export function createRelayHandlers(
         }
         const _meta = staleMeta();
         return success(snapshot, _meta);
+      }
+
+      // MaxAge path: skip relay command if cache is fresh enough
+      if (recency.kind === 'maxAge') {
+        const ageMs = Date.now() - latestControlSnapshot.timestamp;
+        if (isSatisfiedBy(recency, ageMs) && latestControlSnapshot.elements.length > 0) {
+          const _meta = staleMeta();
+          return success(latestControlSnapshot, _meta);
+        }
       }
 
       try {
@@ -568,11 +629,11 @@ export function createRelayHandlers(
         if (isEmpty && screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
           if (fallback) {
-            return success({ ...result, fallbackScreenshot: fallback }, { stale: false });
+            return success({ ...result, fallbackScreenshot: fallback }, { stale: false, cacheAgeMs: 0 });
           }
         }
 
-        return success(result, { stale: false });
+        return success(result, { stale: false, cacheAgeMs: 0 });
       } catch (e) {
         // Command timed out or failed — return cached snapshot with fallback screenshot
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
@@ -592,8 +653,9 @@ export function createRelayHandlers(
     // Workflows
     // ========================================================================
 
-    async getWorkflows() {
-      await refreshSnapshotIfStale(latestControlSnapshot.workflows.length === 0);
+    async getWorkflows(options) {
+      const recency = resolveRecency(options);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.workflows.length === 0);
       const _meta = staleMeta();
       return success(latestControlSnapshot.workflows, _meta);
     },
@@ -1350,6 +1412,19 @@ export function createRelayHandlers(
     async getElementHistory(elementId, options) {
       return relayWithFallback('getElementHistory', { elementId, options }, [] as unknown[]);
     },
+
+    // ========================================================================
+    // Change Observation (push-based)
+    // ========================================================================
+
+    async getChangesSince(params) {
+      const since = params?.since ?? 0;
+      const limit = params?.limit ?? 100;
+      const events = changeEventBuffer
+        .filter((e) => e.timestamp > since)
+        .slice(-limit);
+      return success({ events, count: events.length });
+    },
   };
 
   // Expose render log entry addition for external use
@@ -1367,6 +1442,16 @@ export function createRelayHandlers(
       renderLogEntries.push(entry);
       while (renderLogEntries.length > MAX_ENTRIES) renderLogEntries.shift();
     }
+  };
+
+  // Expose push-based change observation for external wiring
+  (handlers as unknown as Record<string, unknown>).__pushChangeEvent = pushChangeEvent;
+
+  (handlers as unknown as Record<string, unknown>).__subscribeChanges = (
+    callback: (event: DOMChangeEvent) => void
+  ): (() => void) => {
+    changeEventSubscribers.add(callback);
+    return () => { changeEventSubscribers.delete(callback); };
   };
 
   return handlers;

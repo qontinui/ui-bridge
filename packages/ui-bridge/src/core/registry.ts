@@ -164,6 +164,18 @@ function getElementState(element: HTMLElement): ElementState {
     inViewport,
   };
 
+  // Normalized 0–1 viewport coordinates for resolution-independent targeting
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (vw > 0 && vh > 0) {
+    state.normalizedRect = {
+      x: rect.x / vw,
+      y: rect.y / vh,
+      width: rect.width / vw,
+      height: rect.height / vh,
+    };
+  }
+
   // Scroll container info — only for elements with overflowing scrollable content
   if (isScrollContainer(element, computedStyle)) {
     state.scrollInfo = {

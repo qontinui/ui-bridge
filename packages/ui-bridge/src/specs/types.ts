@@ -39,7 +39,8 @@ export type SpecSource = 'auto' | 'manual' | 'ai-generated';
  */
 export type SpecTarget =
   | { type: 'elementId'; elementId: string; label?: string }
-  | { type: 'search'; criteria: SearchCriteria; label?: string };
+  | { type: 'search'; criteria: SearchCriteria; label?: string }
+  | { type: 'ctr'; logicalName: string; label?: string };
 
 // =============================================================================
 // Conditions (for conditional assertions)
@@ -148,6 +149,8 @@ export interface SpecGroup {
   transitionId?: string;
   source: SpecSource;
   tags?: string[];
+  /** Optional reference to a verification contract that wraps this group. */
+  contractId?: string;
 }
 
 // =============================================================================

@@ -30,6 +30,9 @@ export * from './annotations';
 // Specs module - declarative UI element specifications
 export * from './specs';
 
+// CTR module - Central Target Registry for locator abstraction
+export * from './ctr';
+
 // Idle detection module - app idle/busy detection
 export * from './idle';
 
@@ -59,3 +62,12 @@ export * from './network';
 
 // Undo module - undo/redo awareness
 export * from './undo';
+
+// Contracts module - schema-first verification contracts
+export * from './contracts';
+
+// Verification layers module - multi-layer execution matrix
+export * from './verification-layers';
+
+// Artifacts module - immutable verification result records
+export * from './artifacts';

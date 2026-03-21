@@ -115,6 +115,26 @@
       "types": "./dist/native/debug/index.d.ts",
       "import": "./dist/native/debug/index.mjs",
       "require": "./dist/native/debug/index.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts/index.d.ts",
+      "import": "./dist/contracts/index.mjs",
+      "require": "./dist/contracts/index.js"
+    },
+    "./ctr": {
+      "types": "./dist/ctr/index.d.ts",
+      "import": "./dist/ctr/index.mjs",
+      "require": "./dist/ctr/index.js"
+    },
+    "./verification-layers": {
+      "types": "./dist/verification-layers/index.d.ts",
+      "import": "./dist/verification-layers/index.mjs",
+      "require": "./dist/verification-layers/index.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts/index.d.ts",
+      "import": "./dist/artifacts/index.mjs",
+      "require": "./dist/artifacts/index.js"
     }
   },
   "files": [

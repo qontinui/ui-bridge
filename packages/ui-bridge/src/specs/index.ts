@@ -71,6 +71,7 @@ export type { SpecListener, SpecFilterOptions } from './store';
 
 // Executor
 export { SpecExecutor, resolveTarget } from './executor';
+export type { SpecExecutorConfig } from './executor';
 
 // Style types
 export type {

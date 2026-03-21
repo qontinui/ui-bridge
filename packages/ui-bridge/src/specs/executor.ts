@@ -21,6 +21,9 @@ import type {
   AssertionCondition,
 } from './types';
 import { SPEC_CONFIG_VERSION } from './types';
+import { getGlobalCtr } from '../ctr/registry';
+import type { ArtifactStore } from '../artifacts/types';
+import { createArtifact, captureEnvironment } from '../artifacts/factory';
 
 // =============================================================================
 // Target Resolution
@@ -41,6 +44,15 @@ export function resolveTarget(target: SpecTarget): string | SearchCriteria {
       return { idPattern: target.elementId, fuzzy: false };
     case 'search':
       return target.criteria;
+    case 'ctr': {
+      // Resolve through the Central Target Registry.
+      // Returns SearchCriteria derived from the best available selector.
+      const ctr = getGlobalCtr();
+      const criteria = ctr.resolveToSearchCriteria(target.logicalName);
+      if (criteria) return criteria;
+      // Fallback: treat logical name as an ID pattern if CTR has no entry
+      return { idPattern: target.logicalName, fuzzy: true };
+    }
   }
 }
 
@@ -48,11 +60,30 @@ export function resolveTarget(target: SpecTarget): string | SearchCriteria {
 // Executor
 // =============================================================================
 
+export interface SpecExecutorConfig {
+  /** Assertion configuration. */
+  assertionConfig?: Partial<AssertionConfig>;
+  /** Optional artifact store — when set, results are automatically persisted as immutable artifacts. */
+  artifactStore?: ArtifactStore;
+  /** Spec ID used as source when creating artifacts. */
+  specId?: string;
+}
+
 export class SpecExecutor {
   private assertionExecutor: AssertionExecutor;
+  private artifactStore?: ArtifactStore;
+  private specId?: string;
 
-  constructor(config?: Partial<AssertionConfig>) {
-    this.assertionExecutor = new AssertionExecutor(config);
+  constructor(config?: Partial<AssertionConfig> | SpecExecutorConfig) {
+    // Support both legacy (Partial<AssertionConfig>) and new (SpecExecutorConfig) signatures
+    if (config && 'artifactStore' in config) {
+      const c = config as SpecExecutorConfig;
+      this.assertionExecutor = new AssertionExecutor(c.assertionConfig);
+      this.artifactStore = c.artifactStore;
+      this.specId = c.specId;
+    } else {
+      this.assertionExecutor = new AssertionExecutor(config as Partial<AssertionConfig> | undefined);
+    }
   }
 
   /**
@@ -200,7 +231,7 @@ export class SpecExecutor {
       }
     }
 
-    return {
+    const groupResult: SpecGroupResult = {
       groupId: group.id,
       groupName: group.name,
       assertionResults,
@@ -211,6 +242,9 @@ export class SpecExecutor {
       durationMs: Date.now() - startTime,
       timestamp: Date.now(),
     };
+
+    await this.emitArtifact(groupResult);
+    return groupResult;
   }
 
   /**
@@ -268,7 +302,7 @@ export class SpecExecutor {
       else failedCount++;
     }
 
-    return {
+    const executionResult: SpecExecutionResult = {
       specVersion: config.version ?? SPEC_CONFIG_VERSION,
       groupResults,
       ungroupedResults,
@@ -280,6 +314,31 @@ export class SpecExecutor {
       durationMs: Date.now() - startTime,
       timestamp: Date.now(),
     };
+
+    await this.emitArtifact(executionResult);
+    return executionResult;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Artifact Emission
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emit a result to the artifact store if configured.
+   * Failures are silently caught to avoid breaking the execution pipeline.
+   */
+  private async emitArtifact(result: SpecExecutionResult | SpecGroupResult): Promise<void> {
+    if (!this.artifactStore) return;
+    try {
+      const artifact = await createArtifact(
+        result,
+        { specId: this.specId, triggeredBy: 'manual' },
+        captureEnvironment()
+      );
+      await this.artifactStore.save(artifact);
+    } catch {
+      // Artifact emission is best-effort — don't break spec execution
+    }
   }
 }
 

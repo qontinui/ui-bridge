@@ -98,8 +98,12 @@ export function validateSpecAssertion(data: unknown, path = 'assertion'): Valida
       if (!target.criteria || typeof target.criteria !== 'object') {
         errors.push({ path: `${path}.target.criteria`, message: 'must be an object' });
       }
+    } else if (target.type === 'ctr') {
+      if (typeof target.logicalName !== 'string' || target.logicalName.length === 0) {
+        errors.push({ path: `${path}.target.logicalName`, message: 'must be a non-empty string' });
+      }
     } else {
-      errors.push({ path: `${path}.target.type`, message: 'must be "elementId" or "search"' });
+      errors.push({ path: `${path}.target.type`, message: 'must be "elementId", "search", or "ctr"' });
     }
   }
 

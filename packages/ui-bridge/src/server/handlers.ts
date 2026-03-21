@@ -4414,6 +4414,11 @@ export function createHandlers(
         'NOT_IMPLEMENTED'
       );
     },
+
+    getChangesSince: async (_params) => {
+      // Direct handlers don't maintain a change event buffer — use relay-handlers
+      return success({ events: [], count: 0 });
+    },
   };
 }
 
