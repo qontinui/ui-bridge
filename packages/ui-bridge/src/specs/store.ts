@@ -322,15 +322,23 @@ export class SpecStore {
 // Global Singleton
 // =============================================================================
 
-let globalStore: SpecStore | null = null;
+// Use globalThis instead of a module-level variable so that multiple copies
+// of this module (e.g. Vite resolving both source and built dist) share the
+// same SpecStore instance. This eliminates the dual-singleton bug where
+// BundledSpecsLoader loads specs into one store and the IPC handler reads
+// from another.
+const GLOBAL_KEY = '__uiBridgeSpecStore';
 
 export function getGlobalSpecStore(): SpecStore {
-  if (!globalStore) {
-    globalStore = new SpecStore();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as any;
+  if (!g[GLOBAL_KEY]) {
+    g[GLOBAL_KEY] = new SpecStore();
   }
-  return globalStore;
+  return g[GLOBAL_KEY] as SpecStore;
 }
 
 export function resetGlobalSpecStore(): void {
-  globalStore = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete (globalThis as any)[GLOBAL_KEY];
 }

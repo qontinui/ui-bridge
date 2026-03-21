@@ -124,7 +124,7 @@ function getElementState(element: HTMLElement): ElementState {
     rect.right > 0;
 
   const state: ElementState = {
-    visible: isElementVisible(rect, computedStyle, inViewport),
+    visible: isElementVisible(element, rect, computedStyle, inViewport),
     enabled: !isElementDisabled(element),
     focused: document.activeElement === element,
     rect: {
@@ -256,15 +256,39 @@ function getElementState(element: HTMLElement): ElementState {
 }
 
 /**
- * Check if an element is visible (display/opacity/visibility + in viewport)
+ * Check if an element is truly visible — not just in the viewport, but
+ * actually reachable (not clipped by ancestor overflow, not covered by
+ * another element in a higher stacking context).
+ *
+ * Uses `elementFromPoint` as a hit-test: if the element (or one of its
+ * descendants) is at its own centre point, it's genuinely visible.
  */
-function isElementVisible(rect: DOMRect, style: CSSStyleDeclaration, inViewport: boolean): boolean {
+function isElementVisible(
+  element: HTMLElement,
+  rect: DOMRect,
+  style: CSSStyleDeclaration,
+  inViewport: boolean
+): boolean {
   if (rect.width === 0 || rect.height === 0) return false;
   if (style.display === 'none') return false;
   if (style.visibility === 'hidden') return false;
   if (parseFloat(style.opacity) === 0) return false;
+  if (!inViewport) return false;
 
-  return inViewport;
+  // Hit-test: check if the element is actually rendered at its centre.
+  // This catches elements hidden by ancestor overflow:hidden, scroll
+  // clipping, clip-path, or z-index occlusion.
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  // Centre must be within the viewport for elementFromPoint to work
+  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
+    const hit = document.elementFromPoint(cx, cy);
+    if (hit !== null && hit !== element && !element.contains(hit)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**

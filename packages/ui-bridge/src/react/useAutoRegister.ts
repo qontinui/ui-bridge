@@ -249,16 +249,39 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
 }
 
 /**
- * Check if element is visible
+ * Check if element is truly visible — not hidden by CSS, not clipped by
+ * ancestor overflow, not covered by another element.
  */
 function isElementVisible(element: HTMLElement): boolean {
   const style = window.getComputedStyle(element);
   if (style.display === 'none' || style.visibility === 'hidden') {
     return false;
   }
+  if (parseFloat(style.opacity) === 0) return false;
 
   const rect = element.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
+  if (rect.width === 0 || rect.height === 0) return false;
+
+  // Must be within the viewport
+  const inViewport =
+    rect.top < window.innerHeight &&
+    rect.bottom > 0 &&
+    rect.left < window.innerWidth &&
+    rect.right > 0;
+  if (!inViewport) return false;
+
+  // Hit-test: verify the element is actually rendered at its centre,
+  // not clipped by ancestor overflow or covered by a higher z-index.
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
+    const hit = document.elementFromPoint(cx, cy);
+    if (hit !== null && hit !== element && !element.contains(hit)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**

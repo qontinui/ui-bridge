@@ -115,6 +115,21 @@ export interface RelayHandlersOptions {
   screenshotFallbackUrl?: string;
   /** Cache TTL in milliseconds for snapshot staleness checks (default: 5000) */
   cacheTtlMs?: number;
+  /**
+   * Pre-loaded specs to serve from the server without relying on the browser
+   * relay or React lifecycle. Pass the result of your app's `getAllSpecs()`
+   * function here. The relay will still try the browser for live specs, but
+   * falls back to these when the browser is disconnected or unresponsive.
+   *
+   * @example
+   * ```ts
+   * import { getAllSpecs } from '../spec-registry';
+   * const handlers = createRelayHandlers(relay, {
+   *   specs: getAllSpecs(),
+   * });
+   * ```
+   */
+  specs?: Array<{ specId: string; config: unknown }>;
 }
 
 /**
@@ -137,6 +152,7 @@ export function createRelayHandlers(
 ): UIBridgeServerHandlers {
   const version = options?.version ?? '0.1.0';
   const screenshotFallbackUrl = options?.screenshotFallbackUrl;
+  const injectedSpecs = options?.specs ?? [];
 
   // Server-side render log cache
   let renderLogEntries: RenderLogEntry[] = [];
@@ -477,45 +493,41 @@ export function createRelayHandlers(
     async find(request) {
       const { targetTabId, ...payload } =
         (request as Record<string, unknown> & { targetTabId?: string }) || {};
-      try {
-        return await relayCommand('find', payload, { targetTabId });
-      } catch {
-        // Relay failed — fall back to filtering cached snapshot elements
-        await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
-        const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
-        const _meta = staleMeta();
-        return success(
-          {
-            elements: filtered as unknown as FindResponse['elements'],
-            total: filtered.length,
-            durationMs: 0,
-            timestamp: Date.now(),
-          },
-          _meta
-        ) as APIResponse<FindResponse>;
-      }
+      const result = await relayCommand<FindResponse>('find', payload, { targetTabId });
+      if (result.success) return result;
+      // Relay failed — fall back to filtering cached snapshot elements
+      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+      const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
+      const _meta = staleMeta();
+      return success(
+        {
+          elements: filtered as unknown as FindResponse['elements'],
+          total: filtered.length,
+          durationMs: 0,
+          timestamp: Date.now(),
+        },
+        _meta
+      ) as APIResponse<FindResponse>;
     },
 
     async discover(request) {
       const { targetTabId, ...payload } =
         (request as Record<string, unknown> & { targetTabId?: string }) || {};
-      try {
-        return await relayCommand('discover', payload, { targetTabId });
-      } catch {
-        // Relay failed — fall back to filtering cached snapshot elements
-        await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
-        const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
-        const _meta = staleMeta();
-        return success(
-          {
-            elements: filtered as unknown as FindResponse['elements'],
-            total: filtered.length,
-            durationMs: 0,
-            timestamp: Date.now(),
-          },
-          _meta
-        ) as APIResponse<FindResponse>;
-      }
+      const result = await relayCommand<FindResponse>('discover', payload, { targetTabId });
+      if (result.success) return result;
+      // Relay failed — fall back to filtering cached snapshot elements
+      await refreshSnapshotIfStale(latestControlSnapshot.elements.length === 0);
+      const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
+      const _meta = staleMeta();
+      return success(
+        {
+          elements: filtered as unknown as FindResponse['elements'],
+          total: filtered.length,
+          durationMs: 0,
+          timestamp: Date.now(),
+        },
+        _meta
+      ) as APIResponse<FindResponse>;
     },
 
     async getElementImages(request) {
@@ -1318,7 +1330,21 @@ export function createRelayHandlers(
     },
 
     async getSpecs() {
-      return relayWithFallback('getSpecs', {}, {} as Record<string, unknown>);
+      // Try the browser relay first for live spec data
+      const result = await relayWithFallback('getSpecs', {}, {} as Record<string, unknown>);
+      // If the relay returned specs, use them
+      if (result.success && result.data && Object.keys(result.data).length > 0) {
+        return result;
+      }
+      // Fall back to server-injected specs (passed via options.specs)
+      if (injectedSpecs.length > 0) {
+        const data: Record<string, unknown> = {};
+        for (const spec of injectedSpecs) {
+          data[spec.specId] = spec.config;
+        }
+        return success(data);
+      }
+      return result;
     },
 
     async getElementHistory(elementId, options) {
