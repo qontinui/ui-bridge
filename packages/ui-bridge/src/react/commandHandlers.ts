@@ -333,8 +333,7 @@ async function getIdleDetector() {
   if (idleDetector) return idleDetector;
   try {
     const { CompositeIdleDetector } = await import('../idle');
-    const detector = new CompositeIdleDetector();
-    detector.installAll();
+    const detector = CompositeIdleDetector.create();
     idleDetector = detector;
     return detector;
   } catch {
@@ -2407,7 +2406,12 @@ export async function executeCommand(
         // Check contrast using WCAG 2.1 contrast ratio
         const textColor = cs.color;
         const bgColor = cs.backgroundColor;
-        if (textColor && bgColor && textColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'rgba(0, 0, 0, 0)') {
+        if (
+          textColor &&
+          bgColor &&
+          textColor !== 'rgba(0, 0, 0, 0)' &&
+          bgColor !== 'rgba(0, 0, 0, 0)'
+        ) {
           const fgLum = parseLuminance(textColor);
           const bgLum = parseLuminance(bgColor);
           if (fgLum >= 0 && bgLum >= 0) {
