@@ -35,7 +35,11 @@ export class CentralTargetRegistry {
 
   register(entry: CtrEntry): void {
     this.entries.set(entry.logicalName, entry);
-    this.emit({ type: 'ctr:entry-registered', logicalName: entry.logicalName, timestamp: Date.now() });
+    this.emit({
+      type: 'ctr:entry-registered',
+      logicalName: entry.logicalName,
+      timestamp: Date.now(),
+    });
   }
 
   unregister(logicalName: string): boolean {
@@ -309,9 +313,13 @@ function resolveSelectorInDOM(selector: CtrSelector): HTMLElement | null {
   try {
     switch (selector.strategy) {
       case 'data-testid':
-        return document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(selector.value as string)}"]`);
+        return document.querySelector<HTMLElement>(
+          `[data-testid="${CSS.escape(selector.value as string)}"]`
+        );
       case 'data-awas-element':
-        return document.querySelector<HTMLElement>(`[data-awas-element="${CSS.escape(selector.value as string)}"]`);
+        return document.querySelector<HTMLElement>(
+          `[data-awas-element="${CSS.escape(selector.value as string)}"]`
+        );
       case 'id':
         return document.querySelector<HTMLElement>(`#${CSS.escape(selector.value as string)}`);
       case 'css':

@@ -19,5 +19,8 @@ export type { Recency as RecencyType } from './recency';
 export { ChangeObserver } from './change-observer';
 export type { ChangeObserverConfig, DOMChangeEvent } from './change-observer';
 
+// Registry singleton accessor
+export { UIBridgeRegistry, getGlobalRegistry } from './registry';
+
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';

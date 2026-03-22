@@ -178,6 +178,27 @@ export function createExpressRouter(
         sse.removeClient(clientId);
       });
     });
+
+    // Change observation SSE stream — filters to snapshot:changed events only
+    router.get('/control/changes/stream', (changesReq: Request, changesRes: Response) => {
+      changesRes.setHeader('Content-Type', 'text/event-stream');
+      changesRes.setHeader('Cache-Control', 'no-cache');
+      changesRes.setHeader('Connection', 'keep-alive');
+      changesRes.setHeader('X-Accel-Buffering', 'no');
+      changesRes.flushHeaders();
+
+      const clientId = sse.addClient(
+        (data: string) => changesRes.write(data),
+        () => {
+          if (!changesRes.writableEnded) changesRes.end();
+        },
+        'snapshot:changed' // Pre-filter to change events only
+      );
+
+      changesReq.on('close', () => {
+        sse.removeClient(clientId);
+      });
+    });
   }
 
   return router;

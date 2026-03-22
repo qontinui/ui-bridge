@@ -19,6 +19,8 @@ import type {
   FillFormRequest,
   ActionChanges,
   ElementFieldChange,
+  BatchActionRequest,
+  BatchActionResponse,
 } from '../control';
 import { extractReactState } from '../control/action-executor';
 import type { RenderLogEntry } from '../render-log';
@@ -204,6 +206,7 @@ export interface ActionExecutorLike {
     request: { action: string; params?: Record<string, unknown> }
   ): Promise<unknown>;
   fillForm?(request: FillFormRequest): Promise<FillResult>;
+  executeBatch?(request: BatchActionRequest): Promise<BatchActionResponse>;
 }
 
 /**
@@ -1180,6 +1183,71 @@ export function createHandlers(
           },
           timestamp: Date.now(),
         } as APIResponse<any>;
+      }
+    },
+
+    executeBatchAction: async (
+      request: BatchActionRequest
+    ): Promise<APIResponse<BatchActionResponse>> => {
+      try {
+        if (!request?.steps || !Array.isArray(request.steps) || request.steps.length === 0) {
+          return error('Batch request must include a non-empty "steps" array', 'VALIDATION_ERROR');
+        }
+
+        if (actionExecutor.executeBatch) {
+          const result = await actionExecutor.executeBatch(request);
+          return success(result);
+        }
+
+        // Fallback: execute steps sequentially if executor doesn't support native batch
+        const startTime = performance.now();
+        const results: BatchActionResponse['results'] = [];
+        let succeededCount = 0;
+        let failedCount = 0;
+        let skippedCount = 0;
+        let stopped = false;
+        const stopOnFailure = request.stopOnFailure ?? true;
+        const delayBetweenMs = request.delayBetweenMs ?? 0;
+
+        for (let i = 0; i < request.steps.length; i++) {
+          if (stopped) {
+            skippedCount++;
+            continue;
+          }
+
+          const step = request.steps[i];
+          if (i > 0 && delayBetweenMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
+          }
+
+          refreshElements();
+          const response = await actionExecutor.executeAction(step.elementId, step.action);
+          results.push({
+            index: i,
+            label: step.label,
+            elementId: step.elementId,
+            response: response as any,
+          });
+
+          if ((response as any).success) {
+            succeededCount++;
+          } else {
+            failedCount++;
+            if (stopOnFailure) stopped = true;
+          }
+        }
+
+        return success({
+          success: failedCount === 0,
+          results,
+          succeededCount,
+          failedCount,
+          skippedCount,
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        return error((err as Error).message, 'BATCH_ACTION_ERROR');
       }
     },
 

@@ -142,9 +142,7 @@ export class ContractExecutor {
         const { endpoint, method, expectedStatus, headers, timeout } = condition.check;
         try {
           const controller = new AbortController();
-          const timeoutId = timeout
-            ? setTimeout(() => controller.abort(), timeout)
-            : undefined;
+          const timeoutId = timeout ? setTimeout(() => controller.abort(), timeout) : undefined;
 
           const parsedUrl = new URL(endpoint);
           if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
@@ -214,8 +212,8 @@ export class ContractExecutor {
         if (!specConfig) {
           throw new Error(
             `Contract verification references spec "${verification.specId}" ` +
-            `but it is not loaded in the SpecStore. ` +
-            `Load it with specStore.load("${verification.specId}", config) first.`
+              `but it is not loaded in the SpecStore. ` +
+              `Load it with specStore.load("${verification.specId}", config) first.`
           );
         }
 
@@ -223,8 +221,8 @@ export class ContractExecutor {
         if (!group) {
           throw new Error(
             `Contract verification references group "${verification.groupId}" ` +
-            `in spec "${verification.specId}" but the group was not found. ` +
-            `Available groups: ${specConfig.groups.map((g) => g.id).join(', ')}`
+              `in spec "${verification.specId}" but the group was not found. ` +
+              `Available groups: ${specConfig.groups.map((g) => g.id).join(', ')}`
           );
         }
 

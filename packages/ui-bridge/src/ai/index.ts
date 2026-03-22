@@ -363,9 +363,20 @@ export {
 } from './media-queries';
 export type { MediaAccessibilityAudit, MediaPerformanceAudit } from './media-queries';
 
-// Media Snapshot
-export { captureMediaSnapshot, compareMediaSnapshots } from './media-snapshot';
-export type { MediaSnapshotData, MediaComparisonResult } from './media-snapshot';
+// Media Snapshot & Visual Regression
+export {
+  captureMediaSnapshot,
+  compareMediaSnapshots,
+  captureElementScreenshot,
+  compareVisualRegression,
+} from './media-snapshot';
+export type {
+  MediaSnapshotData,
+  MediaComparisonResult,
+  ElementCaptureOptions,
+  VisualRegressionOptions,
+  VisualRegressionResult,
+} from './media-snapshot';
 
 // Media Analysis
 export { analyzeMediaElement, analyzeMediaBatch, analyzeMediaPage } from './media-analysis';

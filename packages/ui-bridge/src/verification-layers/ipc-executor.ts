@@ -55,11 +55,11 @@ export class IpcLayerExecutor {
     }
 
     try {
-      const result = await this.invoke('plugin:ui-bridge|fs_assert', {
+      const result = (await this.invoke('plugin:ui-bridge|fs_assert', {
         path: assertion.path,
         check: assertion.check,
         expected: assertion.expected,
-      }) as { passed: boolean; exists: boolean; content?: string; size?: number };
+      })) as { passed: boolean; exists: boolean; content?: string; size?: number };
 
       const details: FsLayerResult = {
         type: 'fs',
@@ -100,12 +100,12 @@ export class IpcLayerExecutor {
     }
 
     try {
-      const result = await this.invoke('plugin:ui-bridge|db_assert', {
+      const result = (await this.invoke('plugin:ui-bridge|db_assert', {
         query: assertion.query,
         connectionRef: assertion.connectionRef,
         expectedRows: assertion.expectedRows,
         expectedValues: assertion.expectedValues,
-      }) as { passed: boolean; rowCount: number; rows?: Record<string, unknown>[] };
+      })) as { passed: boolean; rowCount: number; rows?: Record<string, unknown>[] };
 
       const details: DbLayerResult = {
         type: 'db',

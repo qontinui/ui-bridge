@@ -326,6 +326,32 @@ export class StandaloneServer {
       return;
     }
 
+    // Change observation SSE stream — filters to snapshot:changed events only
+    if (path === '/control/changes/stream' && method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const clientId = this.sseManager.addClient(
+        (data: string) => {
+          res.write(data);
+          return true;
+        },
+        () => {
+          if (!res.writableEnded) res.end();
+        },
+        'snapshot:changed'
+      );
+
+      req.on('close', () => {
+        this.sseManager.removeClient(clientId);
+      });
+      return;
+    }
+
     // Find matching route
     const route = this.findRoute(path, method);
     if (!route) {

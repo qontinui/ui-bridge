@@ -908,7 +908,11 @@ export class CommandRelay {
       this.changeEventBuffer.splice(0, this.changeEventBuffer.length - this.maxChangeEvents);
     }
     for (const sub of this.changeEventSubscribers) {
-      try { sub(event); } catch { /* subscriber errors are non-fatal */ }
+      try {
+        sub(event);
+      } catch {
+        /* subscriber errors are non-fatal */
+      }
     }
   }
 
@@ -917,7 +921,9 @@ export class CommandRelay {
    */
   subscribeChanges(callback: (event: DOMChangeEvent) => void): () => void {
     this.changeEventSubscribers.add(callback);
-    return () => { this.changeEventSubscribers.delete(callback); };
+    return () => {
+      this.changeEventSubscribers.delete(callback);
+    };
   }
 
   /**

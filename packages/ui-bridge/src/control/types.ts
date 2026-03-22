@@ -640,6 +640,68 @@ export interface FillFormRequest {
   clearFirst?: boolean;
 }
 
+// ============================================================================
+// Batch Action Types
+// ============================================================================
+
+/**
+ * A single step in a batch action sequence.
+ */
+export interface BatchActionStep {
+  /** Target element ID (registry ID, CTR logical name, or CSS selector) */
+  elementId: string;
+  /** Action to execute */
+  action: ControlActionRequest;
+  /** Optional label for identifying this step in results */
+  label?: string;
+}
+
+/**
+ * Request to execute multiple actions in a single HTTP round-trip.
+ */
+export interface BatchActionRequest {
+  /** Ordered sequence of actions to execute */
+  steps: BatchActionStep[];
+  /** Stop executing on the first failure (default: true) */
+  stopOnFailure?: boolean;
+  /** Delay in ms between steps (default: 0) */
+  delayBetweenMs?: number;
+}
+
+/**
+ * Result of a single step within a batch.
+ */
+export interface BatchActionStepResult {
+  /** Index of this step in the batch */
+  index: number;
+  /** Label if provided */
+  label?: string;
+  /** The target element ID */
+  elementId: string;
+  /** The action response */
+  response: ControlActionResponse;
+}
+
+/**
+ * Result of a batch action execution.
+ */
+export interface BatchActionResponse {
+  /** Whether all steps succeeded */
+  success: boolean;
+  /** Individual step results */
+  results: BatchActionStepResult[];
+  /** Number of steps that succeeded */
+  succeededCount: number;
+  /** Number of steps that failed */
+  failedCount: number;
+  /** Number of steps that were skipped (due to stopOnFailure) */
+  skippedCount: number;
+  /** Total duration across all steps */
+  durationMs: number;
+  /** Timestamp */
+  timestamp: number;
+}
+
 /**
  * Action executor interface
  */
@@ -669,6 +731,9 @@ export interface ActionExecutor {
 
   /** Fill multiple form fields atomically */
   fillForm(request: FillFormRequest): Promise<FillResult>;
+
+  /** Execute multiple actions in a single batch, reducing IPC round-trips */
+  executeBatch(request: BatchActionRequest): Promise<BatchActionResponse>;
 }
 
 /**

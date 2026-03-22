@@ -1,0 +1,105 @@
+{
+  "version": "1.0.0",
+  "entries": [
+    {
+      "logicalName": "exec.library-search",
+      "selectors": [
+        {
+          "strategy": "data-testid",
+          "value": "workflow-library-search",
+          "priority": 0,
+          "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "input[role='searchbox']",
+          "priority": 1,
+          "confidence": 0.8
+        }
+      ],
+      "metadata": {
+        "description": "Workflow library search input",
+        "component": "WorkflowQueueTab",
+        "pageUrl": "/execute",
+        "tags": ["execute", "search"]
+      },
+      "version": 1
+    },
+    {
+      "logicalName": "exec.queue-heading",
+      "selectors": [
+        {
+          "strategy": "data-awas-element",
+          "value": "workflow-queue-heading",
+          "priority": 0,
+          "confidence": 0.85
+        },
+        {
+          "strategy": "search",
+          "value": { "role": "heading", "textContent": "Workflow Queue" },
+          "priority": 1,
+          "confidence": 0.7
+        }
+      ],
+      "metadata": {
+        "description": "Workflow Queue page heading",
+        "component": "WorkflowQueueTab",
+        "pageUrl": "/execute",
+        "tags": ["execute", "heading"]
+      },
+      "version": 1
+    },
+    {
+      "logicalName": "exec.run-button",
+      "selectors": [
+        {
+          "strategy": "data-testid",
+          "value": "run-queue-btn",
+          "priority": 0,
+          "confidence": 0.9
+        },
+        {
+          "strategy": "id",
+          "value": "run-queue-button",
+          "priority": 1,
+          "confidence": 0.75
+        },
+        {
+          "strategy": "search",
+          "value": { "role": "button", "textContent": "Run Queue" },
+          "priority": 2,
+          "confidence": 0.6
+        }
+      ],
+      "metadata": {
+        "description": "Run Queue execution button",
+        "component": "WorkflowQueueTab",
+        "pageUrl": "/execute",
+        "tags": ["execute", "action"]
+      },
+      "version": 1
+    },
+    {
+      "logicalName": "exec.clear-button",
+      "selectors": [
+        {
+          "strategy": "data-testid",
+          "value": "clear-queue-btn",
+          "priority": 0,
+          "confidence": 0.9
+        }
+      ],
+      "metadata": {
+        "description": "Clear queue button",
+        "component": "WorkflowQueueTab",
+        "pageUrl": "/execute",
+        "tags": ["execute", "action"]
+      },
+      "version": 1
+    }
+  ],
+  "metadata": {
+    "author": "Joshua Spinak",
+    "description": "CTR entries for the Execute (Workflow Queue) page"
+  }
+}

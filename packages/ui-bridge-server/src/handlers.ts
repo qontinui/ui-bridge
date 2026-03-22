@@ -5,7 +5,9 @@
  */
 
 import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
-import type { ControlSnapshot } from '@qontinui/ui-bridge/control';
+import type { ControlSnapshot, DiscoveredElement } from '@qontinui/ui-bridge/control';
+import { diagnosePageHealth } from './page-health';
+import type { PageHealthReport } from './page-health';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
 import type {
   ActionFailureDetails,
@@ -1242,6 +1244,31 @@ export function createHandlers(
         return success(entries);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_HISTORY_ERROR');
+      }
+    },
+
+    // Page health diagnostics
+    pageHealth: async (): Promise<APIResponse<PageHealthReport>> => {
+      try {
+        // Get elements via discover/find (uses the same path as the discover handler)
+        let elements: DiscoveredElement[];
+        if (actionExecutor.find) {
+          const result = (await actionExecutor.find()) as { elements: DiscoveredElement[] };
+          elements = result.elements ?? [];
+        } else {
+          elements = (registry.findElements?.() ??
+            registry.getAllElements()) as DiscoveredElement[];
+        }
+
+        const report = diagnosePageHealth(elements);
+        return { success: true, data: report, timestamp: Date.now() };
+      } catch (err) {
+        return {
+          success: false,
+          error: (err as Error).message,
+          code: 'PAGE_HEALTH_ERROR',
+          timestamp: Date.now(),
+        };
       }
     },
   };

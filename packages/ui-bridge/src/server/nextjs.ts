@@ -118,6 +118,11 @@ export function createNextRouteHandlers(
         return createSSEStreamResponse(request, config.sseManager);
       }
 
+      // Change observation SSE stream — filters to snapshot:changed events only
+      if (method === 'GET' && path === '/control/changes/stream' && config.sseManager) {
+        return createSSEStreamResponse(request, config.sseManager, 'snapshot:changed');
+      }
+
       // Intercept relay routes before normal routing
       if (config.relay) {
         const relayResponse = handleRelayRoute(method, path, request, config.relay, config);
@@ -621,9 +626,13 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
  * Create an SSE streaming response for the Next.js adapter.
  * Follows the same pattern as the web app's command stream route.
  */
-function createSSEStreamResponse(request: NextRequest, sseManager: SSEManager): Response {
+function createSSEStreamResponse(
+  request: NextRequest,
+  sseManager: SSEManager,
+  typeFilterOverride?: string
+): Response {
   const url = new URL(request.url);
-  const typeFilter = url.searchParams.get('types') ?? undefined;
+  const typeFilter = typeFilterOverride ?? url.searchParams.get('types') ?? undefined;
   const elementFilter = url.searchParams.get('elements') ?? undefined;
   const encoder = new TextEncoder();
 

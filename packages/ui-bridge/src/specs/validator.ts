@@ -103,7 +103,10 @@ export function validateSpecAssertion(data: unknown, path = 'assertion'): Valida
         errors.push({ path: `${path}.target.logicalName`, message: 'must be a non-empty string' });
       }
     } else {
-      errors.push({ path: `${path}.target.type`, message: 'must be "elementId", "search", or "ctr"' });
+      errors.push({
+        path: `${path}.target.type`,
+        message: 'must be "elementId", "search", or "ctr"',
+      });
     }
   }
 

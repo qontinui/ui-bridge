@@ -42,3 +42,10 @@ export {
 
 export { autoPopulateCtr } from './auto-populate';
 export type { AutoPopulateOptions } from './auto-populate';
+
+export {
+  migrateSpecToCtr,
+  migrateDirectoryToCtr,
+  rewriteSpecWithCtr,
+} from './migrate-specs-to-ctr';
+export type { MigrationResult } from './migrate-specs-to-ctr';

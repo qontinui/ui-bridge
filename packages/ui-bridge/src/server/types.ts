@@ -10,6 +10,8 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
+  BatchActionRequest,
+  BatchActionResponse,
   FindRequest,
   FindResponse,
   ControlSnapshot,
@@ -150,7 +152,13 @@ export interface APIResponse<T = unknown> {
   /** Request timestamp */
   timestamp: number;
   /** Response metadata (staleness, diagnostics) */
-  _meta?: { stale?: boolean; staleSinceMs?: number; cacheAgeMs?: number; fallback?: boolean; reason?: string };
+  _meta?: {
+    stale?: boolean;
+    staleSinceMs?: number;
+    cacheAgeMs?: number;
+    fallback?: boolean;
+    reason?: string;
+  };
   /** Recovery suggestions for error responses */
   suggestions?: string[];
 }
@@ -196,18 +204,29 @@ export interface UIBridgeServerHandlers {
   getRenderLogPath: () => Promise<APIResponse<{ path: string }>>;
 
   // Control endpoints
-  getElements: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['elements']>>;
-  getElement: (id: string, options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
+  getElements: (options?: {
+    recency?: string;
+  }) => Promise<APIResponse<ControlSnapshot['elements']>>;
+  getElement: (
+    id: string,
+    options?: { recency?: string }
+  ) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
   getElementState: (id: string) => Promise<APIResponse<unknown>>;
   getElementReactState: (id: string) => Promise<APIResponse<unknown>>;
   executeElementAction: (
     id: string,
     request: ControlActionRequest
   ) => Promise<APIResponse<ControlActionResponse>>;
+  executeBatchAction: (request: BatchActionRequest) => Promise<APIResponse<BatchActionResponse>>;
 
   // Component endpoints
-  getComponents: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['components']>>;
-  getComponent: (id: string, options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
+  getComponents: (options?: {
+    recency?: string;
+  }) => Promise<APIResponse<ControlSnapshot['components']>>;
+  getComponent: (
+    id: string,
+    options?: { recency?: string }
+  ) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
   getComponentState: (id: string) => Promise<
     APIResponse<{
       state: Record<string, unknown>;
@@ -236,7 +255,9 @@ export interface UIBridgeServerHandlers {
   getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
-  getWorkflows: (options?: { recency?: string }) => Promise<APIResponse<ControlSnapshot['workflows']>>;
+  getWorkflows: (options?: {
+    recency?: string;
+  }) => Promise<APIResponse<ControlSnapshot['workflows']>>;
   runWorkflow: (
     id: string,
     request?: WorkflowRunRequest
@@ -642,6 +663,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/element/:id/action',
     handler: 'executeElementAction',
     params: ['id'],
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/actions/batch',
+    handler: 'executeBatchAction',
     bodyRequired: true,
   },
 

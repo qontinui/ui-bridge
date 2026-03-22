@@ -10,7 +10,12 @@
  */
 
 import type { CommandRelay } from './command-relay';
-import type { UIBridgeServerHandlers, APIResponse, CapabilitiesResponse, DOMChangeEvent } from './types';
+import type {
+  UIBridgeServerHandlers,
+  APIResponse,
+  CapabilitiesResponse,
+  DOMChangeEvent,
+} from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
   ControlSnapshot,
@@ -28,7 +33,13 @@ import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 
 function success<T>(
   data: T,
-  _meta?: { stale?: boolean; staleSinceMs?: number; cacheAgeMs?: number; fallback?: boolean; reason?: string }
+  _meta?: {
+    stale?: boolean;
+    staleSinceMs?: number;
+    cacheAgeMs?: number;
+    fallback?: boolean;
+    reason?: string;
+  }
 ): APIResponse<T> {
   const response: APIResponse<T> = { success: true, data, timestamp: Date.now() };
   if (_meta) response._meta = _meta;
@@ -310,10 +321,7 @@ export function createRelayHandlers(
    * - `Current` → always fetch fresh from the browser
    * - `MaxAge(ms)` → fetch only if cache is older than `ms`
    */
-  async function refreshSnapshotIfNeeded(
-    recency: RecencyType,
-    isEmpty: boolean
-  ): Promise<void> {
+  async function refreshSnapshotIfNeeded(recency: RecencyType, isEmpty: boolean): Promise<void> {
     // Fast path: Recency.Any accepts any cached value as long as it's non-empty
     if (recency.kind === 'any' && !isEmpty) return;
 
@@ -363,7 +371,11 @@ export function createRelayHandlers(
     if (!snapshotStaleSince) snapshotStaleSince = Date.now();
     // Notify subscribers
     for (const sub of changeEventSubscribers) {
-      try { sub(event); } catch { /* subscriber errors are non-fatal */ }
+      try {
+        sub(event);
+      } catch {
+        /* subscriber errors are non-fatal */
+      }
     }
   }
 
@@ -474,6 +486,10 @@ export function createRelayHandlers(
       return relayCommand('executeElementAction', { id, request });
     },
 
+    async executeBatchAction(request) {
+      return relayCommand('executeBatchAction', { request });
+    },
+
     // ========================================================================
     // Control — Components
     // ========================================================================
@@ -533,8 +549,11 @@ export function createRelayHandlers(
     // ========================================================================
 
     async find(request) {
-      const { targetTabId, recency: recencyParam, ...payload } =
-        (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
+      const {
+        targetTabId,
+        recency: recencyParam,
+        ...payload
+      } = (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId });
       if (result.success) return result;
       // Relay failed — fall back to filtering cached snapshot elements
@@ -554,8 +573,11 @@ export function createRelayHandlers(
     },
 
     async discover(request) {
-      const { targetTabId, recency: recencyParam, ...payload } =
-        (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
+      const {
+        targetTabId,
+        recency: recencyParam,
+        ...payload
+      } = (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
       const result = await relayCommand<FindResponse>('discover', payload, { targetTabId });
       if (result.success) return result;
       // Relay failed — fall back to filtering cached snapshot elements
@@ -629,7 +651,10 @@ export function createRelayHandlers(
         if (isEmpty && screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'empty_response');
           if (fallback) {
-            return success({ ...result, fallbackScreenshot: fallback }, { stale: false, cacheAgeMs: 0 });
+            return success(
+              { ...result, fallbackScreenshot: fallback },
+              { stale: false, cacheAgeMs: 0 }
+            );
           }
         }
 
@@ -1420,9 +1445,7 @@ export function createRelayHandlers(
     async getChangesSince(params) {
       const since = params?.since ?? 0;
       const limit = params?.limit ?? 100;
-      const events = changeEventBuffer
-        .filter((e) => e.timestamp > since)
-        .slice(-limit);
+      const events = changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);
       return success({ events, count: events.length });
     },
   };
@@ -1451,7 +1474,9 @@ export function createRelayHandlers(
     callback: (event: DOMChangeEvent) => void
   ): (() => void) => {
     changeEventSubscribers.add(callback);
-    return () => { changeEventSubscribers.delete(callback); };
+    return () => {
+      changeEventSubscribers.delete(callback);
+    };
   };
 
   return handlers;

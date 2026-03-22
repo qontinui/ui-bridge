@@ -288,3 +288,299 @@ function loadBase64Image(base64: string): Promise<HTMLImageElement> {
     img.src = `data:image/png;base64,${base64}`;
   });
 }
+
+// =============================================================================
+// Element-level visual capture
+// =============================================================================
+
+/**
+ * Options for capturing an arbitrary DOM element as an image.
+ */
+export interface ElementCaptureOptions {
+  /** Maximum dimension (width or height) to scale to (default: 1024) */
+  maxSize?: number;
+  /** Background color to render behind the element (default: 'white') */
+  background?: string;
+  /** Padding in pixels around the element (default: 0) */
+  padding?: number;
+}
+
+/**
+ * Capture any DOM element as a base64 PNG screenshot using a foreign-object SVG approach.
+ *
+ * This works for arbitrary elements (divs, sections, forms, etc.) — not just media elements.
+ * It serializes the element's outer HTML into an SVG foreignObject, renders it to a canvas,
+ * and returns the result as a base64 PNG.
+ *
+ * Limitations:
+ * - External images may not render (tainted canvas / CORS)
+ * - Some CSS features (backdrop-filter, clip-path) may not render correctly
+ * - iframes and cross-origin content are excluded
+ *
+ * @param element The DOM element to capture
+ * @param elementId The element's identifier string
+ * @param options Capture options
+ */
+export async function captureElementScreenshot(
+  element: HTMLElement,
+  elementId: string,
+  options: ElementCaptureOptions = {}
+): Promise<MediaSnapshotData | null> {
+  const { maxSize = 1024, background = 'white', padding = 0 } = options;
+
+  try {
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    const captureW = Math.ceil(rect.width) + padding * 2;
+    const captureH = Math.ceil(rect.height) + padding * 2;
+
+    // Scale to fit within maxSize
+    const scale = Math.min(1, maxSize / Math.max(captureW, captureH));
+    const scaledW = Math.round(captureW * scale);
+    const scaledH = Math.round(captureH * scale);
+
+    // Clone and inline computed styles for accurate rendering
+    const clone = element.cloneNode(true) as HTMLElement;
+    inlineComputedStyles(element, clone);
+
+    // Build SVG foreignObject
+    const serialized = new XMLSerializer().serializeToString(clone);
+    const svgMarkup = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${captureW}" height="${captureH}">
+        <foreignObject width="100%" height="100%">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="
+            width: ${captureW}px;
+            height: ${captureH}px;
+            padding: ${padding}px;
+            background: ${background};
+            overflow: hidden;
+          ">${serialized}</div>
+        </foreignObject>
+      </svg>
+    `;
+
+    const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = url;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = scaledW;
+      canvas.height = scaledH;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, scaledW, scaledH);
+      ctx.drawImage(img, 0, 0, scaledW, scaledH);
+
+      const data = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+      return {
+        data,
+        width: scaledW,
+        height: scaledH,
+        mediaType: 'image/png',
+        elementId,
+        timestamp: Date.now(),
+      };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deep-copy computed styles from a source element to a cloned element,
+ * ensuring visual fidelity when rendered outside the live DOM.
+ */
+function inlineComputedStyles(source: HTMLElement, target: HTMLElement): void {
+  const computed = window.getComputedStyle(source);
+  for (let i = 0; i < computed.length; i++) {
+    const prop = computed[i];
+    target.style.setProperty(prop, computed.getPropertyValue(prop));
+  }
+
+  // Recurse into children
+  const sourceChildren = source.children;
+  const targetChildren = target.children;
+  for (let i = 0; i < sourceChildren.length && i < targetChildren.length; i++) {
+    if (sourceChildren[i] instanceof HTMLElement && targetChildren[i] instanceof HTMLElement) {
+      inlineComputedStyles(sourceChildren[i] as HTMLElement, targetChildren[i] as HTMLElement);
+    }
+  }
+}
+
+// =============================================================================
+// Visual regression comparison
+// =============================================================================
+
+/**
+ * Options for visual regression comparison.
+ * Inspired by jest-image-snapshot's dual-threshold model.
+ */
+export interface VisualRegressionOptions {
+  /** Per-pixel color difference threshold (0-255). Differences below this are ignored.
+   *  Helps with antialiasing and subpixel rendering. Default: 10 */
+  pixelThreshold?: number;
+  /** Maximum allowed percentage of differing pixels (0-100). Default: 0.1 (0.1%) */
+  failureThreshold?: number;
+  /** Whether failure threshold is a 'percent' of total pixels or an absolute 'pixel' count.
+   *  Default: 'percent' */
+  failureThresholdType?: 'percent' | 'pixel';
+  /** Apply a Gaussian-like blur to both images before comparison to reduce
+   *  noise from antialiasing. Radius in pixels. Default: 0 (disabled) */
+  blur?: number;
+}
+
+/**
+ * Result of a visual regression comparison.
+ */
+export interface VisualRegressionResult {
+  /** Whether the images pass the regression check (within thresholds) */
+  pass: boolean;
+  /** Number of pixels that differ beyond the pixel threshold */
+  diffPixelCount: number;
+  /** Percentage of pixels that differ (0-100) */
+  diffPercentage: number;
+  /** Total number of pixels compared */
+  totalPixels: number;
+  /** Bounding box of the diff region */
+  diffRegion?: { x: number; y: number; width: number; height: number };
+  /** Base64-encoded diff image (red = different, dimmed = same) */
+  diffImage?: string;
+  /** Dimensions used for comparison */
+  dimensions: { width: number; height: number };
+}
+
+/**
+ * Compare two snapshots for visual regression with configurable thresholds.
+ *
+ * Uses a dual-threshold model inspired by jest-image-snapshot:
+ * - pixelThreshold: per-pixel color tolerance (handles antialiasing/subpixel)
+ * - failureThreshold: overall tolerance for total differing pixels
+ *
+ * @param baseline The reference/expected snapshot
+ * @param current The current/actual snapshot
+ * @param options Comparison options
+ */
+export async function compareVisualRegression(
+  baseline: MediaSnapshotData,
+  current: MediaSnapshotData,
+  options: VisualRegressionOptions = {}
+): Promise<VisualRegressionResult> {
+  const {
+    pixelThreshold = 10,
+    failureThreshold = 0.1,
+    failureThresholdType = 'percent',
+    blur = 0,
+  } = options;
+
+  try {
+    const imgA = await loadBase64Image(baseline.data);
+    const imgB = await loadBase64Image(current.data);
+
+    const width = Math.max(imgA.width, imgB.width);
+    const height = Math.max(imgA.height, imgB.height);
+    const totalPixels = width * height;
+
+    const canvasA = document.createElement('canvas');
+    canvasA.width = width;
+    canvasA.height = height;
+    const ctxA = canvasA.getContext('2d')!;
+    if (blur > 0) ctxA.filter = `blur(${blur}px)`;
+    ctxA.drawImage(imgA, 0, 0);
+    const dataA = ctxA.getImageData(0, 0, width, height);
+
+    const canvasB = document.createElement('canvas');
+    canvasB.width = width;
+    canvasB.height = height;
+    const ctxB = canvasB.getContext('2d')!;
+    if (blur > 0) ctxB.filter = `blur(${blur}px)`;
+    ctxB.drawImage(imgB, 0, 0);
+    const dataB = ctxB.getImageData(0, 0, width, height);
+
+    // Diff canvas for visualization
+    const diffCanvas = document.createElement('canvas');
+    diffCanvas.width = width;
+    diffCanvas.height = height;
+    const diffCtx = diffCanvas.getContext('2d')!;
+    const diffData = diffCtx.createImageData(width, height);
+
+    let diffCount = 0;
+    let minX = width,
+      minY = height,
+      maxX = 0,
+      maxY = 0;
+
+    for (let i = 0; i < dataA.data.length; i += 4) {
+      const rDiff = Math.abs(dataA.data[i] - dataB.data[i]);
+      const gDiff = Math.abs(dataA.data[i + 1] - dataB.data[i + 1]);
+      const bDiff = Math.abs(dataA.data[i + 2] - dataB.data[i + 2]);
+
+      if (rDiff > pixelThreshold || gDiff > pixelThreshold || bDiff > pixelThreshold) {
+        diffCount++;
+        const px = (i / 4) % width;
+        const py = Math.floor(i / 4 / width);
+        minX = Math.min(minX, px);
+        minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px);
+        maxY = Math.max(maxY, py);
+
+        // Red highlight
+        diffData.data[i] = 255;
+        diffData.data[i + 1] = 0;
+        diffData.data[i + 2] = 0;
+        diffData.data[i + 3] = 200;
+      } else {
+        // Dimmed original
+        diffData.data[i] = dataA.data[i];
+        diffData.data[i + 1] = dataA.data[i + 1];
+        diffData.data[i + 2] = dataA.data[i + 2];
+        diffData.data[i + 3] = 80;
+      }
+    }
+
+    diffCtx.putImageData(diffData, 0, 0);
+    const diffPercentage = (diffCount / totalPixels) * 100;
+
+    // Check against failure threshold
+    let pass: boolean;
+    if (failureThresholdType === 'percent') {
+      pass = diffPercentage <= failureThreshold;
+    } else {
+      pass = diffCount <= failureThreshold;
+    }
+
+    return {
+      pass,
+      diffPixelCount: diffCount,
+      diffPercentage: Math.round(diffPercentage * 100) / 100,
+      totalPixels,
+      diffRegion:
+        diffCount > 0
+          ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+          : undefined,
+      diffImage:
+        diffCount > 0
+          ? diffCanvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '')
+          : undefined,
+      dimensions: { width, height },
+    };
+  } catch {
+    // Return a failing result if comparison could not be performed
+    return {
+      pass: false,
+      diffPixelCount: 0,
+      diffPercentage: 100,
+      totalPixels: 0,
+      dimensions: { width: 0, height: 0 },
+    };
+  }
+}

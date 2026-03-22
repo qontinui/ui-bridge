@@ -22,11 +22,15 @@ import { fillSingleField } from './fill-form';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { getGlobalCtr } from '../ctr/registry';
 import type {
   ControlActionRequest,
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
+  BatchActionRequest,
+  BatchActionResponse,
+  BatchActionStepResult,
   WaitResult,
   FindRequest,
   FindResponse,
@@ -385,9 +389,11 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Validate action name early — check built-in actions first
     const actionName = request.action;
     if (!SUPPORTED_ACTIONS.has(actionName)) {
-      // Check if it could be a custom action (we'll verify on the element later)
+      // Check if it could be a custom action (we'll verify on the element later).
+      // Skip this check for CTR logical names since the element isn't resolved yet.
       const registered = this.registry.getElement(elementId);
-      if (!registered?.customActions?.[actionName]) {
+      const isCtrTarget = !registered && getGlobalCtr().has(elementId);
+      if (!registered?.customActions?.[actionName] && !isCtrTarget) {
         return {
           success: false,
           error: `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`,
@@ -411,6 +417,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       // If not registered or detached, try to find by identifier
       if (!element) {
         element = findElementByIdentifier(elementId);
+      }
+
+      // Try CTR (Central Target Registry) — resolves logical names to DOM
+      // elements via self-healing selector fallback chains
+      if (!element) {
+        const ctr = getGlobalCtr();
+        if (ctr.has(elementId)) {
+          const result = ctr.resolveInDOM(elementId);
+          if (result.resolved && result.element) {
+            element = result.element;
+          }
+        }
       }
 
       // If still not found, check the discovery cache (elements found via
@@ -2101,6 +2119,65 @@ export class DefaultActionExecutor implements ActionExecutor {
       default:
         return [...baseActions, 'click'];
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Batch execution
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute multiple actions sequentially in a single call, reducing IPC round-trips.
+   */
+  async executeBatch(request: BatchActionRequest): Promise<BatchActionResponse> {
+    const startTime = performance.now();
+    const { steps, stopOnFailure = true, delayBetweenMs = 0 } = request;
+    const results: BatchActionStepResult[] = [];
+    let succeededCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+    let stopped = false;
+
+    for (let i = 0; i < steps.length; i++) {
+      if (stopped) {
+        skippedCount++;
+        continue;
+      }
+
+      const step = steps[i];
+
+      // Inter-step delay (skip before first step)
+      if (i > 0 && delayBetweenMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
+      }
+
+      const response = await this.executeAction(step.elementId, step.action);
+      const stepResult: BatchActionStepResult = {
+        index: i,
+        label: step.label,
+        elementId: step.elementId,
+        response,
+      };
+      results.push(stepResult);
+
+      if (response.success) {
+        succeededCount++;
+      } else {
+        failedCount++;
+        if (stopOnFailure) {
+          stopped = true;
+        }
+      }
+    }
+
+    return {
+      success: failedCount === 0,
+      results,
+      succeededCount,
+      failedCount,
+      skippedCount,
+      durationMs: performance.now() - startTime,
+      timestamp: Date.now(),
+    };
   }
 }
 

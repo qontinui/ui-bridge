@@ -32,6 +32,7 @@ import type {
   SemanticSearchResponse,
   ScreenAnalysis,
 } from '@qontinui/ui-bridge/ai';
+import type { PageHealthReport } from './page-health';
 
 /**
  * Server configuration
@@ -198,6 +199,9 @@ export interface UIBridgeServerHandlers {
     since?: number;
     limit?: number;
   }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
+
+  // Page health diagnostics
+  pageHealth?: () => Promise<APIResponse<PageHealthReport>>;
 }
 
 /**
@@ -299,6 +303,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'clearPerformanceEntries',
   },
   { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
+
+  // Page health diagnostics
+  { method: 'POST', path: '/control/page-health', handler: 'pageHealth' },
 ];
 
 /**

@@ -19,9 +19,10 @@ export class ApiLayerExecutor {
   async execute(id: string, assertion: ApiAssertion): Promise<LayerAssertionResult> {
     const startTime = Date.now();
 
-    const url = this.baseUrl && !assertion.endpoint.startsWith('http')
-      ? `${this.baseUrl}${assertion.endpoint}`
-      : assertion.endpoint;
+    const url =
+      this.baseUrl && !assertion.endpoint.startsWith('http')
+        ? `${this.baseUrl}${assertion.endpoint}`
+        : assertion.endpoint;
 
     try {
       const controller = new AbortController();
@@ -56,7 +57,9 @@ export class ApiLayerExecutor {
       }
 
       // Check body paths
-      let bodyMatches: Record<string, { expected: unknown; actual: unknown; matched: boolean }> | undefined;
+      let bodyMatches:
+        | Record<string, { expected: unknown; actual: unknown; matched: boolean }>
+        | undefined;
       if (passed && assertion.expectedBody && body && typeof body === 'object') {
         bodyMatches = {};
         for (const [path, expected] of Object.entries(assertion.expectedBody)) {

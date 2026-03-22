@@ -6,11 +6,7 @@
  */
 
 import type { CtrEntry, CtrSelector, CtrEvent } from './types';
-import {
-  CONFIDENCE_BOOST,
-  CONFIDENCE_PENALTY,
-  MIN_CONFIDENCE_THRESHOLD,
-} from './types';
+import { CONFIDENCE_BOOST, CONFIDENCE_PENALTY, MIN_CONFIDENCE_THRESHOLD } from './types';
 
 /**
  * Promote a selector that resolved successfully.

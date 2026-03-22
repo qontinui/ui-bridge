@@ -45,3 +45,11 @@ export {
 
 // WebSocket handler
 export { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
+
+// Page health diagnostics
+export {
+  diagnosePageHealth,
+  type PageHealthReport,
+  type PageHealthFinding,
+  type PageHealthSeverity,
+} from './page-health';

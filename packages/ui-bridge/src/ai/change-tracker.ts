@@ -218,7 +218,7 @@ export class ChangeTracker {
     if (
       this.deps.subscribeChanges &&
       !changeReceivedDuringAction &&
-      afterControl.elements.length === beforeControl.elements.length
+      afterControl.elements?.length === beforeControl.elements?.length
     ) {
       // Fast path: push events indicate nothing changed, element count matches
       diff = computeDiff(beforeSnapshot, afterSnapshot, this.config.diffConfig);
@@ -322,7 +322,9 @@ export class ChangeTracker {
 
       while (performance.now() - startTime < timeout) {
         // Wait for either a push event or the safety-net poll interval
-        await sleep(changeReceived ? 0 : Math.min(safetyPollMs, timeout - (performance.now() - startTime)));
+        await sleep(
+          changeReceived ? 0 : Math.min(safetyPollMs, timeout - (performance.now() - startTime))
+        );
         changeReceived = false;
 
         const diff = this.snapshotAndDiff(baselineSnapshot, options);

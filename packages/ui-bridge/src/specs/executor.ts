@@ -82,7 +82,9 @@ export class SpecExecutor {
       this.artifactStore = c.artifactStore;
       this.specId = c.specId;
     } else {
-      this.assertionExecutor = new AssertionExecutor(config as Partial<AssertionConfig> | undefined);
+      this.assertionExecutor = new AssertionExecutor(
+        config as Partial<AssertionConfig> | undefined
+      );
     }
   }
 

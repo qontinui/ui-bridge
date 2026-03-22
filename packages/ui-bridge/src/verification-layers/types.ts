@@ -102,9 +102,9 @@ export interface LayeredAssertion {
  * Execution strategy for running assertions across layers.
  */
 export type ExecutionStrategy =
-  | 'parallel'    // All layers run concurrently
-  | 'sequential'  // Layers run one after another
-  | 'ui-first';   // UI layer runs first, then remaining layers in parallel
+  | 'parallel' // All layers run concurrently
+  | 'sequential' // Layers run one after another
+  | 'ui-first'; // UI layer runs first, then remaining layers in parallel
 
 export interface ExecutionMatrix {
   /** Unique matrix ID. */

@@ -2,7 +2,7 @@
  * Change Tracker Tests
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChangeTracker, analyzeStructuredChanges } from './change-tracker';
 import type { ChangeTrackerDeps } from './change-tracker';
 import type { SemanticSnapshot, SemanticDiff } from './types';
@@ -905,6 +905,188 @@ describe('ChangeTracker', () => {
       });
 
       expect(result.timeline).toBeUndefined();
+    });
+  });
+
+  // =========================================================================
+  // Push-Based Change Observation (allio-inspired)
+  // =========================================================================
+
+  describe('push-based waitForChange', () => {
+    it('should use push path when subscribeChanges is provided', async () => {
+      let subscriberCallback: (() => void) | null = null;
+      const unsubscribe = vi.fn();
+      const subscribeChanges = vi.fn((cb: () => void) => {
+        subscriberCallback = cb;
+        // Simulate a push event arriving shortly after subscription
+        setTimeout(() => cb(), 5);
+        return unsubscribe;
+      });
+
+      // Set up snapshots: first returns baseline, subsequent return changed snapshot
+      const baselineSnapshot = createMockSnapshot([{ id: 'btn-1' }]);
+      const changedSnapshot = createMockSnapshot([
+        { id: 'btn-1' },
+        { id: 'btn-2', description: 'New button' },
+      ]);
+      let callCount = 0;
+      const snapshotManager = {
+        createSnapshot: vi.fn(() => {
+          callCount++;
+          return callCount <= 1 ? baselineSnapshot : changedSnapshot;
+        }),
+      };
+
+      const pushDeps = createMockDeps({
+        subscribeChanges,
+        snapshotManager: snapshotManager as any,
+      });
+
+      const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 3000 });
+
+      const result = await pushTracker.waitForChange(
+        { anySignificantChange: true },
+        { timeout: 3000 }
+      );
+
+      expect(result).toBeDefined();
+      expect(subscribeChanges).toHaveBeenCalledOnce();
+      expect(unsubscribe).toHaveBeenCalledOnce();
+      expect(subscriberCallback).not.toBeNull();
+    });
+
+    it('should fall back to polling when subscribeChanges is not provided', async () => {
+      // Set up snapshots: baseline then changed
+      const baselineSnapshot = createMockSnapshot([{ id: 'btn-1' }]);
+      const changedSnapshot = createMockSnapshot([
+        { id: 'btn-1' },
+        { id: 'btn-2', description: 'New button' },
+      ]);
+      let callCount = 0;
+      const snapshotManager = {
+        createSnapshot: vi.fn(() => {
+          callCount++;
+          return callCount <= 1 ? baselineSnapshot : changedSnapshot;
+        }),
+      };
+
+      const pollDeps = createMockDeps({
+        subscribeChanges: undefined, // No push support
+        snapshotManager: snapshotManager as any,
+      });
+
+      const pollTracker = new ChangeTracker(pollDeps, {
+        defaultPollInterval: 20,
+        defaultWaitTimeout: 3000,
+      });
+
+      const result = await pollTracker.waitForChange(
+        { anySignificantChange: true },
+        { timeout: 3000, interval: 20 }
+      );
+
+      expect(result).toBeDefined();
+      expect(result.changes.appeared.length).toBeGreaterThan(0);
+    });
+
+    it('should timeout in push mode and throw', async () => {
+      const subscribeChanges = vi.fn((_cb: () => void) => {
+        return vi.fn(); // unsubscribe
+      });
+
+      // Always return the same snapshot — no changes
+      const staticSnapshot = createMockSnapshot([{ id: 'btn-1' }]);
+      const snapshotManager = {
+        createSnapshot: vi.fn().mockReturnValue(staticSnapshot),
+      };
+
+      const pushDeps = createMockDeps({
+        subscribeChanges,
+        snapshotManager: snapshotManager as any,
+      });
+
+      const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 100 });
+
+      await expect(
+        pushTracker.waitForChange({ elementAppeared: 'nonexistent' }, { timeout: 100 })
+      ).rejects.toThrow('waitForChange timed out');
+    });
+
+    it('should clean up push subscription on successful match', async () => {
+      const unsubscribe = vi.fn();
+      const subscribeChanges = vi.fn((cb: () => void) => {
+        // Immediately signal a change
+        setTimeout(() => cb(), 1);
+        return unsubscribe;
+      });
+
+      const baselineSnapshot = createMockSnapshot([]);
+      const changedSnapshot = createMockSnapshot([{ id: 'btn-1', description: 'Appeared' }]);
+      let callCount = 0;
+      const snapshotManager = {
+        createSnapshot: vi.fn(() => {
+          callCount++;
+          return callCount <= 1 ? baselineSnapshot : changedSnapshot;
+        }),
+      };
+
+      const pushDeps = createMockDeps({
+        subscribeChanges,
+        snapshotManager: snapshotManager as any,
+      });
+
+      const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 3000 });
+      const result = await pushTracker.waitForChange(
+        { anySignificantChange: true },
+        { timeout: 3000 }
+      );
+
+      expect(result).toBeDefined();
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('executeWithDiff push subscription', () => {
+    it('should subscribe to changes during action execution', async () => {
+      const unsubscribe = vi.fn();
+      const subscribeChanges = vi.fn((_cb: () => void) => unsubscribe);
+
+      const mockControl: ControlSnapshot = {
+        timestamp: Date.now(),
+        elements: [
+          { id: 'btn-1', type: 'button', label: 'Save', actions: ['click'], state: {} as any },
+        ],
+        components: [],
+        workflows: [],
+        activeRuns: [],
+      };
+
+      const pushDeps = createMockDeps({
+        subscribeChanges,
+        createControlSnapshot: vi.fn().mockReturnValue(mockControl),
+      });
+      const pushTracker = new ChangeTracker(pushDeps);
+
+      await pushTracker.executeWithDiff({
+        instruction: 'click',
+        settleMinStable: 10,
+      });
+
+      expect(subscribeChanges).toHaveBeenCalledOnce();
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    });
+
+    it('should work without subscribeChanges (no push)', async () => {
+      const noPushDeps = createMockDeps({ subscribeChanges: undefined });
+      const noPushTracker = new ChangeTracker(noPushDeps);
+
+      const result = await noPushTracker.executeWithDiff({
+        instruction: 'click',
+        settleMinStable: 10,
+      });
+
+      expect(result.actionSuccess).toBe(true);
+      expect(result.diff).toBeDefined();
     });
   });
 });
