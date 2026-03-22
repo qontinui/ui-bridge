@@ -198,14 +198,16 @@ export async function compareMediaSnapshots(
     const canvasA = document.createElement('canvas');
     canvasA.width = width;
     canvasA.height = height;
-    const ctxA = canvasA.getContext('2d')!;
+    const ctxA = canvasA.getContext('2d');
+    if (!ctxA) return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
     ctxA.drawImage(imgA, 0, 0);
     const dataA = ctxA.getImageData(0, 0, width, height);
 
     const canvasB = document.createElement('canvas');
     canvasB.width = width;
     canvasB.height = height;
-    const ctxB = canvasB.getContext('2d')!;
+    const ctxB = canvasB.getContext('2d');
+    if (!ctxB) return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
     ctxB.drawImage(imgB, 0, 0);
     const dataB = ctxB.getImageData(0, 0, width, height);
 
@@ -213,7 +215,9 @@ export async function compareMediaSnapshots(
     const diffCanvas = document.createElement('canvas');
     diffCanvas.width = width;
     diffCanvas.height = height;
-    const diffCtx = diffCanvas.getContext('2d')!;
+    const diffCtx = diffCanvas.getContext('2d');
+    if (!diffCtx)
+      return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
     const diffData = diffCtx.createImageData(width, height);
 
     let diffCount = 0;
@@ -374,7 +378,8 @@ export async function captureElementScreenshot(
       const canvas = document.createElement('canvas');
       canvas.width = scaledW;
       canvas.height = scaledH;
-      const ctx = canvas.getContext('2d')!;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
       ctx.fillStyle = background;
       ctx.fillRect(0, 0, scaledW, scaledH);
       ctx.drawImage(img, 0, 0, scaledW, scaledH);
@@ -493,7 +498,16 @@ export async function compareVisualRegression(
     const canvasA = document.createElement('canvas');
     canvasA.width = width;
     canvasA.height = height;
-    const ctxA = canvasA.getContext('2d')!;
+    const ctxA = canvasA.getContext('2d');
+    if (!ctxA) {
+      return {
+        pass: false,
+        diffPixelCount: 0,
+        diffPercentage: 100,
+        totalPixels: 0,
+        dimensions: { width: 0, height: 0 },
+      };
+    }
     if (blur > 0) ctxA.filter = `blur(${blur}px)`;
     ctxA.drawImage(imgA, 0, 0);
     const dataA = ctxA.getImageData(0, 0, width, height);
@@ -501,7 +515,16 @@ export async function compareVisualRegression(
     const canvasB = document.createElement('canvas');
     canvasB.width = width;
     canvasB.height = height;
-    const ctxB = canvasB.getContext('2d')!;
+    const ctxB = canvasB.getContext('2d');
+    if (!ctxB) {
+      return {
+        pass: false,
+        diffPixelCount: 0,
+        diffPercentage: 100,
+        totalPixels: 0,
+        dimensions: { width: 0, height: 0 },
+      };
+    }
     if (blur > 0) ctxB.filter = `blur(${blur}px)`;
     ctxB.drawImage(imgB, 0, 0);
     const dataB = ctxB.getImageData(0, 0, width, height);
@@ -510,7 +533,16 @@ export async function compareVisualRegression(
     const diffCanvas = document.createElement('canvas');
     diffCanvas.width = width;
     diffCanvas.height = height;
-    const diffCtx = diffCanvas.getContext('2d')!;
+    const diffCtx = diffCanvas.getContext('2d');
+    if (!diffCtx) {
+      return {
+        pass: false,
+        diffPixelCount: 0,
+        diffPercentage: 100,
+        totalPixels: 0,
+        dimensions: { width: 0, height: 0 },
+      };
+    }
     const diffData = diffCtx.createImageData(width, height);
 
     let diffCount = 0;

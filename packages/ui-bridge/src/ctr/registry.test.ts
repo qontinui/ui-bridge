@@ -172,11 +172,11 @@ describe('CentralTargetRegistry', () => {
       expect(criteria).toEqual({ selector: '.my-class', fuzzy: false });
     });
 
-    it('should return selector for xpath strategy', () => {
+    it('should return xpath for xpath strategy', () => {
       const entry = createCtrEntry('el', [{ strategy: 'xpath', value: '//div[@id="x"]' }]);
       registry.register(entry);
       const criteria = registry.resolveToSearchCriteria('el');
-      expect(criteria).toEqual({ selector: '//div[@id="x"]', fuzzy: false });
+      expect(criteria).toEqual({ xpath: '//div[@id="x"]', fuzzy: false });
     });
 
     it('should return SearchCriteria directly for search strategy', () => {

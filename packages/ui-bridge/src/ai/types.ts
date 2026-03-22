@@ -40,6 +40,8 @@ export interface SearchCriteria {
   idPattern?: string;
   /** CSS selector */
   selector?: string;
+  /** XPath expression */
+  xpath?: string;
   /** Placeholder text (for inputs) */
   placeholder?: string;
   /** Title attribute */

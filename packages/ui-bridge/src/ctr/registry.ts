@@ -296,8 +296,7 @@ function selectorToSearchCriteria(selector: CtrSelector): SearchCriteria {
     case 'css':
       return { selector: selector.value as string, fuzzy: false };
     case 'xpath':
-      // XPath not directly supported by SearchCriteria — wrap in selector
-      return { selector: selector.value as string, fuzzy: false };
+      return { xpath: selector.value as string, fuzzy: false };
     case 'search':
       return selector.value as SearchCriteria;
   }

@@ -5,7 +5,11 @@
  */
 
 import type { UIBridgeServerHandlers, APIResponse, RenderLogQuery } from './types';
-import type { ControlSnapshot, DiscoveredElement } from '@qontinui/ui-bridge/control';
+import type {
+  ControlSnapshot,
+  DiscoveredElement,
+  ActionExecutor,
+} from '@qontinui/ui-bridge/control';
 import { diagnosePageHealth } from './page-health';
 import type { PageHealthReport } from './page-health';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
@@ -51,8 +55,8 @@ import {
  * Registry interface - minimal contract for handler usage
  */
 export interface RegistryLike {
-  getAllElements(): unknown[];
-  getElement(id: string): unknown | undefined;
+  getAllElements(): DiscoveredElement[];
+  getElement(id: string): DiscoveredElement | undefined;
   getAllComponents(): unknown[];
   getComponent(id: string): unknown | undefined;
   getComponentState?(id: string): {
@@ -338,7 +342,7 @@ function buildScreenAnalysis(
     tagName: el.type,
     accessibleName: el.label,
     registered: true,
-  })) as any[];
+  })) as AIDiscoveredElement[];
   const summary = generatePageSummary(aiElements);
 
   // Transform elements into compact grouped format
@@ -485,10 +489,10 @@ export function createHandlers(
   // Helper to get fresh elements and update AI modules
   function refreshElements(): void {
     const elements = registry.getAllElements();
-    searchEngine.updateElements(elements as any[]);
-    nlExecutor.updateElements(elements as any[]);
-    nlExecutor.setActionExecutor(actionExecutor as any);
-    assertionExecutor.updateElements(elements as any[]);
+    searchEngine.updateElements(elements);
+    nlExecutor.updateElements(elements);
+    nlExecutor.setActionExecutor(actionExecutor as unknown as ActionExecutor);
+    assertionExecutor.updateElements(elements);
   }
 
   return {
@@ -572,7 +576,7 @@ export function createHandlers(
             success: false,
             error: `Element not found: ${id}`,
             code: 'ELEMENT_NOT_FOUND',
-            data: { failureDetails } as any,
+            data: { failureDetails } as unknown as ControlSnapshot['elements'][0],
             timestamp: Date.now(),
           };
         }
@@ -621,7 +625,7 @@ export function createHandlers(
               durationMs: Date.now() - startTime,
             },
             timestamp: Date.now(),
-          } as APIResponse<any>;
+          } as APIResponse<unknown>;
         }
 
         const result = await actionExecutor.executeAction(id, {
@@ -670,10 +674,10 @@ export function createHandlers(
             code: errorCode,
             data: { ...actionResult, failureDetails },
             timestamp: Date.now(),
-          } as APIResponse<any>;
+          } as APIResponse<unknown>;
         }
 
-        return success(result) as APIResponse<any>;
+        return success(result) as APIResponse<unknown>;
       } catch (err) {
         const errorMessage = (err as Error).message;
         let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
@@ -700,7 +704,7 @@ export function createHandlers(
             durationMs: Date.now() - startTime,
           },
           timestamp: Date.now(),
-        } as APIResponse<any>;
+        } as APIResponse<unknown>;
       }
     },
 
@@ -778,7 +782,7 @@ export function createHandlers(
           action: request.action,
           params: request.params,
         });
-        return success(result) as APIResponse<any>;
+        return success(result) as APIResponse<unknown>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
       }
@@ -794,7 +798,7 @@ export function createHandlers(
         // and other filters that registry.findElements() doesn't handle
         if (actionExecutor.find) {
           const result = await actionExecutor.find(request);
-          return success(result) as APIResponse<any>;
+          return success(result) as APIResponse<unknown>;
         }
         // Fallback to registry
         const findRequest = request as
@@ -806,7 +810,7 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<any>;
+        }) as APIResponse<unknown>;
       } catch (err) {
         return error((err as Error).message, 'FIND_ERROR');
       }
@@ -817,7 +821,7 @@ export function createHandlers(
         // Use actionExecutor.find() when available for proper filtering
         if (actionExecutor.find) {
           const result = await actionExecutor.find(request);
-          return success(result) as APIResponse<any>;
+          return success(result) as APIResponse<unknown>;
         }
         // Fallback to registry
         const findRequest = request as
@@ -829,7 +833,7 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<any>;
+        }) as APIResponse<unknown>;
       } catch (err) {
         return error((err as Error).message, 'DISCOVER_ERROR');
       }
@@ -875,17 +879,17 @@ export function createHandlers(
           return error(
             `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
             'RUNNER_UNAVAILABLE'
-          ) as APIResponse<any>;
+          ) as APIResponse<unknown>;
         }
         if (!response.ok) {
           const body = await response.text().catch(() => '');
           return error(
             `Runner returned ${response.status}: ${body}`,
             'RUNNER_ERROR'
-          ) as APIResponse<any>;
+          ) as APIResponse<unknown>;
         }
-        const data = (await response.json()) as any;
-        return success(data) as APIResponse<any>;
+        const data = (await response.json()) as unknown;
+        return success(data) as APIResponse<unknown>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_ERROR');
       }
@@ -902,17 +906,17 @@ export function createHandlers(
           return error(
             `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
             'RUNNER_UNAVAILABLE'
-          ) as APIResponse<any>;
+          ) as APIResponse<unknown>;
         }
         if (!response.ok) {
           const body = await response.text().catch(() => '');
           return error(
             `Runner returned ${response.status}: ${body}`,
             'RUNNER_ERROR'
-          ) as APIResponse<any>;
+          ) as APIResponse<unknown>;
         }
-        const data = (await response.json()) as any;
-        return success(data) as APIResponse<any>;
+        const data = (await response.json()) as unknown;
+        return success(data) as APIResponse<unknown>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');
       }
@@ -1048,7 +1052,7 @@ export function createHandlers(
           tagName: el.type,
           accessibleName: el.label,
           registered: true,
-        })) as any[];
+        })) as AIDiscoveredElement[];
         const summary = generatePageSummary(elements);
         return success(summary);
       } catch (err) {
@@ -1078,7 +1082,7 @@ export function createHandlers(
         refreshElements();
 
         // Get all elements
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements();
 
         // Convert to AI discovered elements for semantic search
         const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(
@@ -1087,7 +1091,12 @@ export function createHandlers(
             const textParts: string[] = [];
 
             // Prioritize description and accessible name for semantic matching
-            const state = 'getState' in el ? (el as any).getState() : el.state;
+            const state =
+              'getState' in el &&
+              typeof (el as DiscoveredElement & { getState?: () => unknown }).getState ===
+                'function'
+                ? (el as DiscoveredElement & { getState: () => Record<string, unknown> }).getState()
+                : el.state;
             const textContent = state?.textContent || '';
             const label = el.label || '';
             const accessibleName = el.accessibleName || '';
@@ -1304,10 +1313,10 @@ export function createAIHandlers(
 
   function refreshElements(): void {
     const elements = registry.getAllElements();
-    searchEngine.updateElements(elements as any[]);
-    nlExecutor.updateElements(elements as any[]);
-    nlExecutor.setActionExecutor(actionExecutor as any);
-    assertionExecutor.updateElements(elements as any[]);
+    searchEngine.updateElements(elements);
+    nlExecutor.updateElements(elements);
+    nlExecutor.setActionExecutor(actionExecutor as unknown as ActionExecutor);
+    assertionExecutor.updateElements(elements);
   }
 
   return {
@@ -1416,7 +1425,7 @@ export function createAIHandlers(
           tagName: el.type,
           accessibleName: el.label,
           registered: true,
-        })) as any[];
+        })) as AIDiscoveredElement[];
         const summary = generatePageSummary(elements);
         return { success: true, data: summary, timestamp: Date.now() };
       } catch (err) {
