@@ -49,6 +49,15 @@ import type {
 } from './types';
 
 /**
+ * Detects regex patterns with nested quantifiers that can cause catastrophic
+ * backtracking (ReDoS). Matches constructs like (a+)+, (a*)+, (a+)*, etc.
+ */
+function hasNestedQuantifiers(pattern: string): boolean {
+  // Matches a group containing a quantifier (+, *, {n,}) followed by another quantifier
+  return /(\((?:[^()]*[+*}])[^()]*\))[+*?]|\(\?:[^()]*[+*}][^()]*\)[+*?]/.test(pattern);
+}
+
+/**
  * Set of supported built-in action names for early validation.
  */
 const SUPPORTED_ACTIONS = new Set<string>([
@@ -897,8 +906,8 @@ export class DefaultActionExecutor implements ActionExecutor {
 
         // Filter by source pattern (with ReDoS protection)
         if (options?.srcPattern && meta?.src) {
-          if (options.srcPattern.length > 200) {
-            // Pattern too long for safe regex — fall back to substring match
+          if (options.srcPattern.length > 200 || hasNestedQuantifiers(options.srcPattern)) {
+            // Pattern too long or has nested quantifiers (ReDoS risk) — fall back to substring match
             if (!meta.src.includes(options.srcPattern)) continue;
           } else {
             try {

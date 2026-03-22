@@ -446,10 +446,22 @@ export class StandaloneServer {
   /**
    * Parse request body
    */
-  private parseBody(req: import('http').IncomingMessage): Promise<unknown> {
+  private parseBody(
+    req: import('http').IncomingMessage,
+    maxBytes = 10 * 1024 * 1024
+  ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', (chunk) => (data += chunk));
+      let bytes = 0;
+      req.on('data', (chunk: string | Buffer) => {
+        bytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        if (bytes > maxBytes) {
+          req.destroy();
+          reject(new Error('Request body too large'));
+          return;
+        }
+        data += chunk;
+      });
       req.on('end', () => {
         try {
           resolve(data ? JSON.parse(data) : {});
