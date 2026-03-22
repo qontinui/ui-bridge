@@ -32,6 +32,7 @@ import type {
   NLActionResponse,
   AssertionRequest,
   AssertionResult,
+  AssertionType,
   BatchAssertionRequest,
   BatchAssertionResult,
   SemanticSnapshot,
@@ -64,6 +65,7 @@ import type {
   FindResult,
   FindContext,
 } from '../ai';
+import { parseNLAssertion as parseNLAssertionShared } from '../ai/nl-assertion-parser';
 import { find } from '../ai/find';
 import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
 import { discoverForms } from '../ai/form-discovery';
@@ -147,6 +149,23 @@ import { CompositeIdleDetector } from '../idle';
 import type { CompositeIdleConfig } from '../idle';
 import { NetworkRequestTracker } from '../network';
 import type { NetworkRequestFilter, NetworkTrackerConfig } from '../network';
+
+/**
+ * Parse a natural language assertion into a structured AssertionRequest.
+ * Delegates to the shared NL assertion parser and merges result back into the request.
+ */
+function parseNLAssertion(request: AssertionRequest & { assertion?: string }): AssertionRequest {
+  // If already structured with target and type, pass through
+  if (request.target && request.type) return request;
+
+  const parsed = parseNLAssertionShared(request);
+  return {
+    ...request,
+    target: parsed.target,
+    type: parsed.type as AssertionType,
+    expected: parsed.expected,
+  };
+}
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -1720,7 +1739,16 @@ export function createHandlers(
       try {
         // Refresh elements before search
         refreshElements();
-        const response = searchEngine.search(criteria);
+        // Support callers that pass { query: "..." } instead of structured SearchCriteria.
+        // Map the query field to text so the search engine can match against it.
+        const resolved: SearchCriteria = { ...criteria };
+        if (!resolved.text && (criteria as any).query) {
+          resolved.text = (criteria as any).query;
+          if (resolved.fuzzy === undefined) {
+            resolved.fuzzy = true;
+          }
+        }
+        const response = searchEngine.search(resolved);
         return success(response);
       } catch (err) {
         return error((err as Error).message, 'AI_SEARCH_ERROR');
@@ -1799,11 +1827,15 @@ export function createHandlers(
       }
     },
 
-    aiAssert: async (request: AssertionRequest): Promise<APIResponse<AssertionResult>> => {
+    aiAssert: async (
+      request: AssertionRequest & { assertion?: string }
+    ): Promise<APIResponse<AssertionResult>> => {
       try {
         // Refresh elements before assertion
         refreshElements();
-        const result = await assertionExecutor.assert(request);
+        // Support natural language assertions: {assertion: "a button exists"} → {target, type}
+        const normalized = parseNLAssertion(request);
+        const result = await assertionExecutor.assert(normalized);
         return success(result);
       } catch (err) {
         return error((err as Error).message, 'AI_ASSERT_ERROR');
@@ -2682,6 +2714,23 @@ export function createHandlers(
       }
     },
 
+    deleteIntent: async (name: string): Promise<APIResponse<{ deleted: boolean }>> => {
+      try {
+        // Search by name or id
+        let found = false;
+        for (const [id, intent] of intentRegistry.entries()) {
+          if (intent.name === name || id === name) {
+            intentRegistry.delete(id);
+            found = true;
+            break;
+          }
+        }
+        return success({ deleted: found });
+      } catch (err) {
+        return error((err as Error).message, 'DELETE_INTENT_ERROR');
+      }
+    },
+
     executeIntentFromQuery: async (request: {
       query: string;
       params?: Record<string, unknown>;
@@ -3096,10 +3145,14 @@ export function createHandlers(
       label: string;
     }): Promise<APIResponse<{ label: string; capturedAt: number; fingerprintCount: number }>> => {
       try {
+        const label = request?.label;
+        if (!label) {
+          return error('Missing required "label" field in request body', 'VALIDATION_ERROR');
+        }
         if (!hasFullEventAPI(consoleCapture)) {
           return error('Browser event capture not available', 'NO_CAPTURE');
         }
-        const baseline = errorSessionManager.captureBaseline(request.label, consoleCapture);
+        const baseline = errorSessionManager.captureBaseline(label, consoleCapture);
         return success({
           label: baseline.label,
           capturedAt: baseline.capturedAt,
@@ -3114,10 +3167,17 @@ export function createHandlers(
       label: string;
     }): Promise<APIResponse<BaselineComparison | null>> => {
       try {
+        const label = request?.label;
+        if (!label) {
+          return error('Missing required "label" field in request body', 'VALIDATION_ERROR');
+        }
         const comparison = errorSessionManager.compareToBaseline(
-          request.label,
+          label,
           hasFullEventAPI(consoleCapture) ? consoleCapture : undefined
         );
+        if (comparison === null) {
+          return error(`Baseline '${label}' not found`, 'NOT_FOUND');
+        }
         return success(comparison);
       } catch (err) {
         return error((err as Error).message, 'BASELINE_ERROR');
@@ -3809,6 +3869,16 @@ export function createHandlers(
                   path: '/control/element/:id/action',
                   description: 'Execute action on element',
                 },
+                {
+                  method: 'POST',
+                  path: '/control/actions/batch',
+                  description: 'Execute batch actions on multiple elements',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/get-element-images',
+                  description: 'Get rendered images for elements',
+                },
               ],
             },
             components: {
@@ -4137,6 +4207,11 @@ export function createHandlers(
                 },
                 {
                   method: 'GET',
+                  path: '/debug/element-history/:id',
+                  description: 'Get element event history',
+                },
+                {
+                  method: 'GET',
                   path: '/control/console-errors',
                   description: 'Get captured console errors',
                 },
@@ -4198,6 +4273,11 @@ export function createHandlers(
                   description: 'Get composite error report',
                 },
                 { method: 'GET', path: '/render-log', description: 'Get render log entries' },
+                {
+                  method: 'GET',
+                  path: '/control/render-log',
+                  description: 'Get render log entries (alias)',
+                },
                 { method: 'DELETE', path: '/render-log', description: 'Clear render log' },
                 {
                   method: 'POST',
@@ -4218,6 +4298,16 @@ export function createHandlers(
                   method: 'GET',
                   path: '/control/events/stream',
                   description: 'SSE stream of bridge events',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/changes/stream',
+                  description: 'SSE stream of UI changes',
+                },
+                {
+                  method: 'GET',
+                  path: '/control/changes/since',
+                  description: 'Get changes since timestamp',
                 },
                 {
                   method: 'GET',
@@ -4378,6 +4468,91 @@ export function createHandlers(
                 { method: 'GET', path: '/control/specs', description: 'List all loaded specs' },
               ],
             },
+            analysis: {
+              description: 'Cross-app page analysis and structured data extraction',
+              endpoints: [
+                {
+                  method: 'GET',
+                  path: '/ai/analyze/data',
+                  description: 'Analyze page data',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/analyze/regions',
+                  description: 'Analyze page regions',
+                },
+                {
+                  method: 'GET',
+                  path: '/ai/analyze/structured-data',
+                  description: 'Analyze structured data on page',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/analyze/cross-app-compare',
+                  description: 'Compare data across apps',
+                },
+              ],
+            },
+            media: {
+              description: 'Media discovery, analysis, and auditing',
+              endpoints: [
+                {
+                  method: 'POST',
+                  path: '/ai/media/find',
+                  description: 'Find media elements on page',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/audit/accessibility',
+                  description: 'Audit media accessibility',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/audit/performance',
+                  description: 'Audit media performance',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/snapshot',
+                  description: 'Capture media snapshot',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/compare',
+                  description: 'Compare media snapshots',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/analyze',
+                  description: 'Analyze media element',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/analyze/batch',
+                  description: 'Batch analyze media elements',
+                },
+                {
+                  method: 'POST',
+                  path: '/ai/media/analyze/page',
+                  description: 'Analyze all media on page',
+                },
+              ],
+            },
+            system: {
+              description: 'System and lifecycle endpoints',
+              endpoints: [
+                {
+                  method: 'POST',
+                  path: '/heartbeat',
+                  description: 'Send heartbeat to keep connection alive',
+                },
+                {
+                  method: 'GET',
+                  path: '/capabilities',
+                  description: 'Get API capabilities and endpoint listing',
+                },
+              ],
+            },
           },
         },
         timestamp: Date.now(),
@@ -4527,7 +4702,15 @@ export function createAIHandlers(
     aiSearch: async (criteria: SearchCriteria): Promise<APIResponse<SearchResponse>> => {
       try {
         refreshElements();
-        const response = searchEngine.search(criteria);
+        // Support callers that pass { query: "..." } instead of structured SearchCriteria.
+        const resolved: SearchCriteria = { ...criteria };
+        if (!resolved.text && (criteria as any).query) {
+          resolved.text = (criteria as any).query;
+          if (resolved.fuzzy === undefined) {
+            resolved.fuzzy = true;
+          }
+        }
+        const response = searchEngine.search(resolved);
         return { success: true, data: response, timestamp: Date.now() };
       } catch (err) {
         return {
@@ -4577,10 +4760,13 @@ export function createAIHandlers(
       }
     },
 
-    aiAssert: async (request: AssertionRequest): Promise<APIResponse<AssertionResult>> => {
+    aiAssert: async (
+      request: AssertionRequest & { assertion?: string }
+    ): Promise<APIResponse<AssertionResult>> => {
       try {
         refreshElements();
-        const result = await assertionExecutor.assert(request);
+        const normalized = parseNLAssertion(request);
+        const result = await assertionExecutor.assert(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {

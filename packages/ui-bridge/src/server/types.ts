@@ -362,6 +362,7 @@ export interface UIBridgeServerHandlers {
     query: string;
     params?: Record<string, unknown>;
   }) => Promise<APIResponse<IntentExecutionResult>>;
+  deleteIntent: (name: string) => Promise<APIResponse<{ deleted: boolean }>>;
 
   // Recovery endpoints
   attemptRecovery: (request: RecoveryAttemptRequest) => Promise<APIResponse<RecoveryAttemptResult>>;
@@ -1023,6 +1024,83 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Change observation (push-based)
   { method: 'GET', path: '/control/changes/since', handler: 'getChangesSince' },
+
+  // ── Route aliases ──────────────────────────────────────────────────
+  // These map commonly expected paths to existing handlers.
+
+  // Design review aliases under /control/ (static before parameterized)
+  { method: 'POST', path: '/control/design/snapshot', handler: 'getDesignSnapshot' },
+  {
+    method: 'POST',
+    path: '/control/design/responsive',
+    handler: 'getResponsiveSnapshots',
+    bodyRequired: true,
+  },
+  { method: 'POST', path: '/control/design/audit', handler: 'runDesignAudit' },
+  {
+    method: 'GET',
+    path: '/control/design/element/:id/styles',
+    handler: 'getElementStyles',
+    params: ['id'],
+  },
+  {
+    method: 'POST',
+    path: '/control/design/element/:id/state-styles',
+    handler: 'getElementStateStyles',
+    params: ['id'],
+  },
+
+  // Annotation aliases under /control/ (static before parameterized)
+  { method: 'GET', path: '/control/annotations', handler: 'getAnnotations' },
+  { method: 'GET', path: '/control/annotations/export', handler: 'exportAnnotations' },
+  { method: 'GET', path: '/control/annotations/coverage', handler: 'getAnnotationCoverage' },
+  {
+    method: 'POST',
+    path: '/control/annotations/import',
+    handler: 'importAnnotations',
+    bodyRequired: true,
+  },
+  { method: 'GET', path: '/control/annotation/:id', handler: 'getAnnotation', params: ['id'] },
+  {
+    method: 'PUT',
+    path: '/control/annotation/:id',
+    handler: 'setAnnotation',
+    params: ['id'],
+    bodyRequired: true,
+  },
+  {
+    method: 'DELETE',
+    path: '/control/annotation/:id',
+    handler: 'deleteAnnotation',
+    params: ['id'],
+  },
+
+  // History/metrics aliases under /control/
+  { method: 'GET', path: '/control/action-history', handler: 'getActionHistory' },
+  { method: 'GET', path: '/control/history', handler: 'getActionHistory' },
+  { method: 'GET', path: '/control/metrics', handler: 'getMetrics' },
+  { method: 'GET', path: '/control/interaction-metrics', handler: 'getMetrics' },
+  {
+    method: 'GET',
+    path: '/control/element/:id/history',
+    handler: 'getElementHistory',
+    params: ['id'],
+  },
+
+  // Intent aliases under /control/ (static before parameterized)
+  { method: 'GET', path: '/control/intents', handler: 'listIntents' },
+  { method: 'POST', path: '/control/intents', handler: 'registerIntent', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/intent/:name/execute',
+    handler: 'executeIntent',
+    params: ['name'],
+    bodyRequired: true,
+  },
+  { method: 'DELETE', path: '/control/intent/:name', handler: 'deleteIntent', params: ['name'] },
+
+  // AI assert-batch alias (hyphenated form)
+  { method: 'POST', path: '/ai/assert-batch', handler: 'aiAssertBatch', bodyRequired: true },
 ];
 
 /**

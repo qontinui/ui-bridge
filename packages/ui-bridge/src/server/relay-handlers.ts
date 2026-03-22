@@ -966,6 +966,10 @@ export function createRelayHandlers(
       return relayCommand('executeIntentFromQuery', request);
     },
 
+    async deleteIntent(name) {
+      return relayCommand('deleteIntent', { name });
+    },
+
     // ========================================================================
     // Recovery
     // ========================================================================

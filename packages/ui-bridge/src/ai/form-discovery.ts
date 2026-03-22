@@ -40,7 +40,18 @@ export function discoverForms(elements: FormDiscoveryElement[]): FormsResponse {
 
   // Build form-centric view
   const formElements = elements.filter((el) => el.type === 'form');
-  const inputTypes = new Set(['input', 'textarea', 'select', 'checkbox', 'radio']);
+  const inputTypes = new Set([
+    'input',
+    'textarea',
+    'select',
+    'checkbox',
+    'radio',
+    'textbox',
+    'combobox',
+    'switch',
+    'slider',
+    'listbox',
+  ]);
   const allInputs = elements.filter((el) => inputTypes.has(el.type));
 
   const forms: FormState[] = [];

@@ -8,6 +8,7 @@
 
 import type { RegisteredElement } from '../core/types';
 import { getGlobalRegistry } from '../core/registry';
+import { parseNLAssertion } from '../ai/nl-assertion-parser';
 
 // ============================================================================
 // Types
@@ -1348,9 +1349,14 @@ export async function executeCommand(
       const { createSearchEngine } = await import('../ai');
       const engine = createSearchEngine({ includeHidden: true });
       engine.updateElements(elements);
+      const criteria = payload as Parameters<typeof engine.search>[0] & { query?: string };
+      // Map 'query' to 'text' for NL-style search requests
+      if (criteria.query && !criteria.text) {
+        criteria.text = criteria.query;
+      }
       const resp = engine.search({
         fuzzy: true,
-        ...(payload as Parameters<typeof engine.search>[0]),
+        ...criteria,
       });
       return {
         results: resp.results,
@@ -1481,8 +1487,19 @@ export async function executeCommand(
       type AT = import('../ai').AssertionType;
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
-      const r = payload as { target: string; type: string; expected?: unknown };
-      return exec.assert({ target: r.target, type: r.type as AT, expected: r.expected });
+      const r = payload as {
+        target?: string;
+        type?: string;
+        expected?: unknown;
+        assertion?: string;
+      };
+      // Support NL assertions: {assertion: "a button exists"} → {target, type}
+      const parsed = parseNLAssertion(r);
+      return exec.assert({
+        target: parsed.target,
+        type: parsed.type as AT,
+        expected: parsed.expected,
+      });
     }
 
     case 'aiAssertBatch': {
@@ -1491,15 +1508,19 @@ export async function executeCommand(
       const exec = createAssertionExecutor({});
       exec.updateElements(elements as unknown as Parameters<typeof exec.updateElements>[0]);
       const r = payload as {
-        assertions: Array<{ target: string; type: string; expected?: unknown }>;
+        assertions: Array<{
+          target?: string;
+          type?: string;
+          expected?: unknown;
+          assertion?: string;
+        }>;
         mode?: 'all' | 'any';
       };
       return exec.assertBatch({
-        assertions: r.assertions.map((a) => ({
-          target: a.target,
-          type: a.type as AT,
-          expected: a.expected,
-        })),
+        assertions: r.assertions.map((a) => {
+          const parsed = parseNLAssertion(a);
+          return { target: parsed.target, type: parsed.type as AT, expected: parsed.expected };
+        }),
         mode: r.mode || 'all',
       });
     }
@@ -1554,17 +1575,34 @@ export async function executeCommand(
 
     case 'executeWithDiff': {
       const {
+        instruction,
+        elementAction,
         elementId,
         action: act,
         params,
-      } = payload as { elementId: string; action: string; params?: P };
+      } = payload as {
+        instruction?: string;
+        elementAction?: { elementId: string; action: string; params?: P };
+        elementId?: string;
+        action?: string;
+        params?: P;
+      };
       const before = elements.map(elementToSnapshot);
-      // Execute the action
-      const actionResult = await executeCommand(
-        'executeElementAction',
-        { id: elementId, request: { action: act, ...params } },
-        bridge
-      );
+      let actionResult: unknown;
+      if (instruction) {
+        // Natural language instruction — resolve via aiExecute
+        actionResult = await executeCommand('aiExecute', { instruction }, bridge);
+      } else {
+        // Direct element action (from elementAction or legacy flat fields)
+        const eId = elementAction?.elementId ?? elementId;
+        const eAct = elementAction?.action ?? act;
+        const eParams = elementAction?.params ?? params;
+        actionResult = await executeCommand(
+          'executeElementAction',
+          { id: eId, request: { action: eAct, ...eParams } },
+          bridge
+        );
+      }
       await new Promise((r) => setTimeout(r, 100)); // Brief wait for DOM to settle
       const after = elements.map(elementToSnapshot);
       return {
@@ -1825,6 +1863,21 @@ export async function executeCommand(
       const intent = payload as { id: string; [k: string]: unknown };
       intents.set(intent.id, intent);
       return { success: true, id: intent.id, timestamp: Date.now() };
+    }
+
+    case 'deleteIntent': {
+      const intents = getIntentStore();
+      const { name } = payload as { name: string };
+      let found = false;
+      for (const [id, intent] of intents.entries()) {
+        const i = intent as { name?: string };
+        if (i.name === name || id === name) {
+          intents.delete(id);
+          found = true;
+          break;
+        }
+      }
+      return { deleted: found };
     }
 
     // ======================================================================
@@ -2303,6 +2356,8 @@ export async function executeCommand(
 
     case 'compareErrorBaseline': {
       const { label } = payload as { label: string };
+      if (!label)
+        return { success: false, error: 'Missing required "label" field in request body' };
       const baseline = errorBaselines.get(label);
       if (!baseline) return { success: false, error: `Baseline '${label}' not found` };
       const cap = g.browserCapture;

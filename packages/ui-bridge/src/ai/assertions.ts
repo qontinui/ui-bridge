@@ -17,6 +17,7 @@ import type {
   AIDiscoveredElement,
 } from './types';
 import { SearchEngine } from './search-engine';
+import { find } from './find';
 
 /**
  * Configuration for assertions
@@ -262,18 +263,39 @@ export class AssertionExecutor {
    * Find element by target with full search metadata.
    * Returns the SearchResult (including confidence, matchReasons, scores)
    * or null if no match above the fuzzy threshold.
+   *
+   * Uses the unified find() function for element resolution — the same path
+   * used by aiFind — to ensure consistent matching behavior.
    */
   private findElementDetailed(
     target: string | SearchCriteria,
     fuzzy: boolean = true
   ): SearchResult | null {
-    const criteria: SearchCriteria =
-      typeof target === 'string' ? { text: target, fuzzy } : { ...target, fuzzy };
+    const query: string | SearchCriteria =
+      typeof target === 'string' ? target : { ...target, fuzzy };
 
-    const searchResult = this.searchEngine.findBest(criteria, this.elements);
+    const findResult = find(query, this.searchEngine, {
+      confidenceThreshold: this.config.fuzzyThreshold,
+      pickFirst: true,
+    });
 
-    if (searchResult && searchResult.confidence >= this.config.fuzzyThreshold) {
-      return searchResult;
+    if (findResult.found && !findResult.ambiguous) {
+      return {
+        element: findResult.element,
+        confidence: findResult.confidence,
+        matchReasons: findResult.matchReasons,
+        scores: {},
+      };
+    }
+
+    if (findResult.found && findResult.ambiguous && findResult.candidates.length > 0) {
+      const best = findResult.candidates[0];
+      return {
+        element: best.element,
+        confidence: best.confidence,
+        matchReasons: best.matchReasons,
+        scores: {},
+      };
     }
 
     return null;
