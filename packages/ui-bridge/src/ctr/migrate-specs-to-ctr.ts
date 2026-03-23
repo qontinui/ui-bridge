@@ -58,20 +58,14 @@ export function slugify(input: string): string {
  *   3. selector as-is
  *   4. fallback "search-{index}" (should not happen in practice)
  */
-export function logicalNameFromSearch(
-  criteria: SearchCriteria,
-  label?: string
-): string {
+export function logicalNameFromSearch(criteria: SearchCriteria, label?: string): string {
   if (label) {
     return slugify(label);
   }
 
   const role = criteria.role;
   const textPart =
-    criteria.text ??
-    criteria.textContent ??
-    criteria.accessibleName ??
-    criteria.textContains;
+    criteria.text ?? criteria.textContent ?? criteria.accessibleName ?? criteria.textContains;
 
   if (role && textPart) {
     return `${slugify(role)}.${slugify(textPart)}`;

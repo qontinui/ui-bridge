@@ -14,11 +14,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import {
-  CentralTargetRegistry,
-  createCtrEntry,
-  resetGlobalCtr,
-} from './ctr/registry';
+import { CentralTargetRegistry, createCtrEntry, resetGlobalCtr } from './ctr/registry';
 import type { CtrEntry, CtrSelector, CtrEvent } from './ctr/types';
 import {
   DEFAULT_SELECTOR_CONFIDENCE,
@@ -109,9 +105,7 @@ describe('testergizer: CTR integration', () => {
   });
 
   it('CTR cache invalidation forces fresh resolution', () => {
-    const entry = createCtrEntry('search-box', [
-      { strategy: 'id', value: 'search-input' },
-    ]);
+    const entry = createCtrEntry('search-box', [{ strategy: 'id', value: 'search-input' }]);
     registry.register(entry);
 
     // First resolution
@@ -146,9 +140,7 @@ describe('testergizer: CTR integration', () => {
     const events: CtrEvent[] = [];
     registry.on((e) => events.push(e));
 
-    const entry = createCtrEntry('dialog-ok', [
-      { strategy: 'data-testid', value: 'ok-btn' },
-    ]);
+    const entry = createCtrEntry('dialog-ok', [{ strategy: 'data-testid', value: 'ok-btn' }]);
     registry.register(entry);
     registry.resolveToSearchCriteria('dialog-ok');
     registry.unregister('dialog-ok');
@@ -464,9 +456,7 @@ describe('agent-desktop: Batch actions with CTR targets', () => {
     ];
 
     for (const t of targets) {
-      registry.register(
-        createCtrEntry(t.name, [{ strategy: 'data-testid', value: t.testId }])
-      );
+      registry.register(createCtrEntry(t.name, [{ strategy: 'data-testid', value: t.testId }]));
     }
 
     // Resolve all in batch
@@ -484,9 +474,7 @@ describe('agent-desktop: Batch actions with CTR targets', () => {
   });
 
   it('batch resolution is tolerant of missing entries', () => {
-    registry.register(
-      createCtrEntry('exists', [{ strategy: 'id', value: 'real-el' }])
-    );
+    registry.register(createCtrEntry('exists', [{ strategy: 'id', value: 'real-el' }]));
 
     const names = ['exists', 'missing-1', 'missing-2'];
     const results = names.map((name) => ({
@@ -500,12 +488,8 @@ describe('agent-desktop: Batch actions with CTR targets', () => {
   });
 
   it('batch resolution reflects live selector updates', () => {
-    registry.register(
-      createCtrEntry('target-a', [{ strategy: 'css', value: '.old-class' }])
-    );
-    registry.register(
-      createCtrEntry('target-b', [{ strategy: 'css', value: '.stable-class' }])
-    );
+    registry.register(createCtrEntry('target-a', [{ strategy: 'css', value: '.old-class' }]));
+    registry.register(createCtrEntry('target-b', [{ strategy: 'css', value: '.stable-class' }]));
 
     // Update target-a's selector mid-batch
     registry.updateSelector('target-a', 0, { value: '.new-class' });
@@ -571,9 +555,7 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
     const received: DOMChangeEvent[] = [];
     observer.subscribe((e) => received.push(e));
 
-    registry.register(
-      createCtrEntry('new-button', [{ strategy: 'id', value: 'btn' }])
-    );
+    registry.register(createCtrEntry('new-button', [{ strategy: 'id', value: 'btn' }]));
 
     vi.advanceTimersByTime(20);
 
@@ -582,9 +564,7 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
   });
 
   it('unregistering a CTR entry triggers a remove event in ChangeObserver', () => {
-    registry.register(
-      createCtrEntry('temp-el', [{ strategy: 'id', value: 'tmp' }])
-    );
+    registry.register(createCtrEntry('temp-el', [{ strategy: 'id', value: 'tmp' }]));
     vi.advanceTimersByTime(20);
 
     const received: DOMChangeEvent[] = [];
@@ -598,9 +578,7 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
   });
 
   it('updating a CTR selector triggers a modified event in ChangeObserver', () => {
-    registry.register(
-      createCtrEntry('editable-el', [{ strategy: 'css', value: '.old' }])
-    );
+    registry.register(createCtrEntry('editable-el', [{ strategy: 'css', value: '.old' }]));
     vi.advanceTimersByTime(20);
 
     const received: DOMChangeEvent[] = [];
@@ -618,9 +596,7 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
     observer.subscribe((e) => received.push(e));
 
     // Register then immediately unregister within the same batch window
-    registry.register(
-      createCtrEntry('flash-el', [{ strategy: 'id', value: 'flash' }])
-    );
+    registry.register(createCtrEntry('flash-el', [{ strategy: 'id', value: 'flash' }]));
     registry.unregister('flash-el');
 
     vi.advanceTimersByTime(20);
@@ -631,9 +607,7 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
 
   it('Recency.Current combined with ChangeObserver means always re-fetch after changes', () => {
     // Register an element and let the batch flush
-    registry.register(
-      createCtrEntry('live-el', [{ strategy: 'id', value: 'live' }])
-    );
+    registry.register(createCtrEntry('live-el', [{ strategy: 'id', value: 'live' }]));
     vi.advanceTimersByTime(20);
 
     const events = observer.getEventsSince(0);
@@ -758,9 +732,7 @@ describe('agent-desktop: executeBatch resolves CTR logical names before executio
 
     for (let i = 0; i < logicalNames.length; i++) {
       registry.register(
-        createCtrEntry(logicalNames[i], [
-          { strategy: 'data-testid', value: testIds[i] },
-        ])
+        createCtrEntry(logicalNames[i], [{ strategy: 'data-testid', value: testIds[i] }])
       );
     }
 

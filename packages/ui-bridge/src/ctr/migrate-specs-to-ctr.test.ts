@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest';
 import type { SpecConfig } from '../specs/types';
 import type { CtrConfig } from './types';
 import { DEFAULT_SELECTOR_CONFIDENCE } from './types';
-import { migrateSpecToCtr, rewriteSpecWithCtr, slugify, logicalNameFromSearch } from './migrate-specs-to-ctr';
+import {
+  migrateSpecToCtr,
+  rewriteSpecWithCtr,
+  slugify,
+  logicalNameFromSearch,
+} from './migrate-specs-to-ctr';
 
 // =============================================================================
 // Fixtures
@@ -602,58 +607,59 @@ describe('rewriteSpecWithCtr', () => {
 
 describe('logicalNameFromSearch', () => {
   it('uses label when present (slugified)', () => {
-    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' }, 'Submit button'))
-      .toBe('submit-button');
+    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' }, 'Submit button')).toBe(
+      'submit-button'
+    );
   });
 
   it('slugifies labels with special characters', () => {
-    expect(logicalNameFromSearch({}, 'Play/Pause Toggle (Main)'))
-      .toBe('playpause-toggle-main');
+    expect(logicalNameFromSearch({}, 'Play/Pause Toggle (Main)')).toBe('playpause-toggle-main');
   });
 
   it('builds role.text when no label', () => {
-    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' }))
-      .toBe('button.submit');
+    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' })).toBe('button.submit');
   });
 
   it('builds role.textContent when no label and no text', () => {
-    expect(logicalNameFromSearch({ role: 'heading', textContent: 'Dashboard' }))
-      .toBe('heading.dashboard');
+    expect(logicalNameFromSearch({ role: 'heading', textContent: 'Dashboard' })).toBe(
+      'heading.dashboard'
+    );
   });
 
   it('builds role.accessibleName when no label, text, or textContent', () => {
-    expect(logicalNameFromSearch({ role: 'button', accessibleName: 'Close dialog' }))
-      .toBe('button.close-dialog');
+    expect(logicalNameFromSearch({ role: 'button', accessibleName: 'Close dialog' })).toBe(
+      'button.close-dialog'
+    );
   });
 
   it('builds role.textContains when no other text fields', () => {
-    expect(logicalNameFromSearch({ role: 'status', textContains: 'Loading' }))
-      .toBe('status.loading');
+    expect(logicalNameFromSearch({ role: 'status', textContains: 'Loading' })).toBe(
+      'status.loading'
+    );
   });
 
   it('uses role alone when no text fields', () => {
-    expect(logicalNameFromSearch({ role: 'navigation' }))
-      .toBe('navigation');
+    expect(logicalNameFromSearch({ role: 'navigation' })).toBe('navigation');
   });
 
   it('uses text alone when no role', () => {
-    expect(logicalNameFromSearch({ text: 'Save Changes' }))
-      .toBe('save-changes');
+    expect(logicalNameFromSearch({ text: 'Save Changes' })).toBe('save-changes');
   });
 
   it('uses textContent alone when no role and no text', () => {
-    expect(logicalNameFromSearch({ textContent: 'Loading settings...' }))
-      .toBe('loading-settings...');
+    expect(logicalNameFromSearch({ textContent: 'Loading settings...' })).toBe(
+      'loading-settings...'
+    );
   });
 
   it('uses selector when only selector is present', () => {
-    expect(logicalNameFromSearch({ selector: '.my-widget > button' }))
-      .toBe('.my-widget-button');
+    expect(logicalNameFromSearch({ selector: '.my-widget > button' })).toBe('.my-widget-button');
   });
 
   it('falls back to keys-based name for criteria with no standard fields', () => {
-    expect(logicalNameFromSearch({ fuzzy: true, fuzzyThreshold: 0.5 }))
-      .toBe('search-fuzzy-fuzzythreshold');
+    expect(logicalNameFromSearch({ fuzzy: true, fuzzyThreshold: 0.5 })).toBe(
+      'search-fuzzy-fuzzythreshold'
+    );
   });
 });
 

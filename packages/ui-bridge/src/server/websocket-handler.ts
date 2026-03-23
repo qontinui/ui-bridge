@@ -212,11 +212,14 @@ export class UIBridgeWSHandler {
         case 'changeEvent': {
           // Push-based change observation: broadcast to all other subscribed clients
           const changePayload = (message as import('../core').WSChangeEventMessage).payload;
-          this.broadcastEvent({
-            type: 'snapshot:changed',
-            timestamp: Date.now(),
-            data: changePayload ?? {},
-          }, clientId);
+          this.broadcastEvent(
+            {
+              type: 'snapshot:changed',
+              timestamp: Date.now(),
+              data: changePayload ?? {},
+            },
+            clientId
+          );
           break;
         }
 

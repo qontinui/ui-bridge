@@ -347,8 +347,9 @@ export function UIBridgeProvider({
         if (id) observer.onElementRemoved(id);
       }),
       registry.on('element:stateChanged', (event: BridgeEvent) => {
-        const id = (event.data as { id?: string; elementId?: string })?.id
-          ?? (event.data as { elementId?: string })?.elementId;
+        const id =
+          (event.data as { id?: string; elementId?: string })?.id ??
+          (event.data as { elementId?: string })?.elementId;
         if (id) observer.onElementModified(id);
       }),
     ];
