@@ -789,20 +789,24 @@ export function createHandlers(
   const changeObserver = new ChangeObserver({ bufferCapacity: 5000, batchIntervalMs: 16 });
 
   // Wire registry element events → ChangeObserver via public on() API
+  const unsubscribes: Array<() => void> = [];
   if (registry.on) {
-    registry.on('element:registered', (event: BridgeEvent) => {
+    const unsub1 = registry.on('element:registered', (event: BridgeEvent) => {
       const id = (event.data as { id?: string })?.id;
       if (id) changeObserver.onElementAdded(id);
     });
-    registry.on('element:unregistered', (event: BridgeEvent) => {
+    if (unsub1) unsubscribes.push(unsub1);
+    const unsub2 = registry.on('element:unregistered', (event: BridgeEvent) => {
       const id = (event.data as { id?: string })?.id;
       if (id) changeObserver.onElementRemoved(id);
     });
-    registry.on('element:stateChanged', (event: BridgeEvent) => {
+    if (unsub2) unsubscribes.push(unsub2);
+    const unsub3 = registry.on('element:stateChanged', (event: BridgeEvent) => {
       const id = (event.data as { id?: string; elementId?: string })?.id
         ?? (event.data as { elementId?: string })?.elementId;
       if (id) changeObserver.onElementModified(id);
     });
+    if (unsub3) unsubscribes.push(unsub3);
   }
 
   // Wire ChangeObserver → SSEManager/WS broadcast via onChangeEvent callback
@@ -4747,6 +4751,12 @@ export function createAIHandlers(
   }
 
   return {
+    destroy() {
+      for (const unsub of unsubscribes) unsub();
+      unsubscribes.length = 0;
+      changeObserver.destroy();
+    },
+
     aiSearch: async (criteria: SearchCriteria): Promise<APIResponse<SearchResponse>> => {
       try {
         refreshElements();

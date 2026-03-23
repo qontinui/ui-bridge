@@ -586,6 +586,9 @@ export interface UIBridgeServerHandlers {
     since?: number;
     limit?: number;
   }) => Promise<APIResponse<{ events: DOMChangeEvent[]; count: number }>>;
+
+  /** Tear down internal subscriptions and observers to prevent resource leaks. */
+  destroy?: () => void;
 }
 
 /**

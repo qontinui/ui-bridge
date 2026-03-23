@@ -216,7 +216,7 @@ export class UIBridgeWSHandler {
             type: 'snapshot:changed',
             timestamp: Date.now(),
             data: changePayload ?? {},
-          });
+          }, clientId);
           break;
         }
 
@@ -487,9 +487,11 @@ export class UIBridgeWSHandler {
 
   /**
    * Broadcast event to all subscribed clients
+   * @param excludeClientId - optional client ID to skip (e.g. the sender)
    */
-  broadcastEvent(event: BridgeEvent): void {
+  broadcastEvent(event: BridgeEvent, excludeClientId?: string): void {
     for (const [clientId, client] of this.clients) {
+      if (clientId === excludeClientId) continue;
       // Check if client is subscribed to this event type
       if (client.subscription.events.size === 0 || client.subscription.events.has(event.type)) {
         // Check element/component filters if applicable
