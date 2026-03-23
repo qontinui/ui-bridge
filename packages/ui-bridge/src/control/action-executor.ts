@@ -748,10 +748,12 @@ export class DefaultActionExecutor implements ActionExecutor {
           if (type !== options.element_type) continue;
         }
 
-        // Filter by role
+        // Filter by role (match ARIA role attribute OR inferred UI Bridge type)
         if (options?.role) {
-          const elRole = el.getAttribute('role');
-          if (!elRole || elRole.toLowerCase() !== options.role.toLowerCase()) continue;
+          const roleLc = options.role.toLowerCase();
+          const elRole = el.getAttribute('role')?.toLowerCase();
+          const inferredType = this.inferElementType(el).toLowerCase();
+          if (elRole !== roleLc && inferredType !== roleLc) continue;
         }
 
         // Filter by text (matches label, textContent, or accessible name)
@@ -1419,8 +1421,48 @@ export class DefaultActionExecutor implements ActionExecutor {
       element.dispatchEvent(new KeyboardEvent('keydown', eventInit));
 
       // Fire keypress for printable characters only (no modifiers except shift)
+      const isInputElement =
+        element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
       if (key.length === 1 && !NON_PRINTABLE.has(key) && !mods.ctrl && !mods.alt && !mods.meta) {
         element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+        // Insert character into input/textarea value (keypress alone doesn't update .value)
+        if (isInputElement) {
+          const start = element.selectionStart ?? element.value.length;
+          const end = element.selectionEnd ?? start;
+          element.value = element.value.slice(0, start) + key + element.value.slice(end);
+          element.selectionStart = element.selectionEnd = start + 1;
+          element.dispatchEvent(
+            new InputEvent('input', { bubbles: true, data: key, inputType: 'insertText' })
+          );
+        }
+      } else if (key === 'Backspace' && isInputElement && !mods.ctrl && !mods.alt && !mods.meta) {
+        // Handle Backspace: remove character before cursor
+        const start = element.selectionStart ?? element.value.length;
+        const end = element.selectionEnd ?? start;
+        if (start !== end) {
+          element.value = element.value.slice(0, start) + element.value.slice(end);
+          element.selectionStart = element.selectionEnd = start;
+        } else if (start > 0) {
+          element.value = element.value.slice(0, start - 1) + element.value.slice(start);
+          element.selectionStart = element.selectionEnd = start - 1;
+        }
+        element.dispatchEvent(
+          new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })
+        );
+      } else if (key === 'Delete' && isInputElement && !mods.ctrl && !mods.alt && !mods.meta) {
+        // Handle Delete: remove character after cursor (or selection)
+        const start = element.selectionStart ?? element.value.length;
+        const end = element.selectionEnd ?? start;
+        if (start !== end) {
+          element.value = element.value.slice(0, start) + element.value.slice(end);
+          element.selectionStart = element.selectionEnd = start;
+        } else if (start < element.value.length) {
+          element.value = element.value.slice(0, start) + element.value.slice(start + 1);
+          element.selectionStart = element.selectionEnd = start;
+        }
+        element.dispatchEvent(
+          new InputEvent('input', { bubbles: true, inputType: 'deleteContentForward' })
+        );
       }
 
       element.dispatchEvent(new KeyboardEvent('keyup', eventInit));
@@ -1501,9 +1543,17 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
   }
 
-  private performSelect(element: HTMLElement, options?: SelectAction): void {
+  private async performSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
+    // Handle Radix/headless combobox elements (render as <button> with role="combobox")
     if (!(element instanceof HTMLSelectElement)) {
-      throw new Error('Select action requires a select element');
+      const role = element.getAttribute('role');
+      if (role === 'combobox' || element.hasAttribute('aria-expanded')) {
+        await this.performComboboxSelect(element, options);
+        return;
+      }
+      throw new Error(
+        `Cannot select on ${element.tagName}. Use a <select> element or a combobox (role="combobox").`
+      );
     }
 
     const values = Array.isArray(options?.value) ? options.value : [options?.value];
@@ -1571,6 +1621,65 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Dispatch events — React's event delegation will pick these up
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  /**
+   * Handle select on combobox elements (Radix, headless UI, etc.)
+   * Strategy: click to open → find listbox → find option → click option
+   */
+  private performComboboxSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
+    const targetValue = Array.isArray(options?.value) ? options.value[0] : options?.value;
+    if (!targetValue) {
+      throw new Error('Select action on combobox requires a value');
+    }
+
+    // Click to open the combobox dropdown
+    element.click();
+
+    // Wait a tick for the listbox to render, then find and click the option
+    return new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        // Find the associated listbox
+        const listboxId =
+          element.getAttribute('aria-controls') || element.getAttribute('aria-owns');
+        let listbox: Element | null = null;
+        if (listboxId) {
+          listbox = document.getElementById(listboxId);
+        }
+        if (!listbox) {
+          listbox = document.querySelector('[role="listbox"]');
+        }
+        if (!listbox) {
+          // Try finding an open popover/dropdown near the element
+          listbox = document.querySelector(
+            '[data-state="open"] [role="listbox"], [data-radix-popper-content-wrapper] [role="listbox"]'
+          );
+        }
+
+        if (!listbox) {
+          console.warn(
+            `[ui-bridge] performComboboxSelect: listbox not found after opening combobox for value "${targetValue}"`
+          );
+          resolve();
+          return;
+        }
+
+        // Find the matching option
+        const optionElements = listbox.querySelectorAll<HTMLElement>('[role="option"]');
+        for (const opt of optionElements) {
+          const optValue = opt.getAttribute('data-value') || opt.textContent?.trim() || '';
+          if (
+            optValue === targetValue ||
+            opt.textContent?.trim().toLowerCase() === targetValue.toLowerCase()
+          ) {
+            opt.click();
+            resolve();
+            return;
+          }
+        }
+        resolve();
+      });
+    });
   }
 
   private performFocus(element: HTMLElement): void {

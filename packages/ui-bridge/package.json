@@ -126,6 +126,11 @@
       "import": "./dist/ctr/index.mjs",
       "require": "./dist/ctr/index.js"
     },
+    "./ctr/migrate": {
+      "types": "./dist/ctr/migrate.d.ts",
+      "import": "./dist/ctr/migrate.mjs",
+      "require": "./dist/ctr/migrate.js"
+    },
     "./verification-layers": {
       "types": "./dist/verification-layers/index.d.ts",
       "import": "./dist/verification-layers/index.mjs",

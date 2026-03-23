@@ -158,6 +158,10 @@ export function find(
 ): FindResult {
   const startTime = performance.now();
   const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
+  // Guard against NaN threshold (e.g., from undefined override in spread)
+  if (typeof opts.confidenceThreshold !== 'number' || Number.isNaN(opts.confidenceThreshold)) {
+    opts.confidenceThreshold = DEFAULT_FIND_OPTIONS.confidenceThreshold;
+  }
 
   // Parse the query
   let criteria: SearchCriteria;

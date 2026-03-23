@@ -14,6 +14,8 @@ import type {
 import type {
   ControlSnapshot,
   FindRequest,
+  FindResponse,
+  DiscoveredElement,
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
@@ -170,6 +172,23 @@ function parseNLAssertion(request: AssertionRequest & { assertion?: string }): A
 }
 
 /**
+ * Normalize a batch assertion request: parse NL strings and ensure mode is set.
+ */
+function normalizeBatchAssertions(
+  request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
+): BatchAssertionRequest {
+  return {
+    ...request,
+    mode: request.mode || 'all',
+    assertions: (request.assertions || []).map((a: AssertionRequest | string) =>
+      typeof a === 'string'
+        ? parseNLAssertion({ assertion: a } as AssertionRequest & { assertion: string })
+        : parseNLAssertion(a as AssertionRequest & { assertion?: string })
+    ),
+  };
+}
+
+/**
  * Registry interface - minimal contract for handler usage
  */
 export interface RegistryLike {
@@ -214,7 +233,10 @@ export interface RegistryLike {
   getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
 
   // Event subscription (for push-based change observation)
-  on?<T = unknown>(type: import('../core').BridgeEventType, listener: (event: import('../core').BridgeEvent<T>) => void): () => void;
+  on?<T = unknown>(
+    type: import('../core').BridgeEventType,
+    listener: (event: import('../core').BridgeEvent<T>) => void
+  ): () => void;
 }
 
 /**
@@ -802,8 +824,9 @@ export function createHandlers(
     });
     if (unsub2) unsubscribes.push(unsub2);
     const unsub3 = registry.on('element:stateChanged', (event: BridgeEvent) => {
-      const id = (event.data as { id?: string; elementId?: string })?.id
-        ?? (event.data as { elementId?: string })?.elementId;
+      const id =
+        (event.data as { id?: string; elementId?: string })?.id ??
+        (event.data as { elementId?: string })?.elementId;
       if (id) changeObserver.onElementModified(id);
     });
     if (unsub3) unsubscribes.push(unsub3);
@@ -1895,12 +1918,13 @@ export function createHandlers(
     },
 
     aiAssertBatch: async (
-      request: BatchAssertionRequest
+      request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
         // Refresh elements before batch assertion
         refreshElements();
-        const result = await assertionExecutor.assertBatch(request);
+        const normalized = normalizeBatchAssertions(request);
+        const result = await assertionExecutor.assertBatch(normalized);
         return success(result);
       } catch (err) {
         return error((err as Error).message, 'AI_ASSERT_BATCH_ERROR');
@@ -4655,10 +4679,24 @@ export function createHandlers(
     // =========================================================================
 
     findMedia: async (_request) => {
-      return error(
-        'findMedia not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
+      try {
+        refreshElements();
+        const allElements = registry.getAllElements();
+        const mediaTypes = new Set(['image', 'video', 'audio', 'svg', 'picture', 'icon']);
+        const mediaElements = allElements.filter((el) => {
+          const elType = (el as { type?: string }).type ?? '';
+          return mediaTypes.has(elType);
+        });
+        const response: FindResponse = {
+          elements: mediaElements as DiscoveredElement[],
+          total: mediaElements.length,
+          durationMs: 0,
+          timestamp: Date.now(),
+        };
+        return success(response);
+      } catch (err) {
+        return error((err as Error).message, 'FIND_MEDIA_ERROR');
+      }
     },
 
     mediaAuditAccessibility: async () => {
@@ -4837,11 +4875,12 @@ export function createAIHandlers(
     },
 
     aiAssertBatch: async (
-      request: BatchAssertionRequest
+      request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
         refreshElements();
-        const result = await assertionExecutor.assertBatch(request);
+        const normalized = normalizeBatchAssertions(request);
+        const result = await assertionExecutor.assertBatch(normalized);
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {
         return {
