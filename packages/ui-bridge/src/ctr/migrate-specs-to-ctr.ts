@@ -1,7 +1,7 @@
 /**
  * Migration utility: .spec.uibridge.json → .ctr.uibridge.json
  *
- * Scans existing spec files, extracts elementId targets, and generates
+ * Scans existing spec files, extracts elementId and search targets, and generates
  * CTR entries so that specs can migrate to logical-name-based targeting.
  */
 
@@ -15,6 +15,7 @@ import type {
   AssertionCondition,
   SetupAction,
 } from '../specs/types';
+import type { SearchCriteria } from '../ai/types';
 import type { CtrConfig, CtrEntry } from './types';
 import { CTR_CONFIG_VERSION, DEFAULT_SELECTOR_CONFIDENCE } from './types';
 
@@ -25,7 +26,7 @@ import { CTR_CONFIG_VERSION, DEFAULT_SELECTOR_CONFIDENCE } from './types';
 export interface MigrationResult {
   /** Generated CTR config. */
   ctrConfig: CtrConfig;
-  /** Number of unique elementId targets found. */
+  /** Number of unique targets found (elementId + search). */
   totalTargets: number;
   /** Number of CTR entries created (deduplicated). */
   entriesCreated: number;
@@ -37,16 +38,81 @@ export interface MigrationResult {
 // Internal helpers
 // =============================================================================
 
-function collectElementIdTargets(
+/**
+ * Slugify a string: lowercase, spaces/underscores→hyphens, strip non-alphanumeric (except hyphens/dots).
+ */
+export function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9\-\.]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Derive a deterministic logical name from a search target.
+ * Priority:
+ *   1. label (slugified)
+ *   2. {role}.{text|textContent|accessibleName|textContains}
+ *   3. selector as-is
+ *   4. fallback "search-{index}" (should not happen in practice)
+ */
+export function logicalNameFromSearch(
+  criteria: SearchCriteria,
+  label?: string
+): string {
+  if (label) {
+    return slugify(label);
+  }
+
+  const role = criteria.role;
+  const textPart =
+    criteria.text ??
+    criteria.textContent ??
+    criteria.accessibleName ??
+    criteria.textContains;
+
+  if (role && textPart) {
+    return `${slugify(role)}.${slugify(textPart)}`;
+  }
+  if (role) {
+    return slugify(role);
+  }
+  if (textPart) {
+    return slugify(textPart);
+  }
+  if (criteria.selector) {
+    return slugify(criteria.selector);
+  }
+
+  // Fallback: serialize criteria keys
+  const keys = Object.keys(criteria).sort().join('-');
+  return slugify(`search-${keys}`) || 'search-unknown';
+}
+
+interface CollectedTarget {
+  component?: string;
+  description?: string;
+  criteria?: SearchCriteria;
+}
+
+function collectTargets(
   targets: SpecTarget[],
-  seen: Map<string, { component?: string; description?: string }>,
+  seen: Map<string, CollectedTarget>,
   component?: string,
   description?: string
 ): void {
   for (const target of targets) {
+    if (!target) continue;
     if (target.type === 'elementId') {
       if (!seen.has(target.elementId)) {
         seen.set(target.elementId, { component, description });
+      }
+    } else if (target.type === 'search') {
+      const name = logicalNameFromSearch(target.criteria, target.label);
+      if (!seen.has(name)) {
+        seen.set(name, { component, description, criteria: target.criteria });
       }
     }
   }
@@ -59,13 +125,16 @@ function extractTargetsFromAssertion(assertion: SpecAssertion): {
   targets: SpecTarget[];
   description: string;
 } {
-  const targets: SpecTarget[] = [assertion.target];
+  const targets: SpecTarget[] = [];
+  if (assertion.target) {
+    targets.push(assertion.target);
+  }
 
   if (assertion.relatedTarget) {
     targets.push(assertion.relatedTarget);
   }
 
-  if (assertion.condition) {
+  if (assertion.condition?.target) {
     targets.push(assertion.condition.target);
   }
 
@@ -85,7 +154,7 @@ function extractTargetsFromSetupActions(actions: SetupAction[]): SpecTarget[] {
   return targets;
 }
 
-function buildCtrEntry(
+function buildCtrEntryFromElementId(
   elementId: string,
   meta: { component?: string; description?: string }
 ): CtrEntry {
@@ -113,40 +182,67 @@ function buildCtrEntry(
   };
 }
 
+function buildCtrEntryFromSearch(
+  logicalName: string,
+  criteria: SearchCriteria,
+  meta: { component?: string; description?: string }
+): CtrEntry {
+  return {
+    logicalName,
+    selectors: [
+      {
+        strategy: 'search',
+        value: criteria,
+        priority: 0,
+        confidence: DEFAULT_SELECTOR_CONFIDENCE,
+      },
+    ],
+    metadata: {
+      component: meta.component,
+      description: meta.description,
+    },
+    version: 1,
+  };
+}
+
 // =============================================================================
 // Public API
 // =============================================================================
 
 /**
- * Scan a SpecConfig and extract elementId targets into CTR entries.
+ * Scan a SpecConfig and extract elementId and search targets into CTR entries.
  */
 export function migrateSpecToCtr(specConfig: SpecConfig, _specId?: string): CtrConfig {
-  const seen = new Map<string, { component?: string; description?: string }>();
+  const seen = new Map<string, CollectedTarget>();
   const component = specConfig.metadata?.component;
 
   // Walk groups → assertions
   for (const group of specConfig.groups ?? []) {
     for (const assertion of group.assertions) {
       const { targets, description } = extractTargetsFromAssertion(assertion);
-      collectElementIdTargets(targets, seen, component, description);
+      collectTargets(targets, seen, component, description);
     }
 
     // Setup actions
     if (group.setupActions) {
       const setupTargets = extractTargetsFromSetupActions(group.setupActions);
-      collectElementIdTargets(setupTargets, seen, component, group.description);
+      collectTargets(setupTargets, seen, component, group.description);
     }
   }
 
   // Walk ungrouped assertions
   for (const assertion of specConfig.assertions ?? []) {
     const { targets, description } = extractTargetsFromAssertion(assertion);
-    collectElementIdTargets(targets, seen, component, description);
+    collectTargets(targets, seen, component, description);
   }
 
   const entries: CtrEntry[] = [];
-  for (const [elementId, meta] of seen) {
-    entries.push(buildCtrEntry(elementId, meta));
+  for (const [name, meta] of seen) {
+    if (meta.criteria) {
+      entries.push(buildCtrEntryFromSearch(name, meta.criteria, meta));
+    } else {
+      entries.push(buildCtrEntryFromElementId(name, meta));
+    }
   }
 
   return {
@@ -210,6 +306,10 @@ export function rewriteSpecWithCtr(specConfig: SpecConfig): SpecConfig {
   function rewriteTarget(target: SpecTarget): SpecTarget {
     if (target.type === 'elementId') {
       return { type: 'ctr', logicalName: target.elementId, label: target.label };
+    }
+    if (target.type === 'search') {
+      const logicalName = logicalNameFromSearch(target.criteria, target.label);
+      return { type: 'ctr', logicalName, label: target.label };
     }
     return target;
   }
@@ -290,7 +390,7 @@ if (typeof process !== 'undefined' && process.argv[1]?.includes('migrate-specs-t
   const result = migrateDirectoryToCtr(resolvedDir);
 
   console.log(`Scanned ${result.scannedFiles.length} spec file(s)`);
-  console.log(`Found ${result.totalTargets} unique elementId target(s)`);
+  console.log(`Found ${result.totalTargets} unique target(s)`);
   console.log(`Created ${result.entriesCreated} CTR entr(ies)`);
 
   const json = JSON.stringify(result.ctrConfig, null, 2);

@@ -149,6 +149,8 @@ import { CompositeIdleDetector } from '../idle';
 import type { CompositeIdleConfig } from '../idle';
 import { NetworkRequestTracker } from '../network';
 import type { NetworkRequestFilter, NetworkTrackerConfig } from '../network';
+import { ChangeObserver } from '../core/change-observer';
+import type { BridgeEvent } from '../core';
 
 /**
  * Parse a natural language assertion into a structured AssertionRequest.
@@ -210,6 +212,9 @@ export interface RegistryLike {
 
   // Element event log
   getElementHistory?(elementId: string, options?: ElementHistoryOptions): ElementLogEntry[];
+
+  // Event subscription (for push-based change observation)
+  on?<T = unknown>(type: import('../core').BridgeEventType, listener: (event: import('../core').BridgeEvent<T>) => void): () => void;
 }
 
 /**
@@ -299,6 +304,12 @@ export interface CreateHandlersConfig {
    * Defaults to enabled with default settings.
    */
   networkMonitoring?: NetworkTrackerConfig | false;
+  /**
+   * Callback for push-based change observation events (snapshot:changed).
+   * Wire this to SSEManager.broadcast() and/or UIBridgeWSHandler.broadcastEvent()
+   * to push change events to connected clients.
+   */
+  onChangeEvent?: (event: BridgeEvent) => void;
 }
 
 /**
@@ -774,6 +785,38 @@ export function createHandlers(
     }
   }
 
+  // Push-based change observation (allio-inspired)
+  const changeObserver = new ChangeObserver({ bufferCapacity: 5000, batchIntervalMs: 16 });
+
+  // Wire registry element events → ChangeObserver via public on() API
+  if (registry.on) {
+    registry.on('element:registered', (event: BridgeEvent) => {
+      const id = (event.data as { id?: string })?.id;
+      if (id) changeObserver.onElementAdded(id);
+    });
+    registry.on('element:unregistered', (event: BridgeEvent) => {
+      const id = (event.data as { id?: string })?.id;
+      if (id) changeObserver.onElementRemoved(id);
+    });
+    registry.on('element:stateChanged', (event: BridgeEvent) => {
+      const id = (event.data as { id?: string; elementId?: string })?.id
+        ?? (event.data as { elementId?: string })?.elementId;
+      if (id) changeObserver.onElementModified(id);
+    });
+  }
+
+  // Wire ChangeObserver → SSEManager/WS broadcast via onChangeEvent callback
+  if (config.onChangeEvent) {
+    const emitChange = config.onChangeEvent;
+    changeObserver.subscribe((domChange) => {
+      emitChange({
+        type: 'snapshot:changed',
+        timestamp: domChange.timestamp,
+        data: domChange,
+      });
+    });
+  }
+
   // Change tracker
   const changeTracker = new ChangeTracker({
     snapshotManager,
@@ -787,6 +830,11 @@ export function createHandlers(
       return actionExecutor.executeAction(elementId, request);
     },
     refreshElements: () => refreshElements(),
+    subscribeChanges: (callback) => {
+      return changeObserver.subscribe((event) => {
+        callback({ type: 'snapshot:changed', timestamp: event.timestamp });
+      });
+    },
     resolveScope: (scope: string): Set<string> | null => {
       // Use DOM containment when running in a browser environment
       if (typeof document === 'undefined') return null;

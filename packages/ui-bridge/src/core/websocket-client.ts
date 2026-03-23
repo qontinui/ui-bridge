@@ -501,6 +501,19 @@ export class UIBridgeWSClient {
     }
   }
 
+  /**
+   * Send a fire-and-forget event (no response expected).
+   * Used for push-based change observation to stream DOM changes to the server.
+   */
+  sendEvent(message: WSClientMessage): void {
+    if (!this.ws || this.state !== 'connected') return;
+    try {
+      this.ws.send(JSON.stringify(message));
+    } catch {
+      // Fire-and-forget — connection may have closed
+    }
+  }
+
   private sendRequest<T>(
     message: WSClientMessage,
     progressHandler?: (message: WSServerMessage) => void

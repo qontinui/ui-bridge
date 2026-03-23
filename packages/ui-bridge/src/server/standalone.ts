@@ -539,6 +539,19 @@ export class StandaloneServer {
   }
 
   /**
+   * Create an `onChangeEvent` callback wired to SSE + WS broadcast.
+   *
+   * Call this **before** `createHandlers()` to get a callback you can pass as
+   * `config.onChangeEvent`. The ChangeObserver in handlers.ts will forward
+   * batched DOM change events through this callback to all connected clients.
+   */
+  createChangeEventCallback(): (event: BridgeEvent) => void {
+    return (event: BridgeEvent) => {
+      this.broadcastEvent(event);
+    };
+  }
+
+  /**
    * Get WebSocket handler for direct access
    */
   getWSHandler(): UIBridgeWSHandler | null {

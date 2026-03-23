@@ -1248,7 +1248,8 @@ export type WSClientMessageType =
   | 'executeAction'
   | 'executeComponentAction'
   | 'executeWorkflow'
-  | 'getElementHistory';
+  | 'getElementHistory'
+  | 'changeEvent';
 
 /**
  * WebSocket message types from server to client
@@ -1398,6 +1399,18 @@ export interface WSGetElementHistoryMessage extends WSMessageBase {
 }
 
 /**
+ * Client message: Push-based change event from browser tab
+ */
+export interface WSChangeEventMessage extends WSMessageBase {
+  type: 'changeEvent';
+  payload: {
+    added?: string[];
+    removed?: string[];
+    modified?: string[];
+  };
+}
+
+/**
  * Union type for all client messages
  */
 export type WSClientMessage =
@@ -1411,7 +1424,8 @@ export type WSClientMessage =
   | WSExecuteActionMessage
   | WSExecuteComponentActionMessage
   | WSExecuteWorkflowMessage
-  | WSGetElementHistoryMessage;
+  | WSGetElementHistoryMessage
+  | WSChangeEventMessage;
 
 /**
  * Server message: Welcome (sent on connection)

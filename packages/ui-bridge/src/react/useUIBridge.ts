@@ -12,6 +12,7 @@ import type {
   ElementState,
   Workflow,
 } from '../core/types';
+import type { UIBridgeRegistry } from '../core/registry';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -83,6 +84,8 @@ export interface UseUIBridgeReturn {
   getMetrics: () => unknown | undefined;
   /** Get action history (if debug enabled) */
   getActionHistory: () => unknown[] | undefined;
+  /** Direct access to the element registry (for event subscriptions, advanced usage) */
+  registry: UIBridgeRegistry | null;
 }
 
 /**
@@ -351,6 +354,7 @@ export function useUIBridge(): UseUIBridgeReturn {
     clearRenderLog,
     getMetrics,
     getActionHistory,
+    registry: context?.registry ?? null,
   };
 }
 

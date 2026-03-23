@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { SpecConfig } from '../specs/types';
 import type { CtrConfig } from './types';
 import { DEFAULT_SELECTOR_CONFIDENCE } from './types';
-import { migrateSpecToCtr, rewriteSpecWithCtr } from './migrate-specs-to-ctr';
+import { migrateSpecToCtr, rewriteSpecWithCtr, slugify, logicalNameFromSearch } from './migrate-specs-to-ctr';
 
 // =============================================================================
 // Fixtures
@@ -196,7 +196,7 @@ describe('migrateSpecToCtr', () => {
     expect(names).toEqual(['main-btn', 'prereq-element']);
   });
 
-  it('ignores search targets', () => {
+  it('extracts search targets with label', () => {
     const spec = makeSpecConfig({
       groups: [
         {
@@ -210,7 +210,72 @@ describe('migrateSpecToCtr', () => {
               ...baseAssertion,
               target: {
                 type: 'search',
-                criteria: { role: 'button', name: 'Submit' },
+                criteria: { role: 'button', text: 'Submit' },
+                label: 'Submit button',
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = migrateSpecToCtr(spec);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].logicalName).toBe('submit-button');
+    expect(result.entries[0].selectors).toHaveLength(1);
+    expect(result.entries[0].selectors[0]).toEqual({
+      strategy: 'search',
+      value: { role: 'button', text: 'Submit' },
+      priority: 0,
+      confidence: DEFAULT_SELECTOR_CONFIDENCE,
+    });
+    expect(result.entries[0].metadata?.component).toBe('TestComponent');
+    expect(result.entries[0].metadata?.description).toBe('Button is visible');
+  });
+
+  it('extracts search targets without label using role.text', () => {
+    const spec = makeSpecConfig({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Search group',
+          description: 'Uses search targets',
+          category: 'element-presence',
+          source: 'manual',
+          assertions: [
+            {
+              ...baseAssertion,
+              target: {
+                type: 'search',
+                criteria: { role: 'button', text: 'Submit' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = migrateSpecToCtr(spec);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].logicalName).toBe('button.submit');
+  });
+
+  it('extracts both search and elementId targets', () => {
+    const spec = makeSpecConfig({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Mixed group',
+          description: 'Uses both target types',
+          category: 'element-presence',
+          source: 'manual',
+          assertions: [
+            {
+              ...baseAssertion,
+              target: {
+                type: 'search',
+                criteria: { role: 'button', textContent: 'Submit' },
+                label: 'Submit button',
               },
             },
             {
@@ -224,9 +289,46 @@ describe('migrateSpecToCtr', () => {
     });
 
     const result = migrateSpecToCtr(spec);
-    // Only the elementId target should be extracted; the search target should be ignored
+    expect(result.entries).toHaveLength(2);
+    const names = result.entries.map((e) => e.logicalName).sort();
+    expect(names).toEqual(['real-id', 'submit-button']);
+  });
+
+  it('deduplicates search targets by logical name', () => {
+    const spec = makeSpecConfig({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Dup group',
+          description: 'Same search twice',
+          category: 'element-presence',
+          source: 'manual',
+          assertions: [
+            {
+              ...baseAssertion,
+              target: {
+                type: 'search',
+                criteria: { role: 'button', text: 'Save' },
+                label: 'Save button',
+              },
+            },
+            {
+              ...baseAssertion,
+              id: 'a2',
+              target: {
+                type: 'search',
+                criteria: { role: 'button', text: 'Save' },
+                label: 'Save button',
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = migrateSpecToCtr(spec);
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0].logicalName).toBe('real-id');
+    expect(result.entries[0].logicalName).toBe('save-button');
   });
 
   it('ignores ctr targets (already migrated)', () => {
@@ -353,12 +455,7 @@ describe('rewriteSpecWithCtr', () => {
     expect(assertion.condition?.target).toEqual({ type: 'ctr', logicalName: 'prereq' });
   });
 
-  it('leaves search targets unchanged', () => {
-    const searchTarget = {
-      type: 'search' as const,
-      criteria: { role: 'button', name: 'Submit' },
-    };
-
+  it('converts search targets to ctr targets with label-based name', () => {
     const spec = makeSpecConfig({
       groups: [
         {
@@ -370,7 +467,11 @@ describe('rewriteSpecWithCtr', () => {
           assertions: [
             {
               ...baseAssertion,
-              target: searchTarget,
+              target: {
+                type: 'search',
+                criteria: { role: 'button', text: 'Submit' },
+                label: 'Submit button',
+              },
             },
           ],
         },
@@ -378,7 +479,40 @@ describe('rewriteSpecWithCtr', () => {
     });
 
     const result = rewriteSpecWithCtr(spec);
-    expect(result.groups[0].assertions[0].target).toEqual(searchTarget);
+    expect(result.groups[0].assertions[0].target).toEqual({
+      type: 'ctr',
+      logicalName: 'submit-button',
+      label: 'Submit button',
+    });
+  });
+
+  it('converts search targets to ctr targets with criteria-based name', () => {
+    const spec = makeSpecConfig({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          description: 'Test',
+          category: 'element-presence',
+          source: 'manual',
+          assertions: [
+            {
+              ...baseAssertion,
+              target: {
+                type: 'search',
+                criteria: { role: 'heading', textContent: 'Dashboard' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = rewriteSpecWithCtr(spec);
+    expect(result.groups[0].assertions[0].target).toEqual({
+      type: 'ctr',
+      logicalName: 'heading.dashboard',
+    });
   });
 
   it('leaves ctr targets unchanged', () => {
@@ -459,5 +593,92 @@ describe('rewriteSpecWithCtr', () => {
     expect(actions[0]).toEqual({ type: 'click', target: { type: 'ctr', logicalName: 'trigger' } });
     // wait action has no target, should be unchanged
     expect(actions[1]).toEqual({ type: 'wait', ms: 50 });
+  });
+});
+
+// =============================================================================
+// logicalNameFromSearch
+// =============================================================================
+
+describe('logicalNameFromSearch', () => {
+  it('uses label when present (slugified)', () => {
+    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' }, 'Submit button'))
+      .toBe('submit-button');
+  });
+
+  it('slugifies labels with special characters', () => {
+    expect(logicalNameFromSearch({}, 'Play/Pause Toggle (Main)'))
+      .toBe('playpause-toggle-main');
+  });
+
+  it('builds role.text when no label', () => {
+    expect(logicalNameFromSearch({ role: 'button', text: 'Submit' }))
+      .toBe('button.submit');
+  });
+
+  it('builds role.textContent when no label and no text', () => {
+    expect(logicalNameFromSearch({ role: 'heading', textContent: 'Dashboard' }))
+      .toBe('heading.dashboard');
+  });
+
+  it('builds role.accessibleName when no label, text, or textContent', () => {
+    expect(logicalNameFromSearch({ role: 'button', accessibleName: 'Close dialog' }))
+      .toBe('button.close-dialog');
+  });
+
+  it('builds role.textContains when no other text fields', () => {
+    expect(logicalNameFromSearch({ role: 'status', textContains: 'Loading' }))
+      .toBe('status.loading');
+  });
+
+  it('uses role alone when no text fields', () => {
+    expect(logicalNameFromSearch({ role: 'navigation' }))
+      .toBe('navigation');
+  });
+
+  it('uses text alone when no role', () => {
+    expect(logicalNameFromSearch({ text: 'Save Changes' }))
+      .toBe('save-changes');
+  });
+
+  it('uses textContent alone when no role and no text', () => {
+    expect(logicalNameFromSearch({ textContent: 'Loading settings...' }))
+      .toBe('loading-settings...');
+  });
+
+  it('uses selector when only selector is present', () => {
+    expect(logicalNameFromSearch({ selector: '.my-widget > button' }))
+      .toBe('.my-widget-button');
+  });
+
+  it('falls back to keys-based name for criteria with no standard fields', () => {
+    expect(logicalNameFromSearch({ fuzzy: true, fuzzyThreshold: 0.5 }))
+      .toBe('search-fuzzy-fuzzythreshold');
+  });
+});
+
+// =============================================================================
+// slugify
+// =============================================================================
+
+describe('slugify', () => {
+  it('lowercases and replaces spaces with hyphens', () => {
+    expect(slugify('Submit Button')).toBe('submit-button');
+  });
+
+  it('strips special characters', () => {
+    expect(slugify('Play/Pause (Toggle)')).toBe('playpause-toggle');
+  });
+
+  it('collapses multiple hyphens', () => {
+    expect(slugify('a---b')).toBe('a-b');
+  });
+
+  it('trims leading/trailing hyphens', () => {
+    expect(slugify('-hello-')).toBe('hello');
+  });
+
+  it('handles underscores as hyphens', () => {
+    expect(slugify('my_widget_button')).toBe('my-widget-button');
   });
 });

@@ -45,6 +45,7 @@ import type { ToastEventData } from '../toast';
 import { RelationshipTracker } from '../relationships';
 import { DragDropDetector } from '../drag-drop';
 import { UndoTracker } from '../undo';
+import { ChangeObserver } from '../core/change-observer';
 
 /**
  * UI Bridge context value
@@ -158,6 +159,7 @@ export function UIBridgeProvider({
   const relationshipTrackerRef = useRef<RelationshipTracker | null>(null);
   const dragDropDetectorRef = useRef<DragDropDetector | null>(null);
   const undoTrackerRef = useRef<UndoTracker | null>(null);
+  const changeObserverRef = useRef<ChangeObserver | null>(null);
   const elementEventLogRef = useRef<ElementEventLog | null>(null);
   const wsClientRef = useRef<UIBridgeWSClient | null>(null);
   const [wsConnectionState, setWsConnectionState] = useState<WSConnectionState>('disconnected');
@@ -221,6 +223,9 @@ export function UIBridgeProvider({
 
     // Install undo/redo tracker (stateless detector + action correlation)
     undoTrackerRef.current = new UndoTracker();
+
+    // Initialize push-based change observer (allio-inspired)
+    changeObserverRef.current = new ChangeObserver({ bufferCapacity: 5000, batchIntervalMs: 16 });
 
     // Initialize WebSocket client if enabled
     if (config.websocket) {
@@ -326,6 +331,51 @@ export function UIBridgeProvider({
     browserCaptureRef.current?.setOnEvent(onBrowserEvent ?? null);
   }, [onBrowserEvent]);
 
+  // Wire ChangeObserver: registry events → batched changes → WS push to server
+  useEffect(() => {
+    const observer = changeObserverRef.current;
+    if (!observer) return;
+
+    // Feed registry element events into the observer
+    const unsubs = [
+      registry.on('element:registered', (event: BridgeEvent) => {
+        const id = (event.data as { id?: string })?.id;
+        if (id) observer.onElementAdded(id);
+      }),
+      registry.on('element:unregistered', (event: BridgeEvent) => {
+        const id = (event.data as { id?: string })?.id;
+        if (id) observer.onElementRemoved(id);
+      }),
+      registry.on('element:stateChanged', (event: BridgeEvent) => {
+        const id = (event.data as { id?: string; elementId?: string })?.id
+          ?? (event.data as { elementId?: string })?.elementId;
+        if (id) observer.onElementModified(id);
+      }),
+    ];
+
+    // Push batched changes to the server via WebSocket (fire-and-forget)
+    let changeSub: (() => void) | undefined;
+    if (wsClient) {
+      changeSub = observer.subscribe((domChange) => {
+        wsClient.sendEvent({
+          id: `change-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: 'changeEvent',
+          timestamp: domChange.timestamp,
+          payload: {
+            added: domChange.added,
+            removed: domChange.removed,
+            modified: domChange.modified,
+          },
+        });
+      });
+    }
+
+    return () => {
+      unsubs.forEach((u) => u());
+      changeSub?.();
+    };
+  }, [registry, wsClient]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -335,6 +385,7 @@ export function UIBridgeProvider({
       navigationTrackerRef.current?.uninstall();
       shortcutTrackerRef.current?.uninstall();
       toastCaptureRef.current?.uninstall();
+      changeObserverRef.current?.destroy();
       wsClient?.disconnect();
       resetGlobalRegistry();
     };
