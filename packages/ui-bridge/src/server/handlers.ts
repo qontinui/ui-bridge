@@ -4789,12 +4789,6 @@ export function createAIHandlers(
   }
 
   return {
-    destroy() {
-      for (const unsub of unsubscribes) unsub();
-      unsubscribes.length = 0;
-      changeObserver.destroy();
-    },
-
     aiSearch: async (criteria: SearchCriteria): Promise<APIResponse<SearchResponse>> => {
       try {
         refreshElements();
