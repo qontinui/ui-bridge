@@ -383,6 +383,12 @@ export interface UIBridgeServerHandlers {
   pageNavigate: (request: PageNavigateRequest) => Promise<APIResponse<PageNavigationResponse>>;
   pageGoBack: () => Promise<APIResponse<PageNavigationResponse>>;
   pageGoForward: () => Promise<APIResponse<PageNavigationResponse>>;
+  pageEvaluate: (request: unknown) => Promise<APIResponse<unknown>>;
+  pageScroll: (request: unknown) => Promise<APIResponse<unknown>>;
+
+  // Clipboard endpoints (browser gesture-based)
+  clipboardWrite: (request: unknown) => Promise<APIResponse<unknown>>;
+  clipboardRead: () => Promise<APIResponse<unknown>>;
 
   // Annotation endpoints
   getAnnotations: () => Promise<APIResponse<Record<string, ElementAnnotation>>>;
@@ -863,6 +869,17 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/page/navigate', handler: 'pageNavigate', bodyRequired: true },
   { method: 'POST', path: '/control/page/back', handler: 'pageGoBack' },
   { method: 'POST', path: '/control/page/forward', handler: 'pageGoForward' },
+  { method: 'POST', path: '/control/page/evaluate', handler: 'pageEvaluate', bodyRequired: true },
+  { method: 'POST', path: '/control/page/scroll', handler: 'pageScroll', bodyRequired: true },
+
+  // Clipboard (relay to browser for gesture-based access)
+  {
+    method: 'POST',
+    path: '/control/clipboard/write',
+    handler: 'clipboardWrite',
+    bodyRequired: true,
+  },
+  { method: 'GET', path: '/control/clipboard/read', handler: 'clipboardRead' },
 
   // Annotations (static routes before parameterized)
   { method: 'GET', path: '/annotations', handler: 'getAnnotations' },
@@ -1055,6 +1072,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Annotation aliases under /control/ (static before parameterized)
   { method: 'GET', path: '/control/annotations', handler: 'getAnnotations' },
+  {
+    method: 'POST',
+    path: '/control/annotation/:id',
+    handler: 'setAnnotation',
+    params: ['id'],
+    bodyRequired: true,
+  },
   { method: 'GET', path: '/control/annotations/export', handler: 'exportAnnotations' },
   { method: 'GET', path: '/control/annotations/coverage', handler: 'getAnnotationCoverage' },
   {

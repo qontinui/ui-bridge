@@ -4752,6 +4752,28 @@ export function createHandlers(
       // Direct handlers don't maintain a change event buffer — use relay-handlers
       return success({ events: [], count: 0 });
     },
+
+    pageEvaluate: async (_request) => {
+      return error('pageEvaluate requires browser context — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    pageScroll: async (_request) => {
+      return error('pageScroll requires browser context — use relay-handlers', 'NOT_IMPLEMENTED');
+    },
+
+    clipboardWrite: async (_request) => {
+      return error(
+        'clipboardWrite requires browser context — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
+    },
+
+    clipboardRead: async () => {
+      return error(
+        'clipboardRead requires browser context — use relay-handlers',
+        'NOT_IMPLEMENTED'
+      );
+    },
   };
 }
 

@@ -2056,6 +2056,214 @@ export async function executeCommand(
       window.history.forward();
       return { success: true, timestamp: Date.now() };
 
+    case 'pageEvaluate': {
+      const evalExpr = (payload as { expression?: string })?.expression;
+      if (!evalExpr) {
+        return { success: false, error: 'expression is required', timestamp: Date.now() };
+      }
+      try {
+        // eslint-disable-next-line no-eval
+        const evalResult = await Promise.resolve(eval(evalExpr));
+        // Ensure the result is JSON-serializable (eval can return DOM nodes, functions, etc.)
+        let safeValue: unknown;
+        try {
+          safeValue = JSON.parse(JSON.stringify(evalResult));
+        } catch {
+          safeValue =
+            typeof evalResult === 'undefined'
+              ? undefined
+              : typeof evalResult === 'function'
+                ? `[Function: ${evalResult.name || 'anonymous'}]`
+                : String(evalResult);
+        }
+        return { success: true, result: { value: safeValue }, timestamp: Date.now() };
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          timestamp: Date.now(),
+        };
+      }
+    }
+
+    case 'pageScroll': {
+      const scrollReq = payload as { top?: number; left?: number; smooth?: boolean };
+      const bX = window.scrollX;
+      const bY = window.scrollY;
+      const useSmooth = !!scrollReq?.smooth;
+      window.scrollBy({
+        top: scrollReq?.top ?? 0,
+        left: scrollReq?.left ?? 0,
+        behavior: useSmooth ? 'smooth' : 'auto',
+      });
+      // For smooth scrolling, wait for scrollend event before reading final position
+      if (useSmooth) {
+        await new Promise<void>((resolve) => {
+          const onEnd = () => {
+            window.removeEventListener('scrollend', onEnd);
+            resolve();
+          };
+          window.addEventListener('scrollend', onEnd, { once: true });
+          // Fallback timeout in case scrollend doesn't fire (e.g., already at boundary)
+          setTimeout(onEnd, 500);
+        });
+      }
+      return {
+        success: true,
+        before: { scrollX: bX, scrollY: bY },
+        after: { scrollX: window.scrollX, scrollY: window.scrollY },
+        changed: window.scrollX !== bX || window.scrollY !== bY,
+        timestamp: Date.now(),
+      };
+    }
+
+    case 'clipboardWrite': {
+      const clipText = (payload as { text?: string })?.text ?? '';
+      const clipHtml = (payload as { html?: string })?.html;
+
+      // Strategy 1: execCommand with hidden textarea (most reliable, no gesture needed)
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = clipText;
+        ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const execResult = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (execResult) {
+          return {
+            success: true,
+            written: true,
+            method: 'execCommand',
+            formats: ['text/plain'],
+            timestamp: Date.now(),
+          };
+        }
+      } catch {
+        // execCommand failed, try next strategy
+      }
+
+      // Strategy 2: Clipboard API (requires user gesture or permissions)
+      try {
+        if (clipHtml) {
+          const blob = new Blob([clipHtml], { type: 'text/html' });
+          const textBlob = new Blob([clipText], { type: 'text/plain' });
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob }),
+          ]);
+        } else {
+          await navigator.clipboard.writeText(clipText);
+        }
+        return {
+          success: true,
+          written: true,
+          method: 'clipboardAPI',
+          formats: clipHtml ? ['text/html', 'text/plain'] : ['text/plain'],
+          timestamp: Date.now(),
+        };
+      } catch {
+        // Clipboard API also failed
+      }
+
+      // Strategy 3: Gesture-wrapped Clipboard API
+      try {
+        const written = await new Promise<boolean>((resolve) => {
+          const btn = document.createElement('button');
+          btn.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01';
+          btn.textContent = '.';
+          document.body.appendChild(btn);
+          btn.addEventListener('click', () => {
+            navigator.clipboard.writeText(clipText).then(
+              () => {
+                try {
+                  document.body.removeChild(btn);
+                } catch {}
+                resolve(true);
+              },
+              () => {
+                try {
+                  document.body.removeChild(btn);
+                } catch {}
+                resolve(false);
+              }
+            );
+          });
+          btn.focus();
+          btn.click();
+          // Timeout fallback
+          setTimeout(() => {
+            try {
+              document.body.removeChild(btn);
+            } catch {}
+            resolve(false);
+          }, 500);
+        });
+        if (written) {
+          return {
+            success: true,
+            written: true,
+            method: 'gestureClick',
+            formats: ['text/plain'],
+            timestamp: Date.now(),
+          };
+        }
+      } catch {
+        // All strategies exhausted
+      }
+
+      return {
+        success: false,
+        error: 'Clipboard write denied by all strategies (execCommand, Clipboard API, gesture)',
+        timestamp: Date.now(),
+      };
+    }
+
+    case 'clipboardRead': {
+      // Strategy 1: Clipboard API
+      try {
+        const readText = await navigator.clipboard.readText();
+        return {
+          success: true,
+          text: readText,
+          method: 'clipboardAPI',
+          formats: ['text/plain'],
+          timestamp: Date.now(),
+        };
+      } catch {
+        // Clipboard API denied
+      }
+
+      // Strategy 2: execCommand paste (very limited browser support)
+      try {
+        const ta = document.createElement('textarea');
+        ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01';
+        document.body.appendChild(ta);
+        ta.focus();
+        const execResult = document.execCommand('paste');
+        const pastedText = ta.value;
+        document.body.removeChild(ta);
+        if (execResult && pastedText) {
+          return {
+            success: true,
+            text: pastedText,
+            method: 'execCommand',
+            formats: ['text/plain'],
+            timestamp: Date.now(),
+          };
+        }
+      } catch {
+        // execCommand also failed
+      }
+
+      return {
+        success: false,
+        error:
+          'Clipboard read denied. The browser tab must be focused and have clipboard permission.',
+        timestamp: Date.now(),
+      };
+    }
+
     // ======================================================================
     // Annotations
     // ======================================================================

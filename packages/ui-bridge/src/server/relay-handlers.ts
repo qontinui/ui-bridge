@@ -1052,6 +1052,14 @@ export function createRelayHandlers(
       return relayCommand('pageGoForward');
     },
 
+    async pageEvaluate(request: unknown) {
+      return relayCommand('pageEvaluate', request);
+    },
+
+    async pageScroll(request: unknown) {
+      return relayCommand('pageScroll', request);
+    },
+
     // ========================================================================
     // Annotations
     // ========================================================================
@@ -1082,6 +1090,18 @@ export function createRelayHandlers(
 
     async getAnnotationCoverage() {
       return relayCommand('getAnnotationCoverage');
+    },
+
+    // ========================================================================
+    // Clipboard (relayed to browser for gesture-based access)
+    // ========================================================================
+
+    async clipboardWrite(request: unknown) {
+      return relayCommand('clipboardWrite', request);
+    },
+
+    async clipboardRead() {
+      return relayCommand('clipboardRead');
     },
 
     // ========================================================================

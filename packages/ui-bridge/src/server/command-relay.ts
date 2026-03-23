@@ -319,7 +319,8 @@ export class CommandRelay {
   }
 
   /**
-   * Queue a command with primary tab routing and automatic failover.
+   * Queue a command with primary tab routing, automatic failover,
+   * and retry-on-disconnect.
    */
   async queueCommand<T>(
     action: string,
@@ -345,6 +346,39 @@ export class CommandRelay {
       ]);
     }
 
+    // Attempt the command — if SDK_DISCONNECTED, wait for reconnection and retry once
+    try {
+      return await this.queueCommandInner<T>(action, payload, options);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('SDK_DISCONNECTED') || msg.includes('No browser connected')) {
+        console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
+        try {
+          await Promise.race([
+            this.connectionReady,
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error('Reconnection timeout')), 2000)
+            ),
+          ]);
+          console.log(`[ui-bridge] Reconnected, retrying ${action}`);
+          return await this.queueCommandInner<T>(action, payload, options);
+        } catch {
+          // Retry failed — throw original error
+          throw err;
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Inner command queue implementation (no retry logic).
+   */
+  private async queueCommandInner<T>(
+    action: string,
+    payload: unknown,
+    options?: { targetTabId?: string }
+  ): Promise<T> {
     const targetTabId = options?.targetTabId;
 
     // Explicit target — send directly, no failover

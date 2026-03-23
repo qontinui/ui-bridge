@@ -66,15 +66,17 @@ export class NavigationTracker {
     // Intercept pushState
     this.origPushState = history.pushState.bind(history);
     history.pushState = (state: unknown, title: string, url?: string | URL | null) => {
+      // Always call through — origPushState is kept alive even after uninstall
+      // so that other wrappers in the monkey-patch chain aren't broken.
       this.origPushState!(state, title, url);
-      this.handleNavigation('push');
+      if (this.installed) this.handleNavigation('push');
     };
 
     // Intercept replaceState
     this.origReplaceState = history.replaceState.bind(history);
     history.replaceState = (state: unknown, title: string, url?: string | URL | null) => {
       this.origReplaceState!(state, title, url);
-      this.handleNavigation('replace');
+      if (this.installed) this.handleNavigation('replace');
     };
 
     // Listen for back/forward navigation
@@ -97,15 +99,11 @@ export class NavigationTracker {
   uninstall(): void {
     if (!this.installed) return;
 
-    // Restore original History API methods
-    if (this.origPushState) {
-      history.pushState = this.origPushState;
-      this.origPushState = null;
-    }
-    if (this.origReplaceState) {
-      history.replaceState = this.origReplaceState;
-      this.origReplaceState = null;
-    }
+    // Do NOT restore history.pushState/replaceState or null the saved originals.
+    // Other monkey-patch wrappers (navigation capture, render-log) may hold
+    // references to our wrapper. Nulling origPushState would crash them with
+    // "this.origPushState is not a function". Instead, the wrapper becomes a
+    // pass-through (skips handleNavigation) via the `installed` flag check.
 
     // Remove event listeners
     if (this.boundPopState) {
