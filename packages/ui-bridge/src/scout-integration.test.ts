@@ -645,3 +645,158 @@ describe('cross-cutting: CTR events drive ChangeObserver', () => {
     expect(isSatisfiedBy(Recency.Current, 0)).toBe(false);
   });
 });
+
+// =============================================================================
+// Poco — UIQuery DSL immutability and filtering
+// =============================================================================
+
+describe('Poco: UIQuery DSL', () => {
+  // UIQuery requires a UIBridgeRegistry and real DOM elements.
+  // We create a minimal mock registry that returns stub elements.
+
+  function makeMockRegistry(elements: { el: HTMLElement; mounted: boolean; type?: string }[]) {
+    const registered = elements.map((e) => ({
+      element: e.el,
+      mounted: e.mounted,
+      type: e.type ?? 'generic',
+      getState: () => ({ visible: true, enabled: true }),
+    }));
+    return {
+      getAllElements: () => registered,
+    };
+  }
+
+  // Dynamically import UIQuery to avoid import errors if the module has DOM deps
+  // that aren't satisfied in test env. Since vitest runs in jsdom, this should work.
+  let UIQuery: typeof import('./core/query-builder').UIQuery;
+
+  beforeEach(async () => {
+    const mod = await import('./core/query-builder');
+    UIQuery = mod.UIQuery;
+  });
+
+  it('UIQuery chaining is immutable — withText returns new instance, original unchanged', () => {
+    // Create DOM elements
+    const btn1 = document.createElement('button');
+    btn1.textContent = 'Submit';
+    const btn2 = document.createElement('button');
+    btn2.textContent = 'Cancel';
+    document.body.appendChild(btn1);
+    document.body.appendChild(btn2);
+
+    const registry = makeMockRegistry([
+      { el: btn1, mounted: true },
+      { el: btn2, mounted: true },
+    ]);
+
+    const original = UIQuery.from(registry as any);
+    const filtered = original.withText('Submit');
+
+    // The filtered query should be a different instance
+    expect(filtered).not.toBe(original);
+
+    // Original should still resolve both elements (all DOM)
+    const originalDom = original.allDom();
+    expect(originalDom.length).toBe(2);
+
+    // Filtered should resolve only the Submit button
+    const filteredDom = filtered.allDom();
+    expect(filteredDom.length).toBe(1);
+    expect(filteredDom[0].textContent).toBe('Submit');
+
+    // Cleanup
+    document.body.removeChild(btn1);
+    document.body.removeChild(btn2);
+  });
+
+  it('UIQuery.from filters by role', () => {
+    const btn = document.createElement('button');
+    btn.setAttribute('role', 'button');
+    btn.textContent = 'Click me';
+    const heading = document.createElement('h1');
+    heading.setAttribute('role', 'heading');
+    heading.textContent = 'Title';
+    document.body.appendChild(btn);
+    document.body.appendChild(heading);
+
+    const registry = makeMockRegistry([
+      { el: btn, mounted: true },
+      { el: heading, mounted: true },
+    ]);
+
+    const query = UIQuery.from(registry as any);
+    const buttons = query.withRole('button').allDom();
+    const headings = query.withRole('heading').allDom();
+
+    expect(buttons.length).toBe(1);
+    expect(buttons[0].textContent).toBe('Click me');
+    expect(headings.length).toBe(1);
+    expect(headings[0].textContent).toBe('Title');
+
+    // Cleanup
+    document.body.removeChild(btn);
+    document.body.removeChild(heading);
+  });
+});
+
+// =============================================================================
+// agent-desktop — Batch action CTR resolution pipeline
+// =============================================================================
+
+describe('agent-desktop: executeBatch resolves CTR logical names before execution', () => {
+  let registry: CentralTargetRegistry;
+
+  beforeEach(() => {
+    registry = new CentralTargetRegistry();
+    resetGlobalCtr();
+  });
+
+  it('executeBatch resolves CTR logical names before execution', () => {
+    // Register 3 targets that a batch action would reference
+    const logicalNames = ['btn-save', 'btn-cancel', 'input-name'];
+    const testIds = ['save-btn', 'cancel-btn', 'name-input'];
+
+    for (let i = 0; i < logicalNames.length; i++) {
+      registry.register(
+        createCtrEntry(logicalNames[i], [
+          { strategy: 'data-testid', value: testIds[i] },
+        ])
+      );
+    }
+
+    // Simulate the batch resolution pipeline: resolve all logical names
+    // to SearchCriteria before executing any actions
+    const resolutionPipeline = logicalNames.map((name) => ({
+      logicalName: name,
+      criteria: registry.resolveToSearchCriteria(name),
+      resolved: registry.resolveToSearchCriteria(name) !== null,
+    }));
+
+    // All names should resolve successfully
+    expect(resolutionPipeline).toHaveLength(3);
+    for (const step of resolutionPipeline) {
+      expect(step.resolved).toBe(true);
+      expect(step.criteria).not.toBeNull();
+    }
+
+    // Verify the resolution produced correct idPatterns
+    expect(resolutionPipeline[0].criteria).toEqual({ idPattern: 'save-btn', fuzzy: false });
+    expect(resolutionPipeline[1].criteria).toEqual({ idPattern: 'cancel-btn', fuzzy: false });
+    expect(resolutionPipeline[2].criteria).toEqual({ idPattern: 'name-input', fuzzy: false });
+
+    // Simulate a partial batch where one target is missing
+    const withMissing = [...logicalNames, 'nonexistent-target'];
+    const partialResolution = withMissing.map((name) => ({
+      logicalName: name,
+      criteria: registry.resolveToSearchCriteria(name),
+      resolved: registry.resolveToSearchCriteria(name) !== null,
+    }));
+
+    // 3 resolved, 1 unresolved — batch should know about the gap
+    const resolved = partialResolution.filter((r) => r.resolved);
+    const unresolved = partialResolution.filter((r) => !r.resolved);
+    expect(resolved).toHaveLength(3);
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0].logicalName).toBe('nonexistent-target');
+  });
+});
