@@ -276,6 +276,49 @@ export class CentralTargetRegistry {
       this.resolutionCache.clear();
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Cross-Run Confidence Seeding
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Seed selector confidence scores from cross-run reliability data.
+   *
+   * When the runner provides historical element reliability data (via
+   * GET /ui-bridge/graph/element-reliability), this method adjusts the
+   * initial confidence of matching CTR entries based on observed success rates.
+   *
+   * Elements marked as flaky get their confidence reduced; reliable elements
+   * get a boost. This prevents the CTR from starting with high confidence on
+   * selectors that historically fail.
+   */
+  seedFromHistory(reliabilityData: import('./types').ElementReliability[]): number {
+    let seeded = 0;
+
+    for (const data of reliabilityData) {
+      // Match reliability data to entries by element_id matching selector values
+      for (const [, entry] of this.entries) {
+        for (const selector of entry.selectors) {
+          const selectorValue =
+            typeof selector.value === 'string' ? selector.value : undefined;
+          if (!selectorValue) continue;
+
+          // Match if the element_id equals the selector value or logical name
+          if (
+            selectorValue === data.element_id ||
+            entry.logicalName === data.element_id
+          ) {
+            // Blend historical confidence with current: 70% historical, 30% current
+            const blended = data.recommended_confidence * 0.7 + selector.confidence * 0.3;
+            selector.confidence = Math.max(0.1, Math.min(1.0, blended));
+            seeded++;
+          }
+        }
+      }
+    }
+
+    return seeded;
+  }
 }
 
 // =============================================================================

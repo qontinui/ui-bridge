@@ -14,6 +14,7 @@ export type {
   CtrEventType,
   CtrEvent,
   CtrListener,
+  ElementReliability,
 } from './types';
 
 export {

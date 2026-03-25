@@ -155,3 +155,28 @@ export const CONFIDENCE_PENALTY = 0.1;
 
 /** Minimum confidence before a selector is considered unreliable. */
 export const MIN_CONFIDENCE_THRESHOLD = 0.2;
+
+// =============================================================================
+// Cross-run reliability data (from runner knowledge graph)
+// =============================================================================
+
+/**
+ * Element reliability data from the runner's cross-run analysis.
+ * Used to pre-seed CTR selector confidence scores based on historical success rates.
+ */
+export interface ElementReliability {
+  /** The element ID (matches element_id in ui_bridge_events). */
+  element_id: string;
+  /** Total number of interactions across all runs. */
+  total_interactions: number;
+  /** Number of successful interactions. */
+  successful_interactions: number;
+  /** Success rate (0.0 - 1.0). */
+  success_rate: number;
+  /** Last failure reason, if any. */
+  last_failure_reason?: string;
+  /** Whether this element is considered flaky (success_rate < 0.95). */
+  flaky: boolean;
+  /** Recommended confidence score based on historical data. */
+  recommended_confidence: number;
+}
