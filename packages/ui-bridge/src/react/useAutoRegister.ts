@@ -1088,6 +1088,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               }
             });
 
+            // Deferred re-scan for lazy-loaded subtrees: elements inside
+            // React.lazy/Suspense may not be visible during the initial mutation
+            // callback because layout hasn't been computed yet. Schedule a re-scan
+            // after one animation frame to catch them.
+            if (descendants.length > 0 || element.childElementCount > 3) {
+              requestAnimationFrame(() => {
+                const retryDescendants = element.querySelectorAll<HTMLElement>(allSelectors);
+                retryDescendants.forEach((descendant) => {
+                  if (shouldRegister(descendant)) {
+                    queueRegistration(descendant);
+                  }
+                });
+              });
+            }
+
             // Content discovery for added nodes
             if (contentEnabled) {
               const contentSelectors = [
