@@ -157,3 +157,11 @@ export {
   type PerformanceMetrics,
   type MetricsCollectorOptions,
 } from './metrics';
+
+// Click Highlight (TuriX-CUA inspired visual click feedback)
+export {
+  showClickHighlight,
+  showElementHighlight,
+  HIGHLIGHT_COLORS,
+  type ClickHighlightOptions,
+} from './click-highlight';
