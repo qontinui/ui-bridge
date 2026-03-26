@@ -233,6 +233,8 @@ export interface FindRequest {
   exact_text?: string;
   /** Filter by selector */
   selector?: string;
+  /** Filter by data-testid attribute (exact match) */
+  testId?: string;
   /** Include content (non-interactive) elements in results */
   includeContent?: boolean;
   /** Only return content elements */
@@ -592,6 +594,21 @@ export interface SelectAction {
   byLabel?: boolean;
   /** For multi-select: add to selection */
   additive?: boolean;
+}
+
+/**
+ * Autocomplete action for inputs with suggestion dropdowns.
+ * Types text, waits for suggestions to appear, then selects a match.
+ */
+export interface AutocompleteAction {
+  /** Text to type to trigger suggestions */
+  searchText: string;
+  /** Value to select from the suggestion list (matched by text content) */
+  selectValue: string;
+  /** Max time (ms) to wait for suggestions to appear (default: 2000) */
+  suggestionTimeout?: number;
+  /** Clear existing value first (default: true) */
+  clear?: boolean;
 }
 
 /**

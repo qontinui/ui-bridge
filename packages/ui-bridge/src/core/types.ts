@@ -348,7 +348,8 @@ export type StandardAction =
   | 'setValue'
   | 'drag'
   | 'submit'
-  | 'reset';
+  | 'reset'
+  | 'autocomplete';
 
 /**
  * Handler for custom actions

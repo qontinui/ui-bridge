@@ -24,6 +24,7 @@ import {
   generateSuggestedActions,
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
+import { classifyRegionType } from './region-segmentation';
 
 /**
  * Configuration for semantic snapshots
@@ -43,6 +44,14 @@ export interface SemanticSnapshotConfig {
   useAnnotations: boolean;
   /** Include detailed form state via DOM-level form discovery (default: false) */
   includeForms: boolean;
+  /**
+   * Maximum estimated token budget for the snapshot (0 = unlimited).
+   * When set, elements are progressively pruned by region priority
+   * (main-content > form > modal > navigation > sidebar > header > footer)
+   * until the serialized snapshot fits within the budget.
+   * Tokens are estimated as ~4 characters per token.
+   */
+  maxTokens: number;
 }
 
 /**
@@ -56,6 +65,7 @@ export const DEFAULT_SNAPSHOT_CONFIG: SemanticSnapshotConfig = {
   maxElements: 500,
   useAnnotations: true,
   includeForms: false,
+  maxTokens: 0,
 };
 
 /**
@@ -121,11 +131,17 @@ export class SemanticSnapshotManager {
     // Find focused element
     const focusedElement = aiElements.find((el) => el.state.focused)?.id;
 
+    // Apply token budget pruning: prioritize elements by region importance
+    let budgetedElements = aiElements.slice(0, this.config.maxElements);
+    if (this.config.maxTokens > 0) {
+      budgetedElements = this.applyTokenBudget(budgetedElements, this.config.maxTokens);
+    }
+
     const snapshot: SemanticSnapshot = {
       timestamp: Date.now(),
       snapshotId,
       page: fullPageContext,
-      elements: aiElements.slice(0, this.config.maxElements),
+      elements: budgetedElements,
       forms,
       activeModals: modals,
       focusedElement,
@@ -636,6 +652,105 @@ export class SemanticSnapshotManager {
   /**
    * Add snapshot to history
    */
+  /**
+   * Region priority for token budget pruning.
+   * Higher priority regions are kept; lower priority regions are pruned first.
+   */
+  private static readonly REGION_PRIORITY: Record<string, number> = {
+    'main-content': 100,
+    form: 90,
+    modal: 85,
+    table: 80,
+    card: 75,
+    toolbar: 70,
+    navigation: 50,
+    sidebar: 40,
+    header: 30,
+    footer: 20,
+    unknown: 10,
+  };
+
+  /**
+   * Estimate token count from serialized JSON length.
+   * Uses ~4 characters per token as a rough approximation.
+   */
+  private estimateTokens(elements: AIDiscoveredElement[]): number {
+    let charCount = 0;
+    for (const el of elements) {
+      // Estimate without full serialization for performance:
+      // id + type + label + description + aliases + state keys
+      charCount += (el.id?.length ?? 0) + (el.type?.length ?? 0);
+      charCount += (el.label?.length ?? 0) + (el.description?.length ?? 0);
+      charCount += (el.purpose?.length ?? 0);
+      if (el.aliases) charCount += el.aliases.join(',').length;
+      if (el.suggestedActions) charCount += el.suggestedActions.join(',').length;
+      // State contributes ~100 chars on average
+      charCount += 100;
+      // Content metadata contributes ~50 chars on average
+      if (el.contentMetadata) charCount += 50;
+    }
+    return Math.ceil(charCount / 4);
+  }
+
+  /**
+   * Apply token budget by pruning low-priority elements.
+   * Uses region classification to determine which elements to keep.
+   * Interactive elements in main-content are prioritized highest.
+   */
+  private applyTokenBudget(
+    elements: AIDiscoveredElement[],
+    maxTokens: number
+  ): AIDiscoveredElement[] {
+    // Quick check: if already within budget, return as-is
+    if (this.estimateTokens(elements) <= maxTokens) {
+      return elements;
+    }
+
+    // Classify each element by region and assign a priority score
+    const scored = elements.map((el) => {
+      const viewportHeight =
+        (typeof window !== 'undefined' ? window.innerHeight : 0) || 800;
+      const viewportWidth =
+        (typeof window !== 'undefined' ? window.innerWidth : 0) || 1280;
+      const relativeY = (el.state?.rect?.y ?? 0) / viewportHeight;
+      const relativeX = (el.state?.rect?.x ?? 0) / viewportWidth;
+
+      const region = classifyRegionType(el, relativeY, relativeX);
+      const regionPriority =
+        SemanticSnapshotManager.REGION_PRIORITY[region.type] ?? 50;
+
+      // Boost interactive elements (buttons, inputs, links)
+      const interactiveBoost = el.type === 'content' ? 0 : 20;
+      // Boost visible elements
+      const visibleBoost = el.state?.visible ? 10 : 0;
+      // Boost focused element
+      const focusBoost = el.state?.focused ? 30 : 0;
+
+      return {
+        element: el,
+        priority: regionPriority + interactiveBoost + visibleBoost + focusBoost,
+      };
+    });
+
+    // Sort by priority descending (highest priority first)
+    scored.sort((a, b) => b.priority - a.priority);
+
+    // Progressively include elements until budget is exceeded
+    const result: AIDiscoveredElement[] = [];
+    let currentTokens = 0;
+
+    for (const { element } of scored) {
+      const elementTokens = this.estimateTokens([element]);
+      if (currentTokens + elementTokens > maxTokens && result.length > 0) {
+        break;
+      }
+      result.push(element);
+      currentTokens += elementTokens;
+    }
+
+    return result;
+  }
+
   private addToHistory(snapshot: SemanticSnapshot): void {
     this.history.push({
       snapshot,

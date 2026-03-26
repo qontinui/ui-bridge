@@ -81,6 +81,7 @@ const SUPPORTED_ACTIONS = new Set<string>([
   'setValue',
   'submit',
   'reset',
+  'autocomplete',
 ]);
 
 /**
@@ -533,6 +534,17 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
       }
       const result = await this.performAction(element, request.action, actionParams);
+
+      // Visual click feedback — show a brief highlight at the action location
+      // for observability during automation (TuriX-CUA inspired pattern)
+      try {
+        const { showElementHighlight, HIGHLIGHT_COLORS } = await import('../debug/click-highlight');
+        const highlightAction = request.action as keyof typeof HIGHLIGHT_COLORS;
+        const color = HIGHLIGHT_COLORS[highlightAction] ?? HIGHLIGHT_COLORS.click;
+        showElementHighlight(element, { color, duration: 600 });
+      } catch {
+        // Non-fatal — highlight is purely visual feedback
+      }
 
       // Brief wait to catch immediate async errors (promise rejections from click handlers)
       let consoleErrors: CapturedError[] | undefined;
@@ -1202,6 +1214,11 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performDrag(element, params as unknown as DragAction);
       case 'setValue':
         return this.performSetValue(element, params);
+      case 'autocomplete':
+        return this.performAutocomplete(
+          element,
+          params as unknown as import('./types').AutocompleteAction
+        );
       case 'submit':
         return this.performSubmit(element);
       case 'reset':
@@ -1624,8 +1641,8 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Handle select on combobox elements (Radix, headless UI, etc.)
-   * Strategy: click to open → find listbox → find option → click option
+   * Handle select on combobox elements (Radix, headless UI, MUI, Select2, Ant Design, etc.)
+   * Strategy: click to open → find listbox/dropdown → find option → click option
    */
   private performComboboxSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
     const targetValue = Array.isArray(options?.value) ? options.value[0] : options?.value;
@@ -1636,50 +1653,194 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Click to open the combobox dropdown
     element.click();
 
-    // Wait a tick for the listbox to render, then find and click the option
+    // Wait for the dropdown to render, then find and click the option.
+    // Use a retry loop because some frameworks (MUI, Ant Design) render
+    // the dropdown asynchronously after a paint cycle.
     return new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        // Find the associated listbox
-        const listboxId =
-          element.getAttribute('aria-controls') || element.getAttribute('aria-owns');
-        let listbox: Element | null = null;
-        if (listboxId) {
-          listbox = document.getElementById(listboxId);
-        }
-        if (!listbox) {
-          listbox = document.querySelector('[role="listbox"]');
-        }
-        if (!listbox) {
-          // Try finding an open popover/dropdown near the element
-          listbox = document.querySelector(
-            '[data-state="open"] [role="listbox"], [data-radix-popper-content-wrapper] [role="listbox"]'
-          );
+      let attempts = 0;
+      const maxAttempts = 5;
+      const attemptInterval = 50; // ms
+
+      const tryFindOption = (): void => {
+        attempts++;
+        const dropdown = this.findOpenDropdown(element);
+
+        if (!dropdown && attempts < maxAttempts) {
+          setTimeout(tryFindOption, attemptInterval);
+          return;
         }
 
-        if (!listbox) {
+        if (!dropdown) {
           console.warn(
-            `[ui-bridge] performComboboxSelect: listbox not found after opening combobox for value "${targetValue}"`
+            `[ui-bridge] performComboboxSelect: dropdown not found after ${maxAttempts} attempts for value "${targetValue}"`
           );
           resolve();
           return;
         }
 
-        // Find the matching option
-        const optionElements = listbox.querySelectorAll<HTMLElement>('[role="option"]');
-        for (const opt of optionElements) {
-          const optValue = opt.getAttribute('data-value') || opt.textContent?.trim() || '';
-          if (
-            optValue === targetValue ||
-            opt.textContent?.trim().toLowerCase() === targetValue.toLowerCase()
-          ) {
-            opt.click();
-            resolve();
-            return;
-          }
+        // Find matching option across various frameworks
+        const matched = this.findDropdownOption(dropdown, targetValue, options?.byLabel);
+        if (matched) {
+          matched.click();
+        } else {
+          console.warn(
+            `[ui-bridge] performComboboxSelect: option "${targetValue}" not found in dropdown`
+          );
         }
         resolve();
-      });
+      };
+
+      requestAnimationFrame(tryFindOption);
     });
+  }
+
+  /**
+   * Find the open dropdown/listbox associated with an element.
+   * Supports: ARIA listbox, Radix, MUI, Select2, Ant Design, Headless UI.
+   */
+  private findOpenDropdown(trigger: HTMLElement): Element | null {
+    // 1. ARIA listbox via aria-controls/aria-owns
+    const listboxId =
+      trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
+    if (listboxId) {
+      const el = document.getElementById(listboxId);
+      if (el) return el;
+    }
+
+    // 2. Radix / shadcn popper
+    const radixListbox = document.querySelector(
+      '[data-radix-popper-content-wrapper] [role="listbox"], [data-state="open"] [role="listbox"]'
+    );
+    if (radixListbox) return radixListbox;
+
+    // 3. Generic ARIA listbox
+    const ariaListbox = document.querySelector('[role="listbox"]');
+    if (ariaListbox) return ariaListbox;
+
+    // 4. MUI Select (renders a popover with role="presentation" containing <ul role="listbox">)
+    const muiListbox = document.querySelector(
+      '.MuiPopover-root [role="listbox"], .MuiPopper-root [role="listbox"], .MuiMenu-list'
+    );
+    if (muiListbox) return muiListbox;
+
+    // 5. Select2 (jQuery-based, renders .select2-results__options)
+    const select2Dropdown = document.querySelector(
+      '.select2-container--open .select2-results__options'
+    );
+    if (select2Dropdown) return select2Dropdown;
+
+    // 6. Ant Design (renders .ant-select-dropdown with .ant-select-item)
+    const antDropdown = document.querySelector(
+      '.ant-select-dropdown:not(.ant-select-dropdown-hidden)'
+    );
+    if (antDropdown) return antDropdown;
+
+    // 7. Headless UI listbox
+    const headlessListbox = document.querySelector(
+      '[data-headlessui-state~="open"] [role="listbox"]'
+    );
+    if (headlessListbox) return headlessListbox;
+
+    // 8. Generic open dropdown (last resort)
+    const generic = document.querySelector(
+      '[role="menu"][data-state="open"], .dropdown-menu.show'
+    );
+    return generic;
+  }
+
+  /**
+   * Find a matching option element within a dropdown container.
+   * Handles various option patterns across frameworks.
+   */
+  private findDropdownOption(
+    dropdown: Element,
+    targetValue: string,
+    byLabel?: boolean
+  ): HTMLElement | null {
+    const targetLower = targetValue.toLowerCase();
+
+    // Selector patterns for option elements across frameworks
+    const optionSelectors = [
+      '[role="option"]',                      // ARIA standard
+      '.ant-select-item-option',              // Ant Design
+      '.select2-results__option',             // Select2
+      '.MuiMenuItem-root',                    // MUI
+      '[data-headlessui-state] [role="option"]', // Headless UI
+      'li[data-value]',                       // Generic data-value
+    ];
+
+    for (const selector of optionSelectors) {
+      const options = dropdown.querySelectorAll<HTMLElement>(selector);
+      if (options.length === 0) continue;
+
+      for (const opt of options) {
+        const optDataValue = opt.getAttribute('data-value') ?? '';
+        const optText = opt.textContent?.trim() ?? '';
+
+        // Match by data-value, text content, or aria-label
+        if (byLabel || !optDataValue) {
+          if (optText === targetValue || optText.toLowerCase() === targetLower) {
+            return opt;
+          }
+        } else {
+          if (optDataValue === targetValue || optDataValue.toLowerCase() === targetLower) {
+            return opt;
+          }
+        }
+
+        // Fallback: check aria-label
+        const ariaLabel = opt.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel.toLowerCase() === targetLower) {
+          return opt;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Handle autocomplete inputs: type search text, wait for suggestions,
+   * then click the matching suggestion.
+   */
+  private async performAutocomplete(
+    element: HTMLElement,
+    options?: import('./types').AutocompleteAction
+  ): Promise<void> {
+    if (!options?.searchText) {
+      throw new Error('Autocomplete action requires searchText parameter');
+    }
+
+    const timeout = options.suggestionTimeout ?? 2000;
+    const selectValue = options.selectValue || options.searchText;
+
+    // Clear and type the search text
+    if (options.clear !== false) {
+      await this.performClear(element);
+    }
+    await this.performType(element, { text: options.searchText });
+
+    // Wait for suggestions to appear by polling for dropdown/listbox
+    const startTime = Date.now();
+    const pollInterval = 100;
+
+    while (Date.now() - startTime < timeout) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+
+      // Look for suggestion containers
+      const dropdown = this.findOpenDropdown(element);
+      if (!dropdown) continue;
+
+      const match = this.findDropdownOption(dropdown, selectValue);
+      if (match) {
+        match.click();
+        return;
+      }
+    }
+
+    throw new Error(
+      `Autocomplete: no matching suggestion for "${selectValue}" within ${timeout}ms`
+    );
   }
 
   private performFocus(element: HTMLElement): void {

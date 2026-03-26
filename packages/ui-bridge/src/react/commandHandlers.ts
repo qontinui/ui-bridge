@@ -1059,6 +1059,7 @@ export async function executeCommand(
         exact_text,
         role: filterRole,
         label: filterLabel,
+        testId: filterTestId,
       } = payload as {
         interactive_only?: boolean;
         include_hidden?: boolean;
@@ -1069,6 +1070,7 @@ export async function executeCommand(
         exact_text?: string;
         role?: string;
         label?: string;
+        testId?: string;
       };
       // Resolve the type filter: element_type takes precedence, then legacy `type`
       const filterType = element_type ?? filterTypeLegacy;
@@ -1119,6 +1121,11 @@ export async function executeCommand(
           (e) =>
             (e.label ?? '').toLowerCase() === exactLc ||
             (e.element.textContent ?? '').trim().toLowerCase() === exactLc
+        );
+      }
+      if (filterTestId) {
+        filtered = filtered.filter(
+          (e) => (e.element as HTMLElement).getAttribute('data-testid') === filterTestId
         );
       }
       return {
@@ -1527,7 +1534,9 @@ export async function executeCommand(
 
     case 'getSemanticSnapshot': {
       const { createSnapshotManager } = await import('../ai');
-      const mgr = createSnapshotManager({});
+      const mgr = createSnapshotManager({
+        maxTokens: typeof payload.maxTokens === 'number' ? payload.maxTokens : 0,
+      });
       const snap = {
         timestamp: Date.now(),
         elements: elements.map(elementToSnapshot),

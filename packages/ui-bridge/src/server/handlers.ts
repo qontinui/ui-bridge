@@ -951,6 +951,10 @@ export function createHandlers(
         const elLabel = (el.label || '').toLowerCase();
         if (!elLabel.includes(labelSearch)) return false;
       }
+      if (request.testId) {
+        const elTestId = el.testId || el.identifiers?.testId || '';
+        if (elTestId !== request.testId) return false;
+      }
       return true;
     });
   }
