@@ -1472,6 +1472,15 @@ export function createRelayHandlers(
       const events = changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);
       return success({ events, count: events.length });
     },
+
+    // Enhanced discovery — relay to browser context
+    async query(request) {
+      return relayCommand('query', request);
+    },
+
+    async waitForElement(request) {
+      return relayCommand('waitForElement', request);
+    },
   };
 
   // Expose render log entry addition for external use

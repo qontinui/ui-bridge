@@ -202,6 +202,22 @@ export interface UIBridgeServerHandlers {
 
   // Page health diagnostics
   pageHealth?: () => Promise<APIResponse<PageHealthReport>>;
+
+  // Enhanced discovery endpoints
+  query: (request: {
+    selector: string;
+    limit?: number;
+    includeState?: boolean;
+  }) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
+
+  waitForElement: (request: {
+    selector?: string;
+    elementId?: string;
+    timeout?: number;
+    pollInterval?: number;
+  }) => Promise<
+    APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>
+  >;
 }
 
 /**
@@ -306,6 +322,10 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Page health diagnostics
   { method: 'POST', path: '/control/page-health', handler: 'pageHealth' },
+
+  // Enhanced discovery & navigation
+  { method: 'POST', path: '/control/query', handler: 'query', bodyRequired: true },
+  { method: 'POST', path: '/control/waitForElement', handler: 'waitForElement', bodyRequired: true },
 ];
 
 /**

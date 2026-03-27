@@ -595,6 +595,20 @@ export interface UIBridgeServerHandlers {
 
   /** Tear down internal subscriptions and observers to prevent resource leaks. */
   destroy?: () => void;
+
+  // Enhanced discovery endpoints
+  query: (request: {
+    selector: string;
+    limit?: number;
+    includeState?: boolean;
+  }) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
+
+  waitForElement: (request: {
+    selector?: string;
+    elementId?: string;
+    timeout?: number;
+    pollInterval?: number;
+  }) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
 }
 
 /**

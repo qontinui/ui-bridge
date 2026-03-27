@@ -1552,9 +1552,20 @@ export function createHandlers(
           };
         }
 
-        // Enrich snapshot with page/route context if navigation tracker is available
+        // Enrich snapshot with page/route context
         if (navigationTracker) {
           snapshot.page = navigationTracker.getSnapshotPageContext();
+        }
+        // Fallback: always include basic page context from window.location
+        if (!snapshot.page) {
+          snapshot.page = {
+            url: window.location.href,
+            title: document.title,
+            pathname: window.location.pathname,
+            search: window.location.search,
+            hash: window.location.hash,
+            recentNavigations: [],
+          };
         }
 
         // Enrich snapshot with keyboard shortcuts if shortcut tracker is available
@@ -2285,7 +2296,18 @@ export function createHandlers(
             return error('Invalid URL format', 'INVALID_REQUEST');
           }
         }
-        window.location.href = request.url;
+        // Dispatch ui-bridge-navigate event for apps with tab-based navigation (e.g., runner)
+        // This allows navigating by tab ID (e.g., "activity-timeline") in addition to URLs
+        window.dispatchEvent(
+          new CustomEvent('ui-bridge-navigate', {
+            detail: { page: request.url, url: request.url },
+          })
+        );
+
+        // Only perform location.href navigation for actual URLs (not tab IDs)
+        if (request.url.startsWith('/') || request.url.startsWith('http')) {
+          window.location.href = request.url;
+        }
         return success({ success: true, url: request.url, timestamp: Date.now() });
       } catch (err) {
         return error((err as Error).message, 'PAGE_NAVIGATE_ERROR');
@@ -4778,6 +4800,89 @@ export function createHandlers(
         'NOT_IMPLEMENTED'
       );
     },
+
+    // =========================================================================
+    // Enhanced Discovery & Navigation
+    // =========================================================================
+
+    query: async (request: {
+      selector: string;
+      limit?: number;
+      includeState?: boolean;
+    }) => {
+      try {
+        const { selector, limit = 50, includeState = true } = request;
+        const found = document.querySelectorAll(selector);
+        const results: unknown[] = [];
+
+        for (let i = 0; i < Math.min(found.length, limit); i++) {
+          const el = found[i] as HTMLElement;
+          const info: Record<string, unknown> = {
+            tagName: el.tagName.toLowerCase(),
+            id: el.id || undefined,
+            className: el.className || undefined,
+            textContent: el.textContent?.trim().substring(0, 200) || '',
+            visible: el.offsetParent !== null,
+          };
+          if (includeState) {
+            const rect = el.getBoundingClientRect();
+            info.rect = { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              info.value = el.value;
+              info.placeholder = el.placeholder;
+              info.disabled = el.disabled;
+            }
+            if (el instanceof HTMLSelectElement) {
+              info.value = el.value;
+              info.options = Array.from(el.options).map((o) => ({ value: o.value, text: o.text, selected: o.selected }));
+            }
+            if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
+            const attrs: Record<string, string> = {};
+            for (const a of ['data-tutorial-id', 'title', 'aria-label', 'role', 'href', 'placeholder']) {
+              const v = el.getAttribute(a);
+              if (v) attrs[a] = v;
+            }
+            if (Object.keys(attrs).length > 0) info.attributes = attrs;
+          }
+          results.push(info);
+        }
+        return success({ elements: results, count: found.length });
+      } catch (err) {
+        return error((err as Error).message, 'QUERY_ERROR');
+      }
+    },
+
+    waitForElement: async (request: {
+      selector?: string;
+      elementId?: string;
+      timeout?: number;
+      pollInterval?: number;
+    }) => {
+      const { selector, elementId, timeout = 10000, pollInterval = 200 } = request;
+      const target = selector || (elementId ? `#${elementId}, [data-testid="${elementId}"]` : null);
+      if (!target) return error('Must provide selector or elementId', 'INVALID_REQUEST');
+
+      const start = Date.now();
+      return new Promise((resolve) => {
+        const check = () => {
+          const el = document.querySelector(target) as HTMLElement | null;
+          const waited = Date.now() - start;
+          if (el && el.offsetParent !== null) {
+            resolve(success({
+              found: true,
+              element: { tagName: el.tagName.toLowerCase(), id: el.id, textContent: el.textContent?.trim().substring(0, 200), visible: true },
+              waitedMs: waited,
+            }));
+          } else if (waited >= timeout) {
+            resolve(success({ found: false, waitedMs: waited }));
+          } else {
+            setTimeout(check, pollInterval);
+          }
+        };
+        check();
+      });
+    },
+
   };
 }
 
