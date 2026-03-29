@@ -16,6 +16,7 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@qontinui/ui-bridge": ["../ui-bridge/dist"],
       "@qontinui/ui-bridge/*": ["../ui-bridge/dist/*"]
