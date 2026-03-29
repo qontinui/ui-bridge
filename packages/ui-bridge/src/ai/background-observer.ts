@@ -12,7 +12,7 @@
  * ```ts
  * const observer = new BackgroundObserver({
  *   snapshotManager,
- *   createControlSnapshot: () => registry.captureSnapshot(),
+ *   createControlSnapshot: () => actionExecutor.getSnapshot(),
  *   onCapture: async (payload) => {
  *     await fetch('/api/activity-timeline', { method: 'POST', body: JSON.stringify(payload) });
  *   },
