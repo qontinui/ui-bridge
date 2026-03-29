@@ -601,7 +601,7 @@ export function createHandlers(
     executeElementAction: async (
       id: string,
       request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
-    ) => {
+    ): Promise<APIResponse<any>> => {
       const startTime = Date.now();
       try {
         // Check if element exists first
@@ -776,7 +776,7 @@ export function createHandlers(
     executeComponentAction: async (
       id: string,
       request: { action: string; params?: Record<string, unknown> }
-    ) => {
+    ): Promise<APIResponse<any>> => {
       try {
         const result = await actionExecutor.executeComponentAction(id, {
           action: request.action,
@@ -792,7 +792,7 @@ export function createHandlers(
     // Find/Discovery Handlers
     // =========================================================================
 
-    find: async (request?: unknown) => {
+    find: async (request?: unknown): Promise<APIResponse<any>> => {
       try {
         // Use actionExecutor.find() when available — it supports text, role,
         // and other filters that registry.findElements() doesn't handle
@@ -816,7 +816,7 @@ export function createHandlers(
       }
     },
 
-    discover: async (request?: unknown) => {
+    discover: async (request?: unknown): Promise<APIResponse<any>> => {
       try {
         // Use actionExecutor.find() when available for proper filtering
         if (actionExecutor.find) {
@@ -861,7 +861,7 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (id: string, request?: unknown) => {
+    runWorkflow: async (id: string, request?: unknown): Promise<APIResponse<any>> => {
       try {
         const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
         const runnerUrl = `http://localhost:${runnerPort}`;
@@ -895,7 +895,7 @@ export function createHandlers(
       }
     },
 
-    getWorkflowStatus: async (runId: string) => {
+    getWorkflowStatus: async (runId: string): Promise<APIResponse<any>> => {
       try {
         const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
         const runnerUrl = `http://localhost:${runnerPort}`;
@@ -1097,11 +1097,11 @@ export function createHandlers(
                 'function'
                 ? (el as DiscoveredElement & { getState: () => Record<string, unknown> }).getState()
                 : el.state;
-            const textContent = state?.textContent || '';
+            const textContent = String((state as any)?.textContent || '');
             const label = el.label || '';
             const accessibleName = el.accessibleName || '';
-            const placeholder = el.placeholder || '';
-            const title = el.title || '';
+            const placeholder = (el as any).placeholder || '';
+            const title = (el as any).title || '';
 
             if (label) textParts.push(label);
             if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
@@ -1278,6 +1278,53 @@ export function createHandlers(
           code: 'PAGE_HEALTH_ERROR',
           timestamp: Date.now(),
         };
+      }
+    },
+
+    query: async (request: {
+      selector: string;
+      limit?: number;
+      includeState?: boolean;
+    }): Promise<APIResponse<{ elements: unknown[]; count: number }>> => {
+      try {
+        refreshElements();
+        const allElements = registry.findElements?.({ selector: request.selector }) ??
+          registry.getAllElements();
+        const elements = request.limit
+          ? (allElements as unknown[]).slice(0, request.limit)
+          : (allElements as unknown[]);
+        return success({ elements, count: elements.length });
+      } catch (err) {
+        return error((err as Error).message, 'QUERY_ERROR') as any;
+      }
+    },
+
+    waitForElement: async (request: {
+      selector?: string;
+      elementId?: string;
+      timeout?: number;
+      pollInterval?: number;
+    }): Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>> => {
+      const timeout = request.timeout ?? 5000;
+      const pollInterval = request.pollInterval ?? 200;
+      const start = Date.now();
+      try {
+        while (Date.now() - start < timeout) {
+          refreshElements();
+          if (request.elementId) {
+            const el = registry.getElement(request.elementId);
+            if (el) return success({ found: true, element: el, waitedMs: Date.now() - start });
+          } else if (request.selector) {
+            const found = registry.findElements?.({ selector: request.selector });
+            if (found && (found as unknown[]).length > 0) {
+              return success({ found: true, element: (found as unknown[])[0], waitedMs: Date.now() - start });
+            }
+          }
+          await new Promise((r) => setTimeout(r, pollInterval));
+        }
+        return success({ found: false, waitedMs: Date.now() - start });
+      } catch (err) {
+        return error((err as Error).message, 'WAIT_ERROR') as any;
       }
     },
   };

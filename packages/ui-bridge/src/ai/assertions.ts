@@ -271,6 +271,20 @@ export class AssertionExecutor {
     target: string | SearchCriteria,
     fuzzy: boolean = true
   ): SearchResult | null {
+    // For string targets, try a literal text search first to avoid the
+    // target decomposer misinterpreting words like "Hidden" or "Disabled"
+    // as state filters (e.g., "Hidden Content" → stateFilter:"hidden", text:"Content").
+    if (typeof target === 'string') {
+      const directResult = this.searchEngine.search({
+        text: target,
+        fuzzy,
+        fuzzyThreshold: this.config.fuzzyThreshold,
+      });
+      if (directResult.bestMatch && directResult.bestMatch.confidence >= this.config.fuzzyThreshold) {
+        return directResult.bestMatch;
+      }
+    }
+
     const query: string | SearchCriteria =
       typeof target === 'string' ? target : { ...target, fuzzy };
 

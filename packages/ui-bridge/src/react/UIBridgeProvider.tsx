@@ -509,7 +509,7 @@ export function UIBridgeProvider({
     ]
   );
 
-  return <UIBridgeContext.Provider value={contextValue}>{children}</UIBridgeContext.Provider>;
+  return <UIBridgeContext value={contextValue}>{children}</UIBridgeContext>;
 }
 
 /**
