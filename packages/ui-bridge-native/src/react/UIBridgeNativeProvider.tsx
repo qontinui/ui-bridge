@@ -220,7 +220,7 @@ export function UIBridgeNativeProvider({
   );
 
   return (
-    <UIBridgeNativeContext value={contextValue}>{children}</UIBridgeNativeContext>
+    <UIBridgeNativeContext.Provider value={contextValue}>{children}</UIBridgeNativeContext.Provider>
   );
 }
 
