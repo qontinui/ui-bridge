@@ -5,7 +5,7 @@
  * This app simulates a data extraction tool with various UI elements.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useReducer, useCallback } from 'react';
 
 /**
  * Types for the test application
@@ -13,6 +13,86 @@ import React, { useState, useCallback } from 'react';
 interface ExtractionResult {
   data: string[];
   timestamp: number;
+}
+
+interface AppState {
+  // Form state
+  url: string;
+  selector: string;
+  format: 'json' | 'csv' | 'xml';
+  includeHeaders: boolean;
+  validateData: boolean;
+  // UI state
+  isExtracting: boolean;
+  statusMessage: string | null;
+  statusType: 'info' | 'success' | 'error' | 'warning';
+  results: ExtractionResult | null;
+  isModalOpen: boolean;
+}
+
+type AppAction =
+  | { type: 'SET_URL'; payload: string }
+  | { type: 'SET_SELECTOR'; payload: string }
+  | { type: 'SET_FORMAT'; payload: 'json' | 'csv' | 'xml' }
+  | { type: 'SET_INCLUDE_HEADERS'; payload: boolean }
+  | { type: 'SET_VALIDATE_DATA'; payload: boolean }
+  | { type: 'SET_EXTRACTING'; payload: boolean }
+  | { type: 'SET_STATUS'; payload: { message: string | null; statusType: 'info' | 'success' | 'error' | 'warning' } }
+  | { type: 'SET_RESULTS'; payload: ExtractionResult | null }
+  | { type: 'SET_MODAL_OPEN'; payload: boolean }
+  | { type: 'EXTRACTION_COMPLETE'; payload: ExtractionResult }
+  | { type: 'CLEAR_ALL' };
+
+const initialState: AppState = {
+  url: '',
+  selector: '',
+  format: 'json',
+  includeHeaders: true,
+  validateData: false,
+  isExtracting: false,
+  statusMessage: null,
+  statusType: 'info',
+  results: null,
+  isModalOpen: false,
+};
+
+function appReducer(state: AppState, action: AppAction): AppState {
+  switch (action.type) {
+    case 'SET_URL':
+      return { ...state, url: action.payload };
+    case 'SET_SELECTOR':
+      return { ...state, selector: action.payload };
+    case 'SET_FORMAT':
+      return { ...state, format: action.payload };
+    case 'SET_INCLUDE_HEADERS':
+      return { ...state, includeHeaders: action.payload };
+    case 'SET_VALIDATE_DATA':
+      return { ...state, validateData: action.payload };
+    case 'SET_EXTRACTING':
+      return { ...state, isExtracting: action.payload };
+    case 'SET_STATUS':
+      return { ...state, statusMessage: action.payload.message, statusType: action.payload.statusType };
+    case 'SET_RESULTS':
+      return { ...state, results: action.payload };
+    case 'SET_MODAL_OPEN':
+      return { ...state, isModalOpen: action.payload };
+    case 'EXTRACTION_COMPLETE':
+      return {
+        ...state,
+        isExtracting: false,
+        results: action.payload,
+        statusMessage: 'Extraction completed successfully!',
+        statusType: 'success',
+      };
+    case 'CLEAR_ALL':
+      return {
+        ...initialState,
+        statusMessage: 'All fields cleared',
+        statusType: 'info',
+      };
+    default:
+      return state;
+  }
 }
 
 /**
@@ -366,76 +446,49 @@ export function ConfirmationModal({
  * Main Test Application
  */
 export function TestApp(): React.ReactElement {
-  // Form state
-  const [url, setUrl] = useState('');
-  const [selector, setSelector] = useState('');
-  const [format, setFormat] = useState<'json' | 'csv' | 'xml'>('json');
-  const [includeHeaders, setIncludeHeaders] = useState(true);
-  const [validateData, setValidateData] = useState(false);
-
-  // UI state
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [statusType, setStatusType] = useState<'info' | 'success' | 'error' | 'warning'>('info');
-  const [results, setResults] = useState<ExtractionResult | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const { url, selector, format, includeHeaders, validateData, isExtracting, statusMessage, statusType, results, isModalOpen } = state;
 
   // Handlers
   const handleStartExtraction = useCallback(() => {
     if (!url) {
-      setStatusMessage('Please enter a URL');
-      setStatusType('error');
+      dispatch({ type: 'SET_STATUS', payload: { message: 'Please enter a URL', statusType: 'error' } });
       return;
     }
 
-    setIsExtracting(true);
-    setStatusMessage('Extraction in progress...');
-    setStatusType('info');
+    dispatch({ type: 'SET_EXTRACTING', payload: true });
+    dispatch({ type: 'SET_STATUS', payload: { message: 'Extraction in progress...', statusType: 'info' } });
 
     // Simulate extraction
     setTimeout(() => {
-      setIsExtracting(false);
-      setResults({
-        data: ['Item 1', 'Item 2', 'Item 3'],
-        timestamp: Date.now(),
+      dispatch({
+        type: 'EXTRACTION_COMPLETE',
+        payload: { data: ['Item 1', 'Item 2', 'Item 3'], timestamp: Date.now() },
       });
-      setStatusMessage('Extraction completed successfully!');
-      setStatusType('success');
     }, 1500);
   }, [url]);
 
   const handleCancel = useCallback(() => {
-    setIsExtracting(false);
-    setStatusMessage('Extraction cancelled');
-    setStatusType('warning');
+    dispatch({ type: 'SET_EXTRACTING', payload: false });
+    dispatch({ type: 'SET_STATUS', payload: { message: 'Extraction cancelled', statusType: 'warning' } });
   }, []);
 
   const handleClear = useCallback(() => {
-    setIsModalOpen(true);
+    dispatch({ type: 'SET_MODAL_OPEN', payload: true });
   }, []);
 
   const handleConfirmClear = useCallback(() => {
-    setUrl('');
-    setSelector('');
-    setFormat('json');
-    setIncludeHeaders(true);
-    setValidateData(false);
-    setResults(null);
-    setStatusMessage('All fields cleared');
-    setStatusType('info');
-    setIsModalOpen(false);
+    dispatch({ type: 'CLEAR_ALL' });
   }, []);
 
   const handleDownload = useCallback(() => {
-    setStatusMessage('Download started');
-    setStatusType('info');
+    dispatch({ type: 'SET_STATUS', payload: { message: 'Download started', statusType: 'info' } });
   }, []);
 
   const handleCopyToClipboard = useCallback(() => {
     if (results) {
       navigator.clipboard?.writeText(JSON.stringify(results.data, null, 2));
-      setStatusMessage('Results copied to clipboard');
-      setStatusType('success');
+      dispatch({ type: 'SET_STATUS', payload: { message: 'Results copied to clipboard', statusType: 'success' } });
     }
   }, [results]);
 
@@ -452,14 +505,14 @@ export function TestApp(): React.ReactElement {
             handleStartExtraction();
           }}
         >
-          <URLInput value={url} onChange={setUrl} disabled={isExtracting} />
-          <SelectorInput value={selector} onChange={setSelector} disabled={isExtracting} />
-          <FormatSelector value={format} onChange={setFormat} disabled={isExtracting} />
+          <URLInput value={url} onChange={(v) => dispatch({ type: 'SET_URL', payload: v })} disabled={isExtracting} />
+          <SelectorInput value={selector} onChange={(v) => dispatch({ type: 'SET_SELECTOR', payload: v })} disabled={isExtracting} />
+          <FormatSelector value={format} onChange={(v) => dispatch({ type: 'SET_FORMAT', payload: v })} disabled={isExtracting} />
           <OptionsPanel
             includeHeaders={includeHeaders}
-            onIncludeHeadersChange={setIncludeHeaders}
+            onIncludeHeadersChange={(v) => dispatch({ type: 'SET_INCLUDE_HEADERS', payload: v })}
             validateData={validateData}
-            onValidateDataChange={setValidateData}
+            onValidateDataChange={(v) => dispatch({ type: 'SET_VALIDATE_DATA', payload: v })}
             disabled={isExtracting}
           />
           <ActionButtons
@@ -483,7 +536,7 @@ export function TestApp(): React.ReactElement {
         title="Clear All Fields?"
         message="This will reset all form fields and clear any results. Are you sure?"
         onConfirm={handleConfirmClear}
-        onCancel={() => setIsModalOpen(false)}
+        onCancel={() => dispatch({ type: 'SET_MODAL_OPEN', payload: false })}
       />
     </div>
   );
