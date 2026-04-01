@@ -94,7 +94,7 @@ export class UIBridgeWSHandler {
     if (options.recording) {
       this.recordingManager = new RecordingSessionManager(
         options.recording.registry,
-        options.recording.changeObserver ?? null,
+        options.recording.changeObserver ?? null
       );
     }
   }
@@ -653,7 +653,12 @@ export class UIBridgeWSHandler {
 
   private handleRecordingStart(clientId: string, message: WSClientMessage): void {
     if (!this.recordingManager) {
-      this.sendError(clientId, message.id, 'RECORDING_UNAVAILABLE', 'Recording not configured — registry not provided');
+      this.sendError(
+        clientId,
+        message.id,
+        'RECORDING_UNAVAILABLE',
+        'Recording not configured — registry not provided'
+      );
       return;
     }
 
@@ -686,7 +691,10 @@ export class UIBridgeWSHandler {
   private handleRecordingStatus(clientId: string, message: WSClientMessage): void {
     if (!this.recordingManager) {
       this.sendResponse(clientId, message.id, true, {
-        active: false, duration: 0, interactionCount: 0, captureCount: 0,
+        active: false,
+        duration: 0,
+        interactionCount: 0,
+        captureCount: 0,
       });
       return;
     }

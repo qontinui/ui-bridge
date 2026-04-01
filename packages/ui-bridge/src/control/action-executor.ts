@@ -1700,8 +1700,7 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   private findOpenDropdown(trigger: HTMLElement): Element | null {
     // 1. ARIA listbox via aria-controls/aria-owns
-    const listboxId =
-      trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
+    const listboxId = trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
     if (listboxId) {
       const el = document.getElementById(listboxId);
       if (el) return el;
@@ -1742,9 +1741,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (headlessListbox) return headlessListbox;
 
     // 8. Generic open dropdown (last resort)
-    const generic = document.querySelector(
-      '[role="menu"][data-state="open"], .dropdown-menu.show'
-    );
+    const generic = document.querySelector('[role="menu"][data-state="open"], .dropdown-menu.show');
     return generic;
   }
 
@@ -1761,12 +1758,12 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     // Selector patterns for option elements across frameworks
     const optionSelectors = [
-      '[role="option"]',                      // ARIA standard
-      '.ant-select-item-option',              // Ant Design
-      '.select2-results__option',             // Select2
-      '.MuiMenuItem-root',                    // MUI
+      '[role="option"]', // ARIA standard
+      '.ant-select-item-option', // Ant Design
+      '.select2-results__option', // Select2
+      '.MuiMenuItem-root', // MUI
       '[data-headlessui-state] [role="option"]', // Headless UI
-      'li[data-value]',                       // Generic data-value
+      'li[data-value]', // Generic data-value
     ];
 
     for (const selector of optionSelectors) {

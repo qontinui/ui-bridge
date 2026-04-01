@@ -57,7 +57,14 @@ export interface VariableCandidate {
 // Recorded Interaction
 // ============================================================================
 
-export type InteractionActionType = 'click' | 'type' | 'select' | 'submit' | 'navigate' | 'check' | 'uncheck';
+export type InteractionActionType =
+  | 'click'
+  | 'type'
+  | 'select'
+  | 'submit'
+  | 'navigate'
+  | 'check'
+  | 'uncheck';
 
 export interface RecordedInteraction {
   id: string;

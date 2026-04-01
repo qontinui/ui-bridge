@@ -1288,8 +1288,8 @@ export function createHandlers(
     }): Promise<APIResponse<{ elements: unknown[]; count: number }>> => {
       try {
         refreshElements();
-        const allElements = registry.findElements?.({ selector: request.selector }) ??
-          registry.getAllElements();
+        const allElements =
+          registry.findElements?.({ selector: request.selector }) ?? registry.getAllElements();
         const elements = request.limit
           ? (allElements as unknown[]).slice(0, request.limit)
           : (allElements as unknown[]);
@@ -1317,7 +1317,11 @@ export function createHandlers(
           } else if (request.selector) {
             const found = registry.findElements?.({ selector: request.selector });
             if (found && (found as unknown[]).length > 0) {
-              return success({ found: true, element: (found as unknown[])[0], waitedMs: Date.now() - start });
+              return success({
+                found: true,
+                element: (found as unknown[])[0],
+                waitedMs: Date.now() - start,
+              });
             }
           }
           await new Promise((r) => setTimeout(r, pollInterval));
@@ -1330,19 +1334,44 @@ export function createHandlers(
 
     // App-agnostic convenience endpoints (stubs — browser context required)
     clickByText: async () => {
-      return { success: false, error: 'clickByText requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'clickByText requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
     clickBySelector: async () => {
-      return { success: false, error: 'clickBySelector requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'clickBySelector requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
     typeInto: async () => {
-      return { success: false, error: 'typeInto requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'typeInto requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
     readValue: async () => {
-      return { success: false, error: 'readValue requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'readValue requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
     findByText: async () => {
-      return { success: false, error: 'findByText requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'findByText requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
 
     // Diagnostics
@@ -1369,7 +1398,12 @@ export function createHandlers(
       return success([]) as any;
     },
     navigateByAdapter: async () => {
-      return { success: false, error: 'navigateByAdapter requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+      return {
+        success: false,
+        error: 'navigateByAdapter requires browser context',
+        code: 'NOT_IMPLEMENTED',
+        timestamp: Date.now(),
+      } as any;
     },
   };
 }

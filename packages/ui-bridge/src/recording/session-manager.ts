@@ -83,7 +83,7 @@ export class RecordingSessionManager {
   constructor(
     registry: UIBridgeRegistry,
     changeObserver: ChangeObserver | null = null,
-    config: RecordingSessionConfig = {},
+    config: RecordingSessionConfig = {}
   ) {
     this.registry = registry;
     this.changeObserver = changeObserver;
@@ -132,7 +132,7 @@ export class RecordingSessionManager {
       {
         filterUnregistered: this.config.filterUnregistered,
         keystrokeCoalesceMs: this.config.keystrokeCoalesceMs,
-      },
+      }
     );
     this.interceptor.start();
   }
@@ -245,7 +245,10 @@ export class RecordingSessionManager {
       this.interactions.push(recorded);
 
       // Variable detection
-      if (capturedEvent.value && (capturedEvent.actionType === 'type' || capturedEvent.actionType === 'select')) {
+      if (
+        capturedEvent.value &&
+        (capturedEvent.actionType === 'type' || capturedEvent.actionType === 'select')
+      ) {
         this.detectVariable(capturedEvent, targetFingerprint);
       }
     });
@@ -328,8 +331,9 @@ export class RecordingSessionManager {
       }
     }
 
-    const { fingerprints, hashToElementIds, elementIdToHash } =
-      computeFingerprintsWithMapping(this.registry);
+    const { fingerprints, hashToElementIds, elementIdToHash } = computeFingerprintsWithMapping(
+      this.registry
+    );
 
     // Merge into global fingerprint map
     for (const [hash, fp] of fingerprints) {
@@ -378,13 +382,14 @@ export class RecordingSessionManager {
     }
 
     const el = event.targetElement;
-    const inputType = el instanceof HTMLInputElement
-      ? el.type
-      : el instanceof HTMLSelectElement
-        ? 'select'
-        : el instanceof HTMLTextAreaElement
-          ? 'textarea'
-          : 'text';
+    const inputType =
+      el instanceof HTMLInputElement
+        ? el.type
+        : el instanceof HTMLSelectElement
+          ? 'select'
+          : el instanceof HTMLTextAreaElement
+            ? 'textarea'
+            : 'text';
 
     // Get label
     const label = this.getElementLabel(el);
@@ -518,7 +523,7 @@ export class RecordingSessionManager {
 
   private computeStateCandidates(
     allHashes: string[],
-    hashToCaptureEntries: Map<string, Array<{ id: string; timestamp: number }>>,
+    hashToCaptureEntries: Map<string, Array<{ id: string; timestamp: number }>>
   ): StateCandidateData[] {
     // Group fingerprints by their presence signature (which captures they appear in)
     const signatureGroups = new Map<string, string[]>();
@@ -571,14 +576,16 @@ function generateId(prefix: string): string {
 }
 
 function labelToCamelCase(label: string): string {
-  return label
-    .replace(/[^a-zA-Z0-9\s]/g, '')
-    .trim()
-    .split(/\s+/)
-    .map((word, i) =>
-      i === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
-    )
-    .join('') || 'field';
+  return (
+    label
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .trim()
+      .split(/\s+/)
+      .map((word, i) =>
+        i === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      )
+      .join('') || 'field'
+  );
 }
 
 function mostFrequent(items: string[]): string | undefined {

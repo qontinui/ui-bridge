@@ -634,11 +634,7 @@ export interface UIBridgeServerHandlers {
     index?: number;
   }) => Promise<APIResponse<{ value: string | null; length: number }>>;
 
-  findByText: (request: {
-    text: string;
-    tag?: string;
-    exact?: boolean;
-  }) => Promise<
+  findByText: (request: { text: string; tag?: string; exact?: boolean }) => Promise<
     APIResponse<
       Array<{
         index: number;

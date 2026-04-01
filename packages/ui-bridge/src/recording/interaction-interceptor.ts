@@ -46,7 +46,7 @@ export class InteractionInterceptor {
   constructor(
     registry: UIBridgeRegistry,
     callback: InteractionCallback,
-    config: Partial<InteractionInterceptorConfig> = {},
+    config: Partial<InteractionInterceptorConfig> = {}
   ) {
     this.registry = registry;
     this.callback = callback;
@@ -89,7 +89,9 @@ export class InteractionInterceptor {
     document.removeEventListener('keydown', this.handleKeydown, { capture: true });
   }
 
-  private resolveTarget(domTarget: EventTarget | null): { elementId: string; element: HTMLElement } | null {
+  private resolveTarget(
+    domTarget: EventTarget | null
+  ): { elementId: string; element: HTMLElement } | null {
     if (!(domTarget instanceof HTMLElement)) return null;
 
     const registered = findNearestRegisteredElement(domTarget, this.registry);
@@ -99,7 +101,12 @@ export class InteractionInterceptor {
     return { elementId: registered.id, element: registered.element };
   }
 
-  private emit(actionType: InteractionActionType, elementId: string, element: HTMLElement, value?: string): void {
+  private emit(
+    actionType: InteractionActionType,
+    elementId: string,
+    element: HTMLElement,
+    value?: string
+  ): void {
     this.callback({
       timestamp: Date.now(),
       actionType,
@@ -141,7 +148,10 @@ export class InteractionInterceptor {
 
     // Reset coalescing timer
     if (this.keystrokeTimer) clearTimeout(this.keystrokeTimer);
-    this.keystrokeTimer = setTimeout(() => this.flushKeystrokeBuffer(), this.config.keystrokeCoalesceMs);
+    this.keystrokeTimer = setTimeout(
+      () => this.flushKeystrokeBuffer(),
+      this.config.keystrokeCoalesceMs
+    );
   }
 
   private flushKeystrokeBuffer(): void {
@@ -169,7 +179,12 @@ export class InteractionInterceptor {
       this.emit('select', target.elementId, target.element, el.value);
     } else if (el instanceof HTMLInputElement) {
       if (el.type === 'checkbox') {
-        this.emit(el.checked ? 'check' : 'uncheck', target.elementId, target.element, String(el.checked));
+        this.emit(
+          el.checked ? 'check' : 'uncheck',
+          target.elementId,
+          target.element,
+          String(el.checked)
+        );
       } else if (el.type === 'radio') {
         this.emit('check', target.elementId, target.element, el.value);
       }

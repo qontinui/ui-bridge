@@ -393,7 +393,11 @@ export type {
 
 // Background Observer (screenpipe-inspired continuous capture)
 export { BackgroundObserver } from './background-observer';
-export type { BackgroundObserverConfig, BackgroundObserverDeps, TimelineCapturePayload } from './background-observer';
+export type {
+  BackgroundObserverConfig,
+  BackgroundObserverDeps,
+  TimelineCapturePayload,
+} from './background-observer';
 
 // Unified Find API
 export { find } from './find';

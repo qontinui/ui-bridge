@@ -228,7 +228,11 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
   }
 
   // For inputs: use associated label
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
     // Check for label[for]
     if (element.id) {
       const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
@@ -291,7 +295,10 @@ function computeSizeCategory(element: HTMLElement): string {
  * Find the nearest ARIA landmark context by walking up ancestors.
  * Returns { landmark, label } tuple.
  */
-function computeLandmarkContext(element: HTMLElement): { landmark: string; label: string | undefined } {
+function computeLandmarkContext(element: HTMLElement): {
+  landmark: string;
+  label: string | undefined;
+} {
   let current: HTMLElement | null = element.parentElement;
 
   while (current && current.tagName !== 'BODY' && current.tagName !== 'HTML') {
@@ -356,13 +363,22 @@ function computeRepeatPattern(element: HTMLElement): RepeatPatternData | undefin
   const itemTag = element.tagName;
   const itemClass = element.className;
   const matchingSiblings = siblings.filter(
-    (s) => s.tagName === itemTag && s.className === itemClass,
+    (s) => s.tagName === itemTag && s.className === itemClass
   );
   const index = matchingSiblings.indexOf(element);
 
   // Generate selectors
   const containerSelector = generateSimpleSelector(parent);
-  const itemSelector = `${element.tagName.toLowerCase()}${element.className ? '.' + element.className.split(/\s+/).filter(Boolean).map((c) => CSS.escape(c)).join('.') : ''}`;
+  const itemSelector = `${element.tagName.toLowerCase()}${
+    element.className
+      ? '.' +
+        element.className
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((c) => CSS.escape(c))
+          .join('.')
+      : ''
+  }`;
 
   return {
     type: containerType,
@@ -395,7 +411,7 @@ function computeHashSync(
   positionZone: string,
   role: string,
   accessibleName: string | undefined,
-  sizeCategory: string,
+  sizeCategory: string
 ): string {
   const input = `${structuralPath}|${positionZone}|${role}|${accessibleName ?? ''}|${sizeCategory}`;
 
@@ -469,7 +485,7 @@ export function computeElementFingerprint(element: HTMLElement): ElementFingerpr
  * are deduplicated — only the first is kept.
  */
 export function computeAllFingerprints(
-  registry: UIBridgeRegistry,
+  registry: UIBridgeRegistry
 ): Map<string, ElementFingerprintData> {
   const result = new Map<string, ElementFingerprintData>();
   const elements = registry.getAllElements();
@@ -494,9 +510,7 @@ export function computeAllFingerprints(
  * This is useful for the recording session to track which registered elements
  * correspond to which fingerprints.
  */
-export function computeFingerprintsWithMapping(
-  registry: UIBridgeRegistry,
-): {
+export function computeFingerprintsWithMapping(registry: UIBridgeRegistry): {
   fingerprints: Map<string, ElementFingerprintData>;
   hashToElementIds: Map<string, string[]>;
   elementIdToHash: Map<string, string>;
@@ -531,7 +545,7 @@ export function computeFingerprintsWithMapping(
  */
 export function findNearestRegisteredElement(
   target: HTMLElement,
-  registry: UIBridgeRegistry,
+  registry: UIBridgeRegistry
 ): RegisteredElement | undefined {
   let current: HTMLElement | null = target;
 

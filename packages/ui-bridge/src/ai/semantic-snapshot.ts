@@ -681,7 +681,7 @@ export class SemanticSnapshotManager {
       // id + type + label + description + aliases + state keys
       charCount += (el.id?.length ?? 0) + (el.type?.length ?? 0);
       charCount += (el.label?.length ?? 0) + (el.description?.length ?? 0);
-      charCount += (el.purpose?.length ?? 0);
+      charCount += el.purpose?.length ?? 0;
       if (el.aliases) charCount += el.aliases.join(',').length;
       if (el.suggestedActions) charCount += el.suggestedActions.join(',').length;
       // State contributes ~100 chars on average
@@ -708,16 +708,13 @@ export class SemanticSnapshotManager {
 
     // Classify each element by region and assign a priority score
     const scored = elements.map((el) => {
-      const viewportHeight =
-        (typeof window !== 'undefined' ? window.innerHeight : 0) || 800;
-      const viewportWidth =
-        (typeof window !== 'undefined' ? window.innerWidth : 0) || 1280;
+      const viewportHeight = (typeof window !== 'undefined' ? window.innerHeight : 0) || 800;
+      const viewportWidth = (typeof window !== 'undefined' ? window.innerWidth : 0) || 1280;
       const relativeY = (el.state?.rect?.y ?? 0) / viewportHeight;
       const relativeX = (el.state?.rect?.x ?? 0) / viewportWidth;
 
       const region = classifyRegionType(el, relativeY, relativeX);
-      const regionPriority =
-        SemanticSnapshotManager.REGION_PRIORITY[region.type] ?? 50;
+      const regionPriority = SemanticSnapshotManager.REGION_PRIORITY[region.type] ?? 50;
 
       // Boost interactive elements (buttons, inputs, links)
       const interactiveBoost = el.type === 'content' ? 0 : 20;

@@ -280,7 +280,10 @@ export class AssertionExecutor {
         fuzzy,
         fuzzyThreshold: this.config.fuzzyThreshold,
       });
-      if (directResult.bestMatch && directResult.bestMatch.confidence >= this.config.fuzzyThreshold) {
+      if (
+        directResult.bestMatch &&
+        directResult.bestMatch.confidence >= this.config.fuzzyThreshold
+      ) {
         return directResult.bestMatch;
       }
     }

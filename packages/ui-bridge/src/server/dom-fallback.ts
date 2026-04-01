@@ -101,7 +101,11 @@ function getLabel(el: HTMLElement): string {
   }
 
   // Associated <label> for form inputs
-  if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) {
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLSelectElement ||
+    el instanceof HTMLTextAreaElement
+  ) {
     if (el.id) {
       const label = document.querySelector<HTMLLabelElement>(`label[for="${CSS.escape(el.id)}"]`);
       if (label) return label.textContent?.trim() ?? '';
@@ -141,7 +145,12 @@ function generateId(el: HTMLElement, index: number): string {
   // Semantic fallback: tag + type + text snippet
   const tag = el.tagName.toLowerCase();
   const type = inferType(el);
-  const text = getLabel(el).slice(0, 30).replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  const text = getLabel(el)
+    .slice(0, 30)
+    .replace(/[^a-zA-Z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
   if (text) return `dom-${tag}-${text}`;
 
   return `dom-${type}-${index}`;
@@ -302,10 +311,7 @@ export function findElementBySelector(
 /**
  * Find a form element by its associated label text.
  */
-export function findElementByLabel(
-  labelText: string,
-  root?: HTMLElement
-): HTMLElement | null {
+export function findElementByLabel(labelText: string, root?: HTMLElement): HTMLElement | null {
   const container = root ?? document.body;
   if (!container) return null;
 
@@ -328,9 +334,7 @@ export function findElementByLabel(
 
   // Fallback: aria-label match (escape to prevent CSS selector injection)
   const escaped = CSS.escape(labelText);
-  const ariaMatch = container.querySelector<HTMLElement>(
-    `[aria-label*="${escaped}" i]`
-  );
+  const ariaMatch = container.querySelector<HTMLElement>(`[aria-label*="${escaped}" i]`);
   if (ariaMatch) return ariaMatch;
 
   // Fallback: placeholder match

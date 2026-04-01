@@ -18,7 +18,7 @@ function computeHashSync(
   positionZone: string,
   role: string,
   accessibleName: string | undefined,
-  sizeCategory: string,
+  sizeCategory: string
 ): string {
   const input = `${structuralPath}|${positionZone}|${role}|${accessibleName ?? ''}|${sizeCategory}`;
   let h1 = 0x811c9dc5;
@@ -55,16 +55,86 @@ const TEST_VECTORS: Array<{
 
 // Compute expected hashes and populate test vectors
 const inputs = [
-  { name: 'Button in header', structuralPath: 'header > nav > button', positionZone: 'header', role: 'button', accessibleName: 'Menu', sizeCategory: 'button' },
-  { name: 'Text input in main form', structuralPath: 'main > form > div > input', positionZone: 'main', role: 'textbox', accessibleName: 'Email', sizeCategory: 'small' },
-  { name: 'Modal dialog', structuralPath: 'div > div > dialog', positionZone: 'modal', role: 'dialog', accessibleName: 'Confirm Delete', sizeCategory: 'large' },
-  { name: 'List item in sidebar', structuralPath: 'aside > ul > li > a', positionZone: 'sidebar-left', role: 'link', accessibleName: 'Dashboard', sizeCategory: 'button' },
-  { name: 'Footer link', structuralPath: 'footer > div > a', positionZone: 'footer', role: 'link', accessibleName: 'Privacy Policy', sizeCategory: 'button' },
-  { name: 'Heading with no name', structuralPath: 'main > section > h1', positionZone: 'main', role: 'heading', accessibleName: undefined, sizeCategory: 'medium' },
-  { name: 'Select in main', structuralPath: 'main > form > select', positionZone: 'main', role: 'combobox', accessibleName: 'Country', sizeCategory: 'small' },
-  { name: 'Panel full width', structuralPath: 'main > div', positionZone: 'main', role: '', accessibleName: undefined, sizeCategory: 'panel' },
-  { name: 'Icon button', structuralPath: 'header > div > button', positionZone: 'header', role: 'button', accessibleName: 'Close', sizeCategory: 'icon' },
-  { name: 'Checkbox in form', structuralPath: 'main > form > div > input', positionZone: 'main', role: 'checkbox', accessibleName: 'Remember me', sizeCategory: 'icon' },
+  {
+    name: 'Button in header',
+    structuralPath: 'header > nav > button',
+    positionZone: 'header',
+    role: 'button',
+    accessibleName: 'Menu',
+    sizeCategory: 'button',
+  },
+  {
+    name: 'Text input in main form',
+    structuralPath: 'main > form > div > input',
+    positionZone: 'main',
+    role: 'textbox',
+    accessibleName: 'Email',
+    sizeCategory: 'small',
+  },
+  {
+    name: 'Modal dialog',
+    structuralPath: 'div > div > dialog',
+    positionZone: 'modal',
+    role: 'dialog',
+    accessibleName: 'Confirm Delete',
+    sizeCategory: 'large',
+  },
+  {
+    name: 'List item in sidebar',
+    structuralPath: 'aside > ul > li > a',
+    positionZone: 'sidebar-left',
+    role: 'link',
+    accessibleName: 'Dashboard',
+    sizeCategory: 'button',
+  },
+  {
+    name: 'Footer link',
+    structuralPath: 'footer > div > a',
+    positionZone: 'footer',
+    role: 'link',
+    accessibleName: 'Privacy Policy',
+    sizeCategory: 'button',
+  },
+  {
+    name: 'Heading with no name',
+    structuralPath: 'main > section > h1',
+    positionZone: 'main',
+    role: 'heading',
+    accessibleName: undefined,
+    sizeCategory: 'medium',
+  },
+  {
+    name: 'Select in main',
+    structuralPath: 'main > form > select',
+    positionZone: 'main',
+    role: 'combobox',
+    accessibleName: 'Country',
+    sizeCategory: 'small',
+  },
+  {
+    name: 'Panel full width',
+    structuralPath: 'main > div',
+    positionZone: 'main',
+    role: '',
+    accessibleName: undefined,
+    sizeCategory: 'panel',
+  },
+  {
+    name: 'Icon button',
+    structuralPath: 'header > div > button',
+    positionZone: 'header',
+    role: 'button',
+    accessibleName: 'Close',
+    sizeCategory: 'icon',
+  },
+  {
+    name: 'Checkbox in form',
+    structuralPath: 'main > form > div > input',
+    positionZone: 'main',
+    role: 'checkbox',
+    accessibleName: 'Remember me',
+    sizeCategory: 'icon',
+  },
 ];
 
 // Pre-compute expected hashes
@@ -74,7 +144,7 @@ for (const input of inputs) {
     input.positionZone,
     input.role,
     input.accessibleName,
-    input.sizeCategory,
+    input.sizeCategory
   );
   TEST_VECTORS.push({ ...input, expectedHash: hash });
 }
@@ -82,7 +152,13 @@ for (const input of inputs) {
 describe('Element Fingerprint Hash', () => {
   it('produces deterministic 16-char hex strings', () => {
     for (const v of TEST_VECTORS) {
-      const hash = computeHashSync(v.structuralPath, v.positionZone, v.role, v.accessibleName, v.sizeCategory);
+      const hash = computeHashSync(
+        v.structuralPath,
+        v.positionZone,
+        v.role,
+        v.accessibleName,
+        v.sizeCategory
+      );
       expect(hash).toHaveLength(16);
       expect(hash).toMatch(/^[0-9a-f]{16}$/);
     }
@@ -95,15 +171,33 @@ describe('Element Fingerprint Hash', () => {
 
   it('is consistent across calls', () => {
     for (const v of TEST_VECTORS) {
-      const hash1 = computeHashSync(v.structuralPath, v.positionZone, v.role, v.accessibleName, v.sizeCategory);
-      const hash2 = computeHashSync(v.structuralPath, v.positionZone, v.role, v.accessibleName, v.sizeCategory);
+      const hash1 = computeHashSync(
+        v.structuralPath,
+        v.positionZone,
+        v.role,
+        v.accessibleName,
+        v.sizeCategory
+      );
+      const hash2 = computeHashSync(
+        v.structuralPath,
+        v.positionZone,
+        v.role,
+        v.accessibleName,
+        v.sizeCategory
+      );
       expect(hash1).toBe(hash2);
     }
   });
 
   it('matches expected hashes (regression)', () => {
     for (const v of TEST_VECTORS) {
-      const hash = computeHashSync(v.structuralPath, v.positionZone, v.role, v.accessibleName, v.sizeCategory);
+      const hash = computeHashSync(
+        v.structuralPath,
+        v.positionZone,
+        v.role,
+        v.accessibleName,
+        v.sizeCategory
+      );
       expect(hash).toBe(v.expectedHash);
     }
   });
@@ -114,7 +208,7 @@ describe('Element Fingerprint Hash', () => {
     console.log('Copy these to test_fingerprint_hash_consistency.py\n');
     for (const v of TEST_VECTORS) {
       console.log(
-        `("${v.structuralPath}", "${v.positionZone}", "${v.role}", ${v.accessibleName === undefined ? 'None' : `"${v.accessibleName}"`}, "${v.sizeCategory}", "${v.expectedHash}"),  # ${v.name}`,
+        `("${v.structuralPath}", "${v.positionZone}", "${v.role}", ${v.accessibleName === undefined ? 'None' : `"${v.accessibleName}"`}, "${v.sizeCategory}", "${v.expectedHash}"),  # ${v.name}`
       );
     }
     console.log('\n=== END TEST VECTORS ===\n');

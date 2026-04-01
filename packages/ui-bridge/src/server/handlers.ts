@@ -2189,9 +2189,7 @@ export function createHandlers(
         if (!el) {
           return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
         }
-        const value = 'value' in el
-          ? (el as HTMLInputElement).value
-          : el.textContent ?? null;
+        const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
         return success({
           value,
           length: value?.length ?? 0,
@@ -2205,14 +2203,18 @@ export function createHandlers(
       text: string;
       tag?: string;
       exact?: boolean;
-    }): Promise<APIResponse<Array<{
-      index: number;
-      tag: string;
-      text: string;
-      rect: { x: number; y: number; width: number; height: number };
-      disabled: boolean;
-      visible: boolean;
-    }>>> => {
+    }): Promise<
+      APIResponse<
+        Array<{
+          index: number;
+          tag: string;
+          text: string;
+          rect: { x: number; y: number; width: number; height: number };
+          disabled: boolean;
+          visible: boolean;
+        }>
+      >
+    > => {
       try {
         const matches = findElementsByText(request.text, {
           tag: request.tag,
@@ -2244,20 +2246,22 @@ export function createHandlers(
     // Diagnostics Endpoint
     // =========================================================================
 
-    getDiagnostics: async (): Promise<APIResponse<{
-      sdk_initialized: boolean;
-      auto_register_active: boolean;
-      registered_elements: number;
-      dom_interactive_elements: number;
-      mutation_observer_active: boolean;
-      navigation_adapter: string;
-      page_title: string;
-      page_url: string;
-      page_ready: boolean;
-      providers_mounted: string[];
-      last_discover_at: string | null;
-      capabilities: string[];
-    }>> => {
+    getDiagnostics: async (): Promise<
+      APIResponse<{
+        sdk_initialized: boolean;
+        auto_register_active: boolean;
+        registered_elements: number;
+        dom_interactive_elements: number;
+        mutation_observer_active: boolean;
+        navigation_adapter: string;
+        page_title: string;
+        page_url: string;
+        page_ready: boolean;
+        providers_mounted: string[];
+        last_discover_at: string | null;
+        capabilities: string[];
+      }>
+    > => {
       try {
         const registeredCount = registry.getAllElements().length;
         const domCount = countDOMInteractiveElements();
@@ -5098,11 +5102,7 @@ export function createHandlers(
     // Enhanced Discovery & Navigation
     // =========================================================================
 
-    query: async (request: {
-      selector: string;
-      limit?: number;
-      includeState?: boolean;
-    }) => {
+    query: async (request: { selector: string; limit?: number; includeState?: boolean }) => {
       try {
         const { selector, limit = 50, includeState = true } = request;
         const found = document.querySelectorAll(selector);
@@ -5119,7 +5119,12 @@ export function createHandlers(
           };
           if (includeState) {
             const rect = el.getBoundingClientRect();
-            info.rect = { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+            info.rect = {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            };
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
               info.value = el.value;
               info.placeholder = el.placeholder;
@@ -5127,11 +5132,22 @@ export function createHandlers(
             }
             if (el instanceof HTMLSelectElement) {
               info.value = el.value;
-              info.options = Array.from(el.options).map((o) => ({ value: o.value, text: o.text, selected: o.selected }));
+              info.options = Array.from(el.options).map((o) => ({
+                value: o.value,
+                text: o.text,
+                selected: o.selected,
+              }));
             }
             if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
             const attrs: Record<string, string> = {};
-            for (const a of ['data-tutorial-id', 'title', 'aria-label', 'role', 'href', 'placeholder']) {
+            for (const a of [
+              'data-tutorial-id',
+              'title',
+              'aria-label',
+              'role',
+              'href',
+              'placeholder',
+            ]) {
               const v = el.getAttribute(a);
               if (v) attrs[a] = v;
             }
@@ -5161,11 +5177,18 @@ export function createHandlers(
           const el = document.querySelector(target) as HTMLElement | null;
           const waited = Date.now() - start;
           if (el && el.offsetParent !== null) {
-            resolve(success({
-              found: true,
-              element: { tagName: el.tagName.toLowerCase(), id: el.id, textContent: el.textContent?.trim().substring(0, 200), visible: true },
-              waitedMs: waited,
-            }));
+            resolve(
+              success({
+                found: true,
+                element: {
+                  tagName: el.tagName.toLowerCase(),
+                  id: el.id,
+                  textContent: el.textContent?.trim().substring(0, 200),
+                  visible: true,
+                },
+                waitedMs: waited,
+              })
+            );
           } else if (waited >= timeout) {
             resolve(success({ found: false, waitedMs: waited }));
           } else {
@@ -5175,7 +5198,6 @@ export function createHandlers(
         check();
       });
     },
-
   };
 }
 

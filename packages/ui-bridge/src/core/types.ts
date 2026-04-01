@@ -1822,10 +1822,7 @@ export interface AccessibilityIssue {
  * Accessibility validation report
  */
 // Re-export fingerprint types for convenience
-export type {
-  ElementFingerprintData,
-  RepeatPatternData,
-} from './element-fingerprint';
+export type { ElementFingerprintData, RepeatPatternData } from './element-fingerprint';
 
 export interface AccessibilityReport {
   /** When the validation was performed */

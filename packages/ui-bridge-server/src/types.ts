@@ -215,9 +215,7 @@ export interface UIBridgeServerHandlers {
     elementId?: string;
     timeout?: number;
     pollInterval?: number;
-  }) => Promise<
-    APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>
-  >;
+  }) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
 
   // App-agnostic convenience endpoints
   clickByText: (request: {
@@ -243,11 +241,7 @@ export interface UIBridgeServerHandlers {
     index?: number;
   }) => Promise<APIResponse<{ value: string | null; length: number }>>;
 
-  findByText: (request: {
-    text: string;
-    tag?: string;
-    exact?: boolean;
-  }) => Promise<
+  findByText: (request: { text: string; tag?: string; exact?: boolean }) => Promise<
     APIResponse<
       Array<{
         index: number;
@@ -375,11 +369,26 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Enhanced discovery & navigation
   { method: 'POST', path: '/control/query', handler: 'query', bodyRequired: true },
-  { method: 'POST', path: '/control/waitForElement', handler: 'waitForElement', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/waitForElement',
+    handler: 'waitForElement',
+    bodyRequired: true,
+  },
 
   // App-agnostic convenience endpoints
-  { method: 'POST', path: '/control/page/click-by-text', handler: 'clickByText', bodyRequired: true },
-  { method: 'POST', path: '/control/page/click-by-selector', handler: 'clickBySelector', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/page/click-by-text',
+    handler: 'clickByText',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/page/click-by-selector',
+    handler: 'clickBySelector',
+    bodyRequired: true,
+  },
   { method: 'POST', path: '/control/page/type-into', handler: 'typeInto', bodyRequired: true },
   { method: 'POST', path: '/control/page/read-value', handler: 'readValue', bodyRequired: true },
   { method: 'POST', path: '/control/page/find-by-text', handler: 'findByText', bodyRequired: true },
@@ -389,7 +398,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Navigation adapter
   { method: 'GET', path: '/control/page/routes', handler: 'getRoutes' },
-  { method: 'POST', path: '/control/page/navigate-to', handler: 'navigateByAdapter', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/page/navigate-to',
+    handler: 'navigateByAdapter',
+    bodyRequired: true,
+  },
 ];
 
 /**

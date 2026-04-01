@@ -111,11 +111,7 @@ function injectStyles(): void {
  * @param y - Y coordinate (viewport-relative, pixels).
  * @param options - Optional customization.
  */
-export function showClickHighlight(
-  x: number,
-  y: number,
-  options?: ClickHighlightOptions,
-): void {
+export function showClickHighlight(x: number, y: number, options?: ClickHighlightOptions): void {
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   injectStyles();
@@ -163,10 +159,7 @@ export function showClickHighlight(
  * @param element - The DOM element to highlight.
  * @param options - Optional customization.
  */
-export function showElementHighlight(
-  element: HTMLElement,
-  options?: ClickHighlightOptions,
-): void {
+export function showElementHighlight(element: HTMLElement, options?: ClickHighlightOptions): void {
   const rect = element.getBoundingClientRect();
   const centerX = rect.left + rect.width / 2;
   const centerY = rect.top + rect.height / 2;
@@ -177,10 +170,10 @@ export function showElementHighlight(
  * Color presets for different action types.
  */
 export const HIGHLIGHT_COLORS = {
-  click: '#00c800',     // Green
-  type: '#0064ff',      // Blue
-  scroll: '#ff8c00',    // Orange
-  select: '#b400b4',    // Purple
-  focus: '#00b4b4',     // Teal
-  error: '#ff0000',     // Red
+  click: '#00c800', // Green
+  type: '#0064ff', // Blue
+  scroll: '#ff8c00', // Orange
+  select: '#b400b4', // Purple
+  focus: '#00b4b4', // Teal
+  error: '#ff0000', // Red
 } as const;
