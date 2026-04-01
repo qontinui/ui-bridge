@@ -1250,7 +1250,10 @@ export type WSClientMessageType =
   | 'executeComponentAction'
   | 'executeWorkflow'
   | 'getElementHistory'
-  | 'changeEvent';
+  | 'changeEvent'
+  | 'recording:start'
+  | 'recording:stop'
+  | 'recording:status';
 
 /**
  * WebSocket message types from server to client
@@ -1414,6 +1417,29 @@ export interface WSChangeEventMessage extends WSMessageBase {
 /**
  * Union type for all client messages
  */
+/** Recording: Start recording session */
+export interface WSRecordingStartMessage extends WSMessageBase {
+  type: 'recording:start';
+  payload?: {
+    config?: {
+      debounceMs?: number;
+      maxCaptures?: number;
+      filterUnregistered?: boolean;
+      keystrokeCoalesceMs?: number;
+    };
+  };
+}
+
+/** Recording: Stop recording session */
+export interface WSRecordingStopMessage extends WSMessageBase {
+  type: 'recording:stop';
+}
+
+/** Recording: Get recording status */
+export interface WSRecordingStatusMessage extends WSMessageBase {
+  type: 'recording:status';
+}
+
 export type WSClientMessage =
   | WSSubscribeMessage
   | WSUnsubscribeMessage
@@ -1426,7 +1452,10 @@ export type WSClientMessage =
   | WSExecuteComponentActionMessage
   | WSExecuteWorkflowMessage
   | WSGetElementHistoryMessage
-  | WSChangeEventMessage;
+  | WSChangeEventMessage
+  | WSRecordingStartMessage
+  | WSRecordingStopMessage
+  | WSRecordingStatusMessage;
 
 /**
  * Server message: Welcome (sent on connection)
@@ -1792,6 +1821,12 @@ export interface AccessibilityIssue {
 /**
  * Accessibility validation report
  */
+// Re-export fingerprint types for convenience
+export type {
+  ElementFingerprintData,
+  RepeatPatternData,
+} from './element-fingerprint';
+
 export interface AccessibilityReport {
   /** When the validation was performed */
   timestamp: number;

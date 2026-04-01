@@ -22,5 +22,14 @@ export type { ChangeObserverConfig, DOMChangeEvent } from './change-observer';
 // Registry singleton accessor
 export { UIBridgeRegistry, getGlobalRegistry } from './registry';
 
+// Element fingerprinting for state discovery
+export {
+  computeElementFingerprint,
+  computeAllFingerprints,
+  computeFingerprintsWithMapping,
+  findNearestRegisteredElement,
+} from './element-fingerprint';
+export type { ElementFingerprintData, RepeatPatternData } from './element-fingerprint';
+
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';

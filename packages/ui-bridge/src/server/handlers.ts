@@ -24,6 +24,15 @@ import type {
   BatchActionRequest,
   BatchActionResponse,
 } from '../control';
+import {
+  scanDOMForInteractiveElements,
+  countDOMInteractiveElements,
+  findElementsByText,
+  findElementBySelector,
+  findElementByLabel,
+} from './dom-fallback';
+import type { NavigationAdapter } from '../navigation/navigation-adapter';
+import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, ActionErrorCode, FillResult } from '../core';
@@ -332,6 +341,11 @@ export interface CreateHandlersConfig {
    * to push change events to connected clients.
    */
   onChangeEvent?: (event: BridgeEvent) => void;
+  /**
+   * Navigation adapter for app-agnostic page navigation.
+   * If not provided, falls back to window.location navigation.
+   */
+  navigationAdapter?: NavigationAdapter;
 }
 
 /**
@@ -601,6 +615,9 @@ export function createHandlers(
 
   // Drag-drop detector for drag source and drop zone discovery
   const dragDropDetector = config.dragDropDetector ?? null;
+
+  // Navigation adapter for app-agnostic page navigation
+  const navAdapter: NavigationAdapter = config.navigationAdapter ?? new WindowLocationAdapter();
 
   // Undo tracker for undo/redo awareness
   const undoTracker = config.undoTracker ?? null;
@@ -1446,6 +1463,16 @@ export function createHandlers(
           elements = applyFindFilters(elements as any[], findRequest) as unknown[];
         }
 
+        // DOM fallback: when registry returns 0 elements, scan the DOM directly
+        if ((elements as unknown[]).length === 0) {
+          const domElements = scanDOMForInteractiveElements();
+          if (domElements.length > 0) {
+            elements = findRequest
+              ? (applyFindFilters(domElements as any[], findRequest) as unknown[])
+              : domElements;
+          }
+        }
+
         return success({
           elements,
           timestamp: Date.now(),
@@ -1482,6 +1509,16 @@ export function createHandlers(
           elements = applyFindFilters(elements as any[], findRequest) as unknown[];
         }
 
+        // DOM fallback: when registry returns 0 elements, scan the DOM directly
+        if ((elements as unknown[]).length === 0) {
+          const domElements = scanDOMForInteractiveElements();
+          if (domElements.length > 0) {
+            elements = findRequest
+              ? (applyFindFilters(domElements as any[], findRequest) as unknown[])
+              : domElements;
+          }
+        }
+
         return success({
           elements,
           timestamp: Date.now(),
@@ -1510,6 +1547,14 @@ export function createHandlers(
           await awaitDOMSettled(timeout);
         }
         const snapshot = registry.createSnapshot();
+
+        // DOM fallback: when registry has no elements, populate from DOM scan
+        if (snapshot.elements.length === 0) {
+          const domElements = scanDOMForInteractiveElements();
+          if (domElements.length > 0) {
+            snapshot.elements = domElements as any[];
+          }
+        }
 
         // Enrich snapshot with error summary if capture is available
         if (consoleCapture) {
@@ -2004,8 +2049,7 @@ export function createHandlers(
     getPageSummary: async (): Promise<APIResponse<string>> => {
       try {
         const snapshot = registry.createSnapshot();
-        // Convert snapshot elements to AI elements format for summary
-        const elements = snapshot.elements.map((el) => ({
+        let elements = snapshot.elements.map((el) => ({
           ...el,
           description: el.label || el.id,
           aliases: [],
@@ -2014,10 +2058,259 @@ export function createHandlers(
           accessibleName: el.label,
           registered: true,
         })) as any[];
+
+        // DOM fallback: when registry has no elements, scan the DOM
+        if (elements.length === 0) {
+          const domElements = scanDOMForInteractiveElements();
+          elements = domElements.map((el) => ({
+            ...el,
+            description: el.label || el.id,
+            aliases: [],
+            suggestedActions: el.actions.map((a: string) => ({ action: a })),
+            accessibleName: el.label,
+            registered: false,
+          })) as any[];
+        }
+
         const summary = generatePageSummary(elements);
         return success(summary);
       } catch (err) {
         return error((err as Error).message, 'PAGE_SUMMARY_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // App-Agnostic Convenience Endpoints
+    // =========================================================================
+
+    clickByText: async (request: {
+      text: string;
+      tag?: string;
+      exact?: boolean;
+    }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
+      try {
+        const matches = findElementsByText(request.text, {
+          tag: request.tag,
+          exact: request.exact,
+        });
+        if (matches.length === 0) {
+          return error(`No element found with text "${request.text}"`, 'ELEMENT_NOT_FOUND');
+        }
+        const el = matches[0];
+        el.click();
+        return success({
+          clicked: true,
+          element: {
+            tag: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 200) ?? '',
+            rect: el.getBoundingClientRect(),
+          },
+        });
+      } catch (err) {
+        return error((err as Error).message, 'CLICK_BY_TEXT_ERROR');
+      }
+    },
+
+    clickBySelector: async (request: {
+      selector: string;
+      index?: number;
+    }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
+      try {
+        const el = findElementBySelector(request.selector, request.index);
+        if (!el) {
+          return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
+        }
+        el.click();
+        return success({
+          clicked: true,
+          element: {
+            tag: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 200) ?? '',
+            rect: el.getBoundingClientRect(),
+          },
+        });
+      } catch (err) {
+        return error((err as Error).message, 'CLICK_BY_SELECTOR_ERROR');
+      }
+    },
+
+    typeInto: async (request: {
+      selector?: string;
+      label?: string;
+      text: string;
+      clear?: boolean;
+    }): Promise<APIResponse<{ typed: boolean; element?: unknown }>> => {
+      try {
+        let el: HTMLElement | null = null;
+        if (request.label) {
+          el = findElementByLabel(request.label);
+        } else if (request.selector) {
+          el = findElementBySelector(request.selector);
+        }
+        if (!el) {
+          return error(
+            `No input found for ${request.label ? 'label "' + request.label + '"' : 'selector "' + request.selector + '"'}`,
+            'ELEMENT_NOT_FOUND'
+          );
+        }
+        el.focus();
+        if (request.clear) {
+          if ('value' in el) {
+            (el as HTMLInputElement).value = '';
+          } else {
+            el.textContent = '';
+          }
+        }
+        if ('value' in el) {
+          (el as HTMLInputElement).value += request.text;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (el.isContentEditable) {
+          document.execCommand('insertText', false, request.text);
+        }
+        return success({
+          typed: true,
+          element: {
+            tag: el.tagName.toLowerCase(),
+            value: 'value' in el ? (el as HTMLInputElement).value : el.textContent,
+          },
+        });
+      } catch (err) {
+        return error((err as Error).message, 'TYPE_INTO_ERROR');
+      }
+    },
+
+    readValue: async (request: {
+      selector: string;
+      index?: number;
+    }): Promise<APIResponse<{ value: string | null; length: number }>> => {
+      try {
+        const el = findElementBySelector(request.selector, request.index);
+        if (!el) {
+          return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
+        }
+        const value = 'value' in el
+          ? (el as HTMLInputElement).value
+          : el.textContent ?? null;
+        return success({
+          value,
+          length: value?.length ?? 0,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'READ_VALUE_ERROR');
+      }
+    },
+
+    findByText: async (request: {
+      text: string;
+      tag?: string;
+      exact?: boolean;
+    }): Promise<APIResponse<Array<{
+      index: number;
+      tag: string;
+      text: string;
+      rect: { x: number; y: number; width: number; height: number };
+      disabled: boolean;
+      visible: boolean;
+    }>>> => {
+      try {
+        const matches = findElementsByText(request.text, {
+          tag: request.tag,
+          exact: request.exact,
+        });
+        const results = matches.map((el, i) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            index: i,
+            tag: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 200) ?? '',
+            rect: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            },
+            disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
+            visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
+          };
+        });
+        return success(results);
+      } catch (err) {
+        return error((err as Error).message, 'FIND_BY_TEXT_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Diagnostics Endpoint
+    // =========================================================================
+
+    getDiagnostics: async (): Promise<APIResponse<{
+      sdk_initialized: boolean;
+      auto_register_active: boolean;
+      registered_elements: number;
+      dom_interactive_elements: number;
+      mutation_observer_active: boolean;
+      navigation_adapter: string;
+      page_title: string;
+      page_url: string;
+      page_ready: boolean;
+      providers_mounted: string[];
+      last_discover_at: string | null;
+      capabilities: string[];
+    }>> => {
+      try {
+        const registeredCount = registry.getAllElements().length;
+        const domCount = countDOMInteractiveElements();
+        const globalBridge = typeof window !== 'undefined' ? (window as any).__UI_BRIDGE__ : null;
+
+        return success({
+          sdk_initialized: !!globalBridge,
+          auto_register_active: !!globalBridge?.autoRegisterActive,
+          registered_elements: registeredCount,
+          dom_interactive_elements: domCount,
+          mutation_observer_active: !!globalBridge?.mutationObserverActive,
+          navigation_adapter: config.navigationAdapter ? 'custom' : 'window-location',
+          page_title: typeof document !== 'undefined' ? document.title : '',
+          page_url: typeof window !== 'undefined' ? window.location.href : '',
+          page_ready: typeof document !== 'undefined' ? document.readyState === 'complete' : false,
+          providers_mounted: globalBridge?.providers ?? [],
+          last_discover_at: null,
+          capabilities: [
+            'control',
+            'find',
+            'ai',
+            ...(config.consoleCapture ? ['debug'] : []),
+            ...(config.navigationTracker ? ['navigation'] : []),
+            ...(config.navigationAdapter ? ['navigation-adapter'] : []),
+          ],
+        });
+      } catch (err) {
+        return error((err as Error).message, 'DIAGNOSTICS_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Navigation Adapter Endpoints
+    // =========================================================================
+
+    getRoutes: async (): Promise<APIResponse<Array<{ name: string; path: string }>>> => {
+      try {
+        const routes = navAdapter.getRoutes();
+        return success(routes);
+      } catch (err) {
+        return error((err as Error).message, 'GET_ROUTES_ERROR');
+      }
+    },
+
+    navigateByAdapter: async (request: {
+      page: string;
+    }): Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>> => {
+      try {
+        await navAdapter.navigate(request.page);
+        const current = navAdapter.getCurrentRoute();
+        return success({ navigated: true, route: current });
+      } catch (err) {
+        return error((err as Error).message, 'NAVIGATE_ERROR');
       }
     },
 

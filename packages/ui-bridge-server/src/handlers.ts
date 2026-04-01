@@ -1327,6 +1327,50 @@ export function createHandlers(
         return error((err as Error).message, 'WAIT_ERROR') as any;
       }
     },
+
+    // App-agnostic convenience endpoints (stubs — browser context required)
+    clickByText: async () => {
+      return { success: false, error: 'clickByText requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
+    clickBySelector: async () => {
+      return { success: false, error: 'clickBySelector requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
+    typeInto: async () => {
+      return { success: false, error: 'typeInto requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
+    readValue: async () => {
+      return { success: false, error: 'readValue requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
+    findByText: async () => {
+      return { success: false, error: 'findByText requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
+
+    // Diagnostics
+    getDiagnostics: async () => {
+      const registeredCount = registry.getAllElements().length;
+      return success({
+        sdk_initialized: true,
+        auto_register_active: false,
+        registered_elements: registeredCount,
+        dom_interactive_elements: 0,
+        mutation_observer_active: false,
+        navigation_adapter: 'none',
+        page_title: '',
+        page_url: '',
+        page_ready: true,
+        providers_mounted: [],
+        last_discover_at: null,
+        capabilities: ['control', 'find', 'ai'],
+      }) as any;
+    },
+
+    // Navigation adapter (stubs)
+    getRoutes: async () => {
+      return success([]) as any;
+    },
+    navigateByAdapter: async () => {
+      return { success: false, error: 'navigateByAdapter requires browser context', code: 'NOT_IMPLEMENTED', timestamp: Date.now() } as any;
+    },
   };
 }
 

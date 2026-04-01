@@ -18,6 +18,8 @@ import type {
   WSResponseMessage,
   WSErrorMessage,
 } from '../core';
+import { RecordingSessionManager } from '../recording/session-manager';
+import type { RecordingSessionConfig } from '../recording/types';
 
 /**
  * WebSocket-like interface for compatibility
@@ -70,14 +72,31 @@ export class UIBridgeWSHandler {
   private clients = new Map<string, ConnectedClient>();
   private verbose: boolean;
   private log: (message: string) => void;
+  private recordingManager: RecordingSessionManager | null = null;
 
   constructor(
     handlers: Partial<UIBridgeServerHandlers>,
-    options: { verbose?: boolean; log?: (message: string) => void } = {}
+    options: {
+      verbose?: boolean;
+      log?: (message: string) => void;
+      /** Registry and change observer for recording session support */
+      recording?: {
+        registry: import('../core/registry').UIBridgeRegistry;
+        changeObserver?: import('../core/change-observer').ChangeObserver;
+      };
+    } = {}
   ) {
     this.handlers = handlers;
     this.verbose = options.verbose ?? false;
     this.log = options.log ?? console.log;
+
+    // Initialize recording support if registry is provided
+    if (options.recording) {
+      this.recordingManager = new RecordingSessionManager(
+        options.recording.registry,
+        options.recording.changeObserver ?? null,
+      );
+    }
   }
 
   /**
@@ -222,6 +241,18 @@ export class UIBridgeWSHandler {
           );
           break;
         }
+
+        case 'recording:start':
+          this.handleRecordingStart(clientId, message);
+          break;
+
+        case 'recording:stop':
+          this.handleRecordingStop(clientId, message);
+          break;
+
+        case 'recording:status':
+          this.handleRecordingStatus(clientId, message);
+          break;
 
         default:
           this.sendError(
@@ -614,5 +645,53 @@ export class UIBridgeWSHandler {
       }
     }
     this.clients.clear();
+  }
+
+  // ==========================================================================
+  // Recording Handlers
+  // ==========================================================================
+
+  private handleRecordingStart(clientId: string, message: WSClientMessage): void {
+    if (!this.recordingManager) {
+      this.sendError(clientId, message.id, 'RECORDING_UNAVAILABLE', 'Recording not configured — registry not provided');
+      return;
+    }
+
+    try {
+      const config = (message as import('../core').WSRecordingStartMessage).payload?.config;
+      this.recordingManager.start(config);
+      const status = this.recordingManager.getStatus();
+      this.sendResponse(clientId, message.id, true, status);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.sendError(clientId, message.id, 'RECORDING_START_ERROR', err.message);
+    }
+  }
+
+  private handleRecordingStop(clientId: string, message: WSClientMessage): void {
+    if (!this.recordingManager) {
+      this.sendError(clientId, message.id, 'RECORDING_UNAVAILABLE', 'Recording not configured');
+      return;
+    }
+
+    try {
+      const result = this.recordingManager.stop();
+      this.sendResponse(clientId, message.id, true, result);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.sendError(clientId, message.id, 'RECORDING_STOP_ERROR', err.message);
+    }
+  }
+
+  private handleRecordingStatus(clientId: string, message: WSClientMessage): void {
+    if (!this.recordingManager) {
+      this.sendResponse(clientId, message.id, true, {
+        active: false, duration: 0, interactionCount: 0, captureCount: 0,
+      });
+      return;
+    }
+
+    const status = this.recordingManager.getStatus();
+    this.sendResponse(clientId, message.id, true, status);
   }
 }

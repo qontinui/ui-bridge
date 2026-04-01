@@ -18,3 +18,10 @@ export type {
   NavigationTrackerOptions,
   NavigationEventData,
 } from './types';
+
+export {
+  WindowLocationAdapter,
+  createReactRouterAdapter,
+  createNextjsAdapter,
+} from './navigation-adapter';
+export type { NavigationAdapter, NavigationRoute } from './navigation-adapter';

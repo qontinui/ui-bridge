@@ -218,6 +218,56 @@ export interface UIBridgeServerHandlers {
   }) => Promise<
     APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>
   >;
+
+  // App-agnostic convenience endpoints
+  clickByText: (request: {
+    text: string;
+    tag?: string;
+    exact?: boolean;
+  }) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
+
+  clickBySelector: (request: {
+    selector: string;
+    index?: number;
+  }) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
+
+  typeInto: (request: {
+    selector?: string;
+    label?: string;
+    text: string;
+    clear?: boolean;
+  }) => Promise<APIResponse<{ typed: boolean; element?: unknown }>>;
+
+  readValue: (request: {
+    selector: string;
+    index?: number;
+  }) => Promise<APIResponse<{ value: string | null; length: number }>>;
+
+  findByText: (request: {
+    text: string;
+    tag?: string;
+    exact?: boolean;
+  }) => Promise<
+    APIResponse<
+      Array<{
+        index: number;
+        tag: string;
+        text: string;
+        rect: { x: number; y: number; width: number; height: number };
+        disabled: boolean;
+        visible: boolean;
+      }>
+    >
+  >;
+
+  // Diagnostics endpoint
+  getDiagnostics: () => Promise<APIResponse<unknown>>;
+
+  // Navigation adapter endpoints
+  getRoutes: () => Promise<APIResponse<Array<{ name: string; path: string }>>>;
+  navigateByAdapter: (request: {
+    page: string;
+  }) => Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>>;
 }
 
 /**
@@ -326,6 +376,20 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Enhanced discovery & navigation
   { method: 'POST', path: '/control/query', handler: 'query', bodyRequired: true },
   { method: 'POST', path: '/control/waitForElement', handler: 'waitForElement', bodyRequired: true },
+
+  // App-agnostic convenience endpoints
+  { method: 'POST', path: '/control/page/click-by-text', handler: 'clickByText', bodyRequired: true },
+  { method: 'POST', path: '/control/page/click-by-selector', handler: 'clickBySelector', bodyRequired: true },
+  { method: 'POST', path: '/control/page/type-into', handler: 'typeInto', bodyRequired: true },
+  { method: 'POST', path: '/control/page/read-value', handler: 'readValue', bodyRequired: true },
+  { method: 'POST', path: '/control/page/find-by-text', handler: 'findByText', bodyRequired: true },
+
+  // Diagnostics
+  { method: 'GET', path: '/diagnostics', handler: 'getDiagnostics' },
+
+  // Navigation adapter
+  { method: 'GET', path: '/control/page/routes', handler: 'getRoutes' },
+  { method: 'POST', path: '/control/page/navigate-to', handler: 'navigateByAdapter', bodyRequired: true },
 ];
 
 /**

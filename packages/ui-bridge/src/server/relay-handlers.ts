@@ -1481,6 +1481,36 @@ export function createRelayHandlers(
     async waitForElement(request) {
       return relayCommand('waitForElement', request);
     },
+
+    // App-agnostic convenience endpoints
+    async clickByText(request) {
+      return relayCommand('clickByText', request);
+    },
+    async clickBySelector(request) {
+      return relayCommand('clickBySelector', request);
+    },
+    async typeInto(request) {
+      return relayCommand('typeInto', request);
+    },
+    async readValue(request) {
+      return relayCommand('readValue', request);
+    },
+    async findByText(request) {
+      return relayCommand('findByText', request);
+    },
+
+    // Diagnostics
+    async getDiagnostics() {
+      return relayCommand('getDiagnostics');
+    },
+
+    // Navigation adapter
+    async getRoutes() {
+      return relayCommand('getRoutes');
+    },
+    async navigateByAdapter(request) {
+      return relayCommand('navigateByAdapter', request);
+    },
   };
 
   // Expose render log entry addition for external use

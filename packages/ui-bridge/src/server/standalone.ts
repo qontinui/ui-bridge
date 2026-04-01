@@ -31,6 +31,11 @@ export interface StandaloneServerConfig extends UIBridgeServerConfig {
   websocketPort?: number;
   /** Logging function */
   log?: (message: string) => void;
+  /** Enable recording session support — pass the registry and optional changeObserver */
+  recording?: {
+    registry: import('../core/registry').UIBridgeRegistry;
+    changeObserver?: import('../core/change-observer').ChangeObserver;
+  };
 }
 
 /**
@@ -84,6 +89,7 @@ export class StandaloneServer {
       this.wsHandler = new UIBridgeWSHandler(handlers as UIBridgeServerHandlers, {
         verbose: true,
         log: this.config.log,
+        recording: this.config.recording,
       });
     }
   }

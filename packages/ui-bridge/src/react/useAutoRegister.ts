@@ -576,7 +576,7 @@ function generateIdForElement(
  */
 export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const {
-    enabled = process.env.NODE_ENV === 'development',
+    enabled = true,
     root = null,
     idStrategy = 'prefer-existing',
     debounceMs = 100,
