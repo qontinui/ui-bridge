@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import type { SpecConfig } from '../specs/types';
-import type { CtrConfig } from './types';
 import { DEFAULT_SELECTOR_CONFIDENCE } from './types';
 import {
   migrateSpecToCtr,

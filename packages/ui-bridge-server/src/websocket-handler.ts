@@ -153,7 +153,7 @@ export class UIBridgeWSHandler {
     let message: WSClientMessage;
     try {
       message = JSON.parse(data) as WSClientMessage;
-    } catch (error) {
+    } catch (_error) {
       this.sendError(clientId, undefined, 'PARSE_ERROR', 'Invalid JSON message');
       return;
     }

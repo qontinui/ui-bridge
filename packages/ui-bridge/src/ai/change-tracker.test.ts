@@ -2,7 +2,7 @@
  * Change Tracker Tests
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ChangeTracker, analyzeStructuredChanges } from './change-tracker';
 import type { ChangeTrackerDeps } from './change-tracker';
 import type { SemanticSnapshot, SemanticDiff } from './types';

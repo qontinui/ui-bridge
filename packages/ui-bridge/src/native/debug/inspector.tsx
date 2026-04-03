@@ -5,7 +5,7 @@
  * inspection of the UI Bridge state.
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,

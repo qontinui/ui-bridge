@@ -17,10 +17,11 @@ export default tseslint.config(
   // React flat configs
   react.configs.flat.recommended,
   react.configs.flat['jsx-runtime'],
-  reactHooks.configs['recommended-latest'],
-
   // Custom configuration
   {
+    plugins: {
+      'react-hooks': reactHooks,
+    },
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
@@ -37,18 +38,21 @@ export default tseslint.config(
     },
     settings: {
       react: {
-        version: 'detect',
+        version: '19',
       },
     },
     rules: {
       // TypeScript rules
       '@typescript-eslint/no-unused-vars': [
         'error',
-        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
+      // React Hooks rules (classic only, not React Compiler rules)
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
 
       // React rules
       'react/react-in-jsx-scope': 'off',

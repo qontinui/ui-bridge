@@ -24,7 +24,6 @@ export type RelationshipType =
   | 'navigatesTo' // A navigates to B (link -> page section)
   | 'dependsOn' // A requires B's value (city select -> country select)
   | 'owns' // A logically contains B (combobox -> listbox popup)
-  // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {}); // extensible
 
 /**

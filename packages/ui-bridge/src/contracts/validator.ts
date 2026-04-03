@@ -4,7 +4,6 @@
  * Validates .contract.uibridge.json files against the ContractConfig schema.
  */
 
-import type { ContractConfig, VerificationContract, ContractCondition } from './types';
 import { CONTRACT_CONFIG_VERSION } from './types';
 
 export interface ContractValidationError {

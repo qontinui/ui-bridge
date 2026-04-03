@@ -659,7 +659,7 @@ export function createRelayHandlers(
         }
 
         return success(result, { stale: false, cacheAgeMs: 0 });
-      } catch (e) {
+      } catch (_e) {
         // Command timed out or failed — return cached snapshot with fallback screenshot
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
         const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };

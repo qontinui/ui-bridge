@@ -31,7 +31,7 @@
  * ```
  */
 
-import React, { type ReactNode, useRef } from 'react';
+import { type ReactNode, useRef } from 'react';
 import { useAutoRegister, type AutoRegisterOptions } from './useAutoRegister';
 import type { ContentDiscoveryOptions } from './content-discovery';
 

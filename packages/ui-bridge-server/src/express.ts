@@ -99,7 +99,8 @@ export function createExpressRouter(
   config: ExpressAdapterConfig = {}
 ): Router {
   // Dynamic import to avoid bundling Express if not used
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const express = require('express');
   const router: Router = express.Router();
 
@@ -200,7 +201,8 @@ export function createExpressApp(
   handlers: UIBridgeServerHandlers,
   config: ExpressAdapterConfig = {}
 ): unknown {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const express = require('express');
   const app = express();
 

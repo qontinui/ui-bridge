@@ -19,7 +19,7 @@ import type {
   WSErrorMessage,
 } from '../core';
 import { RecordingSessionManager } from '../recording/session-manager';
-import type { RecordingSessionConfig, CooccurrenceExportData } from '../recording/types';
+import type { CooccurrenceExportData } from '../recording/types';
 
 /**
  * WebSocket-like interface for compatibility
@@ -179,7 +179,7 @@ export class UIBridgeWSHandler {
     let message: WSClientMessage;
     try {
       message = JSON.parse(data) as WSClientMessage;
-    } catch (error) {
+    } catch (_error) {
       this.sendError(clientId, undefined, 'PARSE_ERROR', 'Invalid JSON message');
       return;
     }

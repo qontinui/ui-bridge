@@ -3,14 +3,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CentralTargetRegistry, createCtrEntry, getGlobalCtr, resetGlobalCtr } from './registry';
+import { CentralTargetRegistry, createCtrEntry, resetGlobalCtr } from './registry';
 import {
   promoteSelector,
   demoteSelector,
   getViableSelectors,
   hasViableSelectors,
 } from './self-healing';
-import type { CtrEntry, CtrSelector, CtrEvent } from './types';
+import type { CtrEntry, CtrSelector } from './types';
 import {
   DEFAULT_SELECTOR_CONFIDENCE,
   CONFIDENCE_BOOST,

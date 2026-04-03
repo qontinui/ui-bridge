@@ -2071,7 +2071,7 @@ export async function executeCommand(
         return { success: false, error: 'expression is required', timestamp: Date.now() };
       }
       try {
-        // eslint-disable-next-line no-eval
+         
         const evalResult = await Promise.resolve(eval(evalExpr));
         // Ensure the result is JSON-serializable (eval can return DOM nodes, functions, etc.)
         let safeValue: unknown;
@@ -2187,13 +2187,13 @@ export async function executeCommand(
               () => {
                 try {
                   document.body.removeChild(btn);
-                } catch {}
+                } catch { /* element may already be removed */ }
                 resolve(true);
               },
               () => {
                 try {
                   document.body.removeChild(btn);
-                } catch {}
+                } catch { /* element may already be removed */ }
                 resolve(false);
               }
             );
@@ -2204,7 +2204,7 @@ export async function executeCommand(
           setTimeout(() => {
             try {
               document.body.removeChild(btn);
-            } catch {}
+            } catch { /* element may already be removed */ }
             resolve(false);
           }, 500);
         });

@@ -15,12 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { CentralTargetRegistry, createCtrEntry, resetGlobalCtr } from './ctr/registry';
-import type { CtrEntry, CtrSelector, CtrEvent } from './ctr/types';
-import {
-  DEFAULT_SELECTOR_CONFIDENCE,
-  MIN_CONFIDENCE_THRESHOLD,
-  CONFIDENCE_PENALTY,
-} from './ctr/types';
+import type { CtrEntry } from './ctr/types';
 import { getViableSelectors } from './ctr/self-healing';
 
 import { Recency, isSatisfiedBy, parseRecency, requiresFetch } from './core/recency';

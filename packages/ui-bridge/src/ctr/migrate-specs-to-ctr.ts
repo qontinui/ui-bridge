@@ -11,7 +11,6 @@ import type {
   SpecConfig,
   SpecTarget,
   SpecAssertion,
-  SpecGroup,
   AssertionCondition,
   SetupAction,
 } from '../specs/types';
@@ -45,7 +44,7 @@ export function slugify(input: string): string {
   return input
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
-    .replace(/[^a-z0-9\-\.]/g, '')
+    .replace(/[^a-z0-9\-.]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
 }

@@ -17,7 +17,6 @@ export type DragDropOrigin =
 /**
  * The type of drag operation
  */
-// eslint-disable-next-line @typescript-eslint/ban-types
 export type DragEffect = 'move' | 'copy' | 'link' | 'reorder' | (string & {});
 
 /**

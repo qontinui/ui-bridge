@@ -44,7 +44,7 @@ let qualityEvaluator: {
 } | null = null;
 
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const specs = require('@qontinui/ui-bridge/specs');
   styleValidator = specs;
   qualityEvaluator = specs;
@@ -94,7 +94,7 @@ export function createDesignHandlers(registry: NativeUIBridgeRegistry): NativeDe
   // called at handler time, not import time, so we use a lazy getter).
   function getScreenDimensions(): { width: number; height: number } {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { Dimensions } = require('react-native');
       const screen = Dimensions.get('screen');
       return { width: screen.width, height: screen.height };

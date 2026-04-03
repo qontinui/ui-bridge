@@ -157,7 +157,7 @@ export class StandaloneServer {
       wss.on('error', (error) => {
         this.config.log(`WebSocket server error: ${error.message}`);
       });
-    } catch (error) {
+    } catch (_error) {
       // ws package not installed - WebSocket support disabled
       this.config.log(
         'Warning: WebSocket support requires the "ws" package. Install it with: npm install ws'

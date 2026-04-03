@@ -15,7 +15,6 @@
 import type { UIBridgeRegistry } from '../core/registry';
 import type { ChangeObserver } from '../core/change-observer';
 import {
-  computeElementFingerprint,
   computeFingerprintsWithMapping,
   type ElementFingerprintData,
 } from '../core/element-fingerprint';
@@ -337,7 +336,7 @@ export class RecordingSessionManager {
   // Fingerprint Snapshots
   // ============================================================================
 
-  private takeCapture(triggeredBy: string): string {
+  private takeCapture(_triggeredBy: string): string {
     if (this.captures.length >= this.config.maxCaptures) {
       // Evict oldest capture that is not referenced by any transition
       const referencedIds = new Set<string>();
