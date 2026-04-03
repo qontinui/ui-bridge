@@ -1219,8 +1219,25 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       attributeFilter: ['class', 'style', 'hidden'],
     });
 
+    // Expose diagnostic flags on window.__UI_BRIDGE__
+    if (typeof window !== 'undefined') {
+      const w = window as unknown as Record<string, unknown>;
+      if (!w.__UI_BRIDGE__) w.__UI_BRIDGE__ = {};
+      (w.__UI_BRIDGE__ as Record<string, unknown>).autoRegisterActive = true;
+      (w.__UI_BRIDGE__ as Record<string, unknown>).mutationObserverActive = true;
+    }
+
     return () => {
       observer.disconnect();
+
+      // Clear diagnostic flags
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as Record<string, unknown>;
+        if (w.__UI_BRIDGE__) {
+          (w.__UI_BRIDGE__ as Record<string, unknown>).autoRegisterActive = false;
+          (w.__UI_BRIDGE__ as Record<string, unknown>).mutationObserverActive = false;
+        }
+      }
 
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);

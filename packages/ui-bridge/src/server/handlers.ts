@@ -2089,6 +2089,9 @@ export function createHandlers(
       exact?: boolean;
     }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       try {
+        if (!request.text?.trim()) {
+          return error('text is required and must not be empty', 'INVALID_PARAMS');
+        }
         const matches = findElementsByText(request.text, {
           tag: request.tag,
           exact: request.exact,
@@ -2116,6 +2119,9 @@ export function createHandlers(
       index?: number;
     }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       try {
+        if (!request.selector?.trim()) {
+          return error('selector is required and must not be empty', 'INVALID_PARAMS');
+        }
         const el = findElementBySelector(request.selector, request.index);
         if (!el) {
           return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
@@ -2141,6 +2147,9 @@ export function createHandlers(
       clear?: boolean;
     }): Promise<APIResponse<{ typed: boolean; element?: unknown }>> => {
       try {
+        if (!request.label && !request.selector) {
+          return error('Either label or selector is required', 'INVALID_PARAMS');
+        }
         let el: HTMLElement | null = null;
         if (request.label) {
           el = findElementByLabel(request.label);
@@ -2185,6 +2194,9 @@ export function createHandlers(
       index?: number;
     }): Promise<APIResponse<{ value: string | null; length: number }>> => {
       try {
+        if (!request.selector?.trim()) {
+          return error('selector is required and must not be empty', 'INVALID_PARAMS');
+        }
         const el = findElementBySelector(request.selector, request.index);
         if (!el) {
           return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
@@ -2216,6 +2228,9 @@ export function createHandlers(
       >
     > => {
       try {
+        if (!request.text?.trim()) {
+          return error('text is required and must not be empty', 'INVALID_PARAMS');
+        }
         const matches = findElementsByText(request.text, {
           tag: request.tag,
           exact: request.exact,

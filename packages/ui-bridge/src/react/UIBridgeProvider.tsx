@@ -260,6 +260,17 @@ export function UIBridgeProvider({
         relationshipTrackerRef.current;
       (w.__UI_BRIDGE__ as Record<string, unknown>).dragDropDetector = dragDropDetectorRef.current;
       (w.__UI_BRIDGE__ as Record<string, unknown>).undoTracker = undoTrackerRef.current;
+      // Expose provider list for diagnostics endpoint
+      const providers: string[] = ['UIBridgeProvider'];
+      if (browserCaptureRef.current) providers.push('BrowserCapture');
+      if (navigationTrackerRef.current) providers.push('NavigationTracker');
+      if (shortcutTrackerRef.current) providers.push('ShortcutTracker');
+      if (modalDetectorRef.current) providers.push('ModalDetector');
+      if (toastCaptureRef.current) providers.push('ToastCapture');
+      if (relationshipTrackerRef.current) providers.push('RelationshipTracker');
+      if (dragDropDetectorRef.current) providers.push('DragDropDetector');
+      if (undoTrackerRef.current) providers.push('UndoTracker');
+      (w.__UI_BRIDGE__ as Record<string, unknown>).providers = providers;
     }
   }
 
@@ -389,6 +400,14 @@ export function UIBridgeProvider({
       changeObserverRef.current?.destroy();
       wsClient?.disconnect();
       resetGlobalRegistry();
+
+      // Clear diagnostic provider list
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as Record<string, unknown>;
+        if (w.__UI_BRIDGE__) {
+          (w.__UI_BRIDGE__ as Record<string, unknown>).providers = [];
+        }
+      }
     };
   }, [renderLog, wsClient]);
 

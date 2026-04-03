@@ -273,7 +273,9 @@ export function findElementsByText(
   const container = options?.root ?? document.body;
   if (!container) return [];
 
-  const selector = options?.tag ?? '*';
+  // Validate tag is a simple tag name (no selectors/combinators) to prevent injection
+  const tag = options?.tag;
+  const selector = tag ? CSS.escape(tag) : '*';
   const candidates = container.querySelectorAll<HTMLElement>(selector);
   const results: HTMLElement[] = [];
   const searchText = text.toLowerCase();

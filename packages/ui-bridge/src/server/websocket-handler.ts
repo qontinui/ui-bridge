@@ -19,7 +19,7 @@ import type {
   WSErrorMessage,
 } from '../core';
 import { RecordingSessionManager } from '../recording/session-manager';
-import type { RecordingSessionConfig } from '../recording/types';
+import type { RecordingSessionConfig, CooccurrenceExportData } from '../recording/types';
 
 /**
  * WebSocket-like interface for compatibility
@@ -73,6 +73,7 @@ export class UIBridgeWSHandler {
   private verbose: boolean;
   private log: (message: string) => void;
   private recordingManager: RecordingSessionManager | null = null;
+  private lastAutoSavedExport: CooccurrenceExportData | null = null;
 
   constructor(
     handlers: Partial<UIBridgeServerHandlers>,
@@ -94,7 +95,13 @@ export class UIBridgeWSHandler {
     if (options.recording) {
       this.recordingManager = new RecordingSessionManager(
         options.recording.registry,
-        options.recording.changeObserver ?? null
+        options.recording.changeObserver ?? null,
+        {
+          // Wire auto-save to store exports server-side for disconnect recovery
+          onAutoSave: (partialExport) => {
+            this.lastAutoSavedExport = partialExport;
+          },
+        },
       );
     }
   }
@@ -252,6 +259,14 @@ export class UIBridgeWSHandler {
 
         case 'recording:status':
           this.handleRecordingStatus(clientId, message);
+          break;
+
+        case 'recording:autosave':
+          this.handleRecordingAutoSave(clientId, message);
+          break;
+
+        case 'recording:recover':
+          this.handleRecordingRecover(clientId, message);
           break;
 
         default:
@@ -701,5 +716,47 @@ export class UIBridgeWSHandler {
 
     const status = this.recordingManager.getStatus();
     this.sendResponse(clientId, message.id, true, status);
+  }
+
+  /**
+   * Handle recording:autosave — stores the latest auto-saved export data.
+   * Called by the client or internally when the auto-save callback fires.
+   */
+  private handleRecordingAutoSave(clientId: string, message: WSClientMessage): void {
+    try {
+      const payload = (message as WSClientMessage & { payload?: { exportData?: CooccurrenceExportData } }).payload;
+      if (payload?.exportData) {
+        this.lastAutoSavedExport = payload.exportData;
+        this.sendResponse(clientId, message.id, true, { stored: true });
+      } else {
+        this.sendError(
+          clientId,
+          message.id,
+          'AUTOSAVE_INVALID',
+          'Missing exportData in autosave payload'
+        );
+      }
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.sendError(clientId, message.id, 'AUTOSAVE_ERROR', err.message);
+    }
+  }
+
+  /**
+   * Handle recording:recover — returns the last auto-saved export data.
+   * Used by clients to recover partial recording data after a disconnect.
+   */
+  private handleRecordingRecover(clientId: string, message: WSClientMessage): void {
+    if (this.lastAutoSavedExport) {
+      this.sendResponse(clientId, message.id, true, {
+        recovered: true,
+        exportData: this.lastAutoSavedExport,
+      });
+    } else {
+      this.sendResponse(clientId, message.id, true, {
+        recovered: false,
+        exportData: null,
+      });
+    }
   }
 }

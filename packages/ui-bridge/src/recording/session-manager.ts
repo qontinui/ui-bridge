@@ -53,13 +53,16 @@ interface CaptureSnapshot {
 export class RecordingSessionManager {
   private registry: UIBridgeRegistry;
   private changeObserver: ChangeObserver | null;
-  private config: Required<RecordingSessionConfig>;
+  private config: Required<Pick<RecordingSessionConfig, 'debounceMs' | 'maxCaptures' | 'filterUnregistered' | 'keystrokeCoalesceMs' | 'autoSaveIntervalMs'>> & {
+    onAutoSave: RecordingSessionConfig['onAutoSave'];
+  };
 
   // Session state
   private sessionId: string | null = null;
   private startTime = 0;
   private active = false;
   private interceptor: InteractionInterceptor | null = null;
+  private autoSaveTimer: ReturnType<typeof setInterval> | null = null;
 
   // Collected data
   private captures: CaptureSnapshot[] = [];
@@ -92,6 +95,8 @@ export class RecordingSessionManager {
       maxCaptures: config.maxCaptures ?? 500,
       filterUnregistered: config.filterUnregistered ?? true,
       keystrokeCoalesceMs: config.keystrokeCoalesceMs ?? 100,
+      autoSaveIntervalMs: config.autoSaveIntervalMs ?? 30000,
+      onAutoSave: config.onAutoSave,
     };
   }
 
@@ -104,7 +109,10 @@ export class RecordingSessionManager {
 
     // Apply config overrides
     if (config) {
-      this.config = { ...this.config, ...config };
+      this.config = {
+        ...this.config,
+        ...config,
+      };
     }
 
     this.sessionId = generateId('session');
@@ -135,6 +143,19 @@ export class RecordingSessionManager {
       }
     );
     this.interceptor.start();
+
+    // Start periodic auto-save for crash recovery
+    if (this.config.onAutoSave && this.config.autoSaveIntervalMs > 0) {
+      this.autoSaveTimer = setInterval(() => {
+        if (!this.active) return;
+        try {
+          const partialExport = this.buildExport();
+          this.config.onAutoSave?.(partialExport);
+        } catch {
+          // Swallow errors in auto-save to avoid disrupting the recording
+        }
+      }, this.config.autoSaveIntervalMs);
+    }
   }
 
   stop(): RecordingSessionResult {
@@ -145,6 +166,12 @@ export class RecordingSessionManager {
     // Stop interceptor
     this.interceptor?.stop();
     this.interceptor = null;
+
+    // Clear auto-save interval
+    if (this.autoSaveTimer !== null) {
+      clearInterval(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
 
     // Cancel all pending settle timers
     for (const pending of this.pendingSettleTimers) {

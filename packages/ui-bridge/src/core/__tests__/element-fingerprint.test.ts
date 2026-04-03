@@ -39,115 +39,22 @@ function computeHashSync(
 
 /**
  * Shared test vectors for cross-language hash verification.
- * Each entry: [structuralPath, positionZone, role, accessibleName, sizeCategory, expectedHash]
- *
- * To verify in Python, implement the same FNV-1a algorithm and run against these inputs.
+ * Expected hashes are HARDCODED — if the hash algorithm changes, these tests
+ * MUST fail. The same values are hardcoded in Python
+ * (test_fingerprint_hash_consistency.py).
  */
-const TEST_VECTORS: Array<{
-  name: string;
-  structuralPath: string;
-  positionZone: string;
-  role: string;
-  accessibleName: string | undefined;
-  sizeCategory: string;
-  expectedHash: string;
-}> = [];
-
-// Compute expected hashes and populate test vectors
-const inputs = [
-  {
-    name: 'Button in header',
-    structuralPath: 'header > nav > button',
-    positionZone: 'header',
-    role: 'button',
-    accessibleName: 'Menu',
-    sizeCategory: 'button',
-  },
-  {
-    name: 'Text input in main form',
-    structuralPath: 'main > form > div > input',
-    positionZone: 'main',
-    role: 'textbox',
-    accessibleName: 'Email',
-    sizeCategory: 'small',
-  },
-  {
-    name: 'Modal dialog',
-    structuralPath: 'div > div > dialog',
-    positionZone: 'modal',
-    role: 'dialog',
-    accessibleName: 'Confirm Delete',
-    sizeCategory: 'large',
-  },
-  {
-    name: 'List item in sidebar',
-    structuralPath: 'aside > ul > li > a',
-    positionZone: 'sidebar-left',
-    role: 'link',
-    accessibleName: 'Dashboard',
-    sizeCategory: 'button',
-  },
-  {
-    name: 'Footer link',
-    structuralPath: 'footer > div > a',
-    positionZone: 'footer',
-    role: 'link',
-    accessibleName: 'Privacy Policy',
-    sizeCategory: 'button',
-  },
-  {
-    name: 'Heading with no name',
-    structuralPath: 'main > section > h1',
-    positionZone: 'main',
-    role: 'heading',
-    accessibleName: undefined,
-    sizeCategory: 'medium',
-  },
-  {
-    name: 'Select in main',
-    structuralPath: 'main > form > select',
-    positionZone: 'main',
-    role: 'combobox',
-    accessibleName: 'Country',
-    sizeCategory: 'small',
-  },
-  {
-    name: 'Panel full width',
-    structuralPath: 'main > div',
-    positionZone: 'main',
-    role: '',
-    accessibleName: undefined,
-    sizeCategory: 'panel',
-  },
-  {
-    name: 'Icon button',
-    structuralPath: 'header > div > button',
-    positionZone: 'header',
-    role: 'button',
-    accessibleName: 'Close',
-    sizeCategory: 'icon',
-  },
-  {
-    name: 'Checkbox in form',
-    structuralPath: 'main > form > div > input',
-    positionZone: 'main',
-    role: 'checkbox',
-    accessibleName: 'Remember me',
-    sizeCategory: 'icon',
-  },
+const TEST_VECTORS = [
+  { name: 'Button in header', structuralPath: 'header > nav > button', positionZone: 'header', role: 'button', accessibleName: 'Menu' as string | undefined, sizeCategory: 'button', expectedHash: '332bcf7901518bd9' },
+  { name: 'Text input in main form', structuralPath: 'main > form > div > input', positionZone: 'main', role: 'textbox', accessibleName: 'Email' as string | undefined, sizeCategory: 'small', expectedHash: '314e89fb4502cc0b' },
+  { name: 'Modal dialog', structuralPath: 'div > div > dialog', positionZone: 'modal', role: 'dialog', accessibleName: 'Confirm Delete' as string | undefined, sizeCategory: 'large', expectedHash: 'a94df5a4c8e52c9a' },
+  { name: 'List item in sidebar', structuralPath: 'aside > ul > li > a', positionZone: 'sidebar-left', role: 'link', accessibleName: 'Dashboard' as string | undefined, sizeCategory: 'button', expectedHash: '8174509c620d7ab2' },
+  { name: 'Footer link', structuralPath: 'footer > div > a', positionZone: 'footer', role: 'link', accessibleName: 'Privacy Policy' as string | undefined, sizeCategory: 'button', expectedHash: '4873c371fbca621d' },
+  { name: 'Heading with no name', structuralPath: 'main > section > h1', positionZone: 'main', role: 'heading', accessibleName: undefined, sizeCategory: 'medium', expectedHash: 'e5444cd6ebe1bfac' },
+  { name: 'Select in main', structuralPath: 'main > form > select', positionZone: 'main', role: 'combobox', accessibleName: 'Country' as string | undefined, sizeCategory: 'small', expectedHash: '6d8e56731c4558c7' },
+  { name: 'Panel full width', structuralPath: 'main > div', positionZone: 'main', role: '', accessibleName: undefined, sizeCategory: 'panel', expectedHash: '198907dce9e35536' },
+  { name: 'Icon button', structuralPath: 'header > div > button', positionZone: 'header', role: 'button', accessibleName: 'Close' as string | undefined, sizeCategory: 'icon', expectedHash: '87c26e378cea2acf' },
+  { name: 'Checkbox in form', structuralPath: 'main > form > div > input', positionZone: 'main', role: 'checkbox', accessibleName: 'Remember me' as string | undefined, sizeCategory: 'icon', expectedHash: 'c2d6dff7e4d85f8f' },
 ];
-
-// Pre-compute expected hashes
-for (const input of inputs) {
-  const hash = computeHashSync(
-    input.structuralPath,
-    input.positionZone,
-    input.role,
-    input.accessibleName,
-    input.sizeCategory
-  );
-  TEST_VECTORS.push({ ...input, expectedHash: hash });
-}
 
 describe('Element Fingerprint Hash', () => {
   it('produces deterministic 16-char hex strings', () => {

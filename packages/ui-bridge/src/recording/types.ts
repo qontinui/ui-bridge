@@ -23,6 +23,10 @@ export interface RecordingSessionConfig {
   filterUnregistered?: boolean;
   /** Keystroke coalescing window in ms (default: 100) */
   keystrokeCoalesceMs?: number;
+  /** Auto-save interval in ms for periodic export snapshots (default: 30000) */
+  autoSaveIntervalMs?: number;
+  /** Callback invoked periodically with a partial CooccurrenceExportData for crash recovery */
+  onAutoSave?: (partialExport: CooccurrenceExportData) => void;
 }
 
 // ============================================================================

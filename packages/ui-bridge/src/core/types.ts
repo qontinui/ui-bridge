@@ -1253,7 +1253,9 @@ export type WSClientMessageType =
   | 'changeEvent'
   | 'recording:start'
   | 'recording:stop'
-  | 'recording:status';
+  | 'recording:status'
+  | 'recording:autosave'
+  | 'recording:recover';
 
 /**
  * WebSocket message types from server to client
@@ -1426,6 +1428,7 @@ export interface WSRecordingStartMessage extends WSMessageBase {
       maxCaptures?: number;
       filterUnregistered?: boolean;
       keystrokeCoalesceMs?: number;
+      autoSaveIntervalMs?: number;
     };
   };
 }
@@ -1438,6 +1441,19 @@ export interface WSRecordingStopMessage extends WSMessageBase {
 /** Recording: Get recording status */
 export interface WSRecordingStatusMessage extends WSMessageBase {
   type: 'recording:status';
+}
+
+/** Recording: Auto-save partial export data for crash recovery */
+export interface WSRecordingAutoSaveMessage extends WSMessageBase {
+  type: 'recording:autosave';
+  payload?: {
+    exportData?: import('../recording/types').CooccurrenceExportData;
+  };
+}
+
+/** Recording: Recover last auto-saved export data */
+export interface WSRecordingRecoverMessage extends WSMessageBase {
+  type: 'recording:recover';
 }
 
 export type WSClientMessage =
@@ -1455,7 +1471,9 @@ export type WSClientMessage =
   | WSChangeEventMessage
   | WSRecordingStartMessage
   | WSRecordingStopMessage
-  | WSRecordingStatusMessage;
+  | WSRecordingStatusMessage
+  | WSRecordingAutoSaveMessage
+  | WSRecordingRecoverMessage;
 
 /**
  * Server message: Welcome (sent on connection)
