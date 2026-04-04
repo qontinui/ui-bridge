@@ -42,6 +42,7 @@ export default defineConfig([
       'path',
       'url',
       'fs',
+      '@qontinui/ui-bridge-auto',
     ],
   },
   {

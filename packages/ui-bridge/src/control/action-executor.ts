@@ -2,7 +2,34 @@
  * Action Executor
  *
  * Executes actions on registered elements and components.
+ *
+ * When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
+ * execution delegates to its canonical perform* functions. This ensures a
+ * single source of truth for action semantics across the ecosystem.
+ * When ui-bridge-auto is not installed, falls back to inline implementations.
  */
+
+// When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
+// execution delegates to its canonical performAction function.
+// Lazy-resolved on first use to avoid top-level import issues.
+type PerformActionFn = (element: HTMLElement, action: string, params?: Record<string, unknown>) => Promise<void>;
+let _canonicalPerformAction: PerformActionFn | null | undefined;
+
+function getCanonicalPerformAction(): PerformActionFn | null {
+  if (_canonicalPerformAction !== undefined) return _canonicalPerformAction;
+  try {
+    // Dynamic require — ui-bridge-auto is marked external in tsup, so this
+    // resolves at runtime only when the peer dependency is installed.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('@qontinui/ui-bridge-auto') as Record<string, unknown>;
+    _canonicalPerformAction = typeof mod.performAction === 'function'
+      ? (mod.performAction as PerformActionFn)
+      : null;
+  } catch {
+    _canonicalPerformAction = null;
+  }
+  return _canonicalPerformAction;
+}
 
 import type { UIBridgeRegistry } from '../core/registry';
 import type {
@@ -1164,6 +1191,14 @@ export class DefaultActionExecutor implements ActionExecutor {
     action: string,
     params?: Record<string, unknown>
   ): Promise<unknown> {
+    // Delegate to ui-bridge-auto's canonical action implementation if available.
+    // This ensures a single source of truth for action semantics.
+    const canonical = getCanonicalPerformAction();
+    if (canonical) {
+      return canonical(element, action, params);
+    }
+
+    // Fallback: inline implementations (used when ui-bridge-auto is not installed)
     // Auto-hover parent if element is opacity-hidden (e.g., close button revealed on hover)
     const computedStyle = window.getComputedStyle(element);
     if (parseFloat(computedStyle.opacity) === 0 && element.parentElement) {
