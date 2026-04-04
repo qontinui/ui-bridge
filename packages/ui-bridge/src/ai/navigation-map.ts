@@ -109,7 +109,6 @@ export function buildNavigationMap(
       // Exact match
       if (srcNorm === tgtNorm) {
         bestTarget = tgt;
-        bestScore = 1.0;
         break;
       }
 

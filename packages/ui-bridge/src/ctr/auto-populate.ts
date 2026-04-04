@@ -119,7 +119,7 @@ function buildSelectorsFromElement(registered: RegisteredElement): CtrSelector[]
     selectors.push({
       strategy: 'search',
       value: { idPattern: registered.id, fuzzy: false },
-      priority: priority++,
+      priority: priority,
       confidence: DEFAULT_SELECTOR_CONFIDENCE * 0.9,
     });
   }

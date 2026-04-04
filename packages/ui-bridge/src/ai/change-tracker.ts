@@ -152,7 +152,7 @@ export class ChangeTracker {
 
     // 2. Execute action
     let actionResult: unknown;
-    let actionSuccess = false;
+    let actionSuccess: boolean;
 
     if (request.instruction && this.deps.executeNLAction) {
       const nlResult = await this.deps.executeNLAction(request.instruction);

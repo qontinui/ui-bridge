@@ -297,6 +297,7 @@ export class RecordingSessionManager {
     if (this.changeObserver) {
       // Wait for ChangeObserver to report no changes for debounceMs
       let settleTimeout: ReturnType<typeof setTimeout>;
+      // eslint-disable-next-line prefer-const -- reassigned on line below via changeObserver.subscribe()
       let unsubscribe: (() => void) | undefined;
       const entry = { timer: settleTimeout!, unsubscribe: undefined as (() => void) | undefined };
 
