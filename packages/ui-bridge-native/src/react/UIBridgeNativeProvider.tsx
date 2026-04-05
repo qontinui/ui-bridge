@@ -25,6 +25,7 @@ import type {
 import { NativeUIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
+import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter } from '../server/http-server';
 
 /**
  * UI Bridge Native context value
@@ -75,6 +76,12 @@ export interface UIBridgeNativeProviderProps {
   config?: NativeUIBridgeConfig;
   /** Event handler */
   onEvent?: BridgeEventListener;
+  /**
+   * A ServerAdapter instance for the HTTP server.
+   * The app is responsible for creating this using its preferred native TCP/HTTP library.
+   * @see ServerAdapter interface in server/http-server.ts
+   */
+  serverAdapter?: ServerAdapter;
 }
 
 /**
@@ -104,6 +111,7 @@ export function UIBridgeNativeProvider({
   features = {},
   config = {},
   onEvent,
+  serverAdapter,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -127,28 +135,42 @@ export function UIBridgeNativeProvider({
 
   const executor = executorRef.current;
 
-  // Server management
-  // HTTP server start/stop requires a React Native HTTP server library (e.g., react-native-http-bridge
-  // or react-native-http-server) which must be installed as a peer dependency. Until that dependency
-  // is added, these methods log a warning and operate as no-ops.
+  // Server instance (persisted across renders)
+  const serverRef = useRef<NativeUIBridgeServer | null>(null);
+
+  // Server management — uses injected serverAdapter if provided
   const startServer = useCallback(async () => {
-    if (!features.server) {
-      console.warn('[ui-bridge-native] Server feature not enabled');
+    if (!features.server) return;
+
+    if (!serverAdapter) {
+      console.warn(
+        `[ui-bridge-native] HTTP server not available: no serverAdapter prop provided. ` +
+          `Pass a serverAdapter to UIBridgeNativeProvider to enable the HTTP server.`
+      );
       return;
     }
 
-    console.warn(
-      `[ui-bridge-native] HTTP server not available: requires a React Native HTTP server library ` +
-        `(e.g., react-native-http-bridge). Server would listen on port ${config.serverPort || 8087}.`
-    );
-    // Do not set serverRunning to true — the server is not actually running since
-    // no React Native HTTP server library is installed. Reporting true would be misleading.
-  }, [features.server, config.serverPort]);
+    const server = createNativeServer(registry, executor, {
+      serverPort: config.serverPort || 8087,
+      cors: true,
+    });
+
+    server.setAdapter(serverAdapter);
+
+    try {
+      await server.start();
+      serverRef.current = server;
+      setServerRunning(true);
+    } catch (err) {
+      console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
+    }
+  }, [features.server, config.serverPort, registry, executor, serverAdapter]);
 
   const stopServer = useCallback(() => {
-    console.warn(
-      '[ui-bridge-native] HTTP server stop is a no-op: no React Native HTTP server library installed.'
-    );
+    if (serverRef.current) {
+      serverRef.current.stop().catch(() => {});
+      serverRef.current = null;
+    }
     setServerRunning(false);
   }, []);
 

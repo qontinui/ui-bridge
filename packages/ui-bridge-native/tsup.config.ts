@@ -15,6 +15,6 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
-  external: ['react', 'react-native'],
+  external: ['react', 'react-native', 'react-native-tcp-socket'],
   treeshake: true,
 });
