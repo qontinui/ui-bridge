@@ -13,8 +13,11 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor } from '../control/types';
-import type { NativeServerConfig, NativeServerHandlers, APIResponse } from './types';
+import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, APIResponse, HandlerContext } from './types';
 import { createServerHandlers } from './handlers';
+import type { WebSocketEventBridge } from './ws-event-bridge';
+import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
+import { isBatchRequest, isSubscribe, isUnsubscribe } from './ws-types';
 
 /**
  * HTTP Request interface (library-agnostic)
@@ -56,6 +59,26 @@ export interface ServerAdapter {
 }
 
 /**
+ * WebSocket-aware server adapter interface.
+ *
+ * Extends ServerAdapter with callbacks for WebSocket connections.
+ * The adapter manages the raw TCP/WS layer; these callbacks let the
+ * UI Bridge server handle message routing and event broadcasting.
+ */
+export interface WebSocketServerAdapter extends ServerAdapter {
+  /** Called when a JSON text frame is received from a WS client. Returns response string or null. */
+  onWebSocketMessage?: (connId: string, message: string) => Promise<string | null>;
+  /** Called when a new WS connection is established after the HTTP 101 upgrade. */
+  onWebSocketConnect?: (connId: string) => void;
+  /** Called when a WS connection is closed or drops. */
+  onWebSocketDisconnect?: (connId: string) => void;
+  /** Send a message to a specific WS connection by ID. */
+  sendToConnection?: (connId: string, message: string) => void;
+  /** Send a message to all connected WS clients. */
+  broadcast?: (message: string) => void;
+}
+
+/**
  * Native UI Bridge HTTP Server
  */
 export class NativeUIBridgeServer {
@@ -82,6 +105,37 @@ export class NativeUIBridgeServer {
    */
   setAdapter(adapter: ServerAdapter): void {
     this.adapter = adapter;
+  }
+
+  /**
+   * Set a navigation provider for programmatic route navigation.
+   * This enables `control/page/navigate` and `control/page/back` on native.
+   */
+  setNavigationProvider(provider: NavigationProvider): void {
+    this.handlers.pageNavigate = async (ctx) => {
+      const url = ctx.body?.url;
+      if (!url || typeof url !== 'string') {
+        return { success: false, error: 'Missing required "url" parameter' };
+      }
+      try {
+        provider.navigate(url);
+        return { success: true, data: { url, navigated: true } };
+      } catch (e: any) {
+        return { success: false, error: `Navigation failed: ${e.message}` };
+      }
+    };
+
+    this.handlers.pageGoBack = async () => {
+      if (!provider.back) {
+        return { success: false, error: 'Back navigation not supported by this provider' };
+      }
+      try {
+        provider.back();
+        return { success: true, data: { navigated: true } };
+      } catch (e: any) {
+        return { success: false, error: `Back navigation failed: ${e.message}` };
+      }
+    };
   }
 
   /**
@@ -124,6 +178,252 @@ export class NativeUIBridgeServer {
    */
   isRunning(): boolean {
     return this.running;
+  }
+
+  // ── WebSocket Support ───────────────────────────────────────────────────
+
+  private eventBridge?: WebSocketEventBridge;
+
+  /**
+   * Set the event bridge for WebSocket event broadcasting and subscriptions.
+   */
+  setEventBridge(bridge: WebSocketEventBridge): void {
+    this.eventBridge = bridge;
+  }
+
+  /**
+   * Handle a JSON-RPC message from a WebSocket client.
+   * Parses the message, routes to the appropriate handler, and returns
+   * a JSON string response (or null for events that need no response).
+   */
+  async handleWebSocketMessage(connId: string, rawMessage: string): Promise<string | null> {
+    let msg: unknown;
+    try {
+      msg = JSON.parse(rawMessage);
+    } catch {
+      return JSON.stringify({
+        error: 'Invalid JSON',
+        timestamp: Date.now(),
+      });
+    }
+
+    if (typeof msg !== 'object' || msg === null) {
+      return JSON.stringify({
+        error: 'Message must be a JSON object',
+        timestamp: Date.now(),
+      });
+    }
+
+    const message = msg as Record<string, unknown>;
+    const id = (message.id as string | number | undefined) ?? 0;
+
+    // Handle batch requests
+    if (isBatchRequest(message)) {
+      const results = await this.handleBatchRequest(message.batch);
+      return JSON.stringify({ id, results });
+    }
+
+    // Handle subscribe
+    if (isSubscribe(message)) {
+      const events = message.params?.events || [];
+      const ok = this.eventBridge?.handleSubscribe(connId, events) ?? false;
+      return JSON.stringify({
+        id,
+        result: {
+          success: ok,
+          data: { subscribed: events },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    // Handle unsubscribe
+    if (isUnsubscribe(message)) {
+      const events = message.params?.events || [];
+      const ok = this.eventBridge?.handleUnsubscribe(connId, events) ?? false;
+      return JSON.stringify({
+        id,
+        result: {
+          success: ok,
+          data: { unsubscribed: events },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    // Standard JSON-RPC request
+    const method = message.method as string;
+    const params = (message.params || {}) as Record<string, unknown>;
+
+    if (!method) {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: 'Missing "method" field',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    try {
+      const apiResponse = await this.routeMethodToHandler(method, params);
+      return JSON.stringify({ id, result: apiResponse } satisfies JsonRpcResponse);
+    } catch (error) {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: error instanceof Error ? error.message : 'Internal error',
+          code: 'INTERNAL_ERROR',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+  }
+
+  /**
+   * Execute a batch of JSON-RPC requests concurrently.
+   */
+  async handleBatchRequest(batch: JsonRpcRequest[]): Promise<JsonRpcResponse[]> {
+    return Promise.all(
+      batch.map(async (req) => {
+        try {
+          const result = await this.routeMethodToHandler(
+            req.method,
+            (req.params || {}) as Record<string, unknown>
+          );
+          return { id: req.id, result } as JsonRpcResponse;
+        } catch (error) {
+          return {
+            id: req.id,
+            result: {
+              success: false,
+              error: error instanceof Error ? error.message : 'Internal error',
+              code: 'INTERNAL_ERROR',
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse;
+        }
+      })
+    );
+  }
+
+  /**
+   * Route a JSON-RPC method string to the appropriate handler.
+   *
+   * Method strings use the same path structure as HTTP routes but without
+   * the /ui-bridge/ prefix and with path params in the params object.
+   *
+   * Examples:
+   *   "health"                                → handlers.health
+   *   "control/snapshot"                      → handlers.getSnapshot
+   *   "control/element/{id}/action"           → handlers.executeAction (id from params)
+   *   "control/component/{id}/action/{actionId}" → handlers.executeComponentAction
+   */
+  private async routeMethodToHandler(
+    method: string,
+    params: Record<string, unknown>
+  ): Promise<APIResponse> {
+    const ctx: HandlerContext = {
+      params: {} as Record<string, string>,
+      query: {} as Record<string, string>,
+      body: params,
+    };
+
+    // Extract path params from the params object (id, actionId, etc.)
+    if (params.id) ctx.params.id = String(params.id);
+    if (params.actionId) ctx.params.actionId = String(params.actionId);
+
+    // Also pass query params if provided
+    if (params.query && typeof params.query === 'object') {
+      ctx.query = params.query as Record<string, string>;
+    }
+
+    switch (method) {
+      // Health
+      case 'health':
+        return this.handlers.health(ctx);
+
+      // Elements
+      case 'control/elements':
+        return this.handlers.getElements(ctx);
+      case 'control/element':
+        return this.handlers.getElement(ctx);
+      case 'control/element/state':
+        return this.handlers.getElementState(ctx);
+      case 'control/element/action':
+        return this.handlers.executeAction(ctx);
+
+      // Components
+      case 'control/components':
+        return this.handlers.getComponents(ctx);
+      case 'control/component':
+        return this.handlers.getComponent(ctx);
+      case 'control/component/action':
+        return this.handlers.executeComponentAction(ctx);
+
+      // Discovery
+      case 'control/find':
+        return this.handlers.find(ctx);
+      case 'control/snapshot':
+        return this.handlers.getSnapshot(ctx);
+      case 'control/discover':
+        return this.handlers.getSnapshot(ctx);
+
+      // Workflows
+      case 'control/workflows':
+        return this.handlers.getWorkflows(ctx);
+      case 'control/workflow/run':
+        return this.handlers.runWorkflow(ctx);
+
+      // Page Navigation
+      case 'control/page/refresh':
+        return this.handlers.pageRefresh(ctx);
+      case 'control/page/navigate':
+        return this.handlers.pageNavigate(ctx);
+      case 'control/page/back':
+        return this.handlers.pageGoBack(ctx);
+      case 'control/page/forward':
+        return this.handlers.pageGoForward(ctx);
+
+      // Design Review
+      case 'design/element/styles':
+        return this.handlers.getElementStyles(ctx);
+      case 'design/element/state-styles':
+        return this.handlers.getElementStateStyles(ctx);
+      case 'design/snapshot':
+        return this.handlers.getDesignSnapshot(ctx);
+      case 'design/responsive':
+        return this.handlers.getResponsiveSnapshots(ctx);
+      case 'design/audit':
+        return this.handlers.runDesignAudit(ctx);
+      case 'design/style-guide/load':
+        return this.handlers.loadStyleGuide(ctx);
+      case 'design/style-guide':
+        return this.handlers.getStyleGuide(ctx);
+      case 'design/style-guide/clear':
+        return this.handlers.clearStyleGuide(ctx);
+
+      // Quality Evaluation
+      case 'design/evaluate':
+        return this.handlers.evaluateQuality(ctx);
+      case 'design/evaluate/contexts':
+        return this.handlers.getQualityContexts(ctx);
+      case 'design/evaluate/baseline':
+        return this.handlers.saveBaseline(ctx);
+      case 'design/evaluate/diff':
+        return this.handlers.diffBaseline(ctx);
+
+      default:
+        return {
+          success: false,
+          error: `Unknown method: ${method}`,
+          code: 'NOT_FOUND',
+          timestamp: Date.now(),
+        };
+    }
   }
 
   /**
@@ -255,6 +555,20 @@ export class NativeUIBridgeServer {
     params = parsePath('/ui-bridge/control/workflow/:id/run', path);
     if (method === 'POST' && params) {
       return this.handlers.runWorkflow({ params, query, body });
+    }
+
+    // Page Navigation
+    if (method === 'POST' && path === '/ui-bridge/control/page/refresh') {
+      return this.handlers.pageRefresh({ params: {}, query, body });
+    }
+    if (method === 'POST' && path === '/ui-bridge/control/page/navigate') {
+      return this.handlers.pageNavigate({ params: {}, query, body });
+    }
+    if (method === 'POST' && path === '/ui-bridge/control/page/back') {
+      return this.handlers.pageGoBack({ params: {}, query, body });
+    }
+    if (method === 'POST' && path === '/ui-bridge/control/page/forward') {
+      return this.handlers.pageGoForward({ params: {}, query, body });
     }
 
     // Design Review

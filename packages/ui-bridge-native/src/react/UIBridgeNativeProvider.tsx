@@ -25,7 +25,8 @@ import type {
 import { NativeUIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
-import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter } from '../server/http-server';
+import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter, type WebSocketServerAdapter } from '../server/http-server';
+import { WebSocketEventBridge } from '../server/ws-event-bridge';
 
 /**
  * UI Bridge Native context value
@@ -82,6 +83,11 @@ export interface UIBridgeNativeProviderProps {
    * @see ServerAdapter interface in server/http-server.ts
    */
   serverAdapter?: ServerAdapter;
+  /**
+   * Navigation provider for programmatic route navigation via UI Bridge.
+   * Pass Expo Router's push/back functions to enable `control/page/navigate`.
+   */
+  navigationProvider?: { navigate: (url: string) => void; back?: () => void };
 }
 
 /**
@@ -112,6 +118,7 @@ export function UIBridgeNativeProvider({
   config = {},
   onEvent,
   serverAdapter,
+  navigationProvider,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -137,6 +144,7 @@ export function UIBridgeNativeProvider({
 
   // Server instance (persisted across renders)
   const serverRef = useRef<NativeUIBridgeServer | null>(null);
+  const eventBridgeRef = useRef<WebSocketEventBridge | null>(null);
 
   // Server management — uses injected serverAdapter if provided
   const startServer = useCallback(async () => {
@@ -157,6 +165,51 @@ export function UIBridgeNativeProvider({
 
     server.setAdapter(serverAdapter);
 
+    // Wire navigation provider if supplied
+    if (navigationProvider) {
+      server.setNavigationProvider(navigationProvider);
+    }
+
+    // Wire up WebSocket event bridge if adapter supports it
+    const wsAdapter = serverAdapter as WebSocketServerAdapter;
+    if (typeof wsAdapter.broadcast === 'function') {
+      const eventBridge = new WebSocketEventBridge(registry);
+      server.setEventBridge(eventBridge);
+
+      wsAdapter.onWebSocketConnect = (connId: string) => {
+        // Create a lightweight connection proxy for the event bridge
+        // The actual WebSocketConnection lives in the adapter
+        eventBridge.addConnection({
+          id: connId,
+          subscriptions: new Set(),
+          alive: true,
+          isOpen: true,
+          send: (msg: string) => wsAdapter.sendToConnection?.(connId, msg),
+          sendEvent: (event: { event: string }) => {
+            // Check subscriptions before sending
+            const conn = eventBridge['connections'].get(connId);
+            if (!conn) return;
+            if (!conn.subscriptions.has(event.event) && !conn.subscriptions.has('*')) return;
+            wsAdapter.sendToConnection?.(connId, JSON.stringify(event));
+          },
+          ping: () => { /* adapter handles heartbeat */ },
+          close: () => { /* adapter handles close */ },
+          destroy: () => { /* adapter handles destroy */ },
+        } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      };
+
+      wsAdapter.onWebSocketDisconnect = (connId: string) => {
+        eventBridge.removeConnection(connId);
+      };
+
+      wsAdapter.onWebSocketMessage = async (connId: string, message: string) => {
+        return server.handleWebSocketMessage(connId, message);
+      };
+
+      eventBridge.start();
+      eventBridgeRef.current = eventBridge;
+    }
+
     try {
       await server.start();
       serverRef.current = server;
@@ -167,6 +220,10 @@ export function UIBridgeNativeProvider({
   }, [features.server, config.serverPort, registry, executor, serverAdapter]);
 
   const stopServer = useCallback(() => {
+    if (eventBridgeRef.current) {
+      eventBridgeRef.current.stop();
+      eventBridgeRef.current = null;
+    }
     if (serverRef.current) {
       serverRef.current.stop().catch(() => {});
       serverRef.current = null;

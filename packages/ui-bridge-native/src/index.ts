@@ -132,7 +132,20 @@ export {
   type HTTPResponse,
   type RequestHandler,
   type ServerAdapter,
+  type WebSocketServerAdapter,
 } from './server/http-server';
+
+export { buildUpgradeResponse, computeAcceptKey } from './server/ws-protocol';
+export { WebSocketConnection } from './server/ws-connection';
+export type { WebSocketMessageHandler } from './server/ws-connection';
+export { WebSocketEventBridge } from './server/ws-event-bridge';
+export type {
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcEvent,
+  JsonRpcBatchRequest,
+  JsonRpcBatchResponse,
+} from './server/ws-types';
 
 // Design exports
 export {

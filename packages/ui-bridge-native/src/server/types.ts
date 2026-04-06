@@ -14,6 +14,18 @@ import type { ComponentActionResponse, PageNavigationResponse } from '../control
 import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
 
 /**
+ * Navigation provider for React Native apps.
+ *
+ * Apps supply this to enable programmatic navigation via the UI Bridge
+ * (e.g., `control/page/navigate` and `control/page/back`).
+ * For Expo Router: pass `router.push` and `router.back`.
+ */
+export interface NavigationProvider {
+  navigate: (url: string) => void;
+  back?: () => void;
+}
+
+/**
  * Server configuration
  */
 export interface NativeServerConfig extends NativeUIBridgeConfig {
