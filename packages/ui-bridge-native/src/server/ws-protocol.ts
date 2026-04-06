@@ -7,7 +7,7 @@
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const WS_GUID = '258EAFA5-E914-47DA-95CA-5AB5DC085B63';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 export const OPCODE_CONTINUATION = 0x00;
 export const OPCODE_TEXT = 0x01;
@@ -110,12 +110,27 @@ function sha1Bytes(input: Uint8Array): Uint8Array {
   return result;
 }
 
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/**
+ * Manual base64 encoder — avoids Hermes btoa() which can silently corrupt
+ * binary strings containing bytes > 127 (common in SHA-1 output).
+ */
 function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  let result = '';
+  const len = bytes.length;
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    const triplet = (b0 << 16) | (b1 << 8) | b2;
+
+    result += B64_CHARS[(triplet >> 18) & 0x3f];
+    result += B64_CHARS[(triplet >> 12) & 0x3f];
+    result += i + 1 < len ? B64_CHARS[(triplet >> 6) & 0x3f] : '=';
+    result += i + 2 < len ? B64_CHARS[triplet & 0x3f] : '=';
   }
-  return btoa(binary);
+  return result;
 }
 
 // ── Handshake ───────────────────────────────────────────────────────────────
