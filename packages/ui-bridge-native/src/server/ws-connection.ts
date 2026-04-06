@@ -152,13 +152,17 @@ export class WebSocketConnection {
   // ── Internal ────────────────────────────────────────────────────────────
 
   private writeRaw(data: Uint8Array): void {
-    // react-native-tcp-socket write() accepts Buffer/Uint8Array/string
-    // Convert to string for compatibility with all socket implementations
-    let binary = '';
-    for (let i = 0; i < data.length; i++) {
-      binary += String.fromCharCode(data[i]);
+    // react-native-tcp-socket write() accepts Buffer/Uint8Array/string.
+    // Convert to binary string for compatibility with all socket implementations.
+    // Use chunked String.fromCharCode to avoid call-stack limits on large payloads
+    // while staying O(n) instead of O(n^2) from single-char concatenation.
+    const CHUNK = 8192;
+    const parts: string[] = [];
+    for (let i = 0; i < data.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, data.length);
+      parts.push(String.fromCharCode.apply(null, data.subarray(i, end) as unknown as number[]));
     }
-    this.socket.write(binary, 'binary');
+    this.socket.write(parts.join(''), 'binary');
   }
 
   private handleData(chunk: Uint8Array): void {

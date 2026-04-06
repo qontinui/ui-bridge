@@ -227,7 +227,8 @@ export class NativeUIBridgeServer {
     // Handle subscribe
     if (isSubscribe(message)) {
       const events = message.params?.events || [];
-      const ok = this.eventBridge?.handleSubscribe(connId, events) ?? false;
+      const throttleMs = message.params?.throttleMs;
+      const ok = this.eventBridge?.handleSubscribe(connId, events, throttleMs) ?? false;
       return JSON.stringify({
         id,
         result: {

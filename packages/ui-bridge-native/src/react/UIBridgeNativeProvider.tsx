@@ -186,10 +186,7 @@ export function UIBridgeNativeProvider({
           isOpen: true,
           send: (msg: string) => wsAdapter.sendToConnection?.(connId, msg),
           sendEvent: (event: { event: string }) => {
-            // Check subscriptions before sending
-            const conn = eventBridge['connections'].get(connId);
-            if (!conn) return;
-            if (!conn.subscriptions.has(event.event) && !conn.subscriptions.has('*')) return;
+            if (!eventBridge.isSubscribed(connId, event.event)) return;
             wsAdapter.sendToConnection?.(connId, JSON.stringify(event));
           },
           ping: () => { /* adapter handles heartbeat */ },

@@ -29,8 +29,16 @@ const BRIDGE_EVENT_TYPES: BridgeEventType[] = [
   'error',
 ];
 
+/** Per-connection throttle state for batching rapid events */
+interface ThrottleState {
+  ms: number;
+  pending: JsonRpcEvent[];
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 export class WebSocketEventBridge {
   private connections = new Map<string, WebSocketConnection>();
+  private throttles = new Map<string, ThrottleState>();
   private unsubscribers: Array<() => void> = [];
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private registry: NativeUIBridgeRegistry;
@@ -68,6 +76,12 @@ export class WebSocketEventBridge {
       this.heartbeatTimer = null;
     }
 
+    // Clean up throttle timers
+    for (const throttle of this.throttles.values()) {
+      if (throttle.timer) clearTimeout(throttle.timer);
+    }
+    this.throttles.clear();
+
     // Close all connections
     for (const conn of this.connections.values()) {
       conn.close(1001, 'Server shutting down');
@@ -83,6 +97,9 @@ export class WebSocketEventBridge {
   /** Remove a WebSocket connection (called on disconnect). */
   removeConnection(connId: string): void {
     this.connections.delete(connId);
+    const throttle = this.throttles.get(connId);
+    if (throttle?.timer) clearTimeout(throttle.timer);
+    this.throttles.delete(connId);
   }
 
   /** Get the number of active connections. */
@@ -93,12 +110,16 @@ export class WebSocketEventBridge {
   /**
    * Add event subscriptions for a connection.
    * Use '*' to subscribe to all events.
+   * @param throttleMs — if >0, batch rapid events within this window before sending
    */
-  handleSubscribe(connId: string, events: string[]): boolean {
+  handleSubscribe(connId: string, events: string[], throttleMs?: number): boolean {
     const conn = this.connections.get(connId);
     if (!conn) return false;
     for (const event of events) {
       conn.subscriptions.add(event);
+    }
+    if (throttleMs && throttleMs > 0) {
+      this.throttles.set(connId, { ms: throttleMs, pending: [], timer: null });
     }
     return true;
   }
@@ -119,6 +140,13 @@ export class WebSocketEventBridge {
     return conn ? Array.from(conn.subscriptions) : [];
   }
 
+  /** Check if a connection is subscribed to a specific event (or '*'). */
+  isSubscribed(connId: string, eventType: string): boolean {
+    const conn = this.connections.get(connId);
+    if (!conn) return false;
+    return conn.subscriptions.has(eventType) || conn.subscriptions.has('*');
+  }
+
   // ── Internal ────────────────────────────────────────────────────────────
 
   private broadcastEvent(eventType: string, data: unknown): void {
@@ -128,9 +156,35 @@ export class WebSocketEventBridge {
       timestamp: Date.now(),
     };
 
-    for (const conn of this.connections.values()) {
-      conn.sendEvent(event);
+    for (const [connId, conn] of this.connections) {
+      const throttle = this.throttles.get(connId);
+      if (throttle) {
+        this.enqueueThrottled(connId, conn, throttle, event);
+      } else {
+        conn.sendEvent(event);
+      }
     }
+  }
+
+  /** Queue an event for throttled delivery, flushing after the throttle window. */
+  private enqueueThrottled(
+    connId: string,
+    conn: WebSocketConnection,
+    throttle: ThrottleState,
+    event: JsonRpcEvent
+  ): void {
+    throttle.pending.push(event);
+    if (throttle.timer) return; // Flush already scheduled
+
+    throttle.timer = setTimeout(() => {
+      const events = throttle.pending.splice(0);
+      throttle.timer = null;
+      // Verify connection still exists
+      if (!this.connections.has(connId)) return;
+      for (const e of events) {
+        conn.sendEvent(e);
+      }
+    }, throttle.ms);
   }
 
   private startHeartbeat(): void {
