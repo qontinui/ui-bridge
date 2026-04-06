@@ -88,6 +88,11 @@ export interface UIBridgeNativeProviderProps {
    * Pass Expo Router's push/back functions to enable `control/page/navigate`.
    */
   navigationProvider?: { navigate: (url: string) => void; back?: () => void };
+  /**
+   * Screenshot provider for native screen capture via UI Bridge.
+   * Pass a function that captures the current screen as base64 PNG.
+   */
+  screenshotProvider?: { capture: () => Promise<{ base64: string; width: number; height: number }> };
 }
 
 /**
@@ -119,6 +124,7 @@ export function UIBridgeNativeProvider({
   onEvent,
   serverAdapter,
   navigationProvider,
+  screenshotProvider,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -170,6 +176,11 @@ export function UIBridgeNativeProvider({
       server.setNavigationProvider(navigationProvider);
     }
 
+    // Wire screenshot provider if supplied
+    if (screenshotProvider) {
+      server.setScreenshotProvider(screenshotProvider);
+    }
+
     // Wire up WebSocket event bridge if adapter supports it
     const wsAdapter = serverAdapter as WebSocketServerAdapter;
     if (typeof wsAdapter.broadcast === 'function') {
@@ -214,7 +225,7 @@ export function UIBridgeNativeProvider({
     } catch (err) {
       console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
     }
-  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider]);
+  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider, screenshotProvider]);
 
   const stopServer = useCallback(() => {
     if (eventBridgeRef.current) {

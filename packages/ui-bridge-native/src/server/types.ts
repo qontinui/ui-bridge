@@ -26,6 +26,18 @@ export interface NavigationProvider {
 }
 
 /**
+ * Screenshot provider for React Native apps.
+ *
+ * Apps supply this to enable screen capture via the UI Bridge
+ * (`control/screenshot`). For react-native-view-shot: pass a function
+ * that calls `captureRef` on the root view and returns base64 PNG data.
+ */
+export interface ScreenshotProvider {
+  /** Capture the current screen and return base64-encoded PNG data (no data: prefix). */
+  capture: () => Promise<{ base64: string; width: number; height: number }>;
+}
+
+/**
  * Server configuration
  */
 export interface NativeServerConfig extends NativeUIBridgeConfig {
@@ -252,6 +264,9 @@ export interface NativeServerHandlers {
   pageNavigate: HandlerFunction<PageNavigationResponse>;
   pageGoBack: HandlerFunction<PageNavigationResponse>;
   pageGoForward: HandlerFunction<PageNavigationResponse>;
+
+  // Screenshot
+  getScreenshot: HandlerFunction<{ screenshot: string; width: number; height: number }>;
 
   // Design Review
   getElementStyles: HandlerFunction<ElementDesignData>;

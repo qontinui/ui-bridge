@@ -13,7 +13,7 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor, PageNavigationResponse } from '../control/types';
-import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, APIResponse, HandlerContext } from './types';
+import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, ScreenshotProvider, APIResponse, HandlerContext } from './types';
 import { createServerHandlers } from './handlers';
 import type { WebSocketEventBridge } from './ws-event-bridge';
 import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
@@ -135,6 +135,29 @@ export class NativeUIBridgeServer {
         return { success: true, data: { success: true, timestamp: Date.now() }, timestamp: Date.now() };
       } catch (e: any) {
         return { success: false, error: `Back navigation failed: ${e.message}`, timestamp: Date.now() };
+      }
+    };
+  }
+
+  /**
+   * Set a screenshot provider for native screen capture.
+   * This enables `control/screenshot` on native.
+   */
+  setScreenshotProvider(provider: ScreenshotProvider): void {
+    this.handlers.getScreenshot = async () => {
+      try {
+        const result = await provider.capture();
+        return {
+          success: true,
+          data: { screenshot: result.base64, width: result.width, height: result.height },
+          timestamp: Date.now(),
+        };
+      } catch (e: any) {
+        return {
+          success: false,
+          error: `Screenshot capture failed: ${e.message}`,
+          timestamp: Date.now(),
+        };
       }
     };
   }
@@ -390,6 +413,10 @@ export class NativeUIBridgeServer {
       case 'control/page/forward':
         return this.handlers.pageGoForward(ctx);
 
+      // Screenshot
+      case 'control/screenshot':
+        return this.handlers.getScreenshot(ctx);
+
       // Design Review
       case 'design/element/styles':
         return this.handlers.getElementStyles(ctx);
@@ -571,6 +598,12 @@ export class NativeUIBridgeServer {
     }
     if (method === 'POST' && path === '/ui-bridge/control/page/forward') {
       return this.handlers.pageGoForward({ params: {}, query, body });
+    }
+    if (method === 'GET' && path === '/ui-bridge/control/screenshot') {
+      return this.handlers.getScreenshot({ params: {}, query, body });
+    }
+    if (method === 'POST' && path === '/ui-bridge/control/screenshot') {
+      return this.handlers.getScreenshot({ params: {}, query, body });
     }
 
     // Design Review

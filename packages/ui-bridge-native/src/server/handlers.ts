@@ -519,6 +519,11 @@ export function createServerHandlers(
       return error('Page go forward not supported on native platform', 'NOT_SUPPORTED');
     },
 
+    // Screenshot (stub — apps should override with their screen capture library)
+    getScreenshot: async () => {
+      return error('Screenshot not supported. Provide a screenshotProvider to UIBridgeNativeProvider.', 'NOT_SUPPORTED');
+    },
+
     // Design Review
     ...designHandlers,
 
