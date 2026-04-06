@@ -217,7 +217,7 @@ export function UIBridgeNativeProvider({
     } catch (err) {
       console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
     }
-  }, [features.server, config.serverPort, registry, executor, serverAdapter]);
+  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider]);
 
   const stopServer = useCallback(() => {
     if (eventBridgeRef.current) {
