@@ -120,6 +120,8 @@ export {
   type HandlerContext,
   type HandlerFunction,
   type NativeServerHandlers,
+  type NavigationProvider,
+  type ScreenshotProvider,
   UI_BRIDGE_NATIVE_ROUTES,
 } from './server/types';
 
