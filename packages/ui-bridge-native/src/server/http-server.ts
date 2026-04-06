@@ -12,7 +12,7 @@
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
-import type { NativeActionExecutor } from '../control/types';
+import type { NativeActionExecutor, PageNavigationResponse } from '../control/types';
 import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, APIResponse, HandlerContext } from './types';
 import { createServerHandlers } from './handlers';
 import type { WebSocketEventBridge } from './ws-event-bridge';
@@ -112,28 +112,29 @@ export class NativeUIBridgeServer {
    * This enables `control/page/navigate` and `control/page/back` on native.
    */
   setNavigationProvider(provider: NavigationProvider): void {
-    this.handlers.pageNavigate = async (ctx) => {
-      const url = ctx.body?.url;
+    this.handlers.pageNavigate = async (ctx): Promise<APIResponse<PageNavigationResponse>> => {
+      const body = ctx.body as Record<string, unknown> | undefined;
+      const url = body?.url;
       if (!url || typeof url !== 'string') {
-        return { success: false, error: 'Missing required "url" parameter' };
+        return { success: false, error: 'Missing required "url" parameter', timestamp: Date.now() };
       }
       try {
         provider.navigate(url);
-        return { success: true, data: { url, navigated: true } };
+        return { success: true, data: { success: true, url, timestamp: Date.now() }, timestamp: Date.now() };
       } catch (e: any) {
-        return { success: false, error: `Navigation failed: ${e.message}` };
+        return { success: false, error: `Navigation failed: ${e.message}`, timestamp: Date.now() };
       }
     };
 
-    this.handlers.pageGoBack = async () => {
+    this.handlers.pageGoBack = async (): Promise<APIResponse<PageNavigationResponse>> => {
       if (!provider.back) {
-        return { success: false, error: 'Back navigation not supported by this provider' };
+        return { success: false, error: 'Back navigation not supported', timestamp: Date.now() };
       }
       try {
         provider.back();
-        return { success: true, data: { navigated: true } };
+        return { success: true, data: { success: true, timestamp: Date.now() }, timestamp: Date.now() };
       } catch (e: any) {
-        return { success: false, error: `Back navigation failed: ${e.message}` };
+        return { success: false, error: `Back navigation failed: ${e.message}`, timestamp: Date.now() };
       }
     };
   }
