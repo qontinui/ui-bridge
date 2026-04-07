@@ -63,60 +63,78 @@ function parsePath(pattern: string, actual: string): Record<string, string> | nu
  *   "control/component/my-comp/action/submit"     → handlers.executeComponentAction
  */
 type HandlerKey = keyof NativeServerHandlers;
+type HttpVerb = 'GET' | 'POST' | 'DELETE';
 
 interface WsRoute {
   pattern: string;
   handler: HandlerKey;
+  /**
+   * HTTP verbs this route accepts when invoked over HTTP. When absent the
+   * route is WS-only (or matches any verb on HTTP). Multiple verbs allow
+   * a single pattern to serve GET+POST etc.
+   */
+  httpMethods?: readonly HttpVerb[];
 }
 
 const WS_ROUTES: readonly WsRoute[] = [
   // Health
-  { pattern: 'health', handler: 'health' },
+  { pattern: 'health', handler: 'health', httpMethods: ['GET'] },
 
   // Elements
-  { pattern: 'control/elements', handler: 'getElements' },
-  { pattern: 'control/element/:id', handler: 'getElement' },
-  { pattern: 'control/element/:id/state', handler: 'getElementState' },
-  { pattern: 'control/element/:id/action', handler: 'executeAction' },
+  { pattern: 'control/elements', handler: 'getElements', httpMethods: ['GET'] },
+  { pattern: 'control/element/:id', handler: 'getElement', httpMethods: ['GET'] },
+  { pattern: 'control/element/:id/state', handler: 'getElementState', httpMethods: ['GET'] },
+  { pattern: 'control/element/:id/action', handler: 'executeAction', httpMethods: ['POST'] },
 
   // Components
-  { pattern: 'control/components', handler: 'getComponents' },
-  { pattern: 'control/component/:id', handler: 'getComponent' },
-  { pattern: 'control/component/:id/action/:actionId', handler: 'executeComponentAction' },
+  { pattern: 'control/components', handler: 'getComponents', httpMethods: ['GET'] },
+  { pattern: 'control/component/:id', handler: 'getComponent', httpMethods: ['GET'] },
+  {
+    pattern: 'control/component/:id/action/:actionId',
+    handler: 'executeComponentAction',
+    httpMethods: ['POST'],
+  },
 
   // Discovery
-  { pattern: 'control/find', handler: 'find' },
-  { pattern: 'control/snapshot', handler: 'getSnapshot' },
+  { pattern: 'control/find', handler: 'find', httpMethods: ['POST'] },
+  { pattern: 'control/snapshot', handler: 'getSnapshot', httpMethods: ['GET'] },
   { pattern: 'control/discover', handler: 'getSnapshot' },
 
   // Workflows
-  { pattern: 'control/workflows', handler: 'getWorkflows' },
-  { pattern: 'control/workflow/:id/run', handler: 'runWorkflow' },
+  { pattern: 'control/workflows', handler: 'getWorkflows', httpMethods: ['GET'] },
+  { pattern: 'control/workflow/:id/run', handler: 'runWorkflow', httpMethods: ['POST'] },
 
   // Page Navigation
-  { pattern: 'control/page/refresh', handler: 'pageRefresh' },
-  { pattern: 'control/page/navigate', handler: 'pageNavigate' },
-  { pattern: 'control/page/back', handler: 'pageGoBack' },
-  { pattern: 'control/page/forward', handler: 'pageGoForward' },
+  { pattern: 'control/page/refresh', handler: 'pageRefresh', httpMethods: ['POST'] },
+  { pattern: 'control/page/navigate', handler: 'pageNavigate', httpMethods: ['POST'] },
+  { pattern: 'control/page/back', handler: 'pageGoBack', httpMethods: ['POST'] },
+  { pattern: 'control/page/forward', handler: 'pageGoForward', httpMethods: ['POST'] },
 
-  // Screenshot
-  { pattern: 'control/screenshot', handler: 'getScreenshot' },
+  // Screenshot — accepts both GET and POST on HTTP
+  { pattern: 'control/screenshot', handler: 'getScreenshot', httpMethods: ['GET', 'POST'] },
 
   // Design Review
-  { pattern: 'design/element/:id/styles', handler: 'getElementStyles' },
-  { pattern: 'design/element/:id/state-styles', handler: 'getElementStateStyles' },
-  { pattern: 'design/snapshot', handler: 'getDesignSnapshot' },
-  { pattern: 'design/responsive', handler: 'getResponsiveSnapshots' },
-  { pattern: 'design/audit', handler: 'runDesignAudit' },
-  { pattern: 'design/style-guide/load', handler: 'loadStyleGuide' },
-  { pattern: 'design/style-guide', handler: 'getStyleGuide' },
+  { pattern: 'design/element/:id/styles', handler: 'getElementStyles', httpMethods: ['GET'] },
+  {
+    pattern: 'design/element/:id/state-styles',
+    handler: 'getElementStateStyles',
+    httpMethods: ['POST'],
+  },
+  { pattern: 'design/snapshot', handler: 'getDesignSnapshot', httpMethods: ['POST'] },
+  { pattern: 'design/responsive', handler: 'getResponsiveSnapshots', httpMethods: ['POST'] },
+  { pattern: 'design/audit', handler: 'runDesignAudit', httpMethods: ['POST'] },
+  { pattern: 'design/style-guide/load', handler: 'loadStyleGuide', httpMethods: ['POST'] },
+  { pattern: 'design/style-guide', handler: 'getStyleGuide', httpMethods: ['GET'] },
+  // style-guide/clear: WS uses this pattern; HTTP uses DELETE on /design/style-guide.
+  // We keep a WS-only entry for the explicit "clear" subpath, and add a DELETE-on-style-guide entry.
   { pattern: 'design/style-guide/clear', handler: 'clearStyleGuide' },
+  { pattern: 'design/style-guide', handler: 'clearStyleGuide', httpMethods: ['DELETE'] },
 
   // Quality Evaluation
-  { pattern: 'design/evaluate', handler: 'evaluateQuality' },
-  { pattern: 'design/evaluate/contexts', handler: 'getQualityContexts' },
-  { pattern: 'design/evaluate/baseline', handler: 'saveBaseline' },
-  { pattern: 'design/evaluate/diff', handler: 'diffBaseline' },
+  { pattern: 'design/evaluate', handler: 'evaluateQuality', httpMethods: ['POST'] },
+  { pattern: 'design/evaluate/contexts', handler: 'getQualityContexts', httpMethods: ['GET'] },
+  { pattern: 'design/evaluate/baseline', handler: 'saveBaseline', httpMethods: ['POST'] },
+  { pattern: 'design/evaluate/diff', handler: 'diffBaseline', httpMethods: ['POST'] },
 ];
 
 /**
@@ -186,6 +204,12 @@ export class NativeUIBridgeServer {
   private handlers: NativeServerHandlers;
   private adapter?: ServerAdapter;
   private running = false;
+  /**
+   * Per-connection cleanup thunks for in-flight waiters (waitForElement,
+   * waitForCondition, ...). Aborted when a client disconnects so the
+   * underlying timers/listeners don't leak.
+   */
+  private pendingWaiters = new Map<string, Set<() => void>>();
 
   constructor(
     private registry: NativeUIBridgeRegistry,
@@ -411,12 +435,39 @@ export class NativeUIBridgeServer {
 
     // waitForElement — resolve when element is registered, or timeout
     if (method === 'waitForElement') {
-      return this.handleWaitForElement(id, params);
+      return this.handleWaitForElement(connId, id, params);
+    }
+
+    // waitForCondition — resolve when an element state predicate becomes true
+    if (method === 'waitForCondition') {
+      return this.handleWaitForCondition(connId, id, params);
     }
 
     // sequence — execute steps in order, stop on first failure
     if (method === 'sequence') {
       return this.handleSequence(id, params);
+    }
+
+    // events/history — replay recent events matching optional filter
+    if (method === 'events/history') {
+      const eventsFilter = Array.isArray(params.events)
+        ? (params.events as string[])
+        : undefined;
+      const since = typeof params.since === 'number' ? params.since : undefined;
+      const limit = typeof params.limit === 'number' ? params.limit : undefined;
+      const history = this.eventBridge?.getHistory({ events: eventsFilter, since }) ?? [];
+      const sliced =
+        limit !== undefined && limit > 0 && history.length > limit
+          ? history.slice(history.length - limit)
+          : history;
+      return JSON.stringify({
+        id,
+        result: {
+          success: true,
+          data: { events: sliced },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
     }
 
     // Standard JSON-RPC request
@@ -477,10 +528,49 @@ export class NativeUIBridgeServer {
   }
 
   /**
+   * Register an in-flight waiter's cleanup thunk under the given connection.
+   * Returns an `unregister` thunk that the natural-resolution path should
+   * call so the cleanup isn't re-invoked on disconnect.
+   */
+  private registerWaiter(connId: string, cleanup: () => void): () => void {
+    let set = this.pendingWaiters.get(connId);
+    if (!set) {
+      set = new Set();
+      this.pendingWaiters.set(connId, set);
+    }
+    set.add(cleanup);
+    return () => {
+      const s = this.pendingWaiters.get(connId);
+      if (!s) return;
+      s.delete(cleanup);
+      if (s.size === 0) this.pendingWaiters.delete(connId);
+    };
+  }
+
+  /**
+   * Abort all pending waiters associated with a connection. Called by the
+   * provider's WS disconnect handler so timers/listeners don't leak after
+   * the client goes away.
+   */
+  abortWaitersForConnection(connId: string): void {
+    const set = this.pendingWaiters.get(connId);
+    if (!set) return;
+    for (const cleanup of set) {
+      try {
+        cleanup();
+      } catch (err) {
+        console.warn('[ui-bridge-native] waiter cleanup threw:', err);
+      }
+    }
+    this.pendingWaiters.delete(connId);
+  }
+
+  /**
    * Wait for an element to be registered, or resolve immediately if it already exists.
    * Returns a JsonRpcResponse JSON string.
    */
   private async handleWaitForElement(
+    connId: string,
     id: string | number,
     params: Record<string, unknown>
   ): Promise<string> {
@@ -522,8 +612,10 @@ export class NativeUIBridgeServer {
       let settled = false;
       let unsub: (() => void) | null = null;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let unregister: (() => void) | null = null;
 
       const cleanup = () => {
+        if (settled) return;
         settled = true;
         if (unsub) {
           unsub();
@@ -533,7 +625,27 @@ export class NativeUIBridgeServer {
           clearTimeout(timer);
           timer = null;
         }
+        if (unregister) {
+          unregister();
+          unregister = null;
+        }
       };
+
+      // Track this waiter so it can be aborted if the connection closes.
+      unregister = this.registerWaiter(connId, () => {
+        cleanup();
+        resolve(
+          JSON.stringify({
+            id,
+            result: {
+              success: false,
+              error: 'Connection closed before element was registered',
+              code: 'CONNECTION_CLOSED',
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse)
+        );
+      });
 
       unsub = this.registry.on('element:registered', (event: BridgeEvent) => {
         if (settled) return;
@@ -568,6 +680,165 @@ export class NativeUIBridgeServer {
             result: {
               success: false,
               error: `Timeout waiting for element: ${targetId}`,
+              code: 'TIMEOUT',
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse)
+        );
+      }, timeout);
+    });
+  }
+
+  /**
+   * Wait for an arbitrary element-state predicate to become true.
+   *
+   * Supported `condition` shapes:
+   *   {field: "mounted"|"visible"|"enabled"|"focused", equals: boolean}
+   *   {field: "layout", exists: true}
+   *   {field: string, equals: unknown}  // generic: state[field] === equals
+   *
+   * Resolves immediately with `waited:false` if the predicate already
+   * holds. Otherwise subscribes to `element:registered` and
+   * `element:stateChanged` until the predicate matches or timeout fires.
+   */
+  private async handleWaitForCondition(
+    connId: string,
+    id: string | number,
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const targetId = params.elementId;
+    const condition = params.condition as
+      | { field?: string; equals?: unknown; exists?: boolean }
+      | undefined;
+    const timeout = typeof params.timeout === 'number' ? params.timeout : 10000;
+
+    if (!targetId || typeof targetId !== 'string') {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: 'Missing or invalid "elementId" parameter',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+    if (!condition || typeof condition.field !== 'string') {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: 'Missing or invalid "condition.field"',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    const evaluate = (state: Record<string, unknown> | null | undefined): boolean => {
+      if (!state) return false;
+      const value = state[condition.field as string];
+      if (condition.exists === true) return value !== null && value !== undefined;
+      if ('equals' in condition) return value === condition.equals;
+      return false;
+    };
+
+    const makeResult = (state: Record<string, unknown> | null, waited: boolean) =>
+      JSON.stringify({
+        id,
+        result: {
+          success: true,
+          data: { id: targetId, state, waited },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+
+    // Fast path: already holds.
+    const existing = this.registry.getElement(targetId);
+    if (existing) {
+      const state = existing.getState() as unknown as Record<string, unknown> | null;
+      if (evaluate(state)) {
+        return makeResult(state, false);
+      }
+    }
+
+    return new Promise<string>((resolve) => {
+      let settled = false;
+      let unsubRegistered: (() => void) | null = null;
+      let unsubStateChanged: (() => void) | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let unregister: (() => void) | null = null;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        if (unsubRegistered) {
+          unsubRegistered();
+          unsubRegistered = null;
+        }
+        if (unsubStateChanged) {
+          unsubStateChanged();
+          unsubStateChanged = null;
+        }
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (unregister) {
+          unregister();
+          unregister = null;
+        }
+      };
+
+      unregister = this.registerWaiter(connId, () => {
+        cleanup();
+        resolve(
+          JSON.stringify({
+            id,
+            result: {
+              success: false,
+              error: 'Connection closed before condition was met',
+              code: 'CONNECTION_CLOSED',
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse)
+        );
+      });
+
+      const checkAndResolve = () => {
+        if (settled) return;
+        const el = this.registry.getElement(targetId);
+        if (!el) return;
+        const state = el.getState() as unknown as Record<string, unknown> | null;
+        if (evaluate(state)) {
+          cleanup();
+          resolve(makeResult(state, true));
+        }
+      };
+
+      unsubRegistered = this.registry.on('element:registered', (event: BridgeEvent) => {
+        if (settled) return;
+        const data = event.data as { id?: string } | undefined;
+        if (data?.id !== targetId) return;
+        checkAndResolve();
+      });
+
+      unsubStateChanged = this.registry.on('element:stateChanged', (event: BridgeEvent) => {
+        if (settled) return;
+        const data = event.data as { id?: string } | undefined;
+        if (data?.id !== targetId) return;
+        checkAndResolve();
+      });
+
+      timer = setTimeout(() => {
+        if (settled) return;
+        cleanup();
+        resolve(
+          JSON.stringify({
+            id,
+            result: {
+              success: false,
+              error: `Timeout waiting for condition on element: ${targetId}`,
               code: 'TIMEOUT',
               timestamp: Date.now(),
             },
@@ -743,147 +1014,57 @@ export class NativeUIBridgeServer {
   }
 
   /**
-   * Route request to appropriate handler
+   * Route an HTTP request to the appropriate handler using WS_ROUTES.
+   *
+   * Strips the `/ui-bridge/` prefix from the path, then iterates the shared
+   * WS_ROUTES table. Each route's `pattern` is matched against the stripped
+   * path via the module-level `parsePath` helper; path params are merged
+   * with the request body into a HandlerContext.
+   *
+   * `httpMethods` disambiguates routes that share a pattern but differ
+   * by verb (e.g. GET vs DELETE on `design/style-guide`). A route without
+   * `httpMethods` is WS-only and will not be matched on HTTP.
    */
   private async routeRequest(request: HTTPRequest): Promise<APIResponse> {
     const { method, path, query, body } = request;
 
-    // Health check
-    if (method === 'GET' && path === '/ui-bridge/health') {
-      return this.handlers.health({ params: {}, query, body });
+    const PREFIX = '/ui-bridge/';
+    if (!path.startsWith(PREFIX)) {
+      return {
+        success: false,
+        error: `Route not found: ${method} ${path}`,
+        code: 'NOT_FOUND',
+        timestamp: Date.now(),
+      };
     }
 
-    // Elements
-    if (method === 'GET' && path === '/ui-bridge/control/elements') {
-      return this.handlers.getElements({ params: {}, query, body });
+    const stripped = path.slice(PREFIX.length);
+    let patternMatchedButWrongVerb = false;
+
+    for (const route of WS_ROUTES) {
+      const pathParams = parsePath(route.pattern, stripped);
+      if (!pathParams) continue;
+
+      // Pattern matches — now filter on HTTP verb.
+      if (!route.httpMethods) {
+        // WS-only route; don't serve on HTTP.
+        continue;
+      }
+      if (!route.httpMethods.includes(method as HttpVerb)) {
+        patternMatchedButWrongVerb = true;
+        continue;
+      }
+
+      const ctx: HandlerContext = { params: pathParams, query, body };
+      return this.handlers[route.handler](ctx);
     }
 
-    let params = parsePath('/ui-bridge/control/element/:id', path);
-    if (method === 'GET' && params) {
-      return this.handlers.getElement({ params, query, body });
-    }
-
-    params = parsePath('/ui-bridge/control/element/:id/state', path);
-    if (method === 'GET' && params) {
-      return this.handlers.getElementState({ params, query, body });
-    }
-
-    params = parsePath('/ui-bridge/control/element/:id/action', path);
-    if (method === 'POST' && params) {
-      return this.handlers.executeAction({ params, query, body });
-    }
-
-    // Components
-    if (method === 'GET' && path === '/ui-bridge/control/components') {
-      return this.handlers.getComponents({ params: {}, query, body });
-    }
-
-    params = parsePath('/ui-bridge/control/component/:id', path);
-    if (method === 'GET' && params) {
-      return this.handlers.getComponent({ params, query, body });
-    }
-
-    params = parsePath('/ui-bridge/control/component/:id/action/:actionId', path);
-    if (method === 'POST' && params) {
-      return this.handlers.executeComponentAction({ params, query, body });
-    }
-
-    // Discovery
-    if (method === 'POST' && path === '/ui-bridge/control/find') {
-      return this.handlers.find({ params: {}, query, body });
-    }
-
-    if (method === 'GET' && path === '/ui-bridge/control/snapshot') {
-      return this.handlers.getSnapshot({ params: {}, query, body });
-    }
-
-    // Workflows
-    if (method === 'GET' && path === '/ui-bridge/control/workflows') {
-      return this.handlers.getWorkflows({ params: {}, query, body });
-    }
-
-    params = parsePath('/ui-bridge/control/workflow/:id/run', path);
-    if (method === 'POST' && params) {
-      return this.handlers.runWorkflow({ params, query, body });
-    }
-
-    // Page Navigation
-    if (method === 'POST' && path === '/ui-bridge/control/page/refresh') {
-      return this.handlers.pageRefresh({ params: {}, query, body });
-    }
-    if (method === 'POST' && path === '/ui-bridge/control/page/navigate') {
-      return this.handlers.pageNavigate({ params: {}, query, body });
-    }
-    if (method === 'POST' && path === '/ui-bridge/control/page/back') {
-      return this.handlers.pageGoBack({ params: {}, query, body });
-    }
-    if (method === 'POST' && path === '/ui-bridge/control/page/forward') {
-      return this.handlers.pageGoForward({ params: {}, query, body });
-    }
-    if (method === 'GET' && path === '/ui-bridge/control/screenshot') {
-      return this.handlers.getScreenshot({ params: {}, query, body });
-    }
-    if (method === 'POST' && path === '/ui-bridge/control/screenshot') {
-      return this.handlers.getScreenshot({ params: {}, query, body });
-    }
-
-    // Design Review
-    params = parsePath('/ui-bridge/design/element/:id/styles', path);
-    if (method === 'GET' && params) {
-      return this.handlers.getElementStyles({ params, query, body });
-    }
-
-    params = parsePath('/ui-bridge/design/element/:id/state-styles', path);
-    if (method === 'POST' && params) {
-      return this.handlers.getElementStateStyles({ params, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/snapshot') {
-      return this.handlers.getDesignSnapshot({ params: {}, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/responsive') {
-      return this.handlers.getResponsiveSnapshots({ params: {}, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/audit') {
-      return this.handlers.runDesignAudit({ params: {}, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/style-guide/load') {
-      return this.handlers.loadStyleGuide({ params: {}, query, body });
-    }
-
-    if (method === 'GET' && path === '/ui-bridge/design/style-guide') {
-      return this.handlers.getStyleGuide({ params: {}, query, body });
-    }
-
-    if (method === 'DELETE' && path === '/ui-bridge/design/style-guide') {
-      return this.handlers.clearStyleGuide({ params: {}, query, body });
-    }
-
-    // Quality Evaluation
-    if (method === 'POST' && path === '/ui-bridge/design/evaluate') {
-      return this.handlers.evaluateQuality({ params: {}, query, body });
-    }
-
-    if (method === 'GET' && path === '/ui-bridge/design/evaluate/contexts') {
-      return this.handlers.getQualityContexts({ params: {}, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/evaluate/baseline') {
-      return this.handlers.saveBaseline({ params: {}, query, body });
-    }
-
-    if (method === 'POST' && path === '/ui-bridge/design/evaluate/diff') {
-      return this.handlers.diffBaseline({ params: {}, query, body });
-    }
-
-    // Not found
     return {
       success: false,
-      error: `Route not found: ${method} ${path}`,
-      code: 'NOT_FOUND',
+      error: patternMatchedButWrongVerb
+        ? `Method not allowed: ${method} ${path}`
+        : `Route not found: ${method} ${path}`,
+      code: patternMatchedButWrongVerb ? 'METHOD_NOT_ALLOWED' : 'NOT_FOUND',
       timestamp: Date.now(),
     };
   }

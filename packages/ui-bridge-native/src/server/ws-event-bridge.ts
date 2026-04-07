@@ -36,6 +36,43 @@ interface ThrottleState {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+// ── Glob pattern matching ───────────────────────────────────────────────────
+
+/** Cache of compiled glob→RegExp to avoid recompiling hot patterns. */
+const GLOB_CACHE = new Map<string, RegExp>();
+
+/**
+ * Convert a glob-style pattern (supports `*` / `**` wildcards) to a RegExp.
+ * All other regex metacharacters are escaped, so colons and other
+ * event-name characters pass through literally.
+ *
+ *   globToRegex("*")                 → /^.*$/
+ *   globToRegex("element:*")         → /^element:.*$/
+ *   globToRegex("*:stateChanged")    → /^.*:stateChanged$/
+ */
+export function globToRegex(pattern: string): RegExp {
+  const cached = GLOB_CACHE.get(pattern);
+  if (cached) return cached;
+
+  // Normalize ** → * (same semantics for flat event names)
+  const normalized = pattern.replace(/\*\*/g, '*');
+  // Escape regex metacharacters except '*'
+  const escaped = normalized.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  // Replace '*' with '.*'
+  const body = escaped.replace(/\*/g, '.*');
+  const regex = new RegExp(`^${body}$`);
+  GLOB_CACHE.set(pattern, regex);
+  return regex;
+}
+
+/** Options for the WebSocketEventBridge constructor. */
+export interface WebSocketEventBridgeOptions {
+  /** Heartbeat ping interval in ms (default 30000) */
+  heartbeatIntervalMs?: number;
+  /** Max number of events to retain in the replay history buffer (default 100, 0 disables) */
+  maxHistory?: number;
+}
+
 export class WebSocketEventBridge {
   private connections = new Map<string, WebSocketConnection>();
   private throttles = new Map<string, ThrottleState>();
@@ -43,10 +80,22 @@ export class WebSocketEventBridge {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private registry: NativeUIBridgeRegistry;
   private heartbeatIntervalMs: number;
+  private maxHistory: number;
+  /** Circular buffer of recent events for replay to new subscribers. */
+  private history: JsonRpcEvent[] = [];
 
-  constructor(registry: NativeUIBridgeRegistry, heartbeatIntervalMs = 30000) {
+  constructor(
+    registry: NativeUIBridgeRegistry,
+    optionsOrHeartbeatMs: WebSocketEventBridgeOptions | number = {}
+  ) {
     this.registry = registry;
-    this.heartbeatIntervalMs = heartbeatIntervalMs;
+    // Accept legacy positional number form
+    const opts: WebSocketEventBridgeOptions =
+      typeof optionsOrHeartbeatMs === 'number'
+        ? { heartbeatIntervalMs: optionsOrHeartbeatMs }
+        : optionsOrHeartbeatMs;
+    this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30000;
+    this.maxHistory = opts.maxHistory ?? 100;
   }
 
   /**
@@ -87,6 +136,7 @@ export class WebSocketEventBridge {
       conn.close(1001, 'Server shutting down');
     }
     this.connections.clear();
+    this.history = [];
   }
 
   /** Register a new WebSocket connection. */
@@ -109,7 +159,13 @@ export class WebSocketEventBridge {
 
   /**
    * Add event subscriptions for a connection.
-   * Use '*' to subscribe to all events.
+   *
+   * Event names are stored as glob patterns. Supported forms:
+   *   - Exact:  "element:registered"
+   *   - Prefix: "element:*"
+   *   - Suffix: "*:stateChanged"
+   *   - All:    "*"
+   *
    * @param throttleMs — if >0, batch rapid events within this window before sending
    */
   handleSubscribe(connId: string, events: string[], throttleMs?: number): boolean {
@@ -134,22 +190,70 @@ export class WebSocketEventBridge {
     return true;
   }
 
-  /** Get the subscription set for a connection. */
+  /**
+   * Get the subscription set for a connection.
+   * Returns the original pattern strings (not compiled regexes).
+   */
   getSubscriptions(connId: string): string[] {
     const conn = this.connections.get(connId);
     return conn ? Array.from(conn.subscriptions) : [];
   }
 
-  /** Check if a connection is subscribed to a specific event (or '*'). */
+  /**
+   * Check if a connection is subscribed to a specific event.
+   * Matches exact names first (fast path), then tests each stored
+   * pattern as a glob against the event type.
+   */
   isSubscribed(connId: string, eventType: string): boolean {
     const conn = this.connections.get(connId);
     if (!conn) return false;
-    return conn.subscriptions.has(eventType) || conn.subscriptions.has('*');
+    // Fast path: exact match
+    if (conn.subscriptions.has(eventType)) return true;
+    // Glob path: test each pattern
+    for (const pattern of conn.subscriptions) {
+      // Skip exact names with no wildcard — already tested above
+      if (!pattern.includes('*')) continue;
+      if (globToRegex(pattern).test(eventType)) return true;
+    }
+    return false;
   }
 
   /** Get the throttle window (in ms) configured for a connection, or undefined if none. */
   getThrottleMs(connId: string): number | undefined {
     return this.throttles.get(connId)?.ms;
+  }
+
+  /**
+   * Get recent events from the replay history buffer.
+   *
+   * @param filter.events — optional list of glob patterns to match event types against
+   * @param filter.since — optional timestamp (ms); only events at or after this time
+   */
+  getHistory(filter?: { events?: string[]; since?: number }): JsonRpcEvent[] {
+    if (this.maxHistory === 0) return [];
+    const events = filter?.events;
+    const since = filter?.since;
+
+    if (!events && since === undefined) {
+      return this.history.slice();
+    }
+
+    const regexes = events?.map((p) => globToRegex(p));
+    return this.history.filter((e) => {
+      if (since !== undefined && e.timestamp < since) return false;
+      if (regexes && regexes.length > 0) {
+        if (!regexes.some((r) => r.test(e.event))) return false;
+      }
+      return true;
+    });
+  }
+
+  /** Configure the max history buffer size at runtime. 0 disables history. */
+  setMaxHistory(maxHistory: number): void {
+    this.maxHistory = Math.max(0, maxHistory | 0);
+    if (this.history.length > this.maxHistory) {
+      this.history.splice(0, this.history.length - this.maxHistory);
+    }
   }
 
   // ── Internal ────────────────────────────────────────────────────────────
@@ -160,6 +264,14 @@ export class WebSocketEventBridge {
       data,
       timestamp: Date.now(),
     };
+
+    // Append to replay history (circular)
+    if (this.maxHistory > 0) {
+      this.history.push(event);
+      if (this.history.length > this.maxHistory) {
+        this.history.splice(0, this.history.length - this.maxHistory);
+      }
+    }
 
     for (const [connId, conn] of this.connections) {
       const throttle = this.throttles.get(connId);

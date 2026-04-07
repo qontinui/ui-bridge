@@ -220,6 +220,10 @@ export function UIBridgeNativeProvider({
       };
 
       wsAdapter.onWebSocketDisconnect = (connId: string) => {
+        // Abort any pending waiters (waitForElement / waitForCondition)
+        // for this connection BEFORE removing it — stops leaked timers
+        // and registry listeners.
+        server.abortWaitersForConnection(connId);
         eventBridge.removeConnection(connId);
       };
 
