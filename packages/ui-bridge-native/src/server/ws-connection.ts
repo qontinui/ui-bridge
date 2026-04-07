@@ -20,6 +20,7 @@ import {
   type DecodedFrame,
 } from './ws-protocol';
 import type { JsonRpcEvent } from './ws-types';
+import { globToRegex } from './ws-event-bridge';
 
 /**
  * Callback for text messages received from the client.
@@ -101,11 +102,29 @@ export class WebSocketConnection {
     }
   }
 
-  /** Send an event if the client is subscribed to it. */
+  /**
+   * Send an event if the client is subscribed to it. Subscription patterns
+   * may be exact event names, `*` (all), or glob patterns containing `*`
+   * (e.g. `element:*`, `*:stateChanged`). Exact matches and `*` are checked
+   * via fast Set lookups; glob patterns fall through to a regex test.
+   */
   sendEvent(event: JsonRpcEvent): void {
     if (this.closed) return;
-    if (!this.subscriptions.has(event.event) && !this.subscriptions.has('*')) return;
+    if (!this.matchesSubscription(event.event)) return;
     this.send(JSON.stringify(event));
+  }
+
+  private matchesSubscription(eventType: string): boolean {
+    // Fast paths
+    if (this.subscriptions.has(eventType)) return true;
+    if (this.subscriptions.has('*')) return true;
+    // Glob fallback — only patterns containing `*` (other than the bare `*`
+    // already handled above) need the regex test.
+    for (const pattern of this.subscriptions) {
+      if (!pattern.includes('*')) continue;
+      if (globToRegex(pattern).test(eventType)) return true;
+    }
+    return false;
   }
 
   /** Send a ping frame for heartbeat. */
