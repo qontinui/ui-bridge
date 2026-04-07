@@ -147,6 +147,11 @@ export class WebSocketEventBridge {
     return conn.subscriptions.has(eventType) || conn.subscriptions.has('*');
   }
 
+  /** Get the throttle window (in ms) configured for a connection, or undefined if none. */
+  getThrottleMs(connId: string): number | undefined {
+    return this.throttles.get(connId)?.ms;
+  }
+
   // ── Internal ────────────────────────────────────────────────────────────
 
   private broadcastEvent(eventType: string, data: unknown): void {

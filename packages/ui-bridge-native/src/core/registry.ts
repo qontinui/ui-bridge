@@ -206,6 +206,16 @@ export class NativeUIBridgeRegistry {
       console.log(`[ui-bridge-native] Registered element: ${id} (${type})`);
     }
 
+    // Seed a sensible initial state so elements are immediately visible in snapshots
+    // even before onLayout fires. Layout-measuring code can overwrite this later.
+    this.updateElementState(id, {
+      mounted: true,
+      visible: true,
+      enabled: true,
+      focused: false,
+      layout: null,
+    });
+
     return registered;
   }
 
@@ -487,7 +497,10 @@ export class NativeUIBridgeRegistry {
   /**
    * Create a snapshot of the current state
    */
-  createSnapshot(): NativeBridgeSnapshot {
+  createSnapshot(routeInfo?: {
+    currentRoute?: string | null;
+    segments?: string[];
+  }): NativeBridgeSnapshot {
     return {
       timestamp: Date.now(),
       elements: this.getAllElements().map((e) => ({
@@ -512,6 +525,8 @@ export class NativeUIBridgeRegistry {
         description: w.description,
         stepCount: w.steps.length,
       })),
+      currentRoute: routeInfo?.currentRoute ?? null,
+      segments: routeInfo?.segments,
     };
   }
 

@@ -375,6 +375,10 @@ export interface NativeBridgeSnapshot {
     description?: string;
     stepCount: number;
   }>;
+  /** Current navigation route path (if a RouteProvider is configured) */
+  currentRoute?: string | null;
+  /** Current route segments (if a RouteProvider is configured) */
+  segments?: string[];
 }
 
 /**

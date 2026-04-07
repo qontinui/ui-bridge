@@ -38,6 +38,20 @@ export interface ScreenshotProvider {
 }
 
 /**
+ * Route provider for React Native apps.
+ *
+ * Apps supply this to expose the current navigation route in UI Bridge snapshots.
+ * For Expo Router: render a RouteTracker component inside the router context that
+ * calls `usePathname()` / `useSegments()` and writes the result to a module-level ref.
+ */
+export interface RouteProvider {
+  /** Return the current route path (e.g. "/(tabs)/runs"), or null if unknown. */
+  getCurrentRoute: () => string | null;
+  /** Return the current route segments (e.g. ["(tabs)", "runs"]), if available. */
+  getSegments?: () => string[];
+}
+
+/**
  * Server configuration
  */
 export interface NativeServerConfig extends NativeUIBridgeConfig {

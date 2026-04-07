@@ -122,6 +122,7 @@ export {
   type NativeServerHandlers,
   type NavigationProvider,
   type ScreenshotProvider,
+  type RouteProvider,
   UI_BRIDGE_NATIVE_ROUTES,
 } from './server/types';
 

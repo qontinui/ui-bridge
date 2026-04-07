@@ -13,11 +13,111 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor, PageNavigationResponse } from '../control/types';
-import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, ScreenshotProvider, APIResponse, HandlerContext } from './types';
+import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, RouteProvider, ScreenshotProvider, APIResponse, HandlerContext } from './types';
+import type { BridgeEvent } from '../core/types';
 import { createServerHandlers } from './handlers';
 import type { WebSocketEventBridge } from './ws-event-bridge';
 import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
 import { isBatchRequest, isSubscribe, isUnsubscribe } from './ws-types';
+
+// ── Path pattern matching ───────────────────────────────────────────────────
+
+/**
+ * Match an actual path against a pattern with :name placeholders.
+ * Returns extracted params, or null if the pattern does not match.
+ *
+ * Example: parsePath('control/element/:id/action', 'control/element/tab-runs/action')
+ *          → { id: 'tab-runs' }
+ */
+function parsePath(pattern: string, actual: string): Record<string, string> | null {
+  const patternParts = pattern.split('/');
+  const actualParts = actual.split('/');
+
+  if (patternParts.length !== actualParts.length) {
+    return null;
+  }
+
+  const params: Record<string, string> = {};
+  for (let i = 0; i < patternParts.length; i++) {
+    if (patternParts[i].startsWith(':')) {
+      params[patternParts[i].slice(1)] = actualParts[i];
+    } else if (patternParts[i] !== actualParts[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
+// ── WebSocket route table ───────────────────────────────────────────────────
+
+/**
+ * Route table for WebSocket JSON-RPC methods.
+ *
+ * Method strings use the same path structure as HTTP routes (with :id placeholders)
+ * but without the /ui-bridge/ prefix. Path params are extracted automatically.
+ *
+ * Examples:
+ *   "health"                                       → handlers.health
+ *   "control/snapshot"                             → handlers.getSnapshot
+ *   "control/element/tab-runs/action"              → handlers.executeAction ({id: 'tab-runs'})
+ *   "control/component/my-comp/action/submit"     → handlers.executeComponentAction
+ */
+type HandlerKey = keyof NativeServerHandlers;
+
+interface WsRoute {
+  pattern: string;
+  handler: HandlerKey;
+}
+
+const WS_ROUTES: readonly WsRoute[] = [
+  // Health
+  { pattern: 'health', handler: 'health' },
+
+  // Elements
+  { pattern: 'control/elements', handler: 'getElements' },
+  { pattern: 'control/element/:id', handler: 'getElement' },
+  { pattern: 'control/element/:id/state', handler: 'getElementState' },
+  { pattern: 'control/element/:id/action', handler: 'executeAction' },
+
+  // Components
+  { pattern: 'control/components', handler: 'getComponents' },
+  { pattern: 'control/component/:id', handler: 'getComponent' },
+  { pattern: 'control/component/:id/action/:actionId', handler: 'executeComponentAction' },
+
+  // Discovery
+  { pattern: 'control/find', handler: 'find' },
+  { pattern: 'control/snapshot', handler: 'getSnapshot' },
+  { pattern: 'control/discover', handler: 'getSnapshot' },
+
+  // Workflows
+  { pattern: 'control/workflows', handler: 'getWorkflows' },
+  { pattern: 'control/workflow/:id/run', handler: 'runWorkflow' },
+
+  // Page Navigation
+  { pattern: 'control/page/refresh', handler: 'pageRefresh' },
+  { pattern: 'control/page/navigate', handler: 'pageNavigate' },
+  { pattern: 'control/page/back', handler: 'pageGoBack' },
+  { pattern: 'control/page/forward', handler: 'pageGoForward' },
+
+  // Screenshot
+  { pattern: 'control/screenshot', handler: 'getScreenshot' },
+
+  // Design Review
+  { pattern: 'design/element/:id/styles', handler: 'getElementStyles' },
+  { pattern: 'design/element/:id/state-styles', handler: 'getElementStateStyles' },
+  { pattern: 'design/snapshot', handler: 'getDesignSnapshot' },
+  { pattern: 'design/responsive', handler: 'getResponsiveSnapshots' },
+  { pattern: 'design/audit', handler: 'runDesignAudit' },
+  { pattern: 'design/style-guide/load', handler: 'loadStyleGuide' },
+  { pattern: 'design/style-guide', handler: 'getStyleGuide' },
+  { pattern: 'design/style-guide/clear', handler: 'clearStyleGuide' },
+
+  // Quality Evaluation
+  { pattern: 'design/evaluate', handler: 'evaluateQuality' },
+  { pattern: 'design/evaluate/contexts', handler: 'getQualityContexts' },
+  { pattern: 'design/evaluate/baseline', handler: 'saveBaseline' },
+  { pattern: 'design/evaluate/diff', handler: 'diffBaseline' },
+];
 
 /**
  * HTTP Request interface (library-agnostic)
@@ -136,6 +236,20 @@ export class NativeUIBridgeServer {
       } catch (e: any) {
         return { success: false, error: `Back navigation failed: ${e.message}`, timestamp: Date.now() };
       }
+    };
+  }
+
+  /**
+   * Set a route provider for reporting the current navigation route.
+   * When set, `control/snapshot` responses include `currentRoute` and `segments`.
+   */
+  setRouteProvider(provider: RouteProvider): void {
+    this.handlers.getSnapshot = async () => {
+      const snapshot = this.registry.createSnapshot({
+        currentRoute: provider.getCurrentRoute(),
+        segments: provider.getSegments?.(),
+      });
+      return { success: true, data: snapshot, timestamp: Date.now() };
     };
   }
 
@@ -276,9 +390,36 @@ export class NativeUIBridgeServer {
       } satisfies JsonRpcResponse);
     }
 
-    // Standard JSON-RPC request
     const method = message.method as string;
     const params = (message.params || {}) as Record<string, unknown>;
+
+    // ── Connection-aware special methods ──────────────────────────────────
+
+    // subscriptions/list — return current subscriptions + throttle for this connection
+    if (method === 'subscriptions/list') {
+      const events = this.eventBridge?.getSubscriptions(connId) ?? [];
+      const throttleMs = this.eventBridge?.getThrottleMs(connId);
+      return JSON.stringify({
+        id,
+        result: {
+          success: true,
+          data: { events, throttleMs: throttleMs ?? null },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    // waitForElement — resolve when element is registered, or timeout
+    if (method === 'waitForElement') {
+      return this.handleWaitForElement(id, params);
+    }
+
+    // sequence — execute steps in order, stop on first failure
+    if (method === 'sequence') {
+      return this.handleSequence(id, params);
+    }
+
+    // Standard JSON-RPC request
 
     if (!method) {
       return JSON.stringify({
@@ -336,123 +477,225 @@ export class NativeUIBridgeServer {
   }
 
   /**
-   * Route a JSON-RPC method string to the appropriate handler.
+   * Wait for an element to be registered, or resolve immediately if it already exists.
+   * Returns a JsonRpcResponse JSON string.
+   */
+  private async handleWaitForElement(
+    id: string | number,
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const targetId = params.id;
+    const timeout = typeof params.timeout === 'number' ? params.timeout : 10000;
+
+    if (!targetId || typeof targetId !== 'string') {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: 'Missing or invalid "id" parameter',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    // Already registered — return immediately
+    const existing = this.registry.getElement(targetId);
+    if (existing) {
+      return JSON.stringify({
+        id,
+        result: {
+          success: true,
+          data: {
+            id: targetId,
+            state: existing.getState(),
+            identifier: existing.getIdentifier(),
+            waited: false,
+          },
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    // Wait for element:registered event with matching id, or timeout
+    return new Promise<string>((resolve) => {
+      let settled = false;
+      let unsub: (() => void) | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        settled = true;
+        if (unsub) {
+          unsub();
+          unsub = null;
+        }
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
+
+      unsub = this.registry.on('element:registered', (event: BridgeEvent) => {
+        if (settled) return;
+        const data = event.data as { id?: string } | undefined;
+        if (data?.id !== targetId) return;
+
+        cleanup();
+        const el = this.registry.getElement(targetId);
+        resolve(
+          JSON.stringify({
+            id,
+            result: {
+              success: true,
+              data: {
+                id: targetId,
+                state: el?.getState() ?? null,
+                identifier: el?.getIdentifier() ?? null,
+                waited: true,
+              },
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse)
+        );
+      });
+
+      timer = setTimeout(() => {
+        if (settled) return;
+        cleanup();
+        resolve(
+          JSON.stringify({
+            id,
+            result: {
+              success: false,
+              error: `Timeout waiting for element: ${targetId}`,
+              code: 'TIMEOUT',
+              timestamp: Date.now(),
+            },
+          } satisfies JsonRpcResponse)
+        );
+      }, timeout);
+    });
+  }
+
+  /**
+   * Execute a sequence of JSON-RPC steps in order, stopping on first failure.
+   * Returns a JsonRpcResponse JSON string with per-step results.
+   */
+  private async handleSequence(
+    id: string | number,
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const rawSteps = params.steps;
+
+    if (!Array.isArray(rawSteps) || rawSteps.length === 0) {
+      return JSON.stringify({
+        id,
+        result: {
+          success: false,
+          error: 'Missing or empty "steps" array',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        },
+      } satisfies JsonRpcResponse);
+    }
+
+    const steps = rawSteps as Array<{ method: string; params?: Record<string, unknown> }>;
+    const results: Array<{ step: number; method: string; result: APIResponse }> = [];
+    let allSuccess = true;
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+
+      if (!step || typeof step.method !== 'string') {
+        results.push({
+          step: i,
+          method: String(step?.method ?? ''),
+          result: {
+            success: false,
+            error: 'Step is missing "method" field',
+            code: 'INVALID_REQUEST',
+            timestamp: Date.now(),
+          },
+        });
+        allSuccess = false;
+        break;
+      }
+
+      try {
+        const stepResult = await this.routeMethodToHandler(step.method, step.params ?? {});
+        results.push({ step: i, method: step.method, result: stepResult });
+        if (!stepResult.success) {
+          allSuccess = false;
+          break;
+        }
+      } catch (err) {
+        results.push({
+          step: i,
+          method: step.method,
+          result: {
+            success: false,
+            error: err instanceof Error ? err.message : 'Step execution failed',
+            code: 'STEP_FAILED',
+            timestamp: Date.now(),
+          },
+        });
+        allSuccess = false;
+        break;
+      }
+    }
+
+    return JSON.stringify({
+      id,
+      result: {
+        success: allSuccess,
+        data: {
+          completedSteps: results.length,
+          totalSteps: steps.length,
+          results,
+        },
+        timestamp: Date.now(),
+      },
+    } satisfies JsonRpcResponse);
+  }
+
+  /**
+   * Route a JSON-RPC method string to the appropriate handler using path-style matching.
    *
-   * Method strings use the same path structure as HTTP routes but without
-   * the /ui-bridge/ prefix and with path params in the params object.
+   * Method strings mirror HTTP routes but without the /ui-bridge/ prefix.
+   * Path params are extracted from :name placeholders in the route pattern.
    *
    * Examples:
-   *   "health"                                → handlers.health
-   *   "control/snapshot"                      → handlers.getSnapshot
-   *   "control/element/{id}/action"           → handlers.executeAction (id from params)
-   *   "control/component/{id}/action/{actionId}" → handlers.executeComponentAction
+   *   "health"                                           → handlers.health
+   *   "control/snapshot"                                 → handlers.getSnapshot
+   *   "control/element/tab-runs/action"                  → handlers.executeAction ({id:'tab-runs'})
+   *   "control/component/my-comp/action/submit"          → handlers.executeComponentAction
    */
   private async routeMethodToHandler(
     method: string,
     params: Record<string, unknown>
   ): Promise<APIResponse> {
-    const ctx: HandlerContext = {
-      params: {} as Record<string, string>,
-      query: {} as Record<string, string>,
-      body: params,
+    for (const route of WS_ROUTES) {
+      const pathParams = parsePath(route.pattern, method);
+      if (!pathParams) continue;
+
+      const ctx: HandlerContext = {
+        params: pathParams,
+        query:
+          params.query && typeof params.query === 'object'
+            ? (params.query as Record<string, string>)
+            : {},
+        body: params,
+      };
+
+      return this.handlers[route.handler](ctx);
+    }
+
+    return {
+      success: false,
+      error: `Unknown method: ${method}`,
+      code: 'NOT_FOUND',
+      timestamp: Date.now(),
     };
-
-    // Extract path params from the params object (id, actionId, etc.)
-    if (params.id) ctx.params.id = String(params.id);
-    if (params.actionId) ctx.params.actionId = String(params.actionId);
-
-    // Also pass query params if provided
-    if (params.query && typeof params.query === 'object') {
-      ctx.query = params.query as Record<string, string>;
-    }
-
-    switch (method) {
-      // Health
-      case 'health':
-        return this.handlers.health(ctx);
-
-      // Elements
-      case 'control/elements':
-        return this.handlers.getElements(ctx);
-      case 'control/element':
-        return this.handlers.getElement(ctx);
-      case 'control/element/state':
-        return this.handlers.getElementState(ctx);
-      case 'control/element/action':
-        return this.handlers.executeAction(ctx);
-
-      // Components
-      case 'control/components':
-        return this.handlers.getComponents(ctx);
-      case 'control/component':
-        return this.handlers.getComponent(ctx);
-      case 'control/component/action':
-        return this.handlers.executeComponentAction(ctx);
-
-      // Discovery
-      case 'control/find':
-        return this.handlers.find(ctx);
-      case 'control/snapshot':
-        return this.handlers.getSnapshot(ctx);
-      case 'control/discover':
-        return this.handlers.getSnapshot(ctx);
-
-      // Workflows
-      case 'control/workflows':
-        return this.handlers.getWorkflows(ctx);
-      case 'control/workflow/run':
-        return this.handlers.runWorkflow(ctx);
-
-      // Page Navigation
-      case 'control/page/refresh':
-        return this.handlers.pageRefresh(ctx);
-      case 'control/page/navigate':
-        return this.handlers.pageNavigate(ctx);
-      case 'control/page/back':
-        return this.handlers.pageGoBack(ctx);
-      case 'control/page/forward':
-        return this.handlers.pageGoForward(ctx);
-
-      // Screenshot
-      case 'control/screenshot':
-        return this.handlers.getScreenshot(ctx);
-
-      // Design Review
-      case 'design/element/styles':
-        return this.handlers.getElementStyles(ctx);
-      case 'design/element/state-styles':
-        return this.handlers.getElementStateStyles(ctx);
-      case 'design/snapshot':
-        return this.handlers.getDesignSnapshot(ctx);
-      case 'design/responsive':
-        return this.handlers.getResponsiveSnapshots(ctx);
-      case 'design/audit':
-        return this.handlers.runDesignAudit(ctx);
-      case 'design/style-guide/load':
-        return this.handlers.loadStyleGuide(ctx);
-      case 'design/style-guide':
-        return this.handlers.getStyleGuide(ctx);
-      case 'design/style-guide/clear':
-        return this.handlers.clearStyleGuide(ctx);
-
-      // Quality Evaluation
-      case 'design/evaluate':
-        return this.handlers.evaluateQuality(ctx);
-      case 'design/evaluate/contexts':
-        return this.handlers.getQualityContexts(ctx);
-      case 'design/evaluate/baseline':
-        return this.handlers.saveBaseline(ctx);
-      case 'design/evaluate/diff':
-        return this.handlers.diffBaseline(ctx);
-
-      default:
-        return {
-          success: false,
-          error: `Unknown method: ${method}`,
-          code: 'NOT_FOUND',
-          timestamp: Date.now(),
-        };
-    }
   }
 
   /**
@@ -504,28 +747,6 @@ export class NativeUIBridgeServer {
    */
   private async routeRequest(request: HTTPRequest): Promise<APIResponse> {
     const { method, path, query, body } = request;
-
-    // Parse path parameters
-    const parsePath = (pattern: string, actual: string): Record<string, string> | null => {
-      const patternParts = pattern.split('/');
-      const actualParts = actual.split('/');
-
-      if (patternParts.length !== actualParts.length) {
-        return null;
-      }
-
-      const params: Record<string, string> = {};
-
-      for (let i = 0; i < patternParts.length; i++) {
-        if (patternParts[i].startsWith(':')) {
-          params[patternParts[i].slice(1)] = actualParts[i];
-        } else if (patternParts[i] !== actualParts[i]) {
-          return null;
-        }
-      }
-
-      return params;
-    };
 
     // Health check
     if (method === 'GET' && path === '/ui-bridge/health') {

@@ -26,6 +26,7 @@ import { NativeUIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '
 import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
 import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter, type WebSocketServerAdapter } from '../server/http-server';
+import type { RouteProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
 
 /**
@@ -93,6 +94,11 @@ export interface UIBridgeNativeProviderProps {
    * Pass a function that captures the current screen as base64 PNG.
    */
   screenshotProvider?: { capture: () => Promise<{ base64: string; width: number; height: number }> };
+  /**
+   * Route provider for exposing the current navigation route in snapshots.
+   * Wire this to Expo Router's `usePathname()` / `useSegments()` via a module-level ref.
+   */
+  routeProvider?: RouteProvider;
 }
 
 /**
@@ -125,6 +131,7 @@ export function UIBridgeNativeProvider({
   serverAdapter,
   navigationProvider,
   screenshotProvider,
+  routeProvider,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -181,6 +188,12 @@ export function UIBridgeNativeProvider({
       server.setScreenshotProvider(screenshotProvider);
     }
 
+    // Wire route provider if supplied (must be set AFTER navigationProvider
+    // since both may override getSnapshot / pageNavigate handlers)
+    if (routeProvider) {
+      server.setRouteProvider(routeProvider);
+    }
+
     // Wire up WebSocket event bridge if adapter supports it
     const wsAdapter = serverAdapter as WebSocketServerAdapter;
     if (typeof wsAdapter.broadcast === 'function') {
@@ -225,7 +238,7 @@ export function UIBridgeNativeProvider({
     } catch (err) {
       console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
     }
-  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider, screenshotProvider]);
+  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider, screenshotProvider, routeProvider]);
 
   const stopServer = useCallback(() => {
     if (eventBridgeRef.current) {
