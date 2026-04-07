@@ -80,9 +80,16 @@ export class WebSocketEventBridge {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private registry: NativeUIBridgeRegistry;
   private heartbeatIntervalMs: number;
-  private maxHistory: number;
-  /** Circular buffer of recent events for replay to new subscribers. */
-  private history: JsonRpcEvent[] = [];
+  /**
+   * True ring buffer for event replay history.
+   *
+   * `historyBuf` is a fixed-capacity slot array; `historyHead` points at the
+   * NEXT write position; `historyCount` is the number of valid slots
+   * (clamped to capacity). Append is O(1) — no array shifting.
+   */
+  private historyBuf: (JsonRpcEvent | undefined)[] = [];
+  private historyHead = 0;
+  private historyCount = 0;
 
   constructor(
     registry: NativeUIBridgeRegistry,
@@ -95,7 +102,13 @@ export class WebSocketEventBridge {
         ? { heartbeatIntervalMs: optionsOrHeartbeatMs }
         : optionsOrHeartbeatMs;
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30000;
-    this.maxHistory = opts.maxHistory ?? 100;
+    const cap = Math.max(0, (opts.maxHistory ?? 100) | 0);
+    this.historyBuf = cap > 0 ? new Array(cap) : [];
+  }
+
+  /** Effective ring buffer capacity. 0 means history is disabled. */
+  private get historyCapacity(): number {
+    return this.historyBuf.length;
   }
 
   /**
@@ -136,7 +149,9 @@ export class WebSocketEventBridge {
       conn.close(1001, 'Server shutting down');
     }
     this.connections.clear();
-    this.history = [];
+    this.historyBuf.fill(undefined);
+    this.historyHead = 0;
+    this.historyCount = 0;
   }
 
   /** Register a new WebSocket connection. */
@@ -230,30 +245,55 @@ export class WebSocketEventBridge {
    * @param filter.since — optional timestamp (ms); only events at or after this time
    */
   getHistory(filter?: { events?: string[]; since?: number }): JsonRpcEvent[] {
-    if (this.maxHistory === 0) return [];
-    const events = filter?.events;
+    const cap = this.historyCapacity;
+    if (cap === 0 || this.historyCount === 0) return [];
+
     const since = filter?.since;
+    const regexes = filter?.events?.map((p) => globToRegex(p));
 
-    if (!events && since === undefined) {
-      return this.history.slice();
+    // Walk the ring buffer in chronological (oldest → newest) order.
+    const start = (this.historyHead - this.historyCount + cap) % cap;
+    const out: JsonRpcEvent[] = [];
+    for (let i = 0; i < this.historyCount; i++) {
+      const e = this.historyBuf[(start + i) % cap];
+      if (!e) continue;
+      if (since !== undefined && e.timestamp < since) continue;
+      if (regexes && regexes.length > 0 && !regexes.some((r) => r.test(e.event))) continue;
+      out.push(e);
     }
-
-    const regexes = events?.map((p) => globToRegex(p));
-    return this.history.filter((e) => {
-      if (since !== undefined && e.timestamp < since) return false;
-      if (regexes && regexes.length > 0) {
-        if (!regexes.some((r) => r.test(e.event))) return false;
-      }
-      return true;
-    });
+    return out;
   }
 
-  /** Configure the max history buffer size at runtime. 0 disables history. */
+  /**
+   * Configure the max history buffer size at runtime. 0 disables history.
+   * Reallocates the ring buffer, preserving the most recent
+   * min(historyCount, newCapacity) events in chronological order.
+   */
   setMaxHistory(maxHistory: number): void {
-    this.maxHistory = Math.max(0, maxHistory | 0);
-    if (this.history.length > this.maxHistory) {
-      this.history.splice(0, this.history.length - this.maxHistory);
+    const newCap = Math.max(0, maxHistory | 0);
+    if (newCap === this.historyCapacity) return;
+
+    if (newCap === 0) {
+      this.historyBuf = [];
+      this.historyHead = 0;
+      this.historyCount = 0;
+      return;
     }
+
+    // Preserve the latest min(count, newCap) events.
+    const oldCap = this.historyCapacity;
+    const keep = Math.min(this.historyCount, newCap);
+    const newBuf: (JsonRpcEvent | undefined)[] = new Array(newCap);
+    if (keep > 0 && oldCap > 0) {
+      // Source range: the last `keep` events ending just before historyHead.
+      const start = (this.historyHead - keep + oldCap) % oldCap;
+      for (let i = 0; i < keep; i++) {
+        newBuf[i] = this.historyBuf[(start + i) % oldCap];
+      }
+    }
+    this.historyBuf = newBuf;
+    this.historyCount = keep;
+    this.historyHead = keep % newCap;
   }
 
   // ── Internal ────────────────────────────────────────────────────────────
@@ -265,12 +305,12 @@ export class WebSocketEventBridge {
       timestamp: Date.now(),
     };
 
-    // Append to replay history (circular)
-    if (this.maxHistory > 0) {
-      this.history.push(event);
-      if (this.history.length > this.maxHistory) {
-        this.history.splice(0, this.history.length - this.maxHistory);
-      }
+    // Append to ring buffer — O(1), no shifting.
+    const cap = this.historyCapacity;
+    if (cap > 0) {
+      this.historyBuf[this.historyHead] = event;
+      this.historyHead = (this.historyHead + 1) % cap;
+      if (this.historyCount < cap) this.historyCount++;
     }
 
     for (const [connId, conn] of this.connections) {
