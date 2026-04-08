@@ -1114,35 +1114,23 @@ export function createHandlers(
     ) => {
       const startTime = Date.now();
       try {
-        // Check if element exists first.
+        // Pre-flight registry check.
         // Page-level sentinel IDs ("document", "body", "window") bypass the registry
         // check — the action executor resolves them to document.documentElement directly.
         const isPageScrollSentinel =
           request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
-        const element = isPageScrollSentinel ? true : registry.getElement(id);
-        if (!element) {
-          const failureDetails = createFailureDetails(
-            'ELEMENT_NOT_FOUND',
-            `Element not found: ${id}`,
-            {
-              elementId: id,
-              selectorsTried: [id],
-              durationMs: Date.now() - startTime,
-            }
-          );
-          return {
-            success: false,
-            error: `Element not found: ${id}`,
-            code: 'ELEMENT_NOT_FOUND',
-            data: {
-              success: false,
-              error: `Element not found: ${id}`,
-              failureDetails,
-              durationMs: Date.now() - startTime,
-              timestamp: Date.now(),
-            },
-            timestamp: Date.now(),
-          } as APIResponse<any>;
+        let element = isPageScrollSentinel ? true : registry.getElement(id);
+
+        // Auto-rediscover: if the element isn't in the registry, refresh the
+        // search/NL modules and let the action executor's richer lookup chain
+        // (findElementByIdentifier → CTR → discovery cache) take a crack at it
+        // before we return ELEMENT_NOT_FOUND. This handles cases where the
+        // registry was stale between discover() and executeAction() — e.g.
+        // React re-rendered the tree and the client is still using an older
+        // ID that maps to a DOM node with a matching data-testid/id attribute.
+        if (!element && !isPageScrollSentinel) {
+          refreshElements();
+          element = registry.getElement(id);
         }
 
         // Capture pre-action element states for diffing if captureAfter is requested
@@ -1548,7 +1536,21 @@ export function createHandlers(
         }
         const snapshot = registry.createSnapshot();
 
-        // DOM fallback: when registry has no elements, populate from DOM scan
+        // Fix snapshot/discover discrepancy: createSnapshot() sometimes returns
+        // an empty elements[] field even when registry.getAllElements() has
+        // entries (observed during rapid navigation when the snapshot's
+        // internal serialization lags behind registration events). Fall back
+        // to getAllElements() before the DOM scan so callers get a
+        // registry-consistent view that matches discover()'s output.
+        if (snapshot.elements.length === 0) {
+          const registryElements = registry.getAllElements();
+          if (registryElements.length > 0) {
+            snapshot.elements = registryElements as any[];
+          }
+        }
+
+        // DOM fallback: when both the snapshot and registry have no elements,
+        // populate from a live DOM scan.
         if (snapshot.elements.length === 0) {
           const domElements = scanDOMForInteractiveElements();
           if (domElements.length > 0) {
