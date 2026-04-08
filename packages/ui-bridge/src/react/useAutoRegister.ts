@@ -947,6 +947,26 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const scanAndRegister = useCallback(
     (rootElement: HTMLElement): void => {
+      // Prune any leaked entries from prior effect re-runs where the
+      // DOM node has since been removed. This keeps the registry bounded
+      // when the outer useEffect re-runs repeatedly because a caller
+      // passes inline discovery option objects. Cheap — one pass over
+      // whatever's currently registered.
+      const pruneDisconnected = (ref: typeof registeredElementsRef) => {
+        const keep = new Map<HTMLElement, string>();
+        ref.current.forEach((id, element) => {
+          if (element.isConnected) {
+            keep.set(element, id);
+          } else if (bridge?.registry) {
+            bridge.registry.unregisterElement(id);
+          }
+        });
+        ref.current = keep;
+      };
+      pruneDisconnected(registeredElementsRef);
+      pruneDisconnected(registeredContentElementsRef);
+      pruneDisconnected(registeredMediaElementsRef);
+
       // Scan interactive elements
       const allSelectors = [...INTERACTIVE_SELECTORS, ...includeSelectors].join(', ');
       const elements = rootElement.querySelectorAll<HTMLElement>(allSelectors);
@@ -1002,6 +1022,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
     },
     [
+      bridge,
       includeSelectors,
       shouldRegister,
       queueRegistration,
@@ -1253,23 +1274,45 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         clearTimeout(mediaDebounceTimeoutRef.current);
       }
 
-      // Unregister all interactive elements
-      registeredElementsRef.current.forEach((id, _element) => {
-        bridge.registry.unregisterElement(id);
-      });
-      registeredElementsRef.current.clear();
+      // Unregister only elements whose DOM node has actually been
+      // disconnected. The cleanup fires on every effect re-run — not
+      // just true unmount — so unconditionally wiping the registry
+      // was the root cause of a bug where
+      // `GET /ui-bridge/control/elements` intermittently returned an
+      // empty element set right after `POST /discover`: the outer
+      // effect re-ran (because a caller passed an inline
+      // contentDiscovery/mediaDiscovery object, changing the
+      // scanAndRegister identity on every parent render), cleanup
+      // wiped everything, and the re-scan's debounced queueRegistration
+      // hadn't yet committed when the HTTP call arrived.
+      //
+      // By keeping still-connected entries, we let `shouldRegister`
+      // (line 626) skip them on the next scan and the registry stays
+      // stable across effect re-runs. Any entries that are genuinely
+      // gone (their DOM node was removed) are cleaned up as before.
+      //
+      // On true unmount the DOM is still connected at cleanup time, so
+      // entries would leak here. `scanAndRegister` (called on the next
+      // effect run) calls `pruneDisconnectedEntries` up front to catch
+      // that leak the moment a new consumer attaches; and the scan
+      // path naturally drops disconnected entries on subsequent walks.
+      const unregisterIfDisconnected = (
+        ref: React.MutableRefObject<Map<HTMLElement, string>>
+      ) => {
+        const stillAlive = new Map<HTMLElement, string>();
+        ref.current.forEach((id, element) => {
+          if (element.isConnected) {
+            stillAlive.set(element, id);
+          } else {
+            bridge.registry.unregisterElement(id);
+          }
+        });
+        ref.current = stillAlive;
+      };
 
-      // Unregister all content elements
-      registeredContentElementsRef.current.forEach((id, _element) => {
-        bridge.registry.unregisterElement(id);
-      });
-      registeredContentElementsRef.current.clear();
-
-      // Unregister all media elements
-      registeredMediaElementsRef.current.forEach((id, _element) => {
-        bridge.registry.unregisterElement(id);
-      });
-      registeredMediaElementsRef.current.clear();
+      unregisterIfDisconnected(registeredElementsRef);
+      unregisterIfDisconnected(registeredContentElementsRef);
+      unregisterIfDisconnected(registeredMediaElementsRef);
     };
   }, [enabled, bridge, root, scanAndRegister, handleMutations]);
 }
