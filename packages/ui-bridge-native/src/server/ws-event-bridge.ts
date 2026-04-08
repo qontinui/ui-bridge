@@ -195,12 +195,21 @@ export class WebSocketEventBridge {
     return true;
   }
 
-  /** Remove event subscriptions for a connection. */
+  /**
+   * Remove event subscriptions for a connection.
+   * If all subscriptions are cleared, also drops the throttle entry
+   * (and any pending flush timer) so a subsequent resubscribe starts clean.
+   */
   handleUnsubscribe(connId: string, events: string[]): boolean {
     const conn = this.connections.get(connId);
     if (!conn) return false;
     for (const event of events) {
       conn.subscriptions.delete(event);
+    }
+    if (conn.subscriptions.size === 0) {
+      const throttle = this.throttles.get(connId);
+      if (throttle?.timer) clearTimeout(throttle.timer);
+      this.throttles.delete(connId);
     }
     return true;
   }

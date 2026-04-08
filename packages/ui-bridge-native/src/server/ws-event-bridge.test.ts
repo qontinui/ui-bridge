@@ -335,4 +335,66 @@ describe('WebSocketEventBridge — event history ring buffer', () => {
     const ids = bridge.getHistory().map((e) => (e.data as { id: string }).id);
     expect(ids).toEqual(['e7', 'e8', 'e9', 'e10']);
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 16. handleUnsubscribe clears throttle state when all subs are removed
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('handleUnsubscribe throttle cleanup', () => {
+    const makeConn = (id: string) => ({
+      id,
+      subscriptions: new Set<string>(),
+      alive: true,
+      isOpen: true,
+      send: () => {},
+      sendEvent: () => {},
+      ping: () => {},
+      close: () => {},
+      destroy: () => {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
+    it('drops throttle entry when last subscription is removed', () => {
+      const bridge = new WebSocketEventBridge(registry);
+      bridge.start();
+      const conn = makeConn('c1');
+      bridge.addConnection(conn);
+
+      bridge.handleSubscribe('c1', ['element:registered', 'element:stateChanged'], 100);
+      expect(bridge.getThrottleMs('c1')).toBe(100);
+
+      // Remove only one subscription — throttle should persist.
+      bridge.handleUnsubscribe('c1', ['element:registered']);
+      expect(bridge.getThrottleMs('c1')).toBe(100);
+      expect(bridge.getSubscriptions('c1')).toEqual(['element:stateChanged']);
+
+      // Remove the last subscription — throttle must be cleared.
+      bridge.handleUnsubscribe('c1', ['element:stateChanged']);
+      expect(bridge.getThrottleMs('c1')).toBeUndefined();
+      expect(bridge.getSubscriptions('c1')).toEqual([]);
+    });
+
+    it('clearing all at once also drops throttle and any pending timer', () => {
+      vi.useFakeTimers();
+      try {
+        const bridge = new WebSocketEventBridge(registry);
+        bridge.start();
+        const conn = makeConn('c2');
+        bridge.addConnection(conn);
+
+        bridge.handleSubscribe('c2', ['*'], 200);
+        // Emit an event to schedule a flush timer
+        registry.emit('element:registered', { id: 'x' });
+        expect(internals(bridge).throttles.get('c2').timer).not.toBeNull();
+
+        bridge.handleUnsubscribe('c2', ['*']);
+        expect(bridge.getThrottleMs('c2')).toBeUndefined();
+        expect(internals(bridge).throttles.has('c2')).toBe(false);
+
+        // Advance time past the throttle window — no crash, no leaked flush.
+        vi.advanceTimersByTime(500);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
