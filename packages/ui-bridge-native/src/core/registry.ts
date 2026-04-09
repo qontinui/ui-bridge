@@ -497,13 +497,24 @@ export class NativeUIBridgeRegistry {
   /**
    * Create a snapshot of the current state
    */
-  createSnapshot(routeInfo?: {
-    currentRoute?: string | null;
-    segments?: string[];
-  }): NativeBridgeSnapshot {
+  createSnapshot(
+    routeInfo?: {
+      currentRoute?: string | null;
+      segments?: string[];
+    },
+    options?: { visibleOnly?: boolean },
+  ): NativeBridgeSnapshot {
+    let elements = this.getAllElements();
+    if (options?.visibleOnly) {
+      elements = elements.filter((e) => {
+        const state = e.getState();
+        return state.visible && state.layout !== null;
+      });
+    }
+
     return {
       timestamp: Date.now(),
-      elements: this.getAllElements().map((e) => ({
+      elements: elements.map((e) => ({
         id: e.id,
         type: e.type,
         label: e.label,

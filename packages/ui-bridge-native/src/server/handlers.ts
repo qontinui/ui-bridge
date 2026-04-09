@@ -275,8 +275,20 @@ export function createServerHandlers(
 
   return {
     // Elements
-    getElements: async () => {
-      const elements = registry.getAllElements().map((e) => ({
+    getElements: async (ctx: HandlerContext) => {
+      const visibleOnly =
+        ctx.query?.visibleOnly === 'true' ||
+        (ctx.body as Record<string, unknown>)?.visibleOnly === true;
+
+      let allElements = registry.getAllElements();
+      if (visibleOnly) {
+        allElements = allElements.filter((e) => {
+          const state = e.getState();
+          return state.visible && state.layout !== null;
+        });
+      }
+
+      const elements = allElements.map((e) => ({
         id: e.id,
         type: e.type,
         label: e.label,
@@ -419,8 +431,11 @@ export function createServerHandlers(
       return success(response);
     },
 
-    getSnapshot: async () => {
-      const snapshot = registry.createSnapshot();
+    getSnapshot: async (ctx: HandlerContext) => {
+      const visibleOnly =
+        ctx.query?.visibleOnly === 'true' ||
+        (ctx.body as Record<string, unknown>)?.visibleOnly === true;
+      const snapshot = registry.createSnapshot(undefined, { visibleOnly });
       return success(snapshot);
     },
 
@@ -522,6 +537,11 @@ export function createServerHandlers(
     // Screenshot (stub — apps should override with their screen capture library)
     getScreenshot: async () => {
       return error('Screenshot not supported. Provide a screenshotProvider to UIBridgeNativeProvider.', 'NOT_SUPPORTED');
+    },
+
+    // Meta / Introspection (stub — server constructor overrides with real route table)
+    getMethods: async () => {
+      return error('Methods introspection not configured', 'NOT_SUPPORTED');
     },
 
     // Design Review

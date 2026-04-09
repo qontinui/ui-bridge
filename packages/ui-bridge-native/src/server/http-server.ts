@@ -135,6 +135,9 @@ const WS_ROUTES: readonly WsRoute[] = [
   { pattern: 'design/evaluate/contexts', handler: 'getQualityContexts', httpMethods: ['GET'] },
   { pattern: 'design/evaluate/baseline', handler: 'saveBaseline', httpMethods: ['POST'] },
   { pattern: 'design/evaluate/diff', handler: 'diffBaseline', httpMethods: ['POST'] },
+
+  // Meta / Introspection
+  { pattern: 'meta/methods', handler: 'getMethods', httpMethods: ['GET'] },
 ];
 
 /**
@@ -222,6 +225,27 @@ export class NativeUIBridgeServer {
       ...config,
     };
     this.handlers = createServerHandlers(registry, executor);
+
+    // Set up method introspection from the route table
+    this.handlers.getMethods = async () => {
+      const methods = WS_ROUTES.map((r) => ({
+        method: r.pattern,
+        httpMethods: r.httpMethods ? [...r.httpMethods] : undefined,
+      }));
+      // Add special WebSocket-only methods not in the route table
+      const wsMethods = [
+        { method: 'waitForElement', description: 'Wait for an element to be registered' },
+        { method: 'waitForCondition', description: 'Wait for an element state predicate' },
+        { method: 'sequence', description: 'Execute a sequence of steps in order' },
+        { method: 'events/history', description: 'Replay recent registry events' },
+        { method: 'subscriptions/list', description: 'List current event subscriptions' },
+      ];
+      return {
+        success: true,
+        data: { methods: [...methods, ...wsMethods] },
+        timestamp: Date.now(),
+      };
+    };
   }
 
   /**
@@ -268,11 +292,17 @@ export class NativeUIBridgeServer {
    * When set, `control/snapshot` responses include `currentRoute` and `segments`.
    */
   setRouteProvider(provider: RouteProvider): void {
-    this.handlers.getSnapshot = async () => {
-      const snapshot = this.registry.createSnapshot({
-        currentRoute: provider.getCurrentRoute(),
-        segments: provider.getSegments?.(),
-      });
+    this.handlers.getSnapshot = async (ctx: HandlerContext) => {
+      const visibleOnly =
+        ctx?.query?.visibleOnly === 'true' ||
+        (ctx?.body as Record<string, unknown>)?.visibleOnly === true;
+      const snapshot = this.registry.createSnapshot(
+        {
+          currentRoute: provider.getCurrentRoute(),
+          segments: provider.getSegments?.(),
+        },
+        { visibleOnly },
+      );
       return { success: true, data: snapshot, timestamp: Date.now() };
     };
   }
@@ -282,9 +312,18 @@ export class NativeUIBridgeServer {
    * This enables `control/screenshot` on native.
    */
   setScreenshotProvider(provider: ScreenshotProvider): void {
+    const SCREENSHOT_TIMEOUT_MS = 10_000;
     this.handlers.getScreenshot = async () => {
       try {
-        const result = await provider.capture();
+        const result = await Promise.race([
+          provider.capture(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Screenshot capture timed out after ${SCREENSHOT_TIMEOUT_MS}ms`)),
+              SCREENSHOT_TIMEOUT_MS,
+            ),
+          ),
+        ]);
         return {
           success: true,
           data: { screenshot: result.base64, width: result.width, height: result.height },

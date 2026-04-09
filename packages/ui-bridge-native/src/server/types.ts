@@ -298,6 +298,9 @@ export interface NativeServerHandlers {
   saveBaseline: HandlerFunction<{ saved: boolean; elementCount: number }>;
   diffBaseline: HandlerFunction<unknown>;
 
+  // Meta / Introspection
+  getMethods: HandlerFunction<{ methods: Array<{ method: string; httpMethods?: string[]; description?: string }> }>;
+
   // Health
   health: HandlerFunction<{ status: string; timestamp: number }>;
 }
