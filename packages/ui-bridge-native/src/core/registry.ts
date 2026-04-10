@@ -249,6 +249,16 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Get all registered elements that are visible and have a layout
+   */
+  getVisibleElements(): RegisteredNativeElement[] {
+    return this.getAllElements().filter((e) => {
+      const state = e.getState();
+      return state.visible && state.layout !== null;
+    });
+  }
+
+  /**
    * Update element state
    */
   updateElementState(id: string, state: Partial<NativeElementState>): void {
@@ -504,13 +514,9 @@ export class NativeUIBridgeRegistry {
     },
     options?: { visibleOnly?: boolean },
   ): NativeBridgeSnapshot {
-    let elements = this.getAllElements();
-    if (options?.visibleOnly) {
-      elements = elements.filter((e) => {
-        const state = e.getState();
-        return state.visible && state.layout !== null;
-      });
-    }
+    const elements = options?.visibleOnly
+      ? this.getVisibleElements()
+      : this.getAllElements();
 
     return {
       timestamp: Date.now(),

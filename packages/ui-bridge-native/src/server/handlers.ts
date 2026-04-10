@@ -280,13 +280,9 @@ export function createServerHandlers(
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
 
-      let allElements = registry.getAllElements();
-      if (visibleOnly) {
-        allElements = allElements.filter((e) => {
-          const state = e.getState();
-          return state.visible && state.layout !== null;
-        });
-      }
+      const allElements = visibleOnly
+        ? registry.getVisibleElements()
+        : registry.getAllElements();
 
       const elements = allElements.map((e) => ({
         id: e.id,
