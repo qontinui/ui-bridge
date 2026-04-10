@@ -1842,15 +1842,92 @@ export function createHandlers(
     getConsoleErrors: async (params?: {
       since?: number;
       limit?: number;
-    }): Promise<APIResponse<{ errors: CapturedError[]; count: number }>> => {
+      group?: boolean;
+      groupBy?: 'fingerprint' | 'message' | 'source';
+    }): Promise<APIResponse<{ errors: CapturedError[]; count: number } | { groups: unknown[]; totalErrors: number; totalGroups: number }>> => {
       try {
         if (!consoleCapture) {
+          if (params?.group) {
+            return success({ groups: [], totalErrors: 0, totalGroups: 0 });
+          }
           return success({ errors: [], count: 0 });
         }
         const errors = params?.since
           ? consoleCapture.getConsoleSince(params.since)
           : consoleCapture.getConsoleRecent(params?.limit ?? 50);
-        return success({ errors, count: errors.length });
+
+        if (!params?.group) {
+          return success({ errors, count: errors.length });
+        }
+
+        // Grouped mode: delegate to the relay/IPC which handles grouping
+        // For direct (non-relay) mode, do grouping here
+        const groupBy = params.groupBy ?? 'fingerprint';
+        const { computeFingerprint: fp, extractSourceLocation: extractSrc } = await import('../debug/error-fingerprint');
+        const { getEventStack: getStack } = await import('../debug/shared-utils');
+
+        // Get raw events for grouping (consoleCapture may be full BrowserEventCapture)
+        let rawEvents: AnyCapturedEvent[] = [];
+        if (hasFullEventAPI(consoleCapture)) {
+          rawEvents = (params.since
+            ? consoleCapture.getSince(params.since)
+            : consoleCapture.getRecent((params.limit ?? 50) * 10)
+          ).filter((e: AnyCapturedEvent) => e.type === 'console' || e.type === 'hmr');
+        }
+
+        if (rawEvents.length === 0) {
+          // Fallback: return errors as single-item groups
+          const groups = errors.map((e) => ({
+            fingerprint: `msg:${e.message}`,
+            count: 1,
+            firstSeen: e.timestamp,
+            lastSeen: e.timestamp,
+            level: e.level,
+            message: e.message,
+            source: undefined as string | undefined,
+            sample: e,
+          }));
+          return success({ groups, totalErrors: errors.length, totalGroups: groups.length });
+        }
+
+        const groupMap = new Map<string, {
+          fingerprint: string; count: number; firstSeen: number;
+          lastSeen: number; level: string; message: string;
+          source: string | undefined; sample: unknown;
+        }>();
+        const order: string[] = [];
+
+        for (const event of rawEvents) {
+          let key: string;
+          if (groupBy === 'message') {
+            key = `msg:${(event as { message?: string }).message ?? ''}`;
+          } else if (groupBy === 'source') {
+            key = `src:${extractSrc(getStack(event)) ?? 'unknown'}`;
+          } else {
+            key = fp(event);
+          }
+
+          const existing = groupMap.get(key);
+          if (existing) {
+            existing.count += 1;
+            existing.lastSeen = event.timestamp;
+          } else {
+            const msg = (event as { message?: string }).message ?? '';
+            const lvl = event.type === 'hmr'
+              ? ((event as { level: string }).level === 'warning' ? 'warn' : (event as { level: string }).level)
+              : (event as { level: string }).level;
+            const src = extractSrc(getStack(event));
+            groupMap.set(key, {
+              fingerprint: key, count: 1, firstSeen: event.timestamp,
+              lastSeen: event.timestamp, level: lvl, message: msg, source: src,
+              sample: { timestamp: event.timestamp, level: lvl, message: msg, stack: (event as { stack?: string }).stack },
+            });
+            order.push(key);
+          }
+        }
+
+        const groups = order.map((k) => groupMap.get(k)!);
+        return success({ groups, totalErrors: rawEvents.length, totalGroups: groups.length });
       } catch (err) {
         return error((err as Error).message, 'CONSOLE_ERRORS_ERROR');
       }
@@ -4630,6 +4707,12 @@ export function createHandlers(
                   method: 'GET',
                   path: '/control/console-errors',
                   description: 'Get captured console errors',
+                  queryParams: {
+                    since: 'number (epoch ms) — filter errors after this timestamp',
+                    limit: 'number (default 50) — max errors to return',
+                    group: 'boolean (default false) — group errors by fingerprint',
+                    groupBy: "'fingerprint' | 'message' | 'source' (default 'fingerprint') — grouping strategy",
+                  },
                 },
                 {
                   method: 'POST',
