@@ -74,6 +74,8 @@ export interface AutoRegisterOptions {
   mediaDiscovery?: MediaDiscoveryOptions;
   /** Log level for auto-registered elements (uses global default if not set) */
   logLevel?: ElementLogLevel;
+  /** Write data-ui-bridge-id attribute on registered elements (default: true) */
+  writeStableAttribute?: boolean;
 }
 
 /**
@@ -589,6 +591,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     contentDiscovery,
     mediaDiscovery,
     logLevel,
+    writeStableAttribute,
   } = options;
 
   const contentEnabled = contentDiscovery?.enabled !== false;
@@ -674,6 +677,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       });
 
       const finalId = registered.id;
+      if (writeStableAttribute !== false) {
+        element.setAttribute('data-ui-bridge-id', finalId);
+      }
       registeredElementsRef.current.set(element, finalId);
 
       if (logLevel) {
@@ -682,7 +688,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       onRegister?.(finalId, element);
     },
-    [bridge, idStrategy, customGenerateId, onRegister, logLevel]
+    [bridge, idStrategy, customGenerateId, onRegister, logLevel, writeStableAttribute]
   );
 
   /**

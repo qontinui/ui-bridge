@@ -34,6 +34,7 @@ import type {
 } from './types';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
+import { computeElementFingerprint } from './element-fingerprint';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
@@ -435,6 +436,8 @@ export interface RegistryOptions {
   onEvent?: BridgeEventListener;
   /** Element event log for per-element observability */
   elementEventLog?: ElementEventLog;
+  /** Preserve element IDs across React remounts by fingerprint matching (default: false) */
+  preserveIdAcrossRemount?: boolean;
 }
 
 /**
@@ -461,6 +464,9 @@ export class UIBridgeRegistry {
   private stateGroups = new Map<string, UIStateGroup>();
   private transitions = new Map<string, UITransition>();
   private activeStates = new Set<string>();
+
+  // Recently removed elements for remount ID preservation
+  private recentlyRemoved = new Map<string, { id: string; fingerprint: string; removedAt: number }>();
 
   // External store pattern for useSyncExternalStore
   private storeVersion = 0;
@@ -596,7 +602,24 @@ export class UIBridgeRegistry {
     const actions = options.actions ?? inferActions(type);
 
     // Elements are identified through the internal bridge registry, not DOM attributes
-    const actualId = id;
+    let actualId = id;
+
+    // Preserve ID across remounts: match by fingerprint against recently-removed elements
+    if (this.options.preserveIdAcrossRemount) {
+      const now = Date.now();
+      const fp = computeElementFingerprint(element).hash;
+      for (const [key, entry] of this.recentlyRemoved) {
+        if (now - entry.removedAt > 500) {
+          this.recentlyRemoved.delete(key);
+          continue;
+        }
+        if (entry.fingerprint === fp) {
+          actualId = entry.id;
+          this.recentlyRemoved.delete(key);
+          break;
+        }
+      }
+    }
 
     const registered: RegisteredElement = {
       id: actualId,
@@ -710,6 +733,18 @@ export class UIBridgeRegistry {
   unregisterElement(id: string): boolean {
     const registered = this.elements.get(id);
     if (registered) {
+      // Track recently removed for remount ID preservation
+      if (this.options.preserveIdAcrossRemount && registered.element) {
+        const fp = computeElementFingerprint(registered.element).hash;
+        this.recentlyRemoved.set(fp, { id, fingerprint: fp, removedAt: Date.now() });
+        // Bound the map at 100 entries
+        if (this.recentlyRemoved.size > 100) {
+          const firstKey = this.recentlyRemoved.keys().next().value;
+          if (firstKey !== undefined) {
+            this.recentlyRemoved.delete(firstKey);
+          }
+        }
+      }
       registered.mounted = false;
       this.elements.delete(id);
       this.emit('element:unregistered', { id });

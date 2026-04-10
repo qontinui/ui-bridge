@@ -11,6 +11,8 @@ import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { getEventStack } from '../debug/shared-utils';
+import { createStableRef, resolveStableRef } from '../core/stable-ref';
+import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 
 // ============================================================================
@@ -232,6 +234,7 @@ function elementToFindResult(e: RegisteredElement) {
     actions: e.actions,
     state,
     registered: true,
+    stableRef: createStableRef(e),
   };
 }
 
@@ -3390,6 +3393,20 @@ export async function executeCommand(
         elementSnapshot,
       };
       return result;
+    }
+
+    // ======================================================================
+    // Stable Element References
+    // ======================================================================
+
+    case 'resolve_stable_ref': {
+      const { stableRef } = payload as { stableRef: StableElementRef };
+      const resolved = resolveStableRef(stableRef);
+      return {
+        resolved: !!resolved,
+        elementId: resolved?.id ?? null,
+        timestamp: Date.now(),
+      };
     }
 
     // ======================================================================
