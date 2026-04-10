@@ -51,5 +51,9 @@ export { FormMutationDetector } from './form-mutation';
 export { CompositeIdleDetector } from './composite-idle';
 export type { CompositeTransitionCallback } from './composite-idle';
 
+// Element stability wait
+export { waitForElementStable } from './element-settling';
+export type { ElementSettlingOptions, ElementSettlingResult } from './element-settling';
+
 // Stuck screen diagnostic
 export { StuckScreenDetector } from './stuck-screen';

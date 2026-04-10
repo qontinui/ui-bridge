@@ -31,5 +31,9 @@ export {
 } from './element-fingerprint';
 export type { ElementFingerprintData, RepeatPatternData } from './element-fingerprint';
 
+// Stable element references across React re-renders
+export { createStableRef, resolveStableRef } from './stable-ref';
+export type { StableElementRef } from './stable-ref';
+
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';

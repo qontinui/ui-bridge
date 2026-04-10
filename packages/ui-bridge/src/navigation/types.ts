@@ -136,3 +136,49 @@ export interface NavigationEventData {
   /** How the navigation was triggered */
   trigger: NavigationTrigger;
 }
+
+// ============================================================================
+// Navigation Complete Signal
+// ============================================================================
+
+/**
+ * Data tracked when a navigation is explicitly marked complete
+ */
+export interface NavigationCompleteData {
+  /** URL at which navigation completed */
+  url: string;
+  /** Timestamp when the navigation was marked complete */
+  completedAt: number;
+  /** Application-defined route key (e.g., "/tasks/:id") */
+  routeKey: string;
+  /** Optional metadata from the caller */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Parameters for the wait_for_navigation_complete IPC command
+ */
+export interface WaitForNavigationParams {
+  /** Only match navigations completed after this timestamp */
+  since?: number;
+  /** Only match navigations whose URL matches this pattern (substring or regex) */
+  urlPattern?: string;
+  /** Maximum time to wait in milliseconds */
+  timeout: number;
+}
+
+/**
+ * Result of the wait_for_navigation_complete IPC command
+ */
+export interface WaitForNavigationResult {
+  /** Whether navigation completed (true) or timed out (false) */
+  completed: boolean;
+  /** URL where navigation completed */
+  url?: string;
+  /** Application-defined route key */
+  routeKey?: string;
+  /** Timestamp when the navigation completed */
+  completedAt?: number;
+  /** Whether the signal came from an explicit markNavigationComplete call or idle-based fallback */
+  source: 'explicit' | 'fallback-idle';
+}

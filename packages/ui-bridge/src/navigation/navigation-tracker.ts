@@ -17,6 +17,7 @@ import type {
   DeveloperPageContext,
   NavigationTrackerOptions,
   NavigationEventData,
+  NavigationCompleteData,
 } from './types';
 
 /**
@@ -36,6 +37,11 @@ export class NavigationTracker {
 
   // Event callback for bridge event integration
   private onNavigation: ((data: NavigationEventData) => void) | null = null;
+
+  // Navigation-complete tracking
+  private _lastCompleteNavigation: NavigationCompleteData | null = null;
+  private _completionSeenKeys = new Set<string>();
+  private _completionListeners: Array<(data: NavigationCompleteData) => void> = [];
 
   // Original History API methods (saved for cleanup)
   private origPushState: typeof history.pushState | null = null;
@@ -193,6 +199,61 @@ export class NavigationTracker {
    */
   getRouteInfo(): RouteInfo | undefined {
     return this.routeInfo;
+  }
+
+  // ===========================================================================
+  // Public API — Navigation Complete Signal
+  // ===========================================================================
+
+  /**
+   * Mark a navigation as complete. Idempotent per (url, completedAt) tuple.
+   * Emits a navigation-complete event to any registered listeners.
+   */
+  markNavigationComplete(routeKey: string, metadata?: Record<string, unknown>): void {
+    const url = typeof window !== 'undefined' ? window.location.href : '';
+    const completedAt = Date.now();
+
+    // Idempotency: dedupe by (url, completedAt) — completedAt is ms-precision,
+    // so identical calls within the same ms tick are collapsed.
+    const dedupeKey = `${url}|${completedAt}`;
+    if (this._completionSeenKeys.has(dedupeKey)) return;
+    this._completionSeenKeys.add(dedupeKey);
+
+    // Bound the dedup set so it doesn't grow unboundedly
+    if (this._completionSeenKeys.size > 100) {
+      const entries = Array.from(this._completionSeenKeys);
+      this._completionSeenKeys = new Set(entries.slice(-50));
+    }
+
+    const data: NavigationCompleteData = { url, completedAt, routeKey, metadata };
+    this._lastCompleteNavigation = data;
+
+    // Notify listeners
+    for (const listener of this._completionListeners) {
+      try {
+        listener(data);
+      } catch {
+        // Don't let listener errors break the tracker
+      }
+    }
+  }
+
+  /**
+   * Get the last completed navigation, if any.
+   */
+  get lastCompleteNavigation(): NavigationCompleteData | null {
+    return this._lastCompleteNavigation;
+  }
+
+  /**
+   * Subscribe to navigation-complete events. Returns an unsubscribe function.
+   */
+  onNavigationComplete(listener: (data: NavigationCompleteData) => void): () => void {
+    this._completionListeners.push(listener);
+    return () => {
+      const idx = this._completionListeners.indexOf(listener);
+      if (idx >= 0) this._completionListeners.splice(idx, 1);
+    };
   }
 
   // ===========================================================================

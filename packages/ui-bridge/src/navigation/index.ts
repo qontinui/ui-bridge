@@ -17,6 +17,9 @@ export type {
   SnapshotPageContext,
   NavigationTrackerOptions,
   NavigationEventData,
+  NavigationCompleteData,
+  WaitForNavigationParams,
+  WaitForNavigationResult,
 } from './types';
 
 export {
