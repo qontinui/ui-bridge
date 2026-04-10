@@ -853,6 +853,84 @@ export interface ActionFailureDetails {
 }
 
 // ============================================================================
+// Element Assertion Types
+// ============================================================================
+
+/**
+ * Declarative spec for asserting properties of a registered element.
+ * Passed as the JSON body to `POST /ui-bridge/control/element/{id}/assert`.
+ */
+export interface ElementAssertionSpec {
+  /** Assert the element is visible (or not) */
+  visible?: boolean;
+  /** Assert the element is enabled (or not) */
+  enabled?: boolean;
+  /** Assert the element has focus (or not) */
+  focused?: boolean;
+  /** Assert exact text content */
+  text?: string;
+  /** Assert text content contains this substring */
+  textContains?: string;
+  /** Assert text content matches this regex (capped at 500 chars) */
+  textMatches?: string;
+  /** Assert exact input/textarea value */
+  value?: string;
+  /** Assert checked state (checkboxes, radios) */
+  checked?: boolean;
+  /** Assert HTML attributes by name → expected value */
+  attributes?: Record<string, string>;
+  /** Assert CSS class presence / absence */
+  classList?: { has?: string[]; missing?: string[] };
+  /** Assert bounding-box dimensions (px) */
+  boundingBox?: {
+    minWidth?: number;
+    maxWidth?: number;
+    minHeight?: number;
+    maxHeight?: number;
+  };
+}
+
+/**
+ * A single failed predicate within an element assertion.
+ */
+export interface ElementAssertionFailure {
+  /** The spec field that failed (e.g. "visible", "classList.has", "boundingBox.minWidth") */
+  field: string;
+  /** The value the spec expected */
+  expected: unknown;
+  /** The actual value observed on the element */
+  actual: unknown;
+  /** Comparison kind */
+  kind: 'exact' | 'contains' | 'regex' | 'min' | 'max' | 'absent' | 'error';
+}
+
+/**
+ * Structured result of a declarative element assertion.
+ * Returned by `POST /ui-bridge/control/element/{id}/assert`.
+ */
+export interface ElementAssertionResult {
+  /** True when every checked predicate passed */
+  passed: boolean;
+  /** Total number of predicates evaluated */
+  checked: number;
+  /** Number of predicates that passed */
+  passedCount: number;
+  /** Details for each failing predicate (empty when `passed` is true) */
+  failures: ElementAssertionFailure[];
+  /** Snapshot of the element's state at assertion time */
+  elementSnapshot?: {
+    id: string;
+    visible: boolean;
+    enabled: boolean;
+    focused: boolean;
+    textContent?: string;
+    value?: string;
+    checked?: boolean;
+    rect?: { x: number; y: number; width: number; height: number };
+  };
+}
+
+// ============================================================================
 // Bridge Snapshot & Event Types
 // ============================================================================
 

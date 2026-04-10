@@ -8,7 +8,7 @@
 export * from './types';
 
 // Action executor
-export { DefaultActionExecutor, createActionExecutor, extractReactState } from './action-executor';
+export { DefaultActionExecutor, createActionExecutor, extractReactState, batch, MAX_BATCH_SIZE } from './action-executor';
 
 // Form fill utility
 export { fillFormFields } from './fill-form';

@@ -719,6 +719,67 @@ export interface BatchActionResponse {
   timestamp: number;
 }
 
+// ============================================================================
+// Server-Side Batch Types (matches Rust POST /ui-bridge/batch endpoint)
+// ============================================================================
+
+/**
+ * A single operation in a server-side batch request.
+ * Maps to the Rust `BatchOperation` struct.
+ */
+export interface ServerBatchOperation {
+  /** Unique ID for this operation within the batch (for result correlation) */
+  id: string;
+  /** The operation type (e.g., "get_elements", "execute_action", "discover") */
+  operation: string;
+  /** Operation-specific parameters */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * Options for the server-side batch() call.
+ */
+export interface ServerBatchOptions {
+  /** If true, stop executing on first error (default: false) */
+  stopOnError?: boolean;
+}
+
+/**
+ * Result of a single operation within a server-side batch response.
+ * Maps to the Rust `BatchOperationResult` struct.
+ */
+export interface ServerBatchOperationResult {
+  /** Correlation ID matching the request operation */
+  id: string;
+  /** Whether the operation succeeded */
+  success: boolean;
+  /** Operation result data */
+  data?: unknown;
+  /** Error message if failed */
+  error?: string;
+  /** Structured error detail */
+  errorDetail?: {
+    code: string;
+    message: string;
+    recoveryHint?: string;
+  };
+  /** Duration of this operation in milliseconds */
+  durationMs: number;
+}
+
+/**
+ * Response from a server-side batch execution.
+ * Maps to the Rust `BatchResponse` struct.
+ */
+export interface ServerBatchResponse {
+  /** True only if all operations succeeded */
+  success: boolean;
+  /** Per-operation results in request order */
+  results: ServerBatchOperationResult[];
+  /** Total wall-clock time for the entire batch in milliseconds */
+  totalDurationMs: number;
+}
+
 /**
  * Action executor interface
  */

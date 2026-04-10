@@ -6,7 +6,7 @@
  * and DOM APIs to fulfill server-side relay requests.
  */
 
-import type { RegisteredElement } from '../core/types';
+import type { RegisteredElement, ElementAssertionSpec, ElementAssertionFailure, ElementAssertionResult } from '../core/types';
 import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 
@@ -3096,6 +3096,196 @@ export async function executeCommand(
       }
 
       return { images: results, total: results.length };
+    }
+
+    // ======================================================================
+    // Element Assertion
+    // ======================================================================
+
+    case 'assert_element': {
+      const { elementId, spec } = payload as {
+        elementId: string;
+        spec: ElementAssertionSpec;
+      };
+
+      const el = getElement(elementId);
+      if (!el) {
+        return {
+          passed: false,
+          checked: 0,
+          passedCount: 0,
+          failures: [],
+          error: 'ELEMENT_NOT_FOUND',
+          errorMessage: `Element '${elementId}' not found in registry`,
+        };
+      }
+
+      const state = el.getState();
+      const htmlEl = el.element;
+      const failures: ElementAssertionFailure[] = [];
+      let checked = 0;
+
+      // visible
+      if (spec.visible !== undefined) {
+        checked++;
+        if (state.visible !== spec.visible) {
+          failures.push({ field: 'visible', expected: spec.visible, actual: state.visible, kind: 'exact' });
+        }
+      }
+
+      // enabled
+      if (spec.enabled !== undefined) {
+        checked++;
+        if (state.enabled !== spec.enabled) {
+          failures.push({ field: 'enabled', expected: spec.enabled, actual: state.enabled, kind: 'exact' });
+        }
+      }
+
+      // focused
+      if (spec.focused !== undefined) {
+        checked++;
+        if (state.focused !== spec.focused) {
+          failures.push({ field: 'focused', expected: spec.focused, actual: state.focused, kind: 'exact' });
+        }
+      }
+
+      // text (exact match)
+      if (spec.text !== undefined) {
+        checked++;
+        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        if (actualText !== spec.text) {
+          failures.push({ field: 'text', expected: spec.text, actual: actualText, kind: 'exact' });
+        }
+      }
+
+      // textContains (substring)
+      if (spec.textContains !== undefined) {
+        checked++;
+        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        if (!actualText.includes(spec.textContains)) {
+          failures.push({ field: 'textContains', expected: spec.textContains, actual: actualText, kind: 'contains' });
+        }
+      }
+
+      // textMatches (regex)
+      if (spec.textMatches !== undefined) {
+        checked++;
+        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        // Safety: cap pattern length to prevent ReDoS
+        const pattern = spec.textMatches.length > 500 ? spec.textMatches.slice(0, 500) : spec.textMatches;
+        try {
+          const re = new RegExp(pattern);
+          if (!re.test(actualText)) {
+            failures.push({ field: 'textMatches', expected: spec.textMatches, actual: actualText, kind: 'regex' });
+          }
+        } catch {
+          failures.push({ field: 'textMatches', expected: spec.textMatches, actual: 'INVALID_REGEX', kind: 'error' });
+        }
+      }
+
+      // value
+      if (spec.value !== undefined) {
+        checked++;
+        const actualValue = state.value ?? '';
+        if (actualValue !== spec.value) {
+          failures.push({ field: 'value', expected: spec.value, actual: actualValue, kind: 'exact' });
+        }
+      }
+
+      // checked
+      if (spec.checked !== undefined) {
+        checked++;
+        if (state.checked !== spec.checked) {
+          failures.push({ field: 'checked', expected: spec.checked, actual: state.checked, kind: 'exact' });
+        }
+      }
+
+      // attributes
+      if (spec.attributes && htmlEl) {
+        for (const [attrName, expectedVal] of Object.entries(spec.attributes)) {
+          checked++;
+          const actualVal = htmlEl.getAttribute(attrName);
+          if (actualVal !== expectedVal) {
+            failures.push({
+              field: `attributes.${attrName}`,
+              expected: expectedVal,
+              actual: actualVal,
+              kind: 'exact',
+            });
+          }
+        }
+      }
+
+      // classList
+      if (spec.classList && htmlEl) {
+        const classes = Array.from(htmlEl.classList);
+        if (spec.classList.has) {
+          for (const cls of spec.classList.has) {
+            checked++;
+            if (!classes.includes(cls)) {
+              failures.push({ field: `classList.has`, expected: cls, actual: classes.join(' '), kind: 'contains' });
+            }
+          }
+        }
+        if (spec.classList.missing) {
+          for (const cls of spec.classList.missing) {
+            checked++;
+            if (classes.includes(cls)) {
+              failures.push({ field: `classList.missing`, expected: `not ${cls}`, actual: classes.join(' '), kind: 'absent' });
+            }
+          }
+        }
+      }
+
+      // boundingBox
+      if (spec.boundingBox) {
+        const bb = spec.boundingBox;
+        if (bb.minWidth !== undefined) {
+          checked++;
+          if (state.rect.width < bb.minWidth) {
+            failures.push({ field: 'boundingBox.minWidth', expected: bb.minWidth, actual: state.rect.width, kind: 'min' });
+          }
+        }
+        if (bb.maxWidth !== undefined) {
+          checked++;
+          if (state.rect.width > bb.maxWidth) {
+            failures.push({ field: 'boundingBox.maxWidth', expected: bb.maxWidth, actual: state.rect.width, kind: 'max' });
+          }
+        }
+        if (bb.minHeight !== undefined) {
+          checked++;
+          if (state.rect.height < bb.minHeight) {
+            failures.push({ field: 'boundingBox.minHeight', expected: bb.minHeight, actual: state.rect.height, kind: 'min' });
+          }
+        }
+        if (bb.maxHeight !== undefined) {
+          checked++;
+          if (state.rect.height > bb.maxHeight) {
+            failures.push({ field: 'boundingBox.maxHeight', expected: bb.maxHeight, actual: state.rect.height, kind: 'max' });
+          }
+        }
+      }
+
+      // Build element snapshot for context
+      const elementSnapshot = {
+        id: el.id,
+        visible: state.visible,
+        enabled: state.enabled,
+        focused: state.focused,
+        textContent: state.textContent,
+        value: state.value,
+        checked: state.checked,
+        rect: state.rect,
+      };
+
+      const result: ElementAssertionResult = {
+        passed: failures.length === 0,
+        checked,
+        passedCount: checked - failures.length,
+        failures,
+        elementSnapshot,
+      };
+      return result;
     }
 
     // ======================================================================

@@ -73,6 +73,9 @@ import type {
   ScrollIntoViewAction,
   FillFormRequest,
   ReactStateInfo,
+  ServerBatchOperation,
+  ServerBatchOptions,
+  ServerBatchResponse,
 } from './types';
 
 /**
@@ -2669,4 +2672,81 @@ export function createActionExecutor(
   consoleCapture?: BrowserEventCapture
 ): ActionExecutor {
   return new DefaultActionExecutor(registry, consoleCapture);
+}
+
+// ---------------------------------------------------------------------------
+// Server-side batch execution (POST /ui-bridge/batch)
+// ---------------------------------------------------------------------------
+
+/** Maximum batch size accepted by the server. */
+export const MAX_BATCH_SIZE = 50;
+
+/**
+ * Execute multiple UI Bridge operations in a single HTTP round-trip via the
+ * server-side batch endpoint (`POST /ui-bridge/batch`).
+ *
+ * This is distinct from `ActionExecutor.executeBatch()` which executes
+ * browser-side actions sequentially in the SDK. This function sends operations
+ * to the Rust relay server, which dispatches each operation through its
+ * standard IPC path (including circuit breaker, concurrency, and timeout logic).
+ *
+ * @param baseUrl - Base URL of the UI Bridge server (e.g., "http://localhost:1420")
+ * @param operations - Array of operations to execute
+ * @param options - Optional settings (stopOnError)
+ * @returns The batch response with per-operation results and timing
+ *
+ * @example
+ * ```ts
+ * const response = await batch('http://localhost:1420', [
+ *   { id: 'op1', operation: 'discover', params: { interactiveOnly: true } },
+ *   { id: 'op2', operation: 'get_elements' },
+ * ], { stopOnError: true });
+ * ```
+ */
+export async function batch(
+  baseUrl: string,
+  operations: ServerBatchOperation[],
+  options?: ServerBatchOptions,
+): Promise<ServerBatchResponse> {
+  if (operations.length > MAX_BATCH_SIZE) {
+    throw new Error(
+      `Batch size ${operations.length} exceeds maximum of ${MAX_BATCH_SIZE}`,
+    );
+  }
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/ui-bridge/batch`;
+  const body = JSON.stringify({
+    operations,
+    stopOnError: options?.stopOnError ?? false,
+  });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    let detail: string;
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed.error ?? parsed.data?.error ?? text;
+    } catch {
+      detail = text;
+    }
+    throw new Error(
+      `Batch request failed (HTTP ${response.status}): ${detail}`,
+    );
+  }
+
+  const json = await response.json();
+
+  // The server wraps the real payload in ApiResponse { success, data, error }
+  const payload = json.data ?? json;
+  return {
+    success: payload.success,
+    results: payload.results,
+    totalDurationMs: payload.totalDurationMs,
+  };
 }
