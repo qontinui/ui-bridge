@@ -9,6 +9,9 @@
 import type { RegisteredElement, ElementAssertionSpec, ElementAssertionFailure, ElementAssertionResult } from '../core/types';
 import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
+import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
+import { getEventStack } from '../debug/shared-utils';
+import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 
 // ============================================================================
 // Types
@@ -2425,11 +2428,100 @@ export async function executeCommand(
     // ======================================================================
 
     case 'getConsoleErrors': {
-      const { limit = 50, since } = payload as { limit?: number; since?: number };
+      const { limit = 50, since, group = false, groupBy = 'fingerprint' } = payload as {
+        limit?: number;
+        since?: number;
+        group?: boolean;
+        groupBy?: 'fingerprint' | 'message' | 'source';
+      };
       const cap = g.browserCapture;
-      if (!cap) return { errors: [], timestamp: Date.now() };
+      if (!cap) {
+        if (group) {
+          return { groups: [], totalErrors: 0, totalGroups: 0, timestamp: Date.now() };
+        }
+        return { errors: [], timestamp: Date.now() };
+      }
       const errors = since ? cap.getConsoleSince(since) : cap.getConsoleRecent(limit);
-      return { errors: errors.slice(0, limit), timestamp: Date.now() };
+
+      if (!group) {
+        return { errors: errors.slice(0, limit), timestamp: Date.now() };
+      }
+
+      // Grouped mode: aggregate errors by the chosen groupBy strategy
+      const rawEvents = (since
+        ? cap.getSince(since).filter((e: unknown) => {
+            const ev = e as AnyCapturedEvent;
+            return ev.type === 'console' || ev.type === 'hmr';
+          })
+        : cap.getRecent(limit * 10).filter((e: unknown) => {
+            const ev = e as AnyCapturedEvent;
+            return ev.type === 'console' || ev.type === 'hmr';
+          })) as AnyCapturedEvent[];
+
+      const groupMap = new Map<
+        string,
+        {
+          fingerprint: string;
+          count: number;
+          firstSeen: number;
+          lastSeen: number;
+          level: string;
+          message: string;
+          source: string | undefined;
+          sample: unknown;
+        }
+      >();
+      const insertionOrder: string[] = [];
+
+      for (const event of rawEvents) {
+        let key: string;
+        if (groupBy === 'message') {
+          key = `msg:${(event as { message?: string }).message ?? ''}`;
+        } else if (groupBy === 'source') {
+          key = `src:${extractSourceLocation(getEventStack(event)) ?? 'unknown'}`;
+        } else {
+          key = computeFingerprint(event);
+        }
+
+        const existing = groupMap.get(key);
+        if (existing) {
+          existing.count += 1;
+          existing.lastSeen = event.timestamp;
+        } else {
+          const msg = (event as { message?: string }).message ?? '';
+          const lvl =
+            event.type === 'hmr'
+              ? (event as { level: string }).level === 'warning'
+                ? 'warn'
+                : (event as { level: string }).level
+              : (event as { level: string }).level;
+          const src = extractSourceLocation(getEventStack(event));
+          groupMap.set(key, {
+            fingerprint: key,
+            count: 1,
+            firstSeen: event.timestamp,
+            lastSeen: event.timestamp,
+            level: lvl,
+            message: msg,
+            source: src,
+            sample: {
+              timestamp: event.timestamp,
+              level: lvl,
+              message: msg,
+              stack: (event as { stack?: string }).stack,
+            },
+          });
+          insertionOrder.push(key);
+        }
+      }
+
+      const groups = insertionOrder.map((k) => groupMap.get(k)!);
+      return {
+        groups,
+        totalErrors: rawEvents.length,
+        totalGroups: groups.length,
+        timestamp: Date.now(),
+      };
     }
 
     case 'clearConsoleErrors':

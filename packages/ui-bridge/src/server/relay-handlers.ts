@@ -724,20 +724,29 @@ export function createRelayHandlers(
         errors: import('../debug/browser-capture-types').CapturedError[];
         count: number;
       };
+      type GroupedResult = {
+        groups: unknown[];
+        totalErrors: number;
+        totalGroups: number;
+      };
+      const isGrouped = params?.group === true;
       try {
-        const result = await relay.queueCommand<ConsoleErrorsResult>(
+        const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
           params ?? {}
         );
-        // Cache successful result for fallback when browser disconnects
-        if (result && typeof result === 'object') {
+        // Cache successful result for fallback when browser disconnects (ungrouped only)
+        if (!isGrouped && result && typeof result === 'object') {
           lastConsoleErrorsCache = success(result as ConsoleErrorsResult);
         }
-        return success(result as ConsoleErrorsResult);
+        return success(result as ConsoleErrorsResult | GroupedResult);
       } catch {
-        // Relay failed — return cached data if available
-        if (lastConsoleErrorsCache)
+        // Relay failed — return cached data if available (ungrouped only)
+        if (!isGrouped && lastConsoleErrorsCache)
           return lastConsoleErrorsCache as APIResponse<ConsoleErrorsResult>;
+        if (isGrouped) {
+          return success({ groups: [], totalErrors: 0, totalGroups: 0 } as GroupedResult);
+        }
         return success({ errors: [], count: 0 } as ConsoleErrorsResult);
       }
     },

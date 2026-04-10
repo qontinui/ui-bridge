@@ -272,7 +272,9 @@ export interface UIBridgeServerHandlers {
   getConsoleErrors: (params?: {
     since?: number;
     limit?: number;
-  }) => Promise<APIResponse<{ errors: CapturedError[]; count: number }>>;
+    group?: boolean;
+    groupBy?: 'fingerprint' | 'message' | 'source';
+  }) => Promise<APIResponse<{ errors: CapturedError[]; count: number } | { groups: unknown[]; totalErrors: number; totalGroups: number }>>;
   clearConsoleErrors: () => Promise<APIResponse<{ cleared: boolean }>>;
 
   // AI-native endpoints
