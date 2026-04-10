@@ -695,6 +695,7 @@ export interface EndpointInfo {
   method: string;
   path: string;
   description: string;
+  queryParams?: Record<string, string>;
 }
 
 /**
