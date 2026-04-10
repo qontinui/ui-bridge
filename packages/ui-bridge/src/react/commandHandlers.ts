@@ -3120,6 +3120,18 @@ export async function executeCommand(
         };
       }
 
+      // Detect stale elements (in registry but detached from DOM)
+      if (!el.element.isConnected) {
+        return {
+          passed: false,
+          checked: 0,
+          passedCount: 0,
+          failures: [],
+          error: 'ELEMENT_STALE',
+          errorMessage: `Element '${elementId}' exists in registry but is detached from DOM`,
+        };
+      }
+
       const state = el.getState();
       const htmlEl = el.element;
       const failures: ElementAssertionFailure[] = [];
