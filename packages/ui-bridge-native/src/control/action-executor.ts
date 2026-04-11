@@ -144,6 +144,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 
     // Execute standard actions
     switch (action) {
+      case 'click': // Web UI Bridge compatibility alias
       case 'press':
         return this.performPress(props, params as PressActionParams | undefined);
 

@@ -23,6 +23,10 @@ import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../desi
 export interface NavigationProvider {
   navigate: (url: string) => void;
   back?: () => void;
+  /** Replace current route (no back-stack entry). For Expo Router: router.replace */
+  replace?: (url: string) => void;
+  /** Refresh the current route. For Expo Router: router.replace(currentPath) */
+  refresh?: () => void;
 }
 
 /**

@@ -285,6 +285,18 @@ export class NativeUIBridgeServer {
         return { success: false, error: `Back navigation failed: ${e.message}`, timestamp: Date.now() };
       }
     };
+
+    this.handlers.pageRefresh = async (): Promise<APIResponse<PageNavigationResponse>> => {
+      if (!provider.refresh) {
+        return { success: false, error: 'Page refresh not supported by navigation provider', timestamp: Date.now() };
+      }
+      try {
+        provider.refresh();
+        return { success: true, data: { success: true, timestamp: Date.now() }, timestamp: Date.now() };
+      } catch (e: any) {
+        return { success: false, error: `Refresh failed: ${e.message}`, timestamp: Date.now() };
+      }
+    };
   }
 
   /**
@@ -296,12 +308,15 @@ export class NativeUIBridgeServer {
       const visibleOnly =
         ctx?.query?.visibleOnly === 'true' ||
         (ctx?.body as Record<string, unknown>)?.visibleOnly === true;
+      const currentRouteOnly =
+        ctx?.query?.currentRouteOnly === 'true' ||
+        (ctx?.body as Record<string, unknown>)?.currentRouteOnly === true;
       const snapshot = this.registry.createSnapshot(
         {
           currentRoute: provider.getCurrentRoute(),
           segments: provider.getSegments?.(),
         },
-        { visibleOnly },
+        { visibleOnly, currentRouteOnly },
       );
       return { success: true, data: snapshot, timestamp: Date.now() };
     };

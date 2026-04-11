@@ -102,6 +102,21 @@ export interface UseUIElementOptions {
     focused?: unknown;
     disabled?: unknown;
   };
+  /**
+   * Handler props to auto-register with the bridge for action execution.
+   * When provided, the bridge can invoke these handlers via press/type/toggle actions
+   * without the component needing a separate useEffect + updateElementProps call.
+   *
+   * @example
+   * ```tsx
+   * const { ref, onLayout, bridgeProps } = useUIElement({
+   *   id: 'my-button',
+   *   type: 'pressable',
+   *   handlers: { onPress: handlePress },
+   * });
+   * ```
+   */
+  handlers?: Record<string, ((...args: any[]) => any) | undefined>;
 }
 
 /**
@@ -195,6 +210,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     parentPath,
     style,
     stateStyles: stateStylesProp,
+    handlers: handlersProp,
   } = options;
 
   // Build tree path
@@ -221,6 +237,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       treePath,
       testId: id,
       accessibilityLabel: label,
+      registrationRoute: bridge.getCurrentRoute(),
       flatStyle: flattenStyle(style),
       stateStyles: flattenStateStyles(stateStylesProp),
     });
@@ -321,6 +338,22 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       unregister();
     };
   }, [autoRegister, register, unregister]);
+
+  // Auto-register handler props (onPress, onChangeText, etc.) when provided
+  useEffect(() => {
+    if (!bridge || !registered || !handlersProp) return;
+
+    // Filter to only function values
+    const fnProps: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(handlersProp)) {
+      if (typeof value === 'function') {
+        fnProps[key] = value;
+      }
+    }
+    if (Object.keys(fnProps).length > 0) {
+      bridge.registry.updateElementProps(id, fnProps);
+    }
+  }, [bridge, registered, id, handlersProp]);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
   const _updateProps = useCallback(

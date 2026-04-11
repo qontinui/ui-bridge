@@ -59,6 +59,8 @@ export interface UIBridgeNativeContextValue {
   startServer: () => Promise<void>;
   /** Stop the HTTP server */
   stopServer: () => void;
+  /** Get the current navigation route (if a RouteProvider is configured) */
+  getCurrentRoute: () => string | null;
 }
 
 /**
@@ -279,6 +281,10 @@ export function UIBridgeNativeProvider({
 
   const createSnapshot = useCallback(() => registry.createSnapshot(), [registry]);
 
+  const getCurrentRoute = useCallback(() => {
+    return routeProvider?.getCurrentRoute() ?? null;
+  }, [routeProvider]);
+
   const on = useCallback(
     <T = unknown,>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
       registry.on(type, listener),
@@ -306,6 +312,7 @@ export function UIBridgeNativeProvider({
       serverRunning,
       startServer,
       stopServer,
+      getCurrentRoute,
     }),
     [
       features,
@@ -320,6 +327,7 @@ export function UIBridgeNativeProvider({
       serverRunning,
       startServer,
       stopServer,
+      getCurrentRoute,
     ]
   );
 

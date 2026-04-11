@@ -33,6 +33,8 @@ export interface RegisterElementOptions {
   treePath?: string;
   testId?: string;
   accessibilityLabel?: string;
+  /** Route path where the element was registered (for page-scoped filtering) */
+  registrationRoute?: string | null;
   /** Flattened RN style (from StyleSheet.flatten) for design review */
   flatStyle?: Record<string, unknown>;
   /** State-specific style overrides for design review */
@@ -141,6 +143,7 @@ export class NativeUIBridgeRegistry {
       treePath = id,
       testId,
       accessibilityLabel,
+      registrationRoute,
       flatStyle,
       stateStyles,
     } = options;
@@ -194,6 +197,7 @@ export class NativeUIBridgeRegistry {
       getIdentifier,
       registeredAt: Date.now(),
       mounted: true,
+      registrationRoute: registrationRoute ?? null,
       flatStyle,
       stateStyles,
     };
@@ -256,6 +260,13 @@ export class NativeUIBridgeRegistry {
       const state = e.getState();
       return state.visible && state.layout !== null;
     });
+  }
+
+  /**
+   * Get elements registered on a specific route (for page-scoped filtering)
+   */
+  getElementsForRoute(route: string): RegisteredNativeElement[] {
+    return this.getAllElements().filter((e) => e.registrationRoute === route);
   }
 
   /**
@@ -512,23 +523,36 @@ export class NativeUIBridgeRegistry {
       currentRoute?: string | null;
       segments?: string[];
     },
-    options?: { visibleOnly?: boolean },
+    options?: { visibleOnly?: boolean; currentRouteOnly?: boolean },
   ): NativeBridgeSnapshot {
-    const elements = options?.visibleOnly
+    let elements = options?.visibleOnly
       ? this.getVisibleElements()
       : this.getAllElements();
 
+    // Filter to only elements registered on the current route
+    if (options?.currentRouteOnly && routeInfo?.currentRoute) {
+      const currentRoute = routeInfo.currentRoute;
+      elements = elements.filter((e) => e.registrationRoute === currentRoute);
+    }
+
     return {
       timestamp: Date.now(),
-      elements: elements.map((e) => ({
-        id: e.id,
-        type: e.type,
-        label: e.label,
-        identifier: e.getIdentifier(),
-        state: e.getState(),
-        actions: e.actions,
-        customActions: e.customActions ? Object.keys(e.customActions) : undefined,
-      })),
+      elements: elements.map((e) => {
+        const handlers = e.props
+          ? Object.keys(e.props).filter((k) => typeof e.props![k] === 'function')
+          : [];
+        return {
+          id: e.id,
+          type: e.type,
+          label: e.label,
+          identifier: e.getIdentifier(),
+          state: e.getState(),
+          actions: e.actions,
+          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          registeredHandlers: handlers.length > 0 ? handlers : undefined,
+          registrationRoute: e.registrationRoute ?? undefined,
+        };
+      }),
       components: this.getAllComponents().map((c) => ({
         id: c.id,
         name: c.name,

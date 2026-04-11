@@ -279,20 +279,41 @@ export function createServerHandlers(
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
+      const currentRouteOnly =
+        ctx.query?.currentRouteOnly === 'true' ||
+        (ctx.body as Record<string, unknown>)?.currentRouteOnly === true;
+      const forRoute = (ctx.query?.route || (ctx.body as Record<string, unknown>)?.route) as string | undefined;
 
-      const allElements = visibleOnly
+      let allElements = visibleOnly
         ? registry.getVisibleElements()
         : registry.getAllElements();
 
-      const elements = allElements.map((e) => ({
-        id: e.id,
-        type: e.type,
-        label: e.label,
-        identifier: e.getIdentifier(),
-        state: e.getState(),
-        actions: e.actions,
-        customActions: e.customActions ? Object.keys(e.customActions) : undefined,
-      }));
+      // Filter by specific route or current route
+      if (forRoute) {
+        allElements = allElements.filter((e) => e.registrationRoute === forRoute);
+      } else if (currentRouteOnly) {
+        // Caller wants current-route-only but we don't have the route here;
+        // they should use control/snapshot with currentRouteOnly instead.
+        // As a fallback, filter out elements with null registration route.
+        allElements = allElements.filter((e) => e.registrationRoute != null);
+      }
+
+      const elements = allElements.map((e) => {
+        const handlers = e.props
+          ? Object.keys(e.props).filter((k) => typeof e.props![k] === 'function')
+          : [];
+        return {
+          id: e.id,
+          type: e.type,
+          label: e.label,
+          identifier: e.getIdentifier(),
+          state: e.getState(),
+          actions: e.actions,
+          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          registeredHandlers: handlers.length > 0 ? handlers : undefined,
+          registrationRoute: e.registrationRoute ?? undefined,
+        };
+      });
 
       return success({ elements });
     },
@@ -305,6 +326,10 @@ export function createServerHandlers(
         return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
       }
 
+      const handlers = element.props
+        ? Object.keys(element.props).filter((k) => typeof element.props![k] === 'function')
+        : [];
+
       return success({
         element: {
           id: element.id,
@@ -314,6 +339,8 @@ export function createServerHandlers(
           state: element.getState(),
           actions: element.actions,
           customActions: element.customActions ? Object.keys(element.customActions) : undefined,
+          registeredHandlers: handlers.length > 0 ? handlers : undefined,
+          registrationRoute: element.registrationRoute ?? undefined,
         },
       });
     },

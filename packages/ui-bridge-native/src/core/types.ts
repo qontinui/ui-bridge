@@ -251,6 +251,8 @@ export interface RegisteredNativeElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+  /** Route path where this element was registered (for page-scoped filtering) */
+  registrationRoute?: string | null;
   /** Flattened RN style for design review */
   flatStyle?: Record<string, unknown>;
   /** State-specific style overrides (pressed, focused, disabled) */
@@ -359,6 +361,10 @@ export interface NativeBridgeSnapshot {
     state: NativeElementState;
     actions: NativeStandardAction[];
     customActions?: string[];
+    /** Handler names actually registered via updateElementProps (e.g. ['onPress', 'onChangeText']) */
+    registeredHandlers?: string[];
+    /** Route path where this element was registered (for page-scoped filtering) */
+    registrationRoute?: string | null;
   }>;
   /** All registered components */
   components: Array<{
