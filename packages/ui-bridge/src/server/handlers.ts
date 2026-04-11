@@ -5143,12 +5143,45 @@ export function createHandlers(
         refreshElements();
         const allElements = registry.getAllElements();
         const mediaTypes = new Set(['image', 'video', 'audio', 'svg', 'picture', 'icon']);
-        const mediaElements = allElements.filter((el) => {
+        const rawMediaElements = allElements.filter((el) => {
           const elType = (el as { type?: string }).type ?? '';
           return mediaTypes.has(elType);
         });
+        // Materialize state via getState() so fields like rect/visibility are populated,
+        // then map to DiscoveredElement shape expected by FindResponse.
+        const mediaElements: DiscoveredElement[] = rawMediaElements.map((raw) => {
+          const el = raw as {
+            id: string;
+            type?: string;
+            label?: string;
+            actions?: string[];
+            category?: 'interactive' | 'content' | 'media';
+            contentMetadata?: ContentMetadata;
+            mediaMetadata?: MediaMetadata;
+            element?: HTMLElement;
+            tagName?: string;
+            role?: string;
+            accessibleName?: string;
+            getState?: () => unknown;
+          };
+          const state = (el.getState?.() ?? {}) as ElementState;
+          return {
+            id: el.id,
+            type: el.type ?? 'unknown',
+            label: el.label,
+            tagName: el.element?.tagName?.toLowerCase?.() ?? el.tagName ?? el.type ?? 'unknown',
+            role: el.role,
+            accessibleName: el.accessibleName,
+            actions: el.actions ?? [],
+            state,
+            registered: true,
+            category: el.category ?? 'media',
+            contentMetadata: el.contentMetadata,
+            mediaMetadata: el.mediaMetadata,
+          };
+        });
         const response: FindResponse = {
-          elements: mediaElements as DiscoveredElement[],
+          elements: mediaElements,
           total: mediaElements.length,
           durationMs: 0,
           timestamp: Date.now(),
