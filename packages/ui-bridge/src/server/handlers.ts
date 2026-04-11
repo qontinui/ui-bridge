@@ -198,6 +198,43 @@ function normalizeBatchAssertions(
 }
 
 /**
+ * Map raw registry elements to snapshot-format elements with computed state
+ * (rect, visibility, text content, computed styles). Raw RegisteredElement
+ * objects from registry.getAllElements() have a getState() method that must
+ * be called to populate these fields — without this mapping, rects are null.
+ */
+function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'] {
+  return rawElements.map((raw) => {
+    const el = raw as {
+      id: string;
+      type?: string;
+      label?: string;
+      actions?: unknown[];
+      customActions?: Record<string, unknown>;
+      category?: string;
+      contentMetadata?: unknown;
+      mediaMetadata?: unknown;
+      element: HTMLElement;
+      getState?: () => unknown;
+      getIdentifier?: () => unknown;
+    };
+    return {
+      id: el.id,
+      type: el.type,
+      tagName: el.element?.tagName?.toLowerCase?.(),
+      label: el.label,
+      identifier: el.getIdentifier?.(),
+      state: el.getState?.(),
+      actions: el.actions,
+      customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+      category: el.category,
+      contentMetadata: el.contentMetadata,
+      mediaMetadata: el.mediaMetadata,
+    };
+  }) as ControlSnapshot['elements'];
+}
+
+/**
  * Registry interface - minimal contract for handler usage
  */
 export interface RegistryLike {
@@ -1035,7 +1072,7 @@ export function createHandlers(
     getElements: async (): Promise<APIResponse<ControlSnapshot['elements']>> => {
       try {
         const elements = registry.getAllElements();
-        return success(elements as ControlSnapshot['elements']);
+        return success(materializeElements(elements));
       } catch (err) {
         return error((err as Error).message, 'ELEMENTS_ERROR');
       }
@@ -1061,7 +1098,7 @@ export function createHandlers(
             timestamp: Date.now(),
           };
         }
-        return success(element as ControlSnapshot['elements'][0]);
+        return success(materializeElements([element])[0]);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_ERROR');
       }
@@ -1462,7 +1499,7 @@ export function createHandlers(
         }
 
         return success({
-          elements,
+          elements: materializeElements(elements as unknown[]),
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
@@ -1508,7 +1545,7 @@ export function createHandlers(
         }
 
         return success({
-          elements,
+          elements: materializeElements(elements as unknown[]),
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
@@ -1545,7 +1582,7 @@ export function createHandlers(
         if (snapshot.elements.length === 0) {
           const registryElements = registry.getAllElements();
           if (registryElements.length > 0) {
-            snapshot.elements = registryElements as any[];
+            snapshot.elements = materializeElements(registryElements);
           }
         }
 
