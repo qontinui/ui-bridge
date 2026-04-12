@@ -115,6 +115,9 @@ import type {
   ElementDesignData,
   StateStyles,
   ResponsiveSnapshot,
+  ElementState,
+  ContentMetadata,
+  MediaMetadata as UiBridgeMediaMetadata,
 } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
@@ -3880,6 +3883,39 @@ export function createHandlers(
       }
     },
 
+    setViewportConstraints: async (request: {
+      width?: number;
+      restore?: boolean;
+    }): Promise<
+      APIResponse<{
+        success: boolean;
+        viewportWidth: number;
+        constrainedWidth: number;
+        timestamp: number;
+      }>
+    > => {
+      try {
+        const root = document.documentElement;
+        if (request.restore) {
+          root.style.removeProperty('max-width');
+          root.style.removeProperty('margin');
+          root.style.removeProperty('overflow-x');
+        } else if (request.width && request.width > 0) {
+          root.style.maxWidth = `${request.width}px`;
+          root.style.margin = '0 auto';
+          root.style.overflowX = 'hidden';
+        }
+        return success({
+          success: true,
+          viewportWidth: window.innerWidth,
+          constrainedWidth: root.clientWidth,
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        return error((err as Error).message, 'VIEWPORT_CONSTRAINTS_ERROR');
+      }
+    },
+
     runDesignAudit: async (request?: {
       guide?: StyleGuideConfig;
       elementIds?: string[];
@@ -5157,7 +5193,7 @@ export function createHandlers(
             actions?: string[];
             category?: 'interactive' | 'content' | 'media';
             contentMetadata?: ContentMetadata;
-            mediaMetadata?: MediaMetadata;
+            mediaMetadata?: UiBridgeMediaMetadata;
             element?: HTMLElement;
             tagName?: string;
             role?: string;
