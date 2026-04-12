@@ -251,8 +251,28 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
 }
 
 /**
- * Check if element is truly visible — not hidden by CSS, not clipped by
- * ancestor overflow, not covered by another element.
+ * Check if element is truly visible — not hidden by CSS, not zero-sized.
+ *
+ * Deliberately does NOT check whether the element is within the viewport
+ * or clipped by ancestor overflow. Navigation elements (sidebar items,
+ * settings sub-tabs) commonly live inside scrollable containers and may
+ * be off-screen. Excluding them from auto-registration meant the UI
+ * Bridge snapshot returned only ~29 elements for a runner page with 100+
+ * interactive elements — making agent-driven testing impossible for
+ * off-screen features like Settings → World State Verifier.
+ *
+ * The previous viewport + hit-test checks were overly aggressive: they
+ * filtered out anything not visible at the moment of discovery, including
+ * all scrollable sidebar items below the fold. The MutationObserver
+ * re-scan on DOM changes already handles dynamically-added elements, so
+ * the visibility gate was only preventing legitimate elements from being
+ * discoverable.
+ *
+ * What we still check:
+ * - `display: none` — element is not rendered at all
+ * - `visibility: hidden` — element is invisible
+ * - `opacity: 0` — element is fully transparent
+ * - zero width or height — element has no layout box
  */
 function isElementVisible(element: HTMLElement): boolean {
   const style = window.getComputedStyle(element);
@@ -263,25 +283,6 @@ function isElementVisible(element: HTMLElement): boolean {
 
   const rect = element.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return false;
-
-  // Must be within the viewport
-  const inViewport =
-    rect.top < window.innerHeight &&
-    rect.bottom > 0 &&
-    rect.left < window.innerWidth &&
-    rect.right > 0;
-  if (!inViewport) return false;
-
-  // Hit-test: verify the element is actually rendered at its centre,
-  // not clipped by ancestor overflow or covered by a higher z-index.
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
-    const hit = document.elementFromPoint(cx, cy);
-    if (hit !== null && hit !== element && !element.contains(hit)) {
-      return false;
-    }
-  }
 
   return true;
 }
