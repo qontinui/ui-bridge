@@ -56,6 +56,11 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/element/:id/action',
     description: 'Execute action on element',
   },
+  BATCH_ACTIONS: {
+    method: 'POST',
+    path: '/ui-bridge/control/batch-actions',
+    description: 'Execute multiple actions in sequence with optional delay and stopOnFailure',
+  },
 
   // Control - Components
   GET_COMPONENTS: {
@@ -162,6 +167,20 @@ export interface NativeServerHandlers {
   getElement: HandlerFunction<{ element: unknown }>;
   getElementState: HandlerFunction<{ state: unknown }>;
   executeAction: HandlerFunction<NativeActionResponse>;
+  executeBatchAction: HandlerFunction<{
+    success: boolean;
+    results: Array<{
+      index: number;
+      label?: string;
+      elementId: string;
+      response: NativeActionResponse;
+    }>;
+    succeededCount: number;
+    failedCount: number;
+    skippedCount: number;
+    durationMs: number;
+    timestamp: number;
+  }>;
 
   // Components
   getComponents: HandlerFunction<{ components: unknown[] }>;

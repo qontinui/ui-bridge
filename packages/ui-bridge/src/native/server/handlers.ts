@@ -342,6 +342,79 @@ export function createServerHandlers(
       return success(response);
     },
 
+    executeBatchAction: async (ctx: HandlerContext) => {
+      const body = ctx.body as {
+        steps: Array<{
+          elementId: string;
+          action: { action: string; params?: Record<string, unknown> };
+          label?: string;
+        }>;
+        stopOnFailure?: boolean;
+        delayBetweenMs?: number;
+      };
+
+      if (!body?.steps || !Array.isArray(body.steps)) {
+        return error('steps array is required', 'INVALID_REQUEST');
+      }
+
+      const startTime = Date.now();
+      const results: Array<{
+        index: number;
+        label?: string;
+        elementId: string;
+        response: any;
+      }> = [];
+      let succeededCount = 0;
+      let failedCount = 0;
+      let skippedCount = 0;
+      let stopped = false;
+      const stopOnFailure = body.stopOnFailure ?? true;
+      const delayBetweenMs = body.delayBetweenMs ?? 0;
+
+      for (let i = 0; i < body.steps.length; i++) {
+        if (stopped) {
+          skippedCount++;
+          results.push({
+            index: i,
+            label: body.steps[i].label,
+            elementId: body.steps[i].elementId,
+            response: { success: false, error: 'Skipped (previous step failed)' },
+          });
+          continue;
+        }
+
+        const step = body.steps[i];
+        if (i > 0 && delayBetweenMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayBetweenMs));
+        }
+
+        const response = await executor.executeAction(step.elementId, step.action);
+        results.push({
+          index: i,
+          label: step.label,
+          elementId: step.elementId,
+          response,
+        });
+
+        if ((response as any).success) {
+          succeededCount++;
+        } else {
+          failedCount++;
+          if (stopOnFailure) stopped = true;
+        }
+      }
+
+      return success({
+        success: failedCount === 0,
+        results,
+        succeededCount,
+        failedCount,
+        skippedCount,
+        durationMs: Date.now() - startTime,
+        timestamp: Date.now(),
+      });
+    },
+
     // Components
     getComponents: async () => {
       const components = registry.getAllComponents().map((c) => ({

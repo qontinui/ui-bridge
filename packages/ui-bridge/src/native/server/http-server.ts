@@ -223,6 +223,11 @@ export class NativeUIBridgeServer {
       return this.handlers.executeAction({ params, query, body });
     }
 
+    // Batch actions
+    if (method === 'POST' && path === '/ui-bridge/control/batch-actions') {
+      return this.handlers.executeBatchAction({ params: {}, query, body });
+    }
+
     // Components
     if (method === 'GET' && path === '/ui-bridge/control/components') {
       return this.handlers.getComponents({ params: {}, query, body });

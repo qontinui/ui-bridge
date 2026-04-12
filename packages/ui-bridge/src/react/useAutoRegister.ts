@@ -1251,6 +1251,22 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       attributeFilter: ['class', 'style', 'hidden'],
     });
 
+    // Listen for auth-complete events from AuthProvider. When a temp
+    // runner auto-authenticates, the DOM transitions from login page →
+    // authenticated page, but the MutationObserver may not catch all
+    // the changes (React reconciliation can be non-incremental). A
+    // full re-scan ensures the snapshot reflects the post-auth page.
+    const handleAuthComplete = () => {
+      // Clear existing registrations — the login-page elements are
+      // stale after auth redirect.
+      if (bridge?.registry) {
+        bridge.registry.clear();
+      }
+      // Re-scan the entire DOM tree.
+      scanAndRegister(rootElement);
+    };
+    window.addEventListener('ui-bridge-auth-complete', handleAuthComplete);
+
     // Expose diagnostic flags on window.__UI_BRIDGE__
     if (typeof window !== 'undefined') {
       const w = window as unknown as Record<string, unknown>;
@@ -1261,6 +1277,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
     return () => {
       observer.disconnect();
+      window.removeEventListener('ui-bridge-auth-complete', handleAuthComplete);
 
       // Clear diagnostic flags
       if (typeof window !== 'undefined') {
