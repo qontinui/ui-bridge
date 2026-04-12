@@ -1193,6 +1193,10 @@ export function createRelayHandlers(
       return relayCommand('getResponsiveSnapshots', request);
     },
 
+    async setViewportConstraints(request) {
+      return relayCommand('setViewportConstraints', request);
+    },
+
     async runDesignAudit(request) {
       return relayCommand('runDesignAudit', request ?? {});
     },

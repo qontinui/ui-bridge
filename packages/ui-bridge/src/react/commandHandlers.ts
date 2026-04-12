@@ -2765,6 +2765,32 @@ export async function executeCommand(
         timestamp: Date.now(),
       };
 
+    case 'setViewportConstraints': {
+      const { width, restore } = request.params as { width?: number; restore?: boolean };
+      const docEl = document.documentElement;
+
+      if (restore) {
+        docEl.style.removeProperty('width');
+        docEl.style.removeProperty('min-width');
+        docEl.style.removeProperty('max-width');
+        docEl.style.removeProperty('overflow');
+      } else if (width) {
+        docEl.style.width = `${width}px`;
+        docEl.style.minWidth = `${width}px`;
+        docEl.style.maxWidth = `${width}px`;
+        docEl.style.overflow = 'hidden';
+      }
+      // Force reflow so subsequent getControlSnapshot sees updated layout
+      void docEl.offsetHeight;
+
+      return {
+        success: true,
+        viewportWidth: window.innerWidth,
+        constrainedWidth: width ?? window.innerWidth,
+        timestamp: Date.now(),
+      };
+    }
+
     case 'runDesignAudit': {
       const issues: Array<{ element: string; issue: string; severity: string; fix?: string }> = [];
       elements.slice(0, 100).forEach((e) => {

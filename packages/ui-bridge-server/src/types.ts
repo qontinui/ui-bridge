@@ -319,6 +319,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/find', handler: 'find' },
   { method: 'POST', path: '/control/discover', handler: 'discover' }, // @deprecated Use /control/find
   { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
+  {
+    method: 'POST',
+    path: '/control/viewport-constraints',
+    handler: 'setViewportConstraints',
+    bodyRequired: true,
+  },
 
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },

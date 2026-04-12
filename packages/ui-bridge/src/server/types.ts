@@ -471,6 +471,10 @@ export interface UIBridgeServerHandlers {
     viewports?: Record<string, number>;
     elementIds?: string[];
   }) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  setViewportConstraints: (request: {
+    width?: number;
+    restore?: boolean;
+  }) => Promise<APIResponse<{ success: boolean; viewportWidth: number; constrainedWidth: number; timestamp: number }>>;
   runDesignAudit: (request?: {
     guide?: StyleGuideConfig;
     elementIds?: string[];
@@ -1021,6 +1025,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/design/responsive',
     handler: 'getResponsiveSnapshots',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/viewport-constraints',
+    handler: 'setViewportConstraints',
     bodyRequired: true,
   },
   { method: 'POST', path: '/design/audit', handler: 'runDesignAudit' },
