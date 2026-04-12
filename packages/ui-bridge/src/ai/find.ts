@@ -96,6 +96,10 @@ export interface FindResultNotFound {
   reason: string;
   /** Partial matches that were below threshold */
   partialMatches: FindCandidate[];
+  /** How many elements were considered before filtering. Helps agents
+   *  distinguish "searched 200 elements, none matched" from "searched
+   *  10 elements (snapshot truncated / auto-register incomplete)". */
+  consideredCount: number;
   /** Decomposed query (useful for debugging) */
   decomposed: DecomposedTarget;
   /** Search duration in ms */
@@ -210,6 +214,10 @@ export function find(
           ? `Best match confidence (${(results[0].confidence * 100).toFixed(0)}%) below threshold (${(opts.confidenceThreshold * 100).toFixed(0)}%)`
           : `No elements matching "${decomposed.elementText}" found`,
       partialMatches: results.slice(0, opts.maxResults).map((r) => toCandidate(r)),
+      // Diagnostic: how many elements were considered before filtering.
+      // Helps agents distinguish "searched 200 elements, none matched" from
+      // "searched 10 elements (snapshot truncated?)".
+      consideredCount: searchResponse.results.length,
       decomposed,
       durationMs,
     };

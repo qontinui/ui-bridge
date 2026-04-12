@@ -205,6 +205,18 @@ function getElementState(element: HTMLElement): ElementState {
     state.opacityHidden = true;
   }
 
+  // data-content-* attributes — surfaced so agents can address elements
+  // by semantic labels (e.g., data-content-label="save wsv settings")
+  // and verification workflows can match spec assertion targets.
+  const contentLabel = element.getAttribute('data-content-label');
+  if (contentLabel) {
+    (state as unknown as Record<string, unknown>).dataContentLabel = contentLabel;
+  }
+  const contentRole = element.getAttribute('data-content-role');
+  if (contentRole) {
+    (state as unknown as Record<string, unknown>).dataContentRole = contentRole;
+  }
+
   // ARIA state attributes
   const ariaSelected = element.getAttribute('aria-selected');
   if (ariaSelected !== null) {
