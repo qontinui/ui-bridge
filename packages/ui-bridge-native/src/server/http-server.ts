@@ -1061,8 +1061,11 @@ export class NativeUIBridgeServer {
 
   /**
    * Handle incoming HTTP request
+   *
+   * Exposed as public so that CloudRelayClient can call it directly (without
+   * loopback TCP overhead) when processing tunneled requests.
    */
-  private async handleRequest(request: HTTPRequest): Promise<HTTPResponse> {
+  async handleRequest(request: HTTPRequest): Promise<HTTPResponse> {
     // Add CORS headers if enabled
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

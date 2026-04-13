@@ -175,3 +175,6 @@ export { createDesignHandlers, type NativeDesignHandlers } from './server/design
 
 // Debug exports
 export { UIBridgeInspector, type UIBridgeInspectorProps } from './debug/inspector';
+
+// Transport exports (cloud relay + mDNS announcer)
+export * from './transport';

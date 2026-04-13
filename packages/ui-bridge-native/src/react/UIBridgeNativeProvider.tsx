@@ -28,6 +28,8 @@ import type { NativeActionExecutor } from '../control/types';
 import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter, type WebSocketServerAdapter } from '../server/http-server';
 import type { RouteProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
+import { DeviceAnnouncer } from '../transport/DeviceAnnouncer';
+import { CloudRelayClient, type CloudRelayConfig } from '../transport/CloudRelayClient';
 
 /**
  * UI Bridge Native context value
@@ -101,6 +103,23 @@ export interface UIBridgeNativeProviderProps {
    * Wire this to Expo Router's `usePathname()` / `useSegments()` via a module-level ref.
    */
   routeProvider?: RouteProvider;
+  /**
+   * Configuration for the cloud relay tunnel (enables remote device verification
+   * when USB/LAN are not available).  Omit `uiBridgeServer` — the provider wires
+   * that automatically after the server starts.
+   */
+  cloudRelayConfig?: Omit<CloudRelayConfig, 'uiBridgeServer'>;
+  /**
+   * Enable mDNS advertisement so that runners on the same LAN can discover this
+   * device automatically (requires react-native-zeroconf).
+   */
+  enableMdnsAnnounce?: boolean;
+  /**
+   * Stable device identifier used for mDNS TXT records and cloud relay
+   * registration.  Typically sourced from expo-device or a UUID stored in
+   * AsyncStorage.
+   */
+  deviceId?: string;
 }
 
 /**
@@ -134,6 +153,9 @@ export function UIBridgeNativeProvider({
   navigationProvider,
   screenshotProvider,
   routeProvider,
+  cloudRelayConfig,
+  enableMdnsAnnounce,
+  deviceId,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
@@ -160,6 +182,10 @@ export function UIBridgeNativeProvider({
   // Server instance (persisted across renders)
   const serverRef = useRef<NativeUIBridgeServer | null>(null);
   const eventBridgeRef = useRef<WebSocketEventBridge | null>(null);
+
+  // Cloud / mDNS transport references
+  const announcerRef = useRef<DeviceAnnouncer | null>(null);
+  const cloudRelayRef = useRef<CloudRelayClient | null>(null);
 
   // Server management — uses injected serverAdapter if provided
   const startServer = useCallback(async () => {
@@ -265,6 +291,46 @@ export function UIBridgeNativeProvider({
       return () => stopServer();
     }
   }, [features.server, startServer, stopServer]);
+
+  // Start mDNS announcement and cloud relay after the server is running
+  useEffect(() => {
+    if (!serverRunning) return;
+
+    // mDNS advertisement
+    if (enableMdnsAnnounce && deviceId) {
+      const announcer = new DeviceAnnouncer({
+        deviceId,
+        appId: config.appInfo?.appId ?? 'unknown',
+        port: config.serverPort ?? 8087,
+        cloudRelayUrl: cloudRelayConfig?.relayUrl,
+        cloudToken: cloudRelayConfig?.authToken,
+      });
+      announcerRef.current = announcer;
+      void announcer.startMdnsAdvertise();
+    }
+
+    // Cloud relay tunnel
+    if (cloudRelayConfig && serverRef.current) {
+      const relayClient = new CloudRelayClient({
+        ...cloudRelayConfig,
+        uiBridgeServer: serverRef.current,
+      });
+      cloudRelayRef.current = relayClient;
+      relayClient.start();
+    }
+
+    return () => {
+      if (announcerRef.current) {
+        void announcerRef.current.stop();
+        announcerRef.current = null;
+      }
+      if (cloudRelayRef.current) {
+        cloudRelayRef.current.stop();
+        cloudRelayRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverRunning]);
 
   // Cleanup on unmount
   useEffect(() => {
