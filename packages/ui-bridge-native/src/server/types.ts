@@ -152,6 +152,11 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/page/navigate',
     description: 'Navigate to a URL',
   },
+  PAGE_REPLACE: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/replace',
+    description: 'Replace current route without adding to back stack',
+  },
   PAGE_GO_BACK: {
     method: 'POST',
     path: '/ui-bridge/control/page/back',
@@ -280,6 +285,7 @@ export interface NativeServerHandlers {
   // Page Navigation
   pageRefresh: HandlerFunction<PageNavigationResponse>;
   pageNavigate: HandlerFunction<PageNavigationResponse>;
+  pageReplace: HandlerFunction<PageNavigationResponse>;
   pageGoBack: HandlerFunction<PageNavigationResponse>;
   pageGoForward: HandlerFunction<PageNavigationResponse>;
 

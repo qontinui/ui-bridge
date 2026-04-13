@@ -43,6 +43,7 @@ export {
 
 export {
   NativeUIBridgeRegistry,
+  extractHandlerNames,
   setGlobalRegistry,
   getGlobalRegistry,
   resetGlobalRegistry,

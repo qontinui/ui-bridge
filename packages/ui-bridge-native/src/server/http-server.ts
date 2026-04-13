@@ -107,6 +107,7 @@ const WS_ROUTES: readonly WsRoute[] = [
   // Page Navigation
   { pattern: 'control/page/refresh', handler: 'pageRefresh', httpMethods: ['POST'] },
   { pattern: 'control/page/navigate', handler: 'pageNavigate', httpMethods: ['POST'] },
+  { pattern: 'control/page/replace', handler: 'pageReplace', httpMethods: ['POST'] },
   { pattern: 'control/page/back', handler: 'pageGoBack', httpMethods: ['POST'] },
   { pattern: 'control/page/forward', handler: 'pageGoForward', httpMethods: ['POST'] },
 
@@ -274,6 +275,23 @@ export class NativeUIBridgeServer {
       }
     };
 
+    this.handlers.pageReplace = async (ctx): Promise<APIResponse<PageNavigationResponse>> => {
+      if (!provider.replace) {
+        return { success: false, error: 'Replace navigation not supported by navigation provider', timestamp: Date.now() };
+      }
+      const body = ctx.body as Record<string, unknown> | undefined;
+      const url = body?.url;
+      if (!url || typeof url !== 'string') {
+        return { success: false, error: 'Missing required "url" parameter', timestamp: Date.now() };
+      }
+      try {
+        provider.replace(url);
+        return { success: true, data: { success: true, url, timestamp: Date.now() }, timestamp: Date.now() };
+      } catch (e: any) {
+        return { success: false, error: `Replace navigation failed: ${e.message}`, timestamp: Date.now() };
+      }
+    };
+
     this.handlers.pageGoBack = async (): Promise<APIResponse<PageNavigationResponse>> => {
       if (!provider.back) {
         return { success: false, error: 'Back navigation not supported', timestamp: Date.now() };
@@ -304,6 +322,24 @@ export class NativeUIBridgeServer {
    * When set, `control/snapshot` responses include `currentRoute` and `segments`.
    */
   setRouteProvider(provider: RouteProvider): void {
+    // Override getElements to support currentRouteOnly filtering with real route data
+    const baseGetElements = this.handlers.getElements;
+    this.handlers.getElements = async (ctx: HandlerContext) => {
+      const currentRouteOnly =
+        ctx.query?.currentRouteOnly === 'true' ||
+        (ctx.body as Record<string, unknown>)?.currentRouteOnly === true;
+
+      // If currentRouteOnly requested and no explicit route param, inject the current route
+      if (currentRouteOnly && !ctx.query?.route && !(ctx.body as Record<string, unknown>)?.route) {
+        const currentRoute = provider.getCurrentRoute();
+        if (currentRoute) {
+          // Inject route into query so the base handler can filter by it
+          ctx.query = { ...ctx.query, route: currentRoute };
+        }
+      }
+      return baseGetElements(ctx);
+    };
+
     this.handlers.getSnapshot = async (ctx: HandlerContext) => {
       const visibleOnly =
         ctx?.query?.visibleOnly === 'true' ||

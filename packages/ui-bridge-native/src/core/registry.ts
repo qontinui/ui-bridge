@@ -69,6 +69,15 @@ export interface NativeRegistryConfig {
 }
 
 /**
+ * Extract handler function names from an element's props.
+ * Returns names of props whose values are functions (e.g. ['onPress', 'onChangeText']).
+ */
+export function extractHandlerNames(props?: Record<string, unknown>): string[] {
+  if (!props) return [];
+  return Object.keys(props).filter((k) => typeof props[k] === 'function');
+}
+
+/**
  * Infer available actions based on element type
  */
 function inferActions(type: NativeElementType): NativeStandardAction[] {
@@ -78,31 +87,31 @@ function inferActions(type: NativeElementType): NativeStandardAction[] {
     case 'button':
     case 'touchable':
     case 'pressable':
-      return [...baseActions, 'press', 'longPress', 'doubleTap'];
+      return [...baseActions, 'click', 'press', 'longPress', 'doubleTap'];
     case 'input':
-      return [...baseActions, 'press', 'type', 'clear'];
+      return [...baseActions, 'click', 'press', 'type', 'clear'];
     case 'text':
-      return [...baseActions, 'press', 'longPress'];
+      return [...baseActions, 'click', 'press', 'longPress'];
     case 'view':
-      return [...baseActions, 'press'];
+      return [...baseActions, 'click', 'press'];
     case 'scroll':
       return [...baseActions, 'scroll', 'swipe'];
     case 'list':
       return [...baseActions, 'scroll', 'swipe'];
     case 'listItem':
-      return [...baseActions, 'press', 'longPress', 'swipe'];
+      return [...baseActions, 'click', 'press', 'longPress', 'swipe'];
     case 'switch':
     case 'checkbox':
-      return [...baseActions, 'press', 'toggle'];
+      return [...baseActions, 'click', 'press', 'toggle'];
     case 'radio':
-      return [...baseActions, 'press'];
+      return [...baseActions, 'click', 'press'];
     case 'image':
-      return [...baseActions, 'press', 'longPress'];
+      return [...baseActions, 'click', 'press', 'longPress'];
     case 'modal':
       return ['focus', 'blur'];
     case 'custom':
     default:
-      return [...baseActions, 'press'];
+      return [...baseActions, 'click', 'press'];
   }
 }
 
@@ -538,9 +547,7 @@ export class NativeUIBridgeRegistry {
     return {
       timestamp: Date.now(),
       elements: elements.map((e) => {
-        const handlers = e.props
-          ? Object.keys(e.props).filter((k) => typeof e.props![k] === 'function')
-          : [];
+        const handlers = extractHandlerNames(e.props);
         return {
           id: e.id,
           type: e.type,
@@ -550,7 +557,7 @@ export class NativeUIBridgeRegistry {
           actions: e.actions,
           customActions: e.customActions ? Object.keys(e.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
-          registrationRoute: e.registrationRoute ?? undefined,
+          registrationRoute: e.registrationRoute,
         };
       }),
       components: this.getAllComponents().map((c) => ({

@@ -201,6 +201,7 @@ export type NativeElementType =
  */
 export type NativeStandardAction =
   | 'press'
+  | 'click'
   | 'longPress'
   | 'doubleTap'
   | 'type'

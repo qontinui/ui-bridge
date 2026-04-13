@@ -445,9 +445,21 @@ export class NativeUIBridgeRegistry {
    * Create a snapshot of the current state
    */
   createSnapshot(): NativeBridgeSnapshot {
+    const allElements = this.getAllElements();
+    // Count interactive elements actually in the DOM for the diagnostic
+    // `totalInteractiveInDOM` field. Agents compare this against the
+    // snapshot's element count to detect under-registration.
+    let totalInteractiveInDOM = 0;
+    try {
+      totalInteractiveInDOM = document.querySelectorAll(
+        'button, input, select, textarea, a[href], [role="button"], [role="tab"], [role="link"], [role="checkbox"], [role="switch"], [role="menuitem"]',
+      ).length;
+    } catch {
+      // querySelectorAll can fail in non-browser contexts (SSR, tests)
+    }
     return {
       timestamp: Date.now(),
-      elements: this.getAllElements().map((e) => ({
+      elements: allElements.map((e) => ({
         id: e.id,
         type: e.type,
         label: e.label,
@@ -456,6 +468,11 @@ export class NativeUIBridgeRegistry {
         actions: e.actions,
         customActions: e.customActions ? Object.keys(e.customActions) : undefined,
       })),
+      // Diagnostic: how many interactive DOM elements exist vs how many
+      // the registry captured. A large gap (e.g., 30 registered out of
+      // 120 in DOM) signals the auto-register missed elements.
+      registeredCount: allElements.length,
+      totalInteractiveInDOM,
       components: this.getAllComponents().map((c) => ({
         id: c.id,
         name: c.name,

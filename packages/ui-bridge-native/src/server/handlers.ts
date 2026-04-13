@@ -4,7 +4,7 @@
  * Request handlers for the HTTP API endpoints.
  */
 
-import type { NativeUIBridgeRegistry } from '../core/registry';
+import { type NativeUIBridgeRegistry, extractHandlerNames } from '../core/registry';
 import type { WorkflowStep } from '../core/types';
 import type { NativeActionExecutor } from '../control/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
@@ -279,29 +279,19 @@ export function createServerHandlers(
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
-      const currentRouteOnly =
-        ctx.query?.currentRouteOnly === 'true' ||
-        (ctx.body as Record<string, unknown>)?.currentRouteOnly === true;
       const forRoute = (ctx.query?.route || (ctx.body as Record<string, unknown>)?.route) as string | undefined;
 
       let allElements = visibleOnly
         ? registry.getVisibleElements()
         : registry.getAllElements();
 
-      // Filter by specific route or current route
+      // Filter by specific route (injected by setRouteProvider override when currentRouteOnly is set)
       if (forRoute) {
         allElements = allElements.filter((e) => e.registrationRoute === forRoute);
-      } else if (currentRouteOnly) {
-        // Caller wants current-route-only but we don't have the route here;
-        // they should use control/snapshot with currentRouteOnly instead.
-        // As a fallback, filter out elements with null registration route.
-        allElements = allElements.filter((e) => e.registrationRoute != null);
       }
 
       const elements = allElements.map((e) => {
-        const handlers = e.props
-          ? Object.keys(e.props).filter((k) => typeof e.props![k] === 'function')
-          : [];
+        const handlers = extractHandlerNames(e.props);
         return {
           id: e.id,
           type: e.type,
@@ -311,7 +301,7 @@ export function createServerHandlers(
           actions: e.actions,
           customActions: e.customActions ? Object.keys(e.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
-          registrationRoute: e.registrationRoute ?? undefined,
+          registrationRoute: e.registrationRoute,
         };
       });
 
@@ -326,9 +316,7 @@ export function createServerHandlers(
         return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
       }
 
-      const handlers = element.props
-        ? Object.keys(element.props).filter((k) => typeof element.props![k] === 'function')
-        : [];
+      const handlers = extractHandlerNames(element.props);
 
       return success({
         element: {
@@ -340,7 +328,7 @@ export function createServerHandlers(
           actions: element.actions,
           customActions: element.customActions ? Object.keys(element.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
-          registrationRoute: element.registrationRoute ?? undefined,
+          registrationRoute: element.registrationRoute,
         },
       });
     },
@@ -547,6 +535,10 @@ export function createServerHandlers(
 
     pageNavigate: async () => {
       return error('Page navigation not supported on native platform', 'NOT_SUPPORTED');
+    },
+
+    pageReplace: async () => {
+      return error('Page replace not supported on native platform', 'NOT_SUPPORTED');
     },
 
     pageGoBack: async () => {

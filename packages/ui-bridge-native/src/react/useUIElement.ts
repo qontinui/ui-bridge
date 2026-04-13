@@ -339,7 +339,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     };
   }, [autoRegister, register, unregister]);
 
-  // Auto-register handler props (onPress, onChangeText, etc.) when provided
+  // Auto-register handler props (onPress, onChangeText, etc.) when provided.
+  // We use a ref to track which keys were last registered so we can clear
+  // stale handlers on cleanup or when the handlers object changes.
+  const registeredHandlerKeysRef = useRef<string[]>([]);
+
   useEffect(() => {
     if (!bridge || !registered || !handlersProp) return;
 
@@ -350,9 +354,35 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         fnProps[key] = value;
       }
     }
-    if (Object.keys(fnProps).length > 0) {
+
+    const newKeys = Object.keys(fnProps);
+
+    // Clear any previously registered keys that are no longer present
+    const removedKeys = registeredHandlerKeysRef.current.filter((k) => !newKeys.includes(k));
+    if (removedKeys.length > 0) {
+      const cleared: Record<string, unknown> = {};
+      for (const key of removedKeys) {
+        cleared[key] = undefined;
+      }
+      bridge.registry.updateElementProps(id, cleared);
+    }
+
+    if (newKeys.length > 0) {
       bridge.registry.updateElementProps(id, fnProps);
     }
+    registeredHandlerKeysRef.current = newKeys;
+
+    return () => {
+      // On unmount or re-run, clear all registered handlers
+      if (registeredHandlerKeysRef.current.length > 0) {
+        const cleared: Record<string, unknown> = {};
+        for (const key of registeredHandlerKeysRef.current) {
+          cleared[key] = undefined;
+        }
+        bridge.registry.updateElementProps(id, cleared);
+        registeredHandlerKeysRef.current = [];
+      }
+    };
   }, [bridge, registered, id, handlersProp]);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
