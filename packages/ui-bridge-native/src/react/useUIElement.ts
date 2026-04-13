@@ -116,6 +116,7 @@ export interface UseUIElementOptions {
    * });
    * ```
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handlers?: Record<string, ((...args: any[]) => any) | undefined>;
 }
 
@@ -448,6 +449,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const registeredElement = useMemo(() => {
     if (!bridge) return null;
     return bridge.registry.getElement(id) || null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, id, registered]);
 
   return {

@@ -2766,7 +2766,7 @@ export async function executeCommand(
       };
 
     case 'setViewportConstraints': {
-      const { width, restore } = request.params as { width?: number; restore?: boolean };
+      const { width, restore } = payload as { width?: number; restore?: boolean };
       const docEl = document.documentElement;
 
       if (restore) {
