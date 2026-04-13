@@ -19,6 +19,29 @@ import { executeCommand, type BridgeAccess } from './commandHandlers';
 // SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
 const SSE_RECONNECT_DELAY_MS = 10_000;
 
+/**
+ * JSON.stringify replacer that strips DOM nodes and handles circular references.
+ * Command handler results can contain HTMLElement refs (e.g., from component
+ * getState() or action handlers), which create cycles via React's __reactFiber$.
+ */
+function safeJsonStringify(value: unknown): string {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (_key, val) => {
+    if (val !== null && typeof val === 'object') {
+      // Strip DOM nodes — they're never meaningful in JSON responses
+      if (typeof Node !== 'undefined' && val instanceof Node) {
+        return `[${val.constructor.name}]`;
+      }
+      // Break circular references
+      if (seen.has(val)) return '[Circular]';
+      seen.add(val);
+    }
+    // Strip functions
+    if (typeof val === 'function') return undefined;
+    return val;
+  });
+}
+
 // Heartbeat interval — kept alive even when tab is hidden
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
@@ -120,7 +143,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         await fetch(`${basePath}/commands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: safeJsonStringify({
             commandId,
             success: ok,
             result,

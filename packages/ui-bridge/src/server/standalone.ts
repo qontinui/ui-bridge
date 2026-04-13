@@ -480,11 +480,20 @@ export class StandaloneServer {
   }
 
   /**
-   * Send JSON response
+   * Send JSON response (safe against circular refs from DOM nodes)
    */
   private sendJSON(res: import('http').ServerResponse, data: unknown, status = 200): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    const seen = new WeakSet();
+    res.end(JSON.stringify(data, (_key, val) => {
+      if (val !== null && typeof val === 'object') {
+        if (typeof Node !== 'undefined' && val instanceof Node) return `[${val.constructor.name}]`;
+        if (seen.has(val)) return '[Circular]';
+        seen.add(val);
+      }
+      if (typeof val === 'function') return undefined;
+      return val;
+    }));
   }
 
   /**
