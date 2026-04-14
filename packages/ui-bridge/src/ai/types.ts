@@ -947,7 +947,7 @@ export interface WaitForChangeOptions {
   scope?: string;
 }
 
-/** A buffered change entry */
+/** A buffered DOM mutation change entry */
 export interface BufferedChange {
   /** Diff */
   diff: SemanticDiff;
@@ -959,10 +959,36 @@ export interface BufferedChange {
   sequence: number;
 }
 
+/** A buffered SPA route-change entry (P1.3). Distinguished from DOM
+ * mutation entries by the `type: "route-change"` discriminator so callers
+ * can branch without inspecting the shape. */
+export interface BufferedRouteChange {
+  /** Discriminator — always `"route-change"`. */
+  type: "route-change";
+  /** Previous URL (window.location.href before the navigation). */
+  from: string;
+  /** New URL after the navigation. */
+  to: string;
+  /** Timestamp when the change was recorded — `at` matches the wire
+   * format documented in the runner's HTTP contract. */
+  at: number;
+  /** Mirror of `at` so the field matches `BufferedChange.recordedAt` for
+   * consumers that sort the interleaved drain by `recordedAt`. */
+  recordedAt: number;
+  /** Sequence number, monotonic across the buffer (DOM + route). */
+  sequence: number;
+}
+
+/** Discriminated union of every entry kind that can land in the change
+ * buffer. DOM mutations keep their existing flat shape (no `type` field);
+ * route changes carry `type: "route-change"`. */
+export type BufferEntry = BufferedChange | BufferedRouteChange;
+
 /** Response from draining the change buffer */
 export interface ChangeBufferDrainResult {
-  /** Changes since last drain */
-  changes: BufferedChange[];
+  /** Changes since last drain — DOM mutations and route-change entries
+   * interleaved by `recordedAt`. */
+  changes: BufferEntry[];
   /** Total changes drained */
   count: number;
   /** Time span covered */

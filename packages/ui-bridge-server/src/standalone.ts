@@ -238,6 +238,20 @@ export class StandaloneServer {
       path = path.slice(basePath.length) || '/';
     }
 
+    // P2.2 — Endpoint discovery. Served before route matching so it works
+    // even if no UIBridgeServerHandlers entry registers it.
+    if (method === 'GET' && path === '/_routes') {
+      const routes = UI_BRIDGE_ROUTES.map((r) => ({ method: r.method, path: r.path })).sort(
+        (a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)
+      );
+      this.sendJSON(res, {
+        success: true,
+        data: { routes, count: routes.length },
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
     // Find matching route
     const route = this.findRoute(path, method);
     if (!route) {

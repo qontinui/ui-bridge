@@ -106,6 +106,19 @@ export function createNextRouteHandlers(
       const path = Array.isArray(pathParam) ? '/' + pathParam.join('/') : '/' + pathParam;
       const method = request.method;
 
+      // P2.2 — Endpoint discovery. Served before route matching so it
+      // works without an explicit handler entry.
+      if (method === 'GET' && path === '/_routes') {
+        const routes = UI_BRIDGE_ROUTES.map((r) => ({ method: r.method, path: r.path })).sort(
+          (a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)
+        );
+        return jsonResponse({
+          success: true,
+          data: { routes, count: routes.length },
+          timestamp: Date.now(),
+        });
+      }
+
       // Find matching route
       const route = findMatchingRoute(path, method);
       if (!route) {

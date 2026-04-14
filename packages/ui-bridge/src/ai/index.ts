@@ -59,6 +59,8 @@ export type {
   ChangePredicate,
   WaitForChangeOptions,
   BufferedChange,
+  BufferedRouteChange,
+  BufferEntry,
   ChangeBufferDrainResult,
   SnapshotBookmark,
   ChangeTimeline,

@@ -130,6 +130,21 @@ export function createExpressRouter(
     });
   }
 
+  // P2.2 — Endpoint discovery. Returns every (method, path) pair sorted by
+  // path so SDKs and tests can introspect what the server exposes without
+  // grepping the source. Mirrors the `/ui-bridge/_routes` endpoint on the
+  // runner.
+  router.get('/_routes', (_req: Request, res: Response) => {
+    const routes = UI_BRIDGE_ROUTES.map((r) => ({ method: r.method, path: r.path })).sort(
+      (a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)
+    );
+    res.json({
+      success: true,
+      data: { routes, count: routes.length },
+      timestamp: Date.now(),
+    });
+  });
+
   // Register routes
   for (const route of UI_BRIDGE_ROUTES) {
     const method = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'delete' | 'patch';

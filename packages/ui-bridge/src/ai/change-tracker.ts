@@ -20,6 +20,8 @@ import type {
   ChangePredicate,
   WaitForChangeOptions,
   BufferedChange,
+  BufferedRouteChange,
+  BufferEntry,
   ChangeBufferDrainResult,
   SnapshotBookmark,
   NLActionResponse,
@@ -112,8 +114,11 @@ export class ChangeTracker {
   // Bookmarks
   private bookmarks = new Map<string, SnapshotBookmark>();
 
-  // Change buffer
-  private changeBuffer: BufferedChange[] = [];
+  // Change buffer — DOM mutations and SPA route changes share the same
+  // buffer so a drain returns them interleaved by `recordedAt`. The DOM
+  // entry shape is unchanged for backward compatibility; route entries
+  // carry `type: "route-change"` as a discriminator (P1.3).
+  private changeBuffer: BufferEntry[] = [];
   private bufferEnabled = false;
   private bufferSequence = 0;
 
@@ -1088,11 +1093,18 @@ export class ChangeTracker {
   }
 
   /**
-   * Drain all buffered changes and clear the buffer.
+   * Drain all buffered changes and clear the buffer. Route-change and DOM
+   * mutation entries are returned interleaved by `recordedAt` (the buffer
+   * is already in insertion order — both kinds use `Date.now()` at push
+   * time, so a stable sort by `recordedAt` preserves intent).
    */
   drainBuffer(): ChangeBufferDrainResult {
     const changes = [...this.changeBuffer];
     this.changeBuffer = [];
+    // Defensive sort in case route-change events were pushed slightly out
+    // of order (e.g. queued microtask ran after a synchronous DOM mutation
+    // appended later).
+    changes.sort((a, b) => a.recordedAt - b.recordedAt || a.sequence - b.sequence);
 
     return {
       changes,
@@ -1102,18 +1114,43 @@ export class ChangeTracker {
     };
   }
 
+  /**
+   * Push a SPA route-change entry into the buffer (P1.3). Called by the
+   * runner's `useChangeTrackingEvents` integration when the
+   * NavigationTracker fires a `navigation:change` event. No-op if the
+   * buffer is disabled, matching the behaviour of `appendToBuffer`.
+   */
+  pushRouteChange(from: string, to: string, at?: number): void {
+    if (!this.bufferEnabled) return;
+    const recordedAt = at ?? Date.now();
+    const entry: BufferedRouteChange = {
+      type: 'route-change',
+      from,
+      to,
+      at: recordedAt,
+      recordedAt,
+      sequence: this.bufferSequence++,
+    };
+    this.changeBuffer.push(entry);
+    this.evictIfOverLimit();
+  }
+
   /** Append a diff to the buffer */
   private appendToBuffer(diff: SemanticDiff, category: ChangeCategory): void {
     if (!this.bufferEnabled) return;
 
-    this.changeBuffer.push({
+    const entry: BufferedChange = {
       diff,
       category,
       recordedAt: Date.now(),
       sequence: this.bufferSequence++,
-    });
+    };
+    this.changeBuffer.push(entry);
+    this.evictIfOverLimit();
+  }
 
-    // Evict oldest if over limit
+  /** Trim oldest entries when the buffer exceeds its configured size. */
+  private evictIfOverLimit(): void {
     if (this.changeBuffer.length > this.config.maxBufferSize) {
       this.changeBuffer = this.changeBuffer.slice(
         this.changeBuffer.length - this.config.maxBufferSize
