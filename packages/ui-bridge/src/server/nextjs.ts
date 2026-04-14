@@ -483,14 +483,26 @@ function handleRelayRoute(
   // POST /heartbeat — browser heartbeat
   if (method === 'POST' && path === '/heartbeat') {
     return (async () => {
+      let heartbeatTabId: string | undefined;
       try {
         const body = await request.json();
-        const heartbeatTabId = body?.tabId as string | undefined;
+        heartbeatTabId = body?.tabId as string | undefined;
         relay.receiveHeartbeat(heartbeatTabId);
       } catch {
         relay.receiveHeartbeat();
       }
-      return jsonResponse({ success: true, data: { received: true }, timestamp: Date.now() });
+      // Report whether the server currently holds an SSE listener for this
+      // tabId. The SDK uses this to detect silent disconnects (e.g. when a
+      // client-side route change dropped the EventSource without firing
+      // onerror) and recover by reopening the stream.
+      const diag = relay.getTransportDiagnostics();
+      const tabRegistered =
+        heartbeatTabId !== undefined && diag.connectedTabs.includes(heartbeatTabId);
+      return jsonResponse({
+        success: true,
+        data: { received: true, tabRegistered },
+        timestamp: Date.now(),
+      });
     })();
   }
 

@@ -293,14 +293,47 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   useEffect(() => {
     if (!enabled) return;
 
-    const sendHeartbeat = () => {
-      fetch(`${basePath}/heartbeat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: Date.now(), tabId }),
-      }).catch(() => {
+    const sendHeartbeat = async () => {
+      try {
+        const resp = await fetch(`${basePath}/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timestamp: Date.now(), tabId }),
+        });
+        // Recovery: the server reports whether our tabId is a registered SSE
+        // listener. If it is not (e.g. after a client-side navigation that
+        // silently closed the EventSource without triggering onerror), we
+        // need to reopen the stream — otherwise the tab will appear
+        // disconnected to all automation tools until the user reloads.
+        if (resp.ok) {
+          try {
+            const data = await resp.json();
+            const tabRegistered =
+              data?.tabRegistered ??
+              data?.data?.tabRegistered ??
+              null;
+            if (tabRegistered === false) {
+              const es = eventSourceRef.current;
+              if (!es || es.readyState === 2 /* CLOSED */) {
+                // Force a reconnect by bumping a trigger state. Simpler:
+                // just dispatch a synthetic error on the existing SSE so
+                // the existing onerror handler reconnects for us.
+                if (es) {
+                  es.close();
+                }
+                eventSourceRef.current = null;
+                // Fire a visibility event to trigger the existing reconnect
+                // path (which already clears any pending reconnect timeout).
+                document.dispatchEvent(new Event('visibilitychange'));
+              }
+            }
+          } catch {
+            /* older server — no recovery payload */
+          }
+        }
+      } catch {
         /* non-fatal */
-      });
+      }
     };
 
     sendHeartbeat();
