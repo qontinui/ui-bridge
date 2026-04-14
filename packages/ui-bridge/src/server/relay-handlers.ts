@@ -433,7 +433,30 @@ export function createRelayHandlers(
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const _meta = staleMeta();
-      return success(latestControlSnapshot.elements, _meta);
+
+      let elements = latestControlSnapshot.elements;
+
+      // Apply case-insensitive substring filters from query params.
+      // The relay works against the cached snapshot (no live DOM access), so
+      // title and aria_label fall back to checking the label field which already
+      // encodes accessible name (aria-label → title → text content precedence).
+      if (options?.text) {
+        const needle = (options.text as string).toLowerCase();
+        elements = elements.filter(
+          (el) =>
+            (el.label ?? '').toLowerCase().includes(needle) || el.id.toLowerCase().includes(needle)
+        );
+      }
+      if (options?.aria_label) {
+        const needle = (options.aria_label as string).toLowerCase();
+        elements = elements.filter((el) => (el.label ?? '').toLowerCase().includes(needle));
+      }
+      if (options?.title) {
+        const needle = (options.title as string).toLowerCase();
+        elements = elements.filter((el) => (el.label ?? '').toLowerCase().includes(needle));
+      }
+
+      return success(elements, _meta);
     },
 
     async getElement(id, options) {
@@ -1493,6 +1516,16 @@ export function createRelayHandlers(
 
     async waitForElement(request) {
       return relayCommand('waitForElement', request);
+    },
+
+    // Tier 3.1 — relay to browser context so the JS SDK can do registry polling
+    async waitForElementByCondition(request) {
+      return relayCommand('waitForElementByCondition', request);
+    },
+
+    // Tier 3.2 — relay batch to browser context
+    async controlBatch(request) {
+      return relayCommand('controlBatch', request);
     },
 
     // App-agnostic convenience endpoints

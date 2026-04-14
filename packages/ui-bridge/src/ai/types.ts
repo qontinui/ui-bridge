@@ -964,7 +964,7 @@ export interface BufferedChange {
  * can branch without inspecting the shape. */
 export interface BufferedRouteChange {
   /** Discriminator — always `"route-change"`. */
-  type: "route-change";
+  type: 'route-change';
   /** Previous URL (window.location.href before the navigation). */
   from: string;
   /** New URL after the navigation. */
@@ -984,14 +984,66 @@ export interface BufferedRouteChange {
  * route changes carry `type: "route-change"`. */
 export type BufferEntry = BufferedChange | BufferedRouteChange;
 
+// ============================================================================
+// Tier 3.3: Extended change-buffer entry types
+// ============================================================================
+
+/** A raw DOM mutation captured by MutationObserver while the buffer is active. */
+export interface DomMutationEntry {
+  /** MutationRecord.type value. */
+  type: 'childList' | 'attributes' | 'characterData';
+  /** Best-effort CSS selector for the mutated element. */
+  target_selector: string;
+  /** Number of nodes added (childList only). */
+  added?: number;
+  /** Number of nodes removed (childList only). */
+  removed?: number;
+  /** Attribute that changed (attributes only). */
+  attribute_name?: string;
+  /** Wall-clock timestamp (Date.now()) when the mutation was observed. */
+  timestamp: number;
+}
+
+/** A console error/warn/unhandledrejection captured while the buffer is active. */
+export interface ConsoleErrorEntry {
+  /** 'error' | 'warn' | 'unhandledrejection' */
+  level: 'error' | 'warn' | 'unhandledrejection';
+  /** Log message text. */
+  message: string;
+  /** Stack trace if available. */
+  stack?: string;
+  /** Wall-clock timestamp. */
+  timestamp: number;
+}
+
+/** A network request captured while the buffer is active. */
+export interface BufferedNetworkEntry {
+  url: string;
+  method: string;
+  /** HTTP status code if the request has completed. */
+  status?: number;
+  /** Round-trip duration in milliseconds if the request has completed. */
+  duration_ms?: number;
+  /** Timestamp when the request started. */
+  timestamp: number;
+}
+
 /** Response from draining the change buffer */
 export interface ChangeBufferDrainResult {
-  /** Changes since last drain — DOM mutations and route-change entries
-   * interleaved by `recordedAt`. */
+  /** Registry-level diffs (DOM mutations tracked via the semantic snapshot diff engine)
+   * and SPA route-change entries interleaved by `recordedAt`. Backward-compatible. */
   changes: BufferEntry[];
-  /** Total changes drained */
+  /** Raw DOM mutations captured by MutationObserver since last drain. */
+  dom: DomMutationEntry[];
+  /** Console errors/warnings captured since last drain. */
+  console_errors: ConsoleErrorEntry[];
+  /** Network requests that started since last drain. */
+  network_requests: BufferedNetworkEntry[];
+  /** Total registry-level changes drained (backward compat) */
   count: number;
-  /** Time span covered */
+  /** Timestamp when the buffer was most recently enabled. */
+  enabled_at: number;
+  /** Time span covered by the registry changes */
   fromTimestamp: number;
   toTimestamp: number;
 }

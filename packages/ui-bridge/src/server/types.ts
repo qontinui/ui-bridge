@@ -206,6 +206,12 @@ export interface UIBridgeServerHandlers {
   // Control endpoints
   getElements: (options?: {
     recency?: string;
+    /** Case-insensitive substring filter on the element's title DOM attribute */
+    title?: string;
+    /** Case-insensitive substring filter on the element's aria-label DOM attribute */
+    aria_label?: string;
+    /** Case-insensitive substring filter on the element's visible text / label */
+    text?: string;
   }) => Promise<APIResponse<ControlSnapshot['elements']>>;
   getElement: (
     id: string,
@@ -476,10 +482,7 @@ export interface UIBridgeServerHandlers {
     viewports?: Record<string, number>;
     elementIds?: string[];
   }) => Promise<APIResponse<ResponsiveSnapshot[]>>;
-  setViewportConstraints: (request: {
-    width?: number;
-    restore?: boolean;
-  }) => Promise<
+  setViewportConstraints: (request: { width?: number; restore?: boolean }) => Promise<
     APIResponse<{
       success: boolean;
       viewportWidth: number;
@@ -628,6 +631,22 @@ export interface UIBridgeServerHandlers {
     pollInterval?: number;
   }) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
 
+  /**
+   * Tier 3.1 — Wait for an element matching a structured selector to satisfy
+   * a given condition (present / visible / clickable / text-matches).
+   *
+   * Implemented via registry polling so it works with both DOM and native elements.
+   */
+  waitForElementByCondition: (
+    request: WaitForElementByConditionRequest
+  ) => Promise<APIResponse<WaitForElementByConditionResponse>>;
+
+  /**
+   * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
+   * snapshots in one round-trip.
+   */
+  controlBatch: (request: ControlBatchRequest) => Promise<APIResponse<ControlBatchResponse>>;
+
   // App-agnostic convenience endpoints
   clickByText: (request: {
     text: string;
@@ -728,6 +747,99 @@ export interface EndpointCategory {
 export interface CapabilitiesResponse {
   version: string;
   categories: Record<string, EndpointCategory>;
+}
+
+/**
+ * Selector criteria for waitForElementByCondition.
+ * All provided fields are ANDed together (case-insensitive substring match).
+ */
+export interface ElementConditionSelector {
+  /** Match by element id (exact or substring) */
+  id?: string;
+  /** Match by title attribute (substring) */
+  title?: string;
+  /** Match by aria-label attribute (substring) */
+  aria_label?: string;
+  /** Match by visible text / label (substring) */
+  text?: string;
+  /** Match by element type (e.g. "button", "input") */
+  type?: string;
+}
+
+/**
+ * Request body for POST /ai/wait-for-element (Tier 3.1)
+ */
+export interface WaitForElementByConditionRequest {
+  /** Selector criteria — all provided fields must match */
+  selector: ElementConditionSelector;
+  /** Max wait in ms (default 5000, capped at 60000) */
+  timeout_ms?: number;
+  /** Condition to check on each poll */
+  condition?: 'present' | 'visible' | 'clickable' | 'text-matches';
+  /** Substring to match when condition is "text-matches" (case-insensitive) */
+  text_match?: string;
+}
+
+/**
+ * Response body for POST /ai/wait-for-element (Tier 3.1)
+ */
+export interface WaitForElementByConditionResponse {
+  /** Whether the condition was satisfied before timeout */
+  matched: boolean;
+  /** The matched element (present when matched is true) */
+  element?: unknown;
+  /** How long we actually waited in ms */
+  waited_ms: number;
+}
+
+/**
+ * A single step in a Tier 3.2 control batch request.
+ */
+export type ControlBatchStep =
+  | {
+      type: 'action';
+      /** ID of the element to act on */
+      element_id: string;
+      /** Action name (click, type, focus, …) */
+      action: string;
+      /** Optional action parameters */
+      params?: Record<string, unknown>;
+    }
+  | {
+      type: 'wait';
+      /** Milliseconds to sleep */
+      ms: number;
+    }
+  | {
+      type: 'snapshot';
+    };
+
+/**
+ * Request body for POST /control/batch (Tier 3.2)
+ */
+export interface ControlBatchRequest {
+  actions: ControlBatchStep[];
+  /** When true (default), stop executing on the first error */
+  stop_on_error?: boolean;
+}
+
+/**
+ * Per-step result in a Tier 3.2 batch response
+ */
+export interface ControlBatchStepResult {
+  index: number;
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/**
+ * Response body for POST /control/batch (Tier 3.2)
+ */
+export interface ControlBatchResponse {
+  results: ControlBatchStepResult[];
+  completed: number;
+  total: number;
 }
 
 /**
@@ -1258,6 +1370,22 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/control/page/find-by-text',
     handler: 'findByText',
+    bodyRequired: true,
+  },
+
+  // Tier 3.1 — registry-based element condition polling
+  {
+    method: 'POST',
+    path: '/ai/wait-for-element-condition',
+    handler: 'waitForElementByCondition',
+    bodyRequired: true,
+  },
+
+  // Tier 3.2 — mixed action/wait/snapshot batch
+  {
+    method: 'POST',
+    path: '/control/batch-execute',
+    handler: 'controlBatch',
     bodyRequired: true,
   },
 

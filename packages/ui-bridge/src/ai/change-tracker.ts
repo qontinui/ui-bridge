@@ -23,6 +23,9 @@ import type {
   BufferedRouteChange,
   BufferEntry,
   ChangeBufferDrainResult,
+  DomMutationEntry,
+  ConsoleErrorEntry,
+  BufferedNetworkEntry,
   SnapshotBookmark,
   NLActionResponse,
   ChangeTimeline,
@@ -74,6 +77,41 @@ export interface ChangeTrackerDeps {
    * safety-net poll instead of the default 200ms polling interval.
    */
   subscribeChanges?: (callback: (event: { type: string; timestamp: number }) => void) => () => void;
+
+  // ── Tier 3.3 extended buffer hooks ──────────────────────────────────────────
+
+  /**
+   * Subscribe to browser console/error events (optional).
+   * When provided, the change buffer will capture console errors while enabled.
+   * The callback receives events that were emitted by the BrowserEventCapture
+   * (or compatible) service. Returns an unsubscribe function.
+   */
+  subscribeBrowserEvents?: (
+    callback: (event: {
+      type: string;
+      timestamp: number;
+      level?: string;
+      message?: string;
+      stack?: string;
+    }) => void
+  ) => () => void;
+
+  /**
+   * Subscribe to network request events (optional).
+   * When provided, the change buffer will capture network requests while enabled.
+   * The callback receives events from NetworkRequestTracker.onEvent.
+   * Returns an unsubscribe function.
+   */
+  subscribeNetworkEvents?: (
+    callback: (event: {
+      type: string;
+      timestamp: number;
+      entry: {
+        request: { url: string; method: string; startedAt: number };
+        response?: { statusCode: number; durationMs: number };
+      };
+    }) => void
+  ) => () => void;
 }
 
 /** ChangeTracker configuration */
@@ -121,6 +159,17 @@ export class ChangeTracker {
   private changeBuffer: BufferEntry[] = [];
   private bufferEnabled = false;
   private bufferSequence = 0;
+  private bufferEnabledAt = 0;
+
+  // Tier 3.3: Extended change-buffer sub-lists
+  private domMutationBuffer: DomMutationEntry[] = [];
+  private consoleErrorBuffer: ConsoleErrorEntry[] = [];
+  private networkRequestBuffer: BufferedNetworkEntry[] = [];
+
+  // Tier 3.3: Active subscriptions / observers (live while buffer is enabled)
+  private mutationObserver: MutationObserver | null = null;
+  private unsubscribeBrowserEvents: (() => void) | null = null;
+  private unsubscribeNetworkEvents: (() => void) | null = null;
 
   // Last diff for categorization
   private lastDiff: SemanticDiff | null = null;
@@ -1072,14 +1121,143 @@ export class ChangeTracker {
   // Feature 5: Change Buffer
   // ==========================================================================
 
-  /** Enable change buffering */
+  /** Enable change buffering. Starts MutationObserver and subscribes to console/network events. */
   enableBuffer(): void {
     this.bufferEnabled = true;
+    this.bufferEnabledAt = Date.now();
+
+    // Start MutationObserver for raw DOM mutations
+    if (
+      typeof MutationObserver !== 'undefined' &&
+      typeof document !== 'undefined' &&
+      !this.mutationObserver
+    ) {
+      this.mutationObserver = new MutationObserver((records) => {
+        for (const record of records) {
+          if (this.domMutationBuffer.length >= 500) {
+            // Cap at 500: drop the oldest entry
+            this.domMutationBuffer.shift();
+          }
+          const entry: DomMutationEntry = {
+            type: record.type as DomMutationEntry['type'],
+            target_selector: this.selectorFor(record.target),
+            timestamp: Date.now(),
+          };
+          if (record.type === 'childList') {
+            entry.added = record.addedNodes.length;
+            entry.removed = record.removedNodes.length;
+          } else if (record.type === 'attributes') {
+            entry.attribute_name = record.attributeName ?? undefined;
+          }
+          this.domMutationBuffer.push(entry);
+        }
+      });
+      try {
+        this.mutationObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+          attributeOldValue: false,
+          characterDataOldValue: false,
+        });
+      } catch {
+        // document.body may not be available (SSR / test env) — silently skip
+        this.mutationObserver = null;
+      }
+    }
+
+    // Subscribe to browser console/error events
+    if (this.deps.subscribeBrowserEvents && !this.unsubscribeBrowserEvents) {
+      const enabledAt = this.bufferEnabledAt;
+      this.unsubscribeBrowserEvents = this.deps.subscribeBrowserEvents((event) => {
+        if (event.timestamp < enabledAt) return;
+        // Only capture console-level events (errors, warns, unhandled rejections)
+        if (event.type !== 'console') return;
+        if (this.consoleErrorBuffer.length >= 100) {
+          this.consoleErrorBuffer.shift();
+        }
+        this.consoleErrorBuffer.push({
+          level: (event.level ?? 'error') as ConsoleErrorEntry['level'],
+          message: event.message ?? '',
+          stack: event.stack,
+          timestamp: event.timestamp,
+        });
+      });
+    }
+
+    // Subscribe to network events
+    if (this.deps.subscribeNetworkEvents && !this.unsubscribeNetworkEvents) {
+      const enabledAt = this.bufferEnabledAt;
+      this.unsubscribeNetworkEvents = this.deps.subscribeNetworkEvents((event) => {
+        // Only record when a request starts (to capture timestamp of start accurately)
+        // We update/overwrite on completion to add status and duration.
+        if (event.type === 'request-start') {
+          if (event.entry.request.startedAt < enabledAt) return;
+          if (this.networkRequestBuffer.length >= 200) {
+            this.networkRequestBuffer.shift();
+          }
+          this.networkRequestBuffer.push({
+            url: event.entry.request.url,
+            method: event.entry.request.method,
+            timestamp: event.entry.request.startedAt,
+          });
+        } else if (event.type === 'request-complete' || event.type === 'request-error') {
+          if (event.entry.request.startedAt < enabledAt) return;
+          // Update existing entry with status + duration, or append if not found
+          const existing = this.networkRequestBuffer.find(
+            (e) =>
+              e.url === event.entry.request.url && e.timestamp === event.entry.request.startedAt
+          );
+          if (existing) {
+            existing.status = event.entry.response?.statusCode;
+            existing.duration_ms = event.entry.response?.durationMs;
+          } else {
+            // Request started before subscription began but finished after — append
+            if (this.networkRequestBuffer.length >= 200) {
+              this.networkRequestBuffer.shift();
+            }
+            this.networkRequestBuffer.push({
+              url: event.entry.request.url,
+              method: event.entry.request.method,
+              status: event.entry.response?.statusCode,
+              duration_ms: event.entry.response?.durationMs,
+              timestamp: event.entry.request.startedAt,
+            });
+          }
+        }
+      });
+    }
   }
 
-  /** Disable change buffering */
+  /** Disable change buffering. Stops MutationObserver and unsubscribes from services. */
   disableBuffer(): void {
     this.bufferEnabled = false;
+    this._teardownExtendedObservers();
+  }
+
+  /** Stop MutationObserver and unsubscribe from console/network services. */
+  private _teardownExtendedObservers(): void {
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect();
+      this.mutationObserver = null;
+    }
+    if (this.unsubscribeBrowserEvents) {
+      try {
+        this.unsubscribeBrowserEvents();
+      } catch {
+        /* ignore */
+      }
+      this.unsubscribeBrowserEvents = null;
+    }
+    if (this.unsubscribeNetworkEvents) {
+      try {
+        this.unsubscribeNetworkEvents();
+      } catch {
+        /* ignore */
+      }
+      this.unsubscribeNetworkEvents = null;
+    }
   }
 
   /** Whether the buffer is enabled */
@@ -1087,16 +1265,19 @@ export class ChangeTracker {
     return this.bufferEnabled;
   }
 
-  /** Get buffer size */
+  /** Get buffer size (registry-level changes only, for backward compat) */
   getBufferSize(): number {
     return this.changeBuffer.length;
   }
 
   /**
-   * Drain all buffered changes and clear the buffer. Route-change and DOM
-   * mutation entries are returned interleaved by `recordedAt` (the buffer
-   * is already in insertion order — both kinds use `Date.now()` at push
-   * time, so a stable sort by `recordedAt` preserves intent).
+   * Drain all buffered changes and clear the four sub-lists.
+   * Observers remain active if the buffer is still enabled (incremental semantics:
+   * subsequent drains return only events since the previous drain).
+   *
+   * Route-change and registry-diff entries are returned in `changes`, interleaved by
+   * `recordedAt`. Raw DOM mutations, console errors, and network requests are returned
+   * in separate typed lists.
    */
   drainBuffer(): ChangeBufferDrainResult {
     const changes = [...this.changeBuffer];
@@ -1106,12 +1287,46 @@ export class ChangeTracker {
     // appended later).
     changes.sort((a, b) => a.recordedAt - b.recordedAt || a.sequence - b.sequence);
 
+    // Drain extended sub-lists
+    const dom = [...this.domMutationBuffer];
+    this.domMutationBuffer = [];
+
+    const console_errors = [...this.consoleErrorBuffer];
+    this.consoleErrorBuffer = [];
+
+    const network_requests = [...this.networkRequestBuffer];
+    this.networkRequestBuffer = [];
+
     return {
       changes,
+      dom,
+      console_errors,
+      network_requests,
       count: changes.length,
+      enabled_at: this.bufferEnabledAt,
       fromTimestamp: changes.length > 0 ? changes[0].recordedAt : 0,
       toTimestamp: changes.length > 0 ? changes[changes.length - 1].recordedAt : 0,
     };
+  }
+
+  /**
+   * Derive a best-effort CSS selector string for a DOM node.
+   * Used for DomMutationEntry.target_selector.
+   */
+  private selectorFor(node: Node): string {
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return node.nodeName.toLowerCase();
+    }
+    const el = node as Element;
+    const parts: string[] = [el.tagName.toLowerCase()];
+    if (el.id) {
+      return `#${el.id}`;
+    }
+    if (el.className && typeof el.className === 'string') {
+      const cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (cls) parts.push(`.${cls}`);
+    }
+    return parts.join('');
   }
 
   /**

@@ -10,6 +10,11 @@ import type {
   RenderLogQuery,
   BrowserEventsResponse,
   CapabilitiesResponse,
+  WaitForElementByConditionRequest,
+  WaitForElementByConditionResponse,
+  ControlBatchRequest,
+  ControlBatchResponse,
+  ControlBatchStepResult,
 } from './types';
 import type {
   ControlSnapshot,
@@ -221,11 +226,18 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       getState?: () => unknown;
       getIdentifier?: () => unknown;
     };
+    // Capture title and aria-label from the live DOM element for explicit
+    // attribute-level filtering (Tier 1.2). These are separate from `label`
+    // which encodes the best accessible name (aria-label > title > text).
+    const ariaLabel = el.element?.getAttribute?.('aria-label') ?? undefined;
+    const titleAttr = el.element?.getAttribute?.('title') ?? undefined;
     return {
       id: el.id,
       type: el.type,
       tagName: el.element?.tagName?.toLowerCase?.(),
       label: el.label,
+      ariaLabel: ariaLabel || undefined,
+      title: titleAttr || undefined,
       identifier: el.getIdentifier?.(),
       state: el.getState?.(),
       actions: el.actions,
@@ -738,6 +750,10 @@ export function createHandlers(
     return cap !== null && 'getSince' in cap && 'getRecent' in cap && 'getByType' in cap;
   }
 
+  // Tier 3.3: broadcaster for BrowserEventCapture events so the change buffer
+  // can subscribe without displacing the existing session/snapshot/streaming handlers.
+  const browserEventListeners: Array<(event: AnyCapturedEvent) => void> = [];
+
   // Wire BrowserEventCapture's onEvent callback to feed sessions, snapshots, and streaming
   if (
     consoleCapture &&
@@ -769,6 +785,15 @@ export function createHandlers(
           timestamp: Date.now(),
           data: { event, severity },
         });
+      }
+
+      // Tier 3.3: broadcast to change-buffer subscribers
+      for (const listener of browserEventListeners) {
+        try {
+          listener(event);
+        } catch {
+          /* ignore */
+        }
       }
     });
   }
@@ -943,6 +968,57 @@ export function createHandlers(
         return null;
       }
     },
+
+    // Tier 3.3: hook into BrowserEventCapture for console errors via the shared broadcaster
+    subscribeBrowserEvents:
+      consoleCapture && 'setOnEvent' in consoleCapture
+        ? (callback) => {
+            const listener = (event: AnyCapturedEvent) => {
+              if (event.type === 'console') {
+                callback({
+                  type: event.type,
+                  timestamp: event.timestamp,
+                  level: (event as import('../debug/browser-capture-types').ConsoleCapturedEvent)
+                    .level,
+                  message: (event as import('../debug/browser-capture-types').ConsoleCapturedEvent)
+                    .message,
+                  stack: (event as import('../debug/browser-capture-types').ConsoleCapturedEvent)
+                    .stack,
+                });
+              }
+            };
+            browserEventListeners.push(listener);
+            return () => {
+              const idx = browserEventListeners.indexOf(listener);
+              if (idx >= 0) browserEventListeners.splice(idx, 1);
+            };
+          }
+        : undefined,
+
+    // Tier 3.3: hook into NetworkRequestTracker for network requests
+    subscribeNetworkEvents: networkTracker
+      ? (callback) => {
+          return networkTracker.onEvent((event) => {
+            callback({
+              type: event.type,
+              timestamp: event.timestamp,
+              entry: {
+                request: {
+                  url: event.entry.request.url,
+                  method: event.entry.request.method,
+                  startedAt: event.entry.request.startedAt,
+                },
+                response: event.entry.response
+                  ? {
+                      statusCode: event.entry.response.statusCode,
+                      durationMs: event.entry.response.durationMs,
+                    }
+                  : undefined,
+              },
+            });
+          });
+        }
+      : undefined,
   });
 
   // Helper to get fresh elements and update AI modules
@@ -1072,10 +1148,45 @@ export function createHandlers(
     // Element Handlers
     // =========================================================================
 
-    getElements: async (): Promise<APIResponse<ControlSnapshot['elements']>> => {
+    getElements: async (options?: {
+      recency?: string;
+      title?: string;
+      aria_label?: string;
+      text?: string;
+    }): Promise<APIResponse<ControlSnapshot['elements']>> => {
       try {
         const elements = registry.getAllElements();
-        return success(materializeElements(elements));
+        let materialized = materializeElements(elements);
+
+        // Apply case-insensitive substring filters when query params are present.
+        // materializeElements already captured ariaLabel and title from the live DOM,
+        // so we use those fields here rather than doing a second getAttribute() pass.
+        const titleNeedle = options?.title?.toLowerCase();
+        const ariaLabelNeedle = options?.aria_label?.toLowerCase();
+        const textNeedle = options?.text?.toLowerCase();
+
+        if (titleNeedle || ariaLabelNeedle || textNeedle) {
+          materialized = materialized.filter((el) => {
+            const elAny = el as Record<string, unknown>;
+            if (titleNeedle) {
+              const t = ((elAny['title'] as string | undefined) ?? '').toLowerCase();
+              if (!t.includes(titleNeedle)) return false;
+            }
+            if (ariaLabelNeedle) {
+              const a = ((elAny['ariaLabel'] as string | undefined) ?? '').toLowerCase();
+              if (!a.includes(ariaLabelNeedle)) return false;
+            }
+            if (textNeedle) {
+              const label = (el.label ?? '').toLowerCase();
+              if (!label.includes(textNeedle) && !el.id.toLowerCase().includes(textNeedle)) {
+                return false;
+              }
+            }
+            return true;
+          });
+        }
+
+        return success(materialized);
       } catch (err) {
         return error((err as Error).message, 'ELEMENTS_ERROR');
       }
@@ -5431,6 +5542,259 @@ export function createHandlers(
           }
         };
         check();
+      });
+    },
+
+    // =========================================================================
+    // Tier 3.1 — Registry-based wait-for-element with structured conditions
+    // =========================================================================
+
+    waitForElementByCondition: async (
+      request: WaitForElementByConditionRequest
+    ): Promise<APIResponse<WaitForElementByConditionResponse>> => {
+      const { selector = {}, condition = 'present', text_match } = request;
+
+      // Cap timeout between 100 ms and 60 s; default 5 s.
+      const timeoutMs = Math.min(
+        Math.max(typeof request.timeout_ms === 'number' ? request.timeout_ms : 5000, 100),
+        60_000
+      );
+
+      const start = Date.now();
+      const POLL_MS = 100;
+
+      /**
+       * Filter elements from the registry by the selector criteria.
+       * All provided selector fields must match (case-insensitive substring).
+       *
+       * Field fallback logic mirrors the relay-handlers getElements filter so that
+       * the same element found by GET /control/elements?title=X is also matched here:
+       *   - selector.id        → exact match on el.id
+       *   - selector.title     → el.title OR el.ariaLabel OR el.label (accessible name chain)
+       *   - selector.aria_label → el.ariaLabel OR el.label
+       *   - selector.text      → el.label OR el.id (same as relay)
+       */
+      function matchesSelector(el: Record<string, unknown>): boolean {
+        if (selector.id) {
+          const elId = typeof el.id === 'string' ? el.id : '';
+          if (elId !== selector.id) return false;
+        }
+        if (selector.type) {
+          const elType = (typeof el.type === 'string' ? el.type : '').toLowerCase();
+          const elTag = (typeof el.tagName === 'string' ? el.tagName : '').toLowerCase();
+          const needle = selector.type.toLowerCase();
+          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
+        }
+        if (selector.title) {
+          // Mirror relay-handlers: title needle is matched against the accessible name
+          // chain (ariaLabel → title → label) because el.title may be empty even when
+          // the element is clearly identifiable by its label/aria-label.
+          const needle = selector.title.toLowerCase();
+          const elTitle = (typeof el.title === 'string' ? el.title : '').toLowerCase();
+          const elAriaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
+          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
+          if (
+            !elTitle.includes(needle) &&
+            !elAriaLabel.includes(needle) &&
+            !elLabel.includes(needle)
+          )
+            return false;
+        }
+        if (selector.aria_label) {
+          // Also fall back to el.label so aria-label selectors work on elements where
+          // the aria-label was already folded into the label accessible name.
+          const needle = selector.aria_label.toLowerCase();
+          const elAriaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
+          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
+          if (!elAriaLabel.includes(needle) && !elLabel.includes(needle)) return false;
+        }
+        if (selector.text) {
+          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
+          const elId = (typeof el.id === 'string' ? el.id : '').toLowerCase();
+          const needle = selector.text.toLowerCase();
+          if (!elLabel.includes(needle) && !elId.includes(needle)) return false;
+        }
+        return true;
+      }
+
+      /**
+       * Evaluate the condition against a matched element.
+       * Returns true when the condition is satisfied.
+       */
+      function checkCondition(el: Record<string, unknown>, domEl: HTMLElement | null): boolean {
+        switch (condition) {
+          case 'present':
+            return true;
+
+          case 'visible': {
+            if (!domEl) return false;
+            if (domEl.offsetParent === null) return false;
+            const rect = domEl.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+
+          case 'clickable': {
+            if (!domEl) return false;
+            if (domEl.offsetParent === null) return false;
+            const rect = domEl.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            if ((domEl as HTMLButtonElement | HTMLInputElement).disabled) return false;
+            if (domEl.getAttribute('aria-disabled') === 'true') return false;
+            return true;
+          }
+
+          case 'text-matches': {
+            if (!text_match) return true; // degenerate — no needle means always match
+            const needle = text_match.toLowerCase();
+            const label = (typeof el.label === 'string' ? el.label : '').toLowerCase();
+            const ariaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
+            const title = (typeof el.title === 'string' ? el.title : '').toLowerCase();
+            const textContent = domEl?.textContent?.toLowerCase() ?? '';
+            return (
+              label.includes(needle) ||
+              ariaLabel.includes(needle) ||
+              title.includes(needle) ||
+              textContent.includes(needle)
+            );
+          }
+
+          default:
+            return true;
+        }
+      }
+
+      return new Promise<APIResponse<WaitForElementByConditionResponse>>((resolve) => {
+        let done = false;
+
+        const poll = () => {
+          if (done) return;
+          const waited_ms = Date.now() - start;
+
+          try {
+            const raw = registry.getAllElements() as Record<string, unknown>[];
+            const materialized = materializeElements(raw) as unknown as Array<
+              Record<string, unknown>
+            >;
+
+            for (const el of materialized) {
+              if (!matchesSelector(el)) continue;
+
+              // Try to obtain the live DOM element for visibility/clickable checks.
+              const rawEl = raw.find((r) => r.id === el.id) as
+                | { element?: HTMLElement }
+                | undefined;
+              const domEl: HTMLElement | null = rawEl?.element ?? null;
+
+              if (checkCondition(el, domEl)) {
+                done = true;
+                resolve(
+                  success<WaitForElementByConditionResponse>({
+                    matched: true,
+                    element: el,
+                    waited_ms,
+                  })
+                );
+                return;
+              }
+            }
+          } catch {
+            // Registry read errors are non-fatal; keep polling.
+          }
+
+          if (waited_ms >= timeoutMs) {
+            done = true;
+            resolve(
+              // 408-style: matched=false, no element, waited_ms reflects the timeout
+              success<WaitForElementByConditionResponse>({
+                matched: false,
+                waited_ms,
+              })
+            );
+            return;
+          }
+
+          setTimeout(poll, POLL_MS);
+        };
+
+        poll();
+      });
+    },
+
+    // =========================================================================
+    // Tier 3.2 — Mixed action/wait/snapshot batch execution
+    // =========================================================================
+
+    controlBatch: async (
+      request: ControlBatchRequest
+    ): Promise<APIResponse<ControlBatchResponse>> => {
+      const { actions = [], stop_on_error = true } = request;
+      const results: ControlBatchStepResult[] = [];
+      let completed = 0;
+
+      for (let i = 0; i < actions.length; i++) {
+        const step = actions[i];
+        let stepResult: ControlBatchStepResult;
+
+        try {
+          if (step.type === 'wait') {
+            await new Promise<void>((r) => setTimeout(r, step.ms));
+            stepResult = { index: i, success: true, data: { waited_ms: step.ms } };
+          } else if (step.type === 'snapshot') {
+            // Capture a snapshot directly from the registry to avoid circular deps.
+            try {
+              const snap = registry.createSnapshot();
+              stepResult = { index: i, success: true, data: snap };
+            } catch (snapErr) {
+              stepResult = {
+                index: i,
+                success: false,
+                error: (snapErr as Error).message ?? 'Snapshot failed',
+              };
+            }
+          } else if (step.type === 'action') {
+            // Dispatch via the action executor directly — same as executeElementAction.
+            refreshElements();
+            const actionResult = await actionExecutor.executeAction(step.element_id, {
+              action: step.action,
+              params: step.params,
+            });
+            const resultAny = actionResult as { success?: boolean; error?: string };
+            if (resultAny?.success !== false) {
+              stepResult = { index: i, success: true, data: actionResult };
+            } else {
+              stepResult = {
+                index: i,
+                success: false,
+                error: resultAny.error ?? 'Action failed',
+              };
+            }
+          } else {
+            stepResult = {
+              index: i,
+              success: false,
+              error: `Unknown step type: ${(step as { type: string }).type}`,
+            };
+          }
+        } catch (err) {
+          stepResult = {
+            index: i,
+            success: false,
+            error: (err as Error).message ?? String(err),
+          };
+        }
+
+        results.push(stepResult);
+        completed++;
+
+        if (!stepResult.success && stop_on_error) {
+          break;
+        }
+      }
+
+      return success<ControlBatchResponse>({
+        results,
+        completed,
+        total: actions.length,
       });
     },
   };
