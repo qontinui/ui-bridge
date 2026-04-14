@@ -12,7 +12,11 @@
 // When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
 // execution delegates to its canonical performAction function.
 // Lazy-resolved on first use to avoid top-level import issues.
-type PerformActionFn = (element: HTMLElement, action: string, params?: Record<string, unknown>) => Promise<void>;
+type PerformActionFn = (
+  element: HTMLElement,
+  action: string,
+  params?: Record<string, unknown>
+) => Promise<void>;
 let _canonicalPerformAction: PerformActionFn | null | undefined;
 
 function getCanonicalPerformAction(): PerformActionFn | null {
@@ -22,9 +26,8 @@ function getCanonicalPerformAction(): PerformActionFn | null {
     // resolves at runtime only when the peer dependency is installed.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('@qontinui/ui-bridge-auto') as Record<string, unknown>;
-    _canonicalPerformAction = typeof mod.performAction === 'function'
-      ? (mod.performAction as PerformActionFn)
-      : null;
+    _canonicalPerformAction =
+      typeof mod.performAction === 'function' ? (mod.performAction as PerformActionFn) : null;
   } catch {
     _canonicalPerformAction = null;
   }
@@ -2706,12 +2709,10 @@ export const MAX_BATCH_SIZE = 50;
 export async function batch(
   baseUrl: string,
   operations: ServerBatchOperation[],
-  options?: ServerBatchOptions,
+  options?: ServerBatchOptions
 ): Promise<ServerBatchResponse> {
   if (operations.length > MAX_BATCH_SIZE) {
-    throw new Error(
-      `Batch size ${operations.length} exceeds maximum of ${MAX_BATCH_SIZE}`,
-    );
+    throw new Error(`Batch size ${operations.length} exceeds maximum of ${MAX_BATCH_SIZE}`);
   }
 
   const url = `${baseUrl.replace(/\/+$/, '')}/ui-bridge/batch`;
@@ -2735,9 +2736,7 @@ export async function batch(
     } catch {
       detail = text;
     }
-    throw new Error(
-      `Batch request failed (HTTP ${response.status}): ${detail}`,
-    );
+    throw new Error(`Batch request failed (HTTP ${response.status}): ${detail}`);
   }
 
   const json = await response.json();

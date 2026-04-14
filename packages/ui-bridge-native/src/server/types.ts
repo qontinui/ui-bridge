@@ -309,7 +309,9 @@ export interface NativeServerHandlers {
   diffBaseline: HandlerFunction<unknown>;
 
   // Meta / Introspection
-  getMethods: HandlerFunction<{ methods: Array<{ method: string; httpMethods?: string[]; description?: string }> }>;
+  getMethods: HandlerFunction<{
+    methods: Array<{ method: string; httpMethods?: string[]; description?: string }>;
+  }>;
 
   // Health
   health: HandlerFunction<{ status: string; timestamp: number }>;

@@ -70,24 +70,30 @@ export interface JsonRpcEvent {
 }
 
 /** Any server message */
-export type JsonRpcServerMessage =
-  | JsonRpcResponse
-  | JsonRpcBatchResponse
-  | JsonRpcEvent;
+export type JsonRpcServerMessage = JsonRpcResponse | JsonRpcBatchResponse | JsonRpcEvent;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Check if a message is a batch request */
 export function isBatchRequest(msg: unknown): msg is JsonRpcBatchRequest {
-  return typeof msg === 'object' && msg !== null && 'batch' in msg && Array.isArray((msg as JsonRpcBatchRequest).batch);
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    'batch' in msg &&
+    Array.isArray((msg as JsonRpcBatchRequest).batch)
+  );
 }
 
 /** Check if a message is a subscribe request */
 export function isSubscribe(msg: unknown): msg is JsonRpcSubscribe {
-  return typeof msg === 'object' && msg !== null && (msg as JsonRpcSubscribe).method === 'subscribe';
+  return (
+    typeof msg === 'object' && msg !== null && (msg as JsonRpcSubscribe).method === 'subscribe'
+  );
 }
 
 /** Check if a message is an unsubscribe request */
 export function isUnsubscribe(msg: unknown): msg is JsonRpcUnsubscribe {
-  return typeof msg === 'object' && msg !== null && (msg as JsonRpcUnsubscribe).method === 'unsubscribe';
+  return (
+    typeof msg === 'object' && msg !== null && (msg as JsonRpcUnsubscribe).method === 'unsubscribe'
+  );
 }

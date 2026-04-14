@@ -485,15 +485,18 @@ export class StandaloneServer {
   private sendJSON(res: import('http').ServerResponse, data: unknown, status = 200): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     const seen = new WeakSet();
-    res.end(JSON.stringify(data, (_key, val) => {
-      if (val !== null && typeof val === 'object') {
-        if (typeof Node !== 'undefined' && val instanceof Node) return `[${val.constructor.name}]`;
-        if (seen.has(val)) return '[Circular]';
-        seen.add(val);
-      }
-      if (typeof val === 'function') return undefined;
-      return val;
-    }));
+    res.end(
+      JSON.stringify(data, (_key, val) => {
+        if (val !== null && typeof val === 'object') {
+          if (typeof Node !== 'undefined' && val instanceof Node)
+            return `[${val.constructor.name}]`;
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        if (typeof val === 'function') return undefined;
+        return val;
+      })
+    );
   }
 
   /**

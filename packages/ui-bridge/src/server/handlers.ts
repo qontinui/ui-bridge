@@ -1884,7 +1884,12 @@ export function createHandlers(
       limit?: number;
       group?: boolean;
       groupBy?: 'fingerprint' | 'message' | 'source';
-    }): Promise<APIResponse<{ errors: CapturedError[]; count: number } | { groups: unknown[]; totalErrors: number; totalGroups: number }>> => {
+    }): Promise<
+      APIResponse<
+        | { errors: CapturedError[]; count: number }
+        | { groups: unknown[]; totalErrors: number; totalGroups: number }
+      >
+    > => {
       try {
         if (!consoleCapture) {
           if (params?.group) {
@@ -1903,15 +1908,17 @@ export function createHandlers(
         // Grouped mode: delegate to the relay/IPC which handles grouping
         // For direct (non-relay) mode, do grouping here
         const groupBy = params.groupBy ?? 'fingerprint';
-        const { computeFingerprint: fp, extractSourceLocation: extractSrc } = await import('../debug/error-fingerprint');
+        const { computeFingerprint: fp, extractSourceLocation: extractSrc } =
+          await import('../debug/error-fingerprint');
         const { getEventStack: getStack } = await import('../debug/shared-utils');
 
         // Get raw events for grouping (consoleCapture may be full BrowserEventCapture)
         let rawEvents: AnyCapturedEvent[] = [];
         if (hasFullEventAPI(consoleCapture)) {
-          rawEvents = (params.since
-            ? consoleCapture.getSince(params.since)
-            : consoleCapture.getRecent((params.limit ?? 50) * 10)
+          rawEvents = (
+            params.since
+              ? consoleCapture.getSince(params.since)
+              : consoleCapture.getRecent((params.limit ?? 50) * 10)
           ).filter((e: AnyCapturedEvent) => e.type === 'console' || e.type === 'hmr');
         }
 
@@ -1930,11 +1937,19 @@ export function createHandlers(
           return success({ groups, totalErrors: errors.length, totalGroups: groups.length });
         }
 
-        const groupMap = new Map<string, {
-          fingerprint: string; count: number; firstSeen: number;
-          lastSeen: number; level: string; message: string;
-          source: string | undefined; sample: unknown;
-        }>();
+        const groupMap = new Map<
+          string,
+          {
+            fingerprint: string;
+            count: number;
+            firstSeen: number;
+            lastSeen: number;
+            level: string;
+            message: string;
+            source: string | undefined;
+            sample: unknown;
+          }
+        >();
         const order: string[] = [];
 
         for (const event of rawEvents) {
@@ -1953,14 +1968,27 @@ export function createHandlers(
             existing.lastSeen = event.timestamp;
           } else {
             const msg = (event as { message?: string }).message ?? '';
-            const lvl = event.type === 'hmr'
-              ? ((event as { level: string }).level === 'warning' ? 'warn' : (event as { level: string }).level)
-              : (event as { level: string }).level;
+            const lvl =
+              event.type === 'hmr'
+                ? (event as { level: string }).level === 'warning'
+                  ? 'warn'
+                  : (event as { level: string }).level
+                : (event as { level: string }).level;
             const src = extractSrc(getStack(event));
             groupMap.set(key, {
-              fingerprint: key, count: 1, firstSeen: event.timestamp,
-              lastSeen: event.timestamp, level: lvl, message: msg, source: src,
-              sample: { timestamp: event.timestamp, level: lvl, message: msg, stack: (event as { stack?: string }).stack },
+              fingerprint: key,
+              count: 1,
+              firstSeen: event.timestamp,
+              lastSeen: event.timestamp,
+              level: lvl,
+              message: msg,
+              source: src,
+              sample: {
+                timestamp: event.timestamp,
+                level: lvl,
+                message: msg,
+                stack: (event as { stack?: string }).stack,
+              },
             });
             order.push(key);
           }
@@ -4784,7 +4812,8 @@ export function createHandlers(
                     since: 'number (epoch ms) — filter errors after this timestamp',
                     limit: 'number (default 50) — max errors to return',
                     group: 'boolean (default false) — group errors by fingerprint',
-                    groupBy: "'fingerprint' | 'message' | 'source' (default 'fingerprint') — grouping strategy",
+                    groupBy:
+                      "'fingerprint' | 'message' | 'source' (default 'fingerprint') — grouping strategy",
                   },
                 },
                 {

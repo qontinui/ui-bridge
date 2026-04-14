@@ -101,7 +101,7 @@ export class UIBridgeWSHandler {
           onAutoSave: (partialExport) => {
             this.lastAutoSavedExport = partialExport;
           },
-        },
+        }
       );
     }
   }
@@ -724,7 +724,9 @@ export class UIBridgeWSHandler {
    */
   private handleRecordingAutoSave(clientId: string, message: WSClientMessage): void {
     try {
-      const payload = (message as WSClientMessage & { payload?: { exportData?: CooccurrenceExportData } }).payload;
+      const payload = (
+        message as WSClientMessage & { payload?: { exportData?: CooccurrenceExportData } }
+      ).payload;
       if (payload?.exportData) {
         this.lastAutoSavedExport = payload.exportData;
         this.sendResponse(clientId, message.id, true, { stored: true });

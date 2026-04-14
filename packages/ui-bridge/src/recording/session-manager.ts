@@ -52,7 +52,16 @@ interface CaptureSnapshot {
 export class RecordingSessionManager {
   private registry: UIBridgeRegistry;
   private changeObserver: ChangeObserver | null;
-  private config: Required<Pick<RecordingSessionConfig, 'debounceMs' | 'maxCaptures' | 'filterUnregistered' | 'keystrokeCoalesceMs' | 'autoSaveIntervalMs'>> & {
+  private config: Required<
+    Pick<
+      RecordingSessionConfig,
+      | 'debounceMs'
+      | 'maxCaptures'
+      | 'filterUnregistered'
+      | 'keystrokeCoalesceMs'
+      | 'autoSaveIntervalMs'
+    >
+  > & {
     onAutoSave: RecordingSessionConfig['onAutoSave'];
   };
 

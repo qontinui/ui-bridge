@@ -340,18 +340,19 @@ describe('WebSocketEventBridge — event history ring buffer', () => {
   // 16. handleUnsubscribe clears throttle state when all subs are removed
   // ──────────────────────────────────────────────────────────────────────────
   describe('handleUnsubscribe throttle cleanup', () => {
-    const makeConn = (id: string) => ({
-      id,
-      subscriptions: new Set<string>(),
-      alive: true,
-      isOpen: true,
-      send: () => {},
-      sendEvent: () => {},
-      ping: () => {},
-      close: () => {},
-      destroy: () => {},
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
+    const makeConn = (id: string) =>
+      ({
+        id,
+        subscriptions: new Set<string>(),
+        alive: true,
+        isOpen: true,
+        send: () => {},
+        sendEvent: () => {},
+        ping: () => {},
+        close: () => {},
+        destroy: () => {},
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
 
     it('drops throttle entry when last subscription is removed', () => {
       const bridge = new WebSocketEventBridge(registry);

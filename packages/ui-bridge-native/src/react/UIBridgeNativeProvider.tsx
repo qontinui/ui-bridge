@@ -25,7 +25,12 @@ import type {
 import { NativeUIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import { createNativeActionExecutor } from '../control/action-executor';
 import type { NativeActionExecutor } from '../control/types';
-import { createNativeServer, type NativeUIBridgeServer, type ServerAdapter, type WebSocketServerAdapter } from '../server/http-server';
+import {
+  createNativeServer,
+  type NativeUIBridgeServer,
+  type ServerAdapter,
+  type WebSocketServerAdapter,
+} from '../server/http-server';
 import type { RouteProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
 import { DeviceAnnouncer } from '../transport/DeviceAnnouncer';
@@ -97,7 +102,9 @@ export interface UIBridgeNativeProviderProps {
    * Screenshot provider for native screen capture via UI Bridge.
    * Pass a function that captures the current screen as base64 PNG.
    */
-  screenshotProvider?: { capture: () => Promise<{ base64: string; width: number; height: number }> };
+  screenshotProvider?: {
+    capture: () => Promise<{ base64: string; width: number; height: number }>;
+  };
   /**
    * Route provider for exposing the current navigation route in snapshots.
    * Wire this to Expo Router's `usePathname()` / `useSegments()` via a module-level ref.
@@ -241,9 +248,15 @@ export function UIBridgeNativeProvider({
             if (!eventBridge.isSubscribed(connId, event.event)) return;
             wsAdapter.sendToConnection?.(connId, JSON.stringify(event));
           },
-          ping: () => { /* adapter handles heartbeat */ },
-          close: () => { /* adapter handles close */ },
-          destroy: () => { /* adapter handles destroy */ },
+          ping: () => {
+            /* adapter handles heartbeat */
+          },
+          close: () => {
+            /* adapter handles close */
+          },
+          destroy: () => {
+            /* adapter handles destroy */
+          },
         } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
       };
 
@@ -270,7 +283,16 @@ export function UIBridgeNativeProvider({
     } catch (err) {
       console.warn('[ui-bridge-native] Failed to start HTTP server:', err);
     }
-  }, [features.server, config.serverPort, registry, executor, serverAdapter, navigationProvider, screenshotProvider, routeProvider]);
+  }, [
+    features.server,
+    config.serverPort,
+    registry,
+    executor,
+    serverAdapter,
+    navigationProvider,
+    screenshotProvider,
+    routeProvider,
+  ]);
 
   const stopServer = useCallback(() => {
     if (eventBridgeRef.current) {
@@ -329,7 +351,7 @@ export function UIBridgeNativeProvider({
         cloudRelayRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverRunning]);
 
   // Cleanup on unmount

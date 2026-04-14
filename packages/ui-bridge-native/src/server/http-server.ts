@@ -13,7 +13,15 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { NativeActionExecutor, PageNavigationResponse } from '../control/types';
-import type { NativeServerConfig, NativeServerHandlers, NavigationProvider, RouteProvider, ScreenshotProvider, APIResponse, HandlerContext } from './types';
+import type {
+  NativeServerConfig,
+  NativeServerHandlers,
+  NavigationProvider,
+  RouteProvider,
+  ScreenshotProvider,
+  APIResponse,
+  HandlerContext,
+} from './types';
 import type { BridgeEvent } from '../core/types';
 import { createServerHandlers } from './handlers';
 import type { WebSocketEventBridge } from './ws-event-bridge';
@@ -269,7 +277,11 @@ export class NativeUIBridgeServer {
       }
       try {
         provider.navigate(url);
-        return { success: true, data: { success: true, url, timestamp: Date.now() }, timestamp: Date.now() };
+        return {
+          success: true,
+          data: { success: true, url, timestamp: Date.now() },
+          timestamp: Date.now(),
+        };
       } catch (e: any) {
         return { success: false, error: `Navigation failed: ${e.message}`, timestamp: Date.now() };
       }
@@ -277,7 +289,11 @@ export class NativeUIBridgeServer {
 
     this.handlers.pageReplace = async (ctx): Promise<APIResponse<PageNavigationResponse>> => {
       if (!provider.replace) {
-        return { success: false, error: 'Replace navigation not supported by navigation provider', timestamp: Date.now() };
+        return {
+          success: false,
+          error: 'Replace navigation not supported by navigation provider',
+          timestamp: Date.now(),
+        };
       }
       const body = ctx.body as Record<string, unknown> | undefined;
       const url = body?.url;
@@ -286,9 +302,17 @@ export class NativeUIBridgeServer {
       }
       try {
         provider.replace(url);
-        return { success: true, data: { success: true, url, timestamp: Date.now() }, timestamp: Date.now() };
+        return {
+          success: true,
+          data: { success: true, url, timestamp: Date.now() },
+          timestamp: Date.now(),
+        };
       } catch (e: any) {
-        return { success: false, error: `Replace navigation failed: ${e.message}`, timestamp: Date.now() };
+        return {
+          success: false,
+          error: `Replace navigation failed: ${e.message}`,
+          timestamp: Date.now(),
+        };
       }
     };
 
@@ -298,19 +322,35 @@ export class NativeUIBridgeServer {
       }
       try {
         provider.back();
-        return { success: true, data: { success: true, timestamp: Date.now() }, timestamp: Date.now() };
+        return {
+          success: true,
+          data: { success: true, timestamp: Date.now() },
+          timestamp: Date.now(),
+        };
       } catch (e: any) {
-        return { success: false, error: `Back navigation failed: ${e.message}`, timestamp: Date.now() };
+        return {
+          success: false,
+          error: `Back navigation failed: ${e.message}`,
+          timestamp: Date.now(),
+        };
       }
     };
 
     this.handlers.pageRefresh = async (): Promise<APIResponse<PageNavigationResponse>> => {
       if (!provider.refresh) {
-        return { success: false, error: 'Page refresh not supported by navigation provider', timestamp: Date.now() };
+        return {
+          success: false,
+          error: 'Page refresh not supported by navigation provider',
+          timestamp: Date.now(),
+        };
       }
       try {
         provider.refresh();
-        return { success: true, data: { success: true, timestamp: Date.now() }, timestamp: Date.now() };
+        return {
+          success: true,
+          data: { success: true, timestamp: Date.now() },
+          timestamp: Date.now(),
+        };
       } catch (e: any) {
         return { success: false, error: `Refresh failed: ${e.message}`, timestamp: Date.now() };
       }
@@ -352,7 +392,7 @@ export class NativeUIBridgeServer {
           currentRoute: provider.getCurrentRoute(),
           segments: provider.getSegments?.(),
         },
-        { visibleOnly, currentRouteOnly },
+        { visibleOnly, currentRouteOnly }
       );
       return { success: true, data: snapshot, timestamp: Date.now() };
     };
@@ -370,9 +410,10 @@ export class NativeUIBridgeServer {
           provider.capture(),
           new Promise<never>((_, reject) =>
             setTimeout(
-              () => reject(new Error(`Screenshot capture timed out after ${SCREENSHOT_TIMEOUT_MS}ms`)),
-              SCREENSHOT_TIMEOUT_MS,
-            ),
+              () =>
+                reject(new Error(`Screenshot capture timed out after ${SCREENSHOT_TIMEOUT_MS}ms`)),
+              SCREENSHOT_TIMEOUT_MS
+            )
           ),
         ]);
         return {
@@ -540,9 +581,7 @@ export class NativeUIBridgeServer {
 
     // events/history — replay recent events matching optional filter
     if (method === 'events/history') {
-      const eventsFilter = Array.isArray(params.events)
-        ? (params.events as string[])
-        : undefined;
+      const eventsFilter = Array.isArray(params.events) ? (params.events as string[]) : undefined;
       const since = typeof params.since === 'number' ? params.since : undefined;
       const limit = typeof params.limit === 'number' ? params.limit : undefined;
       const history = this.eventBridge?.getHistory({ events: eventsFilter, since }) ?? [];

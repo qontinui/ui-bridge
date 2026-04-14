@@ -274,7 +274,12 @@ export interface UIBridgeServerHandlers {
     limit?: number;
     group?: boolean;
     groupBy?: 'fingerprint' | 'message' | 'source';
-  }) => Promise<APIResponse<{ errors: CapturedError[]; count: number } | { groups: unknown[]; totalErrors: number; totalGroups: number }>>;
+  }) => Promise<
+    APIResponse<
+      | { errors: CapturedError[]; count: number }
+      | { groups: unknown[]; totalErrors: number; totalGroups: number }
+    >
+  >;
   clearConsoleErrors: () => Promise<APIResponse<{ cleared: boolean }>>;
 
   // AI-native endpoints
@@ -474,7 +479,14 @@ export interface UIBridgeServerHandlers {
   setViewportConstraints: (request: {
     width?: number;
     restore?: boolean;
-  }) => Promise<APIResponse<{ success: boolean; viewportWidth: number; constrainedWidth: number; timestamp: number }>>;
+  }) => Promise<
+    APIResponse<{
+      success: boolean;
+      viewportWidth: number;
+      constrainedWidth: number;
+      timestamp: number;
+    }>
+  >;
   runDesignAudit: (request?: {
     guide?: StyleGuideConfig;
     elementIds?: string[];

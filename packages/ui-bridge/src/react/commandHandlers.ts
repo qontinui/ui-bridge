@@ -6,7 +6,12 @@
  * and DOM APIs to fulfill server-side relay requests.
  */
 
-import type { RegisteredElement, ElementAssertionSpec, ElementAssertionFailure, ElementAssertionResult } from '../core/types';
+import type {
+  RegisteredElement,
+  ElementAssertionSpec,
+  ElementAssertionFailure,
+  ElementAssertionResult,
+} from '../core/types';
 import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
@@ -2077,7 +2082,6 @@ export async function executeCommand(
         return { success: false, error: 'expression is required', timestamp: Date.now() };
       }
       try {
-         
         const evalResult = await Promise.resolve(eval(evalExpr));
         // Ensure the result is JSON-serializable (eval can return DOM nodes, functions, etc.)
         let safeValue: unknown;
@@ -2193,13 +2197,17 @@ export async function executeCommand(
               () => {
                 try {
                   document.body.removeChild(btn);
-                } catch { /* element may already be removed */ }
+                } catch {
+                  /* element may already be removed */
+                }
                 resolve(true);
               },
               () => {
                 try {
                   document.body.removeChild(btn);
-                } catch { /* element may already be removed */ }
+                } catch {
+                  /* element may already be removed */
+                }
                 resolve(false);
               }
             );
@@ -2210,7 +2218,9 @@ export async function executeCommand(
           setTimeout(() => {
             try {
               document.body.removeChild(btn);
-            } catch { /* element may already be removed */ }
+            } catch {
+              /* element may already be removed */
+            }
             resolve(false);
           }, 500);
         });
@@ -2431,7 +2441,12 @@ export async function executeCommand(
     // ======================================================================
 
     case 'getConsoleErrors': {
-      const { limit = 50, since, group = false, groupBy = 'fingerprint' } = payload as {
+      const {
+        limit = 50,
+        since,
+        group = false,
+        groupBy = 'fingerprint',
+      } = payload as {
         limit?: number;
         since?: number;
         group?: boolean;
@@ -2451,15 +2466,17 @@ export async function executeCommand(
       }
 
       // Grouped mode: aggregate errors by the chosen groupBy strategy
-      const rawEvents = (since
-        ? cap.getSince(since).filter((e: unknown) => {
-            const ev = e as AnyCapturedEvent;
-            return ev.type === 'console' || ev.type === 'hmr';
-          })
-        : cap.getRecent(limit * 10).filter((e: unknown) => {
-            const ev = e as AnyCapturedEvent;
-            return ev.type === 'console' || ev.type === 'hmr';
-          })) as AnyCapturedEvent[];
+      const rawEvents = (
+        since
+          ? cap.getSince(since).filter((e: unknown) => {
+              const ev = e as AnyCapturedEvent;
+              return ev.type === 'console' || ev.type === 'hmr';
+            })
+          : cap.getRecent(limit * 10).filter((e: unknown) => {
+              const ev = e as AnyCapturedEvent;
+              return ev.type === 'console' || ev.type === 'hmr';
+            })
+      ) as AnyCapturedEvent[];
 
       const groupMap = new Map<
         string,
@@ -3262,7 +3279,12 @@ export async function executeCommand(
       if (spec.visible !== undefined) {
         checked++;
         if (state.visible !== spec.visible) {
-          failures.push({ field: 'visible', expected: spec.visible, actual: state.visible, kind: 'exact' });
+          failures.push({
+            field: 'visible',
+            expected: spec.visible,
+            actual: state.visible,
+            kind: 'exact',
+          });
         }
       }
 
@@ -3270,7 +3292,12 @@ export async function executeCommand(
       if (spec.enabled !== undefined) {
         checked++;
         if (state.enabled !== spec.enabled) {
-          failures.push({ field: 'enabled', expected: spec.enabled, actual: state.enabled, kind: 'exact' });
+          failures.push({
+            field: 'enabled',
+            expected: spec.enabled,
+            actual: state.enabled,
+            kind: 'exact',
+          });
         }
       }
 
@@ -3278,7 +3305,12 @@ export async function executeCommand(
       if (spec.focused !== undefined) {
         checked++;
         if (state.focused !== spec.focused) {
-          failures.push({ field: 'focused', expected: spec.focused, actual: state.focused, kind: 'exact' });
+          failures.push({
+            field: 'focused',
+            expected: spec.focused,
+            actual: state.focused,
+            kind: 'exact',
+          });
         }
       }
 
@@ -3296,7 +3328,12 @@ export async function executeCommand(
         checked++;
         const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
         if (!actualText.includes(spec.textContains)) {
-          failures.push({ field: 'textContains', expected: spec.textContains, actual: actualText, kind: 'contains' });
+          failures.push({
+            field: 'textContains',
+            expected: spec.textContains,
+            actual: actualText,
+            kind: 'contains',
+          });
         }
       }
 
@@ -3305,14 +3342,25 @@ export async function executeCommand(
         checked++;
         const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
         // Safety: cap pattern length to prevent ReDoS
-        const pattern = spec.textMatches.length > 500 ? spec.textMatches.slice(0, 500) : spec.textMatches;
+        const pattern =
+          spec.textMatches.length > 500 ? spec.textMatches.slice(0, 500) : spec.textMatches;
         try {
           const re = new RegExp(pattern);
           if (!re.test(actualText)) {
-            failures.push({ field: 'textMatches', expected: spec.textMatches, actual: actualText, kind: 'regex' });
+            failures.push({
+              field: 'textMatches',
+              expected: spec.textMatches,
+              actual: actualText,
+              kind: 'regex',
+            });
           }
         } catch {
-          failures.push({ field: 'textMatches', expected: spec.textMatches, actual: 'INVALID_REGEX', kind: 'error' });
+          failures.push({
+            field: 'textMatches',
+            expected: spec.textMatches,
+            actual: 'INVALID_REGEX',
+            kind: 'error',
+          });
         }
       }
 
@@ -3321,7 +3369,12 @@ export async function executeCommand(
         checked++;
         const actualValue = state.value ?? '';
         if (actualValue !== spec.value) {
-          failures.push({ field: 'value', expected: spec.value, actual: actualValue, kind: 'exact' });
+          failures.push({
+            field: 'value',
+            expected: spec.value,
+            actual: actualValue,
+            kind: 'exact',
+          });
         }
       }
 
@@ -3329,7 +3382,12 @@ export async function executeCommand(
       if (spec.checked !== undefined) {
         checked++;
         if (state.checked !== spec.checked) {
-          failures.push({ field: 'checked', expected: spec.checked, actual: state.checked, kind: 'exact' });
+          failures.push({
+            field: 'checked',
+            expected: spec.checked,
+            actual: state.checked,
+            kind: 'exact',
+          });
         }
       }
 
@@ -3356,7 +3414,12 @@ export async function executeCommand(
           for (const cls of spec.classList.has) {
             checked++;
             if (!classes.includes(cls)) {
-              failures.push({ field: `classList.has`, expected: cls, actual: classes.join(' '), kind: 'contains' });
+              failures.push({
+                field: `classList.has`,
+                expected: cls,
+                actual: classes.join(' '),
+                kind: 'contains',
+              });
             }
           }
         }
@@ -3364,7 +3427,12 @@ export async function executeCommand(
           for (const cls of spec.classList.missing) {
             checked++;
             if (classes.includes(cls)) {
-              failures.push({ field: `classList.missing`, expected: `not ${cls}`, actual: classes.join(' '), kind: 'absent' });
+              failures.push({
+                field: `classList.missing`,
+                expected: `not ${cls}`,
+                actual: classes.join(' '),
+                kind: 'absent',
+              });
             }
           }
         }
@@ -3376,25 +3444,45 @@ export async function executeCommand(
         if (bb.minWidth !== undefined) {
           checked++;
           if (state.rect.width < bb.minWidth) {
-            failures.push({ field: 'boundingBox.minWidth', expected: bb.minWidth, actual: state.rect.width, kind: 'min' });
+            failures.push({
+              field: 'boundingBox.minWidth',
+              expected: bb.minWidth,
+              actual: state.rect.width,
+              kind: 'min',
+            });
           }
         }
         if (bb.maxWidth !== undefined) {
           checked++;
           if (state.rect.width > bb.maxWidth) {
-            failures.push({ field: 'boundingBox.maxWidth', expected: bb.maxWidth, actual: state.rect.width, kind: 'max' });
+            failures.push({
+              field: 'boundingBox.maxWidth',
+              expected: bb.maxWidth,
+              actual: state.rect.width,
+              kind: 'max',
+            });
           }
         }
         if (bb.minHeight !== undefined) {
           checked++;
           if (state.rect.height < bb.minHeight) {
-            failures.push({ field: 'boundingBox.minHeight', expected: bb.minHeight, actual: state.rect.height, kind: 'min' });
+            failures.push({
+              field: 'boundingBox.minHeight',
+              expected: bb.minHeight,
+              actual: state.rect.height,
+              kind: 'min',
+            });
           }
         }
         if (bb.maxHeight !== undefined) {
           checked++;
           if (state.rect.height > bb.maxHeight) {
-            failures.push({ field: 'boundingBox.maxHeight', expected: bb.maxHeight, actual: state.rect.height, kind: 'max' });
+            failures.push({
+              field: 'boundingBox.maxHeight',
+              expected: bb.maxHeight,
+              actual: state.rect.height,
+              kind: 'max',
+            });
           }
         }
       }

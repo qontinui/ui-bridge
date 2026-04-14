@@ -478,7 +478,10 @@ export class UIBridgeRegistry {
   private activeStates = new Set<string>();
 
   // Recently removed elements for remount ID preservation
-  private recentlyRemoved = new Map<string, { id: string; fingerprint: string; removedAt: number }>();
+  private recentlyRemoved = new Map<
+    string,
+    { id: string; fingerprint: string; removedAt: number }
+  >();
 
   // External store pattern for useSyncExternalStore
   private storeVersion = 0;

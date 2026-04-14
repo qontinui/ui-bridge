@@ -34,7 +34,7 @@ export interface ElementSettlingResult {
  */
 export function waitForElementStable(
   element: HTMLElement,
-  options?: ElementSettlingOptions,
+  options?: ElementSettlingOptions
 ): Promise<ElementSettlingResult> {
   const quietMs = options?.quietMs ?? 500;
   const timeout = options?.timeout ?? 5000;
@@ -69,16 +69,19 @@ export function waitForElementStable(
     // ---- Quiet-period check ----
     function scheduleQuietCheck(): void {
       if (quietCheckId !== null) clearTimeout(quietCheckId);
-      quietCheckId = setTimeout(() => {
-        const elapsed = Date.now() - lastActivityAt;
-        if (elapsed >= quietMs) {
-          cleanup();
-          resolve({ stable: true, elapsed: Date.now() - startTime });
-        } else {
-          // Not quite there yet — reschedule for the remainder.
-          scheduleQuietCheck();
-        }
-      }, quietMs - (Date.now() - lastActivityAt) + 1);
+      quietCheckId = setTimeout(
+        () => {
+          const elapsed = Date.now() - lastActivityAt;
+          if (elapsed >= quietMs) {
+            cleanup();
+            resolve({ stable: true, elapsed: Date.now() - startTime });
+          } else {
+            // Not quite there yet — reschedule for the remainder.
+            scheduleQuietCheck();
+          }
+        },
+        quietMs - (Date.now() - lastActivityAt) + 1
+      );
     }
 
     // ---- MutationObserver ----

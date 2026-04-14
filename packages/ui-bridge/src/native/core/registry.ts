@@ -452,7 +452,7 @@ export class NativeUIBridgeRegistry {
     let totalInteractiveInDOM = 0;
     try {
       totalInteractiveInDOM = document.querySelectorAll(
-        'button, input, select, textarea, a[href], [role="button"], [role="tab"], [role="link"], [role="checkbox"], [role="switch"], [role="menuitem"]',
+        'button, input, select, textarea, a[href], [role="button"], [role="tab"], [role="link"], [role="checkbox"], [role="switch"], [role="menuitem"]'
       ).length;
     } catch {
       // querySelectorAll can fail in non-browser contexts (SSR, tests)

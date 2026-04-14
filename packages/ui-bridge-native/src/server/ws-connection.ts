@@ -26,10 +26,7 @@ import { globToRegex } from './ws-event-bridge';
  * Callback for text messages received from the client.
  * Returns a response string to send back, or null for no response.
  */
-export type WebSocketMessageHandler = (
-  connId: string,
-  message: string
-) => Promise<string | null>;
+export type WebSocketMessageHandler = (connId: string, message: string) => Promise<string | null>;
 
 export class WebSocketConnection {
   readonly id: string;

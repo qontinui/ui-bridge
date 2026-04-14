@@ -54,8 +54,7 @@ const RECONNECT_MAX_DELAY_MS = 60_000;
  * registers with the qontinui.io cloud relay for remote discovery.
  */
 export class DeviceAnnouncer {
-  private config: Required<Pick<AnnouncerConfig, 'deviceId' | 'appId'>> &
-    AnnouncerConfig;
+  private config: Required<Pick<AnnouncerConfig, 'deviceId' | 'appId'>> & AnnouncerConfig;
   private state: DeviceAnnouncerState = {
     mdnsActive: false,
     cloudConnected: false,
@@ -92,19 +91,12 @@ export class DeviceAnnouncer {
       const port = this.config.port ?? DEFAULT_PORT;
       const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
 
-      this.zeroconf.publishService(
-        '_uibridge',
-        '_tcp.',
-        'local.',
-        serviceName,
-        port,
-        {
-          device_id: this.config.deviceId,
-          app_id: this.config.appId,
-          version: this.config.version ?? 'unknown',
-          pairing_token: this.pairingToken,
-        }
-      );
+      this.zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
+        device_id: this.config.deviceId,
+        app_id: this.config.appId,
+        version: this.config.version ?? 'unknown',
+        pairing_token: this.pairingToken,
+      });
 
       this.state = { ...this.state, mdnsActive: true };
       console.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
@@ -130,9 +122,7 @@ export class DeviceAnnouncer {
     }
     if (this.stopped) return;
 
-    const url = `${this.config.cloudRelayUrl}?token=${encodeURIComponent(
-      this.config.cloudToken
-    )}`;
+    const url = `${this.config.cloudRelayUrl}?token=${encodeURIComponent(this.config.cloudToken)}`;
 
     console.log('[DeviceAnnouncer] Cloud relay: connecting to', url);
 

@@ -532,11 +532,9 @@ export class NativeUIBridgeRegistry {
       currentRoute?: string | null;
       segments?: string[];
     },
-    options?: { visibleOnly?: boolean; currentRouteOnly?: boolean },
+    options?: { visibleOnly?: boolean; currentRouteOnly?: boolean }
   ): NativeBridgeSnapshot {
-    let elements = options?.visibleOnly
-      ? this.getVisibleElements()
-      : this.getAllElements();
+    let elements = options?.visibleOnly ? this.getVisibleElements() : this.getAllElements();
 
     // Filter to only elements registered on the current route
     if (options?.currentRouteOnly && routeInfo?.currentRoute) {

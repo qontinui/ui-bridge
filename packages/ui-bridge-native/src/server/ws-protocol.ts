@@ -67,7 +67,11 @@ function sha1Bytes(input: Uint8Array): Uint8Array {
       w[i] = (x << 1) | (x >>> 31);
     }
 
-    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    let a = h0,
+      b = h1,
+      c = h2,
+      d = h3,
+      e = h4;
 
     for (let i = 0; i < 80; i++) {
       let f: number, k: number;

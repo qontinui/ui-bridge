@@ -93,9 +93,7 @@ export class CloudRelayClient {
   private connect(): void {
     if (this.stopped) return;
 
-    const url = `${this.config.relayUrl}?token=${encodeURIComponent(
-      this.config.authToken
-    )}`;
+    const url = `${this.config.relayUrl}?token=${encodeURIComponent(this.config.authToken)}`;
 
     console.log('[CloudRelayClient] Connecting to', url);
 

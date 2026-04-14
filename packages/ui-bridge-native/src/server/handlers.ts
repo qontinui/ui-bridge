@@ -279,11 +279,11 @@ export function createServerHandlers(
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
-      const forRoute = (ctx.query?.route || (ctx.body as Record<string, unknown>)?.route) as string | undefined;
+      const forRoute = (ctx.query?.route || (ctx.body as Record<string, unknown>)?.route) as
+        | string
+        | undefined;
 
-      let allElements = visibleOnly
-        ? registry.getVisibleElements()
-        : registry.getAllElements();
+      let allElements = visibleOnly ? registry.getVisibleElements() : registry.getAllElements();
 
       // Filter by specific route (injected by setRouteProvider override when currentRouteOnly is set)
       if (forRoute) {
@@ -551,7 +551,10 @@ export function createServerHandlers(
 
     // Screenshot (stub — apps should override with their screen capture library)
     getScreenshot: async () => {
-      return error('Screenshot not supported. Provide a screenshotProvider to UIBridgeNativeProvider.', 'NOT_SUPPORTED');
+      return error(
+        'Screenshot not supported. Provide a screenshotProvider to UIBridgeNativeProvider.',
+        'NOT_SUPPORTED'
+      );
     },
 
     // Meta / Introspection (stub — server constructor overrides with real route table)
