@@ -115,6 +115,9 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processCommandRef = useRef<(command: QueuedCommand) => void>(() => {});
+  // Exposes a force-reconnect function that the heartbeat loop can call when
+  // the server reports our tabId is no longer registered (silent SSE drop).
+  const forceReconnectRef = useRef<() => void>(() => {});
 
   // Stable per-tab identifier, persisted across re-renders but unique per browser tab
   const tabIdRef = useRef<string | null>(null);
@@ -272,8 +275,23 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     connect();
     document.addEventListener('visibilitychange', handleVisibility);
 
+    // Publish a force-reconnect hook callable by the heartbeat recovery loop
+    forceReconnectRef.current = () => {
+      if (!isMounted) return;
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      connect();
+    };
+
     return () => {
       isMounted = false;
+      forceReconnectRef.current = () => {};
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -313,19 +331,13 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
               data?.data?.tabRegistered ??
               null;
             if (tabRegistered === false) {
-              const es = eventSourceRef.current;
-              if (!es || es.readyState === 2 /* CLOSED */) {
-                // Force a reconnect by bumping a trigger state. Simpler:
-                // just dispatch a synthetic error on the existing SSE so
-                // the existing onerror handler reconnects for us.
-                if (es) {
-                  es.close();
-                }
-                eventSourceRef.current = null;
-                // Fire a visibility event to trigger the existing reconnect
-                // path (which already clears any pending reconnect timeout).
-                document.dispatchEvent(new Event('visibilitychange'));
-              }
+              // Server lost our registration. Force a full reconnect
+              // regardless of the EventSource's local readyState — the SSE
+              // may appear open locally while the server-side stream has
+              // already been reaped (e.g. after a client-side navigation
+              // that ran strict-mode double-effects or after a proxy
+              // dropped the idle connection).
+              forceReconnectRef.current();
             }
           } catch {
             /* older server — no recovery payload */
