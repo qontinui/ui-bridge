@@ -36,6 +36,7 @@ import {
   findElementBySelector,
   findElementByLabel,
 } from './dom-fallback';
+import { matchesElementSelector, type MatchableElement } from './selector-match';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
@@ -398,6 +399,33 @@ export interface CreateHandlersConfig {
    * If not provided, falls back to window.location navigation.
    */
   navigationAdapter?: NavigationAdapter;
+}
+
+/**
+ * Add `path` to each action and `actionInvocationPath` to the component itself
+ * so callers can discover how to invoke actions without reading docs or
+ * reverse-engineering the route. The path uses `{actionId}` as a placeholder
+ * at the component level and a concrete URL per action.
+ */
+function annotateComponentWithInvocationPaths(comp: unknown): Record<string, unknown> {
+  const c = (comp ?? {}) as { id?: string; actions?: unknown[]; [k: string]: unknown };
+  const id = typeof c.id === 'string' ? c.id : '';
+  const rawActions = Array.isArray(c.actions) ? c.actions : [];
+  const annotatedActions = rawActions.map((a) => {
+    if (a && typeof a === 'object' && 'id' in a) {
+      const action = a as { id: string; [k: string]: unknown };
+      return {
+        ...action,
+        path: `/control/component/${id}/action/${action.id}`,
+      };
+    }
+    return a;
+  });
+  return {
+    ...c,
+    actions: annotatedActions,
+    actionInvocationPath: `/control/component/${id}/action/{actionId}`,
+  };
 }
 
 /**
@@ -1158,32 +1186,17 @@ export function createHandlers(
         const elements = registry.getAllElements();
         let materialized = materializeElements(elements);
 
-        // Apply case-insensitive substring filters when query params are present.
-        // materializeElements already captured ariaLabel and title from the live DOM,
-        // so we use those fields here rather than doing a second getAttribute() pass.
-        const titleNeedle = options?.title?.toLowerCase();
-        const ariaLabelNeedle = options?.aria_label?.toLowerCase();
-        const textNeedle = options?.text?.toLowerCase();
-
-        if (titleNeedle || ariaLabelNeedle || textNeedle) {
-          materialized = materialized.filter((el) => {
-            const elAny = el as Record<string, unknown>;
-            if (titleNeedle) {
-              const t = ((elAny['title'] as string | undefined) ?? '').toLowerCase();
-              if (!t.includes(titleNeedle)) return false;
-            }
-            if (ariaLabelNeedle) {
-              const a = ((elAny['ariaLabel'] as string | undefined) ?? '').toLowerCase();
-              if (!a.includes(ariaLabelNeedle)) return false;
-            }
-            if (textNeedle) {
-              const label = (el.label ?? '').toLowerCase();
-              if (!label.includes(textNeedle) && !el.id.toLowerCase().includes(textNeedle)) {
-                return false;
-              }
-            }
-            return true;
-          });
+        // Apply case-insensitive substring filters via the shared matcher
+        // (uses the accessible-name fallback chain so callers see consistent
+        // results across getElements / waitForElementByCondition / relay).
+        if (options?.title || options?.aria_label || options?.text) {
+          materialized = materialized.filter((el) =>
+            matchesElementSelector(el as unknown as MatchableElement, {
+              title: options?.title,
+              aria_label: options?.aria_label,
+              text: options?.text,
+            })
+          );
         }
 
         return success(materialized);
@@ -1511,7 +1524,7 @@ export function createHandlers(
 
     getComponents: async (): Promise<APIResponse<ControlSnapshot['components']>> => {
       try {
-        const components = registry.getAllComponents();
+        const components = registry.getAllComponents().map(annotateComponentWithInvocationPaths);
         return success(components as ControlSnapshot['components']);
       } catch (err) {
         return error((err as Error).message, 'COMPONENTS_ERROR');
@@ -1524,7 +1537,9 @@ export function createHandlers(
         if (!component) {
           return error(`Component not found: ${id}`, 'NOT_FOUND');
         }
-        return success(component as ControlSnapshot['components'][0]);
+        return success(
+          annotateComponentWithInvocationPaths(component) as ControlSnapshot['components'][0]
+        );
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ERROR');
       }
@@ -5575,46 +5590,22 @@ export function createHandlers(
        *   - selector.text      → el.label OR el.id (same as relay)
        */
       function matchesSelector(el: Record<string, unknown>): boolean {
-        if (selector.id) {
-          const elId = typeof el.id === 'string' ? el.id : '';
-          if (elId !== selector.id) return false;
-        }
+        // Type selector falls back to tagName here (live DOM) since elements
+        // may have either field; the shared helper only checks `type`.
         if (selector.type) {
           const elType = (typeof el.type === 'string' ? el.type : '').toLowerCase();
           const elTag = (typeof el.tagName === 'string' ? el.tagName : '').toLowerCase();
           const needle = selector.type.toLowerCase();
           if (!elType.includes(needle) && !elTag.includes(needle)) return false;
         }
-        if (selector.title) {
-          // Mirror relay-handlers: title needle is matched against the accessible name
-          // chain (ariaLabel → title → label) because el.title may be empty even when
-          // the element is clearly identifiable by its label/aria-label.
-          const needle = selector.title.toLowerCase();
-          const elTitle = (typeof el.title === 'string' ? el.title : '').toLowerCase();
-          const elAriaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
-          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
-          if (
-            !elTitle.includes(needle) &&
-            !elAriaLabel.includes(needle) &&
-            !elLabel.includes(needle)
-          )
-            return false;
-        }
-        if (selector.aria_label) {
-          // Also fall back to el.label so aria-label selectors work on elements where
-          // the aria-label was already folded into the label accessible name.
-          const needle = selector.aria_label.toLowerCase();
-          const elAriaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
-          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
-          if (!elAriaLabel.includes(needle) && !elLabel.includes(needle)) return false;
-        }
-        if (selector.text) {
-          const elLabel = (typeof el.label === 'string' ? el.label : '').toLowerCase();
-          const elId = (typeof el.id === 'string' ? el.id : '').toLowerCase();
-          const needle = selector.text.toLowerCase();
-          if (!elLabel.includes(needle) && !elId.includes(needle)) return false;
-        }
-        return true;
+        // Delegate id/title/aria_label/text to the shared matcher so this stays
+        // in lockstep with getElements / relay-handlers.
+        return matchesElementSelector(el as unknown as MatchableElement, {
+          id: selector.id,
+          title: selector.title,
+          aria_label: selector.aria_label,
+          text: selector.text,
+        });
       }
 
       /**

@@ -23,6 +23,7 @@ import type {
   ComponentActionRequest,
   FindResponse,
 } from '../control';
+import { matchesElementSelector, type MatchableElement } from './selector-match';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
@@ -436,24 +437,17 @@ export function createRelayHandlers(
 
       let elements = latestControlSnapshot.elements;
 
-      // Apply case-insensitive substring filters from query params.
-      // The relay works against the cached snapshot (no live DOM access), so
-      // title and aria_label fall back to checking the label field which already
-      // encodes accessible name (aria-label → title → text content precedence).
-      if (options?.text) {
-        const needle = (options.text as string).toLowerCase();
-        elements = elements.filter(
-          (el) =>
-            (el.label ?? '').toLowerCase().includes(needle) || el.id.toLowerCase().includes(needle)
+      // Apply substring filters via the shared matcher. The relay works
+      // against the cached snapshot (no live DOM), so the matcher's
+      // accessible-name fallback chain (label → id) is what actually fires here.
+      if (options?.title || options?.aria_label || options?.text) {
+        elements = elements.filter((el) =>
+          matchesElementSelector(el as unknown as MatchableElement, {
+            title: options?.title as string | undefined,
+            aria_label: options?.aria_label as string | undefined,
+            text: options?.text as string | undefined,
+          })
         );
-      }
-      if (options?.aria_label) {
-        const needle = (options.aria_label as string).toLowerCase();
-        elements = elements.filter((el) => (el.label ?? '').toLowerCase().includes(needle));
-      }
-      if (options?.title) {
-        const needle = (options.title as string).toLowerCase();
-        elements = elements.filter((el) => (el.label ?? '').toLowerCase().includes(needle));
       }
 
       return success(elements, _meta);

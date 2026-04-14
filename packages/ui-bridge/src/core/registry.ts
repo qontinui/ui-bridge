@@ -487,6 +487,7 @@ export class UIBridgeRegistry {
   private storeVersion = 0;
   private storeListeners = new Set<() => void>();
   private cachedSnapshot: RegistrySnapshot | null = null;
+  private notifyScheduled = false;
 
   constructor(options: RegistryOptions = {}) {
     this.options = options;
@@ -522,9 +523,20 @@ export class UIBridgeRegistry {
   private notifyStoreListeners(): void {
     this.storeVersion++;
     this.cachedSnapshot = null;
-    for (const listener of this.storeListeners) {
-      listener();
-    }
+    // Defer listener invocation to a microtask so a burst of
+    // register/unregister calls during a React commit phase only wakes
+    // subscribers once, after commit. Calling listeners synchronously from
+    // within a ref callback causes useSyncExternalStore consumers to
+    // re-render mid-commit, which can cascade into React error #185
+    // (maximum update depth exceeded).
+    if (this.notifyScheduled) return;
+    this.notifyScheduled = true;
+    queueMicrotask(() => {
+      this.notifyScheduled = false;
+      for (const listener of this.storeListeners) {
+        listener();
+      }
+    });
   }
 
   /**
@@ -1634,6 +1646,9 @@ export class UIBridgeRegistry {
         name: comp.name,
         description: comp.description,
         actions: comp.actions.map((a) => a.id),
+        // Tell the caller exactly how to invoke any action on this component
+        // without having to grep docs or guess the route shape.
+        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
         elementIds: comp.elementIds,
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
@@ -1686,6 +1701,9 @@ export class UIBridgeRegistry {
         name: comp.name,
         description: comp.description,
         actions: comp.actions.map((a) => a.id),
+        // Tell the caller exactly how to invoke any action on this component
+        // without having to grep docs or guess the route shape.
+        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
         elementIds: comp.elementIds,
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
