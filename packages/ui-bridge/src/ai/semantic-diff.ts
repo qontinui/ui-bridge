@@ -244,7 +244,12 @@ function formatValue(value: unknown): string {
     return value;
   }
   if (typeof value === 'object') {
-    return JSON.stringify(value);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      // Circular references (e.g. DOM elements with React Fiber nodes)
+      return '[object]';
+    }
   }
   return String(value);
 }
