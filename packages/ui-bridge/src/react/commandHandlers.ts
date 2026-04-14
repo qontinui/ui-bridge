@@ -2016,7 +2016,7 @@ export async function executeCommand(
       return { success: true, timestamp: Date.now() };
 
     case 'pageNavigate': {
-      const { url } = payload as { url: string };
+      const { url, hard } = payload as { url: string; hard?: boolean };
       // Reject dangerous URL protocols that can execute JS or break the SSE relay.
       // Only allow http:, https:, and relative paths starting with "/".
       try {
@@ -2048,24 +2048,29 @@ export async function executeCommand(
         }
       }
       const g = getBridge();
-      // Use client-side navigation for same-origin URLs when a handler is registered
-      // (e.g., Next.js router.push). This avoids destroying the SSE/WebSocket connection.
-      try {
-        const target = new URL(url, window.location.origin);
-        if (target.origin === window.location.origin && g.navigateHandler) {
-          g.navigateHandler(target.pathname + target.search + target.hash);
-          return {
-            success: true,
-            url: target.pathname,
-            clientSideNavigation: true,
-            timestamp: Date.now(),
-          };
+      // Use client-side navigation for same-origin URLs when a handler is
+      // registered (e.g., Next.js router.push). This avoids destroying the
+      // SSE/WebSocket connection. Callers that need a full, SDK-reinitialising
+      // reload (e.g. automation capture loops hitting pages that unmount the
+      // UI Bridge provider tree) can pass `hard: true` to bypass the handler.
+      if (!hard) {
+        try {
+          const target = new URL(url, window.location.origin);
+          if (target.origin === window.location.origin && g.navigateHandler) {
+            g.navigateHandler(target.pathname + target.search + target.hash);
+            return {
+              success: true,
+              url: target.pathname,
+              clientSideNavigation: true,
+              timestamp: Date.now(),
+            };
+          }
+        } catch {
+          // Invalid URL — fall through to hard navigation
         }
-      } catch {
-        // Invalid URL — fall through to hard navigation
       }
       window.location.href = url;
-      return { success: true, url, timestamp: Date.now() };
+      return { success: true, url, timestamp: Date.now(), hard: true };
     }
 
     case 'pageGoBack':
