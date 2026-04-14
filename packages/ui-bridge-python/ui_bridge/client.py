@@ -1058,6 +1058,28 @@ class UIBridgeClient:
         self._request("POST", f"/debug/highlight/{element_id}")
 
     # ==========================================================================
+    # Page navigation
+    # ==========================================================================
+
+    def page_navigate(self, url: str, *, hard: bool = False) -> dict[str, Any]:
+        """Navigate the connected browser tab to *url*.
+
+        Args:
+            url: Target URL (absolute http(s) or relative path starting with "/").
+            hard: If True, bypasses any registered client-side navigation
+                handler (e.g. Next.js `router.push`) and performs a full
+                `window.location.href` reload.  Use this in automation loops
+                hitting pages that unmount the UI Bridge provider tree —
+                the full reload re-initialises the SDK cleanly.
+        """
+        body: dict[str, Any] = {"url": url, "hard": hard}
+        return self._request("POST", "/control/page/navigate", json=body)
+
+    def page_refresh(self) -> dict[str, Any]:
+        """Refresh the connected browser tab."""
+        return self._request("POST", "/control/page/refresh")
+
+    # ==========================================================================
     # Health
     # ==========================================================================
 

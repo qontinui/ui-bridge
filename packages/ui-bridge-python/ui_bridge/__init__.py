@@ -59,6 +59,11 @@ from .ai_types import (
 )
 from .async_ai import AsyncAIClient
 from .async_client import AsyncUIBridgeClient
+from .capture_host import (
+    CaptureHostBootstrapError,
+    CaptureHostDriver,
+    CaptureHostIds,
+)
 from .client import UIBridgeClient
 
 # Logging
@@ -266,6 +271,10 @@ __all__ = [
     "RecoveryExecutorResult",
     "RecoveryStrategyResult",
     "StrategyStatus",
+    # Capture-host pattern
+    "CaptureHostDriver",
+    "CaptureHostIds",
+    "CaptureHostBootstrapError",
     # Logging
     "UIBridgeLogger",
     "LogEntry",

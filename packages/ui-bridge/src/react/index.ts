@@ -96,3 +96,15 @@ export { useUndoRedo } from './useUndoRedo';
 // Command relay
 export { useCommandRelay, type UseCommandRelayOptions } from './useCommandRelay';
 export { CommandRelayListener, type CommandRelayListenerProps } from './CommandRelayListener';
+
+// Capture-host pattern: stable outer host + iframe + echo input for driving
+// automation loops through pages that would otherwise unmount the SDK.
+export {
+  useUIBridgeEcho,
+  type UseUIBridgeEchoOptions,
+} from './useUIBridgeEcho';
+export {
+  CaptureHostFrame,
+  DEFAULT_CAPTURE_HOST_IDS,
+  type CaptureHostFrameProps,
+} from './CaptureHostFrame';
