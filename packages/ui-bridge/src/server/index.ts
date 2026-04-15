@@ -71,3 +71,10 @@ export {
 
 // Relay handlers
 export { createRelayHandlers, type RelayHandlersOptions } from './relay-handlers';
+
+// Shared selector matcher (single source of truth for element filter queries)
+export {
+  matchesElementSelector,
+  type MatchableElement,
+  type ElementSelector,
+} from './selector-match';

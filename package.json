@@ -18,6 +18,7 @@
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx}\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "smoke-test:runner": "bash scripts/smoke-test-runner.sh",
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
   },
   "devDependencies": {
