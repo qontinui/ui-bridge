@@ -4,7 +4,7 @@
  * Register and execute UI state transitions with UI Bridge.
  */
 
-import { useEffect, useCallback, useMemo, useState } from 'react';
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import type { UITransition, TransitionResult, WorkflowStep } from '../core/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
@@ -82,6 +82,9 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
   const bridge = useUIBridgeOptional();
   const [registered, setRegistered] = useState(false);
   const [canExecute, setCanExecute] = useState(false);
+  // See useUIState — ref-based tracking to avoid a setState feedback loop when
+  // consumers pass inline `fromStates`/`activateStates`/etc. arrays.
+  const registeredRef = useRef(false);
 
   const {
     id,
@@ -97,9 +100,12 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
     autoRegister = true,
   } = options;
 
+  // See useUIState for rationale on capturing id at register time.
+  const registeredTransitionIdRef = useRef<string | null>(null);
+
   // Register the transition
   const register = useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
 
     const transition: UITransition = {
       id,
@@ -115,11 +121,12 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
     };
 
     bridge.registry.registerTransition(transition);
+    registeredRef.current = true;
+    registeredTransitionIdRef.current = id;
     setRegistered(true);
     setCanExecute(bridge.registry.canExecuteTransition(id));
   }, [
     bridge,
-    registered,
     id,
     name,
     fromStates,
@@ -134,25 +141,78 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
 
   // Unregister the transition
   const unregister = useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterTransition(id);
+    bridge.registry.unregisterTransition(registeredTransitionIdRef.current ?? id);
+    registeredRef.current = false;
+    registeredTransitionIdRef.current = null;
     setRegistered(false);
     setCanExecute(false);
-  }, [bridge, registered, id]);
+  }, [bridge, id]);
+
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
 
   // Auto-register on mount
   useEffect(() => {
     if (autoRegister && bridge) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      if (registered) {
-        unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
       }
     };
-  }, [autoRegister, bridge, register, unregister, registered]);
+  }, [autoRegister, bridge]);
+
+  // In-place option sync — see useUIState for rationale. `actions` contains
+  // functions and is not serializable; we mirror it into the stored record
+  // on every sync, without emitting a re-register event.
+  const transitionKey =
+    bridge && registeredRef.current
+      ? JSON.stringify({
+          id,
+          name,
+          fromStates,
+          activateStates,
+          exitStates,
+          activateGroups: activateGroups ?? null,
+          exitGroups: exitGroups ?? null,
+          pathCost: pathCost ?? null,
+          staysVisible: staysVisible ?? null,
+        })
+      : null;
+  useEffect(() => {
+    if (!bridge || !registeredRef.current || transitionKey === null) return;
+    const next: UITransition = {
+      id,
+      name,
+      fromStates,
+      activateStates,
+      exitStates,
+      activateGroups,
+      exitGroups,
+      actions,
+      pathCost,
+      staysVisible,
+    };
+    const registeredTransitionId = registeredTransitionIdRef.current;
+    if (registeredTransitionId === null) return;
+    if (registeredTransitionId !== id) {
+      bridge.registry.unregisterTransition(registeredTransitionId);
+      registeredTransitionIdRef.current = id;
+      bridge.registry.registerTransition(next);
+      return;
+    }
+    bridge.registry.updateTransition(next);
+    // actions intentionally excluded from dep key — see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, transitionKey]);
 
   // Subscribe to state changes to update canExecute
   useEffect(() => {

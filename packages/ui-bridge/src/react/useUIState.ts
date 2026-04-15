@@ -4,7 +4,7 @@
  * Register and manage UI states with UI Bridge.
  */
 
-import { useEffect, useCallback, useMemo, useState } from 'react';
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import type { UIState, UIStateGroup, StateSnapshot } from '../core/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
@@ -91,6 +91,13 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
   const [registered, setRegistered] = useState(false);
   const [isActive, setIsActive] = useState(options.initialActive ?? false);
   const [activeStates, setActiveStates] = useState<string[]>([]);
+  // Authoritative "am I registered?" tracking. Using a ref (not the `registered`
+  // state) breaks a feedback loop: consumers commonly pass inline `activeWhen`,
+  // `metadata`, `elements`, which make `register`/`unregister` identity churn
+  // every render. If the auto-register effect depends on those AND on the
+  // `registered` state it sets, the cleanup/run cycle pings registered
+  // true↔false past React's 50-update ceiling (error #185).
+  const registeredRef = useRef(false);
 
   const {
     id,
@@ -106,9 +113,15 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
     initialActive = false,
   } = options;
 
+  // Authoritative id of the currently-registered state. Captured at register
+  // time (not at sync-effect time) so a prop change between register and the
+  // first sync can't desync the baseline. Also used by `unregister` so we
+  // remove the actually-registered id even if `id` has changed since.
+  const registeredIdRef = useRef<string | null>(null);
+
   // Register the state
   const register = useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
 
     const state: UIState = {
       id,
@@ -123,6 +136,8 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
     };
 
     bridge.registry.registerState(state);
+    registeredRef.current = true;
+    registeredIdRef.current = id;
     setRegistered(true);
 
     // Set initial active state
@@ -135,7 +150,6 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
     setActiveStates(bridge.registry.getActiveStates());
   }, [
     bridge,
-    registered,
     id,
     name,
     elements,
@@ -150,25 +164,98 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
 
   // Unregister the state
   const unregister = useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterState(id);
+    bridge.registry.unregisterState(registeredIdRef.current ?? id);
+    registeredRef.current = false;
+    registeredIdRef.current = null;
     setRegistered(false);
     setIsActive(false);
-  }, [bridge, registered, id]);
+  }, [bridge, id]);
 
-  // Auto-register on mount
+  // Keep latest register/unregister in refs so the auto-register effect does
+  // not re-run on every parent render when consumers pass inline options.
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
+  // Auto-register on mount / bridge-or-autoRegister change
   useEffect(() => {
     if (autoRegister && bridge) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      if (registered) {
-        unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
       }
     };
-  }, [autoRegister, bridge, register, unregister, registered]);
+  }, [autoRegister, bridge]);
+
+  // In-place option sync. When a consumer passes reactive options (dynamic
+  // `name`, `metadata`, `blocking`, etc. on the same mounted instance), we
+  // mirror the changes into the registry without re-emitting
+  // `element:registered` — which would wake every `useSyncExternalStore`
+  // consumer. An `id` change IS treated as a re-registration because the
+  // registry keys by id.
+  //
+  // `activeWhen` is not part of the serialized key (functions aren't
+  // stable); we write the latest closure into the registry copy on every
+  // sync, which is cheap and keeps predicate reads fresh.
+  const optionsKey =
+    bridge && registeredRef.current
+      ? JSON.stringify({
+          id,
+          name,
+          elements,
+          blocking,
+          blocks: blocks ?? null,
+          group: group ?? null,
+          pathCost: pathCost ?? null,
+          metadata: metadata ?? null,
+        })
+      : null;
+  useEffect(() => {
+    if (!bridge || !registeredRef.current || optionsKey === null) return;
+    const registeredId = registeredIdRef.current;
+    // `register()` sets registeredIdRef before this effect ever runs, so
+    // null here means we're racing with an unmount path — bail out.
+    if (registeredId === null) return;
+    if (registeredId !== id) {
+      // Id changed — re-register under the new id.
+      bridge.registry.unregisterState(registeredId);
+      registeredIdRef.current = id;
+      bridge.registry.registerState({
+        id,
+        name,
+        elements,
+        activeWhen,
+        blocking,
+        blocks,
+        group,
+        pathCost,
+        metadata,
+      });
+      return;
+    }
+    bridge.registry.updateState({
+      id,
+      name,
+      elements,
+      activeWhen,
+      blocking,
+      blocks,
+      group,
+      pathCost,
+      metadata,
+    });
+    // activeWhen intentionally excluded from dep key (function identity is
+    // unstable). We still write the latest closure into the registry above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, optionsKey]);
 
   // Subscribe to state changes
   useEffect(() => {
@@ -279,38 +366,70 @@ export interface UseUIStateGroupReturn {
 export function useUIStateGroup(options: UseUIStateGroupOptions): UseUIStateGroupReturn {
   const bridge = useUIBridgeOptional();
   const [registered, setRegistered] = useState(false);
+  // See useUIState above — ref-based tracking to avoid a setState feedback loop
+  // when consumers pass inline `states` arrays.
+  const registeredRef = useRef(false);
 
   const { id, name, states, autoRegister = true } = options;
 
+  // See useUIState for rationale on capturing id at register time.
+  const registeredGroupIdRef = useRef<string | null>(null);
+
   // Register the group
   const register = useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
 
     const group: UIStateGroup = { id, name, states };
     bridge.registry.registerStateGroup(group);
+    registeredRef.current = true;
+    registeredGroupIdRef.current = id;
     setRegistered(true);
-  }, [bridge, registered, id, name, states]);
+  }, [bridge, id, name, states]);
 
   // Unregister the group
   const unregister = useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterStateGroup(id);
+    bridge.registry.unregisterStateGroup(registeredGroupIdRef.current ?? id);
+    registeredRef.current = false;
+    registeredGroupIdRef.current = null;
     setRegistered(false);
-  }, [bridge, registered, id]);
+  }, [bridge, id]);
+
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
 
   // Auto-register on mount
   useEffect(() => {
     if (autoRegister && bridge) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      if (registered) {
-        unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
       }
     };
-  }, [autoRegister, bridge, register, unregister, registered]);
+  }, [autoRegister, bridge]);
+
+  // In-place option sync — see useUIState for rationale.
+  const groupKey = bridge && registeredRef.current ? JSON.stringify({ id, name, states }) : null;
+  useEffect(() => {
+    if (!bridge || !registeredRef.current || groupKey === null) return;
+    const registeredGroupId = registeredGroupIdRef.current;
+    if (registeredGroupId === null) return;
+    if (registeredGroupId !== id) {
+      bridge.registry.unregisterStateGroup(registeredGroupId);
+      registeredGroupIdRef.current = id;
+      bridge.registry.registerStateGroup({ id, name, states });
+      return;
+    }
+    bridge.registry.updateStateGroup({ id, name, states });
+  }, [bridge, groupKey, id, name, states]);
 
   // Activate group
   const activate = useCallback((): string[] => {

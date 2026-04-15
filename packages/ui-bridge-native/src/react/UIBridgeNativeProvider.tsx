@@ -376,31 +376,18 @@ export function UIBridgeNativeProvider({
   // Mark the previous route's elements offscreen when the active route changes.
   // Without this, React Navigation's persistent-mount behavior leaves stale
   // layouts in the registry for tabs the user has left. Elements on the new
-  // route will re-fire `onLayout` and repopulate their layout.
-  //
-  // Prefer the route provider's subscribe() API (zero-lag, no wasted CPU).
-  // Fall back to 250ms polling only when the provider hasn't wired subscribe.
+  // route re-fire `onLayout` and repopulate their layout.
   useEffect(() => {
     if (!routeProvider) return;
 
     let lastRoute: string | null = routeProvider.getCurrentRoute();
 
-    const handleRouteChange = (current: string | null) => {
+    return routeProvider.subscribe((current: string | null) => {
       if (current !== lastRoute && lastRoute != null) {
         registry.markRouteOffscreen(lastRoute);
       }
       lastRoute = current;
-    };
-
-    if (typeof routeProvider.subscribe === 'function') {
-      return routeProvider.subscribe(handleRouteChange);
-    }
-
-    // Fallback: poll every 250ms for apps that haven't implemented subscribe
-    const interval = setInterval(() => {
-      handleRouteChange(routeProvider.getCurrentRoute());
-    }, 250);
-    return () => clearInterval(interval);
+    });
   }, [routeProvider, registry]);
 
   const on = useCallback(

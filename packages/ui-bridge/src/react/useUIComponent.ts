@@ -163,6 +163,9 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     };
   }, []);
 
+  // See useUIState for rationale on capturing id at register time.
+  const registeredComponentIdRef = useRef<string | null>(null);
+
   // Register the component
   const register = useCallback(() => {
     if (!bridge || registeredRef.current) return;
@@ -181,14 +184,16 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       getComputed: createGetComputed(),
     });
     registeredRef.current = true;
+    registeredComponentIdRef.current = id;
   }, [bridge, id, name, description, createGetComputed]);
 
   // Unregister the component
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterComponent(id);
+    bridge.registry.unregisterComponent(registeredComponentIdRef.current ?? id);
     registeredRef.current = false;
+    registeredComponentIdRef.current = null;
   }, [bridge, id]);
 
   // Execute an action
@@ -242,16 +247,74 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     elementIdsRef.current = elementIdsRef.current.filter((id) => id !== elementId);
   }, []);
 
-  // Auto-register on mount
+  // Keep latest register/unregister in refs so the auto-register effect does
+  // not re-run on every parent render when consumers pass inline options
+  // (inline `actions`/`elementIds`/`computed` arrays churn the `register`
+  // callback identity, which would re-fire this effect and emit
+  // `component:registered` per render — triggering the useSyncExternalStore
+  // consumers to wake AppContent and re-render the component's tree in an
+  // infinite loop (React error #185).
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
   useEffect(() => {
-    if (autoRegister) {
-      register();
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
+  // Auto-register on mount — depends only on [autoRegister, bridge] so it
+  // doesn't re-run when register/unregister identity churns.
+  useEffect(() => {
+    if (autoRegister && bridge) {
+      registerRef.current();
     }
 
     return () => {
-      unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
+      }
     };
-  }, [autoRegister, register, unregister]);
+  }, [autoRegister, bridge]);
+
+  // In-place option sync — see useUIState for rationale. `actions`,
+  // `getState`, `getComputed` hold function references we intentionally
+  // exclude from the key (identity churn would defeat the purpose); the
+  // refs already track their latest values, and `updateComponent` reads
+  // those refs via the sync call below.
+  const componentKey =
+    bridge && registeredRef.current
+      ? JSON.stringify({
+          id,
+          name,
+          description: description ?? null,
+          elementIds: options.elementIds ?? null,
+        })
+      : null;
+  useEffect(() => {
+    if (!bridge || !registeredRef.current || componentKey === null) return;
+    const payload = {
+      name,
+      description,
+      actions: actionsRef.current.map((a) => ({
+        id: a.id,
+        label: a.label,
+        description: a.description,
+        handler: a.handler,
+      })),
+      elementIds: elementIdsRef.current,
+      getState: stateRef.current,
+      getComputed: createGetComputed(),
+    };
+    const registeredComponentId = registeredComponentIdRef.current;
+    if (registeredComponentId === null) return;
+    if (registeredComponentId !== id) {
+      bridge.registry.unregisterComponent(registeredComponentId);
+      registeredComponentIdRef.current = id;
+      bridge.registry.registerComponent(id, payload);
+      return;
+    }
+    bridge.registry.updateComponent(id, payload);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, componentKey]);
 
   // Get registered component
   const registeredComponent = useMemo(() => {

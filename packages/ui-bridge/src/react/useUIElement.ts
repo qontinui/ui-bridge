@@ -114,6 +114,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     relationships,
   } = options;
 
+  // See useUIState for rationale on capturing id at register time.
+  const registeredElementIdRef = useRef<string | null>(null);
+
   // Register the element
   const register = useCallback(() => {
     if (!bridge || !elementRef.current || registeredRef.current) return;
@@ -125,6 +128,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       customActions,
     });
     registeredRef.current = true;
+    registeredElementIdRef.current = id;
 
     if (logLevel) {
       bridge.registry.setElementLogLevel(id, logLevel);
@@ -135,34 +139,113 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(id);
+    bridge.registry.unregisterElement(registeredElementIdRef.current ?? id);
     registeredRef.current = false;
+    registeredElementIdRef.current = null;
   }, [bridge, id]);
 
-  // Ref callback
+  // Keep latest register/unregister in refs so the ref callback doesn't
+  // churn identity when consumers pass inline `actions`/`customActions`
+  // options. A churning ref callback causes React to call ref(null) then
+  // ref(node) every render, which unregister/registers each render and
+  // emits `element:registered` — waking all useSyncExternalStore consumers
+  // (e.g., AppContent via useUIBridge) and re-rendering this component
+  // in an infinite loop (React error #185).
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
+  // Ref callback — stable identity (deps: [autoRegister]). Uses latest
+  // register/unregister via refs.
+  //
+  // We deliberately do NOT unregister when called with `null`. React calls
+  // the previous ref with `null` whenever the ref callback's own identity
+  // changes (e.g., Radix `useComposedRefs` rebuilds its wrapper every
+  // render), even though the DOM node is still mounted. Treating that as
+  // an unmount would fire unregister/register per render, bumping the
+  // registry's storeVersion and re-rendering any `useSyncExternalStore`
+  // consumer (e.g., AppContent via `useUIBridge`) in an infinite loop
+  // (React error #185). Real unmounts are handled by the cleanup effect
+  // below, which only runs when this component unmounts.
+  //
+  // If the DOM element truly swaps to a different node (rare — React reuses
+  // nodes aggressively), unregister the old one before pointing elementRef
+  // at the new one so the registry doesn't hold a dangling reference.
   const ref = useCallback(
     (node: HTMLElement | null) => {
-      // Cleanup previous
+      if (node === null) {
+        // Identity churn or transient detach — don't unregister; cleanup
+        // effect will handle real unmount.
+        return;
+      }
+
       if (elementRef.current && elementRef.current !== node) {
-        unregister();
+        unregisterRef.current();
       }
 
       elementRef.current = node;
 
-      // Register new element
-      if (node && autoRegister) {
-        register();
+      if (autoRegister) {
+        registerRef.current();
       }
     },
-    [autoRegister, register, unregister]
+    [autoRegister]
   );
 
-  // Cleanup on unmount
+  // Cleanup on unmount — runs once.
   useEffect(() => {
     return () => {
-      unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
+      }
+      elementRef.current = null;
     };
-  }, [unregister]);
+  }, []);
+
+  // In-place option sync — see useUIState for rationale. Treats an `id`
+  // change as a re-registration (registry is keyed by id); all other
+  // changes go through `updateElement` which skips the re-register emit.
+  // `customActions` holds function references; we exclude it from the key
+  // and mirror the latest object into the registry on each sync.
+  const elementKey =
+    bridge && registeredRef.current
+      ? JSON.stringify({
+          id,
+          type: type ?? null,
+          label: label ?? null,
+          actions: actions ?? null,
+          logLevel: logLevel ?? null,
+        })
+      : null;
+  useEffect(() => {
+    if (!bridge || !registeredRef.current || !elementRef.current || elementKey === null) return;
+    const registeredElementId = registeredElementIdRef.current;
+    if (registeredElementId === null) return;
+    if (registeredElementId !== id) {
+      bridge.registry.unregisterElement(registeredElementId);
+      registeredElementIdRef.current = id;
+      bridge.registry.registerElement(id, elementRef.current, {
+        type,
+        label,
+        actions,
+        customActions,
+      });
+      if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
+      return;
+    }
+    bridge.registry.updateElement(id, {
+      type,
+      label,
+      actions,
+      customActions,
+    });
+    if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
+    // customActions excluded from key — see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, elementKey]);
 
   // Declare relationships when registered
   const serializedRelationships = JSON.stringify(relationships);

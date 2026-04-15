@@ -612,6 +612,35 @@ export class UIBridgeRegistry {
   /**
    * Register an element
    */
+  /**
+   * Update a registered element's metadata/options in place.
+   * See `updateComponent` for rationale. Does not replace the DOM element
+   * reference — use `registerElement` if the element itself changed.
+   */
+  updateElement(
+    id: string,
+    options: {
+      type?: ElementType;
+      label?: string;
+      actions?: StandardAction[];
+      customActions?: Record<string, CustomAction>;
+      category?: 'interactive' | 'content' | 'media';
+      contentMetadata?: ContentMetadata;
+      mediaMetadata?: MediaMetadata;
+    }
+  ): boolean {
+    const existing = this.elements.get(id);
+    if (!existing) return false;
+    if (options.type !== undefined) existing.type = options.type;
+    if (options.label !== undefined) existing.label = options.label;
+    if (options.actions !== undefined) existing.actions = options.actions;
+    if (options.customActions !== undefined) existing.customActions = options.customActions;
+    if (options.category !== undefined) existing.category = options.category;
+    if (options.contentMetadata !== undefined) existing.contentMetadata = options.contentMetadata;
+    if (options.mediaMetadata !== undefined) existing.mediaMetadata = options.mediaMetadata;
+    return true;
+  }
+
   registerElement(
     id: string,
     element: HTMLElement,
@@ -1082,6 +1111,50 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Update a component's options in place, without emitting a
+   * `component:registered` event. Returns `false` if the component is not
+   * currently registered — callers should fall back to `registerComponent`.
+   *
+   * Preserves `registeredAt` and `mounted`. Intended for React hooks that
+   * want to reflect option changes on the same mounted consumer without
+   * firing a full re-register (which would churn `useSyncExternalStore`
+   * subscribers).
+   */
+  updateComponent(
+    id: string,
+    options: {
+      name?: string;
+      description?: string;
+      actions?: Array<{
+        id: string;
+        label?: string;
+        description?: string;
+        handler: (params?: unknown) => unknown | Promise<unknown>;
+      }>;
+      elementIds?: string[];
+      getState?: StateGetter<Record<string, unknown>>;
+      getComputed?: () => Record<string, unknown>;
+    }
+  ): boolean {
+    const existing = this.components.get(id);
+    if (!existing) return false;
+    if (options.name !== undefined) existing.name = options.name;
+    if (options.description !== undefined) existing.description = options.description;
+    if (options.actions !== undefined) {
+      existing.actions = options.actions.map((a) => ({
+        id: a.id,
+        label: a.label,
+        description: a.description,
+        handler: a.handler,
+      }));
+    }
+    if (options.elementIds !== undefined) existing.elementIds = options.elementIds;
+    if (options.getState !== undefined) existing.getState = options.getState;
+    if (options.getComputed !== undefined) existing.getComputed = options.getComputed;
+    return true;
+  }
+
+  /**
    * Register a component
    */
   registerComponent(
@@ -1214,6 +1287,18 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Update a state's stored options in place. See `updateComponent` for
+   * rationale — avoids re-emitting `element:registered`/`unregistered`
+   * pairs on every option change so `useSyncExternalStore` consumers don't
+   * re-render on minor metadata edits.
+   */
+  updateState(state: UIState): boolean {
+    if (!this.states.has(state.id)) return false;
+    this.states.set(state.id, state);
+    return true;
+  }
+
+  /**
    * Unregister a state
    */
   unregisterState(id: string): boolean {
@@ -1249,6 +1334,13 @@ export class UIBridgeRegistry {
     return group;
   }
 
+  /** In-place update — see `updateComponent`. */
+  updateStateGroup(group: UIStateGroup): boolean {
+    if (!this.stateGroups.has(group.id)) return false;
+    this.stateGroups.set(group.id, group);
+    return true;
+  }
+
   /**
    * Unregister a state group
    */
@@ -1276,6 +1368,13 @@ export class UIBridgeRegistry {
   registerTransition(transition: UITransition): UITransition {
     this.transitions.set(transition.id, transition);
     return transition;
+  }
+
+  /** In-place update — see `updateComponent`. */
+  updateTransition(transition: UITransition): boolean {
+    if (!this.transitions.has(transition.id)) return false;
+    this.transitions.set(transition.id, transition);
+    return true;
   }
 
   /**

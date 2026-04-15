@@ -54,17 +54,17 @@ export interface RouteProvider {
   /** Return the current route segments (e.g. ["(tabs)", "runs"]), if available. */
   getSegments?: () => string[];
   /**
-   * Subscribe to route changes. Optional — if omitted, UIBridgeNativeProvider
-   * falls back to polling `getCurrentRoute()` every 250ms.
+   * Subscribe to route changes. Required so the UI Bridge can clear stale
+   * layouts on route changes with zero lag.
    *
-   * Implementers should invoke `listener` synchronously whenever the route
+   * Implementers must invoke `listener` synchronously whenever the route
    * changes, passing the new route (or null if unknown). The returned function
    * must unsubscribe the listener.
    *
    * For Expo Router: wrap your RouteTracker component in a module-level
    * listener set and call each listener from within the tracker's effect.
    */
-  subscribe?: (listener: (route: string | null) => void) => () => void;
+  subscribe: (listener: (route: string | null) => void) => () => void;
 }
 
 /**
