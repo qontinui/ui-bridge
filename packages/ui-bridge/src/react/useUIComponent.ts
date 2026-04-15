@@ -18,6 +18,13 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   label?: string;
   /** Description */
   description?: string;
+  /**
+   * Parameter schema — surfaced verbatim on `/control/component/:id` so
+   * callers discover what shape `params` should take without reading source.
+   * Keep it lightweight: a map of `{ paramName: "string" | "number" | ... }`
+   * or a small JSON Schema subset. No runtime validation is performed.
+   */
+  paramSchema?: Record<string, unknown>;
   /** Handler function */
   handler: (params?: TParams) => TResult | Promise<TResult>;
 }
@@ -177,6 +184,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         id: a.id,
         label: a.label,
         description: a.description,
+        paramSchema: a.paramSchema,
         handler: a.handler,
       })),
       elementIds: elementIdsRef.current,
@@ -298,6 +306,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         id: a.id,
         label: a.label,
         description: a.description,
+        paramSchema: a.paramSchema,
         handler: a.handler,
       })),
       elementIds: elementIdsRef.current,

@@ -1129,6 +1129,7 @@ export class UIBridgeRegistry {
         id: string;
         label?: string;
         description?: string;
+        paramSchema?: Record<string, unknown>;
         handler: (params?: unknown) => unknown | Promise<unknown>;
       }>;
       elementIds?: string[];
@@ -1145,6 +1146,7 @@ export class UIBridgeRegistry {
         id: a.id,
         label: a.label,
         description: a.description,
+        paramSchema: a.paramSchema,
         handler: a.handler,
       }));
     }
@@ -1166,6 +1168,7 @@ export class UIBridgeRegistry {
         id: string;
         label?: string;
         description?: string;
+        paramSchema?: Record<string, unknown>;
         handler: (params?: unknown) => unknown | Promise<unknown>;
       }>;
       elementIds?: string[];
@@ -1182,6 +1185,7 @@ export class UIBridgeRegistry {
           id: a.id,
           label: a.label,
           description: a.description,
+          paramSchema: a.paramSchema,
           handler: a.handler,
         })) ?? [],
       elementIds: options.elementIds,
