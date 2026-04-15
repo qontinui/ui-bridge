@@ -314,9 +314,31 @@ export function UIBridgeNativeProvider({
     }
   }, [features.server, startServer, stopServer]);
 
-  // Start mDNS announcement and cloud relay after the server is running
+  // Start mDNS announcement and cloud relay.
+  //
+  // The cloud relay path does NOT require the HTTP server to be running —
+  // it calls `server.handleRequest()` directly, bypassing HTTP. This matters
+  // for preview/production builds where `features.server` is typically
+  // false (no native TCP server adapter available). We still need a
+  // NativeUIBridgeServer instance to handle tunneled requests, so we create
+  // a bare instance here if startServer() didn't already make one.
+  //
+  // mDNS also doesn't need the HTTP server — it just advertises on the
+  // network so remote devices can discover this phone's address.
   useEffect(() => {
-    if (!serverRunning) return;
+    const needsBareServer = !serverRef.current && !!cloudRelayConfig;
+    if (needsBareServer) {
+      // Create a server instance for handleRequest() use only; no adapter,
+      // no HTTP listener. This is safe without features.server.
+      const bareServer = createNativeServer(registry, executor, {
+        serverPort: config.serverPort || 8087,
+        cors: true,
+      });
+      if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
+      if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
+      if (routeProvider) bareServer.setRouteProvider(routeProvider);
+      serverRef.current = bareServer;
+    }
 
     // mDNS advertisement
     if (enableMdnsAnnounce && deviceId) {
@@ -331,7 +353,7 @@ export function UIBridgeNativeProvider({
       void announcer.startMdnsAdvertise();
     }
 
-    // Cloud relay tunnel
+    // Cloud relay tunnel (works without HTTP server)
     if (cloudRelayConfig && serverRef.current) {
       const relayClient = new CloudRelayClient({
         ...cloudRelayConfig,
@@ -352,7 +374,13 @@ export function UIBridgeNativeProvider({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverRunning]);
+  }, [
+    serverRunning,
+    cloudRelayConfig?.relayUrl,
+    cloudRelayConfig?.authToken,
+    enableMdnsAnnounce,
+    deviceId,
+  ]);
 
   // Cleanup on unmount
   useEffect(() => {
