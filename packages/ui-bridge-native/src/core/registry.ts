@@ -279,6 +279,44 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Mark elements registered on a route as off-screen (visible: false, layout: null).
+   *
+   * Use this when a screen loses focus but stays mounted — common in React Navigation
+   * tab navigators where inactive tabs remain in the tree. Without this call, stale
+   * `layout` data lingers in snapshots and makes off-screen elements look rendered.
+   *
+   * Does NOT unregister the elements — they stay registered so the user's next visit
+   * re-measures them via `onLayout` without re-mount cost. Elements without a
+   * `registrationRoute` (app-wide registrations) are untouched.
+   */
+  markRouteOffscreen(route: string): void {
+    // Guard against accidental global wipes. Elements registered without a
+    // route have `registrationRoute: null` — passing null/empty here would
+    // match every globally-registered element and erase their layouts.
+    if (route == null || route === '') {
+      if (this.config.verbose) {
+        console.warn(
+          `[ui-bridge-native] markRouteOffscreen called with null/empty route — ignoring`
+        );
+      }
+      return;
+    }
+    let cleared = 0;
+    for (const element of this.elements.values()) {
+      if (element.registrationRoute === route) {
+        this.updateElementState(element.id, {
+          visible: false,
+          layout: null,
+        });
+        cleared++;
+      }
+    }
+    if (this.config.verbose && cleared > 0) {
+      console.log(`[ui-bridge-native] Marked ${cleared} elements offscreen for route: ${route}`);
+    }
+  }
+
+  /**
    * Update element state
    */
   updateElementState(id: string, state: Partial<NativeElementState>): void {
