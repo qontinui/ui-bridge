@@ -325,6 +325,54 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, componentKey]);
 
+  // Auto-track owned elements: subscribe to registry events and add/remove
+  // element IDs whose `ownedByComponent` matches this component. Lets
+  // `RegisteredComponent.elementIds` populate without consumers maintaining
+  // it manually — works for both React-hook and DOM-auto-scanned elements
+  // (they all flow through `registry.registerElement`).
+  useEffect(() => {
+    if (!bridge) return;
+    const reg = bridge.registry as unknown as {
+      on: (
+        event: 'element:registered' | 'element:unregistered',
+        listener: (event: { data: { id: string } }) => void
+      ) => () => void;
+      getElement?: (id: string) => { ownedByComponent?: string } | undefined;
+      getAllElements?: () => Array<{ id: string; ownedByComponent?: string }>;
+      updateComponent?: (id: string, opts: { elementIds?: string[] }) => boolean;
+    };
+    const ownedSet = new Set<string>(elementIdsRef.current);
+
+    const pushUpdate = () => {
+      const next = Array.from(ownedSet);
+      elementIdsRef.current = next;
+      reg.updateComponent?.(id, { elementIds: next });
+    };
+
+    // Seed from any elements already registered that point at this component.
+    for (const el of reg.getAllElements?.() ?? []) {
+      if (el.ownedByComponent === id) ownedSet.add(el.id);
+    }
+    if (ownedSet.size > 0) pushUpdate();
+
+    const offReg = reg.on('element:registered', (event) => {
+      const elId = event.data.id;
+      const el = reg.getElement?.(elId);
+      if (el?.ownedByComponent === id && !ownedSet.has(elId)) {
+        ownedSet.add(elId);
+        pushUpdate();
+      }
+    });
+    const offUnreg = reg.on('element:unregistered', (event) => {
+      if (ownedSet.delete(event.data.id)) pushUpdate();
+    });
+
+    return () => {
+      offReg();
+      offUnreg();
+    };
+  }, [bridge, id]);
+
   // Get registered component
   const registeredComponent = useMemo(() => {
     if (!bridge) return null;
