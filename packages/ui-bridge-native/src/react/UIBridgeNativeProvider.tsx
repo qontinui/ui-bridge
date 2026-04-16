@@ -326,51 +326,74 @@ export function UIBridgeNativeProvider({
   // mDNS also doesn't need the HTTP server — it just advertises on the
   // network so remote devices can discover this phone's address.
   useEffect(() => {
-    const needsBareServer = !serverRef.current && !!cloudRelayConfig;
-    if (needsBareServer) {
-      // Create a server instance for handleRequest() use only; no adapter,
-      // no HTTP listener. This is safe without features.server.
-      const bareServer = createNativeServer(registry, executor, {
-        serverPort: config.serverPort || 8087,
-        cors: true,
-      });
-      if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
-      if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
-      if (routeProvider) bareServer.setRouteProvider(routeProvider);
-      serverRef.current = bareServer;
-    }
+    // Everything here is best-effort — any exception must not crash the app.
+    try {
+      const needsBareServer = !serverRef.current && !!cloudRelayConfig;
+      if (needsBareServer) {
+        try {
+          // Create a server instance for handleRequest() use only; no adapter,
+          // no HTTP listener. This is safe without features.server.
+          const bareServer = createNativeServer(registry, executor, {
+            serverPort: config.serverPort || 8087,
+            cors: true,
+          });
+          if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
+          if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
+          if (routeProvider) bareServer.setRouteProvider(routeProvider);
+          serverRef.current = bareServer;
+        } catch (err) {
+          console.warn('[ui-bridge-native] Failed to create bare server:', err);
+        }
+      }
 
-    // mDNS advertisement
-    if (enableMdnsAnnounce && deviceId) {
-      const announcer = new DeviceAnnouncer({
-        deviceId,
-        appId: config.appInfo?.appId ?? 'unknown',
-        port: config.serverPort ?? 8087,
-        cloudRelayUrl: cloudRelayConfig?.relayUrl,
-        cloudToken: cloudRelayConfig?.authToken,
-      });
-      announcerRef.current = announcer;
-      void announcer.startMdnsAdvertise();
-    }
+      // mDNS advertisement
+      if (enableMdnsAnnounce && deviceId) {
+        try {
+          const announcer = new DeviceAnnouncer({
+            deviceId,
+            appId: config.appInfo?.appId ?? 'unknown',
+            port: config.serverPort ?? 8087,
+            cloudRelayUrl: cloudRelayConfig?.relayUrl,
+            cloudToken: cloudRelayConfig?.authToken,
+          });
+          announcerRef.current = announcer;
+          void announcer.startMdnsAdvertise().catch((err) => {
+            console.warn('[ui-bridge-native] mDNS advertise failed:', err);
+          });
+        } catch (err) {
+          console.warn('[ui-bridge-native] Failed to start DeviceAnnouncer:', err);
+        }
+      }
 
-    // Cloud relay tunnel (works without HTTP server)
-    if (cloudRelayConfig && serverRef.current) {
-      const relayClient = new CloudRelayClient({
-        ...cloudRelayConfig,
-        uiBridgeServer: serverRef.current,
-      });
-      cloudRelayRef.current = relayClient;
-      relayClient.start();
+      // Cloud relay tunnel (works without HTTP server)
+      if (cloudRelayConfig && serverRef.current) {
+        try {
+          const relayClient = new CloudRelayClient({
+            ...cloudRelayConfig,
+            uiBridgeServer: serverRef.current,
+          });
+          cloudRelayRef.current = relayClient;
+          relayClient.start();
+        } catch (err) {
+          console.warn('[ui-bridge-native] Failed to start CloudRelayClient:', err);
+        }
+      }
+    } catch (err) {
+      console.warn('[ui-bridge-native] Transport effect failed:', err);
     }
 
     return () => {
-      if (announcerRef.current) {
-        void announcerRef.current.stop();
-        announcerRef.current = null;
-      }
-      if (cloudRelayRef.current) {
-        cloudRelayRef.current.stop();
-        cloudRelayRef.current = null;
+      try {
+        if (announcerRef.current) {
+          void announcerRef.current.stop().catch(() => {});
+          announcerRef.current = null;
+        }
+        if (cloudRelayRef.current) {
+          cloudRelayRef.current.stop();
+          cloudRelayRef.current = null;
+        }
+      } catch {
+        // cleanup must never throw
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

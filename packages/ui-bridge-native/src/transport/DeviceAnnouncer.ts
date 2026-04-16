@@ -6,6 +6,8 @@
  * cloud relay backend.
  */
 
+import { Platform } from 'react-native';
+
 export interface AnnouncerConfig {
   /** Stable device identifier */
   deviceId: string;
@@ -76,17 +78,28 @@ export class DeviceAnnouncer {
   // ── mDNS ──────────────────────────────────────────────────────────────────
 
   /**
-   * Start mDNS advertisement using react-native-zeroconf.
+   * Start mDNS advertisement.
    *
-   * If the package is not installed the call is a no-op and a warning is logged.
+   * The consumer must pass the `Zeroconf` constructor (from `react-native-zeroconf`)
+   * explicitly; otherwise this is a no-op.
+   *
+   * Rationale: Metro's `require()` throws an uncatchable module-load error if the
+   * bundle doesn't include the named package. That error escapes async try/catch
+   * boundaries and crashes the app. We avoid it by never calling `require()`
+   * ourselves — the consumer imports the package when they know it's installed.
+   *
+   * @param ZeroconfCtor - constructor from `import Zeroconf from 'react-native-zeroconf'`
    */
-  async startMdnsAdvertise(): Promise<void> {
+  async startMdnsAdvertise(ZeroconfCtor?: new () => ZeroconfService): Promise<void> {
+    if (!ZeroconfCtor) {
+      console.log(
+        '[DeviceAnnouncer] mDNS advertisement skipped (no Zeroconf constructor provided). ' +
+          'Pass one to enable mDNS.'
+      );
+      return;
+    }
     try {
-      // Dynamic import so apps without the package still compile
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const ZeroconfModule = require('react-native-zeroconf');
-      const Zeroconf = ZeroconfModule.default ?? ZeroconfModule;
-      this.zeroconf = new Zeroconf() as ZeroconfService;
+      this.zeroconf = new ZeroconfCtor();
 
       const port = this.config.port ?? DEFAULT_PORT;
       const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
@@ -100,11 +113,8 @@ export class DeviceAnnouncer {
 
       this.state = { ...this.state, mdnsActive: true };
       console.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
-    } catch (_err) {
-      console.warn(
-        '[DeviceAnnouncer] react-native-zeroconf not available — mDNS advertisement skipped. ' +
-          'Install it with: npx expo install react-native-zeroconf'
-      );
+    } catch (err) {
+      console.warn('[DeviceAnnouncer] mDNS start failed:', err);
     }
   }
 
@@ -243,11 +253,5 @@ function generateHex(bytes: number): string {
 }
 
 function getPlatform(): string {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { Platform } = require('react-native');
-    return (Platform.OS as string) ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  return Platform?.OS ?? 'unknown';
 }
