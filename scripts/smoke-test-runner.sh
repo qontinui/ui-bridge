@@ -142,21 +142,8 @@ if [[ "$REBUILD" == "true" ]]; then
 fi
 spawn_body='{"rebuild": '"$REBUILD"', "requester_id": "'"$REQUESTER_ID"'", "queue_timeout_secs": '"$QUEUE_TIMEOUT_SECS"'}'
 log "Spawning with rebuild=${REBUILD} (queue timeout=${QUEUE_TIMEOUT_SECS}s)"
-# Transient supervisor race: occasionally the runner is cleaned up between
-# spawn success and API response ("Runner not found: test-xxx"). Retry once
-# with a fresh requester_id.
-_spawn_attempt=1
 body=""; status=""
 curl_json body status POST "${SUPERVISOR_URL}/runners/spawn-test" "$spawn_body"
-# Retry once on 404 "Runner not found" (transient supervisor race).
-if [[ "$status" == "404" ]] && echo "$body" | grep -iq "not found"; then
-  log "Transient spawn race — retrying with fresh requester_id"
-  REQUESTER_ID="${REQUESTER_ID}-r2"
-  spawn_body='{"rebuild": '"$REBUILD"', "requester_id": "'"$REQUESTER_ID"'", "queue_timeout_secs": '"$QUEUE_TIMEOUT_SECS"'}'
-  sleep 1
-  body=""; status=""
-  curl_json body status POST "${SUPERVISOR_URL}/runners/spawn-test" "$spawn_body"
-fi
 if [[ "$status" != "200" && "$status" != "201" ]]; then
   err "spawn-test failed (status=${status}): ${body}"
   exit 1
@@ -701,10 +688,13 @@ run_t15() {
     fail "T15 snapshot-visibleOnly: could not parse filtered count"
     return
   fi
-  if (( visible > 0 )) && (( visible <= total )); then
-    pass "T15 snapshot-visibleOnly (visible=${visible} <= total=${total})"
+  # Strict inequality: the Rust proxy MUST forward visibleOnly to the snapshot
+  # filter. If the query string is dropped the handler returns the unfiltered
+  # list and `visible == total`, which is the regression this test catches.
+  if (( visible > 0 )) && (( visible < total )); then
+    pass "T15 snapshot-visibleOnly (visible=${visible} < total=${total})"
   else
-    fail "T15 snapshot-visibleOnly: visible=${visible} total=${total} (expected 0 < visible <= total)"
+    fail "T15 snapshot-visibleOnly: visible=${visible} total=${total} (expected 0 < visible < total)"
   fi
 }
 run_t15
