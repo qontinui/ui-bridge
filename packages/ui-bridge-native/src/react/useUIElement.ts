@@ -199,6 +199,12 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const [registered, setRegistered] = useState(false);
   const [_layout, setLayout] = useState<NativeLayout | null>(null);
   const propsRef = useRef<Record<string, unknown>>({});
+  // Authoritative registration tracking. See the web `useUIElement` for
+  // rationale: consumers commonly pass inline `style`/`stateStyles` objects,
+  // and threading the `registered` state into the register useCallback's deps
+  // creates a cleanup/run feedback loop past React's 50-update ceiling.
+  const registeredRef = useRef(false);
+  const registeredIdRef = useRef<string | null>(null);
 
   const {
     id,
@@ -228,7 +234,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
 
   // Register the element
   const register = useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
 
     bridge.registry.registerElement(id, ref, {
       type,
@@ -242,25 +248,18 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       flatStyle: flattenStyle(style),
       stateStyles: flattenStateStyles(stateStylesProp),
     });
+    registeredRef.current = true;
+    registeredIdRef.current = id;
     setRegistered(true);
-  }, [
-    bridge,
-    registered,
-    id,
-    type,
-    label,
-    actions,
-    customActions,
-    treePath,
-    style,
-    stateStylesProp,
-  ]);
+  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp]);
 
   // Unregister the element
   const unregister = useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(id);
+    bridge.registry.unregisterElement(registeredIdRef.current ?? id);
+    registeredRef.current = false;
+    registeredIdRef.current = null;
     setRegistered(false);
   }, [bridge, registered, id]);
 
@@ -329,16 +328,27 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [bridge, registered, id, onStateChange]
   );
 
+  // Keep latest register/unregister in refs so the auto-register effect does
+  // not re-run when consumers pass inline `style`/`stateStyles` options.
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
   // Auto-register on mount
   useEffect(() => {
     if (autoRegister) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
+      }
     };
-  }, [autoRegister, register, unregister]);
+  }, [autoRegister, bridge]);
 
   // Auto-register handler props (onPress, onChangeText, etc.) when provided.
   // We use a ref to track which keys were last registered so we can clear

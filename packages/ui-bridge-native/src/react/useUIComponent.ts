@@ -114,6 +114,7 @@ export interface UseUIComponentReturn {
 export function useUIComponent(options: UseUIComponentOptions): UseUIComponentReturn {
   const bridge = useUIBridgeNativeOptional();
   const registeredRef = useRef(false);
+  const registeredIdRef = useRef<string | null>(null);
   const actionsRef = useRef(options.actions || []);
   const elementIdsRef = useRef(options.elementIds || []);
 
@@ -141,14 +142,16 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       elementIds: elementIdsRef.current,
     });
     registeredRef.current = true;
+    registeredIdRef.current = id;
   }, [bridge, id, name, description]);
 
   // Unregister the component
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterComponent(id);
+    bridge.registry.unregisterComponent(registeredIdRef.current ?? id);
     registeredRef.current = false;
+    registeredIdRef.current = null;
   }, [bridge, id]);
 
   // Execute an action
@@ -202,16 +205,27 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     elementIdsRef.current = elementIdsRef.current.filter((eid) => eid !== elementId);
   }, []);
 
+  // Keep latest register/unregister in refs so the auto-register effect does
+  // not re-run when consumers pass inline options.
+  const registerRef = useRef(register);
+  const unregisterRef = useRef(unregister);
+  useEffect(() => {
+    registerRef.current = register;
+    unregisterRef.current = unregister;
+  }, [register, unregister]);
+
   // Auto-register on mount
   useEffect(() => {
     if (autoRegister) {
-      register();
+      registerRef.current();
     }
 
     return () => {
-      unregister();
+      if (registeredRef.current) {
+        unregisterRef.current();
+      }
     };
-  }, [autoRegister, register, unregister]);
+  }, [autoRegister, bridge]);
 
   // Get registered component
   const registeredComponent = useMemo(() => {
