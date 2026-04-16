@@ -679,6 +679,16 @@ export class UIBridgeRegistry {
       }
     }
 
+    // Fallback: if the caller didn't pass ownedByComponent (e.g. auto-scanned
+    // elements outside the React hook path), walk up the DOM looking for a
+    // `<UIBridgeComponentScope>` marker attribute.
+    let ownedByComponent = options.ownedByComponent;
+    if (!ownedByComponent && element && typeof element.closest === 'function') {
+      const scope = element.closest('[data-ui-bridge-component]');
+      const attr = scope?.getAttribute('data-ui-bridge-component');
+      if (attr) ownedByComponent = attr;
+    }
+
     const registered: RegisteredElement = {
       id: actualId,
       element,
@@ -693,7 +703,7 @@ export class UIBridgeRegistry {
       category: options.category ?? 'interactive',
       contentMetadata: options.contentMetadata,
       mediaMetadata: options.mediaMetadata,
-      ownedByComponent: options.ownedByComponent,
+      ownedByComponent,
     };
 
     this.elements.set(actualId, registered);
@@ -1746,6 +1756,10 @@ export class UIBridgeRegistry {
         category: el.category,
         contentMetadata: el.contentMetadata,
         mediaMetadata: el.mediaMetadata,
+        ownedByComponent: el.ownedByComponent,
+        componentActionBasePath: el.ownedByComponent
+          ? `/control/component/${el.ownedByComponent}`
+          : undefined,
       })),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,
@@ -1791,6 +1805,10 @@ export class UIBridgeRegistry {
           category: el.category,
           contentMetadata: el.contentMetadata,
           mediaMetadata: el.mediaMetadata,
+          ownedByComponent: el.ownedByComponent,
+          componentActionBasePath: el.ownedByComponent
+            ? `/control/component/${el.ownedByComponent}`
+            : undefined,
         });
       }
       // Yield to main thread between batches to keep UI responsive

@@ -962,6 +962,10 @@ export interface BridgeSnapshot {
     category?: 'interactive' | 'content' | 'media';
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
+    /** Component (if any) that owns/renders this element. Prefer component actions for automation. */
+    ownedByComponent?: string;
+    /** Base URL template for the owning component, if present. */
+    componentActionBasePath?: string;
   }>;
   /** All registered components */
   components: Array<{

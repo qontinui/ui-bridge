@@ -29,8 +29,16 @@ export interface UIBridgeComponentScopeProps {
 }
 
 export function UIBridgeComponentScope({ componentId, children }: UIBridgeComponentScopeProps) {
+  // Render a transparent wrapper so auto-registered (DOM-scanned) elements
+  // can discover their owning component by walking up for the data attribute.
+  // `display: contents` keeps the wrapper invisible to layout while still
+  // carrying the attribute on a real DOM node.
   return (
-    <ComponentScopeContext.Provider value={componentId}>{children}</ComponentScopeContext.Provider>
+    <ComponentScopeContext.Provider value={componentId}>
+      <div data-ui-bridge-component={componentId} style={{ display: 'contents' }}>
+        {children}
+      </div>
+    </ComponentScopeContext.Provider>
   );
 }
 
