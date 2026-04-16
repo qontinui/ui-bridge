@@ -31,6 +31,13 @@ export {
   type UseUIComponentReturn,
 } from './useUIComponent';
 
+// Component scope — wraps subtrees so child elements auto-link to a component
+export {
+  UIBridgeComponentScope,
+  useOwningComponent,
+  type UIBridgeComponentScopeProps,
+} from './UIBridgeComponentScope';
+
 // Bridge hook
 export { useUIBridge, useUIBridgeRequired, type UseUIBridgeReturn } from './useUIBridge';
 
@@ -99,10 +106,7 @@ export { CommandRelayListener, type CommandRelayListenerProps } from './CommandR
 
 // Capture-host pattern: stable outer host + iframe + echo input for driving
 // automation loops through pages that would otherwise unmount the SDK.
-export {
-  useUIBridgeEcho,
-  type UseUIBridgeEchoOptions,
-} from './useUIBridgeEcho';
+export { useUIBridgeEcho, type UseUIBridgeEchoOptions } from './useUIBridgeEcho';
 export {
   CaptureHostFrame,
   DEFAULT_CAPTURE_HOST_IDS,

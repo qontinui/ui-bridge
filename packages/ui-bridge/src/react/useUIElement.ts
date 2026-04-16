@@ -18,6 +18,7 @@ import type {
 } from '../core/types';
 import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
+import { useOwningComponent } from './UIBridgeComponentScope';
 
 /**
  * useUIElement options
@@ -100,6 +101,7 @@ export interface UseUIElementReturn {
  */
 export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const bridge = useUIBridgeOptional();
+  const ownedByComponent = useOwningComponent();
   const elementRef = useRef<HTMLElement | null>(null);
   const registeredRef = useRef(false);
 
@@ -126,6 +128,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       label,
       actions,
       customActions,
+      ownedByComponent: ownedByComponent ?? undefined,
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -133,7 +136,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     if (logLevel) {
       bridge.registry.setElementLogLevel(id, logLevel);
     }
-  }, [bridge, id, type, label, actions, customActions, logLevel]);
+  }, [bridge, id, type, label, actions, customActions, logLevel, ownedByComponent]);
 
   // Unregister the element
   const unregister = useCallback(() => {

@@ -652,6 +652,8 @@ export class UIBridgeRegistry {
       category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
       mediaMetadata?: MediaMetadata;
+      /** Component that owns this element (set by <UIBridgeComponentScope>). */
+      ownedByComponent?: string;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -691,6 +693,7 @@ export class UIBridgeRegistry {
       category: options.category ?? 'interactive',
       contentMetadata: options.contentMetadata,
       mediaMetadata: options.mediaMetadata,
+      ownedByComponent: options.ownedByComponent,
     };
 
     this.elements.set(actualId, registered);

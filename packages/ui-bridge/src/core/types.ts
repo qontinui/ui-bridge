@@ -414,6 +414,15 @@ export interface RegisteredElement {
   semanticType?: string;
   /** Purpose of the element */
   purpose?: string;
+
+  /**
+   * ID of a `useUIComponent` that owns/renders this element. Set automatically
+   * when the element is registered inside a `<UIBridgeComponentScope>`, so
+   * snapshot consumers can discover that higher-level actions exist (e.g.
+   * `POST /control/component/<ownedByComponent>/action/load-profile`) rather
+   * than driving the flow through raw element clicks.
+   */
+  ownedByComponent?: string;
 }
 
 // ============================================================================
