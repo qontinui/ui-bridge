@@ -20,7 +20,7 @@ export { ChangeObserver } from './change-observer';
 export type { ChangeObserverConfig, DOMChangeEvent } from './change-observer';
 
 // Registry singleton accessor
-export { UIBridgeRegistry, getGlobalRegistry } from './registry';
+export { UIBridgeRegistry, getGlobalRegistry, serializeRegisteredElement } from './registry';
 
 // Element fingerprinting for state discovery
 export {

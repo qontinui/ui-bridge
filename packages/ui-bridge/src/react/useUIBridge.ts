@@ -42,7 +42,10 @@ export interface UseUIBridgeReturn {
   /** Create a snapshot of the current state */
   createSnapshot: () => BridgeSnapshot;
   /** Create a snapshot asynchronously (non-blocking, yields between batches) */
-  createSnapshotAsync: (batchSize?: number) => Promise<BridgeSnapshot>;
+  createSnapshotAsync: (
+    batchSize?: number,
+    options?: { componentBasePath?: string }
+  ) => Promise<BridgeSnapshot>;
   /** Execute an action on an element */
   executeAction: (
     elementId: string,
@@ -163,7 +166,10 @@ export function useUIBridge(): UseUIBridgeReturn {
 
   // Create snapshot async (non-blocking)
   const createSnapshotAsync = useCallback(
-    async (batchSize?: number): Promise<BridgeSnapshot> => {
+    async (
+      batchSize?: number,
+      options?: { componentBasePath?: string }
+    ): Promise<BridgeSnapshot> => {
       if (!context) {
         return {
           timestamp: Date.now(),
@@ -172,7 +178,7 @@ export function useUIBridge(): UseUIBridgeReturn {
           workflows: [],
         };
       }
-      return context.createSnapshotAsync(batchSize);
+      return context.createSnapshotAsync(batchSize, options);
     },
     [context]
   );

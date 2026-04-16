@@ -40,6 +40,45 @@ import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 
 /**
+ * Single source of truth for serializing a `RegisteredElement` to a snapshot
+ * entry. Used by `createSnapshot`/`createSnapshotAsync` here AND by the
+ * runner's `serializeElement` helper so the two paths cannot drift. When you
+ * add a field to `RegisteredElement` that should appear in serialized form,
+ * add it here only.
+ *
+ * Returns the snapshot-shape (no `registeredAt`/`mounted`/`element`). Wrappers
+ * that need additional fields can spread and extend.
+ *
+ * @param options.componentBasePath  Prefix for `componentActionBasePath`. Defaults
+ *   to `/control/component` (correct for the standalone ui-bridge server).
+ *   The runner mounts routes under `/ui-bridge/...` so it should pass
+ *   `/ui-bridge/control/component`.
+ */
+export function serializeRegisteredElement(
+  el: RegisteredElement,
+  options: { componentBasePath?: string } = {}
+): BridgeSnapshot['elements'][number] {
+  const componentBasePath = options.componentBasePath ?? '/control/component';
+  return {
+    id: el.id,
+    type: el.type,
+    tagName: el.element.tagName.toLowerCase(),
+    label: el.label,
+    identifier: el.getIdentifier(),
+    state: el.getState(),
+    actions: el.actions,
+    customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+    category: el.category,
+    contentMetadata: el.contentMetadata,
+    mediaMetadata: el.mediaMetadata,
+    ownedByComponent: el.ownedByComponent,
+    componentActionBasePath: el.ownedByComponent
+      ? `${componentBasePath}/${el.ownedByComponent}`
+      : undefined,
+  };
+}
+
+/**
  * Capture form-specific state (required, validation, constraints) for a form control element.
  */
 function captureFormControlState(
@@ -1741,26 +1780,10 @@ export class UIBridgeRegistry {
   /**
    * Create a snapshot of the current state
    */
-  createSnapshot(): BridgeSnapshot {
+  createSnapshot(options: { componentBasePath?: string } = {}): BridgeSnapshot {
     return {
       timestamp: Date.now(),
-      elements: this.getAllElements().map((el) => ({
-        id: el.id,
-        type: el.type,
-        tagName: el.element.tagName.toLowerCase(),
-        label: el.label,
-        identifier: el.getIdentifier(),
-        state: el.getState(),
-        actions: el.actions,
-        customActions: el.customActions ? Object.keys(el.customActions) : undefined,
-        category: el.category,
-        contentMetadata: el.contentMetadata,
-        mediaMetadata: el.mediaMetadata,
-        ownedByComponent: el.ownedByComponent,
-        componentActionBasePath: el.ownedByComponent
-          ? `/control/component/${el.ownedByComponent}`
-          : undefined,
-      })),
+      elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,
         name: comp.name,
@@ -1786,30 +1809,17 @@ export class UIBridgeRegistry {
    * there are many registered elements (200-500+), since getState() and
    * getIdentifier() force layout/style recalculation for each element.
    */
-  async createSnapshotAsync(batchSize = 50): Promise<BridgeSnapshot> {
+  async createSnapshotAsync(
+    batchSize = 50,
+    options: { componentBasePath?: string } = {}
+  ): Promise<BridgeSnapshot> {
     const allElements = this.getAllElements();
     const elementSnapshots: BridgeSnapshot['elements'] = [];
 
     for (let i = 0; i < allElements.length; i += batchSize) {
       const batch = allElements.slice(i, i + batchSize);
       for (const el of batch) {
-        elementSnapshots.push({
-          id: el.id,
-          type: el.type,
-          tagName: el.element.tagName.toLowerCase(),
-          label: el.label,
-          identifier: el.getIdentifier(),
-          state: el.getState(),
-          actions: el.actions,
-          customActions: el.customActions ? Object.keys(el.customActions) : undefined,
-          category: el.category,
-          contentMetadata: el.contentMetadata,
-          mediaMetadata: el.mediaMetadata,
-          ownedByComponent: el.ownedByComponent,
-          componentActionBasePath: el.ownedByComponent
-            ? `/control/component/${el.ownedByComponent}`
-            : undefined,
-        });
+        elementSnapshots.push(serializeRegisteredElement(el, options));
       }
       // Yield to main thread between batches to keep UI responsive
       if (i + batchSize < allElements.length) {

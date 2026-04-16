@@ -74,9 +74,12 @@ export interface UIBridgeContextValue {
   /** Get all registered components */
   getComponents: () => RegisteredComponent[];
   /** Create a snapshot */
-  createSnapshot: () => BridgeSnapshot;
+  createSnapshot: (options?: { componentBasePath?: string }) => BridgeSnapshot;
   /** Create a snapshot asynchronously (non-blocking) */
-  createSnapshotAsync: (batchSize?: number) => Promise<BridgeSnapshot>;
+  createSnapshotAsync: (
+    batchSize?: number,
+    options?: { componentBasePath?: string }
+  ) => Promise<BridgeSnapshot>;
   /** Subscribe to events */
   on: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => () => void;
   /** Unsubscribe from events */
@@ -447,10 +450,14 @@ export function UIBridgeProvider({
 
   const getComponents = useCallback(() => registry.getAllComponents(), [registry]);
 
-  const createSnapshot = useCallback(() => registry.createSnapshot(), [registry]);
+  const createSnapshot = useCallback(
+    (options?: { componentBasePath?: string }) => registry.createSnapshot(options),
+    [registry]
+  );
 
   const createSnapshotAsync = useCallback(
-    (batchSize?: number) => registry.createSnapshotAsync(batchSize),
+    (batchSize?: number, options?: { componentBasePath?: string }) =>
+      registry.createSnapshotAsync(batchSize, options),
     [registry]
   );
 
