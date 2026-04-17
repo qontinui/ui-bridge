@@ -316,7 +316,13 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         const resp = await fetch(`${basePath}/heartbeat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timestamp: Date.now(), tabId }),
+          body: JSON.stringify({
+            timestamp: Date.now(),
+            tabId,
+            url: typeof window !== 'undefined' ? window.location.href : undefined,
+            title: typeof document !== 'undefined' ? document.title : undefined,
+            visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
+          }),
         });
         // Recovery: the server reports whether our tabId is a registered SSE
         // listener. If it is not (e.g. after a client-side navigation that
@@ -326,10 +332,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         if (resp.ok) {
           try {
             const data = await resp.json();
-            const tabRegistered =
-              data?.tabRegistered ??
-              data?.data?.tabRegistered ??
-              null;
+            const tabRegistered = data?.tabRegistered ?? data?.data?.tabRegistered ?? null;
             if (tabRegistered === false) {
               // Server lost our registration. Force a full reconnect
               // regardless of the EventSource's local readyState — the SSE

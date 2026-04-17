@@ -78,6 +78,8 @@ export interface TransportDiagnostics {
   wsClientCount: number;
   wsClientIds: string[];
   commandQueueLength: number;
+  tabHeartbeats: Record<string, number>;
+  tabMetadata: Record<string, { url: string; title: string; visibility: string; lastSeen: number }>;
 }
 
 export interface CommandRelayOptions {
@@ -120,6 +122,10 @@ export class CommandRelay {
   private readonly demotedTabs: Set<string>;
   private readonly commandQueue: QueuedCommand[];
   private readonly tabHeartbeats: Map<string, number>;
+  private readonly tabMetadata: Map<
+    string,
+    { url: string; title: string; visibility: string; lastSeen: number }
+  >;
   private readonly tabLastSuccess: Map<string, number>;
 
   // Simple value state
@@ -153,6 +159,7 @@ export class CommandRelay {
     if (!g[key('CommandQueue')]) g[key('CommandQueue')] = [];
     if (!g[key('PrimaryTabId')]) g[key('PrimaryTabId')] = null;
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
+    if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
@@ -174,6 +181,7 @@ export class CommandRelay {
     this.commandQueue = g[key('CommandQueue')];
     this.primaryTabId = g[key('PrimaryTabId')];
     this.tabHeartbeats = g[key('TabHeartbeats')];
+    this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.buildId = g[key('BuildId')];
 
@@ -200,6 +208,7 @@ export class CommandRelay {
           this.tabHeartbeats.delete(tabId);
           this.demotedTabs.delete(tabId);
           this.tabLastSuccess.delete(tabId);
+          this.tabMetadata.delete(tabId);
         }
       }
     }
@@ -810,6 +819,7 @@ export class CommandRelay {
       if (retryTimer) clearTimeout(retryTimer);
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
+      this.tabMetadata.delete(id);
       console.log(
         `[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`
       );
@@ -862,10 +872,21 @@ export class CommandRelay {
   /**
    * Record a heartbeat from the browser, optionally per-tab.
    */
-  receiveHeartbeat(tabId?: string): void {
+  receiveHeartbeat(
+    tabId?: string,
+    metadata?: { url?: string; title?: string; visibility?: string }
+  ): void {
     const now = Date.now();
     if (tabId) {
       this.tabHeartbeats.set(tabId, now);
+      if (metadata) {
+        this.tabMetadata.set(tabId, {
+          url: metadata.url ?? '',
+          title: metadata.title ?? '',
+          visibility: metadata.visibility ?? 'unknown',
+          lastSeen: now,
+        });
+      }
     } else {
       // Anonymous heartbeat — store under a synthetic key
       this.tabHeartbeats.set('__anonymous__', now);
@@ -914,6 +935,8 @@ export class CommandRelay {
       wsClientCount: this.wsClients.size,
       wsClientIds: Array.from(this.wsClients.keys()),
       commandQueueLength: this.commandQueue.length,
+      tabHeartbeats: Object.fromEntries(this.tabHeartbeats),
+      tabMetadata: Object.fromEntries(this.tabMetadata),
     };
   }
 
@@ -973,6 +996,7 @@ export class CommandRelay {
       this.cleanupInterval = null;
     }
     this.tabHeartbeats.clear();
+    this.tabMetadata.clear();
     this.tabLastSuccess.clear();
     this.demotedTabs.clear();
     this.tabListeners.clear();

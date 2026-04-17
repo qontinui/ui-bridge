@@ -3529,6 +3529,28 @@ export async function executeCommand(
     }
 
     // ======================================================================
+    // Tab management
+    // ======================================================================
+
+    case 'tabActivate': {
+      try {
+        window.focus();
+      } catch {
+        /* ignore */
+      }
+      return { success: true, focused: document.hasFocus(), timestamp: Date.now() };
+    }
+
+    case 'tabClose': {
+      try {
+        window.close();
+      } catch {
+        /* ignore — only works for script-opened tabs */
+      }
+      return { success: true, timestamp: Date.now() };
+    }
+
+    // ======================================================================
     // Fallback
     // ======================================================================
 

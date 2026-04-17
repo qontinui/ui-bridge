@@ -1133,6 +1133,26 @@ class UIBridgeClient:
         return None
 
     # ==========================================================================
+    # Tab discovery & management
+    # ==========================================================================
+
+    def list_tabs(self) -> list[dict[str, Any]]:
+        """List all connected browser tabs with URL, title, visibility."""
+        data = self._request("GET", "/tabs")
+        tabs: list[dict[str, Any]] = data.get("tabs", [])
+        return tabs
+
+    def activate_tab(self, tab_id: str) -> dict[str, Any]:
+        """Focus a specific browser tab by its tabId."""
+        result: dict[str, Any] = self._request("POST", f"/tabs/{tab_id}/activate")
+        return result
+
+    def close_tab(self, tab_id: str) -> dict[str, Any]:
+        """Request a specific tab to close."""
+        result: dict[str, Any] = self._request("POST", f"/tabs/{tab_id}/close")
+        return result
+
+    # ==========================================================================
     # Health
     # ==========================================================================
 
