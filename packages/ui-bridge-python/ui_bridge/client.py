@@ -1080,6 +1080,59 @@ class UIBridgeClient:
         return self._request("POST", "/control/page/refresh")
 
     # ==========================================================================
+    # CDP Tab Discovery
+    # ==========================================================================
+
+    def list_cdp_tabs(self) -> list[dict[str, Any]]:
+        """List all Chrome tabs via CDP (requires --remote-debugging-port).
+
+        Returns:
+            List of CDP target dicts with id, type, url, title, etc.
+        """
+        data = self._request("GET", "/tabs/cdp")
+        targets: list[dict[str, Any]] = data.get("targets", [])
+        return targets
+
+    def activate_cdp_tab(self, target_id: str) -> bool:
+        """Activate a Chrome tab by its CDP target ID.
+
+        Args:
+            target_id: CDP target identifier
+
+        Returns:
+            True if activation succeeded
+        """
+        data: dict[str, Any] = self._request("POST", f"/tabs/cdp/{target_id}/activate")
+        return bool(data.get("success")) if isinstance(data, dict) else False
+
+    def close_cdp_tab(self, target_id: str) -> bool:
+        """Close a Chrome tab by its CDP target ID.
+
+        Args:
+            target_id: CDP target identifier
+
+        Returns:
+            True if close succeeded
+        """
+        data: dict[str, Any] = self._request("POST", f"/tabs/cdp/{target_id}/close")
+        return bool(data.get("success")) if isinstance(data, dict) else False
+
+    def open_cdp_tab(self, url: str | None = None) -> dict[str, Any] | None:
+        """Open a new Chrome tab via CDP.
+
+        Args:
+            url: Optional URL to navigate the new tab to
+
+        Returns:
+            CDP target dict for the new tab, or None on failure
+        """
+        payload = {"url": url} if url else None
+        data: dict[str, Any] | None = self._request("POST", "/tabs/cdp/new", json=payload)
+        if isinstance(data, dict):
+            return data
+        return None
+
+    # ==========================================================================
     # Health
     # ==========================================================================
 

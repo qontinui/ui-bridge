@@ -72,6 +72,9 @@ export {
 // Relay handlers
 export { createRelayHandlers, type RelayHandlersOptions } from './relay-handlers';
 
+// CDP tab discovery
+export { CDPTabDiscovery, type CDPTarget, type CDPTabsConfig } from './cdp-tabs';
+
 // Shared selector matcher (single source of truth for element filter queries)
 export {
   matchesElementSelector,

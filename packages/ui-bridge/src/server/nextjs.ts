@@ -25,6 +25,7 @@ import type {
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
 import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
+import { CDPTabDiscovery } from './cdp-tabs';
 
 /**
  * Next.js specific configuration
@@ -117,6 +118,7 @@ export function createNextRouteHandlers(
   DELETE: NextRouteHandler;
 } {
   const authenticate = config.authenticate;
+  const cdp = new CDPTabDiscovery();
 
   async function handleRequest(
     request: NextRequest,
@@ -145,6 +147,10 @@ export function createNextRouteHandlers(
       if (method === 'GET' && path === '/control/changes/stream' && config.sseManager) {
         return createSSEStreamResponse(request, config.sseManager, 'snapshot:changed');
       }
+
+      // CDP tab discovery routes (opt-in, works without relay)
+      const cdpResponse = await handleCDPRoute(method, path, request, cdp);
+      if (cdpResponse) return cdpResponse;
 
       // Intercept relay routes before normal routing
       if (config.relay) {
@@ -454,6 +460,86 @@ export function createUIBridgeHandler(config?: NextJSAdapterConfig): NextRouteHa
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 
 // ============================================================================
+// CDP Tab Discovery Routes
+// ============================================================================
+
+/**
+ * Handle CDP tab discovery routes. Returns a Response if the route matches,
+ * or null to fall through to relay / normal routing.
+ */
+async function handleCDPRoute(
+  method: string,
+  path: string,
+  request: Request,
+  cdp: CDPTabDiscovery
+): Promise<Response | null> {
+  // GET /tabs/cdp — list all Chrome tabs via CDP
+  if (method === 'GET' && path === '/tabs/cdp') {
+    if (!cdp.isEnabled()) {
+      return jsonResponse(
+        {
+          success: false,
+          error:
+            'CDP not configured. Launch Chrome with --remote-debugging-port=9222 and set CDP_ENDPOINT env var.',
+          code: 'CDP_DISABLED',
+        },
+        503
+      );
+    }
+    const targets = await cdp.listTargets();
+    return jsonResponse({
+      success: true,
+      data: { targets, endpoint: 'configured' },
+      timestamp: Date.now(),
+    });
+  }
+
+  // POST /tabs/cdp/new — open a new tab (must be checked before :targetId routes)
+  if (method === 'POST' && path === '/tabs/cdp/new') {
+    if (!cdp.isEnabled()) {
+      return jsonResponse(
+        { success: false, error: 'CDP not configured.', code: 'CDP_DISABLED' },
+        503
+      );
+    }
+    const body = await request.json().catch(() => ({}));
+    const url = (body as { url?: string }).url;
+    const target = await cdp.openNewTab(url);
+    return jsonResponse({ success: !!target, data: target, timestamp: Date.now() });
+  }
+
+  // POST /tabs/cdp/:targetId/activate
+  const activateMatch = method === 'POST' && path.match(/^\/tabs\/cdp\/([^/]+)\/activate$/);
+  if (activateMatch) {
+    if (!cdp.isEnabled()) {
+      return jsonResponse(
+        { success: false, error: 'CDP not configured.', code: 'CDP_DISABLED' },
+        503
+      );
+    }
+    const targetId = decodeURIComponent(activateMatch[1]);
+    const ok = await cdp.activateTarget(targetId);
+    return jsonResponse({ success: ok, timestamp: Date.now() });
+  }
+
+  // POST /tabs/cdp/:targetId/close
+  const closeMatch = method === 'POST' && path.match(/^\/tabs\/cdp\/([^/]+)\/close$/);
+  if (closeMatch) {
+    if (!cdp.isEnabled()) {
+      return jsonResponse(
+        { success: false, error: 'CDP not configured.', code: 'CDP_DISABLED' },
+        503
+      );
+    }
+    const targetId = decodeURIComponent(closeMatch[1]);
+    const ok = await cdp.closeTarget(targetId);
+    return jsonResponse({ success: ok, timestamp: Date.now() });
+  }
+
+  return null;
+}
+
+// ============================================================================
 // Relay Routes
 // ============================================================================
 
@@ -487,7 +573,11 @@ function handleRelayRoute(
       try {
         const body = await request.json();
         heartbeatTabId = body?.tabId as string | undefined;
-        relay.receiveHeartbeat(heartbeatTabId);
+        relay.receiveHeartbeat(heartbeatTabId, {
+          url: body?.url as string | undefined,
+          title: body?.title as string | undefined,
+          visibility: body?.visibility as string | undefined,
+        });
       } catch {
         relay.receiveHeartbeat();
       }
@@ -528,21 +618,64 @@ function handleRelayRoute(
     return jsonResponse(response);
   }
 
-  // GET /tabs — connected tab info
+  // GET /tabs — connected tab info with metadata
   if (method === 'GET' && path === '/tabs') {
     const url = new URL(request.url);
     const detailed = url.searchParams.get('detailed') === 'true';
+    const diag = relay.getTransportDiagnostics();
     if (detailed) {
       return (async () => {
-        const tabs = await relay.getTabsWithInfo();
+        const tabInfos = await relay.getTabsWithInfo();
+        const tabs = tabInfos.map((info) => ({
+          ...info,
+          ...(diag.tabMetadata[info.tabId] || {}),
+          lastHeartbeat: diag.tabHeartbeats[info.tabId] ?? null,
+          isPrimary: info.tabId === diag.primaryTabId,
+          isDemoted: diag.demotedTabs.includes(info.tabId),
+        }));
         return jsonResponse({ success: true, data: { tabs }, timestamp: Date.now() });
       })();
     }
+    const tabs = diag.connectedTabs.map((tabId) => ({
+      tabId,
+      ...(diag.tabMetadata[tabId] || {}),
+      lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
+      isPrimary: tabId === diag.primaryTabId,
+      isDemoted: diag.demotedTabs.includes(tabId),
+    }));
     return jsonResponse({
       success: true,
-      data: { tabs: relay.getConnectedTabs() },
+      data: { tabs },
       timestamp: Date.now(),
     });
+  }
+
+  // POST /tabs/:tabId/activate — focus a specific tab
+  if (method === 'POST' && path.match(/^\/tabs\/([^/]+)\/activate$/)) {
+    const targetTabId = decodeURIComponent(path.split('/')[2]);
+    return (async () => {
+      try {
+        const result = await relay.queueCommand('tabActivate', {}, { targetTabId });
+        return jsonResponse({ success: true, data: result, timestamp: Date.now() });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
+      }
+    })();
+  }
+
+  // POST /tabs/:tabId/close — request a tab to close
+  if (method === 'POST' && path.match(/^\/tabs\/([^/]+)\/close$/)) {
+    const targetTabId = decodeURIComponent(path.split('/')[2]);
+    return (async () => {
+      try {
+        const result = await relay.queueCommand('tabClose', {}, { targetTabId });
+        return jsonResponse({ success: true, data: result, timestamp: Date.now() });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
+      }
+    })();
   }
 
   return null;
