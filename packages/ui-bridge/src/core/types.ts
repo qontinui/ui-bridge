@@ -966,6 +966,13 @@ export interface BridgeSnapshot {
     ownedByComponent?: string;
     /** Base URL template for the owning component, if present. */
     componentActionBasePath?: string;
+    /** Stable reference that survives React re-renders */
+    stableRef?: {
+      id: string;
+      fingerprint: string;
+      semanticPath: string;
+      stableId?: string;
+    };
   }>;
   /** All registered components */
   components: Array<{

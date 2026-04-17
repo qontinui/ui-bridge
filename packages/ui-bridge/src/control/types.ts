@@ -781,6 +781,53 @@ export interface ServerBatchResponse {
 }
 
 /**
+ * A single step in a control batch request (simplified form for the
+ * standalone `controlBatch()` helper).
+ */
+export interface ControlBatchStep {
+  /** Target element ID */
+  elementId: string;
+  /** Action name (e.g., "click", "type", "select") */
+  action: string;
+  /** Action-specific parameters */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * Per-step result returned by the `/control/batch` endpoint.
+ */
+export interface ControlBatchStepResult {
+  /** Zero-based step index */
+  step: number;
+  /** Whether the step succeeded */
+  success: boolean;
+  /** Wall-clock time in ms */
+  durationMs: number;
+  /** Target element ID */
+  elementId: string;
+  /** Action executed */
+  action: string;
+  /** Raw response from the step */
+  response: Record<string, unknown>;
+}
+
+/**
+ * Response from the `/control/batch` endpoint.
+ */
+export interface ControlBatchResponse {
+  /** True only if every executed step succeeded */
+  success: boolean;
+  /** Per-step results in request order */
+  results: ControlBatchStepResult[];
+  /** Total wall-clock time in ms */
+  totalMs: number;
+  /** Snapshot diff (element IDs added / removed) */
+  snapshotDiff: Record<string, unknown> | null;
+  /** Whether execution was stopped early due to an error */
+  stoppedEarly: boolean;
+}
+
+/**
  * Action executor interface
  */
 export interface ActionExecutor {

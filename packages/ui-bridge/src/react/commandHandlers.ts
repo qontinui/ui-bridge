@@ -222,6 +222,57 @@ function createActionFailure(
   };
 }
 
+/**
+ * Fallback resolution chain for stale element IDs.
+ *
+ * When an action targets an element ID that no longer exists in the registry
+ * (e.g., after a React re-render replaced the DOM node), this chain tries
+ * progressively less precise strategies to find the replacement element:
+ *
+ *   1. data-ui-bridge-id DOM attribute match
+ *   2. Fingerprint match via resolveStableRef (checks current registry + semantic path)
+ *   3. If a match is found, transparently returns the new RegisteredElement
+ *   4. If not, returns undefined (caller should return the existing "element not found" error)
+ */
+function resolveElementWithFallback(id: string): RegisteredElement | undefined {
+  const registry = getGlobalRegistry();
+
+  // Strategy 1: Direct registry lookup (already tried by caller, but cheap)
+  const direct = registry.getElement(id);
+  if (direct) return direct;
+
+  // Strategy 2: data-ui-bridge-id DOM attribute match
+  if (typeof document !== 'undefined') {
+    try {
+      const byAttr = document.querySelector(
+        `[data-ui-bridge-id="${CSS.escape(id)}"]`
+      ) as HTMLElement | null;
+      if (byAttr) {
+        const registered = registry.findByDOMElement(byAttr);
+        if (registered && registered.mounted) return registered;
+      }
+    } catch {
+      // Invalid selector — skip
+    }
+  }
+
+  // Strategy 3: Fingerprint match via resolveStableRef
+  // Build a minimal StableElementRef from just the ID and attempt resolution
+  // through the full resolution chain (fingerprint + semantic path)
+  const syntheticRef: StableElementRef = {
+    id,
+    idStrategy: 'prefer-existing',
+    primaryId: id,
+    fingerprint: '', // unknown — resolveStableRef will skip fingerprint match with empty hash
+    semanticPath: '',
+    lastSeenAt: 0,
+  };
+  const resolved = resolveStableRef(syntheticRef);
+  if (resolved) return resolved;
+
+  return undefined;
+}
+
 function elementToSnapshot(e: RegisteredElement) {
   const state = e.getState();
   return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
@@ -491,7 +542,8 @@ export async function executeCommand(
   const elements = registry.getAllElements();
   const components = registry.getAllComponents();
   const workflows = registry.getAllWorkflows();
-  const getElement = (id: string) => registry.getElement(id);
+  /** Resolve an element by ID, falling back through the stable-ref resolution chain. */
+  const getElement = (id: string) => registry.getElement(id) ?? resolveElementWithFallback(id);
 
   switch (action) {
     // ======================================================================

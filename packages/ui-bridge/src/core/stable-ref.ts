@@ -28,14 +28,18 @@ import { computeElementFingerprint, findNearestRegisteredElement } from './eleme
  * resolved even after its DOM node has been replaced.
  */
 export interface StableElementRef {
+  /** Current transient ID (changes on re-render) */
+  id: string;
   /** Strategy used to generate the primaryId (e.g. 'prefer-existing', 'semantic') */
   idStrategy: string;
   /** The element's registered ID at time of creation */
   primaryId: string;
-  /** Fingerprint hash for structural matching */
+  /** Content-based fingerprint hash (survives re-renders) */
   fingerprint: string;
-  /** Optional CSS selector path for semantic traversal */
-  semanticPath?: string;
+  /** Semantic path through the component tree (e.g., "App>Sidebar>NavItem[2]") */
+  semanticPath: string;
+  /** data-ui-bridge-id from DOM if present (highest priority for resolution) */
+  stableId?: string;
   /** Timestamp (ms) when this ref was last confirmed to resolve */
   lastSeenAt: number;
 }
@@ -100,23 +104,25 @@ function buildSemanticPath(element: HTMLElement): string | undefined {
  */
 export function createStableRef(element: RegisteredElement): StableElementRef {
   const fingerprint = computeElementFingerprint(element.element);
-  const semanticPath = buildSemanticPath(element.element);
+  const semanticPath = buildSemanticPath(element.element) ?? element.element.tagName.toLowerCase();
 
   // Infer the ID strategy from the element's attributes
-  let idStrategy = 'semantic';
-  if (element.element.getAttribute('data-testid')) {
-    idStrategy = 'data-testid';
-  } else if (element.element.id && !/^:r[0-9a-z]+:$/.test(element.element.id)) {
-    idStrategy = 'html-id';
-  } else {
-    idStrategy = 'prefer-existing';
-  }
+  const idStrategy = element.element.getAttribute('data-testid')
+    ? 'data-testid'
+    : element.element.id && !/^:r[0-9a-z]+:$/.test(element.element.id)
+      ? 'html-id'
+      : 'prefer-existing';
+
+  // Capture data-ui-bridge-id if present (written by useAutoRegister)
+  const stableId = element.element.getAttribute('data-ui-bridge-id') || undefined;
 
   return {
+    id: element.id,
     idStrategy,
     primaryId: element.id,
     fingerprint: fingerprint.hash,
     semanticPath,
+    stableId,
     lastSeenAt: Date.now(),
   };
 }

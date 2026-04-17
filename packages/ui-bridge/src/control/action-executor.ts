@@ -79,6 +79,8 @@ import type {
   ServerBatchOperation,
   ServerBatchOptions,
   ServerBatchResponse,
+  ControlBatchStep,
+  ControlBatchResponse,
 } from './types';
 
 /**
@@ -2747,5 +2749,84 @@ export async function batch(
     success: payload.success,
     results: payload.results,
     totalDurationMs: payload.totalDurationMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Control batch execution (POST /ui-bridge/control/batch)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a sequence of element actions via the control batch endpoint
+ * (`POST /ui-bridge/control/batch`).
+ *
+ * Unlike the lower-level `batch()` helper (which dispatches arbitrary IPC
+ * operations), `controlBatch()` accepts simplified action steps with
+ * `elementId` / `action` / `params` and returns per-step timing plus a
+ * snapshot diff showing which element IDs were added or removed.
+ *
+ * @param baseUrl - Base URL of the UI Bridge server (e.g., "http://localhost:1420")
+ * @param steps - Array of action steps to execute
+ * @param options - Optional settings
+ * @returns The batch response with per-step results, timing, and snapshot diff
+ *
+ * @example
+ * ```ts
+ * const response = await controlBatch('http://localhost:1420', [
+ *   { elementId: 'btn-save', action: 'click' },
+ *   { elementId: 'input-name', action: 'type', params: { text: 'Alice' } },
+ * ], { stopOnError: true });
+ * ```
+ */
+export async function controlBatch(
+  baseUrl: string,
+  steps: ControlBatchStep[],
+  options?: { stopOnError?: boolean }
+): Promise<ControlBatchResponse> {
+  if (steps.length > MAX_BATCH_SIZE) {
+    throw new Error(`Batch size ${steps.length} exceeds maximum of ${MAX_BATCH_SIZE}`);
+  }
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/ui-bridge/control/batch`;
+  const body = JSON.stringify({
+    steps,
+    stopOnError: options?.stopOnError ?? true,
+  });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    let detail: string;
+    try {
+      const parsed = JSON.parse(text);
+      // Handle structured batch_size_exceeded error
+      const errorData = parsed.error ? JSON.parse(parsed.error) : parsed.data;
+      if (errorData?.error === 'batch_size_exceeded') {
+        throw new Error(
+          `Batch size exceeded: max ${errorData.max}, received ${errorData.received}`
+        );
+      }
+      detail = parsed.error ?? parsed.data?.error ?? text;
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('Batch size exceeded')) throw e;
+      detail = text;
+    }
+    throw new Error(`Control batch request failed (HTTP ${response.status}): ${detail}`);
+  }
+
+  const json = await response.json();
+  const payload = json.data ?? json;
+
+  return {
+    success: payload.success ?? json.success,
+    results: payload.results ?? [],
+    totalMs: payload.totalMs ?? 0,
+    snapshotDiff: payload.snapshotDiff ?? null,
+    stoppedEarly: payload.stoppedEarly ?? false,
   };
 }

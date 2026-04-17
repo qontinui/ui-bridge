@@ -13,6 +13,7 @@ export {
   createActionExecutor,
   extractReactState,
   batch,
+  controlBatch,
   MAX_BATCH_SIZE,
 } from './action-executor';
 

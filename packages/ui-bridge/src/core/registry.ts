@@ -35,6 +35,7 @@ import type {
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
+import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
@@ -74,6 +75,17 @@ export function serializeRegisteredElement(
     ownedByComponent: el.ownedByComponent,
     componentActionBasePath: el.ownedByComponent
       ? `${componentBasePath}/${el.ownedByComponent}`
+      : undefined,
+    stableRef: el.element?.isConnected
+      ? (() => {
+          const ref = createStableRef(el);
+          return {
+            id: ref.id,
+            fingerprint: ref.fingerprint,
+            semanticPath: ref.semanticPath,
+            stableId: ref.stableId,
+          };
+        })()
       : undefined,
   };
 }
@@ -480,6 +492,13 @@ function inferElementType(element: HTMLElement): ElementType {
 /**
  * Registry options
  */
+/**
+ * Duration (ms) to keep recently-unmounted element refs for fingerprint-based
+ * ID preservation across React re-renders. Tunable per-registry via
+ * `RegistryOptions.remountCacheWindowMs`.
+ */
+export const DEFAULT_REMOUNT_CACHE_WINDOW_MS = 2000;
+
 export interface RegistryOptions {
   /** Enable verbose logging */
   verbose?: boolean;
@@ -489,6 +508,8 @@ export interface RegistryOptions {
   elementEventLog?: ElementEventLog;
   /** Preserve element IDs across React remounts by fingerprint matching (default: false) */
   preserveIdAcrossRemount?: boolean;
+  /** How long (ms) to keep recently-unmounted refs for remount matching (default: 2000) */
+  remountCacheWindowMs?: number;
 }
 
 /**
@@ -704,9 +725,10 @@ export class UIBridgeRegistry {
     // Preserve ID across remounts: match by fingerprint against recently-removed elements
     if (this.options.preserveIdAcrossRemount) {
       const now = Date.now();
+      const cacheWindow = this.options.remountCacheWindowMs ?? DEFAULT_REMOUNT_CACHE_WINDOW_MS;
       const fp = computeElementFingerprint(element).hash;
       for (const [key, entry] of this.recentlyRemoved) {
-        if (now - entry.removedAt > 500) {
+        if (now - entry.removedAt > cacheWindow) {
           this.recentlyRemoved.delete(key);
           continue;
         }
