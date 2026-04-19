@@ -26,6 +26,7 @@ import type {
   DomMutationEntry,
   ConsoleErrorEntry,
   BufferedNetworkEntry,
+  BufferedTauriEvent,
   SnapshotBookmark,
   NLActionResponse,
   ChangeTimeline,
@@ -170,6 +171,14 @@ export class ChangeTracker {
   private mutationObserver: MutationObserver | null = null;
   private unsubscribeBrowserEvents: (() => void) | null = null;
   private unsubscribeNetworkEvents: (() => void) | null = null;
+
+  // Phase 2a: Tauri events sub-buffer. Only populated inside a Tauri webview
+  // (guarded by `window.__TAURI_INTERNALS__`). `@tauri-apps/api` is loaded via
+  // dynamic import so non-Tauri hosts don't pay for the dependency.
+  private tauriEventBuffer: BufferedTauriEvent[] = [];
+  private tauriEventNames: string[] = [];
+  private tauriEventUnlisteners: Array<() => void> = [];
+  private readonly tauriEventBufferCap = 200;
 
   // Last diff for categorization
   private lastDiff: SemanticDiff | null = null;
@@ -1121,8 +1130,13 @@ export class ChangeTracker {
   // Feature 5: Change Buffer
   // ==========================================================================
 
-  /** Enable change buffering. Starts MutationObserver and subscribes to console/network events. */
-  enableBuffer(): void {
+  /** Enable change buffering. Starts MutationObserver and subscribes to
+   * console/network events. When running inside a Tauri webview and
+   * `setTauriEventNames()` has been called, also subscribes to those Tauri
+   * backend events. The returned promise resolves once Tauri-event
+   * subscriptions are in place; all other subscriptions are synchronous. In
+   * non-Tauri hosts the promise resolves immediately. */
+  async enableBuffer(): Promise<void> {
     this.bufferEnabled = true;
     this.bufferEnabledAt = Date.now();
 
@@ -1228,12 +1242,122 @@ export class ChangeTracker {
         }
       });
     }
+
+    // Subscribe to Tauri backend events (no-op outside a Tauri webview).
+    await this.subscribeTauriEvents();
   }
 
   /** Disable change buffering. Stops MutationObserver and unsubscribes from services. */
   disableBuffer(): void {
     this.bufferEnabled = false;
     this._teardownExtendedObservers();
+  }
+
+  /**
+   * Set the list of Tauri event names to capture in the change buffer.
+   * Safe to call before or after `enableBuffer()`. When the buffer is
+   * currently enabled, this unsubscribes from the previous names and
+   * subscribes to the new ones (best-effort — returns a promise that
+   * resolves once resubscription completes).
+   */
+  async setTauriEventNames(names: string[]): Promise<void> {
+    // Clone so external mutations to the caller's array don't affect us.
+    this.tauriEventNames = [...names];
+    if (this.bufferEnabled) {
+      this.unsubscribeTauriEvents();
+      await this.subscribeTauriEvents();
+    }
+  }
+
+  /**
+   * Subscribe to Tauri backend events. No-op when not running inside a
+   * Tauri webview (detected via `window.__TAURI_INTERNALS__`) or when the
+   * event-name list is empty. Loads `@tauri-apps/api/event` via dynamic
+   * import so the SDK stays usable in non-Tauri hosts without the optional
+   * dependency installed.
+   */
+  private async subscribeTauriEvents(): Promise<void> {
+    // Guard: only run in a Tauri webview.
+    if (
+      typeof window === 'undefined' ||
+      !(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    ) {
+      return;
+    }
+    if (this.tauriEventNames.length === 0) return;
+
+    type ListenFn = (
+      name: string,
+      handler: (e: { event: string; payload: unknown }) => void
+    ) => Promise<() => void>;
+
+    // Prefer the globally exposed Tauri event API. When the Tauri frontend
+    // runs with `withGlobalTauri: true` (the default for v2), the helpers are
+    // published at `window.__TAURI__.event.listen`. This avoids the dynamic-
+    // import path entirely, which otherwise fails in production bundles
+    // where bare specifiers like `@tauri-apps/api/event` can't be resolved
+    // at runtime by the browser (Vite's `@vite-ignore` opts out of bundling
+    // and rewriting, so the specifier reaches the browser unchanged and
+    // throws `Failed to resolve module specifier`).
+    const globalTauri = (
+      window as unknown as {
+        __TAURI__?: { event?: { listen?: ListenFn } };
+      }
+    ).__TAURI__;
+    let listen: ListenFn | undefined = globalTauri?.event?.listen;
+
+    if (typeof listen !== 'function') {
+      try {
+        // Fallback: dynamic import of `@tauri-apps/api/event` for hosts
+        // that don't expose the global (e.g. `withGlobalTauri: false`).
+        // Kept out of the static dep tree via the helper below so vitest
+        // can mock by specifier.
+        const specifier = `@tauri-apps/api/event`;
+        const mod = await loadTauriEventModule(specifier);
+        const dynListen = (mod as { listen?: unknown }).listen;
+        if (typeof dynListen === 'function') {
+          listen = dynListen as ListenFn;
+        }
+      } catch (err) {
+        console.warn('[ui-bridge] Tauri event subscription unavailable:', err);
+        return;
+      }
+    }
+
+    if (typeof listen !== 'function') {
+      // Neither global nor dynamic-import path produced a usable listen fn.
+      return;
+    }
+
+    for (const name of this.tauriEventNames) {
+      try {
+        const unlisten = await listen(name, (e) => {
+          if (this.tauriEventBuffer.length >= this.tauriEventBufferCap) return;
+          this.tauriEventBuffer.push({
+            event: e.event,
+            payload: e.payload,
+            timestamp: Date.now(),
+          });
+        });
+        this.tauriEventUnlisteners.push(unlisten);
+      } catch (err) {
+        // One bad name shouldn't block the others.
+
+        console.warn(`[ui-bridge] Failed to subscribe to Tauri event "${name}":`, err);
+      }
+    }
+  }
+
+  /** Invoke every stored unlisten function and clear the list. */
+  private unsubscribeTauriEvents(): void {
+    for (const unlisten of this.tauriEventUnlisteners) {
+      try {
+        unlisten();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.tauriEventUnlisteners = [];
   }
 
   /** Stop MutationObserver and unsubscribe from console/network services. */
@@ -1258,6 +1382,10 @@ export class ChangeTracker {
       }
       this.unsubscribeNetworkEvents = null;
     }
+    // Clear Tauri listeners and drop any queued events — buffer semantics
+    // match the other sub-lists which are not preserved across disable.
+    this.unsubscribeTauriEvents();
+    this.tauriEventBuffer = [];
   }
 
   /** Whether the buffer is enabled */
@@ -1297,11 +1425,15 @@ export class ChangeTracker {
     const network_requests = [...this.networkRequestBuffer];
     this.networkRequestBuffer = [];
 
+    const tauri_events = [...this.tauriEventBuffer];
+    this.tauriEventBuffer = [];
+
     return {
       changes,
       dom,
       console_errors,
       network_requests,
+      tauri_events,
       count: changes.length,
       enabled_at: this.bufferEnabledAt,
       fromTimestamp: changes.length > 0 ? changes[0].recordedAt : 0,
@@ -1670,4 +1802,19 @@ export function createChangeTracker(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Dynamic-import wrapper for `@tauri-apps/api/event`.
+ *
+ * The specifier is passed in as a variable so neither Vite (vitest) nor tsup
+ * tries to resolve the module at transform/build time. This is load-bearing:
+ * the SDK is published without `@tauri-apps/api` as a hard dependency, so the
+ * module may not exist in the consumer's or test runner's node_modules, and a
+ * static import would hard-fail at import-analysis. At runtime in a Tauri
+ * webview the module is always present. Vitest's `vi.mock()` still matches
+ * by module name and intercepts the dynamic import.
+ */
+async function loadTauriEventModule(specifier: string): Promise<unknown> {
+  return import(/* @vite-ignore */ specifier);
 }

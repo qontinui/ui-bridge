@@ -269,6 +269,7 @@ function getElementState(element: HTMLElement): ElementState {
     state.availableOptions = Array.from(element.options).map((opt) => ({
       value: opt.value,
       label: opt.text,
+      selected: opt.selected,
     }));
   }
 

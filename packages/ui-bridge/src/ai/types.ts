@@ -1028,6 +1028,18 @@ export interface BufferedNetworkEntry {
   timestamp: number;
 }
 
+/** A Tauri backend event captured while the buffer is active. Only populated
+ * when the SDK is running inside a Tauri webview (detected via
+ * `window.__TAURI_INTERNALS__`). In non-Tauri hosts this stays empty. */
+export interface BufferedTauriEvent {
+  /** Tauri event name (matches the name passed to `listen()`). */
+  event: string;
+  /** Event payload as delivered by `@tauri-apps/api/event`. */
+  payload: unknown;
+  /** Wall-clock timestamp (Date.now()) when the event was observed. */
+  timestamp: number;
+}
+
 /** Response from draining the change buffer */
 export interface ChangeBufferDrainResult {
   /** Registry-level diffs (DOM mutations tracked via the semantic snapshot diff engine)
@@ -1039,6 +1051,10 @@ export interface ChangeBufferDrainResult {
   console_errors: ConsoleErrorEntry[];
   /** Network requests that started since last drain. */
   network_requests: BufferedNetworkEntry[];
+  /** Tauri backend events captured since last drain. Empty when the host is
+   * not a Tauri webview or no event names were registered via
+   * `setTauriEventNames()`. */
+  tauri_events: BufferedTauriEvent[];
   /** Total registry-level changes drained (backward compat) */
   count: number;
   /** Timestamp when the buffer was most recently enabled. */

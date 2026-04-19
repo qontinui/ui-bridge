@@ -2,11 +2,33 @@
  * Change Tracker Tests
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChangeTracker, analyzeStructuredChanges } from './change-tracker';
 import type { ChangeTrackerDeps } from './change-tracker';
 import type { SemanticSnapshot, SemanticDiff } from './types';
 import type { ControlSnapshot } from '../control/types';
+
+// ============================================================================
+// Tauri event mock (Phase 2a) — shared state captured across hoisted vi.mock
+// ============================================================================
+
+/** Handlers stored by the mocked `listen()` so tests can fire fake events. */
+const registeredTauriHandlers: Record<string, (e: { event: string; payload: unknown }) => void> =
+  {};
+/** Tracks every `listen()` call for assertion. */
+const mockListen = vi.fn(
+  async (name: string, handler: (e: { event: string; payload: unknown }) => void) => {
+    registeredTauriHandlers[name] = handler;
+    return mockUnlisten;
+  }
+);
+/** Single unlisten function reused across subscriptions (we assert call count). */
+const mockUnlisten = vi.fn();
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (name: string, handler: (e: { event: string; payload: unknown }) => void) =>
+    mockListen(name, handler),
+}));
 
 // ============================================================================
 // Helpers
@@ -371,6 +393,117 @@ describe('ChangeTracker', () => {
       // The buffer is only populated by executeWithDiff and waitForChange
       // Since those are async and require real deps, just test drain works
       expect(smallTracker.getBufferSize()).toBe(0);
+    });
+
+    // =======================================================================
+    // Tauri Event Sub-Buffer (Phase 2a)
+    // =======================================================================
+
+    describe('Tauri event sub-buffer', () => {
+      beforeEach(() => {
+        mockListen.mockClear();
+        mockUnlisten.mockClear();
+        for (const key of Object.keys(registeredTauriHandlers)) {
+          delete registeredTauriHandlers[key];
+        }
+        delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      });
+
+      afterEach(() => {
+        delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      });
+
+      it('returns empty tauri_events and does not call listen when not in a Tauri webview', async () => {
+        // __TAURI_INTERNALS__ intentionally unset.
+        await tracker.setTauriEventNames(['foo-event']);
+        await tracker.enableBuffer();
+
+        const drained = tracker.drainBuffer();
+        expect(drained.tauri_events).toEqual([]);
+        expect(mockListen).not.toHaveBeenCalled();
+      });
+
+      it('captures events fired through the listen() handler inside a Tauri webview', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['foo-event', 'bar-event']);
+        await tracker.enableBuffer();
+
+        expect(mockListen).toHaveBeenCalledTimes(2);
+        expect(registeredTauriHandlers['foo-event']).toBeDefined();
+
+        // Fire a fake event for 'foo-event'.
+        const payload = { counter: 42, label: 'hello' };
+        const before = Date.now();
+        registeredTauriHandlers['foo-event']({ event: 'foo-event', payload });
+        const after = Date.now();
+
+        const drained = tracker.drainBuffer();
+        expect(drained.tauri_events.length).toBe(1);
+        expect(drained.tauri_events[0].event).toBe('foo-event');
+        expect(drained.tauri_events[0].payload).toEqual(payload);
+        expect(drained.tauri_events[0].timestamp).toBeGreaterThanOrEqual(before);
+        expect(drained.tauri_events[0].timestamp).toBeLessThanOrEqual(after);
+      });
+
+      it('calls every stored unlisten on disableBuffer', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['foo', 'bar']);
+        await tracker.enableBuffer();
+        expect(mockListen).toHaveBeenCalledTimes(2);
+
+        tracker.disableBuffer();
+        expect(mockUnlisten).toHaveBeenCalledTimes(2);
+      });
+
+      it('enforces the 200-event buffer cap', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['flood']);
+        await tracker.enableBuffer();
+
+        const handler = registeredTauriHandlers['flood'];
+        expect(handler).toBeDefined();
+        for (let i = 0; i < 201; i++) {
+          handler({ event: 'flood', payload: { n: i } });
+        }
+
+        const drained = tracker.drainBuffer();
+        expect(drained.tauri_events.length).toBe(200);
+      });
+
+      it('clears the buffer on drain (subsequent drain returns empty array)', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['evt']);
+        await tracker.enableBuffer();
+
+        registeredTauriHandlers['evt']({ event: 'evt', payload: 1 });
+        registeredTauriHandlers['evt']({ event: 'evt', payload: 2 });
+
+        const first = tracker.drainBuffer();
+        expect(first.tauri_events.length).toBe(2);
+
+        const second = tracker.drainBuffer();
+        expect(second.tauri_events).toEqual([]);
+      });
+
+      it('resubscribes with new names when setTauriEventNames is called on an enabled buffer', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['old']);
+        await tracker.enableBuffer();
+        expect(mockListen).toHaveBeenCalledTimes(1);
+        expect(mockUnlisten).toHaveBeenCalledTimes(0);
+
+        await tracker.setTauriEventNames(['new-a', 'new-b']);
+        // Old subscription should be torn down (1 unlisten) and two new ones added.
+        expect(mockUnlisten).toHaveBeenCalledTimes(1);
+        expect(mockListen).toHaveBeenCalledTimes(3);
+        expect(registeredTauriHandlers['new-a']).toBeDefined();
+        expect(registeredTauriHandlers['new-b']).toBeDefined();
+      });
     });
   });
 

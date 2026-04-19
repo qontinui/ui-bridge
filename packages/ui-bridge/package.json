@@ -184,6 +184,9 @@
       "optional": true
     }
   },
+  "optionalDependencies": {
+    "@tauri-apps/api": "^2.10.1"
+  },
   "devDependencies": {
     "@qontinui/ui-bridge-auto": "file:../../../ui-bridge-auto",
     "@testing-library/dom": "^10.0.0",

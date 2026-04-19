@@ -314,6 +314,11 @@ function getElementState(element: HTMLElement): ElementState {
   } else if (element instanceof HTMLSelectElement) {
     state.value = element.value;
     state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.availableOptions = Array.from(element.options).map((opt) => ({
+      value: opt.value,
+      label: opt.label || opt.textContent?.trim() || opt.value,
+      selected: opt.selected,
+    }));
     captureFormControlState(element, state);
   }
 

@@ -2749,7 +2749,7 @@ export function createHandlers(
 
     enableChangeBuffer: async (): Promise<APIResponse<{ enabled: boolean }>> => {
       try {
-        changeTracker.enableBuffer();
+        await changeTracker.enableBuffer();
         return success({ enabled: true });
       } catch (err) {
         return error((err as Error).message, 'CHANGE_BUFFER_ERROR');
