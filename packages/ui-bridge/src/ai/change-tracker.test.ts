@@ -522,6 +522,58 @@ describe('ChangeTracker', () => {
         expect(registeredTauriHandlers['new-a']).toBeDefined();
         expect(registeredTauriHandlers['new-b']).toBeDefined();
       });
+
+      it('disableBuffer mid-subscribe does not leak listeners and drops in-flight events', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        // Arrange: reroute mockListen to a slow variant that waits for a
+        // hand-signalled release. This lets us inject `disableBuffer()`
+        // into the gap between listen() awaits inside subscribeTauriEvents.
+        const originalImpl = mockListen.getMockImplementation();
+        let releaseFirstListen: (() => void) | null = null;
+        const firstListenAwaiting = new Promise<void>((resolve) => {
+          mockListen.mockImplementationOnce(
+            async (name: string, handler: (e: { event: string; payload: unknown }) => void) => {
+              registeredTauriHandlers[name] = handler;
+              resolve(); // signal: subscribe loop has reached its first await
+              await new Promise<void>((r) => {
+                releaseFirstListen = r;
+              });
+              return mockUnlisten;
+            }
+          );
+        });
+
+        await tracker.setTauriEventNames(['slow-a', 'slow-b']);
+        const enablePromise = tracker.enableBuffer();
+
+        // Wait until subscribeTauriEvents has called listen('slow-a') and is
+        // suspended awaiting the promise. Then disable while the subscribe
+        // is still in flight — this is the race the guard must handle.
+        await firstListenAwaiting;
+        tracker.disableBuffer();
+        releaseFirstListen?.();
+        await enablePromise;
+
+        // Race guard: the resolved unlisten must have been torn down
+        // (not leaked) once subscribeTauriEvents noticed bufferEnabled=false.
+        // mockUnlisten fires once for the one listener that made it past
+        // the first await. No second listener should ever be registered.
+        expect(mockUnlisten).toHaveBeenCalledTimes(1);
+        expect(mockListen).toHaveBeenCalledTimes(1);
+        expect(registeredTauriHandlers['slow-b']).toBeUndefined();
+
+        // Any event fired through the leaked handler must not land in the
+        // buffer now that the tracker is disabled.
+        registeredTauriHandlers['slow-a']?.({ event: 'slow-a', payload: null });
+        // Re-enable to prove no stale entries crept in during the race.
+        await tracker.enableBuffer();
+        const drained = tracker.drainBuffer();
+        expect(drained.tauri_events).toEqual([]);
+
+        // Restore the shared mock impl for downstream tests in the block.
+        if (originalImpl) mockListen.mockImplementation(originalImpl);
+      });
     });
   });
 

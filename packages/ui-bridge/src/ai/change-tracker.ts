@@ -1337,6 +1337,10 @@ export class ChangeTracker {
     for (const name of this.tauriEventNames) {
       try {
         const unlisten = await listen(name, (e) => {
+          // Skip events when the buffer is disabled — handlers registered
+          // mid-flight may fire after a concurrent disableBuffer cleared the
+          // array, and the push would otherwise silently grow the buffer.
+          if (!this.bufferEnabled) return;
           if (this.tauriEventBuffer.length >= this.tauriEventBufferCap) return;
           this.tauriEventBuffer.push({
             event: e.event,
@@ -1344,6 +1348,18 @@ export class ChangeTracker {
             timestamp: Date.now(),
           });
         });
+        // Race guard: if disableBuffer ran while we were awaiting listen(),
+        // the unlisteners array was already cleared. Tear down this new
+        // subscription immediately so it doesn't leak.
+        if (!this.bufferEnabled) {
+          try {
+            unlisten();
+          } catch {
+            /* ignore */
+          }
+          // Don't keep subscribing — disableBuffer asked us to stop.
+          return;
+        }
         this.tauriEventUnlisteners.push(unlisten);
       } catch (err) {
         // One bad name shouldn't block the others.
