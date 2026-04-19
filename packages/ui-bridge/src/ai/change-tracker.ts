@@ -1277,6 +1277,11 @@ export class ChangeTracker {
    * dependency installed.
    */
   private async subscribeTauriEvents(): Promise<void> {
+    // Idempotent: if listeners are already registered (e.g., enableBuffer was
+    // called twice without an intervening disableBuffer, or a concurrent
+    // setTauriEventNames raced the first subscribe), bail out so we don't
+    // accumulate duplicate subscriptions that fire each event multiple times.
+    if (this.tauriEventUnlisteners.length > 0) return;
     // Guard: only run in a Tauri webview.
     if (
       typeof window === 'undefined' ||

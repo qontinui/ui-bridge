@@ -489,6 +489,24 @@ describe('ChangeTracker', () => {
         expect(second.tauri_events).toEqual([]);
       });
 
+      it('is idempotent: double enableBuffer does not double-subscribe', async () => {
+        (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+        await tracker.setTauriEventNames(['evt']);
+        await tracker.enableBuffer();
+        expect(mockListen).toHaveBeenCalledTimes(1);
+
+        // Call enableBuffer a second time without disabling first. Before the
+        // idempotency guard, this would register a duplicate listener, so every
+        // fired event would land in the buffer twice.
+        await tracker.enableBuffer();
+        expect(mockListen).toHaveBeenCalledTimes(1);
+
+        registeredTauriHandlers['evt']({ event: 'evt', payload: 'once' });
+        const drained = tracker.drainBuffer();
+        expect(drained.tauri_events.length).toBe(1);
+      });
+
       it('resubscribes with new names when setTauriEventNames is called on an enabled buffer', async () => {
         (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 
