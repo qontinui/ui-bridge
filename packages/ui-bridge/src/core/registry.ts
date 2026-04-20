@@ -161,6 +161,46 @@ function captureFormControlState(
 }
 
 /**
+ * Compute the accessible name for an element (aria-label > aria-labelledby
+ * > associated <label for=""> > title attribute > short text content fallback).
+ */
+function computeAccessibleName(element: HTMLElement): string | undefined {
+  const ariaLabel = element.getAttribute('aria-label');
+  if (ariaLabel) return ariaLabel;
+
+  const labelledBy = element.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const parts = labelledBy
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent?.trim())
+      .filter((t): t is string => !!t);
+    if (parts.length > 0) return parts.join(' ');
+  }
+
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+  ) {
+    if (element.id) {
+      const label = document.querySelector<HTMLLabelElement>(`label[for="${element.id}"]`);
+      const labelText = label?.textContent?.trim();
+      if (labelText) return labelText;
+    }
+  }
+
+  const title = element.getAttribute('title');
+  if (title) return title;
+
+  const rawText = element.textContent?.trim();
+  if (rawText) {
+    return rawText.length <= 80 ? rawText : rawText.slice(0, 80);
+  }
+
+  return undefined;
+}
+
+/**
  * Get the current state of an element
  */
 function getElementState(element: HTMLElement): ElementState {
@@ -175,10 +215,15 @@ function getElementState(element: HTMLElement): ElementState {
     rect.left < window.innerWidth &&
     rect.right > 0;
 
+  const roleAttr = element.getAttribute('role') || undefined;
+  const accessibleName = computeAccessibleName(element);
+
   const state: ElementState = {
     visible: isElementVisible(element, rect, computedStyle, inViewport),
     enabled: !isElementDisabled(element),
     focused: document.activeElement === element,
+    role: roleAttr,
+    accessibleName,
     rect: {
       x: rect.x,
       y: rect.y,

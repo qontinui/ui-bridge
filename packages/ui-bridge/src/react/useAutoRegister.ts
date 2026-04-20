@@ -93,6 +93,7 @@ const INTERACTIVE_SELECTORS = [
   '[role="radio"]',
   '[role="menuitem"]',
   '[role="tab"]',
+  '[role="tablist"]',
   '[role="switch"]',
   '[role="slider"]',
   '[role="spinbutton"]',
@@ -100,6 +101,7 @@ const INTERACTIVE_SELECTORS = [
   '[role="listbox"]',
   '[role="option"]',
   '[role="textbox"]',
+  '[role="status"]',
   '[tabindex]:not([tabindex="-1"])',
   '[contenteditable="true"]',
   '[data-ui-element]', // Explicitly marked for registration

@@ -60,6 +60,10 @@ export interface ElementState {
   enabled: boolean;
   /** Whether the element has focus */
   focused: boolean;
+  /** ARIA role attribute value (e.g. "tablist", "tab", "button") */
+  role?: string;
+  /** Computed accessible name (aria-label > aria-labelledby > associated label > title > text) */
+  accessibleName?: string;
   /** Bounding rectangle of the element */
   rect: {
     x: number;
