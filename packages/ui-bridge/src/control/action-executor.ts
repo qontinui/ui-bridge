@@ -1204,7 +1204,19 @@ export class DefaultActionExecutor implements ActionExecutor {
     // This ensures a single source of truth for action semantics.
     const canonical = getCanonicalPerformAction();
     if (canonical) {
-      return canonical(element, action, params);
+      // Inject a resolver so ui-bridge-auto can look up target.elementId via our
+      // registry (drag actions take { target: { elementId } } descriptors).
+      const enriched =
+        action === 'drag' && params && !('resolveElement' in params)
+          ? {
+              ...params,
+              resolveElement: (id: string): HTMLElement | null => {
+                const reg = this.registry.getElement(id);
+                return reg?.element ?? findElementByIdentifier(id);
+              },
+            }
+          : params;
+      return canonical(element, action, enriched);
     }
 
     // Fallback: inline implementations (used when ui-bridge-auto is not installed)
