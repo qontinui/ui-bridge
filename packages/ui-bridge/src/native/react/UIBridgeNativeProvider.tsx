@@ -63,6 +63,9 @@ export interface UIBridgeNativeContextValue {
  */
 const UIBridgeNativeContext = createContext<UIBridgeNativeContextValue | null>(null);
 
+const EMPTY_FEATURES: NativeUIBridgeFeatures = {};
+const EMPTY_CONFIG: NativeUIBridgeConfig = {};
+
 /**
  * UI Bridge Native provider props
  */
@@ -101,8 +104,8 @@ export interface UIBridgeNativeProviderProps {
  */
 export function UIBridgeNativeProvider({
   children,
-  features = {},
-  config = {},
+  features = EMPTY_FEATURES,
+  config = EMPTY_CONFIG,
   onEvent,
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);

@@ -120,6 +120,9 @@ export interface UIBridgeContextValue {
  */
 const UIBridgeContext = createContext<UIBridgeContextValue | null>(null);
 
+const EMPTY_FEATURES: UIBridgeFeatures = {};
+const EMPTY_CONFIG: UIBridgeConfig = {};
+
 /**
  * UI Bridge provider props
  */
@@ -145,8 +148,8 @@ export interface UIBridgeProviderProps {
  */
 export function UIBridgeProvider({
   children,
-  features = {},
-  config = {},
+  features = EMPTY_FEATURES,
+  config = EMPTY_CONFIG,
   onEvent,
   onBrowserEvent,
   browserCaptureConfig,

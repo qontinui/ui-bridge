@@ -108,6 +108,8 @@ const INTERACTIVE_SELECTORS = [
   '[data-testid]', // Testing library convention
 ];
 
+const EMPTY_SELECTORS: string[] = [];
+
 /**
  * Infer element type from DOM element
  */
@@ -586,8 +588,8 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     idStrategy = 'prefer-existing',
     debounceMs = 100,
     includeHidden = false,
-    includeSelectors = [],
-    excludeSelectors = [],
+    includeSelectors = EMPTY_SELECTORS,
+    excludeSelectors = EMPTY_SELECTORS,
     generateId: customGenerateId,
     onRegister,
     onUnregister,

@@ -44,6 +44,8 @@ export interface AutoRegisterProviderProps extends Omit<AutoRegisterOptions, 'ro
   contentDiscovery?: ContentDiscoveryOptions;
 }
 
+const EMPTY_SELECTORS: string[] = [];
+
 /**
  * Provider component that enables automatic element registration.
  *
@@ -63,8 +65,8 @@ export function AutoRegisterProvider({
   idStrategy = 'prefer-existing',
   debounceMs = 100,
   includeHidden = false,
-  includeSelectors = [],
-  excludeSelectors = [],
+  includeSelectors = EMPTY_SELECTORS,
+  excludeSelectors = EMPTY_SELECTORS,
   generateId,
   onRegister,
   onUnregister,
