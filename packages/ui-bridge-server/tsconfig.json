@@ -19,7 +19,8 @@
     "paths": {
       "@qontinui/ui-bridge": ["../ui-bridge/dist"],
       "@qontinui/ui-bridge/*": ["../ui-bridge/dist/*"]
-    }
+    },
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]

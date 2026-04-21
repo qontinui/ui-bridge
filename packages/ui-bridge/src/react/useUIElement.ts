@@ -19,6 +19,7 @@ import type {
 import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { useOwningComponent } from './UIBridgeComponentScope';
+import { pollForTaggedElement, trackElementBbox, UI_BRIDGE_ID_ATTR } from './bbox-tracker';
 
 /**
  * useUIElement options
@@ -119,6 +120,34 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   // See useUIState for rationale on capturing id at register time.
   const registeredElementIdRef = useRef<string | null>(null);
 
+  // Tear-down function for the live bbox tracker (ResizeObserver + shared
+  // scroll/resize listeners). Null when we aren't tracking an element —
+  // e.g. before first attach, or when the hook fell back to attribute-
+  // lookup and couldn't find a match.
+  const untrackBboxRef = useRef<(() => void) | null>(null);
+
+  // Helper: attach the bbox tracker to a live DOM element, stamping the
+  // fallback attribute so runners (or future fallback polls) can resolve
+  // the same node without holding the React ref.
+  const startBboxTracking = useCallback(
+    (node: HTMLElement) => {
+      if (!bridge) return;
+      untrackBboxRef.current?.();
+      // Stamp the fallback attribute on the element so runners and the
+      // poll-fallback path can resolve it by id without the ref.
+      if (node.getAttribute(UI_BRIDGE_ID_ATTR) !== id) {
+        node.setAttribute(UI_BRIDGE_ID_ATTR, id);
+      }
+      untrackBboxRef.current = trackElementBbox(bridge.registry, id, node);
+    },
+    [bridge, id]
+  );
+
+  const stopBboxTracking = useCallback(() => {
+    untrackBboxRef.current?.();
+    untrackBboxRef.current = null;
+  }, []);
+
   // Register the element
   const register = useCallback(() => {
     if (!bridge || !elementRef.current || registeredRef.current) return;
@@ -136,7 +165,21 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     if (logLevel) {
       bridge.registry.setElementLogLevel(id, logLevel);
     }
-  }, [bridge, id, type, label, actions, customActions, logLevel, ownedByComponent]);
+
+    // Start live bbox tracking so snapshots expose DOM coordinates without
+    // a per-snapshot getBoundingClientRect() call.
+    startBboxTracking(elementRef.current);
+  }, [
+    bridge,
+    id,
+    type,
+    label,
+    actions,
+    customActions,
+    logLevel,
+    ownedByComponent,
+    startBboxTracking,
+  ]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -145,7 +188,8 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     bridge.registry.unregisterElement(registeredElementIdRef.current ?? id);
     registeredRef.current = false;
     registeredElementIdRef.current = null;
-  }, [bridge, id]);
+    stopBboxTracking();
+  }, [bridge, id, stopBboxTracking]);
 
   // Keep latest register/unregister in refs so the ref callback doesn't
   // churn identity when consumers pass inline `actions`/`customActions`
@@ -198,12 +242,47 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [autoRegister]
   );
 
+  // Fallback: if the consumer didn't attach the ref (e.g. portaled or
+  // headless component), try to locate an element by `[data-ui-bridge-id]`
+  // soon after mount. This keeps live bbox tracking working for sites that
+  // can't easily thread a ref through. If the poll succeeds, we register
+  // the found element like any other; if not, registration is skipped and
+  // the entry stays bbox-less (backward compatible).
+  useEffect(() => {
+    if (!autoRegister) return;
+    if (!bridge) return;
+
+    let cancelled = false;
+    // Delay 1 microtask so attached refs get a chance to register first.
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (registeredRef.current || elementRef.current) return;
+      void pollForTaggedElement(id).then((node) => {
+        if (cancelled) return;
+        if (registeredRef.current || elementRef.current) return;
+        if (!node) return;
+        elementRef.current = node;
+        registerRef.current();
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally keyed on bridge/id/autoRegister only — re-polling on
+    // every option tweak is wasteful and would fight the register effect.
+  }, [bridge, id, autoRegister]);
+
   // Cleanup on unmount — runs once.
   useEffect(() => {
     return () => {
       if (registeredRef.current) {
         unregisterRef.current();
       }
+      // Belt-and-braces: ensure bbox tracker is torn down even if unregister
+      // didn't run (e.g. StrictMode double-invocation edge cases).
+      untrackBboxRef.current?.();
+      untrackBboxRef.current = null;
       elementRef.current = null;
     };
   }, []);
@@ -228,6 +307,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     const registeredElementId = registeredElementIdRef.current;
     if (registeredElementId === null) return;
     if (registeredElementId !== id) {
+      // Re-register under new id. Also re-point the bbox tracker at the
+      // new registry key so updates land on the right entry.
+      stopBboxTracking();
       bridge.registry.unregisterElement(registeredElementId);
       registeredElementIdRef.current = id;
       bridge.registry.registerElement(id, elementRef.current, {
@@ -237,6 +319,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         customActions,
       });
       if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
+      startBboxTracking(elementRef.current);
       return;
     }
     bridge.registry.updateElement(id, {

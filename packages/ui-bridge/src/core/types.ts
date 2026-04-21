@@ -377,6 +377,25 @@ export interface CustomAction<TParams = unknown, TResult = unknown> {
 }
 
 /**
+ * Live bounding box (viewport-relative, CSS pixels) for a registered element.
+ *
+ * Maintained by the `useUIElement` hook via `ResizeObserver` + scroll/resize
+ * listeners — it's always fresh without a `getBoundingClientRect()` call at
+ * snapshot time. Used by the runner's bbox-first click provider to skip VLM
+ * pixel grounding for SDK-registered elements.
+ */
+export interface ElementBbox {
+  /** Viewport-relative left edge in CSS pixels */
+  x: number;
+  /** Viewport-relative top edge in CSS pixels */
+  y: number;
+  /** Width in CSS pixels */
+  width: number;
+  /** Height in CSS pixels */
+  height: number;
+}
+
+/**
  * A UI element registered with the bridge
  */
 export interface RegisteredElement {
@@ -400,6 +419,20 @@ export interface RegisteredElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+
+  /**
+   * Live viewport-relative bounding box in CSS pixels. Maintained by
+   * `useUIElement` via ResizeObserver + scroll/resize listeners so snapshots
+   * can expose it without recomputing layout. Undefined if the element is not
+   * DOM-attached yet or the hook couldn't resolve a node.
+   */
+  bbox?: ElementBbox;
+  /**
+   * Live visibility signal (`bbox.width > 0 && bbox.height > 0`). Undefined
+   * when `bbox` is undefined. A "rendered" hint only — it does not include
+   * the hit-test/occlusion checks that `getState().visible` performs.
+   */
+  visible?: boolean;
 
   // Category
   /** Whether this is an interactive element, static content, or media */
@@ -970,6 +1003,15 @@ export interface BridgeSnapshot {
     ownedByComponent?: string;
     /** Base URL template for the owning component, if present. */
     componentActionBasePath?: string;
+    /**
+     * Live viewport-relative bounding box tracked by `useUIElement`. Present
+     * for SDK-registered elements whose ref has attached (or that resolved
+     * via the `[data-ui-bridge-id]` fallback). Undefined for elements that
+     * didn't wire up live tracking.
+     */
+    bbox?: ElementBbox;
+    /** Live visibility (`bbox.width > 0 && bbox.height > 0`). Paired with `bbox`. */
+    visible?: boolean;
     /** Stable reference that survives React re-renders */
     stableRef?: {
       id: string;

@@ -21,6 +21,11 @@ export {
   type UseUIElementReturn,
 } from './useUIElement';
 
+// Live bounding-box tracking — used internally by useUIElement and exported
+// for consumers (e.g. custom registration paths outside the hook) that need
+// to keep a registry entry's bbox fresh.
+export { trackElementBbox, pollForTaggedElement, UI_BRIDGE_ID_ATTR } from './bbox-tracker';
+
 // Component hook
 export {
   useUIComponent,

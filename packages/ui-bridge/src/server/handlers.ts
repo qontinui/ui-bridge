@@ -226,6 +226,8 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       element: HTMLElement;
       getState?: () => unknown;
       getIdentifier?: () => unknown;
+      bbox?: { x: number; y: number; width: number; height: number };
+      visible?: boolean;
     };
     // Capture title and aria-label from the live DOM element for explicit
     // attribute-level filtering (Tier 1.2). These are separate from `label`
@@ -246,6 +248,10 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       category: el.category,
       contentMetadata: el.contentMetadata,
       mediaMetadata: el.mediaMetadata,
+      // Live bbox/visibility maintained by `useUIElement`. Present for
+      // SDK-registered elements; absent for DOM-fallback scans.
+      bbox: el.bbox,
+      visible: el.visible,
     };
   }) as ControlSnapshot['elements'];
 }

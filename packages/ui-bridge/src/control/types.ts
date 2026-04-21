@@ -363,6 +363,20 @@ export interface ControlSnapshot {
     category?: 'interactive' | 'content' | 'media';
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
+    /**
+     * Live viewport-relative bounding box (CSS pixels) tracked by
+     * `useUIElement`'s ResizeObserver + scroll/resize listeners. Present for
+     * SDK-registered elements whose ref attached (or matched via the
+     * `[data-ui-bridge-id]` fallback). Runners use this to dispatch clicks
+     * via DOM coordinates and skip VLM pixel grounding.
+     */
+    bbox?: { x: number; y: number; width: number; height: number };
+    /**
+     * Live visibility signal (`bbox.width > 0 && bbox.height > 0`). Paired
+     * with `bbox`. A cheap "rendered" hint — not a full hit-test like
+     * `state.visible`.
+     */
+    visible?: boolean;
   }>;
   /** All registered components */
   components: Array<{

@@ -393,6 +393,22 @@ DiscoveryResponse = FindResponse
 """Deprecated: Use FindResponse instead."""
 
 
+class ElementBbox(BaseModel):
+    """Live viewport-relative bounding box for a registered element.
+
+    Maintained by the TypeScript ``useUIElement`` hook via ResizeObserver and
+    scroll/resize listeners. Present on snapshot entries for SDK-registered
+    elements that have attached a ref (or that matched via the
+    ``data-ui-bridge-id`` fallback). Runners use this to dispatch clicks via
+    DOM coordinates and skip VLM pixel grounding.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 class RegisteredElement(BaseModel):
     """Registered element info."""
 
@@ -401,6 +417,11 @@ class RegisteredElement(BaseModel):
     label: str | None = None
     actions: list[str]
     state: ElementState
+    # Live bbox/visibility tracked by useUIElement. Absent when the hook could
+    # not resolve a DOM element (e.g. unmounted) or when the entry originated
+    # from the server-side DOM fallback scan rather than React registration.
+    bbox: ElementBbox | None = None
+    visible: bool | None = None
 
 
 class RegisteredComponent(BaseModel):

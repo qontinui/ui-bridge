@@ -108,6 +108,79 @@ describe('UIBridgeRegistry', () => {
       expect(found).toBeDefined();
       expect(found?.id).toBe('email-input');
     });
+
+    it('starts with no bbox and no visibility until updated', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+
+      const registered = registry.registerElement('btn-1', btn);
+
+      expect(registered.bbox).toBeUndefined();
+      expect(registered.visible).toBeUndefined();
+    });
+
+    it('updateElementBbox writes live bbox and visibility', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+
+      const ok = registry.updateElementBbox(
+        'btn-1',
+        { x: 10, y: 20, width: 100, height: 30 },
+        true
+      );
+
+      expect(ok).toBe(true);
+      const entry = registry.getElement('btn-1')!;
+      expect(entry.bbox).toEqual({ x: 10, y: 20, width: 100, height: 30 });
+      expect(entry.visible).toBe(true);
+    });
+
+    it('updateElementBbox does not bump storeVersion (scroll churn safety)', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+
+      const before = registry.getSnapshot().version;
+      registry.updateElementBbox('btn-1', { x: 0, y: 0, width: 10, height: 10 }, true);
+      registry.updateElementBbox('btn-1', { x: 1, y: 1, width: 10, height: 10 }, true);
+      const after = registry.getSnapshot().version;
+
+      expect(after).toBe(before);
+    });
+
+    it('updateElementBbox returns false for unknown id', () => {
+      expect(registry.updateElementBbox('nope', { x: 0, y: 0, width: 1, height: 1 }, true)).toBe(
+        false
+      );
+    });
+
+    it('clears bbox/visible when called with undefined', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+      registry.updateElementBbox('btn-1', { x: 1, y: 2, width: 3, height: 4 }, true);
+
+      registry.updateElementBbox('btn-1', undefined, undefined);
+
+      const entry = registry.getElement('btn-1')!;
+      expect(entry.bbox).toBeUndefined();
+      expect(entry.visible).toBeUndefined();
+    });
+
+    it('serializes bbox/visible into the snapshot output', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn, { type: 'button', label: 'Go' });
+      registry.updateElementBbox('btn-1', { x: 5, y: 6, width: 7, height: 8 }, true);
+
+      const snapshot = registry.createSnapshot();
+      const serialized = snapshot.elements.find((e) => e.id === 'btn-1');
+
+      expect(serialized).toBeDefined();
+      expect(serialized!.bbox).toEqual({ x: 5, y: 6, width: 7, height: 8 });
+      expect(serialized!.visible).toBe(true);
+    });
   });
 
   describe('component registration', () => {

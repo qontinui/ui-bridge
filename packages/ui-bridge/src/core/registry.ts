@@ -76,6 +76,11 @@ export function serializeRegisteredElement(
     componentActionBasePath: el.ownedByComponent
       ? `${componentBasePath}/${el.ownedByComponent}`
       : undefined,
+    // Live bbox/visibility maintained by `useUIElement`. Present for elements
+    // whose hook attached a ref (or that matched via `[data-ui-bridge-id]`).
+    // Runners use this to dispatch clicks via DOM coords without VLM grounding.
+    bbox: el.bbox,
+    visible: el.visible,
     stableRef: el.element?.isConnected
       ? (() => {
           const ref = createStableRef(el);
@@ -748,6 +753,27 @@ export class UIBridgeRegistry {
     if (options.category !== undefined) existing.category = options.category;
     if (options.contentMetadata !== undefined) existing.contentMetadata = options.contentMetadata;
     if (options.mediaMetadata !== undefined) existing.mediaMetadata = options.mediaMetadata;
+    return true;
+  }
+
+  /**
+   * Update the live viewport-relative bounding box and visibility for a
+   * registered element. Called by `useUIElement`'s ResizeObserver + scroll
+   * listeners and MUST NOT emit events or bump `storeVersion` — bbox updates
+   * fire on every scroll/resize and would cause `useSyncExternalStore`
+   * consumers to re-render continuously (React error #185).
+   *
+   * Returns `false` if the element is not registered.
+   */
+  updateElementBbox(
+    id: string,
+    bbox: { x: number; y: number; width: number; height: number } | undefined,
+    visible: boolean | undefined
+  ): boolean {
+    const existing = this.elements.get(id);
+    if (!existing) return false;
+    existing.bbox = bbox;
+    existing.visible = visible;
     return true;
   }
 
