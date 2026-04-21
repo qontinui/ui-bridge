@@ -171,6 +171,8 @@ import { NetworkRequestTracker } from '../network';
 import type { NetworkRequestFilter, NetworkTrackerConfig } from '../network';
 import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
+import { findElements } from '../core/find';
+import type { ElementQuery } from '../core/find';
 
 /**
  * Parse a natural language assertion into a structured AssertionRequest.
@@ -1208,6 +1210,38 @@ export function createHandlers(
         return success(materialized);
       } catch (err) {
         return error((err as Error).message, 'ELEMENTS_ERROR');
+      }
+    },
+
+    rankElements: async (
+      request?: ElementQuery
+    ): Promise<
+      APIResponse<
+        Array<{
+          id: string;
+          score: number;
+          reasons: string[];
+          element: ControlSnapshot['elements'][0];
+        }>
+      >
+    > => {
+      try {
+        const elements = registry.getAllElements();
+        const materialized = materializeElements(elements) as ControlSnapshot['elements'];
+        const matches = findElements(
+          materialized as unknown as Parameters<typeof findElements>[0],
+          request ?? {}
+        );
+        return success(
+          matches.map((m) => ({
+            id: m.id,
+            score: m.score,
+            reasons: m.reasons,
+            element: m.element as unknown as ControlSnapshot['elements'][0],
+          }))
+        );
+      } catch (err) {
+        return error((err as Error).message, 'RANK_ELEMENTS_ERROR');
       }
     },
 

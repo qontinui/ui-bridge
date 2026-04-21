@@ -224,6 +224,37 @@ export interface UIBridgeServerHandlers {
     request: ControlActionRequest
   ) => Promise<APIResponse<ControlActionResponse>>;
   executeBatchAction: (request: BatchActionRequest) => Promise<APIResponse<BatchActionResponse>>;
+  /**
+   * Rank snapshot elements by natural-language query against the
+   * structured disambiguation metadata (variant, position, color,
+   * contextPath, label, type). Returns scored matches.
+   *
+   * Free-text input is tokenised and matched token-bag style; structured
+   * filters (type, origin, visibleOnly, contextPathContains) act as hard
+   * filters. See `@qontinui/ui-bridge/core` `findElements` for the
+   * scoring model.
+   */
+  rankElements: (request: {
+    text?: string;
+    type?: string;
+    variant?: string;
+    position?: string;
+    color?: string;
+    contextPathContains?: string;
+    origin?: 'hook' | 'auto';
+    visibleOnly?: boolean;
+    limit?: number;
+    minScore?: number;
+  }) => Promise<
+    APIResponse<
+      Array<{
+        id: string;
+        score: number;
+        reasons: string[];
+        element: ControlSnapshot['elements'][0];
+      }>
+    >
+  >;
 
   // Component endpoints
   getComponents: (options?: {
@@ -885,6 +916,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/control/actions/batch',
     handler: 'executeBatchAction',
+    bodyRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/elements/rank',
+    handler: 'rankElements',
     bodyRequired: true,
   },
 

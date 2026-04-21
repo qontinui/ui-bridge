@@ -27,6 +27,8 @@ import { matchesElementSelector, type MatchableElement } from './selector-match'
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
+import { findElements } from '../core/find';
+import type { ElementQuery } from '../core/find';
 
 // ============================================================================
 // Helpers
@@ -451,6 +453,28 @@ export function createRelayHandlers(
       }
 
       return success(elements, _meta);
+    },
+
+    async rankElements(request) {
+      // Rank against the cached relay snapshot — the disambiguation
+      // metadata is passthrough from the browser tab's registry, so no
+      // live relay call is needed. Respects the caller's recency hint
+      // so a stale snapshot can be refreshed first.
+      const recency = resolveRecency(request as { recency?: string } | undefined);
+      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
+      const query = (request ?? {}) as ElementQuery;
+      const matches = findElements(
+        latestControlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
+        query
+      );
+      return success(
+        matches.map((m) => ({
+          id: m.id,
+          score: m.score,
+          reasons: m.reasons,
+          element: m.element as unknown as ControlSnapshot['elements'][0],
+        }))
+      );
     },
 
     async getElement(id, options) {
