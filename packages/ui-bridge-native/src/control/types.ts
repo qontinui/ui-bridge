@@ -154,6 +154,8 @@ export interface TypeActionParams {
   delay?: number;
   /** Clear existing text first */
   clearFirst?: boolean;
+  /** Alias for `clearFirst` matching the runner UI Bridge convention. */
+  clear?: boolean;
 }
 
 /**

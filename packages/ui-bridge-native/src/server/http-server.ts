@@ -90,6 +90,10 @@ const WS_ROUTES: readonly WsRoute[] = [
 
   // Elements
   { pattern: 'control/elements', handler: 'getElements', httpMethods: ['GET'] },
+  // Flat alias — matches the runner UI Bridge's `/ui-bridge/elements` path so
+  // agents can use the same URL across runner + mobile without remembering
+  // the `control/` prefix. Delegates to the same handler.
+  { pattern: 'elements', handler: 'getElements', httpMethods: ['GET'] },
   { pattern: 'control/element/:id', handler: 'getElement', httpMethods: ['GET'] },
   { pattern: 'control/element/:id/state', handler: 'getElementState', httpMethods: ['GET'] },
   { pattern: 'control/element/:id/action', handler: 'executeAction', httpMethods: ['POST'] },
@@ -148,6 +152,111 @@ const WS_ROUTES: readonly WsRoute[] = [
   // Meta / Introspection
   { pattern: 'meta/methods', handler: 'getMethods', httpMethods: ['GET'] },
 ];
+
+// ── _help payload ───────────────────────────────────────────────────────────
+
+/**
+ * Short description keyed by handler name — rendered alongside the route
+ * list so `_help` is self-documenting. Only needs to cover handlers that
+ * appear in WS_ROUTES.
+ */
+const HANDLER_DESCRIPTIONS: Record<string, string> = {
+  health: 'Liveness probe; returns app metadata + element count',
+  getElements: 'Flat list of registered UI elements',
+  getElement: 'Single element by id',
+  getElementState: 'Dynamic state (value, focused, checked) for one element',
+  executeAction: 'Run an action on an element (see "actions" below for names)',
+  getComponents: 'Higher-level components with action schemas',
+  getComponent: 'Component detail + per-action paramSchema',
+  executeComponentAction: 'Invoke a component action directly (preferred over button clicks)',
+  find: 'AI-powered element search by natural-language query',
+  getSnapshot:
+    'Full snapshot: elements + route + state. Supports ?visibleOnly=true and ?currentRouteOnly=true',
+  getWorkflows: 'List registered workflows',
+  runWorkflow: 'Trigger a workflow by id',
+  pageRefresh: 'Reload the current route',
+  pageNavigate: 'Imperative router.push(url) — preferred over tapping tab buttons',
+  pageReplace: 'router.replace(url)',
+  pageGoBack: 'router.back()',
+  pageGoForward: 'router.forward()',
+  getScreenshot: 'PNG screenshot of the current screen',
+  getElementStyles: 'Computed styles for an element (design review)',
+  getElementStateStyles: 'Computed styles per interaction state (hover/focus/disabled)',
+  getDesignSnapshot: 'Visual + style snapshot for design review',
+  getResponsiveSnapshots: 'Screenshots at multiple viewport widths',
+  runDesignAudit: 'Accessibility + visual audit',
+  loadStyleGuide: 'Load a design system style guide',
+  getStyleGuide: 'Fetch the currently loaded style guide',
+  clearStyleGuide: 'Unload the style guide',
+  evaluateQuality: 'Score the current UI against a quality context',
+  getQualityContexts: 'List available quality evaluation contexts',
+  saveBaseline: 'Save a quality baseline snapshot',
+  diffBaseline: 'Diff current UI against a saved baseline',
+  getMethods: 'List every handler name (legacy introspection)',
+};
+
+/** Static reference for common action names + their params. */
+const ACTION_REFERENCE = [
+  { name: 'press', aliases: ['click'], params: 'PressActionParams (optional position)' },
+  { name: 'longPress', params: 'PressActionParams (optional position)' },
+  { name: 'doubleTap', params: 'none' },
+  {
+    name: 'type',
+    params:
+      'TypeActionParams { text, delay?, clear? | clearFirst? } — `clear:true` replaces content atomically',
+  },
+  { name: 'clear', params: 'none — empties the input' },
+  { name: 'focus', params: 'none' },
+  { name: 'blur', params: 'none' },
+  { name: 'scroll', params: 'ScrollActionParams { offset? {x,y}, to? }' },
+  { name: 'swipe', params: 'SwipeActionParams { direction, distance }' },
+  { name: 'toggle', params: 'none — flips boolean controls' },
+];
+
+/**
+ * Minimal `{method, path}` list matching the runner's `/_routes` shape so
+ * the same URL works across platforms. Expanded multi-verb routes into one
+ * entry per verb.
+ */
+function buildRoutesPayload() {
+  const entries: Array<{ method: string; path: string }> = [];
+  for (const r of WS_ROUTES) {
+    if (!r.httpMethods) continue;
+    for (const m of r.httpMethods) {
+      entries.push({ method: m, path: `/ui-bridge/${r.pattern}` });
+    }
+  }
+  // Expose the two discovery endpoints themselves so self-reference is clean.
+  entries.push({ method: 'GET', path: '/ui-bridge/_help' });
+  entries.push({ method: 'GET', path: '/ui-bridge/_routes' });
+  entries.sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+  return { routes: entries, count: entries.length };
+}
+
+/**
+ * Build the `/_help` payload: route index + action reference.
+ * Cheap to compute; we don't cache since it's rarely called.
+ */
+function buildHelpPayload() {
+  return {
+    version: 1,
+    description: 'UI Bridge Native HTTP surface. Prefix every path with /ui-bridge/.',
+    routes: WS_ROUTES.map((r) => ({
+      pattern: r.pattern,
+      httpMethods: r.httpMethods ?? [],
+      wsOnly: !r.httpMethods,
+      handler: r.handler,
+      description: HANDLER_DESCRIPTIONS[r.handler] ?? '',
+    })),
+    actions: ACTION_REFERENCE,
+    tips: [
+      'Start with `GET /ui-bridge/control/snapshot?visibleOnly=true` to see what the user actually sees.',
+      'Prefer `control/component/:id/action/:actionId` over button presses — typed paramSchema, no button-id guessing.',
+      'Use `pageNavigate` for tab switches instead of pressing tab buttons; gesture state often swallows clicks.',
+      'The `type` action supports `clear:true` to replace existing text atomically in one call.',
+    ],
+  };
+}
 
 /**
  * HTTP Request interface (library-agnostic)
@@ -1171,6 +1280,27 @@ export class NativeUIBridgeServer {
     }
 
     const stripped = path.slice(PREFIX.length);
+
+    // Discoverability:
+    //   - `_help` (rich) — routes + action reference + tips
+    //   - `_routes` (minimal) — runner-compatible shape for parity
+    // Lets agents fetch a single URL on either runner or mobile to see what
+    // they can do without reading docs.
+    if (method === 'GET' && stripped === '_help') {
+      return {
+        success: true,
+        data: buildHelpPayload(),
+        timestamp: Date.now(),
+      };
+    }
+    if (method === 'GET' && stripped === '_routes') {
+      return {
+        success: true,
+        data: buildRoutesPayload(),
+        timestamp: Date.now(),
+      };
+    }
+
     let patternMatchedButWrongVerb = false;
 
     for (const route of WS_ROUTES) {

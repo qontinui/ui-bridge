@@ -252,8 +252,10 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       throw new Error('Type action requires text parameter');
     }
 
-    // Clear first if requested
-    if (params.clearFirst) {
+    // Clear first if requested. Accept either `clearFirst` (native SDK
+    // convention) or `clear` (runner UI Bridge convention) — so agents
+    // using the same action across platforms don't hit a naming mismatch.
+    if (params.clearFirst || params.clear) {
       await this.performClear(element, props);
     }
 
