@@ -15,6 +15,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
+import { trackElementBbox } from './bbox-tracker';
 import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
@@ -612,6 +613,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   const registeredElementsRef = useRef(new Map<HTMLElement, string>());
   const registeredContentElementsRef = useRef(new Map<HTMLElement, string>());
   const registeredMediaElementsRef = useRef(new Map<HTMLElement, string>());
+  // Per-registered-id untrackers for the lazy bbox tracker. Keyed by id
+  // (not element) so mid-mount node swaps that re-run track() under the
+  // same id correctly teardown the prior observer.
+  const bboxUntrackersRef = useRef(new Map<string, () => void>());
   const pendingRegistrationsRef = useRef(new Set<HTMLElement>());
   const pendingContentRegistrationsRef = useRef(new Set<HTMLElement>());
   const pendingMediaRegistrationsRef = useRef(new Set<HTMLElement>());
@@ -711,6 +716,14 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
       registeredElementsRef.current.set(element, finalId);
 
+      // Start lazy bbox tracking. The scanner may tag hundreds of elements
+      // on a typical page (every row of a long table, every item in a
+      // sidebar); eager ResizeObserver-per-element tracking does not scale
+      // there. Lazy mode keeps active ResizeObservers bounded by the
+      // visible element count via a shared IntersectionObserver.
+      const untrack = trackElementBbox(bridge.registry, finalId, element, { lazy: true });
+      bboxUntrackersRef.current.set(finalId, untrack);
+
       if (logLevel) {
         bridge.registry.setElementLogLevel(finalId, logLevel);
       }
@@ -727,6 +740,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     (element: HTMLElement): void => {
       const id = registeredElementsRef.current.get(element);
       if (!id || !bridge?.registry) return;
+
+      const untrack = bboxUntrackersRef.current.get(id);
+      untrack?.();
+      bboxUntrackersRef.current.delete(id);
 
       bridge.registry.unregisterElement(id);
       registeredElementsRef.current.delete(element);
@@ -993,6 +1010,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           if (element.isConnected) {
             keep.set(element, id);
           } else if (bridge?.registry) {
+            const untrack = bboxUntrackersRef.current.get(id);
+            untrack?.();
+            bboxUntrackersRef.current.delete(id);
             bridge.registry.unregisterElement(id);
           }
         });
@@ -1354,6 +1374,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           if (element.isConnected) {
             stillAlive.set(element, id);
           } else {
+            const untrack = bboxUntrackersRef.current.get(id);
+            untrack?.();
+            bboxUntrackersRef.current.delete(id);
             bridge.registry.unregisterElement(id);
           }
         });

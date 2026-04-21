@@ -3,8 +3,9 @@
  *
  * Watches DOM elements for layout changes (resize, scroll, viewport resize)
  * and pushes fresh viewport-relative bounding boxes into the UI Bridge
- * registry. Used by `useUIElement` so runner steps can target SDK-registered
- * elements by DOM coordinates and skip VLM pixel grounding.
+ * registry. Used by `useUIElement` and `useAutoRegister` so runner steps can
+ * target SDK-registered elements by DOM coordinates and skip VLM pixel
+ * grounding.
  *
  * Key design points:
  *
@@ -19,6 +20,18 @@
  *   NOT emit events or bump `storeVersion`. Every scroll would otherwise
  *   wake `useSyncExternalStore` consumers and cascade into render loops
  *   (React error #185).
+ * - **Lazy mode for auto-registered elements.** The `useAutoRegister`
+ *   scanner may tag hundreds of elements on a single page (every row in a
+ *   data table, every nav item in a sidebar). Eager tracking — one
+ *   `ResizeObserver` per element forever — does not scale past a few
+ *   hundred. In lazy mode we keep a single shared `IntersectionObserver`
+ *   per group; only elements currently intersecting the viewport get an
+ *   active `ResizeObserver`. Active observers stay bounded by visible
+ *   element count regardless of total DOM size. Off-screen lazy elements
+ *   retain their last-known bbox in the registry (so snapshot queries
+ *   still see a value), and the runner's click resolution already checks
+ *   `visible` before using it — so a stale off-screen bbox can't cause a
+ *   wrong click, it just fails the visibility gate.
  */
 
 import type { UIBridgeRegistry } from '../core/registry';
@@ -31,18 +44,31 @@ interface Tracked {
   id: string;
   /** DOM node being observed. */
   element: HTMLElement;
-  /** Per-element ResizeObserver, so we can disconnect on untrack. */
+  /** Per-element ResizeObserver. In eager mode, created once on track().
+   *  In lazy mode, created when the element enters the viewport and torn
+   *  down when it leaves. */
   resizeObserver: ResizeObserver | null;
+  /** True when the consumer opted into lazy viewport-gated tracking. */
+  lazy: boolean;
+  /** True when the element is currently intersecting the viewport. Always
+   *  true for eager trackers; set by the shared IntersectionObserver for
+   *  lazy trackers. */
+  inViewport: boolean;
 }
 
 /**
- * Internal: bucket of trackers keyed by element id, plus one pair of
- * window-level listeners shared across all trackers in this registry.
+ * Internal: bucket of trackers keyed by element id, plus one set of shared
+ * observers (window scroll/resize + IntersectionObserver) that fan out to
+ * every tracker in this registry.
  */
 class BboxTrackerGroup {
   private tracked = new Map<string, Tracked>();
+  /** Reverse lookup so IntersectionObserver callbacks can find the tracker
+   *  for a given DOM element in O(1). */
+  private byElement = new WeakMap<Element, Tracked>();
   private scrollListener: (() => void) | null = null;
   private resizeListener: (() => void) | null = null;
+  private intersectionObserver: IntersectionObserver | null = null;
   private rafHandle: number | null = null;
 
   constructor(private readonly registry: UIBridgeRegistry) {}
@@ -50,31 +76,69 @@ class BboxTrackerGroup {
   /**
    * Start tracking `element` under `id`. If the id is already tracked, the
    * previous tracker is torn down first (covers mid-mount node swaps).
+   *
+   * @param lazy When true, defer ResizeObserver creation until the element
+   *             enters the viewport; tear it down when it leaves. Use for
+   *             scanner-registered elements where total count may exceed
+   *             what eager tracking can afford.
    */
-  track(id: string, element: HTMLElement): void {
+  track(id: string, element: HTMLElement, lazy = false): void {
     this.untrack(id);
 
-    const observer =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => this.measure(id)) : null;
-    observer?.observe(element);
-
-    this.tracked.set(id, { id, element, resizeObserver: observer });
+    const entry: Tracked = {
+      id,
+      element,
+      resizeObserver: null,
+      lazy,
+      // Eager trackers behave as if always in viewport. Lazy trackers flip
+      // to true once the IntersectionObserver reports them as intersecting.
+      inViewport: !lazy,
+    };
+    this.tracked.set(id, entry);
+    this.byElement.set(element, entry);
     this.ensureGlobalListeners();
 
-    // Initial measurement — fire synchronously so the first snapshot after
-    // register already has a bbox. Subsequent measurements are rAF-debounced.
-    this.measure(id);
+    if (lazy) {
+      this.ensureIntersectionObserver();
+      if (this.intersectionObserver) {
+        this.intersectionObserver.observe(element);
+        // Initial measurement is deferred to the first IntersectionObserver
+        // callback (fires on the next microtask for elements that start in
+        // the viewport). We do NOT measure synchronously here — doing so
+        // would force layout on every auto-registered element at mount
+        // time, which is exactly the cost lazy mode exists to avoid.
+      } else {
+        // No IntersectionObserver available (SSR, bare JSDOM). Fall back
+        // to eager tracking so consumers never end up with trackers that
+        // silently never measure. This is strictly worse-perf than real
+        // lazy mode, but correct: every tracker produces a bbox.
+        entry.inViewport = true;
+        this.attachResizeObserver(entry);
+        this.measure(id);
+      }
+    } else {
+      // Eager: attach ResizeObserver immediately and take an initial
+      // measurement so the first snapshot after register already has a
+      // bbox. Subsequent measurements are rAF-debounced via shared
+      // scroll/resize listeners.
+      this.attachResizeObserver(entry);
+      this.measure(id);
+    }
   }
 
   /** Stop tracking `id`. Safe to call with an unknown id. */
   untrack(id: string): void {
     const entry = this.tracked.get(id);
     if (!entry) return;
+
     entry.resizeObserver?.disconnect();
+    this.intersectionObserver?.unobserve(entry.element);
+    this.byElement.delete(entry.element);
     this.tracked.delete(id);
 
     if (this.tracked.size === 0) {
       this.teardownGlobalListeners();
+      this.teardownIntersectionObserver();
     }
   }
 
@@ -84,7 +148,25 @@ class BboxTrackerGroup {
       entry.resizeObserver?.disconnect();
     }
     this.tracked.clear();
+    this.byElement = new WeakMap();
     this.teardownGlobalListeners();
+    this.teardownIntersectionObserver();
+  }
+
+  /** Attach a ResizeObserver to the tracked element. No-op in SSR. */
+  private attachResizeObserver(entry: Tracked): void {
+    if (entry.resizeObserver) return;
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => this.measure(entry.id));
+    observer.observe(entry.element);
+    entry.resizeObserver = observer;
+  }
+
+  /** Detach the ResizeObserver for a tracked element (lazy-mode eviction). */
+  private detachResizeObserver(entry: Tracked): void {
+    if (!entry.resizeObserver) return;
+    entry.resizeObserver.disconnect();
+    entry.resizeObserver = null;
   }
 
   /**
@@ -126,8 +208,12 @@ class BboxTrackerGroup {
   }
 
   private measureAll(): void {
-    for (const id of this.tracked.keys()) {
-      this.measure(id);
+    for (const entry of this.tracked.values()) {
+      // Skip off-screen lazy trackers — their ResizeObserver is detached
+      // and their last-known bbox in the registry is fine. The next
+      // viewport entry will re-measure.
+      if (entry.lazy && !entry.inViewport) continue;
+      this.measure(entry.id);
     }
   }
 
@@ -158,6 +244,57 @@ class BboxTrackerGroup {
       this.rafHandle = null;
     }
   }
+
+  private ensureIntersectionObserver(): void {
+    if (this.intersectionObserver) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      // SSR or JSDOM without polyfill — fall back to treating lazy
+      // trackers as always-in-viewport so they still produce bboxes,
+      // just without the viewport gating. Attach resize observers and
+      // take an initial measurement on next scroll/resize.
+      return;
+    }
+
+    this.intersectionObserver = new IntersectionObserver(
+      (entries) => this.handleIntersections(entries),
+      // threshold: 0 = fire when any part of the element enters or leaves
+      // the viewport. rootMargin stays at default (0px) — no point
+      // pre-attaching observers before the element is actually visible.
+      { threshold: 0 }
+    );
+  }
+
+  private teardownIntersectionObserver(): void {
+    if (!this.intersectionObserver) return;
+    this.intersectionObserver.disconnect();
+    this.intersectionObserver = null;
+  }
+
+  private handleIntersections(entries: IntersectionObserverEntry[]): void {
+    for (const io of entries) {
+      const entry = this.byElement.get(io.target);
+      if (!entry) continue;
+
+      const wasInViewport = entry.inViewport;
+      entry.inViewport = io.isIntersecting;
+
+      if (io.isIntersecting && !wasInViewport) {
+        // Entered viewport: attach ResizeObserver and take an initial
+        // measurement so the registry bbox reflects the current layout
+        // as soon as the element becomes visible.
+        this.attachResizeObserver(entry);
+        this.measure(entry.id);
+      } else if (!io.isIntersecting && wasInViewport) {
+        // Left viewport: tear down the ResizeObserver to cap active
+        // observer count at visible-element count. The last-known bbox
+        // stays in the registry — runner's click resolution checks
+        // `visible` (and viewport intersection implicitly) via the same
+        // snapshot read, so a stale off-screen bbox can't cause a wrong
+        // click; it just fails the visibility gate.
+        this.detachResizeObserver(entry);
+      }
+    }
+  }
 }
 
 /**
@@ -175,6 +312,21 @@ function getGroup(registry: UIBridgeRegistry): BboxTrackerGroup {
   return group;
 }
 
+/** Options for {@link trackElementBbox}. */
+export interface TrackElementBboxOptions {
+  /**
+   * When true, defer ResizeObserver attachment until the element enters the
+   * viewport. Only active elements pay the observer cost, so this scales to
+   * thousands of registered elements (large tables, long lists, etc.).
+   * Use for scanner-registered (`origin: 'auto'`) elements.
+   *
+   * Defaults to false. Hook-registered (`useUIElement`) elements stay eager
+   * because they're usually few, always-interesting, and expected to report
+   * a bbox immediately after mount.
+   */
+  lazy?: boolean;
+}
+
 /**
  * Start tracking `element` under `id` in the given registry. Returns an
  * untrack function.
@@ -182,10 +334,11 @@ function getGroup(registry: UIBridgeRegistry): BboxTrackerGroup {
 export function trackElementBbox(
   registry: UIBridgeRegistry,
   id: string,
-  element: HTMLElement
+  element: HTMLElement,
+  options: TrackElementBboxOptions = {}
 ): () => void {
   const group = getGroup(registry);
-  group.track(id, element);
+  group.track(id, element, options.lazy ?? false);
   return () => group.untrack(id);
 }
 

@@ -26,7 +26,16 @@ export default defineConfig([
       'artifacts/index': 'src/artifacts/index.ts',
     },
     format: ['cjs', 'esm'],
-    dts: true,
+    // DTS rollup traverses transitive types from node_modules; a handful
+    // of upstream packages still ship tsconfigs with the deprecated
+    // `baseUrl` option, which TS 6+ rejects. `ignoreDeprecations: "6.0"`
+    // keeps the DTS build green until those upstream configs migrate.
+    // Our own tsconfigs no longer set baseUrl.
+    dts: {
+      compilerOptions: {
+        ignoreDeprecations: '6.0',
+      },
+    },
     splitting: false,
     sourcemap: true,
     clean: true,
