@@ -40,5 +40,10 @@ export type { ElementFingerprintData, RepeatPatternData } from './element-finger
 export { createStableRef, resolveStableRef } from './stable-ref';
 export type { StableElementRef } from './stable-ref';
 
+// Structured NL-disambiguation query — rank elements by metadata without
+// pixel inspection. Replaces the VLM-for-disambiguation path.
+export { findElements } from './find';
+export type { FindableElement, ElementQuery, ElementMatch } from './find';
+
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';
