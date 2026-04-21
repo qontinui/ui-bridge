@@ -346,7 +346,9 @@ export class CommandRelay {
               reject(
                 new Error(
                   'No browser connected — no WebSocket clients and no SSE listeners. ' +
-                    'Ensure the web app is open in a browser tab.'
+                    'Open the web app in a browser tab, or launch a headless one with ' +
+                    '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
+                    'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
                 )
               ),
             3000
@@ -455,7 +457,9 @@ export class CommandRelay {
           new Error(
             `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
               'No WebSocket clients and no SSE listeners registered. ' +
-              'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+              'Open the web app in a browser tab, or launch a headless one with ' +
+              '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
+              'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
           )
         );
         return;

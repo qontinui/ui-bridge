@@ -618,6 +618,62 @@ function handleRelayRoute(
     return jsonResponse(response);
   }
 
+  // GET /tabs/wait — long-poll until at least one tab is connected.
+  // Used by `@qontinui/ui-bridge-headless` and other test drivers that
+  // launch a browser and want to block until the relay acknowledges
+  // the new tab instead of racing it.
+  //
+  // Query params:
+  //   ?timeoutMs=<ms>   default 30000, max 120000
+  //   ?pollMs=<ms>      default 250, min 50
+  //
+  // Response (tab connected):
+  //   { success: true, data: { tabs: [...], waitedMs: N }, timestamp }
+  // Response (timeout):
+  //   HTTP 504 { success: false, error: 'timeout', timestamp }
+  if (method === 'GET' && path === '/tabs/wait') {
+    const url = new URL(request.url);
+    const timeoutMs = Math.min(
+      120_000,
+      Math.max(100, Number.parseInt(url.searchParams.get('timeoutMs') ?? '30000', 10) || 30_000)
+    );
+    const pollMs = Math.max(
+      50,
+      Number.parseInt(url.searchParams.get('pollMs') ?? '250', 10) || 250
+    );
+    return (async () => {
+      const startedAt = Date.now();
+      const deadline = startedAt + timeoutMs;
+      while (Date.now() < deadline) {
+        const diag = relay.getTransportDiagnostics();
+        if (diag.connectedTabs.length > 0) {
+          const tabs = diag.connectedTabs.map((tabId) => ({
+            tabId,
+            ...(diag.tabMetadata[tabId] || {}),
+            lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
+            isPrimary: tabId === diag.primaryTabId,
+            isDemoted: diag.demotedTabs.includes(tabId),
+          }));
+          return jsonResponse({
+            success: true,
+            data: { tabs, waitedMs: Date.now() - startedAt },
+            timestamp: Date.now(),
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+      }
+      return jsonResponse(
+        {
+          success: false,
+          error: 'timeout',
+          data: { timeoutMs, waitedMs: Date.now() - startedAt },
+          timestamp: Date.now(),
+        },
+        504
+      );
+    })();
+  }
+
   // GET /tabs — connected tab info with metadata
   if (method === 'GET' && path === '/tabs') {
     const url = new URL(request.url);
