@@ -460,6 +460,54 @@ export interface RegisteredElement {
    * than driving the flow through raw element clicks.
    */
   ownedByComponent?: string;
+  /**
+   * How this element entered the registry.
+   *
+   * - `'hook'`  — registered explicitly via `useUIElement` / `useUIComponent`
+   *   (i.e. a developer wired it up).
+   * - `'auto'`  — registered by the DOM walker in `useAutoRegister` based on
+   *   tag/role selectors. Downstream consumers (snapshot filters, spec
+   *   emitters, test tooling) can use this to skip or prioritize
+   *   developer-instrumented elements.
+   *
+   * Defaults to `'hook'` when not specified so programmatic callers that
+   * preceded this field behave as before.
+   */
+  origin?: 'hook' | 'auto';
+
+  // ------------------------------------------------------------------
+  // Structured disambiguation metadata (all optional).
+  //
+  // Consumers set these on `useUIElement` so NL queries like "the red Save
+  // button at the bottom right" or "the destructive Confirm" can be ranked
+  // without pixel-grounding via a VLM. They are open-ended strings so design
+  // systems can use their own tokens; see the SDK docs for common values.
+  // Snapshots pass them through verbatim.
+  // ------------------------------------------------------------------
+  /**
+   * Semantic role / intent. Common values: `"primary"`, `"secondary"`,
+   * `"destructive"`, `"ghost"`, `"link"`, `"success"`, `"warning"`.
+   * Open-ended — consumers may use their own design-system tokens.
+   */
+  variant?: string;
+  /**
+   * Positional hint for disambiguation. Common values: `"top"`, `"bottom"`,
+   * `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"`,
+   * `"bottom-right"`, `"center"`. Open-ended string.
+   */
+  position?: string;
+  /**
+   * Dominant color hint as seen by the user. Accepts CSS color names
+   * (`"red"`, `"blue"`), hex (`"#ef4444"`), or design-token aliases
+   * (`"accent"`, `"danger"`). Open-ended string.
+   */
+  color?: string;
+  /**
+   * Hierarchical semantic path, e.g.
+   * `"settings-modal > theme-section > accent-color"`. Helps rank
+   * "the Save button" when multiple forms each have one. Open-ended string.
+   */
+  contextPath?: string;
 }
 
 // ============================================================================
@@ -1019,6 +1067,34 @@ export interface BridgeSnapshot {
       semanticPath: string;
       stableId?: string;
     };
+    /**
+     * How this element got into the registry.
+     * `'hook'` = explicit `useUIElement`/`useUIComponent`; `'auto'` = DOM-walker
+     * auto-instrumentation (`useAutoRegister`). Consumers that want to ignore
+     * auto-tagged entries can filter on this field.
+     */
+    origin?: 'hook' | 'auto';
+    /**
+     * Semantic role / intent hint for disambiguation (e.g. `"primary"`,
+     * `"destructive"`). Passthrough from `useUIElement` options. See
+     * `RegisteredElement.variant` for common values.
+     */
+    variant?: string;
+    /**
+     * Positional hint for disambiguation (e.g. `"bottom-right"`).
+     * Passthrough from `useUIElement` options.
+     */
+    position?: string;
+    /**
+     * Dominant color hint as seen by the user (CSS name / hex / token).
+     * Passthrough from `useUIElement` options.
+     */
+    color?: string;
+    /**
+     * Hierarchical semantic path for ranking across duplicate labels.
+     * Passthrough from `useUIElement` options.
+     */
+    contextPath?: string;
   }>;
   /** All registered components */
   components: Array<{

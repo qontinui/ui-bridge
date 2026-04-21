@@ -48,6 +48,32 @@ export interface UseUIElementOptions {
     bidirectional?: boolean;
     metadata?: Record<string, unknown>;
   }>;
+
+  // --- Structured disambiguation metadata (all optional) --------------
+  // Consumers opt in to help NL queries ("the red Save button at the bottom
+  // right", "the destructive Confirm") rank candidates without VLM pixel
+  // grounding. Each field is an open-ended string — design systems can use
+  // their own tokens. Snapshots pass them through verbatim.
+  /**
+   * Semantic role / intent. Common values: `"primary"`, `"secondary"`,
+   * `"destructive"`, `"ghost"`, `"link"`, `"success"`, `"warning"`.
+   */
+  variant?: string;
+  /**
+   * Positional hint. Common values: `"top"`, `"bottom"`, `"left"`, `"right"`,
+   * `"top-left"`, `"top-right"`, `"bottom-left"`, `"bottom-right"`, `"center"`.
+   */
+  position?: string;
+  /**
+   * Dominant color as seen by the user — CSS color name (`"red"`), hex
+   * (`"#ef4444"`), or design-token alias (`"accent"`, `"danger"`).
+   */
+  color?: string;
+  /**
+   * Hierarchical semantic path for ranking across duplicate labels, e.g.
+   * `"settings-modal > theme-section > accent-color"`.
+   */
+  contextPath?: string;
 }
 
 /**
@@ -115,6 +141,10 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     autoRegister = true,
     logLevel,
     relationships,
+    variant,
+    position,
+    color,
+    contextPath,
   } = options;
 
   // See useUIState for rationale on capturing id at register time.
@@ -158,6 +188,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       actions,
       customActions,
       ownedByComponent: ownedByComponent ?? undefined,
+      origin: 'hook',
+      // Structured disambiguation metadata — passed through verbatim. Absent
+      // fields keep today's behavior (no ranking hint emitted).
+      variant,
+      position,
+      color,
+      contextPath,
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -178,6 +215,10 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     customActions,
     logLevel,
     ownedByComponent,
+    variant,
+    position,
+    color,
+    contextPath,
     startBboxTracking,
   ]);
 
@@ -300,6 +341,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
           label: label ?? null,
           actions: actions ?? null,
           logLevel: logLevel ?? null,
+          // Disambiguation hints are plain strings — include them so mid-
+          // lifecycle updates (e.g. variant flipping from "primary" to
+          // "destructive") propagate into the registry via `updateElement`.
+          variant: variant ?? null,
+          position: position ?? null,
+          color: color ?? null,
+          contextPath: contextPath ?? null,
         })
       : null;
   useEffect(() => {
@@ -317,6 +365,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         label,
         actions,
         customActions,
+        origin: 'hook',
+        variant,
+        position,
+        color,
+        contextPath,
       });
       if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
       startBboxTracking(elementRef.current);
@@ -327,6 +380,10 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       label,
       actions,
       customActions,
+      variant,
+      position,
+      color,
+      contextPath,
     });
     if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
     // customActions excluded from key — see comment above.

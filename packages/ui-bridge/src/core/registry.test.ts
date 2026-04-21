@@ -181,6 +181,28 @@ describe('UIBridgeRegistry', () => {
       expect(serialized!.bbox).toEqual({ x: 5, y: 6, width: 7, height: 8 });
       expect(serialized!.visible).toBe(true);
     });
+
+    it('carries disambiguation metadata (variant/position/color/contextPath) through the snapshot', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('save-btn', btn, {
+        type: 'button',
+        label: 'Save',
+        variant: 'destructive',
+        position: 'bottom-right',
+        color: '#ef4444',
+        contextPath: 'settings-modal > theme-section > accent-color',
+      });
+
+      const snapshot = registry.createSnapshot();
+      const serialized = snapshot.elements.find((e) => e.id === 'save-btn');
+
+      expect(serialized).toBeDefined();
+      expect(serialized!.variant).toBe('destructive');
+      expect(serialized!.position).toBe('bottom-right');
+      expect(serialized!.color).toBe('#ef4444');
+      expect(serialized!.contextPath).toBe('settings-modal > theme-section > accent-color');
+    });
   });
 
   describe('component registration', () => {

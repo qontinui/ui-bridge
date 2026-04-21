@@ -377,6 +377,29 @@ export interface ControlSnapshot {
      * `state.visible`.
      */
     visible?: boolean;
+    /**
+     * Semantic role / intent hint for disambiguation (e.g. `"primary"`,
+     * `"destructive"`). Passthrough from `useUIElement` options — see
+     * `RegisteredElement.variant` for common values. Lets NL queries like
+     * "the destructive Confirm" rank candidates without VLM grounding.
+     */
+    variant?: string;
+    /**
+     * Positional hint for disambiguation (e.g. `"bottom-right"`).
+     * Passthrough from `useUIElement` options.
+     */
+    position?: string;
+    /**
+     * Dominant color hint as seen by the user (CSS name / hex / design-token
+     * alias). Passthrough from `useUIElement` options.
+     */
+    color?: string;
+    /**
+     * Hierarchical semantic path for ranking across duplicate labels
+     * (e.g. `"settings-modal > theme-section > accent-color"`).
+     * Passthrough from `useUIElement` options.
+     */
+    contextPath?: string;
   }>;
   /** All registered components */
   components: Array<{

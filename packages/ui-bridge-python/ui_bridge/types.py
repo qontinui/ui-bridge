@@ -422,6 +422,22 @@ class RegisteredElement(BaseModel):
     # from the server-side DOM fallback scan rather than React registration.
     bbox: ElementBbox | None = None
     visible: bool | None = None
+    # --- Structured disambiguation metadata (all optional) --------------
+    # Open-ended strings set by the consumer on `useUIElement` so NL queries
+    # like "the red Save button at the bottom right" or "the destructive
+    # Confirm" can rank candidates without VLM pixel grounding. Absent when
+    # the consumer didn't opt in.
+    # Semantic role/intent — e.g. "primary", "destructive", "ghost".
+    variant: str | None = None
+    # Positional hint — e.g. "bottom-right", "top", "center".
+    position: str | None = None
+    # Dominant color as seen by the user — CSS name, hex, or design token.
+    color: str | None = None
+    # Hierarchical semantic path — e.g.
+    # "settings-modal > theme-section > accent-color".
+    context_path: str | None = Field(None, alias="contextPath")
+
+    model_config = {"populate_by_name": True}
 
 
 class RegisteredComponent(BaseModel):

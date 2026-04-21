@@ -80,11 +80,17 @@ export interface AutoRegisterOptions {
 
 /**
  * Interactive element selectors
+ *
+ * Any DOM element matching one of these gets `data-ui-bridge-id` stamped and
+ * registered as `origin: 'auto'`. Kept deliberately comprehensive so bbox
+ * tracking works for elements the developer never wrapped with `useUIElement`.
+ * Hidden inputs are excluded — they have no visual representation and only
+ * pollute the snapshot.
  */
 const INTERACTIVE_SELECTORS = [
   'a[href]',
   'button',
-  'input',
+  'input:not([type="hidden"])',
   'select',
   'textarea',
   '[role="button"]',
@@ -658,17 +664,34 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      let id = generateIdForElement(element, idStrategy, customGenerateId);
+      // If the element already carries a `data-ui-bridge-id` — e.g. a
+      // `useUIElement` hook stamped it via bbox-tracker, or a prior
+      // auto-instrumentation pass already registered it — prefer that id
+      // verbatim so hook-driven and scanner-driven paths stay coherent.
+      // This prevents the scanner from clobbering a developer-assigned id
+      // and keeps runner bbox tracking pointed at the right registry key.
+      const existingStamp = element.getAttribute('data-ui-bridge-id');
+      let id = existingStamp || generateIdForElement(element, idStrategy, customGenerateId);
 
       // Check if ID already exists in registry — disambiguate with sibling index
-      const existing = bridge.registry.getElement(id);
-      if (existing) {
-        // Find a unique suffix by counting collisions
-        let suffix = 1;
-        while (bridge.registry.getElement(`${id}-${suffix}`)) {
-          suffix++;
+      // (skip this when the id came from an existing stamp; collisions there
+      // likely mean the element is already registered under that id).
+      if (!existingStamp) {
+        const existing = bridge.registry.getElement(id);
+        if (existing) {
+          // Find a unique suffix by counting collisions
+          let suffix = 1;
+          while (bridge.registry.getElement(`${id}-${suffix}`)) {
+            suffix++;
+          }
+          id = `${id}-${suffix}`;
         }
-        id = `${id}-${suffix}`;
+      } else if (bridge.registry.getElement(id)) {
+        // The element is already registered under its stamped id — nothing
+        // for the scanner to do. Record the mapping so future mutations
+        // don't re-scan it and return early.
+        registeredElementsRef.current.set(element, id);
+        return;
       }
 
       const type = inferElementType(element);
@@ -679,10 +702,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         type,
         actions,
         label,
+        origin: 'auto',
       });
 
       const finalId = registered.id;
-      if (writeStableAttribute !== false) {
+      if (writeStableAttribute !== false && !existingStamp) {
         element.setAttribute('data-ui-bridge-id', finalId);
       }
       registeredElementsRef.current.set(element, finalId);

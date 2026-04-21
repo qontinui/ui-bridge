@@ -81,6 +81,17 @@ export function serializeRegisteredElement(
     // Runners use this to dispatch clicks via DOM coords without VLM grounding.
     bbox: el.bbox,
     visible: el.visible,
+    // `'hook'` for explicit useUIElement registrations, `'auto'` for
+    // DOM-walker entries from useAutoRegister. Snapshot consumers that care
+    // about developer-instrumented vs. scanner-discovered elements filter here.
+    origin: el.origin,
+    // Structured disambiguation metadata (all optional). Passthrough of the
+    // four hints the consumer set on `useUIElement` so NL queries can rank
+    // candidates without VLM grounding. Absent fields keep today's behavior.
+    variant: el.variant,
+    position: el.position,
+    color: el.color,
+    contextPath: el.contextPath,
     stableRef: el.element?.isConnected
       ? (() => {
           const ref = createStableRef(el);
@@ -742,6 +753,14 @@ export class UIBridgeRegistry {
       category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
       mediaMetadata?: MediaMetadata;
+      /** Disambiguation hint — semantic role/intent. See RegisteredElement.variant. */
+      variant?: string;
+      /** Disambiguation hint — positional. See RegisteredElement.position. */
+      position?: string;
+      /** Disambiguation hint — dominant color. See RegisteredElement.color. */
+      color?: string;
+      /** Disambiguation hint — hierarchical semantic path. See RegisteredElement.contextPath. */
+      contextPath?: string;
     }
   ): boolean {
     const existing = this.elements.get(id);
@@ -753,6 +772,11 @@ export class UIBridgeRegistry {
     if (options.category !== undefined) existing.category = options.category;
     if (options.contentMetadata !== undefined) existing.contentMetadata = options.contentMetadata;
     if (options.mediaMetadata !== undefined) existing.mediaMetadata = options.mediaMetadata;
+    // Disambiguation metadata — mirror consumer updates verbatim.
+    if (options.variant !== undefined) existing.variant = options.variant;
+    if (options.position !== undefined) existing.position = options.position;
+    if (options.color !== undefined) existing.color = options.color;
+    if (options.contextPath !== undefined) existing.contextPath = options.contextPath;
     return true;
   }
 
@@ -790,6 +814,22 @@ export class UIBridgeRegistry {
       mediaMetadata?: MediaMetadata;
       /** Component that owns this element (set by <UIBridgeComponentScope>). */
       ownedByComponent?: string;
+      /**
+       * How this registration happened — `'hook'` (explicit useUIElement /
+       * useUIComponent) or `'auto'` (DOM walker in useAutoRegister). Defaults
+       * to `'hook'` so any programmatic caller that doesn't know about this
+       * field is treated as a developer-instrumented registration. The
+       * auto-register path overrides to `'auto'`.
+       */
+      origin?: 'hook' | 'auto';
+      /** Disambiguation hint — semantic role/intent. See RegisteredElement.variant. */
+      variant?: string;
+      /** Disambiguation hint — positional. See RegisteredElement.position. */
+      position?: string;
+      /** Disambiguation hint — dominant color. See RegisteredElement.color. */
+      color?: string;
+      /** Disambiguation hint — hierarchical semantic path. See RegisteredElement.contextPath. */
+      contextPath?: string;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -841,6 +881,17 @@ export class UIBridgeRegistry {
       contentMetadata: options.contentMetadata,
       mediaMetadata: options.mediaMetadata,
       ownedByComponent,
+      // Default programmatic registrations to `'hook'` — only the DOM walker
+      // in useAutoRegister passes `'auto'`. Tests and external callers that
+      // pre-date this field stay on the `'hook'` side of any filter.
+      origin: options.origin ?? 'hook',
+      // Structured disambiguation metadata (all optional). Snapshots echo
+      // these through verbatim so NL queries can rank candidates without
+      // VLM pixel grounding.
+      variant: options.variant,
+      position: options.position,
+      color: options.color,
+      contextPath: options.contextPath,
     };
 
     this.elements.set(actualId, registered);
@@ -859,6 +910,8 @@ export class UIBridgeRegistry {
       contentType: string;
       contentMetadata: ContentMetadata;
       label?: string;
+      /** Defaults to `'auto'` — content elements only flow from the DOM scanner. */
+      origin?: 'hook' | 'auto';
     }
   ): RegisteredElement {
     return this.registerElement(id, element, {
@@ -867,6 +920,7 @@ export class UIBridgeRegistry {
       actions: [],
       category: 'content',
       contentMetadata: options.contentMetadata,
+      origin: options.origin ?? 'auto',
     });
   }
 
@@ -891,6 +945,8 @@ export class UIBridgeRegistry {
       mediaMetadata: MediaMetadata;
       label?: string;
       refreshMetadata?: (el: HTMLElement) => MediaMetadata;
+      /** Defaults to `'auto'` — media elements only flow from the DOM scanner. */
+      origin?: 'hook' | 'auto';
     }
   ): RegisteredElement {
     const registered = this.registerElement(id, element, {
@@ -899,6 +955,7 @@ export class UIBridgeRegistry {
       actions: [],
       category: 'media',
       mediaMetadata: options.mediaMetadata,
+      origin: options.origin ?? 'auto',
     });
 
     // Override getState to re-capture media metadata on each call

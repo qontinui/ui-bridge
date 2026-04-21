@@ -218,7 +218,25 @@ const { ref, trigger, getState } = useUIElement({
   type: 'button',
   label: 'My Button',
 });
+```
 
+#### Disambiguation metadata
+
+`useUIElement` accepts four optional structured hints — `variant`, `position`, `color`, `contextPath` — that help natural-language queries like _"the red Save button at the bottom right"_ or _"the destructive Confirm"_ rank candidates when multiple elements share the same label. They are open-ended strings (use your own design-system tokens) and flow through the control snapshot verbatim; absent fields keep prior behavior.
+
+```tsx
+useUIElement({
+  id: 'confirm-delete',
+  type: 'button',
+  label: 'Confirm',
+  variant: 'destructive', // "primary" | "destructive" | "ghost" | ...
+  position: 'bottom-right', // "top" | "bottom-right" | "center" | ...
+  color: '#ef4444', // CSS name, hex, or token ("danger")
+  contextPath: 'delete-modal > footer > actions',
+});
+```
+
+```tsx
 // Register a component with actions
 useUIComponent({
   id: 'my-form',
