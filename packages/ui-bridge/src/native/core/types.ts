@@ -145,6 +145,34 @@ export interface NativeLayout {
 }
 
 /**
+ * Live bounding box (screen-absolute, RN pixels) for a registered native
+ * element. Parity shape with the web SDK's `ElementBbox` so the runner's
+ * bbox-first click resolver can treat SDK-registered native elements the
+ * same way it treats SDK-registered web elements — no VLM grounding.
+ *
+ * Maintained by `useUIElement`'s `onLayout` handler: the `x`/`y` here are
+ * the screen-absolute coordinates (from `measureInWindow`'s `pageX`/`pageY`
+ * when available, else falling back to the layout-relative `x`/`y`). That
+ * matches the runner's expectation that `bbox` is directly dispatchable
+ * without a coordinate-space conversion.
+ *
+ * Declared here (rather than imported from the web `core/types.ts`) to keep
+ * the native subtree free of web-only type deps and avoid a cross-cut that
+ * would be pulled into bundles that don't need the DOM registry. The shape
+ * is identical by contract — runners serialize both as the same wire field.
+ */
+export interface ElementBbox {
+  /** Left edge in pixels */
+  x: number;
+  /** Top edge in pixels */
+  y: number;
+  /** Width in pixels */
+  width: number;
+  /** Height in pixels */
+  height: number;
+}
+
+/**
  * Current state of a native UI element
  */
 export interface NativeElementState {
@@ -251,6 +279,23 @@ export interface RegisteredNativeElement {
   registeredAt: number;
   /** Whether this element is currently mounted */
   mounted: boolean;
+
+  /**
+   * Live screen-absolute bounding box in pixels, parity field with the web
+   * SDK's `RegisteredElement.bbox`. Maintained by `useUIElement`'s
+   * `onLayout` handler. Undefined until the first layout event fires (or
+   * after unmount). Exposed in the native snapshot so runners targeting
+   * React Native apps can skip VLM grounding for SDK-registered elements.
+   */
+  bbox?: ElementBbox;
+  /**
+   * Live visibility signal (`bbox.width > 0 && bbox.height > 0`), parity
+   * field with the web SDK. Undefined when `bbox` is undefined.
+   * `NativeLayout` doesn't carry richer visibility data so this is the
+   * cheap correct approximation — a "rendered with nonzero size" hint
+   * only, not a hit-test / occlusion check.
+   */
+  visible?: boolean;
 }
 
 /**
@@ -351,6 +396,14 @@ export interface NativeBridgeSnapshot {
     state: NativeElementState;
     actions: NativeStandardAction[];
     customActions?: string[];
+    /**
+     * Live screen-absolute bounding box maintained by `useUIElement`'s
+     * `onLayout`. Parity with the web snapshot's `elements[].bbox`.
+     * Undefined if the hook hasn't observed a layout event yet.
+     */
+    bbox?: ElementBbox;
+    /** Live visibility (`bbox.width > 0 && bbox.height > 0`). Paired with `bbox`. */
+    visible?: boolean;
   }>;
   /** All registered components */
   components: Array<{

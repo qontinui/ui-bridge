@@ -13,6 +13,7 @@ export {
   type NativeElementIdentifier,
   type NativeElementState,
   type NativeLayout,
+  type ElementBbox,
   type NativeElementType,
   type NativeStandardAction,
   type NativeCustomAction,

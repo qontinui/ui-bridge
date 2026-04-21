@@ -14,6 +14,7 @@ import type {
   RegisteredNativeElement,
   NativeElementRef,
   NativeLayout,
+  ElementBbox,
 } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
@@ -182,6 +183,38 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     (event: LayoutEventData) => {
       const { x, y, width, height } = event.nativeEvent.layout;
 
+      // Push both `NativeLayout` (native-specific, kept for RN consumers)
+      // and `ElementBbox` + `visible` (parity with web SDK, consumed by
+      // runners doing bbox-first click resolution) in one update site.
+      //
+      // `ElementBbox` uses screen-absolute coords so runners can dispatch
+      // taps without a coord-space conversion. `measureInWindow`'s
+      // `pageX`/`pageY` are screen-absolute; we fall back to the layout's
+      // relative `x`/`y` only when `measureInWindow` is unavailable.
+      const commit = (newLayout: NativeLayout) => {
+        setLayout(newLayout);
+        if (!bridge || !registered) return;
+
+        const newState: NativeElementState = {
+          mounted: true,
+          visible: width > 0 && height > 0,
+          enabled: true,
+          focused: false,
+          layout: newLayout,
+        };
+        bridge.registry.updateElementState(id, newState);
+
+        const bbox: ElementBbox = {
+          x: newLayout.pageX,
+          y: newLayout.pageY,
+          width,
+          height,
+        };
+        bridge.registry.updateElementBbox(id, bbox, width > 0 && height > 0);
+
+        onStateChange?.(newState);
+      };
+
       // Get absolute position using measureInWindow
       if (ref.current && 'measureInWindow' in ref.current) {
         (
@@ -191,52 +224,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
             ) => void;
           }
         ).measureInWindow((pageX: number, pageY: number) => {
-          const newLayout: NativeLayout = {
-            x,
-            y,
-            width,
-            height,
-            pageX,
-            pageY,
-          };
-          setLayout(newLayout);
-
-          // Update state in registry
-          if (bridge && registered) {
-            const newState: NativeElementState = {
-              mounted: true,
-              visible: width > 0 && height > 0,
-              enabled: true,
-              focused: false,
-              layout: newLayout,
-            };
-            bridge.registry.updateElementState(id, newState);
-            onStateChange?.(newState);
-          }
+          commit({ x, y, width, height, pageX, pageY });
         });
       } else {
         // Fallback if measureInWindow not available
-        const newLayout: NativeLayout = {
-          x,
-          y,
-          width,
-          height,
-          pageX: x,
-          pageY: y,
-        };
-        setLayout(newLayout);
-
-        if (bridge && registered) {
-          const newState: NativeElementState = {
-            mounted: true,
-            visible: width > 0 && height > 0,
-            enabled: true,
-            focused: false,
-            layout: newLayout,
-          };
-          bridge.registry.updateElementState(id, newState);
-          onStateChange?.(newState);
-        }
+        commit({ x, y, width, height, pageX: x, pageY: y });
       }
     },
     [bridge, registered, id, onStateChange]

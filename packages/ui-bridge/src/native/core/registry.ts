@@ -15,6 +15,7 @@ import type {
   NativeBridgeSnapshot,
   NativeElementIdentifier,
   NativeElementRef,
+  ElementBbox,
   Workflow,
   BridgeEvent,
   BridgeEventType,
@@ -261,6 +262,34 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Update the live screen-absolute bounding box and visibility for a
+   * registered element. Parity with the web registry's `updateElementBbox`.
+   * Called by `useUIElement`'s `onLayout` handler.
+   *
+   * Intentionally does not emit `element:stateChanged` — onLayout can fire
+   * on every scroll / rotation / keyboard-open, and event churn would cause
+   * snapshot consumers to rebuild on every frame. Pass `undefined` for
+   * both args to clear the fields.
+   *
+   * Returns `false` if the element is not registered.
+   */
+  updateElementBbox(
+    id: string,
+    bbox: ElementBbox | undefined,
+    visible: boolean | undefined
+  ): boolean {
+    const element = this.elements.get(id);
+    if (!element) return false;
+    const updated: RegisteredNativeElement = {
+      ...element,
+      bbox,
+      visible,
+    };
+    this.elements.set(id, updated);
+    return true;
+  }
+
+  /**
    * Find element by testID
    */
   findByTestId(testId: string): RegisteredNativeElement | undefined {
@@ -467,6 +496,11 @@ export class NativeUIBridgeRegistry {
         state: e.getState(),
         actions: e.actions,
         customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+        // Live bbox/visibility maintained by `useUIElement`'s onLayout.
+        // Parity with the web snapshot so runners can dispatch taps by
+        // coords without VLM grounding for SDK-registered elements.
+        bbox: e.bbox,
+        visible: e.visible,
       })),
       // Diagnostic: how many interactive DOM elements exist vs how many
       // the registry captured. A large gap (e.g., 30 registered out of
