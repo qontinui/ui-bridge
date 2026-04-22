@@ -59,6 +59,24 @@ export interface UseCommandRelayOptions {
   basePath?: string;
   /** Heartbeat interval in ms (default: 10000) */
   heartbeatInterval?: number;
+  /**
+   * Explicit runner URL override for phone-home registration.
+   * Default: 'http://127.0.0.1:9876'. When set, phone-home fires regardless
+   * of hostname; otherwise it is gated to localhost-family hosts.
+   */
+  runnerUrl?: string;
+  /** Opt out of the phone-home registration entirely. */
+  disablePhoneHome?: boolean;
+  /** Stable identity for this app in the runner's registry. Default: hostname. */
+  appId?: string;
+  /** Display name. Default: `document.title || location.hostname`. */
+  appName?: string;
+  /** App classification. Default: 'web'. */
+  appType?: 'web' | 'desktop' | 'mobile' | 'dashboard' | 'other';
+  /** Framework hint. Default: 'react'. */
+  framework?: string;
+  /** Capability tags. Default: ['control']. */
+  capabilities?: string[];
 }
 
 /**
@@ -355,4 +373,99 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     const interval = setInterval(sendHeartbeat, heartbeatIntervalMs);
     return () => clearInterval(interval);
   }, [enabled, basePath, heartbeatIntervalMs, tabId]);
+
+  // ========================================================================
+  // Phone-home registration
+  // ========================================================================
+  // POSTs a registration payload to the local qontinui-runner so the
+  // integration tool can discover this app without a port scan. Gated to
+  // localhost-family hostnames by default; opt in on non-localhost via
+  // `runnerUrl`, or opt out with `disablePhoneHome`.
+  useEffect(() => {
+    if (!enabled || options?.disablePhoneHome) return;
+    if (typeof window === 'undefined') return; // SSR guard
+
+    const host = window.location.hostname;
+    const isLocalhost =
+      host === '127.0.0.1' ||
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.endsWith('.local');
+    const runnerUrl = options?.runnerUrl ?? 'http://127.0.0.1:9876';
+    // Guard: only phone home on localhost unless explicitly overridden.
+    if (!isLocalhost && !options?.runnerUrl) return;
+
+    const origin = window.location.origin;
+    const baseUrl = `${origin}${basePath}`;
+    const resolvedAppId = options?.appId ?? host;
+    const appName = options?.appName ?? (document.title || host);
+    const appType = options?.appType ?? 'web';
+    const framework = options?.framework ?? 'react';
+    const capabilities = options?.capabilities ?? ['control'];
+
+    const payload = {
+      appId: resolvedAppId,
+      appName,
+      appType,
+      transport: 'http',
+      baseUrl,
+      framework,
+      capabilities,
+      origin,
+    };
+
+    let cancelled = false;
+
+    const register = async () => {
+      try {
+        await fetch(`${runnerUrl}/ui-bridge/apps/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch {
+        // Runner not reachable — silent. Expected when runner is down or
+        // unreachable (e.g. DNS failure inside a container).
+      }
+    };
+
+    register();
+    const interval = setInterval(() => {
+      if (!cancelled) register();
+    }, 10_000);
+
+    // Best-effort deregister on tab close. Uses fetch(keepalive) because
+    // sendBeacon only supports POST and the runner's deregister route is a
+    // DELETE. keepalive lets the browser finish the request after the tab
+    // navigates away. If this fails (older browser, request blocked, etc.)
+    // the runner's 30s staleness sweeper will evict the entry anyway.
+    const onBeforeUnload = () => {
+      try {
+        void fetch(`${runnerUrl}/ui-bridge/apps/register/${encodeURIComponent(resolvedAppId)}`, {
+          method: 'DELETE',
+          keepalive: true,
+        });
+      } catch {
+        /* swallow: unreachable-runner is the common case and not actionable here */
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- values read from options are stable for the component's lifetime
+  }, [
+    enabled,
+    basePath,
+    options?.disablePhoneHome,
+    options?.runnerUrl,
+    options?.appId,
+    options?.appName,
+    options?.appType,
+    options?.framework,
+  ]);
 }
