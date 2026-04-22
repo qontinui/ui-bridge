@@ -342,7 +342,9 @@ export class NativeUIBridgeServer {
       cors: true,
       ...config,
     };
-    this.handlers = createServerHandlers(registry, executor);
+    this.handlers = createServerHandlers(registry, executor, {
+      appInfo: this.config.appInfo,
+    });
 
     // Set up method introspection from the route table
     this.handlers.getMethods = async () => {

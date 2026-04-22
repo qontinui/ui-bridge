@@ -209,6 +209,7 @@ export function UIBridgeNativeProvider({
     const server = createNativeServer(registry, executor, {
       serverPort: config.serverPort || 8087,
       cors: true,
+      appInfo: config.appInfo,
     });
 
     server.setAdapter(serverAdapter);
@@ -336,6 +337,7 @@ export function UIBridgeNativeProvider({
           const bareServer = createNativeServer(registry, executor, {
             serverPort: config.serverPort || 8087,
             cors: true,
+            appInfo: config.appInfo,
           });
           if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
           if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
