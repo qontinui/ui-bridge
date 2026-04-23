@@ -112,10 +112,7 @@ export function useUIBridgeEcho<T>(
     }
   }, [value, serialize, onNullish]);
 
-  const mergedStyle = useMemo(
-    () => ({ ...HIDDEN_INPUT_STYLE, ...(style ?? {}) }),
-    [style]
-  );
+  const mergedStyle = useMemo(() => ({ ...HIDDEN_INPUT_STYLE, ...(style ?? {}) }), [style]);
 
   return (
     <input

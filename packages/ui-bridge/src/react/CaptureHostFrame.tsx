@@ -35,14 +35,7 @@
  * ```
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-  useRef,
-} from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode, useRef } from 'react';
 import { useUIBridgeEcho } from './useUIBridgeEcho';
 import { useUIElement } from './useUIElement';
 
@@ -99,10 +92,7 @@ export function CaptureHostFrame(props: CaptureHostFrameProps) {
     onMessage,
   } = props;
 
-  const resolvedIds = useMemo(
-    () => ({ ...DEFAULT_CAPTURE_HOST_IDS, ...(ids ?? {}) }),
-    [ids]
-  );
+  const resolvedIds = useMemo(() => ({ ...DEFAULT_CAPTURE_HOST_IDS, ...(ids ?? {}) }), [ids]);
 
   const [currentUrl, setCurrentUrl] = useState(initialSrc);
   const [advanceCount, setAdvanceCount] = useState(0);
@@ -171,9 +161,7 @@ export function CaptureHostFrame(props: CaptureHostFrameProps) {
 
   return (
     <div style={{ padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      {header ?? (
-        <h1 style={{ fontSize: 18, marginBottom: 8 }}>{title}</h1>
-      )}
+      {header ?? <h1 style={{ fontSize: 18, marginBottom: 8 }}>{title}</h1>}
       <div
         style={{
           display: 'flex',
@@ -219,9 +207,7 @@ export function CaptureHostFrame(props: CaptureHostFrameProps) {
       </div>
       <div style={{ fontSize: 11, color: '#666', marginBottom: 8 }}>
         advance #{advanceCount} — echo:{' '}
-        <code>
-          {lastEcho ? JSON.stringify(lastEcho).slice(0, 140) : '(none)'}
-        </code>
+        <code>{lastEcho ? JSON.stringify(lastEcho).slice(0, 140) : '(none)'}</code>
       </div>
       <iframe
         src={currentUrl}
