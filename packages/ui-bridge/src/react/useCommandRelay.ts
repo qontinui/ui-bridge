@@ -396,15 +396,30 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     // Dev-mode override: `?uiBridgeRunnerUrl=http://127.0.0.1:9877` or the
     // shorthand `?uiBridgeRunnerPort=9877`. Lets a developer point an existing
     // running app at a temp runner on a different port without rebuilding the
-    // app. Same trust boundary as the prop — only honored on localhost origins
-    // (or when the prop `runnerUrl` is already overriding).
+    // app. Only honored on localhost origins, and only accepts URLs whose
+    // host is itself localhost — the stated purpose is pointing at a local
+    // temp runner, so allowing arbitrary hosts would just be an exfiltration
+    // channel for the registration payload.
     let qspRunnerUrl: string | undefined;
-    if (typeof URLSearchParams !== 'undefined' && (isLocalhost || options?.runnerUrl)) {
+    if (typeof URLSearchParams !== 'undefined' && isLocalhost) {
       const params = new URLSearchParams(window.location.search);
       const urlParam = params.get('uiBridgeRunnerUrl');
       const portParam = params.get('uiBridgeRunnerPort');
-      if (urlParam && /^https?:\/\//.test(urlParam)) {
-        qspRunnerUrl = urlParam;
+      if (urlParam) {
+        try {
+          const parsed = new URL(urlParam);
+          const parsedHost = parsed.hostname;
+          const parsedIsLocalhost =
+            parsedHost === '127.0.0.1' ||
+            parsedHost === 'localhost' ||
+            parsedHost === '0.0.0.0' ||
+            parsedHost === '::1';
+          if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsedIsLocalhost) {
+            qspRunnerUrl = urlParam;
+          }
+        } catch {
+          // Invalid URL — ignore
+        }
       } else if (portParam && /^\d+$/.test(portParam)) {
         qspRunnerUrl = `http://127.0.0.1:${portParam}`;
       }
