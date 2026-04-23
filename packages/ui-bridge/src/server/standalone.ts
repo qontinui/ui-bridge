@@ -265,8 +265,8 @@ export class StandaloneServer {
       return;
     }
 
-    // Health check
-    if (url.pathname === '/health') {
+    // Health check (also served at /status)
+    if (url.pathname === '/health' || url.pathname === '/status') {
       const healthResponse: Record<string, unknown> = { status: 'ok', timestamp: Date.now() };
 
       // Include UI Bridge metadata for app discovery

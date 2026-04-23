@@ -261,8 +261,8 @@ export function createExpressApp(
 
   app.use(basePath, router);
 
-  // Health check
-  app.get('/health', (_req: Request, res: Response) => {
+  // Health check (also served at /status)
+  app.get(['/health', '/status'], (_req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: Date.now() });
   });
 

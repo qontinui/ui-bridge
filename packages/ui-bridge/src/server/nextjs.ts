@@ -596,8 +596,8 @@ function handleRelayRoute(
     })();
   }
 
-  // GET /health — transport diagnostics + heartbeat freshness + discovery metadata
-  if (method === 'GET' && path === '/health') {
+  // GET /health (also served at /status) — transport diagnostics + heartbeat freshness + discovery metadata
+  if (method === 'GET' && (path === '/health' || path === '/status')) {
     const diagnostics = relay.getTransportDiagnostics();
     const response: Record<string, unknown> = {
       success: true,
