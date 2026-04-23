@@ -420,8 +420,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         } catch {
           // Invalid URL — ignore
         }
-      } else if (portParam && /^\d+$/.test(portParam)) {
-        qspRunnerUrl = `http://127.0.0.1:${portParam}`;
+      } else if (portParam) {
+        const portNum = Number(portParam);
+        if (Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535) {
+          qspRunnerUrl = `http://127.0.0.1:${portNum}`;
+        }
       }
     }
 
