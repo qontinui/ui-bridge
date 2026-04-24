@@ -173,6 +173,7 @@ import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
+import { classString } from '../core/class-name';
 
 /**
  * Parse a natural language assertion into a structured AssertionRequest.
@@ -5514,7 +5515,7 @@ export function createHandlers(
           const info: Record<string, unknown> = {
             tagName: el.tagName.toLowerCase(),
             id: el.id || undefined,
-            className: el.className || undefined,
+            className: classString(el) || undefined,
             textContent: el.textContent?.trim().substring(0, 200) || '',
             visible: el.offsetParent !== null,
           };
