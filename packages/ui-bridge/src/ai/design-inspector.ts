@@ -16,6 +16,7 @@ import type {
   ElementDesignData,
   ResponsiveSnapshot,
 } from '../core/types';
+import { classString } from '../core/class-name';
 
 // ============================================================================
 // Constants
@@ -152,7 +153,7 @@ export function getElementDesignData(
     styles,
     pseudoElements: pseudoElements.length > 0 ? pseudoElements : undefined,
     customProperties: Object.keys(customProperties).length > 0 ? customProperties : undefined,
-    className: el.className || undefined,
+    className: classString(el) || undefined,
     classes: el.classList.length > 0 ? Array.from(el.classList) : undefined,
     rect: {
       x: rect.x,
