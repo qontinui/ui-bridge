@@ -7,7 +7,14 @@ import globals from 'globals';
 export default tseslint.config(
   // Global ignores
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', 'eslint.config.js'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/*.js',
+      '**/*.mjs',
+      '**/*.cjs',
+      'eslint.config.js',
+    ],
   },
 
   // Base recommended configs
@@ -63,4 +70,49 @@ export default tseslint.config(
       'no-unused-vars': 'off', // Use TypeScript's version
     },
   },
+
+  // SVG-safety guard for the UI Bridge SDK sources.
+  //
+  // `Element.className` is `SVGAnimatedString` on SVG/MathML, not `string`.
+  // Calling `.split`, `.toLowerCase`, `.trim`, etc. directly throws on SVG
+  // (regression bug: "ee.className.split is not a function" in get_snapshot).
+  // Use `classString(el)` / `classList(el)` from `src/core/class-name.ts`.
+  //
+  // Scoped to packages/ui-bridge/src so tests and fixtures keep their
+  // existing `el.className = '…'` assignments (which are safe via the
+  // native DOM API) without friction. Test files inside src/**/__tests__
+  // are excluded explicitly because they construct HTMLElement literals.
+  {
+    files: ['packages/ui-bridge/src/**/*.ts', 'packages/ui-bridge/src/**/*.tsx'],
+    ignores: [
+      'packages/ui-bridge/src/**/__tests__/**',
+      'packages/ui-bridge/src/**/*.test.ts',
+      'packages/ui-bridge/src/**/*.test.tsx',
+      'packages/ui-bridge/src/core/class-name.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          // Flags raw `.className.<op>()` reads on any object, e.g.
+          //   el.className.split(' ')
+          //   el.className.toLowerCase()
+          // Does NOT flag `.className = ...` assignment, `typeof x.className`,
+          // or `x.className || fallback`.
+          selector:
+            "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className']",
+          message:
+            'Use classString(el) or classList(el) from core/class-name instead of raw .className string ops — SVG/MathML elements have SVGAnimatedString className, not string, and will throw.',
+        },
+        {
+          // Same, but through optional chain: `el.className?.toLowerCase()`.
+          // Still unsafe on SVG because SVGAnimatedString is truthy.
+          selector:
+            "CallExpression > MemberExpression[property.name=/^(split|toLowerCase|toUpperCase|trim|indexOf|includes|replace|replaceAll|match|startsWith|endsWith|substring|slice|charAt)$/] > MemberExpression[property.name='className'][optional=true]",
+          message:
+            'Use classString(el) or classList(el) from core/class-name instead of raw .className?.<stringOp>() — SVGAnimatedString is truthy, so optional chaining does NOT protect you.',
+        },
+      ],
+    },
+  }
 );
