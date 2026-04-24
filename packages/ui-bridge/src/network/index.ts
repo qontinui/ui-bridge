@@ -7,3 +7,18 @@
 
 export * from './types';
 export { NetworkRequestTracker } from './tracker';
+export {
+  NetworkStubRegistry,
+  getGlobalStubRegistry,
+  installStubFetchInterceptor,
+  validateStubRequest,
+  __resetGlobalStubRegistryForTest,
+} from './stubs';
+export type {
+  StubMethod,
+  StubRequestSpec,
+  StubResponseSpec,
+  StubEntry,
+  StubMatch,
+  StubValidationError,
+} from './stubs';

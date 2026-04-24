@@ -14,6 +14,7 @@ import type {
 } from '../core/types';
 import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
+import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -427,29 +428,76 @@ interface TrackedRequest {
   headers?: Record<string, string>;
   error?: string;
   inFlight: boolean;
+  /** F2: present when the request was served from the stub registry. */
+  stubId?: string;
 }
 
 const networkRequests: TrackedRequest[] = [];
 let networkIntercepted = false;
 const MAX_TRACKED_REQUESTS = 500;
 
+/**
+ * Install the fetch interceptor used for both request tracking and the F2
+ * stub registry. Idempotent — safe to call on every relay command.
+ *
+ * The interceptor checks the global stub registry BEFORE calling the real
+ * fetch. Matched stubs produce a synthetic `Response` and are recorded in
+ * `networkRequests` with `stubId` set so callers can audit. Unmatched
+ * requests pass through to the real network.
+ */
 function installNetworkInterceptor() {
   if (networkIntercepted) return;
   networkIntercepted = true;
 
   const originalFetch = window.fetch;
   window.fetch = async function (...args: Parameters<typeof fetch>) {
-    const req = new Request(...args);
+    // Extract URL + method WITHOUT constructing a `new Request(...)` because
+    // jsdom (and some older runtimes) reject relative URLs there even though
+    // real browsers accept them via fetch. Mirror what `network/tracker.ts`
+    // does.
+    const [input, init] = args;
+    let reqUrl: string;
+    if (typeof input === 'string') reqUrl = input;
+    else if (input instanceof URL) reqUrl = input.href;
+    else if (typeof Request !== 'undefined' && input instanceof Request) reqUrl = input.url;
+    else reqUrl = String(input);
+    let reqMethod = 'GET';
+    if (init?.method) reqMethod = init.method.toUpperCase();
+    else if (typeof Request !== 'undefined' && input instanceof Request)
+      reqMethod = input.method.toUpperCase();
+
     const id = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const tracked: TrackedRequest = {
       id,
-      url: req.url,
-      method: req.method,
+      url: reqUrl,
+      method: reqMethod,
       startTime: Date.now(),
       inFlight: true,
     };
     networkRequests.push(tracked);
     if (networkRequests.length > MAX_TRACKED_REQUESTS) networkRequests.shift();
+
+    // F2: check the stub registry first. A hit short-circuits the network.
+    const stubMatch = getGlobalStubRegistry().match(reqUrl, reqMethod);
+    if (stubMatch) {
+      try {
+        const response = stubMatch.buildResponse();
+        tracked.status = response.status;
+        tracked.statusText = response.statusText;
+        tracked.endTime = Date.now();
+        tracked.duration = tracked.endTime - tracked.startTime;
+        tracked.inFlight = false;
+        tracked.stubId = stubMatch.id;
+        return response;
+      } catch (err) {
+        tracked.error = (err as Error).message;
+        tracked.endTime = Date.now();
+        tracked.duration = tracked.endTime - tracked.startTime;
+        tracked.inFlight = false;
+        tracked.stubId = stubMatch.id;
+        throw err;
+      }
+    }
 
     try {
       const response = await originalFetch.apply(this, args);
@@ -2068,7 +2116,27 @@ export async function executeCommand(
       return { success: true, timestamp: Date.now() };
 
     case 'pageNavigate': {
-      const { url, hard } = payload as { url: string; hard?: boolean };
+      // F1: accept an optional `mode` field ("hard" | "soft") in addition to
+      // the legacy `hard` boolean. Back-compat: omitted `mode` + omitted `hard`
+      // = default ("hard" behaviour with registered navigate-handler override).
+      // `mode: "soft"` forces a `history.pushState` + synthetic `popstate`
+      // navigation that preserves injected window state.
+      const {
+        url,
+        hard,
+        mode: rawMode,
+      } = payload as {
+        url: string;
+        hard?: boolean;
+        mode?: string;
+      };
+      if (rawMode !== undefined && rawMode !== 'hard' && rawMode !== 'soft') {
+        return {
+          success: false,
+          error: `invalid mode: "${rawMode}" (expected "hard" or "soft")`,
+          timestamp: Date.now(),
+        };
+      }
       // Reject dangerous URL protocols that can execute JS or break the SSE relay.
       // Only allow http:, https:, and relative paths starting with "/".
       try {
@@ -2099,6 +2167,40 @@ export async function executeCommand(
           };
         }
       }
+
+      // Soft mode: pure client-side navigation via pushState + synthetic
+      // popstate. React Router v6 subscribes to popstate by default, so this
+      // drives the router without destroying window state (fetch patches,
+      // spies, `window.__*` globals).
+      if (rawMode === 'soft') {
+        let pathname = url;
+        try {
+          const target = new URL(url, window.location.origin);
+          if (target.origin === window.location.origin) {
+            pathname = target.pathname + target.search + target.hash;
+          }
+        } catch {
+          // Relative URL — use as-is.
+        }
+        window.history.pushState(null, '', pathname);
+        try {
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        } catch {
+          window.dispatchEvent(new Event('popstate'));
+        }
+        window.dispatchEvent(
+          new CustomEvent('ui-bridge:navigate', { detail: { url: pathname, mode: 'soft' } })
+        );
+        return {
+          success: true,
+          url: pathname,
+          hard: false,
+          mode: 'soft',
+          clientSideNavigation: true,
+          timestamp: Date.now(),
+        };
+      }
+
       const g = getBridge();
       // Use client-side navigation for same-origin URLs when a handler is
       // registered (e.g., Next.js router.push). This avoids destroying the
@@ -2114,6 +2216,8 @@ export async function executeCommand(
               success: true,
               url: target.pathname,
               clientSideNavigation: true,
+              hard: false,
+              mode: 'hard',
               timestamp: Date.now(),
             };
           }
@@ -2122,7 +2226,7 @@ export async function executeCommand(
         }
       }
       window.location.href = url;
-      return { success: true, url, timestamp: Date.now(), hard: true };
+      return { success: true, url, hard: true, mode: 'hard', timestamp: Date.now() };
     }
 
     case 'pageGoBack':
@@ -2690,6 +2794,53 @@ export async function executeCommand(
       if (!cap) return { chains: [], timestamp: Date.now() };
       const events = cap.getByType('network');
       return { chains: events.slice(-((payload.limit as number) || 50)), timestamp: Date.now() };
+    }
+
+    // ======================================================================
+    // F2 — Network Stub Registry
+    // Module-level registry lives in `../network/stubs`. Stubs survive F1
+    // soft navigations (module state is preserved) and clear on hard reload
+    // when the SDK reinitialises.
+    // ======================================================================
+
+    case 'registerNetworkStub': {
+      const validation = validateStubRequest(payload);
+      if (validation) {
+        return {
+          success: false,
+          error: `${validation.field}: ${validation.message}`,
+          timestamp: Date.now(),
+        };
+      }
+      // Ensure the interceptor is actually attached so the stub fires.
+      installNetworkInterceptor();
+      const id = getGlobalStubRegistry().register(payload as unknown as StubRequestSpec);
+      return { success: true, id, timestamp: Date.now() };
+    }
+
+    case 'listNetworkStubs': {
+      return { success: true, stubs: getGlobalStubRegistry().list(), timestamp: Date.now() };
+    }
+
+    case 'deleteNetworkStub': {
+      const { id } = payload as { id?: string };
+      if (typeof id !== 'string' || id.length === 0) {
+        return { success: false, error: 'id is required', timestamp: Date.now() };
+      }
+      const removed = getGlobalStubRegistry().delete(id);
+      return removed
+        ? { success: true, timestamp: Date.now() }
+        : {
+            success: false,
+            error: `stub ${id} not found`,
+            code: 'NOT_FOUND',
+            timestamp: Date.now(),
+          };
+    }
+
+    case 'clearNetworkStubs': {
+      const cleared = getGlobalStubRegistry().clear();
+      return { success: true, cleared, timestamp: Date.now() };
     }
 
     // ======================================================================
