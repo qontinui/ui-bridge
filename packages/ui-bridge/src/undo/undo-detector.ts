@@ -13,6 +13,7 @@
  */
 
 import type { UndoElementInfo, UndoDetectorConfig } from './types';
+import { classString } from '../core/class-name';
 
 // ---------------------------------------------------------------------------
 // Selectors for common undo/redo patterns
@@ -108,8 +109,7 @@ function buildSelector(el: Element): string {
 function isDisabled(el: Element): boolean {
   if ((el as HTMLButtonElement).disabled) return true;
   if (el.getAttribute('aria-disabled') === 'true') return true;
-  const classes = el.className;
-  if (typeof classes === 'string' && classes.toLowerCase().includes('disabled')) return true;
+  if (classString(el).toLowerCase().includes('disabled')) return true;
   return false;
 }
 
