@@ -12,6 +12,7 @@
 
 import type { UIBridgeRegistry } from './registry';
 import type { RegisteredElement } from './types';
+import { classString, classList } from './class-name';
 
 // ============================================================================
 // Types
@@ -345,7 +346,7 @@ function computeRepeatPattern(element: HTMLElement): RepeatPatternData | undefin
   if (!containerType) {
     const children = Array.from(parent.children);
     if (children.length >= 3) {
-      const signature = (el: Element) => `${el.tagName}|${el.className}`;
+      const signature = (el: Element) => `${el.tagName}|${classString(el)}`;
       const sig = signature(element);
       const matches = children.filter((c) => signature(c) === sig);
       if (matches.length >= 3) {
@@ -361,23 +362,17 @@ function computeRepeatPattern(element: HTMLElement): RepeatPatternData | undefin
   // Compute index and total
   const siblings = Array.from(parent.children);
   const itemTag = element.tagName;
-  const itemClass = element.className;
+  const itemClass = classString(element);
   const matchingSiblings = siblings.filter(
-    (s) => s.tagName === itemTag && s.className === itemClass
+    (s) => s.tagName === itemTag && classString(s) === itemClass
   );
   const index = matchingSiblings.indexOf(element);
 
   // Generate selectors
   const containerSelector = generateSimpleSelector(parent);
+  const itemClassTokens = classList(element);
   const itemSelector = `${element.tagName.toLowerCase()}${
-    element.className
-      ? '.' +
-        element.className
-          .split(/\s+/)
-          .filter(Boolean)
-          .map((c) => CSS.escape(c))
-          .join('.')
-      : ''
+    itemClassTokens.length > 0 ? '.' + itemClassTokens.map((c) => CSS.escape(c)).join('.') : ''
   }`;
 
   return {
