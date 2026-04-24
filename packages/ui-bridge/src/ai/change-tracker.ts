@@ -42,6 +42,7 @@ import type { SemanticDiffConfig } from './semantic-diff';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { CompositeIdleDetector } from '../idle';
 import { detectTable, detectList } from './table-extraction';
+import { classList } from '../core/class-name';
 
 // ============================================================================
 // Configuration
@@ -1475,10 +1476,8 @@ export class ChangeTracker {
     if (el.id) {
       return `#${el.id}`;
     }
-    if (el.className && typeof el.className === 'string') {
-      const cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
-      if (cls) parts.push(`.${cls}`);
-    }
+    const cls = classList(el).slice(0, 2).join('.');
+    if (cls) parts.push(`.${cls}`);
     return parts.join('');
   }
 
