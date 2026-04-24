@@ -764,6 +764,9 @@ export function createRelayHandlers(
       type ConsoleErrorsResult = {
         errors: import('../debug/browser-capture-types').CapturedError[];
         count: number;
+        nextSinceId?: number;
+        droppedCount?: number;
+        bufferedCount?: number;
       };
       type GroupedResult = {
         groups: unknown[];

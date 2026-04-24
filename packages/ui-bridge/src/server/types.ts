@@ -308,12 +308,28 @@ export interface UIBridgeServerHandlers {
   getElementTree: () => Promise<APIResponse<unknown>>;
   getConsoleErrors: (params?: {
     since?: number;
+    /**
+     * Monotonic id cursor — return only entries with `id > sinceId`.
+     * Paired with `nextSinceId` in the ungrouped response for pagination.
+     * Takes precedence over the legacy `since` timestamp filter when both
+     * are provided.
+     */
+    sinceId?: number;
     limit?: number;
     group?: boolean;
     groupBy?: 'fingerprint' | 'message' | 'source';
   }) => Promise<
     APIResponse<
-      | { errors: CapturedError[]; count: number }
+      | {
+          errors: CapturedError[];
+          count: number;
+          /** Cursor for the next call — last returned entry's id, or `sinceId` if empty. */
+          nextSinceId?: number;
+          /** Lifetime total of entries evicted from the underlying buffer. */
+          droppedCount?: number;
+          /** Current buffer size (not filtered by level/since). */
+          bufferedCount?: number;
+        }
       | { groups: unknown[]; totalErrors: number; totalGroups: number }
     >
   >;

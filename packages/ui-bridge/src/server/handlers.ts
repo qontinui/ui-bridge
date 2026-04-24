@@ -2052,12 +2052,19 @@ export function createHandlers(
 
     getConsoleErrors: async (params?: {
       since?: number;
+      sinceId?: number;
       limit?: number;
       group?: boolean;
       groupBy?: 'fingerprint' | 'message' | 'source';
     }): Promise<
       APIResponse<
-        | { errors: CapturedError[]; count: number }
+        | {
+            errors: CapturedError[];
+            count: number;
+            nextSinceId?: number;
+            droppedCount?: number;
+            bufferedCount?: number;
+          }
         | { groups: unknown[]; totalErrors: number; totalGroups: number }
       >
     > => {
@@ -2066,14 +2073,106 @@ export function createHandlers(
           if (params?.group) {
             return success({ groups: [], totalErrors: 0, totalGroups: 0 });
           }
-          return success({ errors: [], count: 0 });
+          return success({
+            errors: [],
+            count: 0,
+            nextSinceId: typeof params?.sinceId === 'number' ? params.sinceId : 0,
+            droppedCount: 0,
+            bufferedCount: 0,
+          });
         }
+
+        // Cursor path — `sinceId` takes precedence over the legacy `since`
+        // timestamp filter. The cursor variant returns the richer
+        // ConsoleRecentResponse shape, which we surface additively so
+        // existing callers that ignore the new fields keep working.
+        if (typeof params?.sinceId === 'number' || !params?.group) {
+          const hasNewApi =
+            consoleCapture &&
+            typeof (consoleCapture as { getConsoleRecent?: unknown }).getConsoleRecent ===
+              'function';
+
+          if (
+            typeof params?.sinceId === 'number' &&
+            hasNewApi &&
+            // The new signature accepts an options object — detect by trying it.
+            // The legacy numeric signature just returns CapturedError[], which
+            // we'd also detect via Array.isArray below.
+            true
+          ) {
+            const response = (
+              consoleCapture as unknown as {
+                getConsoleRecent: (opts: { sinceId?: number; limit?: number }) => {
+                  errors: CapturedError[];
+                  nextSinceId: number;
+                  droppedCount: number;
+                  bufferedCount: number;
+                };
+              }
+            ).getConsoleRecent({
+              sinceId: params.sinceId,
+              limit: params.limit,
+            });
+            if (response && !Array.isArray(response) && 'errors' in response) {
+              if (!params?.group) {
+                return success({
+                  errors: response.errors,
+                  count: response.errors.length,
+                  nextSinceId: response.nextSinceId,
+                  droppedCount: response.droppedCount,
+                  bufferedCount: response.bufferedCount,
+                });
+              }
+            }
+          }
+        }
+
         const errors = params?.since
           ? consoleCapture.getConsoleSince(params.since)
           : consoleCapture.getConsoleRecent(params?.limit ?? 50);
 
         if (!params?.group) {
-          return success({ errors, count: errors.length });
+          // Attempt to surface buffer stats additively. The new BrowserEventCapture
+          // exposes these via a one-arg-object getConsoleRecent; fall back to the
+          // legacy shape (no stats) when the capture source doesn't support it.
+          let nextSinceId: number | undefined;
+          let droppedCount: number | undefined;
+          let bufferedCount: number | undefined;
+          try {
+            const maybe = (
+              consoleCapture as unknown as {
+                getConsoleRecent?: (opts: unknown) => unknown;
+              }
+            ).getConsoleRecent?.({
+              sinceId: 0,
+              limit: params?.limit ?? 50,
+            });
+            if (
+              maybe &&
+              typeof maybe === 'object' &&
+              !Array.isArray(maybe) &&
+              'errors' in (maybe as Record<string, unknown>)
+            ) {
+              const m = maybe as {
+                nextSinceId?: number;
+                droppedCount?: number;
+                bufferedCount?: number;
+              };
+              nextSinceId = m.nextSinceId;
+              droppedCount = m.droppedCount;
+              bufferedCount = m.bufferedCount;
+            }
+          } catch {
+            /* ignore — legacy capture shape */
+          }
+
+          return success({
+            errors,
+            count: errors.length,
+            ...(nextSinceId !== undefined ? { nextSinceId } : {}),
+            ...(droppedCount !== undefined ? { droppedCount } : {}),
+            ...(bufferedCount !== undefined ? { bufferedCount } : {}),
+          });
         }
 
         // Grouped mode: delegate to the relay/IPC which handles grouping
@@ -4981,7 +5080,9 @@ export function createHandlers(
                   description: 'Get captured console errors',
                   queryParams: {
                     since: 'number (epoch ms) — filter errors after this timestamp',
-                    limit: 'number (default 50) — max errors to return',
+                    sinceId:
+                      'number — monotonic cursor id; return entries with id > sinceId (takes precedence over since)',
+                    limit: 'number (default 50, max 500) — max errors to return',
                     group: 'boolean (default false) — group errors by fingerprint',
                     groupBy:
                       "'fingerprint' | 'message' | 'source' (default 'fingerprint') — grouping strategy",

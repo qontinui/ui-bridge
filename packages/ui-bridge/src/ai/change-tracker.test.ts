@@ -1292,4 +1292,65 @@ describe('ChangeTracker', () => {
       expect(result.diff).toBeDefined();
     });
   });
+
+  // =========================================================================
+  // Route-change subscribers (Phase A — testing-friendliness)
+  // =========================================================================
+
+  describe('route-change subscribers', () => {
+    it('fires subscribeRouteChange listeners even when the buffer is disabled', () => {
+      const events: Array<{ from: string; to: string; at: number }> = [];
+      const unsub = tracker.subscribeRouteChange((e) => events.push(e));
+
+      tracker.pushRouteChange('/a', '/b', 1000);
+      tracker.pushRouteChange('/b', '/c', 1500);
+
+      expect(events).toHaveLength(2);
+      expect(events[0]).toEqual({ from: '/a', to: '/b', at: 1000 });
+      expect(events[1]).toEqual({ from: '/b', to: '/c', at: 1500 });
+
+      unsub();
+      tracker.pushRouteChange('/c', '/d');
+      expect(events).toHaveLength(2); // no new events after unsubscribe
+    });
+
+    it('surfaces recent route changes via getRecentRouteChanges with optional sinceMs filter', () => {
+      tracker.pushRouteChange('/home', '/profile', 100);
+      tracker.pushRouteChange('/profile', '/settings', 200);
+      tracker.pushRouteChange('/settings', '/logout', 300);
+
+      const all = tracker.getRecentRouteChanges();
+      expect(all).toHaveLength(3);
+
+      const recent = tracker.getRecentRouteChanges(200);
+      expect(recent).toHaveLength(2);
+      expect(recent[0].to).toBe('/settings');
+      expect(recent[1].to).toBe('/logout');
+    });
+
+    it('caps the recent-route-change ring buffer', () => {
+      // Cap is 100 — push 150 and ensure only the latest 100 remain.
+      for (let i = 0; i < 150; i++) {
+        tracker.pushRouteChange(`/a${i}`, `/b${i}`, i);
+      }
+      const all = tracker.getRecentRouteChanges();
+      expect(all).toHaveLength(100);
+      expect(all[0].from).toBe('/a50'); // oldest retained
+      expect(all[99].from).toBe('/a149');
+    });
+
+    it('still feeds the change buffer when enabled', async () => {
+      await tracker.enableBuffer();
+      tracker.pushRouteChange('/a', '/b', 42);
+
+      const drain = tracker.drainBuffer();
+      const routeEntries = drain.changes.filter(
+        (c): c is Extract<typeof c, { type: 'route-change' }> =>
+          (c as { type?: string }).type === 'route-change'
+      );
+      expect(routeEntries).toHaveLength(1);
+      expect(routeEntries[0].from).toBe('/a');
+      expect(routeEntries[0].to).toBe('/b');
+    });
+  });
 });
