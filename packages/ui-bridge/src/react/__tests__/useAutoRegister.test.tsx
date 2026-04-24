@@ -141,3 +141,102 @@ describe('useAutoRegister — attribute stamping', () => {
     expect(visible.getAttribute('data-ui-bridge-id')).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// persistWhileMounted — logically-persistent elements bypass the visibility
+// gate. Covers sidebar navigation items that live inside a collapsible group
+// (opacity:0 / max-height:0 during the collapsed state) but must stay in the
+// registry so UI Bridge clients can still discover and drive them.
+// ---------------------------------------------------------------------------
+
+// Harness variant that does NOT set includeHidden — so the visibility gate is
+// active. The `persistWhileMounted` option is the only thing that should let
+// an opacity-0 element through.
+function PersistHarness({ persistWhileMounted }: { persistWhileMounted?: boolean }) {
+  useAutoRegister({
+    enabled: true,
+    debounceMs: 0,
+    contentDiscovery: { enabled: false },
+    mediaDiscovery: { enabled: false },
+    persistWhileMounted,
+  });
+  return null;
+}
+
+describe('useAutoRegister — persistWhileMounted', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('registers opacity-0 elements when the hook option is set', async () => {
+    // Element is styled exactly like the runner's NavGroup collapsed state:
+    // opacity:0 + max-height:0. Without persistWhileMounted, isElementVisible
+    // rejects it. With the flag, registration proceeds.
+    const fixture = document.createElement('div');
+    fixture.style.opacity = '0';
+    fixture.style.maxHeight = '0';
+    fixture.style.overflow = 'hidden';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Settings';
+    fixture.appendChild(btn);
+    document.body.appendChild(fixture);
+
+    render(<PersistHarness persistWhileMounted />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(btn.getAttribute('data-ui-bridge-id')).toBeTruthy();
+    expect(registry.getAllElements().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('registers individual opacity-0 elements carrying data-ui-bridge-persist', async () => {
+    // Per-element opt-in: global flag stays off, but a single element marks
+    // itself persistent. The other opacity-0 sibling still gets rejected.
+    const fixture = document.createElement('div');
+    fixture.style.opacity = '0';
+    const persistent = document.createElement('button');
+    persistent.type = 'button';
+    persistent.textContent = 'Keep me';
+    persistent.setAttribute('data-ui-bridge-persist', 'true');
+    const skipped = document.createElement('button');
+    skipped.type = 'button';
+    skipped.textContent = 'Skip me';
+    fixture.appendChild(persistent);
+    fixture.appendChild(skipped);
+    document.body.appendChild(fixture);
+
+    render(<PersistHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(persistent.getAttribute('data-ui-bridge-id')).toBeTruthy();
+    expect(skipped.getAttribute('data-ui-bridge-id')).toBeNull();
+  });
+
+  it('keeps legacy behavior when the flag is off and element is not marked', async () => {
+    // Baseline: opacity-0 element with no persist marker stays out of the
+    // registry when the hook option is default-off. Protects the current
+    // behavior consumers rely on.
+    const fixture = document.createElement('div');
+    fixture.style.opacity = '0';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Should skip';
+    fixture.appendChild(btn);
+    document.body.appendChild(fixture);
+
+    render(<PersistHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(btn.getAttribute('data-ui-bridge-id')).toBeNull();
+    expect(registry.getAllElements().length).toBe(0);
+  });
+});

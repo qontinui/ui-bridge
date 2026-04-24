@@ -71,6 +71,7 @@ export function AutoRegisterProvider({
   onRegister,
   onUnregister,
   contentDiscovery,
+  persistWhileMounted,
 }: AutoRegisterProviderProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -87,6 +88,7 @@ export function AutoRegisterProvider({
     onRegister,
     onUnregister,
     contentDiscovery,
+    persistWhileMounted,
   });
 
   // If scoped to children, wrap in a div

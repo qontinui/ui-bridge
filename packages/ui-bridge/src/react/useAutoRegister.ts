@@ -78,7 +78,34 @@ export interface AutoRegisterOptions {
   logLevel?: ElementLogLevel;
   /** Write data-ui-bridge-id attribute on registered elements (default: true) */
   writeStableAttribute?: boolean;
+  /**
+   * If true, elements stay registered in the UI Bridge registry for the
+   * entire lifetime of their mount, even when the visibility gate would
+   * normally reject them (e.g. `opacity: 0`, `max-height: 0` during a
+   * collapse animation, zero bounding box because an ancestor is animating
+   * out). The element's layout metadata (bbox) may become stale in those
+   * states, but clients can still discover it by id/label and drive it via
+   * control actions. Individual elements can also opt in via the
+   * `data-ui-bridge-persist="true"` attribute without flipping this global
+   * flag.
+   *
+   * Use for logically-persistent elements like sidebar navigation items
+   * that live inside a collapsible group or scroll container but shouldn't
+   * disappear from the registry when their visibility flickers.
+   *
+   * Default: false (legacy behavior — skip registration while invisible).
+   */
+  persistWhileMounted?: boolean;
 }
+
+/**
+ * Attribute callers can stamp on individual DOM elements to mark them
+ * persistently-registerable, regardless of the global `persistWhileMounted`
+ * option. Used by `useUIElement({ persistWhileMounted: true })` and available
+ * directly on any host element authors want to keep in the registry across
+ * visibility flickers.
+ */
+export const UI_BRIDGE_PERSIST_ATTR = 'data-ui-bridge-persist';
 
 /**
  * Interactive element selectors
@@ -601,6 +628,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     mediaDiscovery,
     logLevel,
     writeStableAttribute,
+    persistWhileMounted = false,
   } = options;
 
   const contentEnabled = contentDiscovery?.enabled !== false;
@@ -626,8 +654,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    */
   const shouldRegister = useCallback(
     (element: HTMLElement): boolean => {
+      // Persist-while-mounted opt-in: either the hook-wide option or a
+      // per-element `data-ui-bridge-persist="true"` attribute bypasses the
+      // visibility gate. The element is still subject to exclude selectors
+      // and the interactive-selector match below — only the "looks
+      // invisible right now" heuristic is relaxed. Used for sidebar nav
+      // items hidden behind a collapse animation (opacity:0 / max-height:0)
+      // that must stay discoverable for UI Bridge clients regardless of
+      // the group's expanded/collapsed visual state.
+      const isPersistent =
+        persistWhileMounted || element.getAttribute(UI_BRIDGE_PERSIST_ATTR) === 'true';
+
       // Check visibility
-      if (!includeHidden && !isElementVisible(element)) {
+      if (!includeHidden && !isPersistent && !isElementVisible(element)) {
         return false;
       }
 
@@ -653,7 +692,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       return false;
     },
-    [includeHidden, includeSelectors, excludeSelectors]
+    [includeHidden, includeSelectors, excludeSelectors, persistWhileMounted]
   );
 
   /**

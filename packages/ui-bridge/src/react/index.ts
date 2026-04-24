@@ -76,7 +76,12 @@ export {
 } from './useUINavigation';
 
 // Auto-registration
-export { useAutoRegister, type AutoRegisterOptions, type IdStrategy } from './useAutoRegister';
+export {
+  useAutoRegister,
+  UI_BRIDGE_PERSIST_ATTR,
+  type AutoRegisterOptions,
+  type IdStrategy,
+} from './useAutoRegister';
 
 export { AutoRegisterProvider, type AutoRegisterProviderProps } from './AutoRegisterProvider';
 

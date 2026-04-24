@@ -20,6 +20,7 @@ import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { useOwningComponent } from './UIBridgeComponentScope';
 import { pollForTaggedElement, trackElementBbox, UI_BRIDGE_ID_ATTR } from './bbox-tracker';
+import { UI_BRIDGE_PERSIST_ATTR } from './useAutoRegister';
 
 /**
  * useUIElement options
@@ -74,6 +75,24 @@ export interface UseUIElementOptions {
    * `"settings-modal > theme-section > accent-color"`.
    */
   contextPath?: string;
+
+  /**
+   * If true, this element stays registered in the UI Bridge registry for the
+   * entire lifetime of its mount, even if surrounding visibility changes
+   * (opacity:0 during a collapse animation, ancestor scroll container,
+   * max-height:0 on a hidden group) would normally cause the auto-scanner
+   * to skip or drop it. `useUIElement` itself already binds registration to
+   * mount lifecycle, but when this flag is set the hook also stamps
+   * `data-ui-bridge-persist="true"` on the DOM node so the auto-scanner
+   * treats neighbouring/duplicate passes the same way.
+   *
+   * Use for logically-persistent elements like sidebar navigation items
+   * that live inside a collapsible group but should remain discoverable for
+   * UI Bridge clients regardless of the group's expanded/collapsed state.
+   *
+   * Default: false.
+   */
+  persistWhileMounted?: boolean;
 }
 
 /**
@@ -145,6 +164,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     position,
     color,
     contextPath,
+    persistWhileMounted,
   } = options;
 
   // See useUIState for rationale on capturing id at register time.
@@ -168,9 +188,17 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       if (node.getAttribute(UI_BRIDGE_ID_ATTR) !== id) {
         node.setAttribute(UI_BRIDGE_ID_ATTR, id);
       }
+      // Stamp the persist marker so the auto-scanner skips its visibility
+      // gate on this node even if it happens to be re-scanned (e.g. when a
+      // parent's class/style mutation triggers a rescan pass). Safe to
+      // leave on mount forever — the attribute is inert without the
+      // scanner.
+      if (persistWhileMounted && node.getAttribute(UI_BRIDGE_PERSIST_ATTR) !== 'true') {
+        node.setAttribute(UI_BRIDGE_PERSIST_ATTR, 'true');
+      }
       untrackBboxRef.current = trackElementBbox(bridge.registry, id, node);
     },
-    [bridge, id]
+    [bridge, id, persistWhileMounted]
   );
 
   const stopBboxTracking = useCallback(() => {
