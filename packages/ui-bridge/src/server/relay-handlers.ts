@@ -1546,6 +1546,9 @@ export function createRelayHandlers(
     async waitForRouteChange(request) {
       return relayCommand('waitForRouteChange', request);
     },
+    async waitForElementRegistered(request) {
+      return relayCommand('waitForElementRegistered', request);
+    },
 
     // Tier 3.2 — relay batch to browser context
     async controlBatch(request) {

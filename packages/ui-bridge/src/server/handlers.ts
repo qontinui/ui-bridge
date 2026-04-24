@@ -14,6 +14,8 @@ import type {
   WaitForElementByConditionResponse,
   WaitForRouteChangeRequest,
   WaitForRouteChangeResponse,
+  WaitForElementRequest,
+  WaitForElementSuccessResponse,
   ControlBatchRequest,
   ControlBatchResponse,
   ControlBatchStepResult,
@@ -5870,6 +5872,228 @@ export function createHandlers(
             })
           );
         }, timeoutMs);
+      });
+    },
+
+    waitForElementRegistered: async (
+      request: WaitForElementRequest
+    ): Promise<
+      APIResponse<
+        | WaitForElementSuccessResponse
+        | { reason: 'timeout'; elapsedMs: number; closestMatch?: Record<string, unknown> }
+      >
+    > => {
+      const predicate = request?.predicate ?? {};
+      const requirement = request?.requirement ?? 'registered';
+      const pollMs = Math.min(
+        Math.max(typeof request?.pollMs === 'number' ? request.pollMs : 100, 50),
+        1000
+      );
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeoutMs === 'number' ? request.timeoutMs : 5000, 100),
+        60_000
+      );
+
+      const labelNeedle =
+        typeof predicate.label === 'string' && predicate.label.length > 0
+          ? predicate.label.toLowerCase()
+          : null;
+
+      function predicateMatches(el: Record<string, unknown>, domEl: HTMLElement | null): boolean {
+        if (typeof predicate.id === 'string' && predicate.id.length > 0) {
+          if (el.id !== predicate.id) return false;
+        }
+        if (labelNeedle) {
+          const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
+          const ariaLabel = typeof el.ariaLabel === 'string' ? el.ariaLabel.toLowerCase() : '';
+          const accessible =
+            typeof (el.state as { accessibleName?: string } | undefined)?.accessibleName ===
+            'string'
+              ? (el.state as { accessibleName: string }).accessibleName.toLowerCase()
+              : '';
+          if (
+            !label.includes(labelNeedle) &&
+            !ariaLabel.includes(labelNeedle) &&
+            !accessible.includes(labelNeedle)
+          ) {
+            return false;
+          }
+        }
+        if (typeof predicate.testId === 'string' && predicate.testId.length > 0) {
+          const testId = domEl?.getAttribute?.('data-testid');
+          if (testId !== predicate.testId) return false;
+        }
+        return true;
+      }
+
+      function requirementMet(el: Record<string, unknown>, domEl: HTMLElement | null): boolean {
+        if (requirement === 'registered') return true;
+
+        const state = el.state as
+          | {
+              visible?: boolean;
+              rect?: { width?: number; height?: number };
+            }
+          | undefined;
+
+        if (requirement === 'visible') {
+          if (state && typeof state.visible === 'boolean') return state.visible;
+          if (!domEl) return false;
+          if (domEl.offsetParent === null) return false;
+          const rect = domEl.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }
+
+        if (requirement === 'has-layout') {
+          const w = state?.rect?.width ?? 0;
+          const h = state?.rect?.height ?? 0;
+          if (w > 0 && h > 0) return true;
+          if (domEl) {
+            const rect = domEl.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+          return false;
+        }
+
+        return true;
+      }
+
+      const started = Date.now();
+
+      /**
+       * One poll pass. Returns the matched element/dom-el pair (if any) or
+       * null. Scans the in-memory registry first, then falls back to
+       * `document.querySelector` when `predicate.selector` is present and
+       * the registry didn't produce a match.
+       */
+      function attempt(): {
+        element: Record<string, unknown>;
+        domEl: HTMLElement | null;
+      } | null {
+        try {
+          const raw = registry.getAllElements() as Record<string, unknown>[];
+          const materialized = materializeElements(raw) as unknown as Array<
+            Record<string, unknown>
+          >;
+
+          for (const el of materialized) {
+            const rawEl = raw.find((r) => r.id === el.id) as { element?: HTMLElement } | undefined;
+            const domEl: HTMLElement | null = rawEl?.element ?? null;
+            if (!predicateMatches(el, domEl)) continue;
+            if (!requirementMet(el, domEl)) continue;
+            return { element: el, domEl };
+          }
+        } catch {
+          // Registry errors are non-fatal; keep polling.
+        }
+
+        // DOM-selector fallback — only kicks in when the caller provided
+        // one and the registry couldn't satisfy the predicate. Lets tests
+        // wait on elements that aren't registered with the SDK
+        // (third-party widgets, unmounted portals, etc.).
+        if (
+          typeof predicate.selector === 'string' &&
+          predicate.selector.length > 0 &&
+          typeof document !== 'undefined'
+        ) {
+          try {
+            const domEl = document.querySelector(predicate.selector) as HTMLElement | null;
+            if (domEl) {
+              const syntheticEl: Record<string, unknown> = {
+                id: domEl.id || `dom-${predicate.selector}`,
+                label: domEl.getAttribute('aria-label') ?? domEl.textContent?.trim() ?? undefined,
+                type: domEl.tagName?.toLowerCase?.(),
+                ariaLabel: domEl.getAttribute('aria-label') ?? undefined,
+              };
+              if (!requirementMet(syntheticEl, domEl)) return null;
+              return { element: syntheticEl, domEl };
+            }
+          } catch {
+            // Invalid selector — treat as no match.
+          }
+        }
+
+        return null;
+      }
+
+      // Fast path — check before scheduling any timers.
+      const first = attempt();
+      if (first) {
+        return success<WaitForElementSuccessResponse>({
+          element: first.element as WaitForElementSuccessResponse['element'],
+          elapsedMs: Date.now() - started,
+        });
+      }
+
+      return new Promise<
+        APIResponse<
+          | WaitForElementSuccessResponse
+          | { reason: 'timeout'; elapsedMs: number; closestMatch?: Record<string, unknown> }
+        >
+      >((resolve) => {
+        let done = false;
+        let lastPartial: Record<string, unknown> | undefined;
+
+        const poll = () => {
+          if (done) return;
+          const elapsed = Date.now() - started;
+
+          const match = attempt();
+          if (match) {
+            done = true;
+            resolve(
+              success<WaitForElementSuccessResponse>({
+                element: match.element as WaitForElementSuccessResponse['element'],
+                elapsedMs: Date.now() - started,
+              })
+            );
+            return;
+          }
+
+          // Track a "closest match" — an element that matched the predicate
+          // but failed the requirement (visibility/layout). Helps callers
+          // debug why their wait timed out.
+          if (requirement !== 'registered') {
+            try {
+              const raw = registry.getAllElements() as Record<string, unknown>[];
+              const materialized = materializeElements(raw) as unknown as Array<
+                Record<string, unknown>
+              >;
+              for (const el of materialized) {
+                const rawEl = raw.find((r) => r.id === el.id) as
+                  | { element?: HTMLElement }
+                  | undefined;
+                const domEl: HTMLElement | null = rawEl?.element ?? null;
+                if (predicateMatches(el, domEl)) {
+                  lastPartial = el;
+                  break;
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+
+          if (elapsed >= timeoutMs) {
+            done = true;
+            resolve(
+              success<{
+                reason: 'timeout';
+                elapsedMs: number;
+                closestMatch?: Record<string, unknown>;
+              }>({
+                reason: 'timeout',
+                elapsedMs: elapsed,
+                closestMatch: lastPartial,
+              })
+            );
+            return;
+          }
+
+          setTimeout(poll, pollMs);
+        };
+
+        setTimeout(poll, pollMs);
       });
     },
 

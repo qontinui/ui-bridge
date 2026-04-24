@@ -686,6 +686,21 @@ export interface UIBridgeServerHandlers {
   >;
 
   /**
+   * Testing-friendliness — Wait for an element matching `predicate` to be
+   * registered (or visible / have layout, per `requirement`). Polls the
+   * in-memory registry; falls back to `document.querySelector` when
+   * `predicate.selector` is given.
+   */
+  waitForElementRegistered: (
+    request: WaitForElementRequest
+  ) => Promise<
+    APIResponse<
+      | WaitForElementSuccessResponse
+      | { reason: 'timeout'; elapsedMs: number; closestMatch?: Record<string, unknown> }
+    >
+  >;
+
+  /**
    * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
    * snapshots in one round-trip.
    */
@@ -862,6 +877,58 @@ export interface WaitForRouteChangeRequest {
 export interface WaitForRouteChangeResponse {
   from: string;
   to: string;
+  elapsedMs: number;
+}
+
+/**
+ * Selector predicate for POST /ai/wait-for-element.
+ *
+ * All provided fields are ANDed. At least one field should be provided;
+ * otherwise the first registered element is returned.
+ */
+export interface WaitForElementPredicate {
+  /** Match by element id (exact). */
+  id?: string;
+  /** Match by label / accessible name (case-insensitive substring). */
+  label?: string;
+  /** Match by data-testid attribute (exact). */
+  testId?: string;
+  /** CSS selector — falls back to document.querySelector if element is not in registry. */
+  selector?: string;
+}
+
+/**
+ * Request body for POST /ai/wait-for-element.
+ *
+ * Polls the in-memory registry for an element matching `predicate`. When
+ * `selector` is supplied, falls back to `document.querySelector` once per
+ * poll so the wait also covers elements that aren't SDK-registered.
+ */
+export interface WaitForElementRequest {
+  predicate: WaitForElementPredicate;
+  /**
+   * Additional requirement on the matched element.
+   * - `"registered"` (default): element exists in the registry.
+   * - `"visible"`: element exists AND is visible per snapshot rules.
+   * - `"has-layout"`: element exists AND `layout.width > 0 && layout.height > 0`.
+   */
+  requirement?: 'registered' | 'visible' | 'has-layout';
+  /** Poll interval in ms. Default 100, clamped to [50, 1000]. */
+  pollMs?: number;
+  /** Max wait in ms. Default 5000, clamped to [100, 60000]. */
+  timeoutMs?: number;
+}
+
+/**
+ * Response body for POST /ai/wait-for-element (success case).
+ */
+export interface WaitForElementSuccessResponse {
+  element: {
+    id: string;
+    label?: string;
+    type?: string;
+    [key: string]: unknown;
+  };
   elapsedMs: number;
 }
 
@@ -1465,6 +1532,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/ai/wait-for-route-change',
     handler: 'waitForRouteChange',
+  },
+  {
+    method: 'POST',
+    path: '/ai/wait-for-element',
+    handler: 'waitForElementRegistered',
+    bodyRequired: true,
   },
 
   // Tier 3.2 — mixed action/wait/snapshot batch
