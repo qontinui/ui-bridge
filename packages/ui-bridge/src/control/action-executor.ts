@@ -52,6 +52,7 @@ import { fillSingleField } from './fill-form';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { classString } from '../core/class-name';
 import { getGlobalCtr } from '../ctr/registry';
 import type {
   ControlActionRequest,
@@ -872,7 +873,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: !!registered,
           category: registered?.category || 'interactive',
-          className: el.className || undefined,
+          className: classString(el) || undefined,
           classes: el.classList?.length > 0 ? Array.from(el.classList) : undefined,
           contentMetadata: registered?.contentMetadata,
         });
@@ -921,7 +922,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: true,
           category: 'content',
-          className: el.element.className || undefined,
+          className: classString(el.element) || undefined,
           classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
           contentMetadata: el.contentMetadata,
         });
@@ -1001,7 +1002,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           state,
           registered: true,
           category: 'media',
-          className: el.element.className || undefined,
+          className: classString(el.element) || undefined,
           classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
           mediaMetadata: meta,
         });
