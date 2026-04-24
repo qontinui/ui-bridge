@@ -14,9 +14,21 @@
 import type { ElementIdentifier } from './types';
 
 /**
- * Data attributes used for element identification (in priority order)
+ * Data attributes used for element identification (in priority order).
+ *
+ * `data-ui-bridge-test-id` (Item 10 of the testability plan) is the
+ * escape-hatch alias that lets authors pin a stable id onto an
+ * auto-discovered element whose derived id would otherwise drift with
+ * placeholder/label copy changes. It sits above `data-testid` because
+ * authors reach for it specifically to override the `data-testid`-based
+ * default behavior.
  */
-export const ID_ATTRIBUTES = ['data-testid', 'data-awas-element', 'id'] as const;
+export const ID_ATTRIBUTES = [
+  'data-ui-bridge-test-id',
+  'data-testid',
+  'data-awas-element',
+  'id',
+] as const;
 
 /**
  * Generate a unique XPath for an element
@@ -128,10 +140,18 @@ export function generateCSSSelector(element: HTMLElement): string {
 }
 
 /**
- * Get the best identifier for an element based on available attributes
+ * Get the best identifier for an element based on available attributes.
+ *
+ * Item 10: `data-ui-bridge-test-id` is consulted first so authors can pin a
+ * stable id that survives label/placeholder drift. Falls through to the
+ * legacy `data-testid` > `data-awas-element` > `id` > generated selector
+ * chain when absent.
  */
 export function getBestIdentifier(element: HTMLElement): string {
-  // Priority order
+  // Priority order — Item-10 alias first.
+  const uiBridgeTestId = element.getAttribute('data-ui-bridge-test-id')?.trim();
+  if (uiBridgeTestId) return uiBridgeTestId;
+
   const testId = element.getAttribute('data-testid');
   if (testId) return testId;
 

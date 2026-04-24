@@ -32,6 +32,10 @@ export default defineConfig([
     // keeps the DTS build green until those upstream configs migrate.
     // Our own tsconfigs no longer set baseUrl.
     dts: {
+      // Resolve types across node_modules so stale / missing upstream
+      // dts surfaces as a hard error instead of a silent empty rollup
+      // (Phase 3 Item 8 guard).
+      resolve: true,
       compilerOptions: {
         ignoreDeprecations: '6.0',
       },

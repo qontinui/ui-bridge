@@ -412,3 +412,11 @@ export type {
   FindResultNotFound,
   FindCandidate,
 } from './find';
+
+// Wait-for — declarative state polling (POST /ui-bridge/ai/wait-for)
+export { waitFor } from './wait-for';
+export type { WaitForPredicate, WaitForResult, WaitForOptions } from './wait-for';
+
+// Network probe — server-side loopback HTTP probe (POST /ui-bridge/ai/network-probe)
+export { networkProbe } from './network-probe';
+export type { NetworkProbeRequest, NetworkProbeResult, NetworkProbeOptions } from './network-probe';

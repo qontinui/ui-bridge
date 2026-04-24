@@ -265,9 +265,13 @@ export function createRelayHandlers(
     let filtered = [...elements];
 
     if (criteria.interactive_only || criteria.interactiveOnly) {
-      filtered = filtered.filter(
-        (e) => interactiveTypes.has(e.type) || (e.actions && e.actions.length > 0)
-      );
+      filtered = filtered.filter((e) => {
+        // Item 1: explicit `kind: "content"` wins — those elements always
+        // drop out of `interactiveOnly` responses regardless of whether
+        // they happened to inherit any actions.
+        if ((e as { kind?: string }).kind === 'content') return false;
+        return interactiveTypes.has(e.type) || (e.actions && e.actions.length > 0);
+      });
     }
     if (criteria.element_type) {
       const t = criteria.element_type as string;

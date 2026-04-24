@@ -79,6 +79,9 @@ export {
 export {
   useAutoRegister,
   UI_BRIDGE_PERSIST_ATTR,
+  UI_BRIDGE_CONTENT_ATTR,
+  UI_BRIDGE_ROLE_ATTR,
+  UI_BRIDGE_TEST_ID_ATTR,
   type AutoRegisterOptions,
   type IdStrategy,
 } from './useAutoRegister';

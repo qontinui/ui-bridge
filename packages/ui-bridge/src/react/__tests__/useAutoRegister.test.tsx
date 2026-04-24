@@ -240,3 +240,185 @@ describe('useAutoRegister — persistWhileMounted', () => {
     expect(registry.getAllElements().length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Item 1 — semantic content registration via `data-ui-bridge-content`.
+// Non-interactive cards/badges/pills that carry the attribute appear in the
+// snapshot as `kind: "content"` entries with `content` set to the normalized
+// textContent. The attribute value is the snapshot id verbatim.
+// ---------------------------------------------------------------------------
+
+describe('useAutoRegister — data-ui-bridge-content (Item 1)', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('registers a data-ui-bridge-content element as kind: "content" with normalized text', async () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <div data-ui-bridge-content="registered-app:supervisor" data-ui-bridge-role="article">
+        <span>Qontinui Supervisor</span>
+        <span>   react   </span>
+        <span>dashboard</span>
+        <span>registered</span>
+        <span>http://localhost:9875</span>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    // Content has its own debounce (~250ms); give it two ticks.
+    await new Promise((r) => setTimeout(r, 300));
+
+    const registered = registry.getElement('registered-app:supervisor');
+    expect(registered).toBeDefined();
+    expect(registered?.category).toBe('content');
+    expect(registered?.actions).toEqual([]);
+    // Whitespace is collapsed and trimmed.
+    expect(registered?.content).toBe(
+      'Qontinui Supervisor react dashboard registered http://localhost:9875'
+    );
+    expect(registered?.role).toBe('article');
+  });
+
+  it('serializes kind="content" in snapshots and interactive siblings stay kind="interactive"', async () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <div data-ui-bridge-content="card:a">Card A body</div>
+      <button type="button">Interact</button>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 300));
+
+    const snapshot = registry.createSnapshot();
+    const card = snapshot.elements.find((e) => e.id === 'card:a');
+    expect(card).toBeDefined();
+    expect(card?.kind).toBe('content');
+    expect(card?.category).toBe('content');
+    expect(card?.content).toBe('Card A body');
+
+    const btn = snapshot.elements.find((e) => (e.label ?? '').toLowerCase() === 'interact');
+    expect(btn?.kind).toBe('interactive');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 2 — `<details>` auto-register. A <details> element is discoverable
+// as an interactive entry with a `toggle` action and a stable
+// `details-<summary-slug>` id.
+// ---------------------------------------------------------------------------
+
+describe('useAutoRegister — <details> auto-register (Item 2)', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('auto-registers a <details> with id derived from <summary> and a toggle action', async () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <details>
+        <summary>Advanced: per-stage controls</summary>
+        <p>Hidden body content</p>
+      </details>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const id = 'details-advanced-per-stage-controls';
+    const registered = registry.getElement(id);
+    expect(registered).toBeDefined();
+    expect(registered?.actions).toContain('toggle');
+    expect(registered?.origin).toBe('auto');
+  });
+
+  it('disambiguates repeated summary slugs with numeric suffixes', async () => {
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <details><summary>Stage config</summary><p>one</p></details>
+      <details><summary>Stage config</summary><p>two</p></details>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(registry.getElement('details-stage-config')).toBeDefined();
+    expect(registry.getElement('details-stage-config-1')).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 10 — `data-ui-bridge-test-id` wins over the derived id so authors
+// can pin a stable id that survives placeholder/label text drift.
+// ---------------------------------------------------------------------------
+
+describe('useAutoRegister — data-ui-bridge-test-id alias (Item 10)', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('uses data-ui-bridge-test-id verbatim when present, ignoring the derived id', async () => {
+    const fixture = document.createElement('div');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.placeholder = 'e.g. 7000'; // would derive input-eg-7000 without the alias
+    input.setAttribute('data-ui-bridge-test-id', 'discovery-port-input');
+    fixture.appendChild(input);
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Alias id wins.
+    expect(registry.getElement('discovery-port-input')).toBeDefined();
+    // The would-be derived id never lands in the registry.
+    expect(registry.getElement('input-eg-7000')).toBeUndefined();
+  });
+
+  it('falls back to derived id when the alias attribute is empty', async () => {
+    const fixture = document.createElement('div');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Save Settings';
+    btn.setAttribute('data-ui-bridge-test-id', '   '); // empty / whitespace-only
+    fixture.appendChild(btn);
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Whitespace-only attribute falls through to the slug derivation.
+    expect(registry.getElement('button-save-settings')).toBeDefined();
+  });
+});

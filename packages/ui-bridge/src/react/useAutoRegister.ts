@@ -122,6 +122,7 @@ const INTERACTIVE_SELECTORS = [
   'input:not([type="hidden"])',
   'select',
   'textarea',
+  'details', // Disclosure widget — registered with a `toggle` action (Item 2)
   '[role="button"]',
   '[role="link"]',
   '[role="checkbox"]',
@@ -142,6 +143,28 @@ const INTERACTIVE_SELECTORS = [
   '[data-ui-element]', // Explicitly marked for registration
   '[data-testid]', // Testing library convention
 ];
+
+/**
+ * Selector for semantic plain-content elements tagged with
+ * `data-ui-bridge-content`. These are non-interactive cards/badges/pills
+ * a tester would assert text on but that carry no `useUIElement` wrapper.
+ *
+ * The attribute's value becomes the element's snapshot id verbatim
+ * (e.g. `"registered-app:qontinui-supervisor-dashboard"`), letting authors
+ * pick a semantic, stable id without maintaining a React hook.
+ *
+ * See Item 1 of the UI Bridge testability plan.
+ */
+const SEMANTIC_CONTENT_SELECTOR = '[data-ui-bridge-content]';
+
+/** HTML attribute name for opt-in semantic content registration (Item 1). */
+export const UI_BRIDGE_CONTENT_ATTR = 'data-ui-bridge-content';
+
+/** HTML attribute name for the optional role hint on content elements (Item 1). */
+export const UI_BRIDGE_ROLE_ATTR = 'data-ui-bridge-role';
+
+/** HTML attribute name for the stable-id alias on auto-discovered elements (Item 10). */
+export const UI_BRIDGE_TEST_ID_ATTR = 'data-ui-bridge-test-id';
 
 const EMPTY_SELECTORS: string[] = [];
 
@@ -559,12 +582,23 @@ function generateAutoId(element: HTMLElement): string {
 
 /**
  * Generate ID based on strategy
+ *
+ * `data-ui-bridge-test-id` (Item 10) is always checked first regardless of
+ * strategy — it's the stable-id escape hatch that lets tests pin an id that
+ * would otherwise drift when a placeholder/label text changes. When absent,
+ * the existing strategy-based derivation runs as before.
  */
 function generateIdForElement(
   element: HTMLElement,
   strategy: IdStrategy,
   customGenerator?: (element: HTMLElement) => string
 ): string {
+  // Item 10: `data-ui-bridge-test-id` wins over everything else so authors
+  // can pin a stable id onto an auto-discovered element. Trimmed to tolerate
+  // whitespace in attribute values; empty → falls through to normal derivation.
+  const stableTestId = element.getAttribute(UI_BRIDGE_TEST_ID_ATTR)?.trim();
+  if (stableTestId) return stableTestId;
+
   if (customGenerator) {
     return customGenerator(element);
   }
@@ -592,6 +626,68 @@ function generateIdForElement(
       return generateSemanticId(element);
     }
   }
+}
+
+/**
+ * Slugify helper used specifically for `<details>` auto-registration (Item 2).
+ * Collapses whitespace, strips non-alphanumerics, lowercases. Distinct from
+ * the interactive-element `slugify` above only in its stricter default
+ * maxLen — we want identifiable but short slugs for disclosure widgets.
+ */
+function slugifyForDetails(text: string, maxLen = 40): string {
+  return text
+    .replace(/\s*\(.*?\)\s*/g, '') // strip parenthetical hints
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen)
+    .replace(/-+$/g, '');
+}
+
+/**
+ * Derive a stable id for a `<details>` element.
+ *
+ * Preference order:
+ *   1. An explicit `data-ui-bridge-test-id` (handled by the caller before
+ *      this runs — defense in depth here).
+ *   2. The nearest `<summary>` child's textContent → `details-<slug>`.
+ *   3. The nearest ancestor heading (h1–h6) text → `details-<slug>`.
+ *   4. Fallback `details-unnamed`.
+ *
+ * Collisions are resolved by the caller (registerElement loop) via `-1`,
+ * `-2`, ... suffixes the same way generic interactive elements disambiguate.
+ */
+function generateDetailsId(element: HTMLElement): string {
+  // Summary child first — it's the canonical "label" for a <details>.
+  const summary = element.querySelector(':scope > summary');
+  const summaryText = summary?.textContent?.trim();
+  if (summaryText) {
+    const slug = slugifyForDetails(summaryText);
+    if (slug) return `details-${slug}`;
+  }
+
+  // Fall back to the nearest ancestor heading in the same document order —
+  // useful when the <details> has no summary text but sits under a labelled
+  // section (e.g. "Advanced" card's per-stage disclosures).
+  let cursor: HTMLElement | null = element.parentElement;
+  let depth = 0;
+  while (cursor && depth < 4) {
+    const heading = cursor.querySelector<HTMLElement>('h1, h2, h3, h4, h5, h6');
+    // Only consider headings that actually precede the <details> element in
+    // the tree — a later sibling heading labels a different section.
+    if (heading && heading.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      const text = heading.textContent?.trim();
+      if (text) {
+        const slug = slugifyForDetails(text);
+        if (slug) return `details-${slug}`;
+      }
+    }
+    cursor = cursor.parentElement;
+    depth++;
+  }
+
+  return 'details-unnamed';
 }
 
 /**
@@ -705,6 +801,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
+      // Item 2 — `<details>` gets a stable `details-<summary-slug>` id and
+      // a `toggle` action up front, so disclosure widgets become drivable
+      // without `useUIElement`. `data-ui-bridge-test-id` still wins (Item 10).
+      const isDetails = element.tagName.toLowerCase() === 'details';
+
       // If the element already carries a `data-ui-bridge-id` — e.g. a
       // `useUIElement` hook stamped it via bbox-tracker, or a prior
       // auto-instrumentation pass already registered it — prefer that id
@@ -712,7 +813,23 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // This prevents the scanner from clobbering a developer-assigned id
       // and keeps runner bbox tracking pointed at the right registry key.
       const existingStamp = element.getAttribute('data-ui-bridge-id');
-      let id = existingStamp || generateIdForElement(element, idStrategy, customGenerateId);
+      // `data-ui-bridge-test-id` is the Item-10 alias — consulted first
+      // inside `generateIdForElement`. For <details> we also run the
+      // details-specific derivation so the generated id is `details-<slug>`
+      // rather than a generic `button`/`generic`-prefixed slug.
+      let id: string;
+      if (existingStamp) {
+        id = existingStamp;
+      } else {
+        const stableTestId = element.getAttribute(UI_BRIDGE_TEST_ID_ATTR)?.trim();
+        if (stableTestId) {
+          id = stableTestId;
+        } else if (isDetails) {
+          id = generateDetailsId(element);
+        } else {
+          id = generateIdForElement(element, idStrategy, customGenerateId);
+        }
+      }
 
       // Check if ID already exists in registry — disambiguate with sibling index
       // (skip this when the id came from an existing stamp; collisions there
@@ -736,7 +853,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       }
 
       const type = inferElementType(element);
-      const actions = inferActions(type);
+      // `<details>` gets the dedicated `toggle` action only — interactive-hover
+      // and focus are still useful to expose so existing workflows keep working.
+      const actions: StandardAction[] = isDetails
+        ? ['toggle', 'focus', 'blur']
+        : inferActions(type);
       const label = getAccessibleLabel(element);
 
       const registered = bridge.registry.registerElement(id, element, {
@@ -839,6 +960,76 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       bridge.registry.unregisterElement(id);
       registeredContentElementsRef.current.delete(element);
+    },
+    [bridge]
+  );
+
+  /**
+   * Register a `data-ui-bridge-content` semantic content element (Item 1).
+   *
+   * These are non-interactive cards/badges/pills a tester would assert text
+   * on but that carry no `useUIElement` wrapper. The attribute's value is
+   * used as the element's snapshot id verbatim — authors pick the semantic
+   * id (e.g. `"registered-app:qontinui-supervisor-dashboard"`), and the
+   * scanner populates `content` (normalized text), `role` (from
+   * `data-ui-bridge-role` or the DOM `role` attribute), and bbox tracking.
+   *
+   * Separate from `registerContentElement` above, which handles the
+   * heading/paragraph/table-cell content-discovery path and emits derived
+   * ids with `content-` / `heading-` prefixes.
+   */
+  const registerSemanticContentElement = useCallback(
+    (element: HTMLElement): void => {
+      if (!bridge?.registry || registeredContentElementsRef.current.has(element)) {
+        return;
+      }
+
+      const rawId = element.getAttribute(UI_BRIDGE_CONTENT_ATTR);
+      if (!rawId) return; // scanner checked this already, defense in depth
+      const id = rawId.trim();
+      if (!id) return;
+
+      // Authors chose the id — if it's already taken (e.g. identical card
+      // rendered twice in the same tree), skip the duplicate rather than
+      // silently appending a suffix that would confuse assertions.
+      const existing = bridge.registry.getElement(id);
+      if (existing) return;
+
+      // Normalized text: collapse runs of whitespace (including newlines
+      // introduced by JSX formatting) so assertions don't need to know
+      // exactly how the template wrapped its spans.
+      const rawText = (element.innerText ?? element.textContent ?? '').trim();
+      const content = rawText.replace(/\s+/g, ' ');
+
+      // Role hint — `data-ui-bridge-role` wins, DOM `role` is the fallback.
+      const roleAttr =
+        element.getAttribute(UI_BRIDGE_ROLE_ATTR) || element.getAttribute('role') || undefined;
+
+      // Label defaults to the first 50 chars of the normalized text so the
+      // snapshot has something human-readable in the `label` slot for tools
+      // that don't render `content` yet.
+      const label = content ? content.substring(0, 50) : undefined;
+
+      bridge.registry.registerElement(id, element, {
+        // `generic` is the closest ElementType we have for a semantic card.
+        // The category='content' flag is the load-bearing signal — callers
+        // filter on it (or on `kind: 'content'` in the snapshot).
+        type: 'generic',
+        actions: [],
+        label,
+        category: 'content',
+        content,
+        role: roleAttr,
+        origin: 'auto',
+      });
+
+      registeredContentElementsRef.current.set(element, id);
+
+      // Track bbox so the snapshot can expose layout info alongside the
+      // text — same as interactive elements. Lazy tracking since a page
+      // may host dozens of semantic cards.
+      const untrack = trackElementBbox(bridge.registry, id, element, { lazy: true });
+      bboxUntrackersRef.current.set(id, untrack);
     },
     [bridge]
   );
@@ -949,17 +1140,33 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
   }, [shouldRegister, registerElement, refreshRelationships, refreshDragDrop]);
 
   /**
-   * Process pending content registrations (debounced, separate timer)
+   * Process pending content registrations (debounced, separate timer).
+   *
+   * Handles two paths:
+   *   - Semantic content (`data-ui-bridge-content`, Item 1): always processed
+   *     regardless of `contentDiscovery.enabled` because it's an explicit
+   *     author opt-in. These elements get the attribute value as the
+   *     snapshot id verbatim.
+   *   - Heading/paragraph/table-cell discovery: subject to the
+   *     `shouldRegisterContent` gate (text length, visibility, etc.) as
+   *     before.
    */
   const processPendingContentRegistrations = useCallback(() => {
     const registeredIds = new Set(registeredContentElementsRef.current.values());
     pendingContentRegistrationsRef.current.forEach((element) => {
+      if (registeredContentElementsRef.current.has(element)) return;
+      // Semantic content takes the fast path — no shouldRegisterContent()
+      // gate, because the author explicitly opted in via the attribute.
+      if (element.hasAttribute(UI_BRIDGE_CONTENT_ATTR)) {
+        registerSemanticContentElement(element);
+        return;
+      }
       if (shouldRegisterContent(element, contentDiscovery, registeredIds)) {
         registerContentElement(element);
       }
     });
     pendingContentRegistrationsRef.current.clear();
-  }, [contentDiscovery, registerContentElement]);
+  }, [contentDiscovery, registerContentElement, registerSemanticContentElement]);
 
   /**
    * Process pending media registrations (debounced, separate timer)
@@ -1084,6 +1291,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         });
       }
 
+      // Item 1: semantic plain-content elements (`data-ui-bridge-content`).
+      // Always scanned — the attribute is an explicit author opt-in, so it
+      // runs independently of the contentDiscovery flag that gates the
+      // heading/paragraph auto-discovery pass. The attribute value becomes
+      // the snapshot id verbatim inside registerSemanticContentElement.
+      const semanticContentElements =
+        rootElement.querySelectorAll<HTMLElement>(SEMANTIC_CONTENT_SELECTOR);
+      semanticContentElements.forEach((element) => {
+        if (!registeredContentElementsRef.current.has(element)) {
+          queueContentRegistration(element);
+        }
+      });
+
       // Scan media elements
       if (mediaEnabled) {
         const mediaSelectors = MEDIA_SELECTORS.join(', ');
@@ -1165,6 +1385,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             });
           }
 
+          // Item 1 — semantic content (`data-ui-bridge-content`). Always
+          // scanned, independent of the contentDiscovery flag.
+          if (target.hasAttribute(UI_BRIDGE_CONTENT_ATTR)) {
+            if (!registeredContentElementsRef.current.has(target)) {
+              queueContentRegistration(target);
+            }
+          }
+          const semanticDescendants =
+            target.querySelectorAll<HTMLElement>(SEMANTIC_CONTENT_SELECTOR);
+          semanticDescendants.forEach((descendant) => {
+            if (!registeredContentElementsRef.current.has(descendant)) {
+              queueContentRegistration(descendant);
+            }
+          });
+
           // Media discovery for newly-visible elements
           if (mediaEnabled) {
             const mediaSelectors = MEDIA_SELECTORS.join(', ');
@@ -1240,6 +1475,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
                 }
               });
             }
+
+            // Item 1 — semantic content registration for added nodes.
+            // Always runs, independent of contentDiscovery.enabled.
+            if (element.hasAttribute(UI_BRIDGE_CONTENT_ATTR)) {
+              if (!registeredContentElementsRef.current.has(element)) {
+                queueContentRegistration(element);
+              }
+            }
+            const semanticContentDescendants =
+              element.querySelectorAll<HTMLElement>(SEMANTIC_CONTENT_SELECTOR);
+            semanticContentDescendants.forEach((descendant) => {
+              if (!registeredContentElementsRef.current.has(descendant)) {
+                queueContentRegistration(descendant);
+              }
+            });
 
             // Media discovery for added nodes
             if (mediaEnabled) {

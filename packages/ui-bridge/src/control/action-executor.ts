@@ -2052,12 +2052,63 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performToggle(element: HTMLElement): void {
+    // Checkbox: flip the native `checked` property + fire change (legacy path).
     if (element instanceof HTMLInputElement && element.type === 'checkbox') {
       element.checked = !element.checked;
       element.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (element.getAttribute('role') === 'switch') {
-      element.click();
+      return;
     }
+
+    // Item 2: `<details>` — flip the `open` property (not the attribute, so
+    // React's controlled pattern doesn't diverge from the DOM) and dispatch
+    // the native `toggle` event that any onToggle/onSummaryClick listeners
+    // expect. Works whether the <details> is uncontrolled (pure DOM) or
+    // React-controlled via a custom onToggle handler.
+    if (element instanceof HTMLDetailsElement) {
+      element.open = !element.open;
+      element.dispatchEvent(new Event('toggle', { bubbles: false }));
+      return;
+    }
+
+    // Item 2: `<dialog>` — showModal() / close() are the idiomatic API.
+    // Guarded because jsdom historically lacked `HTMLDialogElement` support;
+    // in that case we fall through to a synthetic click so tests on older
+    // environments still exercise the handler.
+    if (typeof HTMLDialogElement !== 'undefined' && element instanceof HTMLDialogElement) {
+      if (element.open) {
+        element.close();
+      } else if (typeof element.showModal === 'function') {
+        element.showModal();
+      } else {
+        // Rare: a polyfilled <dialog> without showModal — just flip the
+        // attribute so downstream consumers see the state change.
+        element.setAttribute('open', '');
+        element.dispatchEvent(new Event('close', { bubbles: false }));
+      }
+      return;
+    }
+
+    // Item 2: anything carrying aria-expanded (disclosure buttons) — flip
+    // the attribute so screen readers reflect the state, then dispatch a
+    // synthetic click so the framework's real click handler (React
+    // onClick, etc.) runs and manages any associated visual collapse.
+    const ariaExpanded = element.getAttribute('aria-expanded');
+    if (ariaExpanded !== null) {
+      const next = ariaExpanded === 'true' ? 'false' : 'true';
+      element.setAttribute('aria-expanded', next);
+      element.click();
+      return;
+    }
+
+    // Switch role: native path — just click.
+    if (element.getAttribute('role') === 'switch') {
+      element.click();
+      return;
+    }
+
+    // Generic fallback: a synthetic click covers the "I forgot to mark this
+    // as a disclosure but the click handler does the right thing" case.
+    element.click();
   }
 
   private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {

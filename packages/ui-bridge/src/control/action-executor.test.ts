@@ -249,3 +249,81 @@ describe('DefaultActionExecutor - drag', () => {
     expect(mousedownCoords[0].y).toBe(20);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Item 2 — generic `toggle` action. Covers <details>, aria-expanded buttons,
+// and the <dialog> branch where available.
+// ---------------------------------------------------------------------------
+
+describe('DefaultActionExecutor - toggle', () => {
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  it('flips the <details> open property and dispatches a toggle event', async () => {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Advanced';
+    details.appendChild(summary);
+    container.appendChild(details);
+    registry.registerElement('details-advanced', details, {
+      type: 'generic',
+      actions: ['toggle'],
+      label: 'Advanced',
+    });
+
+    expect(details.open).toBe(false);
+    let toggleCount = 0;
+    details.addEventListener('toggle', () => {
+      toggleCount++;
+    });
+
+    const open = await executor.executeAction('details-advanced', { action: 'toggle' });
+    expect(open.success).toBe(true);
+    expect(details.open).toBe(true);
+    expect(toggleCount).toBe(1);
+
+    // Second toggle flips back.
+    const close = await executor.executeAction('details-advanced', { action: 'toggle' });
+    expect(close.success).toBe(true);
+    expect(details.open).toBe(false);
+    expect(toggleCount).toBe(2);
+  });
+
+  it('flips aria-expanded on a disclosure button and fires the click handler', async () => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('aria-expanded', 'false');
+    btn.textContent = 'Open menu';
+    container.appendChild(btn);
+    registry.registerElement('button-open-menu', btn, {
+      type: 'button',
+      actions: ['toggle', 'click'],
+      label: 'Open menu',
+    });
+
+    let clicks = 0;
+    btn.addEventListener('click', () => {
+      clicks++;
+    });
+
+    await executor.executeAction('button-open-menu', { action: 'toggle' });
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(clicks).toBe(1);
+
+    await executor.executeAction('button-open-menu', { action: 'toggle' });
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    expect(clicks).toBe(2);
+  });
+});

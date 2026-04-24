@@ -288,6 +288,14 @@ export interface UIBridgeServerHandlers {
     skipSettle?: boolean | string;
     settleTimeout?: number | string;
     recency?: string;
+    /**
+     * Item 1 filter: when `true`, drop elements with `kind: "content"`
+     * (semantic `data-ui-bridge-content` entries) from the response.
+     * Default `false` — include everything.
+     */
+    interactiveOnly?: boolean | string;
+    /** snake_case alias for `interactiveOnly`. */
+    interactive_only?: boolean | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
   getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
 
