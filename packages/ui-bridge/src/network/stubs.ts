@@ -230,6 +230,68 @@ export class NetworkStubRegistry {
     return null;
   }
 
+  /**
+   * Non-consuming lookup — N3 `verify-stub`.
+   *
+   * Same FIFO matching semantics as `match()` but does NOT mutate state:
+   *   - `hitCount` is NOT incremented,
+   *   - `timesRemaining` is NOT decremented,
+   *   - `times: 1` stubs are NOT removed.
+   *
+   * Returns the same `StubMatch` shape so callers can call `buildResponse()`
+   * and report the hypothetical response body/headers/status without
+   * actually firing the stub. A snapshot of the matched stub's metadata is
+   * exposed via the companion `peekEntry()` helper below — callers that
+   * need both the response and the registry-state snapshot typically call
+   * `peek()` and `peekEntry()` together.
+   *
+   * Intended for server-side verification endpoints (e.g.
+   * `POST /control/network/verify-stub`) where tests want to ask "would
+   * this URL get stubbed?" without consuming a `times: 1` entry.
+   */
+  peek(url: string, method: string): StubMatch | null {
+    const upper = method.toUpperCase();
+    for (const s of this.stubs) {
+      if (s.method !== '*' && s.method !== upper) continue;
+      if (!url.includes(s.urlPattern)) continue;
+
+      const { status, headers, body } = s;
+      return {
+        id: s.id,
+        buildResponse: () =>
+          new Response(body, {
+            status,
+            headers: { ...headers },
+          }),
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Companion to `peek()` — returns the matched stub's registry entry
+   * (the same shape `list()` returns per stub) without consuming it.
+   *
+   * Kept separate from `peek()` so the hot `StubMatch` path stays minimal,
+   * and so callers that only need the response can skip the extra
+   * allocation.
+   */
+  peekEntry(url: string, method: string): StubEntry | null {
+    const upper = method.toUpperCase();
+    for (const s of this.stubs) {
+      if (s.method !== '*' && s.method !== upper) continue;
+      if (!url.includes(s.urlPattern)) continue;
+      return {
+        id: s.id,
+        urlPattern: s.urlPattern,
+        method: s.method,
+        timesRemaining: s.timesRemaining,
+        hitCount: s.hitCount,
+      };
+    }
+    return null;
+  }
+
   /** Delete a stub by ID. Returns true if removed, false if unknown. */
   delete(id: string): boolean {
     const before = this.stubs.length;

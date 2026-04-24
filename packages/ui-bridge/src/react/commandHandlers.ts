@@ -2844,6 +2844,66 @@ export async function executeCommand(
     }
 
     // ======================================================================
+    // N3 — Non-consuming stub verification
+    // Returns what `match()` WOULD return for the given url+method pair
+    // without decrementing `times: 1` stubs or bumping `hitCount`. Lets
+    // tests assert "this stub is still armed" cheaply, and lets them read
+    // the hypothetical response body without going through `page/evaluate`.
+    // ======================================================================
+
+    case 'verifyNetworkStub': {
+      const { urlPattern, method } = payload as { urlPattern?: unknown; method?: unknown };
+      if (typeof urlPattern !== 'string' || urlPattern.length === 0) {
+        return {
+          success: false,
+          error: 'urlPattern: urlPattern must be a non-empty string',
+          timestamp: Date.now(),
+        };
+      }
+      const methodStr =
+        typeof method === 'string' && method.length > 0 ? method.toUpperCase() : '*';
+
+      const registry = getGlobalStubRegistry();
+      const hit = registry.peek(urlPattern, methodStr);
+      if (!hit) {
+        return {
+          success: true,
+          data: {
+            matched: false,
+            stubId: null,
+            response: null,
+            stubEntry: null,
+          },
+          timestamp: Date.now(),
+        };
+      }
+      const entry = registry.peekEntry(urlPattern, methodStr);
+      const resp = hit.buildResponse();
+      // Extract headers without consuming the Response stream; peek() returned
+      // a freshly-built Response instance, so reading it here is safe.
+      const headers: Record<string, string> = {};
+      resp.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+      const body = await resp.text();
+
+      return {
+        success: true,
+        data: {
+          matched: true,
+          stubId: hit.id,
+          response: {
+            status: resp.status,
+            headers,
+            body,
+          },
+          stubEntry: entry,
+        },
+        timestamp: Date.now(),
+      };
+    }
+
+    // ======================================================================
     // Error Sessions
     // ======================================================================
 

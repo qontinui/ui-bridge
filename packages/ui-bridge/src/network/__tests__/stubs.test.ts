@@ -221,6 +221,97 @@ describe('NetworkStubRegistry — delete / clear / list', () => {
   });
 });
 
+describe('NetworkStubRegistry — peek (N3 non-consuming lookup)', () => {
+  let reg: NetworkStubRegistry;
+
+  beforeEach(() => {
+    reg = new NetworkStubRegistry();
+  });
+
+  it('peek returns a match without consuming times: 1 or bumping hitCount', () => {
+    const id = reg.register({
+      urlPattern: '/once',
+      response: { body: 'A' },
+      times: 1,
+    });
+
+    for (let i = 0; i < 5; i++) {
+      const hit = reg.peek('/once', 'GET');
+      expect(hit).not.toBeNull();
+      expect(hit!.id).toBe(id);
+    }
+
+    const [entry] = reg.list();
+    expect(entry.timesRemaining).toBe(1);
+    expect(entry.hitCount).toBe(0);
+  });
+
+  it('peek then match once: peek null afterwards once the stub is consumed', () => {
+    reg.register({
+      urlPattern: '/once',
+      response: { body: 'A' },
+      times: 1,
+    });
+
+    // Five peeks don't consume.
+    for (let i = 0; i < 5; i++) {
+      expect(reg.peek('/once', 'GET')).not.toBeNull();
+    }
+
+    // A single match() consumes.
+    expect(reg.match('/once', 'GET')).not.toBeNull();
+
+    // Registry is empty, peek reports null.
+    expect(reg.list()).toHaveLength(0);
+    expect(reg.peek('/once', 'GET')).toBeNull();
+  });
+
+  it('peek respects method constraint like match', () => {
+    reg.register({
+      urlPattern: '/m',
+      method: 'POST',
+      response: { body: 'A' },
+    });
+    expect(reg.peek('/m', 'GET')).toBeNull();
+    expect(reg.peek('/m', 'POST')).not.toBeNull();
+  });
+
+  it('peek buildResponse yields the correct status+headers+body', async () => {
+    reg.register({
+      urlPattern: '/data',
+      response: { status: 418, headers: { 'x-test': '1' }, body: '{"ok":1}' },
+    });
+    const hit = reg.peek('/data', 'GET')!;
+    const resp = hit.buildResponse();
+    expect(resp.status).toBe(418);
+    expect(resp.headers.get('x-test')).toBe('1');
+    expect(await resp.text()).toBe('{"ok":1}');
+  });
+
+  it('peek returns first-registered on overlapping patterns (FIFO like match)', () => {
+    const a = reg.register({ urlPattern: '/foo', response: { body: 'A' } });
+    reg.register({ urlPattern: '/foo', response: { body: 'B' } });
+    expect(reg.peek('/foo/bar', 'GET')?.id).toBe(a);
+  });
+
+  it('peekEntry returns the live entry snapshot with unchanged hitCount', () => {
+    reg.register({ urlPattern: '/x', response: { body: 'A' }, times: 3 });
+    const entry = reg.peekEntry('/x', 'GET')!;
+    expect(entry.urlPattern).toBe('/x');
+    expect(entry.timesRemaining).toBe(3);
+    expect(entry.hitCount).toBe(0);
+    // Peek one more time — still 0 hitCount, still 3 remaining.
+    reg.peek('/x', 'GET');
+    const after = reg.peekEntry('/x', 'GET')!;
+    expect(after.timesRemaining).toBe(3);
+    expect(after.hitCount).toBe(0);
+  });
+
+  it('peekEntry returns null when no stub matches', () => {
+    expect(reg.peekEntry('/nope', 'GET')).toBeNull();
+  });
+});
+
 describe('NetworkStubRegistry — global singleton', () => {
   beforeEach(() => __resetGlobalStubRegistryForTest());
 

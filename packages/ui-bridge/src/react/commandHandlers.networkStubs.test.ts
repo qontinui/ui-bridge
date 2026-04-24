@@ -196,3 +196,125 @@ describe('executeCommand · F2 network stubs', () => {
     expect(res.error).toMatch(/response/);
   });
 });
+
+describe('executeCommand · N3 verifyNetworkStub (non-consuming)', () => {
+  it('verify returns matched=true with stubId + response for a registered stub', async () => {
+    const id = await register({
+      urlPattern: '/api/verify-hit',
+      response: { status: 418, headers: { 'x-test': '1' }, bodyJson: { stubbed: true } },
+    });
+
+    const res = (await executeCommand(
+      'verifyNetworkStub',
+      { urlPattern: '/api/verify-hit' },
+      emptyBridge
+    )) as {
+      success: boolean;
+      data: {
+        matched: boolean;
+        stubId: string | null;
+        response: { status: number; headers: Record<string, string>; body: string } | null;
+        stubEntry: { id: string; hitCount: number; timesRemaining: number | 'always' } | null;
+      };
+    };
+
+    expect(res.success).toBe(true);
+    expect(res.data.matched).toBe(true);
+    expect(res.data.stubId).toBe(id);
+    expect(res.data.response).not.toBeNull();
+    expect(res.data.response!.status).toBe(418);
+    expect(res.data.response!.headers['x-test']).toBe('1');
+    expect(res.data.response!.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(res.data.response!.body)).toEqual({ stubbed: true });
+    expect(res.data.stubEntry).not.toBeNull();
+    expect(res.data.stubEntry!.id).toBe(id);
+  });
+
+  it('verify returns matched=false for a URL that no stub matches', async () => {
+    await register({
+      urlPattern: '/api/only-this',
+      response: { body: 'NO' },
+    });
+
+    const res = (await executeCommand(
+      'verifyNetworkStub',
+      { urlPattern: '/api/nothing-matches-this' },
+      emptyBridge
+    )) as {
+      success: boolean;
+      data: {
+        matched: boolean;
+        stubId: string | null;
+        response: unknown;
+        stubEntry: unknown;
+      };
+    };
+    expect(res.success).toBe(true);
+    expect(res.data.matched).toBe(false);
+    expect(res.data.stubId).toBeNull();
+    expect(res.data.response).toBeNull();
+    expect(res.data.stubEntry).toBeNull();
+  });
+
+  it('verify does NOT consume a times: 1 stub', async () => {
+    await register({
+      urlPattern: '/api/once-only',
+      response: { body: 'ONE' },
+      times: 1,
+    });
+
+    // Verify 5 times; the stub must still be there afterwards.
+    for (let i = 0; i < 5; i++) {
+      const res = (await executeCommand(
+        'verifyNetworkStub',
+        { urlPattern: '/api/once-only' },
+        emptyBridge
+      )) as { data: { matched: boolean } };
+      expect(res.data.matched).toBe(true);
+    }
+
+    // The real fetch must now resolve from the stub (not the real network
+    // spy). Confirm the stub survived all the verifies by actually firing
+    // the fetch once.
+    const resp = await fetch('/api/once-only');
+    expect(await resp.text()).toBe('ONE');
+  });
+
+  it('verify respects the method filter', async () => {
+    await register({
+      urlPattern: '/api/post-only',
+      method: 'POST',
+      response: { body: 'P' },
+    });
+
+    const gotGet = (await executeCommand(
+      'verifyNetworkStub',
+      { urlPattern: '/api/post-only', method: 'GET' },
+      emptyBridge
+    )) as { data: { matched: boolean } };
+    expect(gotGet.data.matched).toBe(false);
+
+    const gotPost = (await executeCommand(
+      'verifyNetworkStub',
+      { urlPattern: '/api/post-only', method: 'POST' },
+      emptyBridge
+    )) as { data: { matched: boolean } };
+    expect(gotPost.data.matched).toBe(true);
+  });
+
+  it('verify rejects missing or empty urlPattern', async () => {
+    const missing = (await executeCommand('verifyNetworkStub', {}, emptyBridge)) as {
+      success: boolean;
+      error?: string;
+    };
+    expect(missing.success).toBe(false);
+    expect(missing.error).toMatch(/urlPattern/);
+
+    const empty = (await executeCommand('verifyNetworkStub', { urlPattern: '' }, emptyBridge)) as {
+      success: boolean;
+      error?: string;
+    };
+    expect(empty.success).toBe(false);
+    expect(empty.error).toMatch(/urlPattern/);
+  });
+});
