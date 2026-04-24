@@ -47,3 +47,6 @@ export type { FindableElement, ElementQuery, ElementMatch } from './find';
 
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';
+
+// SVG-safe className helpers — always use instead of `.className.split(...)`.
+export { classString, classList } from './class-name';
