@@ -15,6 +15,7 @@ import type {
   ToastSnapshot,
   SnapshotToastContext,
 } from './types';
+import { classString } from '../core/class-name';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -79,8 +80,8 @@ function levelFromDataAttr(value: string | null): ToastLevel | null {
 
 /** Infer level from CSS classes on the element and its children */
 function levelFromClasses(el: Element): ToastLevel | null {
-  const className = el.className;
-  if (typeof className !== 'string') return null;
+  const className = classString(el);
+  if (!className) return null;
 
   // MUI-specific classes
   if (className.includes('MuiAlert-standardSuccess')) return 'success';
@@ -163,7 +164,7 @@ function detectSource(el: Element): string | undefined {
   if (el.hasAttribute('data-sonner-toast')) return 'sonner';
   if (el.closest('[data-radix-toast-viewport]')) return 'radix';
 
-  const className = typeof el.className === 'string' ? el.className : '';
+  const className = classString(el);
   if (className.includes('Toastify')) return 'react-toastify';
   if (className.includes('ant-message') || className.includes('ant-notification'))
     return 'ant-design';
