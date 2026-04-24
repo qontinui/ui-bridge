@@ -154,8 +154,14 @@ export function useUIBridge(): UseUIBridgeReturn {
   // Create snapshot
   const createSnapshot = useCallback((): BridgeSnapshot => {
     if (!context) {
+      const takenAt = Date.now();
       return {
-        timestamp: Date.now(),
+        timestamp: takenAt,
+        snapshotTakenAtMs: takenAt,
+        // No bridge → no registration activity observed. Callers can
+        // disambiguate this from "bridge present but empty page" via
+        // `registration.everHadRegistrations`.
+        registration: { totalRegistered: 0, everHadRegistrations: false, byRoute: {} },
         elements: [],
         components: [],
         workflows: [],
@@ -171,8 +177,11 @@ export function useUIBridge(): UseUIBridgeReturn {
       options?: { componentBasePath?: string }
     ): Promise<BridgeSnapshot> => {
       if (!context) {
+        const takenAt = Date.now();
         return {
-          timestamp: Date.now(),
+          timestamp: takenAt,
+          snapshotTakenAtMs: takenAt,
+          registration: { totalRegistered: 0, everHadRegistrations: false, byRoute: {} },
           elements: [],
           components: [],
           workflows: [],

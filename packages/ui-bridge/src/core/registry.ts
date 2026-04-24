@@ -60,6 +60,16 @@ export function serializeRegisteredElement(
   options: { componentBasePath?: string } = {}
 ): BridgeSnapshot['elements'][number] {
   const componentBasePath = options.componentBasePath ?? '/control/component';
+  // High-level `kind` — mirrors `category` for the "interactive" / "content"
+  // split so snapshot filters (?interactiveOnly=true) don't have to branch
+  // on the richer `category` enum. Media elements keep `kind` undefined;
+  // clients that care specifically about media filter on `category`.
+  const kind: 'interactive' | 'content' | undefined =
+    el.category === 'content'
+      ? 'content'
+      : el.category === 'interactive'
+        ? 'interactive'
+        : undefined;
   return {
     id: el.id,
     type: el.type,
@@ -70,6 +80,9 @@ export function serializeRegisteredElement(
     actions: el.actions,
     customActions: el.customActions ? Object.keys(el.customActions) : undefined,
     category: el.category,
+    kind,
+    content: el.content,
+    role: el.role,
     contentMetadata: el.contentMetadata,
     mediaMetadata: el.mediaMetadata,
     ownedByComponent: el.ownedByComponent,
@@ -103,6 +116,10 @@ export function serializeRegisteredElement(
           };
         })()
       : undefined,
+    // Route captured at registration time. Mirrored on the snapshot element
+    // so consumers can cross-check `registration.byRoute` against individual
+    // entries without a second call.
+    route: el.route,
   };
 }
 
@@ -609,6 +626,22 @@ export class UIBridgeRegistry {
     { id: string; fingerprint: string; removedAt: number }
   >();
 
+  // ── F3: Snapshot registration metadata ────────────────────────────────────
+  // Sticky latch: flips true the first time any element registers and stays
+  // true for the rest of this registry instance's lifetime, including across
+  // unregister cycles. Lets snapshot consumers distinguish "bridge has never
+  // seen a registration" (no SDK coverage on this page) from "registrations
+  // happened but are all unmounted now". Never reset except on `clear()`.
+  private everHadRegistrationsFlag = false;
+
+  // Per-route tally of currently-registered elements. Mirrors
+  // `elements.size` partitioned by `RegisteredElement.route`. Incremented on
+  // register, decremented on unregister, and a zero count is dropped from
+  // the map so `byRoute` never emits `{ "/foo": 0 }`. Elements registered
+  // without a route (non-DOM environment) are tracked under the empty-string
+  // key `""` — snapshot serialization filters that bucket out.
+  private routeCounts = new Map<string, number>();
+
   // External store pattern for useSyncExternalStore
   private storeVersion = 0;
   private storeListeners = new Set<() => void>();
@@ -830,6 +863,27 @@ export class UIBridgeRegistry {
       color?: string;
       /** Disambiguation hint — hierarchical semantic path. See RegisteredElement.contextPath. */
       contextPath?: string;
+      /**
+       * Page route the element is registered under. Defaults to
+       * `window.location.pathname` when available; used to populate
+       * `BridgeSnapshot.registration.byRoute`. Pass `null` to explicitly
+       * opt out of route tracking; pass a string (e.g. a framework router's
+       * matched pattern) to override the `pathname` default.
+       */
+      route?: string | null;
+      /**
+       * Normalized text content for `data-ui-bridge-content` semantic
+       * elements (cards/badges/pills). Surfaced on the snapshot element
+       * as `content`.
+       */
+      content?: string;
+      /**
+       * ARIA/semantic role hint for content elements (e.g. `"article"`,
+       * `"listitem"`, `"status"`). Surfaced on the snapshot element as
+       * `role`. Sourced from `data-ui-bridge-role` with a fallback to
+       * the DOM `role` attribute.
+       */
+      role?: string;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -866,6 +920,20 @@ export class UIBridgeRegistry {
       if (attr) ownedByComponent = attr;
     }
 
+    // Resolve the route to tag this element with for registration
+    // diagnostics. `route === null` explicitly opts out (stays undefined).
+    // Any string (even empty) is taken as-is. When the option is absent,
+    // fall back to `window.location.pathname` in DOM environments;
+    // otherwise leave undefined (SSR, tests without jsdom).
+    let route: string | undefined;
+    if (options.route === null) {
+      route = undefined;
+    } else if (typeof options.route === 'string') {
+      route = options.route;
+    } else if (typeof window !== 'undefined' && window.location?.pathname) {
+      route = window.location.pathname;
+    }
+
     const registered: RegisteredElement = {
       id: actualId,
       element,
@@ -892,12 +960,45 @@ export class UIBridgeRegistry {
       position: options.position,
       color: options.color,
       contextPath: options.contextPath,
+      route,
+      // Content/role fields for data-ui-bridge-content semantic elements.
+      // Undefined for interactive elements and for content registered via
+      // the heading/paragraph/table-cell content-discovery path.
+      content: options.content,
+      role: options.role,
     };
 
+    // If this id is already registered, reverse the previous entry's
+    // route bookkeeping so we don't double-count an overwrite.
+    const prior = this.elements.get(actualId);
+    if (prior) {
+      this.decrementRouteCount(prior.route);
+    }
     this.elements.set(actualId, registered);
+    // F3: sticky latch + per-route tally
+    this.everHadRegistrationsFlag = true;
+    this.incrementRouteCount(route);
     this.emit('element:registered', { id: actualId, type, label: options.label });
 
     return registered;
+  }
+
+  private incrementRouteCount(route: string | undefined): void {
+    // Use `""` as the key for undefined-route elements so the map stays
+    // typed as `Map<string, number>`; snapshot serialization filters this
+    // bucket out.
+    const key = route ?? '';
+    this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+  }
+
+  private decrementRouteCount(route: string | undefined): void {
+    const key = route ?? '';
+    const next = (this.routeCounts.get(key) ?? 0) - 1;
+    if (next <= 0) {
+      this.routeCounts.delete(key);
+    } else {
+      this.routeCounts.set(key, next);
+    }
   }
 
   /**
@@ -1010,6 +1111,11 @@ export class UIBridgeRegistry {
       }
       registered.mounted = false;
       this.elements.delete(id);
+      // F3: drop this element from the per-route tally. Note we do NOT
+      // clear `everHadRegistrationsFlag` — it's a one-way latch that stays
+      // true for the rest of the registry's lifetime so callers can tell
+      // "had coverage, all unmounted" from "never had coverage".
+      this.decrementRouteCount(registered.route);
       this.emit('element:unregistered', { id });
       this.options.elementEventLog?.removeElement(id);
       return true;
@@ -1933,11 +2039,71 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Whether this registry instance has ever had an element register in its
+   * lifetime. Sticky — flips true on first `registerElement` and stays true
+   * until `clear()`.  Exposed primarily for tests; production code should
+   * read `BridgeSnapshot.registration.everHadRegistrations`.
+   */
+  hasEverHadRegistrations(): boolean {
+    return this.everHadRegistrationsFlag;
+  }
+
+  /**
+   * Per-route counts of currently-registered elements. Returns a plain
+   * object copy so callers can't mutate the internal map. Elements with
+   * an undefined route are omitted. Exposed primarily for tests; production
+   * code should read `BridgeSnapshot.registration.byRoute`.
+   */
+  getCountsByRoute(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [route, count] of this.routeCounts) {
+      // Empty-string key = undefined-route bucket — exclude from the
+      // user-visible map so it never shows up as `"": N`.
+      if (route === '') continue;
+      if (count > 0) out[route] = count;
+    }
+    return out;
+  }
+
+  /**
+   * Build the F3 registration-diagnostics metadata for a snapshot. Shared
+   * by `createSnapshot` and `createSnapshotAsync` so both paths emit the
+   * same shape.
+   */
+  private buildRegistrationMetadata(): {
+    totalRegistered: number;
+    everHadRegistrations: boolean;
+    byRoute: Record<string, number>;
+  } {
+    return {
+      totalRegistered: this.elements.size,
+      everHadRegistrations: this.everHadRegistrationsFlag,
+      byRoute: this.getCountsByRoute(),
+    };
+  }
+
+  /**
+   * Best-effort read of the current page route. Matches the default source
+   * `registerElement` uses, so the snapshot's top-level `route` lines up
+   * with the `byRoute` keys under normal operation.
+   */
+  private currentRoute(): string | undefined {
+    if (typeof window !== 'undefined' && window.location?.pathname) {
+      return window.location.pathname;
+    }
+    return undefined;
+  }
+
+  /**
    * Create a snapshot of the current state
    */
   createSnapshot(options: { componentBasePath?: string } = {}): BridgeSnapshot {
+    const takenAt = Date.now();
     return {
-      timestamp: Date.now(),
+      timestamp: takenAt,
+      snapshotTakenAtMs: takenAt,
+      route: this.currentRoute(),
+      registration: this.buildRegistrationMetadata(),
       elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,
@@ -1982,8 +2148,15 @@ export class UIBridgeRegistry {
       }
     }
 
+    // Capture registration metadata AFTER the element loop so counts
+    // reflect any (un)registrations that happened during yields — the map
+    // is always authoritative.
+    const takenAt = Date.now();
     return {
-      timestamp: Date.now(),
+      timestamp: takenAt,
+      snapshotTakenAtMs: takenAt,
+      route: this.currentRoute(),
+      registration: this.buildRegistrationMetadata(),
       elements: elementSnapshots,
       components: this.getAllComponents().map((comp) => ({
         id: comp.id,
@@ -2016,6 +2189,11 @@ export class UIBridgeRegistry {
     this.stateGroups.clear();
     this.transitions.clear();
     this.activeStates.clear();
+    // F3: a full `clear()` is an explicit teardown — unlike per-element
+    // unregister it resets the route tally AND the sticky latch, matching
+    // the lifetime semantics expected after `resetGlobalRegistry()`.
+    this.routeCounts.clear();
+    this.everHadRegistrationsFlag = false;
   }
 
   /**

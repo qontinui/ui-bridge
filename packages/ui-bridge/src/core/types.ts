@@ -441,6 +441,23 @@ export interface RegisteredElement {
   contentMetadata?: ContentMetadata;
   /** Metadata for media elements */
   mediaMetadata?: MediaMetadata;
+  /**
+   * Normalized text content of a semantic content element (whitespace
+   * collapsed, trimmed). Populated by the auto-register scanner for plain
+   * content elements tagged with `data-ui-bridge-content` so snapshots can
+   * expose card/badge/pill text without requiring `/control/page/evaluate`.
+   * Absent for interactive elements and for content registered via the
+   * heading/paragraph/table-cell content-discovery path (those expose their
+   * text via `state.textContent`).
+   */
+  content?: string;
+  /**
+   * ARIA role / semantic role of a content element, populated from
+   * `data-ui-bridge-role` on the element (falls back to `role` attribute).
+   * Lets callers filter semantic content by role (e.g. `role: "article"`,
+   * `role: "listitem"`, `role: "status"`) without DOM traversal.
+   */
+  role?: string;
 
   // AI-Native metadata
   /** Alternative names for natural language matching */
@@ -508,6 +525,17 @@ export interface RegisteredElement {
    * "the Save button" when multiple forms each have one. Open-ended string.
    */
   contextPath?: string;
+
+  /**
+   * The page route this element was registered under.
+   *
+   * Captured at `registerElement` time from `window.location.pathname` when
+   * not provided explicitly. Used to group elements by page in snapshot
+   * registration metadata so callers can confirm a tab switch actually
+   * re-registered the target page's elements. Undefined in non-DOM
+   * environments (SSR, tests without jsdom).
+   */
+  route?: string;
 }
 
 // ============================================================================
@@ -1029,11 +1057,68 @@ export interface ElementAssertionResult {
 // ============================================================================
 
 /**
+ * Registration-diagnostics metadata for a bridge snapshot.
+ *
+ * Lets callers distinguish the three cases that all look like
+ * `elements: []` on the wire:
+ *   1. "Bridge has never seen any registration" — page has no `useUIElement`
+ *      coverage, or the SDK isn't wired up at all.
+ *   2. "Registrations happened but are all unmounted now" — page mounted
+ *      its elements earlier then tore them down (e.g. route switched).
+ *   3. "Registrations happened and some are still live" — normal operation;
+ *      `elements` is empty only if the caller filtered it out.
+ *
+ * Always present on `BridgeSnapshot`. Additive to the pre-F3 shape: legacy
+ * readers of `elements` continue to work unchanged.
+ */
+export interface SnapshotRegistrationMetadata {
+  /** Number of elements currently in the registry at snapshot time. */
+  totalRegistered: number;
+  /**
+   * Flips `true` the first time any element registers in this SDK
+   * instance's lifetime, and stays `true` for the rest of its lifetime —
+   * even after every element unmounts. Use this to distinguish "bridge has
+   * never seen any registration" from "registrations happened but are all
+   * unmounted now".
+   */
+  everHadRegistrations: boolean;
+  /**
+   * Per-route counts of currently-registered elements, keyed by the route
+   * string captured when the element was registered (same semantics as the
+   * snapshot's top-level `route` field). Elements drop out of the map when
+   * they unmount; a route with zero live elements is omitted entirely
+   * rather than kept as `route: 0`. Useful for confirming a tab switch
+   * actually re-registered the target page's elements.
+   */
+  byRoute: Record<string, number>;
+}
+
+/**
  * Snapshot of the entire UI bridge state
  */
 export interface BridgeSnapshot {
-  /** Timestamp of the snapshot */
+  /**
+   * Timestamp of the snapshot (ms since epoch).
+   *
+   * @deprecated Prefer `snapshotTakenAtMs` — same value, clearer name.
+   *   Both fields are emitted for back-compat; `timestamp` will be removed
+   *   in a future major.
+   */
   timestamp: number;
+  /** Snapshot capture timestamp in milliseconds since epoch. */
+  snapshotTakenAtMs: number;
+  /**
+   * Current page route at snapshot time. Captured from
+   * `window.location.pathname` when available. Undefined in non-DOM
+   * environments. Matches the `route` keys used in `registration.byRoute`.
+   */
+  route?: string;
+  /**
+   * Registration-diagnostics metadata — lets callers tell "no coverage"
+   * from "coverage but all unmounted" without an extra probe round-trip.
+   * See {@link SnapshotRegistrationMetadata}.
+   */
+  registration: SnapshotRegistrationMetadata;
   /** All registered elements */
   elements: Array<{
     id: string;
@@ -1045,6 +1130,26 @@ export interface BridgeSnapshot {
     actions: StandardAction[];
     customActions?: string[];
     category?: 'interactive' | 'content' | 'media';
+    /**
+     * High-level element kind — `"interactive"` for clickable/typeable/etc.
+     * elements, `"content"` for semantic plain-content elements (cards,
+     * badges, pills) emitted via `data-ui-bridge-content`. Mirrors
+     * `category` when set; callers can filter with `?interactiveOnly=true`
+     * to exclude content entries. Absent for `"media"` (use `category`).
+     */
+    kind?: 'interactive' | 'content';
+    /**
+     * Normalized text content of a `data-ui-bridge-content` element
+     * (whitespace-collapsed, trimmed). Lets snapshot consumers assert on
+     * card/badge/pill text directly. Undefined for interactive elements.
+     */
+    content?: string;
+    /**
+     * ARIA role / semantic role hint for content elements, sourced from
+     * `data-ui-bridge-role` (falls back to the element's `role` attribute).
+     * Absent for elements that don't carry one.
+     */
+    role?: string;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /** Component (if any) that owns/renders this element. Prefer component actions for automation. */
@@ -1095,6 +1200,14 @@ export interface BridgeSnapshot {
      * Passthrough from `useUIElement` options.
      */
     contextPath?: string;
+    /**
+     * The page route this element was registered under (captured from
+     * `window.location.pathname` at registration time, or provided
+     * explicitly by framework hooks). Matches the keys in
+     * `BridgeSnapshot.registration.byRoute`. Undefined in non-DOM
+     * environments.
+     */
+    route?: string;
   }>;
   /** All registered components */
   components: Array<{

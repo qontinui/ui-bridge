@@ -384,6 +384,169 @@ describe('UIBridgeRegistry', () => {
     });
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // F3: Snapshot registration metadata
+  // ──────────────────────────────────────────────────────────────────────
+  describe('snapshot registration metadata (F3)', () => {
+    it('everHadRegistrations starts false before any register call', () => {
+      const snapshot = registry.createSnapshot();
+      expect(snapshot.registration.everHadRegistrations).toBe(false);
+      expect(snapshot.registration.totalRegistered).toBe(0);
+      expect(snapshot.registration.byRoute).toEqual({});
+      expect(registry.hasEverHadRegistrations()).toBe(false);
+    });
+
+    it('everHadRegistrations flips true after first register and stays true after unmount', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+
+      registry.registerElement('btn-1', btn, { route: '/home' });
+      expect(registry.createSnapshot().registration.everHadRegistrations).toBe(true);
+
+      registry.unregisterElement('btn-1');
+      const afterUnmount = registry.createSnapshot();
+
+      // Key F3 invariant: latch stays `true` so callers can tell
+      // "page had coverage that's now torn down" from "never had coverage".
+      expect(afterUnmount.registration.everHadRegistrations).toBe(true);
+      expect(afterUnmount.registration.totalRegistered).toBe(0);
+      expect(afterUnmount.registration.byRoute).toEqual({});
+    });
+
+    it('everHadRegistrations resets to false only on clear()', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+      expect(registry.hasEverHadRegistrations()).toBe(true);
+
+      registry.clear();
+
+      expect(registry.hasEverHadRegistrations()).toBe(false);
+      expect(registry.createSnapshot().registration.everHadRegistrations).toBe(false);
+    });
+
+    it('totalRegistered matches elements.length at snapshot time', () => {
+      const a = document.createElement('button');
+      const b = document.createElement('input');
+      const c = document.createElement('a');
+      container.appendChild(a);
+      container.appendChild(b);
+      container.appendChild(c);
+
+      registry.registerElement('a', a);
+      registry.registerElement('b', b);
+      registry.registerElement('c', c);
+
+      const snap = registry.createSnapshot();
+      expect(snap.registration.totalRegistered).toBe(snap.elements.length);
+      expect(snap.registration.totalRegistered).toBe(3);
+
+      registry.unregisterElement('b');
+      const snap2 = registry.createSnapshot();
+      expect(snap2.registration.totalRegistered).toBe(snap2.elements.length);
+      expect(snap2.registration.totalRegistered).toBe(2);
+    });
+
+    it('byRoute groups by registration route and drops keys when count hits zero', () => {
+      const a1 = document.createElement('button');
+      const a2 = document.createElement('button');
+      const b1 = document.createElement('button');
+      container.appendChild(a1);
+      container.appendChild(a2);
+      container.appendChild(b1);
+
+      registry.registerElement('a1', a1, { route: '/fleet' });
+      registry.registerElement('a2', a2, { route: '/fleet' });
+      registry.registerElement('b1', b1, { route: '/settings' });
+
+      expect(registry.createSnapshot().registration.byRoute).toEqual({
+        '/fleet': 2,
+        '/settings': 1,
+      });
+
+      // Drop the only /settings element — the key itself should be removed.
+      registry.unregisterElement('b1');
+      expect(registry.createSnapshot().registration.byRoute).toEqual({ '/fleet': 2 });
+
+      // Drop both /fleet elements — byRoute should be fully empty, not
+      // `{ '/fleet': 0 }`.
+      registry.unregisterElement('a1');
+      registry.unregisterElement('a2');
+      expect(registry.createSnapshot().registration.byRoute).toEqual({});
+    });
+
+    it('byRoute falls back to window.location.pathname when route not supplied', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+
+      registry.registerElement('btn-1', btn);
+
+      const snap = registry.createSnapshot();
+      // jsdom defaults to "/" — whatever the current pathname is, it must
+      // be present in both the top-level `route` and `byRoute`.
+      expect(typeof snap.route).toBe('string');
+      expect(snap.registration.byRoute[snap.route!]).toBe(1);
+    });
+
+    it('passing route: null opts the element out of byRoute entirely', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+
+      registry.registerElement('btn-opt-out', btn, { route: null });
+
+      const snap = registry.createSnapshot();
+      // Element exists but contributes nothing to byRoute — useful for
+      // elements that don't belong to any page (e.g. an always-mounted
+      // app shell control).
+      expect(snap.registration.totalRegistered).toBe(1);
+      expect(snap.registration.byRoute).toEqual({});
+    });
+
+    it('snapshot.registration is present on createSnapshotAsync too', async () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('async-btn', btn, { route: '/async-page' });
+
+      const snap = await registry.createSnapshotAsync();
+
+      expect(snap.registration.totalRegistered).toBe(1);
+      expect(snap.registration.everHadRegistrations).toBe(true);
+      expect(snap.registration.byRoute).toEqual({ '/async-page': 1 });
+      expect(snap.snapshotTakenAtMs).toBeGreaterThan(0);
+      expect(snap.snapshotTakenAtMs).toBe(snap.timestamp);
+    });
+
+    it('snapshotTakenAtMs mirrors the legacy timestamp field', () => {
+      const snap = registry.createSnapshot();
+      expect(snap.snapshotTakenAtMs).toBe(snap.timestamp);
+      expect(snap.snapshotTakenAtMs).toBeGreaterThan(0);
+    });
+
+    it('re-registering the same id under a new route does not double-count', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+
+      registry.registerElement('same-id', btn, { route: '/a' });
+      registry.registerElement('same-id', btn, { route: '/b' });
+
+      const snap = registry.createSnapshot();
+      // Reverse the prior entry's route on overwrite so /a goes back to 0
+      // (and is therefore dropped) and /b holds the single live count.
+      expect(snap.registration.totalRegistered).toBe(1);
+      expect(snap.registration.byRoute).toEqual({ '/b': 1 });
+    });
+
+    it('individual snapshot elements echo their registration route', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn, { route: '/dashboard' });
+
+      const snap = registry.createSnapshot();
+      const el = snap.elements.find((e) => e.id === 'btn-1');
+      expect(el?.route).toBe('/dashboard');
+    });
+  });
+
   describe('global registry', () => {
     it('should set and get global registry', () => {
       const newRegistry = new UIBridgeRegistry();
