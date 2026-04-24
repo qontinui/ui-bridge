@@ -16,6 +16,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
+import { classString } from '../core/class-name';
 import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
@@ -408,9 +409,8 @@ function findParentInteractive(element: HTMLElement): HTMLElement | null {
 function inferIconAction(element: HTMLElement): string | undefined {
   // aria-label or title would have been caught by getAccessibleLabel,
   // but check for common class-name hints
-  const className = element.className;
-  if (typeof className === 'string') {
-    const lower = className.toLowerCase();
+  const lower = classString(element).toLowerCase();
+  if (lower) {
     if (lower.includes('close')) return 'close';
     if (lower.includes('delete') || lower.includes('remove')) return 'remove';
     if (lower.includes('expand')) return 'expand';
@@ -423,10 +423,7 @@ function inferIconAction(element: HTMLElement): string | undefined {
   const children = element.children;
   if (children.length === 1 && children[0].tagName.toLowerCase() === 'svg') {
     // Check SVG for class hints
-    const svgClass = children[0].className;
-    const svgClassStr =
-      typeof svgClass === 'string' ? svgClass : ((svgClass as SVGAnimatedString)?.baseVal ?? '');
-    const svgLower = svgClassStr.toLowerCase();
+    const svgLower = classString(children[0]).toLowerCase();
     if (svgLower.includes('close') || svgLower.includes('x-icon')) return 'close';
     if (svgLower.includes('delete') || svgLower.includes('trash')) return 'remove';
     if (svgLower.includes('chevron')) return 'toggle';
