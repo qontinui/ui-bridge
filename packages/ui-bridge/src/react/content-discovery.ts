@@ -9,6 +9,7 @@
  */
 
 import type { ContentType, ContentRole, ContentMetadata } from '../core/types';
+import { classString } from '../core/class-name';
 
 // ============================================================================
 // Configuration
@@ -300,10 +301,10 @@ export function inferContentType(element: HTMLElement): ContentType {
   if (element.hasAttribute('aria-live')) return 'status-message';
 
   // Check for common CSS classes that indicate content type
-  const classList = element.className?.toLowerCase() || '';
-  if (classList.includes('badge')) return 'badge';
-  if (classList.includes('status')) return 'status-message';
-  if (classList.includes('metric') || classList.includes('stat')) return 'metric-value';
+  const classes = classString(element).toLowerCase();
+  if (classes.includes('badge')) return 'badge';
+  if (classes.includes('status')) return 'status-message';
+  if (classes.includes('metric') || classes.includes('stat')) return 'metric-value';
 
   return 'content-generic';
 }
