@@ -16,6 +16,7 @@ import type {
   SignalWaitOptions,
   SignalTransitionCallback,
 } from './types';
+import { classList } from '../core/class-name';
 
 /** Common loading indicator CSS selectors */
 const DEFAULT_LOADING_SELECTORS = [
@@ -316,7 +317,7 @@ export class LoadingIndicatorDetector implements IdleSignal<LoadingIndicatorSign
       el.getAttribute('data-testid') ||
       el.getAttribute('data-ui-bridge-id') ||
       el.id ||
-      `${el.tagName.toLowerCase()}.${el.className.toString().split(' ')[0] || 'unknown'}`
+      `${el.tagName.toLowerCase()}.${classList(el)[0] || 'unknown'}`
     );
   }
 
