@@ -1541,6 +1541,12 @@ export function createRelayHandlers(
       return relayCommand('waitForElementByCondition', request);
     },
 
+    // Testing-friendliness — relay route-change waits to the browser
+    // context, which owns the ChangeTracker state.
+    async waitForRouteChange(request) {
+      return relayCommand('waitForRouteChange', request);
+    },
+
     // Tier 3.2 — relay batch to browser context
     async controlBatch(request) {
       return relayCommand('controlBatch', request);

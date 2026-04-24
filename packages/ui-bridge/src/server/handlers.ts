@@ -12,6 +12,8 @@ import type {
   CapabilitiesResponse,
   WaitForElementByConditionRequest,
   WaitForElementByConditionResponse,
+  WaitForRouteChangeRequest,
+  WaitForRouteChangeResponse,
   ControlBatchRequest,
   ControlBatchResponse,
   ControlBatchStepResult,
@@ -5749,6 +5751,125 @@ export function createHandlers(
         };
 
         poll();
+      });
+    },
+
+    // =========================================================================
+    // Testing-friendliness — wait-for-route-change + wait-for-element
+    // =========================================================================
+
+    waitForRouteChange: async (
+      request?: WaitForRouteChangeRequest
+    ): Promise<
+      APIResponse<
+        | WaitForRouteChangeResponse
+        | { reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }
+      >
+    > => {
+      const req = request ?? {};
+      const matchMode = req.matchMode ?? 'exact';
+
+      // Validate + build the `toRoute` matcher once up front. Invalid regex
+      // surfaces as a 400-equivalent API error — callers shouldn't block on
+      // requests the server can't satisfy.
+      let toMatcher: ((candidate: string) => boolean) | null = null;
+      if (typeof req.toRoute === 'string' && req.toRoute.length > 0) {
+        const needle = req.toRoute;
+        if (matchMode === 'exact') {
+          toMatcher = (c) => c === needle;
+        } else if (matchMode === 'prefix') {
+          toMatcher = (c) => c.startsWith(needle);
+        } else if (matchMode === 'regex') {
+          let re: RegExp;
+          try {
+            re = new RegExp(needle);
+          } catch (err) {
+            return error(`Invalid regex toRoute: ${(err as Error).message}`, 'VALIDATION_ERROR');
+          }
+          toMatcher = (c) => re.test(c);
+        }
+      }
+
+      const fromMatcher =
+        typeof req.fromRoute === 'string' && req.fromRoute.length > 0
+          ? (candidate: string) => candidate === req.fromRoute
+          : null;
+
+      // Clamp timeout to [100, 60000]; default 5000.
+      const timeoutMs = Math.min(
+        Math.max(typeof req.timeoutMs === 'number' ? req.timeoutMs : 5000, 100),
+        60_000
+      );
+
+      const started = Date.now();
+
+      const matchEntry = (entry: { from: string; to: string }): boolean => {
+        if (fromMatcher && !fromMatcher(entry.from)) return false;
+        if (toMatcher && !toMatcher(entry.to)) return false;
+        return true;
+      };
+
+      // Race mitigation: scan the always-on ring buffer for an entry that
+      // landed within the configured lookback window (= timeoutMs). If we
+      // find one, resolve immediately with `elapsedMs: 0` so callers that
+      // ran an action *before* calling this endpoint don't hang.
+      const lookbackFrom = started - timeoutMs;
+      const recent = changeTracker.getRecentRouteChanges(lookbackFrom);
+      for (const entry of recent) {
+        if (matchEntry(entry)) {
+          return success<WaitForRouteChangeResponse>({
+            from: entry.from,
+            to: entry.to,
+            elapsedMs: 0,
+          });
+        }
+      }
+
+      return new Promise<
+        APIResponse<
+          | WaitForRouteChangeResponse
+          | { reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }
+        >
+      >((resolve) => {
+        let settled = false;
+        let unsubscribe: (() => void) | null = null;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+
+        const done = (
+          value: APIResponse<
+            | WaitForRouteChangeResponse
+            | { reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }
+          >
+        ) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          unsubscribe?.();
+          resolve(value);
+        };
+
+        unsubscribe = changeTracker.subscribeRouteChange((evt) => {
+          if (!matchEntry(evt)) return;
+          done(
+            success<WaitForRouteChangeResponse>({
+              from: evt.from,
+              to: evt.to,
+              elapsedMs: Date.now() - started,
+            })
+          );
+        });
+
+        timer = setTimeout(() => {
+          const history = changeTracker.getRecentRouteChanges();
+          const lastKnownRoute = history.length > 0 ? history[history.length - 1].to : undefined;
+          done(
+            success<{ reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }>({
+              reason: 'timeout',
+              lastKnownRoute,
+              elapsedMs: Date.now() - started,
+            })
+          );
+        }, timeoutMs);
       });
     },
 

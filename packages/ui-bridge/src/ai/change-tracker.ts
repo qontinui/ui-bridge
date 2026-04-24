@@ -181,6 +181,19 @@ export class ChangeTracker {
   private tauriEventUnlisteners: Array<() => void> = [];
   private readonly tauriEventBufferCap = 200;
 
+  // Recent route-change ring buffer — always on, independent of `bufferEnabled`.
+  // Used by `/ai/wait-for-route-change` to resolve immediately when a matching
+  // navigation happened between the HTTP request arriving and the subscription
+  // being attached.
+  private recentRouteChanges: Array<{ from: string; to: string; at: number }> = [];
+  private readonly recentRouteChangesCap = 100;
+
+  // Listeners fired synchronously from `pushRouteChange`. Independent of the
+  // buffer-enabled gate so consumers like wait-for-route-change can subscribe
+  // without first having to toggle the change buffer.
+  private routeChangeListeners: Set<(event: { from: string; to: string; at: number }) => void> =
+    new Set();
+
   // Last diff for categorization
   private lastDiff: SemanticDiff | null = null;
 
@@ -1484,12 +1497,35 @@ export class ChangeTracker {
   /**
    * Push a SPA route-change entry into the buffer (P1.3). Called by the
    * runner's `useChangeTrackingEvents` integration when the
-   * NavigationTracker fires a `navigation:change` event. No-op if the
-   * buffer is disabled, matching the behaviour of `appendToBuffer`.
+   * NavigationTracker fires a `navigation:change` event.
+   *
+   * Always feeds the always-on `recentRouteChanges` ring buffer and fires
+   * any `subscribeRouteChange` listeners, regardless of `bufferEnabled`, so
+   * that `/ai/wait-for-route-change` can resolve without the change buffer
+   * being explicitly enabled. The existing `changeBuffer` append remains
+   * gated on `bufferEnabled` for backward compatibility with drain semantics.
    */
   pushRouteChange(from: string, to: string, at?: number): void {
-    if (!this.bufferEnabled) return;
     const recordedAt = at ?? Date.now();
+
+    // Always-on tracking for wait-for-route-change race mitigation.
+    this.recentRouteChanges.push({ from, to, at: recordedAt });
+    if (this.recentRouteChanges.length > this.recentRouteChangesCap) {
+      this.recentRouteChanges.splice(
+        0,
+        this.recentRouteChanges.length - this.recentRouteChangesCap
+      );
+    }
+    // Fire listeners synchronously — subscribers are expected to be cheap.
+    for (const listener of this.routeChangeListeners) {
+      try {
+        listener({ from, to, at: recordedAt });
+      } catch {
+        /* ignore listener errors — one bad subscriber shouldn't block others */
+      }
+    }
+
+    if (!this.bufferEnabled) return;
     const entry: BufferedRouteChange = {
       type: 'route-change',
       from,
@@ -1500,6 +1536,34 @@ export class ChangeTracker {
     };
     this.changeBuffer.push(entry);
     this.evictIfOverLimit();
+  }
+
+  /**
+   * Subscribe to SPA route-change events.
+   *
+   * Fires synchronously from `pushRouteChange`, regardless of whether the
+   * change buffer is enabled. Returns an unsubscribe function.
+   */
+  subscribeRouteChange(
+    listener: (event: { from: string; to: string; at: number }) => void
+  ): () => void {
+    this.routeChangeListeners.add(listener);
+    return () => {
+      this.routeChangeListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Return recent route-change events from the always-on ring buffer,
+   * optionally filtered to entries recorded at or after `sinceMs`.
+   *
+   * Used by `/ai/wait-for-route-change` to resolve immediately when a
+   * matching navigation occurred between the HTTP request arriving and the
+   * listener being attached.
+   */
+  getRecentRouteChanges(sinceMs?: number): Array<{ from: string; to: string; at: number }> {
+    if (sinceMs === undefined) return [...this.recentRouteChanges];
+    return this.recentRouteChanges.filter((entry) => entry.at >= sinceMs);
   }
 
   /** Append a diff to the buffer */

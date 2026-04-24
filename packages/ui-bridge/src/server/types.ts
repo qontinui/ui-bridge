@@ -673,6 +673,19 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<WaitForElementByConditionResponse>>;
 
   /**
+   * Testing-friendliness — Wait for an SPA route change with optional
+   * from/to matching. Returns a timeout shape (reason: 'timeout') when no
+   * matching navigation occurs before `timeoutMs`.
+   */
+  waitForRouteChange: (
+    request?: WaitForRouteChangeRequest
+  ) => Promise<
+    APIResponse<
+      WaitForRouteChangeResponse | { reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }
+    >
+  >;
+
+  /**
    * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
    * snapshots in one round-trip.
    */
@@ -821,6 +834,35 @@ export interface WaitForElementByConditionResponse {
   element?: unknown;
   /** How long we actually waited in ms */
   waited_ms: number;
+}
+
+/**
+ * Request body for POST /ai/wait-for-route-change.
+ *
+ * Blocks until the SPA route changes. Optionally filters by the prior
+ * route (`fromRoute`) and/or the new route (`toRoute` with `matchMode`).
+ * When a matching route change happened between the request arriving and
+ * the subscription being set, the handler resolves immediately with
+ * `elapsedMs: 0` by scanning the always-on recent-route-change buffer.
+ */
+export interface WaitForRouteChangeRequest {
+  /** Only fire when the prior route equals this exact string. */
+  fromRoute?: string;
+  /** Only fire when the new route matches this (per `matchMode`). */
+  toRoute?: string;
+  /** How to compare `toRoute` against the new route. Default: `"exact"`. */
+  matchMode?: 'exact' | 'prefix' | 'regex';
+  /** Max wait in ms. Default 5000, clamped to [100, 60000]. */
+  timeoutMs?: number;
+}
+
+/**
+ * Response body for POST /ai/wait-for-route-change (success case).
+ */
+export interface WaitForRouteChangeResponse {
+  from: string;
+  to: string;
+  elapsedMs: number;
 }
 
 /**
@@ -1416,6 +1458,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/ai/wait-for-element-condition',
     handler: 'waitForElementByCondition',
     bodyRequired: true,
+  },
+
+  // Testing-friendliness — route-change wait
+  {
+    method: 'POST',
+    path: '/ai/wait-for-route-change',
+    handler: 'waitForRouteChange',
   },
 
   // Tier 3.2 — mixed action/wait/snapshot batch
