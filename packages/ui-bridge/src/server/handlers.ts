@@ -1075,6 +1075,10 @@ export function createHandlers(
     return elements.filter((el: any) => {
       // Filter by interactiveOnly (support both camelCase and snake_case)
       if (request.interactiveOnly || (request as any).interactive_only) {
+        // Item 1: drop `kind: "content"` entries up front — they're the
+        // semantic card/badge/pill elements authors opt into via
+        // `data-ui-bridge-content`, not interactive elements.
+        if ((el as { kind?: string }).kind === 'content') return false;
         const interactiveTypes = new Set([
           'button',
           'input',
@@ -1734,6 +1738,16 @@ export function createHandlers(
       url?: string;
       skipSettle?: boolean | string;
       settleTimeout?: number | string;
+      /**
+       * Item 1: when true, filter `kind: "content"` entries out of the
+       * snapshot's `elements` array. Default false — new semantic content
+       * entries are returned by default so authors get richer snapshots
+       * without changing any caller code. GET query params arrive as
+       * strings, so accept `'true'` alongside a real boolean.
+       */
+      interactiveOnly?: boolean | string;
+      /** snake_case alias for interactiveOnly (match find/discover). */
+      interactive_only?: boolean | string;
     }): Promise<APIResponse<ControlSnapshot>> => {
       try {
         // GET query params arrive as strings from standalone server
@@ -1746,6 +1760,21 @@ export function createHandlers(
           await awaitDOMSettled(timeout);
         }
         const snapshot = registry.createSnapshot();
+        // Item 1: `?interactiveOnly=true` is an opt-in filter that drops
+        // every `kind: "content"` entry — useful for legacy callers that
+        // walk `elements` expecting actionable items. Default (absent or
+        // `false`) keeps content entries in so new tests can assert on
+        // card/badge text alongside interactive elements.
+        const wantInteractiveOnly =
+          request?.interactiveOnly === true ||
+          request?.interactiveOnly === 'true' ||
+          request?.interactive_only === true ||
+          request?.interactive_only === 'true';
+        if (wantInteractiveOnly) {
+          snapshot.elements = snapshot.elements.filter(
+            (e: unknown) => (e as { kind?: string }).kind !== 'content'
+          );
+        }
 
         // Fix snapshot/discover discrepancy: createSnapshot() sometimes returns
         // an empty elements[] field even when registry.getAllElements() has
@@ -3010,6 +3039,13 @@ export function createHandlers(
         if (!request.url) {
           return error('URL is required', 'INVALID_REQUEST');
         }
+        // F1: optional `mode` ("hard" | "soft"). Default: "hard" for back-compat.
+        const rawMode = request.mode;
+        if (rawMode !== undefined && rawMode !== 'hard' && rawMode !== 'soft') {
+          return error(`invalid mode: "${rawMode}" (expected "hard" or "soft")`, 'INVALID_REQUEST');
+        }
+        const mode: 'hard' | 'soft' = rawMode ?? 'hard';
+
         // Validate URL scheme to prevent javascript:/data: injection
         try {
           const parsed = new URL(request.url, window.location.origin);
@@ -3025,6 +3061,39 @@ export function createHandlers(
             return error('Invalid URL format', 'INVALID_REQUEST');
           }
         }
+
+        if (mode === 'soft') {
+          // SPA-friendly navigation: pushState + synthetic popstate event so
+          // React Router v6 picks up the change without a full reload. This
+          // preserves injected test state (fetch patches, `window.__*` globals).
+          let pathname = request.url;
+          try {
+            const target = new URL(request.url, window.location.origin);
+            if (target.origin === window.location.origin) {
+              pathname = target.pathname + target.search + target.hash;
+            }
+          } catch {
+            // Relative URL — use as-is.
+          }
+          window.history.pushState(null, '', pathname);
+          try {
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch {
+            window.dispatchEvent(new Event('popstate'));
+          }
+          window.dispatchEvent(
+            new CustomEvent('ui-bridge:navigate', { detail: { url: pathname, mode: 'soft' } })
+          );
+          return success({
+            success: true,
+            url: pathname,
+            hard: false,
+            mode: 'soft',
+            timestamp: Date.now(),
+          });
+        }
+
+        // Hard mode: legacy path.
         // Dispatch ui-bridge-navigate event for apps with tab-based navigation (e.g., runner)
         // This allows navigating by tab ID (e.g., "activity-timeline") in addition to URLs
         window.dispatchEvent(
@@ -3037,7 +3106,13 @@ export function createHandlers(
         if (request.url.startsWith('/') || request.url.startsWith('http')) {
           window.location.href = request.url;
         }
-        return success({ success: true, url: request.url, timestamp: Date.now() });
+        return success({
+          success: true,
+          url: request.url,
+          hard: true,
+          mode: 'hard',
+          timestamp: Date.now(),
+        });
       } catch (err) {
         return error((err as Error).message, 'PAGE_NAVIGATE_ERROR');
       }

@@ -118,6 +118,14 @@ export interface NativeActionExecutor {
 export interface PageNavigateRequest {
   /** URL to navigate to */
   url: string;
+  /**
+   * Optional navigation mode (F1). `"hard"` (default) does a full reload;
+   * `"soft"` uses `history.pushState` + synthetic events. Native platforms
+   * return `NOT_SUPPORTED` regardless of mode.
+   */
+  mode?: 'hard' | 'soft';
+  /** Legacy pre-F1 flag (see `mode`). */
+  hard?: boolean;
 }
 
 /**
@@ -128,6 +136,10 @@ export interface PageNavigationResponse {
   success: boolean;
   /** Current URL after navigation */
   url?: string;
+  /** Whether a full reload was used (F1). */
+  hard?: boolean;
+  /** Mode actually executed, `"hard"` or `"soft"` (F1). */
+  mode?: 'hard' | 'soft';
   /** Timestamp */
   timestamp: number;
 }

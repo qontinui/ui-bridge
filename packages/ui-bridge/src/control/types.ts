@@ -195,6 +195,14 @@ export interface DiscoveredElement {
   registered: boolean;
   /** Whether this is an interactive element, static content, or media */
   category?: 'interactive' | 'content' | 'media';
+  /**
+   * High-level element kind. `"content"` for plain semantic content
+   * (cards/badges/pills) tagged with `data-ui-bridge-content`;
+   * `"interactive"` otherwise. Mirrors `category`.
+   */
+  kind?: 'interactive' | 'content';
+  /** Normalized text content for data-ui-bridge-content elements */
+  content?: string;
   /** CSS className attribute */
   className?: string;
   /** CSS class list as array */
@@ -361,6 +369,25 @@ export interface ControlSnapshot {
     actions: string[];
     state: ElementState;
     category?: 'interactive' | 'content' | 'media';
+    /**
+     * High-level element kind — `"interactive"` for clickable/typeable/etc.
+     * elements, `"content"` for semantic plain-content elements (cards,
+     * badges, pills) tagged with `data-ui-bridge-content`. Mirrors
+     * `category`. Callers can pass `?interactiveOnly=true` on the snapshot
+     * endpoint to filter `kind: "content"` entries out.
+     */
+    kind?: 'interactive' | 'content';
+    /**
+     * Normalized text content for semantic content elements tagged with
+     * `data-ui-bridge-content` (whitespace-collapsed, trimmed). Lets tests
+     * assert on card/badge/pill text without `/control/page/evaluate`.
+     */
+    content?: string;
+    /**
+     * ARIA role / semantic role hint for content elements, sourced from
+     * `data-ui-bridge-role` (falls back to the element's `role` attribute).
+     */
+    role?: string;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /**
@@ -668,6 +695,25 @@ export interface WaitResult {
 export interface PageNavigateRequest {
   /** URL to navigate to */
   url: string;
+  /**
+   * Optional navigation mode (F1).
+   *
+   * - `"hard"` (default, back-compat): full webview reload via
+   *   `window.location.href = url`. Resets all injected state.
+   * - `"soft"`: SPA-friendly client-side navigation using
+   *   `history.pushState` + synthetic `popstate` / `ui-bridge:navigate`
+   *   events. Preserves `window.<custom-globals>` (fetch patches, spies,
+   *   test tokens).
+   *
+   * Any other value is rejected with a 400.
+   */
+  mode?: 'hard' | 'soft';
+  /**
+   * Legacy boolean flag (pre-F1). `true` bypasses the registered navigation
+   * handler and forces a full reload even when a React Router / Next.js
+   * adapter is available. Kept for back-compat; prefer `mode` for new code.
+   */
+  hard?: boolean;
 }
 
 /**
@@ -678,6 +724,20 @@ export interface PageNavigationResponse {
   success: boolean;
   /** Current URL after navigation */
   url?: string;
+  /**
+   * Whether a full reload was used (`true` for `mode: "hard"`, `false` for
+   * `"soft"`). Populated on every F1+ response so callers can audit which
+   * path the SDK took. Legacy callers that only read this flag continue to
+   * work.
+   */
+  hard?: boolean;
+  /**
+   * Echoes the mode actually executed: `"hard"` or `"soft"`. Populated on
+   * every F1+ response.
+   */
+  mode?: 'hard' | 'soft';
+  /** When true, the SDK used a registered navigate-handler (client-side). */
+  clientSideNavigation?: boolean;
   /** Timestamp */
   timestamp: number;
 }
