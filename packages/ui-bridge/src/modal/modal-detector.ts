@@ -11,6 +11,7 @@
  */
 
 import type { ModalInfo, ModalStack, SnapshotModalContext, ModalDetectorConfig } from './types';
+import { classString } from '../core/class-name';
 
 // ---------------------------------------------------------------------------
 // Default selectors for common modal patterns
@@ -155,9 +156,8 @@ function resolveType(el: Element): ModalInfo['type'] {
 
   if (role === 'alertdialog') return 'alertdialog';
 
-  const classes = el.className;
-  if (typeof classes === 'string') {
-    const lower = classes.toLowerCase();
+  const lower = classString(el).toLowerCase();
+  if (lower) {
     if (lower.includes('drawer')) return 'drawer';
     if (lower.includes('sheet')) return 'sheet';
     if (lower.includes('popover')) return 'popover';
@@ -181,12 +181,9 @@ function detectBackdrop(el: Element): boolean {
   // Check previous sibling (common pattern: overlay sibling before modal content)
   const prevSibling = el.previousElementSibling;
   if (prevSibling) {
-    const classes = prevSibling.className;
-    if (typeof classes === 'string') {
-      const lower = classes.toLowerCase();
-      if (lower.includes('backdrop') || lower.includes('overlay') || lower.includes('mask')) {
-        return true;
-      }
+    const lower = classString(prevSibling).toLowerCase();
+    if (lower.includes('backdrop') || lower.includes('overlay') || lower.includes('mask')) {
+      return true;
     }
     // Radix overlay attribute
     if (prevSibling.hasAttribute('data-radix-dialog-overlay')) {
@@ -197,12 +194,9 @@ function detectBackdrop(el: Element): boolean {
   // Check parent for backdrop/overlay class
   const parent = el.parentElement;
   if (parent) {
-    const parentClasses = parent.className;
-    if (typeof parentClasses === 'string') {
-      const lower = parentClasses.toLowerCase();
-      if (lower.includes('backdrop') || lower.includes('overlay') || lower.includes('mask')) {
-        return true;
-      }
+    const lower = classString(parent).toLowerCase();
+    if (lower.includes('backdrop') || lower.includes('overlay') || lower.includes('mask')) {
+      return true;
     }
   }
 
