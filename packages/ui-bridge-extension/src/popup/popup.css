@@ -113,3 +113,38 @@ body {
 .btn:hover {
   opacity: 0.9;
 }
+
+.section-divider {
+  height: 1px;
+  background: #374151;
+  margin: 14px 0 10px;
+}
+
+.section-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: #60a5fa;
+  margin-bottom: 8px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #f3f4f6;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.toggle-row input[type='checkbox'] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.help-text {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.4;
+  margin-top: 4px;
+}

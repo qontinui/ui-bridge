@@ -45,7 +45,17 @@ function copyStatic() {
 
 copyStatic();
 
-// Build configuration for each entry point
+// Build configuration for each entry point.
+//
+// `externals` lets us exclude Node-only / browser-incompatible modules
+// from a given bundle. The wrapper package's barrel statically references
+// HeadlessTransport / HeadedTransport, which dynamic-import
+// `@qontinui/ui-bridge-headless` (which depends on `playwright-core`).
+// Those paths are unreachable from the live-relay content script, but
+// esbuild still tries to resolve dynamic imports with literal paths.
+// Marking them external sidesteps the resolver — if any of those code
+// paths are ever hit at runtime in a browser, they'll fail loudly,
+// which is the correct behavior for a content script.
 const builds = [
   {
     entryPoints: ['src/background/service-worker.ts'],
@@ -56,6 +66,12 @@ const builds = [
     entryPoints: ['src/content/index.ts'],
     outfile: `${outdir}/content/index.js`,
     format: 'iife',
+  },
+  {
+    entryPoints: ['src/content/live-relay.ts'],
+    outfile: `${outdir}/content/live-relay.js`,
+    format: 'iife',
+    external: ['@qontinui/ui-bridge-headless', 'playwright', 'playwright-core', 'ws'],
   },
   {
     entryPoints: ['src/popup/popup.ts'],
@@ -71,11 +87,13 @@ const builds = [
 
 async function build() {
   for (const config of builds) {
+    const { external, ...rest } = config;
     const ctx = await esbuild.context({
-      ...config,
+      ...rest,
       bundle: true,
       sourcemap: true,
       target: 'es2020',
+      external: external ?? [],
       define: {
         'process.env.NODE_ENV': '"production"',
       },

@@ -66,8 +66,18 @@ interface RegisterFrame {
 }
 
 interface AckFrame {
-  type: 'ack';
+  /**
+   * Two equivalent post-register acknowledgement shapes are accepted from
+   * the runner: the original `{type: "ack", ok}` and the more descriptive
+   * `{type: "registered", appId, connId, acceptedAt}` it actually emits
+   * today. Both are treated as a successful handshake; failure is signalled
+   * by either `ok: false` or a `type: "ack"` with an `error` payload.
+   */
+  type: 'ack' | 'registered';
   ok?: boolean;
+  appId?: string;
+  connId?: number;
+  acceptedAt?: number;
   error?: { code?: string; message?: string };
 }
 
@@ -206,7 +216,8 @@ export class LiveSessionTransport extends BaseTransport {
     }
 
     switch (frame.type) {
-      case 'ack': {
+      case 'ack':
+      case 'registered': {
         const f = frame as AckFrame;
         if (!this.ackResolvers) return;
         clearTimeout(this.ackResolvers.timer);

@@ -35,4 +35,11 @@ export const STORAGE_KEYS = {
   serverUrl: 'uib-server-url',
   localAnnotations: 'uib-local-annotations',
   inspectorEnabled: 'uib-inspector-enabled',
+  /** Live wrapper relay toggle (default: false) */
+  liveRelayEnabled: 'qontinui_live_relay_enabled',
+  /** Runner WebSocket URL used by the live wrapper relay. */
+  liveRelayRunnerUrl: 'qontinui_live_relay_runner_url',
 } as const;
+
+/** Default runner WebSocket URL for the live wrapper relay. */
+export const DEFAULT_LIVE_RELAY_RUNNER_URL = 'ws://127.0.0.1:9876/ui-bridge/ws';

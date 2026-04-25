@@ -23,6 +23,27 @@
           <button id="btn-inspector" class="btn btn-primary">Toggle Inspector</button>
           <button id="btn-sidepanel" class="btn btn-secondary">Open Side Panel</button>
         </div>
+
+        <div class="section-divider"></div>
+
+        <div class="section-header">Live wrapper relay</div>
+        <label class="toggle-row">
+          <input id="live-relay-enabled" type="checkbox" />
+          <span>Enable live wrapper relay</span>
+        </label>
+        <div class="field">
+          <label>Runner WebSocket URL</label>
+          <input
+            id="live-relay-runner-url"
+            type="text"
+            placeholder="ws://127.0.0.1:9876/ui-bridge/ws"
+          />
+        </div>
+        <div class="help-text">
+          Off by default. When enabled, allowlisted tabs register with the runner and respond to
+          remote commands. If the WebSocket fails to connect, the page's CSP may be blocking
+          ws://127.0.0.1 — try a different page.
+        </div>
       </div>
     </div>
     <script src="popup.js"></script>
