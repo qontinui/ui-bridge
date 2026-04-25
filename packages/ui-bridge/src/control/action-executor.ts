@@ -334,6 +334,69 @@ function createMouseEventAt(type: string, clientX: number, clientY: number): Mou
 }
 
 /**
+ * Actions that mutate the element's user-visible state (input value, checked,
+ * selected option, etc.). After one of these runs we push every state field
+ * that could plausibly have changed into the registry overlay so reads after
+ * the action match what the user would see.
+ */
+const MUTATION_ACTIONS = new Set<string>([
+  'type',
+  'sendKeys',
+  'clear',
+  'setValue',
+  'select',
+  'check',
+  'uncheck',
+  'toggle',
+  'submit',
+  'reset',
+  'autocomplete',
+]);
+
+/**
+ * Actions that only change focus/hover state without mutating values. After
+ * these we refresh the focus-related fields but explicitly NOT `value` or
+ * `checked`, so a prior `type` overlay isn't clobbered by a subsequent
+ * `focus`.
+ */
+const STATE_ACTIONS = new Set<string>(['focus', 'blur']);
+
+/**
+ * Decide which subset of the freshly-computed post-action `ElementState`
+ * should be pushed into the registry overlay for an action. Returns
+ * `undefined` for actions that should not refresh anything (click, hover,
+ * scroll, drag — these don't have a deterministic post-action state slot
+ * the registry needs to cache; live DOM reads stay authoritative).
+ */
+function pickRefreshFields(action: string, state: ElementState): Partial<ElementState> | undefined {
+  if (MUTATION_ACTIONS.has(action)) {
+    // Full overlay — every field the action could have written.
+    const updates: Partial<ElementState> = {
+      visible: state.visible,
+      enabled: state.enabled,
+      focused: state.focused,
+    };
+    if (state.value !== undefined) updates.value = state.value;
+    if (state.checked !== undefined) updates.checked = state.checked;
+    if (state.selectedOptions !== undefined) updates.selectedOptions = state.selectedOptions;
+    if (state.availableOptions !== undefined) updates.availableOptions = state.availableOptions;
+    if (state.textContent !== undefined) updates.textContent = state.textContent;
+    if (state.ariaChecked !== undefined) updates.ariaChecked = state.ariaChecked;
+    if (state.ariaPressed !== undefined) updates.ariaPressed = state.ariaPressed;
+    if (state.ariaExpanded !== undefined) updates.ariaExpanded = state.ariaExpanded;
+    if (state.ariaSelected !== undefined) updates.ariaSelected = state.ariaSelected;
+    if (state.validationState !== undefined) updates.validationState = state.validationState;
+    return updates;
+  }
+  if (STATE_ACTIONS.has(action)) {
+    // Focus-only refresh — explicitly skip value/checked so we don't blow
+    // away a prior mutation overlay.
+    return { focused: state.focused };
+  }
+  return undefined;
+}
+
+/**
  * Default action executor implementation
  */
 export class DefaultActionExecutor implements ActionExecutor {
@@ -632,9 +695,27 @@ export class DefaultActionExecutor implements ActionExecutor {
         idleWaitMs = performance.now() - idleWaitStart;
       }
 
+      const elementState = getElementState(element);
+
+      // B1+M2: Push the freshly-computed post-action state into the registry
+      // so subsequent `/control/element/:id` and `/control/snapshot` reads
+      // reflect the mutation (input value, checked, focus, ...) even when
+      // React detaches/re-creates the DOM node between the action and the
+      // next read. Only refreshes if `elementId` resolves to a registered
+      // entry — find()/discover()-cached IDs won't have one and that's fine.
+      try {
+        const refreshUpdates = pickRefreshFields(request.action, elementState);
+        if (refreshUpdates && this.registry.refreshElement) {
+          this.registry.refreshElement(elementId, refreshUpdates);
+        }
+      } catch {
+        // Refresh is best-effort observability — never let it sink an
+        // otherwise-successful action.
+      }
+
       return {
         success: true,
-        elementState: getElementState(element),
+        elementState,
         result,
         consoleErrors,
         browserEvents,

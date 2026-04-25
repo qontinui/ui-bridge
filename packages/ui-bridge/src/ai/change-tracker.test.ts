@@ -7,6 +7,7 @@ import { ChangeTracker, analyzeStructuredChanges } from './change-tracker';
 import type { ChangeTrackerDeps } from './change-tracker';
 import type { SemanticSnapshot, SemanticDiff } from './types';
 import type { ControlSnapshot } from '../control/types';
+import { __resetGlobalBookmarkStoreForTest } from './bookmarks';
 
 // ============================================================================
 // Tauri event mock (Phase 2a) — shared state captured across hoisted vi.mock
@@ -106,6 +107,11 @@ describe('ChangeTracker', () => {
 
   beforeEach(() => {
     snapshotCounter = 0;
+    // Reset the process-wide bookmark store so each test starts clean.
+    // ChangeTracker now delegates bookmark storage to the singleton in
+    // `ai/bookmarks.ts`; without this reset, bookmarks from earlier tests
+    // would leak into the next test's `listBookmarks()` assertions.
+    __resetGlobalBookmarkStoreForTest();
     deps = createMockDeps();
     tracker = new ChangeTracker(deps);
   });

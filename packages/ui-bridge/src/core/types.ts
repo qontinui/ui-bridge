@@ -536,6 +536,22 @@ export interface RegisteredElement {
    * environments (SSR, tests without jsdom).
    */
   route?: string;
+
+  /**
+   * Action-driven cached state overlays.
+   *
+   * After a mutation action (`type`, `clear`, `setValue`, `check`, `uncheck`,
+   * `toggle`, `select`, `sendKeys`, `focus`, `blur`) executes, the action
+   * executor pushes the freshly-computed `ElementState` here via
+   * `registry.refreshElement(id, state)`. The element's `getState()` overlays
+   * these fields on top of the live DOM read so subsequent
+   * `/control/element/:id` and `/control/snapshot` calls reflect the action
+   * outcome even when the registered DOM node has been detached/re-rendered
+   * by React between the action and the read.
+   *
+   * Cleared on re-registration (the new entry starts with no overrides).
+   */
+  cachedStateOverrides?: Partial<ElementState>;
 }
 
 // ============================================================================
@@ -1113,6 +1129,17 @@ export interface BridgeSnapshot {
    * environments. Matches the `route` keys used in `registration.byRoute`.
    */
   route?: string;
+  /**
+   * Currently-active tab id for tab-based apps that decouple their visible
+   * pane from `route`. The SDK does not own a tab system itself; this field
+   * is populated only when the snapshot caller supplies a `getActiveTab`
+   * provider on `createSnapshot` / `createSnapshotAsync`. The runner wires
+   * this to its `qontinui-main-active-tab` instance-storage key (the same
+   * value the `tabs_list` IPC handler returns), so cross-tab automation can
+   * read `route` + `activeTab` from a single snapshot rather than calling
+   * `/control/tabs` separately. Absent for non-runner consumers.
+   */
+  activeTab?: string;
   /**
    * Registration-diagnostics metadata — lets callers tell "no coverage"
    * from "coverage but all unmounted" without an extra probe round-trip.

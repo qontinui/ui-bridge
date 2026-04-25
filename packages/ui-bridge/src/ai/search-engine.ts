@@ -80,6 +80,8 @@ interface SearchableElement {
   rect: ElementState['rect'];
   labelText?: string;
   value?: string;
+  /** `name` attribute (form fields) */
+  name?: string;
   /** Nearest semantic container (e.g., "form[login-form]", "dialog", "nav") */
   parentContext?: string;
 }
@@ -125,6 +127,7 @@ export class SearchEngine {
     let title: string | undefined;
     let labelText: string | undefined;
     let value: string | undefined;
+    let name: string | undefined;
 
     if ('getState' in element && typeof element.getState === 'function') {
       // RegisteredElement — prefer getState() data over direct DOM queries
@@ -144,6 +147,7 @@ export class SearchEngine {
         ariaLabel = element.element.getAttribute('aria-label') || undefined;
         placeholder = element.element.getAttribute('placeholder') || undefined;
         title = element.element.getAttribute('title') || undefined;
+        name = element.element.getAttribute('name') || undefined;
       } catch {
         // DOM access failed — use fallbacks from RegisteredElement metadata
       }
@@ -157,6 +161,17 @@ export class SearchEngine {
         if (element.element.id) {
           const labelEl = document.querySelector(`label[for="${element.element.id}"]`);
           labelText = labelEl?.textContent?.trim() || undefined;
+        }
+        // Fall back to a wrapping <label> ancestor if no explicit `for=` match
+        if (!labelText) {
+          let ancestor: HTMLElement | null = element.element.parentElement;
+          while (ancestor) {
+            if (ancestor.tagName.toLowerCase() === 'label') {
+              labelText = ancestor.textContent?.trim() || undefined;
+              break;
+            }
+            ancestor = ancestor.parentElement;
+          }
         }
       } catch {
         // label query failed
@@ -281,6 +296,7 @@ export class SearchEngine {
       rect: state.rect,
       labelText,
       value,
+      name,
       parentContext,
     };
   }
@@ -605,7 +621,15 @@ export class SearchEngine {
   }
 
   /**
-   * Score text match
+   * Score text match.
+   *
+   * Probes multiple element-side signals so that form inputs with no visible
+   * text content can still be located by their identifying attributes.
+   * Each source has a weight that establishes precedence:
+   *   label (1.00) > aria-label (0.95) > placeholder (0.90) > text (1.00) > name (0.80)
+   * The final per-element score is `bestSimilarity * sourceWeight` taken across
+   * all sources — i.e., best-matching signal wins, with weaker sources slightly
+   * down-ranked so a weak `name` match cannot beat a strong placeholder match.
    */
   private scoreTextMatch(
     searchable: SearchableElement,
@@ -616,31 +640,65 @@ export class SearchEngine {
     const reasons: string[] = [];
     let maxScore = 0;
 
-    const textsToMatch = [searchable.textContent, searchable.labelText, searchable.value].filter(
-      Boolean
-    ) as string[];
+    // Source weight establishes precedence when multiple signals match.
+    // textContent stays at 1.00 to preserve the original behaviour where
+    // visible text is treated as the primary signal.
+    const sources: Array<{ value: string | undefined; label: string; weight: number }> = [
+      { value: searchable.labelText, label: 'label', weight: 1.0 },
+      { value: searchable.ariaLabel, label: 'aria-label', weight: 0.95 },
+      { value: searchable.placeholder, label: 'placeholder', weight: 0.9 },
+      { value: searchable.textContent, label: 'text', weight: 1.0 },
+      { value: searchable.value, label: 'value', weight: 1.0 },
+      { value: searchable.name, label: 'name', weight: 0.8 },
+    ];
 
-    for (const targetText of textsToMatch) {
+    for (const { value: targetText, label: sourceLabel, weight } of sources) {
+      if (!targetText) continue;
+
       // Exact match
       if (targetText.toLowerCase() === text.toLowerCase()) {
-        maxScore = Math.max(maxScore, 1.0);
-        reasons.push('exact text match');
+        const score = 1.0 * weight;
+        if (score > maxScore) {
+          maxScore = score;
+          reasons.push(`exact ${sourceLabel} match`);
+        }
         continue;
       }
 
       // Fuzzy match
       if (fuzzy) {
         const result = fuzzyMatch(targetText, text, { threshold });
-        if (result.isMatch && result.similarity > maxScore) {
-          maxScore = result.similarity;
-          reasons.push(`text similarity: ${(result.similarity * 100).toFixed(0)}%`);
+        if (result.isMatch) {
+          const score = result.similarity * weight;
+          if (score > maxScore) {
+            maxScore = score;
+            reasons.push(`${sourceLabel} similarity: ${(result.similarity * 100).toFixed(0)}%`);
+          }
         }
 
-        // Word-level match
+        // Word-level match — useful when the query is a single token like
+        // "prompt" and the target is a longer phrase like "Prompt input".
         const wordSim = wordSimilarity(targetText, text, { threshold });
-        if (wordSim > maxScore && wordSim >= threshold) {
-          maxScore = wordSim;
-          reasons.push(`word match: ${(wordSim * 100).toFixed(0)}%`);
+        if (wordSim >= threshold) {
+          const score = wordSim * weight;
+          if (score > maxScore) {
+            maxScore = score;
+            reasons.push(`${sourceLabel} word match: ${(wordSim * 100).toFixed(0)}%`);
+          }
+        }
+
+        // Substring/contains check — placeholders and labels are often
+        // sentence-shaped ("What would you like to do?") while queries are
+        // a single keyword. `wordSimilarity` requires reasonable token overlap;
+        // a literal substring is a strong signal even when overlap is low.
+        if (targetText.toLowerCase().includes(text.toLowerCase())) {
+          // Slightly under-weight contains vs. exact/fuzzy to avoid false
+          // positives where the query is one common word.
+          const score = 0.85 * weight;
+          if (score > maxScore) {
+            maxScore = score;
+            reasons.push(`${sourceLabel} contains "${text}"`);
+          }
         }
       }
     }

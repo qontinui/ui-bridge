@@ -249,6 +249,15 @@ export type { SemanticDiffConfig } from './semantic-diff';
 export { ChangeTracker, createChangeTracker, analyzeStructuredChanges } from './change-tracker';
 export type { ChangeTrackerDeps, ChangeTrackerConfig } from './change-tracker';
 
+// Bookmark Store (B2) — process-wide singleton shared by ChangeTracker
+// and the browser-SDK command dispatcher.
+export {
+  BookmarkStore,
+  getGlobalBookmarkStore,
+  __resetGlobalBookmarkStoreForTest,
+} from './bookmarks';
+export type { SnapshotBookmarkEntry } from './bookmarks';
+
 // Error Context
 export {
   ErrorCodes,
@@ -416,6 +425,29 @@ export type {
 // Wait-for — declarative state polling (POST /ui-bridge/ai/wait-for)
 export { waitFor } from './wait-for';
 export type { WaitForPredicate, WaitForResult, WaitForOptions } from './wait-for';
+
+// Wait-for-element — element-level state polling (POST /ui-bridge/ai/wait-for-element)
+export {
+  waitForElement,
+  evaluateElementPredicate,
+  validateWaitForElementRequest,
+  pollWaitForElement,
+  snapshotFromRegisteredElement,
+  serializeSnapshot,
+  WAIT_FOR_ELEMENT_STATES,
+} from './wait-for-element';
+export type {
+  WaitForElementState,
+  WaitForElementRequest,
+  WaitForElementResult,
+  WaitForElementFoundResult,
+  WaitForElementTimeoutResult,
+  WaitForElementOptions,
+  SerializedElementState,
+  ElementSnapshot,
+  PollWaitForElementOptions,
+  PollWaitForElementOutcome,
+} from './wait-for-element';
 
 // Network probe — server-side loopback HTTP probe (POST /ui-bridge/ai/network-probe)
 export { networkProbe } from './network-probe';

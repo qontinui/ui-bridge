@@ -48,6 +48,25 @@ export interface DecomposedTarget {
     | 'focused'
     | 'hidden'
     | 'visible';
+  // ---------------------------------------------------------------------------
+  // Source-signal mirrors (B3)
+  //
+  // These optional fields document which element-side attributes the matcher
+  // probes for the query. They are populated for free-form natural-language
+  // queries (mirroring `elementText`) so callers can see at a glance that
+  // `ai/find` now considers placeholder/aria-label/<label>/name in addition
+  // to visible text content.
+  //
+  // Existing consumers ignore unknown fields, so this is backward compatible.
+  // ---------------------------------------------------------------------------
+  /** Query value also probed against `<label>` text (for/wrapping). */
+  label?: string;
+  /** Query value also probed against `aria-label`. */
+  ariaLabel?: string;
+  /** Query value also probed against `placeholder` (input/textarea). */
+  placeholder?: string;
+  /** Query value also probed against the `name` attribute. */
+  name?: string;
 }
 
 // Noise words to strip from descriptions
@@ -164,6 +183,16 @@ export function decomposeTarget(description: string): DecomposedTarget {
 
   // 6. Clean up remaining text as the element text
   result.elementText = cleanElementText(remaining);
+
+  // 7. Mirror the element text into source-signal fields (B3) so callers can
+  //    see that placeholder/aria-label/<label>/name are probed in addition
+  //    to the visible text content. Skipped for empty queries.
+  if (result.elementText) {
+    result.label = result.elementText;
+    result.ariaLabel = result.elementText;
+    result.placeholder = result.elementText;
+    result.name = result.elementText;
+  }
 
   return result;
 }

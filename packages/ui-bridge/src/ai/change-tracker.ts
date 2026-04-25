@@ -43,6 +43,7 @@ import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { CompositeIdleDetector } from '../idle';
 import { detectTable, detectList } from './table-extraction';
 import { classList } from '../core/class-name';
+import { getGlobalBookmarkStore } from './bookmarks';
 
 // ============================================================================
 // Configuration
@@ -151,8 +152,13 @@ export class ChangeTracker {
   private deps: ChangeTrackerDeps;
   private config: ChangeTrackerConfig;
 
-  // Bookmarks
-  private bookmarks = new Map<string, SnapshotBookmark>();
+  // Bookmarks — backed by the process-wide singleton store
+  // (`getGlobalBookmarkStore()`). Previously this was a per-instance Map,
+  // but parallel code paths (the SDK browser dispatcher and the runner-side
+  // ChangeTracker) each owned their own map, so a `POST /ai/bookmarks` save
+  // wasn't visible to a follow-up `GET /ai/bookmarks` list resolved through
+  // the other path. The singleton ensures every reader/writer hits the
+  // same backing storage. See B2 / `ai/bookmarks.ts`.
 
   // Change buffer — DOM mutations and SPA route changes share the same
   // buffer so a drain returns them interleaved by `recordedAt`. The DOM
@@ -200,6 +206,10 @@ export class ChangeTracker {
   constructor(deps: ChangeTrackerDeps, config?: Partial<ChangeTrackerConfig>) {
     this.deps = deps;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    // Propagate the configured cap to the shared bookmark store. Last
+    // constructor wins, but every host today initialises with the same cap
+    // (50) so this is fine in practice.
+    getGlobalBookmarkStore().setMaxBookmarks(this.config.maxBookmarks);
   }
 
   // ==========================================================================
@@ -1130,7 +1140,7 @@ export class ChangeTracker {
    * Get a scoped diff from the current state vs. a named bookmark.
    */
   scopedDiffFromBookmark(bookmarkName: string, scope: string): SemanticDiff | null {
-    const bookmark = this.bookmarks.get(bookmarkName);
+    const bookmark = getGlobalBookmarkStore().get(bookmarkName);
     if (!bookmark) return null;
 
     this.deps.refreshElements?.();
@@ -1607,15 +1617,9 @@ export class ChangeTracker {
       savedAt: Date.now(),
     };
 
-    // Evict oldest if at limit
-    if (this.bookmarks.size >= this.config.maxBookmarks && !this.bookmarks.has(name)) {
-      const oldest = [...this.bookmarks.entries()].sort(([, a], [, b]) => a.savedAt - b.savedAt)[0];
-      if (oldest) {
-        this.bookmarks.delete(oldest[0]);
-      }
-    }
-
-    this.bookmarks.set(name, bookmark);
+    // Persist via the shared bookmark store. Eviction policy lives in the
+    // store so every code path benefits.
+    getGlobalBookmarkStore().save(bookmark);
     return bookmark;
   }
 
@@ -1623,28 +1627,28 @@ export class ChangeTracker {
    * Get a named bookmark.
    */
   getBookmark(name: string): SnapshotBookmark | null {
-    return this.bookmarks.get(name) ?? null;
+    return getGlobalBookmarkStore().get(name);
   }
 
   /**
    * Delete a named bookmark.
    */
   deleteBookmark(name: string): boolean {
-    return this.bookmarks.delete(name);
+    return getGlobalBookmarkStore().delete(name);
   }
 
   /**
    * List all bookmark names.
    */
   listBookmarks(): string[] {
-    return [...this.bookmarks.keys()];
+    return getGlobalBookmarkStore().listNames();
   }
 
   /**
    * Compute a diff from a named bookmark to the current state.
    */
   diffFromBookmark(name: string): SemanticDiff | null {
-    const bookmark = this.bookmarks.get(name);
+    const bookmark = getGlobalBookmarkStore().get(name);
     if (!bookmark) return null;
 
     this.deps.refreshElements?.();

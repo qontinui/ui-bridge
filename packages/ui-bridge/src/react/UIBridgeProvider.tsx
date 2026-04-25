@@ -77,11 +77,17 @@ export interface UIBridgeContextValue {
   /** Get all registered components */
   getComponents: () => RegisteredComponent[];
   /** Create a snapshot */
-  createSnapshot: (options?: { componentBasePath?: string }) => BridgeSnapshot;
+  createSnapshot: (options?: {
+    componentBasePath?: string;
+    getActiveTab?: () => string | null | undefined;
+  }) => BridgeSnapshot;
   /** Create a snapshot asynchronously (non-blocking) */
   createSnapshotAsync: (
     batchSize?: number,
-    options?: { componentBasePath?: string }
+    options?: {
+      componentBasePath?: string;
+      getActiveTab?: () => string | null | undefined;
+    }
   ) => Promise<BridgeSnapshot>;
   /** Subscribe to events */
   on: <T = unknown>(type: BridgeEventType, listener: BridgeEventListener<T>) => () => void;
@@ -332,12 +338,18 @@ export function UIBridgeProvider({
   const getElements = useCallback(() => registry.getAllElements(), [registry]);
   const getComponents = useCallback(() => registry.getAllComponents(), [registry]);
   const createSnapshot = useCallback(
-    (options?: { componentBasePath?: string }) => registry.createSnapshot(options),
+    (options?: { componentBasePath?: string; getActiveTab?: () => string | null | undefined }) =>
+      registry.createSnapshot(options),
     [registry]
   );
   const createSnapshotAsync = useCallback(
-    (batchSize?: number, options?: { componentBasePath?: string }) =>
-      registry.createSnapshotAsync(batchSize, options),
+    (
+      batchSize?: number,
+      options?: {
+        componentBasePath?: string;
+        getActiveTab?: () => string | null | undefined;
+      }
+    ) => registry.createSnapshotAsync(batchSize, options),
     [registry]
   );
   const on = useCallback(

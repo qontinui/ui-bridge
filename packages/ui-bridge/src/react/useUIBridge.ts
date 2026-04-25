@@ -44,7 +44,10 @@ export interface UseUIBridgeReturn {
   /** Create a snapshot asynchronously (non-blocking, yields between batches) */
   createSnapshotAsync: (
     batchSize?: number,
-    options?: { componentBasePath?: string }
+    options?: {
+      componentBasePath?: string;
+      getActiveTab?: () => string | null | undefined;
+    }
   ) => Promise<BridgeSnapshot>;
   /** Execute an action on an element */
   executeAction: (
@@ -174,7 +177,10 @@ export function useUIBridge(): UseUIBridgeReturn {
   const createSnapshotAsync = useCallback(
     async (
       batchSize?: number,
-      options?: { componentBasePath?: string }
+      options?: {
+        componentBasePath?: string;
+        getActiveTab?: () => string | null | undefined;
+      }
     ): Promise<BridgeSnapshot> => {
       if (!context) {
         const takenAt = Date.now();

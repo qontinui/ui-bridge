@@ -15,6 +15,8 @@ import type {
 import { getGlobalRegistry } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
+import { getGlobalBookmarkStore } from '../ai/bookmarks';
+import type { SemanticSnapshot } from '../ai/types';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -552,8 +554,12 @@ function enableChangeTracking() {
   });
 }
 
-// Snapshot bookmarks
-const bookmarks = new Map<string, { name: string; timestamp: number; snapshot: unknown }>();
+// Internal quality-baseline store. Distinct from the user-visible bookmark
+// registry: `saveBaseline` / `diffBaseline` (below) own their own shape
+// (raw element-state arrays, not full `SemanticSnapshot`s) and never need
+// to interop with `/ai/bookmarks`. Keeping a private Map here avoids
+// pollution of the singleton's typed snapshot contract.
+const qualityBaselines = new Map<string, { timestamp: number; snapshot: unknown }>();
 
 // Error sessions
 interface ErrorSession {
@@ -1787,38 +1793,48 @@ export async function executeCommand(
 
     case 'saveBookmark': {
       const { name } = payload as { name: string };
-      const snapshot = { timestamp: Date.now(), elements: elements.map(elementToSnapshot) };
-      bookmarks.set(name, { name, timestamp: Date.now(), snapshot });
-      return { success: true, name, timestamp: Date.now() };
+      // Build a minimal snapshot shaped to fit `SnapshotBookmarkEntry`. The
+      // browser dispatcher doesn't have full `SemanticSnapshot` data
+      // (no diff manager / page context), so we cast through the loose
+      // contract. The store treats the snapshot as opaque and only the
+      // diff endpoints actually inspect its structure.
+      const snapshot = {
+        timestamp: Date.now(),
+        elements: elements.map(elementToSnapshot),
+      } as unknown as SemanticSnapshot;
+      const savedAt = Date.now();
+      getGlobalBookmarkStore().save({ name, snapshot, savedAt });
+      return { success: true, name, timestamp: savedAt, savedAt };
     }
 
     case 'getBookmark': {
-      const bm = bookmarks.get(payload.name as string);
+      const bm = getGlobalBookmarkStore().get(payload.name as string);
       if (!bm) return { success: false, error: `Bookmark '${payload.name}' not found` };
-      return bm;
+      // Preserve the legacy `timestamp` alias for callers that haven't
+      // migrated to `savedAt` yet.
+      return { name: bm.name, snapshot: bm.snapshot, savedAt: bm.savedAt, timestamp: bm.savedAt };
     }
 
     case 'deleteBookmark': {
-      const deleted = bookmarks.delete(payload.name as string);
+      const deleted = getGlobalBookmarkStore().delete(payload.name as string);
       return { success: deleted, name: payload.name, timestamp: Date.now() };
     }
 
     case 'listBookmarks':
       return {
-        bookmarks: Array.from(bookmarks.values()).map((b) => ({
-          name: b.name,
-          timestamp: b.timestamp,
-        })),
+        bookmarks: getGlobalBookmarkStore()
+          .list()
+          .map((b) => ({ name: b.name, savedAt: b.savedAt, timestamp: b.savedAt })),
         timestamp: Date.now(),
       };
 
     case 'diffFromBookmark': {
-      const bm = bookmarks.get(payload.name as string);
+      const bm = getGlobalBookmarkStore().get(payload.name as string);
       if (!bm) return { success: false, error: `Bookmark '${payload.name}' not found` };
       const current = elements.map(elementToSnapshot);
-      const prev = (bm.snapshot as { elements: unknown[] }).elements;
+      const prev = (bm.snapshot as unknown as { elements: unknown[] }).elements ?? [];
       return {
-        bookmarkTimestamp: bm.timestamp,
+        bookmarkTimestamp: bm.savedAt,
         currentTimestamp: Date.now(),
         beforeCount: (prev as unknown[]).length,
         afterCount: current.length,
@@ -3233,8 +3249,7 @@ export async function executeCommand(
         type: e.type,
         state: e.getState(),
       }));
-      bookmarks.set('__quality_baseline__', {
-        name: '__quality_baseline__',
+      qualityBaselines.set('__quality_baseline__', {
         timestamp: Date.now(),
         snapshot,
       });
@@ -3242,7 +3257,7 @@ export async function executeCommand(
     }
 
     case 'diffBaseline': {
-      const baseline = bookmarks.get('__quality_baseline__');
+      const baseline = qualityBaselines.get('__quality_baseline__');
       if (!baseline) return { success: false, error: 'No baseline saved' };
       return {
         baselineTimestamp: baseline.timestamp,

@@ -547,6 +547,73 @@ describe('UIBridgeRegistry', () => {
     });
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // F1: snapshot.activeTab provider injection
+  //
+  // The SDK has no concept of "tab" — apps that decouple URL from tab
+  // (the runner) supply a `getActiveTab` callback so a single snapshot
+  // can carry both `route` and `activeTab`. With no provider the field
+  // must stay omitted so non-tab consumers are unaffected.
+  // ──────────────────────────────────────────────────────────────────────
+  describe('snapshot activeTab (F1)', () => {
+    it('omits activeTab when no getActiveTab provider is supplied', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+
+      const snap = registry.createSnapshot();
+      expect(snap.activeTab).toBeUndefined();
+      expect('activeTab' in snap).toBe(false);
+    });
+
+    it('populates activeTab from the provider on createSnapshot', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+
+      const snap = registry.createSnapshot({ getActiveTab: () => 'specs' });
+      expect(snap.activeTab).toBe('specs');
+    });
+
+    it('populates activeTab from the provider on createSnapshotAsync', async () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn);
+
+      const snap = await registry.createSnapshotAsync(50, {
+        getActiveTab: () => 'prompt-home',
+      });
+      expect(snap.activeTab).toBe('prompt-home');
+    });
+
+    it('reflects the live provider value on each snapshot call', () => {
+      let current = 'tab-a';
+      const opts = { getActiveTab: () => current };
+      expect(registry.createSnapshot(opts).activeTab).toBe('tab-a');
+
+      current = 'tab-b';
+      expect(registry.createSnapshot(opts).activeTab).toBe('tab-b');
+    });
+
+    it('treats null / empty / non-string provider returns as omitted', () => {
+      expect(registry.createSnapshot({ getActiveTab: () => null }).activeTab).toBeUndefined();
+      expect(registry.createSnapshot({ getActiveTab: () => undefined }).activeTab).toBeUndefined();
+      expect(registry.createSnapshot({ getActiveTab: () => '' }).activeTab).toBeUndefined();
+    });
+
+    it('swallows provider errors and omits activeTab', () => {
+      const snap = registry.createSnapshot({
+        getActiveTab: () => {
+          throw new Error('boom');
+        },
+      });
+      expect(snap.activeTab).toBeUndefined();
+      // The rest of the snapshot must still be intact.
+      expect(snap.registration).toBeDefined();
+      expect(Array.isArray(snap.elements)).toBe(true);
+    });
+  });
+
   describe('global registry', () => {
     it('should set and get global registry', () => {
       const newRegistry = new UIBridgeRegistry();

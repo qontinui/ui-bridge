@@ -175,11 +175,18 @@ export function find(
     decomposed = decomposeTarget(query);
     criteria = resolveCriteria(decomposed, engine, opts);
   } else {
-    // Structured query — pass through, create a synthetic decomposed for debugging
+    // Structured query — pass through, create a synthetic decomposed for debugging.
+    // Mirror probe-target fields from the structured criteria when present so
+    // callers get a consistent shape across both query forms.
     criteria = query;
+    const elementText = query.text || query.textContent || query.accessibleName || '';
     decomposed = {
-      elementText: query.text || query.accessibleName || '',
+      elementText,
       elementType: query.type,
+      label: elementText || undefined,
+      ariaLabel: query.accessibleName || elementText || undefined,
+      placeholder: query.placeholder || elementText || undefined,
+      name: elementText || undefined,
     };
   }
 
@@ -282,6 +289,7 @@ function resolveCriteria(
 
   // Set element type
   if (decomposed.elementType) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     criteria.type = decomposed.elementType as any;
   }
 

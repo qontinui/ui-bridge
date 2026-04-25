@@ -834,6 +834,52 @@ export class UIBridgeRegistry {
     return true;
   }
 
+  /**
+   * Action-driven state refresh.
+   *
+   * Action handlers (`type`, `clear`, `setValue`, `check`, `uncheck`, `toggle`,
+   * `select`, `sendKeys`, `focus`, `blur`) call this after mutating the DOM so
+   * subsequent `getElement(id)` / snapshot reads see the post-action state
+   * even when React detaches/re-creates the underlying DOM node between the
+   * action and the next read.
+   *
+   * The fields in `updates` overlay the live `getElementState(element)` read
+   * (cached values win for `value`, `checked`, `focused`, etc.). Other fields
+   * (rect, computedStyles, scrollInfo) keep flowing from the live DOM read so
+   * layout stays accurate. Pass `undefined` for `updates` to clear the
+   * overlay.
+   *
+   * Returns `false` if `id` is not registered.
+   */
+  refreshElement(id: string, updates: Partial<ElementState> | undefined): boolean {
+    const existing = this.elements.get(id) as
+      | (RegisteredElement & {
+          __stateOverridesRef?: { value: Partial<ElementState> | undefined };
+        })
+      | undefined;
+    if (!existing) return false;
+    const ref = existing.__stateOverridesRef;
+    if (!ref) {
+      // Older entry (registered before this slot existed) — fall back to
+      // setting the public field. Without the closure ref, getState() won't
+      // pick this up, but at least serializers that read `cachedStateOverrides`
+      // directly stay consistent.
+      existing.cachedStateOverrides = updates;
+      return true;
+    }
+    if (updates === undefined) {
+      ref.value = undefined;
+      existing.cachedStateOverrides = undefined;
+    } else {
+      // Merge so partial refreshes (e.g. focus() updates only `focused`)
+      // don't clobber a prior `value` overlay from a `type` action.
+      const merged: Partial<ElementState> = { ...(ref.value ?? {}), ...updates };
+      ref.value = merged;
+      existing.cachedStateOverrides = merged;
+    }
+    return true;
+  }
+
   registerElement(
     id: string,
     element: HTMLElement,
@@ -934,14 +980,33 @@ export class UIBridgeRegistry {
       route = window.location.pathname;
     }
 
-    const registered: RegisteredElement = {
+    // Captured in `computeState` so action-executor's `refreshElement(id,
+    // state)` can push post-action state into the same closure the registry
+    // returns from `getState()`. Mutated through the registered entry's
+    // `cachedStateOverrides` field for external consumers; this local lets
+    // the closure stay O(1) without re-resolving via `this.elements`.
+    const stateOverridesRef: { value: Partial<ElementState> | undefined } = {
+      value: undefined,
+    };
+    const computeState = (): ElementState => {
+      const live = getElementState(element);
+      const overlay = stateOverridesRef.value;
+      if (!overlay) return live;
+      // Shallow-merge: cached overlay wins for fields the action wrote
+      // (value, checked, focused, ...). Live read still provides rect,
+      // computedStyles, scrollInfo, etc. so layout stays accurate.
+      return { ...live, ...overlay } as ElementState;
+    };
+    const registered: RegisteredElement & {
+      __stateOverridesRef?: { value: Partial<ElementState> | undefined };
+    } = {
       id: actualId,
       element,
       type,
       label: options.label,
       actions,
       customActions: options.customActions,
-      getState: () => getElementState(element),
+      getState: computeState,
       getIdentifier: () => createElementIdentifier(element),
       registeredAt: Date.now(),
       mounted: true,
@@ -967,6 +1032,16 @@ export class UIBridgeRegistry {
       content: options.content,
       role: options.role,
     };
+    // Hidden non-enumerable hook so `refreshElement` can mutate the same
+    // closure-captured ref. Stored on the entry rather than via a side map
+    // so re-registering an id with a fresh DOM node automatically resets
+    // the ref (the new closure carries its own).
+    Object.defineProperty(registered, '__stateOverridesRef', {
+      value: stateOverridesRef,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
 
     // If this id is already registered, reverse the previous entry's
     // route bookkeeping so we don't double-count an overwrite.
@@ -2095,14 +2170,46 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Resolve the optional `activeTab` field for a snapshot. Applications that
+   * decouple their visible pane from `window.location` (e.g. the runner's
+   * tab-based shell) supply a `getActiveTab` callback in the snapshot options;
+   * the SDK itself has no concept of "tab", so without a provider the field
+   * stays undefined and non-tab-based consumers are unaffected. Errors thrown
+   * by the provider are swallowed so a buggy host can never break the rest of
+   * the snapshot.
+   */
+  private resolveActiveTab(getActiveTab?: () => string | null | undefined): string | undefined {
+    if (!getActiveTab) return undefined;
+    try {
+      const value = getActiveTab();
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Create a snapshot of the current state
    */
-  createSnapshot(options: { componentBasePath?: string } = {}): BridgeSnapshot {
+  createSnapshot(
+    options: {
+      componentBasePath?: string;
+      /**
+       * Optional provider for the snapshot's `activeTab` field. Apps that
+       * own their own tab system (the runner) inject the active tab id here.
+       * Returning a falsy value or omitting the provider leaves the field
+       * undefined.
+       */
+      getActiveTab?: () => string | null | undefined;
+    } = {}
+  ): BridgeSnapshot {
     const takenAt = Date.now();
+    const activeTab = this.resolveActiveTab(options.getActiveTab);
     return {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
+      ...(activeTab !== undefined ? { activeTab } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
       components: this.getAllComponents().map((comp) => ({
@@ -2132,7 +2239,16 @@ export class UIBridgeRegistry {
    */
   async createSnapshotAsync(
     batchSize = 50,
-    options: { componentBasePath?: string } = {}
+    options: {
+      componentBasePath?: string;
+      /**
+       * Optional provider for the snapshot's `activeTab` field — see
+       * {@link createSnapshot}. The provider is invoked once at the end of
+       * the snapshot build so it observes the same wall-clock as the
+       * registration metadata.
+       */
+      getActiveTab?: () => string | null | undefined;
+    } = {}
   ): Promise<BridgeSnapshot> {
     const allElements = this.getAllElements();
     const elementSnapshots: BridgeSnapshot['elements'] = [];
@@ -2152,10 +2268,12 @@ export class UIBridgeRegistry {
     // reflect any (un)registrations that happened during yields — the map
     // is always authoritative.
     const takenAt = Date.now();
+    const activeTab = this.resolveActiveTab(options.getActiveTab);
     return {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
+      ...(activeTab !== undefined ? { activeTab } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: elementSnapshots,
       components: this.getAllComponents().map((comp) => ({
