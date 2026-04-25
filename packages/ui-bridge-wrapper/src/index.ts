@@ -66,3 +66,12 @@ export {
 export { withRetry, type WithRetryOptions } from './helpers/retry.js';
 export { withAuthRefresh, type WithAuthRefreshOptions } from './helpers/auth.js';
 export { paramSchemaOf } from './helpers/schema.js';
+
+export {
+  runWrapperEntrypoint,
+  emitManifestOnly,
+  type RunWrapperEntrypointOptions,
+  type ManifestActionMeta,
+  type ManifestOnlyEnvelope,
+  type WrapperManifest,
+} from './manifest-only.js';
