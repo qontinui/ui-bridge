@@ -1,0 +1,455 @@
+---
+sidebar_position: 6
+---
+
+# Runner Features (HTTP API)
+
+UI Bridge primitives shipped specifically for the qontinui-runner Tauri app
+and any consumer driving it via HTTP. The SDK pieces are framework-agnostic;
+the runner-only sections are called out.
+
+This page is the **single source of truth** for the endpoints below — slash
+commands, internal docs, and agent test rigs should link here rather than
+duplicate the content.
+
+## Inspection & discovery
+
+### Snapshot
+
+```http
+GET /control/snapshot
+GET /control/snapshot?visibleOnly=true
+GET /control/snapshot?currentRouteOnly=true
+GET /control/snapshot?visibleOnly=true&currentRouteOnly=true
+```
+
+Returns elements + components + page state. Each element carries its
+dynamic state under `state` (see "Reading element state" below).
+
+The response also includes:
+
+- `route` — `window.location.pathname`
+- `activeTab` — runner-only; reflects the current tab id (e.g. `"specs"`).
+  Decoupled from `route` because tab-based apps can switch tabs without
+  changing the URL. Populated when the host supplies a `getActiveTab`
+  callback (the runner does this automatically).
+- `registration: { totalRegistered, everHadRegistrations, byRoute }` —
+  metadata for distinguishing "page has no `useUIElement` coverage" from
+  "bridge is broken / not yet mounted." `everHadRegistrations` is a
+  sticky latch: it flips `true` on first register and never flips back.
+- `snapshotTakenAtMs` — server epoch ms when the snapshot was built.
+
+**Filtering tips:**
+
+Elements registered via `useUIElement` linger in the registry across tab
+switches because React Navigation keeps inactive tabs mounted. Their last
+measured `layout` sticks around too. So a raw snapshot returns a mix of
+on-screen and off-screen elements. Use:
+
+- `visibleOnly=true` — only elements with a layout AND `visible: true`.
+- `currentRouteOnly=true` — only elements registered on the current
+  route (filters out cross-route persistence).
+- Both together — tightest "what is the user seeing right now" snapshot.
+
+When verifying "did the tab switch and did my new component render?",
+always use at least `visibleOnly=true`. Offscreen-marking fires
+synchronously via `RouteProvider.subscribe()`, so a snapshot taken
+immediately after `/control/page/navigate` already reflects cleared
+layouts for the departed route.
+
+### Discover
+
+```http
+POST /control/discover
+{ "interactive_only": false }
+```
+
+Forces a re-scan of the page for unregistered elements. Useful when
+`useUIElement` coverage is incomplete and elements are reachable only
+via DOM walk.
+
+### Get element
+
+```http
+GET /control/element/:id
+```
+
+Returns the registered element record, with dynamic state nested under
+`state`:
+
+```json
+{
+  "id": "input-foo",
+  "type": "input",
+  "actions": ["focus", "blur", "type", "clear", "click"],
+  "state": {
+    "value": "user@example.com",
+    "visible": true,
+    "enabled": true,
+    "focused": false,
+    "rect": { "x": 100, "y": 200, "width": 300, "height": 40 }
+  }
+}
+```
+
+## Reading element state — `state.value`, not top-level
+
+The dynamic state lives at `data.state.value`, NOT `data.value`. Inputs'
+typed text, checkboxes' checked, focused/enabled/visible flags, and the
+element's bounding rect are all under `state`.
+
+```bash
+# Correct
+curl -s $BASE/control/element/input-foo | jq '.data.state.value'
+
+# Wrong — returns null on inputs even when typed
+curl -s $BASE/control/element/input-foo | jq '.data.value'
+```
+
+Snapshot elements use the same nested shape. After a `type` / `clear` /
+`setValue` action, `state.value` is updated synchronously by the SDK's
+action-driven registry refresh — no polling needed.
+
+## Interaction actions
+
+```bash
+# Click variants
+$BASE/control/element/<id>/action  body:{"action":"click"}
+                                       {"action":"doubleClick"}
+                                       {"action":"rightClick"}
+                                       {"action":"middleClick"}
+
+# Type / Clear / SetValue / Select
+{"action":"type","params":{"text":"value","clear":true,"delay":50}}
+{"action":"clear"}
+{"action":"setValue","params":{"value":"new-value"}}
+{"action":"select","params":{"value":"option1","byLabel":false}}
+
+# Focus / Blur / Hover
+{"action":"focus"} | {"action":"blur"} | {"action":"hover"}
+
+# Scroll
+{"action":"scrollIntoView"}
+{"action":"scroll","params":{"direction":"down","amount":300,"smooth":true}}
+
+# Checkbox
+{"action":"check"} | {"action":"uncheck"} | {"action":"toggle"}
+
+# Drag
+{"action":"drag","params":{"target":{"elementId":"target-id"},"steps":20}}
+
+# Submit / Reset
+{"action":"submit"} | {"action":"reset"}
+
+# Keyboard events (for terminals, canvas, etc.)
+{"action":"sendKeys","params":{"keys":[{"key":"Enter"},{"key":"v","modifiers":{"ctrl":true}}]}}
+```
+
+Mutation actions (`type`, `sendKeys`, `clear`, `setValue`, `select`,
+`check`, `uncheck`, `toggle`, `submit`, `reset`, `autocomplete`) push
+the post-action `elementState` into the registry's overlay, so subsequent
+reads (`/control/element/{id}`, `/control/snapshot`) reflect the new
+value immediately. Click/hover/scroll do not write to the cache; the
+live DOM stays authoritative there.
+
+## Page navigation
+
+### Soft vs hard
+
+```bash
+# Hard (default, back-compat) — full webview reload on real SPAs.
+# Wipes injected globals (test mocks, fetch patches, bookmarks).
+curl -X POST $BASE/control/page/navigate \
+  -H "Content-Type: application/json" \
+  -d '{"url":"/fleet"}'
+
+# Soft — history.pushState + popstate, preserves window.<globals>
+# and SDK state (network stubs, bookmarks).
+curl -X POST $BASE/control/page/navigate \
+  -H "Content-Type: application/json" \
+  -d '{"url":"/fleet","mode":"soft"}'
+```
+
+Default `mode` is `"hard"` for back-compat with the pre-2026-04-23
+`{url}`-only envelope. On the runner specifically, "hard" still uses
+`pushState` (a full webview reload would kill the Tauri session) — the
+distinction there is which event fires (`popstate` for soft only). On
+real SPAs (supervisor dashboard, Next.js), hard does reload.
+
+Response shape: `{ url, hard, mode, clientSideNavigation }`. Invalid
+`mode` returns HTTP 400.
+
+### Refresh
+
+```http
+POST /control/page/refresh
+```
+
+### Close-request (runner only)
+
+```http
+POST $RUNNER_BASE/control/page/close-request
+```
+
+Simulates a user clicking the window's X button. Fires Tauri's native
+`WindowEvent::CloseRequested` on the main webview, which is the only
+reliable way to exercise the runner's shutdown path through UI Bridge.
+`window.close()` via `/control/page/evaluate` is a no-op for top-level
+webviews, and Win32 `WM_CLOSE` messages don't consistently reach Tao's
+event pump.
+
+### Mobile route navigation
+
+```bash
+curl -X POST $MOBILE_BASE/control/page/navigate \
+  -H "Content-Type: application/json" \
+  -d '{"url":"/"}'        # dashboard
+  -d '{"url":"/settings"}'
+  -d '{"url":"/processes"}'
+```
+
+Uses Expo Router's `router.push()` via UIBridgeNativeProvider's
+navigationProvider. Prefer this over clicking tab buttons: React
+Navigation's `tabBarButton onPress` is wired through internal gesture
+state, so calling it via UI Bridge press often no-ops.
+
+**NOTE:** use plain routes like `/`, `/settings`. Do NOT use
+`/(tabs)/index` — the explicit index segment can crash Expo Router and
+take down the UI Bridge server.
+
+## Tab activation (runner only)
+
+```http
+GET /control/tabs
+POST /control/tab/activate { "tabId": "specs" }
+```
+
+`GET /control/tabs` returns `{ activeTab, tabs: [{id, label}] }`.
+`POST /control/tab/activate` fires the same `ui-bridge-set-tab` event a
+user click dispatches — lazy-mounts and URL-state-sync fire as usual.
+
+Unknown `tabId` returns HTTP 400 with `{ error: "unknown_tab",
+knownTabs: [...] }` so you don't have to guess.
+
+The snapshot response also surfaces `activeTab` alongside `route` so
+you can confirm a tab activation without a separate `/control/tabs`
+call.
+
+## Network stubs (fetch short-circuit)
+
+Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
+Stubs live in a module-level SDK singleton — they survive React
+re-renders and soft navigations; they clear on hard reload.
+
+```bash
+# Install — substring URL match, first-registered wins on overlaps.
+curl -X POST $BASE/control/network/stubs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urlPattern": "/api/v1/runners",
+    "method": "GET",
+    "response": { "status": 200, "bodyJson": [{"id":"fake","name":"e2e"}] },
+    "times": "always"
+  }'
+# → {"success":true,"data":{"id":"stub_abc"}}
+
+# List active stubs (shows hitCount + timesRemaining)
+curl $BASE/control/network/stubs
+
+# Remove one or all
+curl -X DELETE $BASE/control/network/stubs/stub_abc
+curl -X DELETE $BASE/control/network/stubs
+
+# Verify match without consuming (peek)
+curl -X POST $BASE/control/network/verify-stub \
+  -H "Content-Type: application/json" \
+  -d '{"urlPattern":"/api/v1/runners","method":"GET"}'
+# → {"matched":true,"stubId":"stub_abc","response":{...},"stubEntry":{hitCount,timesRemaining}}
+```
+
+`times: 1` stubs are consumed on the first matched fetch. `verify-stub`
+is non-consuming — `hitCount` and `timesRemaining` stay unchanged.
+
+**Triggering the stubbed fetch from `page/evaluate`:** the evaluator
+blocks the literal `fetch(` token. Dodge via indirect access:
+
+```bash
+curl -X POST $BASE/control/page/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"expression":"(async()=>{const f=window[\"fet\"+\"ch\"];const r=await f(\"/api/v1/runners\");return r.status+\" \"+(await r.text()).length})()"}'
+```
+
+## Wait-for-element (state predicates)
+
+Element-level wait primitive — replaces the snapshot-poll-in-a-loop
+pattern. Resolves the moment the predicate flips, or returns
+`found: false` after `timeoutMs`.
+
+```http
+POST /ai/wait-for-element
+{
+  "elementId": "input-foo",
+  "state": "value-not-empty",
+  "timeoutMs": 5000,
+  "pollMs": 50
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "found": true,
+    "durationMs": 123,
+    "finalState": { "value": "hi", "visible": true, ... }
+  }
+}
+```
+
+States: `present`, `visible`, `enabled`, `disabled`, `value-not-empty`,
+`value-empty`, `checked`, `unchecked`, `absent`. Default timeout
+5000ms (max 30000ms); default poll 50ms (min 10ms).
+
+`value-not-empty` also returns true for a checked checkbox.
+
+## ai/find — what gets matched
+
+`POST /ai/find { query: "..." }` matches the query against the following
+sources, in precedence order:
+
+1. associated `<label>` text (via `htmlFor` or wrapping ancestor)
+2. visible `textContent`
+3. input `value`
+4. `aria-label`
+5. `placeholder`
+6. `name` attribute
+
+So an `<input placeholder="What would you like to do?">` matches
+`query: "What would you like"` (substring of placeholder) but NOT
+`query: "prompt"` (no signal contains "prompt"). **Use phrases the
+user actually sees** — labels, button text, placeholders. Don't search
+by abstract concepts unless the abstract word literally appears
+on-screen.
+
+## Change tracking & bookmarks
+
+```bash
+# Buffer DOM mutations between two interactions
+curl -X POST $BASE/ai/change-buffer/enable
+# ... perform actions ...
+curl -X POST $BASE/ai/change-buffer/drain
+curl -X POST $BASE/ai/change-buffer/disable
+
+# One-shot diff against the previous implicit baseline
+curl $BASE/ai/diff
+
+# Bookmark + diff
+curl -X POST $BASE/ai/bookmarks \
+  -H "Content-Type: application/json" \
+  -d '{"name":"before-test"}'
+# ... perform actions ...
+curl $BASE/ai/bookmarks/before-test/diff
+```
+
+Bookmarks live in a process-wide singleton — `save` and `list` always
+agree, regardless of which dispatcher path served the request.
+
+## Forms
+
+```bash
+# Discover all forms on the page
+curl $BASE/ai/forms
+
+# Multi-field fill
+curl -X POST $BASE/ai/fill-form \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fields": [
+      {"elementId":"input-name","value":"Test"},
+      {"elementId":"input-email","value":"test@example.com"}
+    ]
+  }'
+```
+
+`ai/forms` walks the DOM and finds inputs even when `ai/find` cannot
+reach them by element-text matching — useful as a fallback for
+form-heavy pages.
+
+## Idle status
+
+```bash
+curl $BASE/ai/idle-status
+curl -X POST $BASE/ai/wait-for-idle \
+  -H "Content-Type: application/json" \
+  -d '{"timeout": 5000}'
+```
+
+Returns weighted signals across `dom`, `form-mutation`,
+`loading-indicators`, and `network` with per-signal `idle: bool` plus
+an aggregate `idleScore`. `wait-for-idle` resolves when all signals
+settle or after the timeout.
+
+## Console & network monitoring
+
+```http
+GET /control/console-errors
+GET /sdk/network-requests
+```
+
+`console-errors` returns the captured browser-console error buffer.
+`sdk/network-requests` is populated when an SDK is connected;
+otherwise empty.
+
+## JavaScript evaluation (runner only)
+
+```bash
+curl -X POST $BASE/control/page/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"expression":"document.title"}'
+```
+
+Returns the value of the expression. Async expressions are awaited.
+
+**Security filter:** the evaluator rejects expressions matching
+`\bfetch\s*\(`. Use `window["fet"+"ch"]("/url")` for fetch tests
+(see "Network stubs" above).
+
+## Components (preferred over button clicks)
+
+```http
+GET /control/components
+GET /control/component/:id
+POST /control/component/:id/action/:actionName
+```
+
+⭐ **Prefer component actions over button clicks.** Before driving an
+interactive flow by fighting `button-*` element IDs in the snapshot,
+list `/control/components`. Features like `zone-profile-picker`,
+`zone-layout-picker`, and `terminal-page` register high-level actions
+(`load-profile`, `select-layout`, `create-terminal`) that invoke the
+React handler directly — no dropdown state dance, no ordering bugs,
+and each action exposes a `paramSchema` so you know exactly what to
+POST.
+
+```bash
+# Invoke
+curl -X POST $BASE/control/component/zone-profile-picker/action/load-profile \
+  -H "Content-Type: application/json" \
+  -d '{"params":{"name":"mobile"}}'
+```
+
+Each component detail also includes `actionInvocationPath` templates
+and per-action `path` fields — the response itself tells you how to
+call it.
+
+## Design audit
+
+```http
+POST /ai/design-audit
+```
+
+Runs the accessibility / visual audit pass. Requires a style guide to
+be loaded first (`design_load_style_guide`). Returns HTTP 400 with a
+flat `{success:false, error}` envelope when no guide is loaded.
