@@ -12,6 +12,34 @@ This page is the **single source of truth** for the endpoints below — slash
 commands, internal docs, and agent test rigs should link here rather than
 duplicate the content.
 
+## First probe: page playbook
+
+```http
+GET /control/page/playbook
+```
+
+The "what can I do here?" call. Stitches data the bridge already has into
+one envelope agents can read at the start of a task to skip a couple of
+trial-and-error round-trips:
+
+```json
+{
+  "route": "/specs",
+  "activeTab": "specs",
+  "tabs": [{ "id": "specs", "label": "Specs", "active": true }, ...],
+  "components": [{ "id": "...", "actions": [...], "actionInvocationPath": "..." }],
+  "intents": [...],
+  "recipes": {
+    "tab-activate": "POST /control/tab/activate {tabId}",
+    "ai-find": "POST /ai/find {query}",
+    "element-action": "POST /control/element/:id/action {action,params}"
+  }
+}
+```
+
+Use it as the first call after spawning a temp runner. For deeper inspection,
+fall through to `/control/snapshot` and `/control/components`.
+
 ## Inspection & discovery
 
 ### Snapshot
@@ -33,6 +61,11 @@ The response also includes:
   Decoupled from `route` because tab-based apps can switch tabs without
   changing the URL. Populated when the host supplies a `getActiveTab`
   callback (the runner does this automatically).
+- `availableTabs` — runner-only; full tab catalogue:
+  `[{ id, label, alias?, active }]`. Lets you switch tabs without a
+  separate `/control/tabs` round-trip.
+- `tabActivation` — runner-only; static hint object describing how to
+  switch tabs (`{ method: "POST", path: "/control/tab/activate", body: {tabId} }`).
 - `registration: { totalRegistered, everHadRegistrations, byRoute }` —
   metadata for distinguishing "page has no `useUIElement` coverage" from
   "bridge is broken / not yet mounted." `everHadRegistrations` is a
@@ -72,10 +105,37 @@ via DOM walk.
 
 ```http
 GET /control/element/:id
+GET /control/element/:id/tree?depth=N
 ```
 
-Returns the registered element record, with dynamic state nested under
-`state`:
+`/element/:id` returns the registered element record (state under
+`state`). `/element/:id/tree` BFS-walks the rendered DOM subtree, useful
+for "where exactly does this element sit?" answers in one call:
+
+```json
+{
+  "tagName": "div",
+  "attributes": {
+    "class": "...",
+    "data-testid": "...",
+    "role": "...",
+    "aria-label": "...",
+    "name": "...",
+    "type": "..."
+  },
+  "childCount": 4,
+  "children": [
+    /* recursive same shape */
+  ],
+  "truncated": false
+}
+```
+
+`depth` accepts `1..6` (default 2). 200-node cap; `truncated: true` when
+hit. Class attribute trimmed to 80 chars; only `data-*`, `role`, `title`,
+`aria-label`, `name`, `type` are surfaced.
+
+The bare `/element/:id`:
 
 ```json
 {
@@ -546,3 +606,70 @@ POST /ai/design-audit
 Runs the accessibility / visual audit pass. Requires a style guide to
 be loaded first (`design_load_style_guide`). Returns HTTP 400 with a
 flat `{success:false, error}` envelope when no guide is loaded.
+
+## Error envelopes (response contract)
+
+Every IPC-backed UI Bridge handler funnels through a single unwrapper
+(`wrap_ipc_result`). The wire shape:
+
+- **Success:** HTTP 200 with `{ success: true, data: <result> }`.
+- **Soft failure** (operation rejected the request — bad input, missing
+  preconditions, element not found, etc.): HTTP 400 with a flat
+  `{ success: false, error: "..." }` body. **No nested `data`, no inner
+  `success` field.** This is the F2 contract — agents check the outer
+  status code and the outer `error` string.
+- **Transport failure** (frontend not mounted yet, IPC timeout): HTTP
+  503 / 500 with `{ success: false, error_detail: { code, message,
+recovery } }` so the caller can branch on whether to retry.
+
+Three high-friction errors carry `hint` objects to short-circuit
+trial-and-error:
+
+```json
+// element-not-found 404
+{
+  "success": false,
+  "error": "Element not found: foo-btn",
+  "hint": { "closestMatches": ["foo-button-0", "fooBtn", ...] }
+}
+
+// action-not-allowed
+{
+  "success": false,
+  "error": "Action 'check' not allowed on this element",
+  "hint": { "allowedActions": ["click", "focus", "blur", "hover"] }
+}
+
+// page/evaluate rejected by the security guard
+{
+  "success": false,
+  "error": "Expression rejected: contains prohibited pattern",
+  "hint": "Use indirect access for fetch: window['fet'+'ch']('/url')"
+}
+```
+
+`closestMatches` is Levenshtein-ranked, capped at 5, edit-distance ≤ 50%
+of element-id length.
+
+## Health (Tauri runner)
+
+```http
+GET /health
+```
+
+Returns runner liveness signals. Three booleans worth knowing:
+
+- `responsive` — IPC round-trip succeeds (the React side is alive
+  enough to acknowledge a ping).
+- `ready` — the runner has completed its bootstrap routine.
+- `frontendReady` — flips `true` the first time any UI Bridge IPC
+  response comes back from the React frontend, meaning the app has
+  rendered past `App.tsx`'s loading-screen branch and registered its
+  ui-bridge-response listener. **One-way transition** — once true, it
+  stays true for the rest of the process lifetime.
+
+Use `frontendReady` to distinguish "Tauri shell is up but the React
+app is still loading" from "the app is fully usable." External
+pollers spawning a temp runner should wait until `frontendReady: true`
+before issuing UI Bridge calls — otherwise the first few requests may
+hit the 503 transport-failure path until the React listener attaches.

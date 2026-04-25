@@ -2,6 +2,16 @@
 
 REST API endpoints for AI-native UI automation.
 
+> **See also:** [Runner Features](runner-features.md) is the canonical
+> reference for HTTP-API behavior on the qontinui-runner. It covers
+> `ai/find` scoring, `ai/wait-for-element`, idle-status signals, and the
+> response-envelope contract in detail. This page documents the
+> framework-agnostic AI endpoints exposed by every UI Bridge host.
+
+> **URL prefix:** examples below use the runner-style `/ai/...` path.
+> The headless server / SDK-mode embed exposes the same endpoints under
+> `/__ui-bridge__/ai/...` — substitute as appropriate for your host.
+
 ## Search Elements
 
 ```

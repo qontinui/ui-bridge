@@ -6,6 +6,14 @@ sidebar_position: 2
 
 Element and component control API endpoints.
 
+> **See also:** [Runner Features](runner-features.md) covers the
+> qontinui-runner's HTTP-API extensions in one place — soft-nav modes,
+> tab activation, network stubs, snapshot metadata
+> (`activeTab` / `availableTabs` / `registration`), `state.value` shape,
+> the F2 error-envelope contract, page playbook, component-tree
+> introspection. This page documents the cross-host element + component
+> primitives every UI Bridge implementation supports.
+
 ## Elements
 
 ### List Elements
