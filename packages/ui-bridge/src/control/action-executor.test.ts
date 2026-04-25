@@ -293,12 +293,14 @@ describe('DefaultActionExecutor - toggle', () => {
     expect(open.success).toBe(true);
     expect(details.open).toBe(true);
     expect(toggleCount).toBe(1);
+    expect(open.elementState?.ariaExpanded).toBe(true);
 
     // Second toggle flips back.
     const close = await executor.executeAction('details-advanced', { action: 'toggle' });
     expect(close.success).toBe(true);
     expect(details.open).toBe(false);
     expect(toggleCount).toBe(2);
+    expect(close.elementState?.ariaExpanded).toBe(false);
   });
 
   it('flips aria-expanded on a disclosure button and fires the click handler', async () => {

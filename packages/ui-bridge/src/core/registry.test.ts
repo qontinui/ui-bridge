@@ -203,6 +203,36 @@ describe('UIBridgeRegistry', () => {
       expect(serialized!.color).toBe('#ef4444');
       expect(serialized!.contextPath).toBe('settings-modal > theme-section > accent-color');
     });
+
+    it('reads ariaExpanded from <details>.open when aria-expanded is unset', () => {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'Advanced';
+      details.appendChild(summary);
+      container.appendChild(details);
+
+      registry.registerElement('details-el', details, { type: 'disclosure', label: 'Advanced' });
+      registry.registerElement('summary-el', summary, { type: 'disclosure', label: 'Advanced' });
+
+      details.open = false;
+      expect(registry.getElement('details-el')!.getState().ariaExpanded).toBe(false);
+      expect(registry.getElement('summary-el')!.getState().ariaExpanded).toBe(false);
+
+      details.open = true;
+      expect(registry.getElement('details-el')!.getState().ariaExpanded).toBe(true);
+      expect(registry.getElement('summary-el')!.getState().ariaExpanded).toBe(true);
+    });
+
+    it('explicit aria-expanded wins over <details>.open fallback', () => {
+      const details = document.createElement('details');
+      details.setAttribute('aria-expanded', 'true');
+      details.open = false;
+      container.appendChild(details);
+
+      registry.registerElement('details-el', details, { type: 'disclosure', label: 'x' });
+
+      expect(registry.getElement('details-el')!.getState().ariaExpanded).toBe(true);
+    });
   });
 
   describe('component registration', () => {

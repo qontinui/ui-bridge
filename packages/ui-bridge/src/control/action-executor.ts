@@ -225,6 +225,13 @@ function getElementState(element: HTMLElement): ElementState {
   const ariaExpanded = element.getAttribute('aria-expanded');
   if (ariaExpanded !== null) {
     state.ariaExpanded = ariaExpanded === 'true';
+  } else if (element instanceof HTMLDetailsElement) {
+    state.ariaExpanded = element.open;
+  } else if (element.tagName === 'SUMMARY') {
+    const parentDetails = element.closest('details');
+    if (parentDetails instanceof HTMLDetailsElement) {
+      state.ariaExpanded = parentDetails.open;
+    }
   }
   // Capture aria-checked for role="switch" and similar toggle elements
   const ariaCheckedAttr = element.getAttribute('aria-checked');
