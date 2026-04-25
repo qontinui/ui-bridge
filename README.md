@@ -4,22 +4,62 @@ A unified, modular framework for AI-driven UI observation, control, and debuggin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
+## What is UI Bridge
 
-UI Bridge enables programmatic observation and control of React UI elements via HTTP/WebSocket APIs. Every actionable UI element becomes observable and controllable, making it perfect for:
+UI Bridge is how you give agents a semantic interface to any app you have.
 
-- **AI Automation**: Let AI agents interact with web applications
+- **Your own apps** integrate the SDK directly — add `<UIBridgeProvider>`, register
+  elements and components with `useUIElement` / `useUIComponent`, and agents can
+  drive the app by component name and action id rather than by CSS selector.
+
+- **Third-party apps, legacy apps, and apps where source changes are prohibitive**
+  get **wrapped** — a small integrated app sits next to the target and translates
+  semantic actions into API calls, Playwright automation, or live-browser
+  driving. The wrapped app looks identical to an SDK-integrated app from an
+  agent's point of view: same discovery, same action surface, same
+  `/ui-bridge/control/*` routes.
+
+Common uses:
+
+- **AI Automation**: Let AI agents interact with any application
 - **Testing**: Programmatic UI testing without brittle selectors
 - **Debugging**: Real-time DOM inspection and action tracking
 - **Accessibility**: Expose semantic UI structure for assistive technologies
 
 ## Packages
 
-| Package            | Description                             | Registry |
-| ------------------ | --------------------------------------- | -------- |
-| `ui-bridge`        | React hooks and providers               | npm      |
-| `ui-bridge-server` | HTTP server adapters (Express, Next.js) | npm      |
-| `ui-bridge-python` | Python client library with AI interface | PyPI     |
+| Package                       | Description                                                      | Registry |
+| ----------------------------- | ---------------------------------------------------------------- | -------- |
+| `ui-bridge`                   | React hooks and providers (SDK)                                  | npm      |
+| `ui-bridge-server`            | HTTP server adapters (Express, Next.js)                          | npm      |
+| `ui-bridge-python`            | Python client library with AI interface                          | PyPI     |
+| `@qontinui/ui-bridge-wrapper` | Runtime for wrappers (api / headless / headed / live transports) | npm      |
+| `create-ui-bridge-wrapper`    | `npx` scaffold CLI for new wrappers                              | npm      |
+
+## Wrappers
+
+A **wrapper** is a small UI Bridge app that exposes semantic actions against
+another application — typically one whose source you cannot or do not want to
+modify. Wrappers pick one or more of four transports:
+
+- `api` — direct SDK / REST calls, no browser.
+- `headless` — Playwright Chromium, no visible window.
+- `headed` — Playwright Chromium, visible (for debugging).
+- `live` — connects to a qontinui runner over WebSocket at `/ui-bridge/ws`.
+
+Get started:
+
+```bash
+npx create-ui-bridge-wrapper my-thing
+```
+
+See:
+
+- [Wrapper authoring guide](./docs/wrappers/authoring-guide.md)
+- [`@qontinui/wrapper-gmail`](https://github.com/qontinui/qontinui-wrappers/tree/main/packages/wrapper-gmail) — api-only reference wrapper
+- [`@qontinui/wrapper-v0`](https://github.com/qontinui/qontinui-wrappers/tree/main/packages/wrapper-v0) — api + Playwright fallback reference wrapper
+- [`packages/ui-bridge-wrapper/`](./packages/ui-bridge-wrapper/) — the runtime
+- [`packages/create-ui-bridge-wrapper/`](./packages/create-ui-bridge-wrapper/) — the scaffold CLI
 
 ## Quick Start
 
