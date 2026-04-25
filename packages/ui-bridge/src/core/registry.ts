@@ -362,6 +362,13 @@ function getElementState(element: HTMLElement): ElementState {
   const ariaExpanded = element.getAttribute('aria-expanded');
   if (ariaExpanded !== null) {
     state.ariaExpanded = ariaExpanded === 'true';
+  } else if (element instanceof HTMLDetailsElement) {
+    state.ariaExpanded = element.open;
+  } else if (element.tagName === 'SUMMARY') {
+    const parentDetails = element.closest('details');
+    if (parentDetails instanceof HTMLDetailsElement) {
+      state.ariaExpanded = parentDetails.open;
+    }
   }
   const ariaCheckedAttr = element.getAttribute('aria-checked');
   if (ariaCheckedAttr !== null) {
@@ -1481,6 +1488,7 @@ export class UIBridgeRegistry {
       menuitem: 'menuitem',
       tab: 'tab',
       dialog: 'dialog',
+      disclosure: 'group',
       custom: undefined,
       switch: 'switch',
       slider: 'slider',

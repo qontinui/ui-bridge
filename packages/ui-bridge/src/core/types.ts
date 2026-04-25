@@ -206,6 +206,7 @@ export type ElementType =
   | 'menuitem'
   | 'tab'
   | 'dialog'
+  | 'disclosure'
   | 'custom'
   | 'switch'
   | 'slider'

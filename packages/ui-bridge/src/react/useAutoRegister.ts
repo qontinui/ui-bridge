@@ -221,6 +221,9 @@ function inferElementType(element: HTMLElement): ElementType {
       return 'textarea';
     case 'option':
       return 'option';
+    case 'details':
+    case 'summary':
+      return 'disclosure';
     default:
       return 'generic';
   }
@@ -249,6 +252,7 @@ function inferActions(type: ElementType): StandardAction[] {
     tab: [...baseActions, 'click', 'select', 'middleClick'],
     menuitem: [...baseActions, 'click'],
     dialog: [...baseActions],
+    disclosure: [...baseActions, 'click', 'toggle'],
     menu: [...baseActions],
     form: [...baseActions, 'submit', 'reset'],
     custom: [...baseActions, 'click'],

@@ -32,6 +32,7 @@ const INTERACTIVE_SELECTORS = [
   '[onclick]',
   '[data-ui-element]',
   '[data-testid]',
+  'details > summary',
 ];
 
 const COMBINED_SELECTOR = INTERACTIVE_SELECTORS.join(', ');
@@ -45,6 +46,7 @@ function inferType(el: HTMLElement): string {
   if (tag === 'button') return 'button';
   if (tag === 'select') return 'select';
   if (tag === 'textarea') return 'textarea';
+  if (tag === 'details' || tag === 'summary') return 'disclosure';
   if (tag === 'input') {
     const inputType = (el as HTMLInputElement).type?.toLowerCase() ?? 'text';
     if (inputType === 'checkbox') return 'checkbox';
@@ -70,6 +72,7 @@ function inferActions(type: string): string[] {
     case 'checkbox':
     case 'radio':
     case 'switch':
+    case 'disclosure':
       return ['click', 'toggle'];
     case 'select':
     case 'combobox':
