@@ -604,9 +604,40 @@ export async function executeCommand(
     // Control — Snapshot & Elements
     // ======================================================================
 
-    case 'getControlSnapshot':
+    case 'getControlSnapshot': {
+      // F3: include registration metadata + route so callers can distinguish
+      // "no elements on this page" from "this app has no bridge coverage".
+      // Computed from public registry APIs; degrades gracefully if the global
+      // registry is unavailable for any reason.
+      let route: string | undefined;
+      let registration: {
+        totalRegistered: number;
+        everHadRegistrations: boolean;
+        byRoute: Record<string, number>;
+      } = {
+        totalRegistered: elements.length,
+        everHadRegistrations: false,
+        byRoute: {},
+      };
+      try {
+        const reg = getGlobalRegistry();
+        registration = {
+          totalRegistered: elements.length,
+          everHadRegistrations: reg.hasEverHadRegistrations(),
+          byRoute: reg.getCountsByRoute(),
+        };
+      } catch {
+        // Fall back to the conservative default above.
+      }
+      if (typeof window !== 'undefined' && window.location?.pathname) {
+        route = window.location.pathname;
+      }
+      const now = Date.now();
       return {
-        timestamp: Date.now(),
+        timestamp: now,
+        snapshotTakenAtMs: now,
+        ...(route !== undefined ? { route } : {}),
+        registration,
         elements: elements.map(elementToSnapshot),
         components: components.map((c) => ({
           id: c.id,
@@ -624,6 +655,7 @@ export async function executeCommand(
         })),
         activeRuns: [],
       };
+    }
 
     case 'getElementState': {
       const el = getElement(payload.id as string);
