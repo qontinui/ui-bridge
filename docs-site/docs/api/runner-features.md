@@ -314,6 +314,65 @@ States: `present`, `visible`, `enabled`, `disabled`, `value-not-empty`,
 
 `value-not-empty` also returns true for a checked checkbox.
 
+### Predicate-shape (registry-driven)
+
+Same path; selected when the body has a `predicate` key. Resolves on
+the first registered element that matches `id` / `label` / `testId` /
+CSS `selector`, or returns `reason: "timeout"` after `timeoutMs`.
+
+```http
+POST /ai/wait-for-element
+{
+  "predicate": { "label": "Save" },
+  "requirement": "visible",
+  "pollMs": 100,
+  "timeoutMs": 5000
+}
+```
+
+`requirement`: `"registered"` (default) | `"visible"` | `"has-layout"`.
+`predicate.selector` falls back to `document.querySelector` per poll;
+the other keys hit the registry directly. Defaults: `pollMs` 100
+(clamped `[50,1000]`), `timeoutMs` 5000 (clamped `[100,60000]`).
+
+Response on match: `{ element: {id, label, type, ...}, elapsedMs }`.
+Response on timeout: `{ reason: "timeout", elapsedMs, closestMatch? }`
+where `closestMatch` is populated when a predicate-matching element
+exists but fails the `requirement` filter.
+
+The legacy state-shape above (with `elementId` + `state`) and the
+predicate-shape are routed by body shape on the same path — both keep
+working.
+
+## Wait-for-route-change
+
+Drop-in for `sleep 2` after a click that triggers SPA navigation.
+Resolves on the first matching `navigation:change` from the
+ChangeTracker. Has a recent-buffer fast-path: if a matching transition
+fired within the last `timeoutMs` ms, returns immediately with
+`elapsedMs: 0`.
+
+```http
+POST /ai/wait-for-route-change
+{
+  "fromRoute": "/settings",
+  "toRoute": "^/dashboard(/.*)?$",
+  "matchMode": "regex",
+  "timeoutMs": 5000
+}
+```
+
+`matchMode`: `"exact"` (default) | `"prefix"` | `"regex"`. Invalid
+regex returns 400. Defaults: `timeoutMs` 5000 (clamped `[100,60000]`).
+`fromRoute` and `toRoute` are both optional — omit either to wildcard
+that side.
+
+Response on match: `{ from, to, elapsedMs }`.
+Response on timeout: `{ reason: "timeout", lastKnownRoute?, elapsedMs }`.
+
+Aliased at `/control/wait-for-route-change` for symmetry with the rest
+of the `/control/` path family.
+
 ## ai/find — what gets matched
 
 `POST /ai/find { query: "..." }` matches the query against the following
@@ -394,11 +453,31 @@ settle or after the timeout.
 ## Console & network monitoring
 
 ```http
-GET /control/console-errors
+GET /control/console-errors                  # legacy: { errors, count }
+GET /control/console-errors?sinceId=N&limit=M # cursor form
 GET /sdk/network-requests
 ```
 
 `console-errors` returns the captured browser-console error buffer.
+Each entry has a monotonic `id`. The cursor form (when `sinceId` is
+present) returns:
+
+```json
+{
+  "errors": [...],          // entries with id > sinceId, up to limit
+  "nextSinceId": 42,         // pass back as sinceId on the next call
+  "droppedCount": 3,         // running total of evictions; growth between
+                             // calls means you fell behind the buffer
+  "bufferedCount": 250,      // current buffer size
+  "count": 9                 // legacy, still present
+}
+```
+
+Default limit 50, max 500; buffer capacity 250 by default
+(`QONTINUI_UI_BRIDGE_ERROR_BUFFER_CAPACITY` env var to tune).
+Without `sinceId`, the response keeps the legacy `{errors, count}`
+shape verbatim.
+
 `sdk/network-requests` is populated when an SDK is connected;
 otherwise empty.
 
@@ -411,6 +490,20 @@ curl -X POST $BASE/control/page/evaluate \
 ```
 
 Returns the value of the expression. Async expressions are awaited.
+
+The default response shape is conditional: scalars come back as
+`{ result: { value } }`, objects as `{ result }`. Pass `unwrap: true`
+for a uniform shape that doesn't depend on the expression's return
+type — preferred for new code.
+
+```bash
+curl -X POST $BASE/control/page/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"expression":"document.title","unwrap":true}'
+```
+
+`unwrap=true` response: `{ value: <result>, type: "scalar" | "object" | "undefined" | "function" | "null" }`. The legacy
+conditional shape is still emitted when `unwrap` is omitted or false.
 
 **Security filter:** the evaluator rejects expressions matching
 `\bfetch\s*\(`. Use `window["fet"+"ch"]("/url")` for fetch tests
