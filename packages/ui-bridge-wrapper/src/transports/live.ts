@@ -9,11 +9,14 @@
  * Frame shapes match the Phase 1 runner protocol:
  *
  *   client -> server:
- *     { "type": "register", "transport": "websocket", "appId", "appName" }
+ *     { "type": "register", "transport": "websocket",
+ *       "appId", "appName", "appType",
+ *       "framework"?, "version"?, "capabilities"?,
+ *       "origin"?, "pageUrl"? }
  *     { "type": "response", "commandId", "success", "result"?, "error"? }
  *
  *   server -> client:
- *     { "type": "ack" }
+ *     { "type": "registered", "appId", "connId", "acceptedAt" }
  *     { "type": "command", "commandId", "action", "payload"? }
  *
  * The transport also exposes `dispatch` for direct, self-issued commands —
@@ -32,6 +35,22 @@ export interface LiveTransportOptions {
   handshakeTimeoutMs?: number;
   /** Bearer token for the `Authorization` header on the WebSocket upgrade. */
   authToken?: string;
+  /**
+   * App-type identifier — required by the runner's `RegisterFrame` schema
+   * (`mcp/ws_relay.rs`). Common values: `"web"`, `"mobile"`, `"native"`,
+   * `"extension"`, `"wrapper"`. Defaults to `"wrapper"` when not provided.
+   */
+  appType?: string;
+  /** UI framework hint forwarded to `app_registry` (e.g. `"react"`, `"vue"`). */
+  framework?: string;
+  /** Wrapper version forwarded to `app_registry`. */
+  version?: string;
+  /** Capability strings forwarded to `app_registry` (informational). */
+  capabilities?: string[];
+  /** Origin URL forwarded to `app_registry` (informational). */
+  origin?: string;
+  /** Page URL forwarded to `app_registry` (informational). */
+  pageUrl?: string;
 }
 
 /** Context delivered to live-session handlers. */
@@ -63,6 +82,16 @@ interface RegisterFrame {
   transport: 'websocket';
   appId?: string;
   appName?: string;
+  /**
+   * Required by the runner's `RegisterFrame` deserializer; defaults to
+   * `"wrapper"` if the caller did not configure `options.appType`.
+   */
+  appType: string;
+  framework?: string;
+  version?: string;
+  capabilities?: string[];
+  origin?: string;
+  pageUrl?: string;
 }
 
 interface AckFrame {
@@ -161,7 +190,13 @@ export class LiveSessionTransport extends BaseTransport {
             transport: 'websocket',
             appId: this.appId,
             appName: this.appName,
+            appType: this.opts.appType ?? 'wrapper',
           };
+          if (this.opts.framework !== undefined) frame.framework = this.opts.framework;
+          if (this.opts.version !== undefined) frame.version = this.opts.version;
+          if (this.opts.capabilities !== undefined) frame.capabilities = this.opts.capabilities;
+          if (this.opts.origin !== undefined) frame.origin = this.opts.origin;
+          if (this.opts.pageUrl !== undefined) frame.pageUrl = this.opts.pageUrl;
           ws.send(JSON.stringify(frame));
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
