@@ -1658,15 +1658,16 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // effect run) calls `pruneDisconnectedEntries` up front to catch
       // that leak the moment a new consumer attaches; and the scan
       // path naturally drops disconnected entries on subsequent walks.
+      const bboxUntrackers = bboxUntrackersRef.current;
       const unregisterIfDisconnected = (ref: React.MutableRefObject<Map<HTMLElement, string>>) => {
         const stillAlive = new Map<HTMLElement, string>();
         ref.current.forEach((id, element) => {
           if (element.isConnected) {
             stillAlive.set(element, id);
           } else {
-            const untrack = bboxUntrackersRef.current.get(id);
+            const untrack = bboxUntrackers.get(id);
             untrack?.();
-            bboxUntrackersRef.current.delete(id);
+            bboxUntrackers.delete(id);
             bridge.registry.unregisterElement(id);
           }
         });

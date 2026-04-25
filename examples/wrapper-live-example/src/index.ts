@@ -42,7 +42,7 @@ function parseArgs(argv: readonly string[]): CliConfig {
     return undefined;
   };
   const runnerUrl =
-    flag('runner-url') ?? process.env.RUNNER_URL ?? 'ws://127.0.0.1:1420/ui-bridge/ws';
+    flag('runner-url') ?? process.env.RUNNER_URL ?? 'ws://127.0.0.1:9876/ui-bridge/ws';
   const appId = flag('app-id') ?? process.env.APP_ID ?? 'wrapper-live-example';
   const appName = flag('app-name') ?? process.env.APP_NAME ?? 'Wrapper Live Example';
   const appType = flag('app-type') ?? process.env.APP_TYPE ?? 'wrapper';

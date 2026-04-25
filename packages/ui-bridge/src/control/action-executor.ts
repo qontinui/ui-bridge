@@ -88,7 +88,7 @@ import type {
  * Detects regex patterns with nested quantifiers that can cause catastrophic
  * backtracking (ReDoS). Matches constructs like (a+)+, (a*)+, (a+)*, etc.
  */
-function hasNestedQuantifiers(pattern: string): boolean {
+export function hasNestedQuantifiers(pattern: string): boolean {
   // Matches a group containing a quantifier (+, *, {n,}) followed by another quantifier
   return /(\((?:[^()]*[+*}])[^()]*\))[+*?]|\(\?:[^()]*[+*}][^()]*\)[+*?]/.test(pattern);
 }

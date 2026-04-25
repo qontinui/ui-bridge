@@ -18,6 +18,7 @@ import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type { SemanticSnapshot } from '../ai/types';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
+import { hasNestedQuantifiers } from '../control/action-executor';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
@@ -2784,8 +2785,17 @@ export async function executeCommand(
       if (method)
         filtered = filtered.filter((r) => r.method.toLowerCase() === method.toLowerCase());
       if (urlPattern) {
-        const re = new RegExp(urlPattern);
-        filtered = filtered.filter((r) => re.test(r.url));
+        if (urlPattern.length > 200 || hasNestedQuantifiers(urlPattern)) {
+          filtered = filtered.filter((r) => r.url.includes(urlPattern));
+        } else {
+          try {
+            const re = new RegExp(urlPattern);
+            filtered = filtered.filter((r) => re.test(r.url));
+          } catch {
+            // invalid regex — fall back to substring match
+            filtered = filtered.filter((r) => r.url.includes(urlPattern));
+          }
+        }
       }
       if (failuresOnly) filtered = filtered.filter((r) => r.error || (r.status && r.status >= 400));
       return { requests: filtered.slice(-limit), total: filtered.length, timestamp: Date.now() };
@@ -3656,9 +3666,12 @@ export async function executeCommand(
       if (spec.textMatches !== undefined) {
         checked++;
         const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
-        // Safety: cap pattern length to prevent ReDoS
-        const pattern =
+        // Safety: cap pattern length and check for nested quantifiers to prevent ReDoS
+        const rawPattern =
           spec.textMatches.length > 500 ? spec.textMatches.slice(0, 500) : spec.textMatches;
+        const pattern = hasNestedQuantifiers(rawPattern)
+          ? rawPattern.replace(/[+*?{}]/g, '')
+          : rawPattern;
         try {
           const re = new RegExp(pattern);
           if (!re.test(actualText)) {
