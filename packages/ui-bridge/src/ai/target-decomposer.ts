@@ -14,6 +14,14 @@
  *
  *   "third item in the list"
  *   → { elementText: "item", container: "list", ordinal: 3 }
+ *
+ *   "Advanced details toggle"
+ *   → { elementText: "Advanced", elementType: "disclosure" }
+ *
+ * Element-type recognition is driven by a single synonym table
+ * (`ELEMENT_TYPE_SYNONYMS`). Multi-word phrases beat single words, so adding a
+ * new family (or extending an existing one) is a one-line edit and naturally
+ * resolves precedence ("details toggle" → disclosure, before "toggle" → switch).
  */
 
 /**
@@ -67,33 +75,165 @@ export interface DecomposedTarget {
   placeholder?: string;
   /** Query value also probed against the `name` attribute. */
   name?: string;
+  /**
+   * @internal — true when `elementType` came from a soft-hint synonym
+   * (e.g., "toggle" → switch, "details" → disclosure). Consumers like
+   * `find.ts` use this flag to retry a label-only search if the
+   * type-constrained search returns nothing. Not part of the stable
+   * external contract; external clients should ignore it.
+   */
+  __softTypeHint?: boolean;
 }
 
 // Noise words to strip from descriptions
 const NOISE_WORDS = new Set(['the', 'a', 'an', 'that', 'this', 'those', 'these', 'its', 'my']);
 
-// Element type keywords — order matters (longer matches first)
-const ELEMENT_TYPES: Array<{ pattern: RegExp; type: string }> = [
-  { pattern: /\btext\s*(?:area|field|box)\b/i, type: 'textarea' },
-  { pattern: /\bdrop\s*down\b/i, type: 'select' },
-  { pattern: /\bcheck\s*box\b/i, type: 'checkbox' },
-  { pattern: /\bradio\s*button\b/i, type: 'radio' },
-  { pattern: /\bbutton\b/i, type: 'button' },
-  { pattern: /\binput\b/i, type: 'input' },
-  { pattern: /\bfield\b/i, type: 'input' },
-  { pattern: /\btab\b/i, type: 'tab' },
-  { pattern: /\blink\b/i, type: 'link' },
-  { pattern: /\bicon\b/i, type: 'button' },
-  { pattern: /\bswitch\b/i, type: 'switch' },
-  { pattern: /\btoggle\b/i, type: 'switch' },
-  { pattern: /\bslider\b/i, type: 'slider' },
-  { pattern: /\blabel\b/i, type: 'label' },
-  { pattern: /\bheading\b/i, type: 'heading' },
-  { pattern: /\bmenu\b/i, type: 'menu' },
-  { pattern: /\bmenu\s*item\b/i, type: 'menuitem' },
-  { pattern: /\bselect\b/i, type: 'select' },
-  { pattern: /\bcombo\s*box\b/i, type: 'select' },
+/**
+ * Element-type synonym table.
+ *
+ * The decomposer scans synonyms in priority order: longer phrases first so
+ * "details toggle" beats "toggle", "drop down" beats "drop", etc. This single
+ * data structure replaces a scattered if/else regex chain — adding a new
+ * widget family is a one-line edit and precedence falls out of phrase length.
+ *
+ * `softHint: true` marks synonyms that the surrounding language can override
+ * (e.g., the bare verb "toggle" is a soft hint; in "details toggle" the
+ * disclosure phrase wins). Soft hints are still emitted into `elementType`
+ * but downstream consumers (see `find.ts`) treat them as advisory: if the
+ * type-constrained search returns nothing, a label-only retry is attempted.
+ */
+interface ElementTypeSynonym {
+  /** Element type to emit */
+  type: string;
+  /** Synonyms (case-insensitive). Multi-word entries match the literal phrase
+   *  with flexible whitespace (e.g., "drop down" also matches "dropdown"). */
+  synonyms: string[];
+  /** When true, the matcher in find.ts will retry without `type=` if the
+   *  type-constrained search produces no viable matches. */
+  softHint?: boolean;
+}
+
+const ELEMENT_TYPE_SYNONYMS: ElementTypeSynonym[] = [
+  // Inputs / form
+  { type: 'textarea', synonyms: ['text area', 'text field', 'text box'] },
+  { type: 'input', synonyms: ['input', 'field', 'textbox'] },
+  { type: 'select', synonyms: ['drop down', 'dropdown', 'combo box', 'combobox', 'select'] },
+  { type: 'checkbox', synonyms: ['check box', 'checkbox'] },
+  { type: 'radio', synonyms: ['radio button', 'radio'] },
+
+  // Buttons / links
+  // 'icon' is a soft hint — "settings icon" is usually a button but could
+  // also be a passive image; let the label match decide if the type fails.
+  { type: 'button', synonyms: ['button'] },
+  { type: 'button', synonyms: ['icon'], softHint: true },
+  { type: 'link', synonyms: ['link', 'hyperlink', 'anchor'] },
+
+  // Navigation
+  { type: 'tab', synonyms: ['tab'] },
+  { type: 'menuitem', synonyms: ['menu item', 'menuitem'] },
+  { type: 'menu', synonyms: ['menu'] },
+
+  // Disclosure / accordion family
+  // Multi-word phrases (e.g., "details toggle") sit above the bare "toggle"
+  // synonym below so they win precedence. The single-word "details" is
+  // softHint because it commonly appears as label text ("Job details"); a
+  // label match should still work when nothing else flags this as
+  // a disclosure.
+  {
+    type: 'disclosure',
+    synonyms: [
+      'details toggle',
+      'details panel',
+      'disclosure',
+      'accordion',
+      'collapsible',
+      'expander',
+      'expandable',
+    ],
+  },
+  {
+    type: 'disclosure',
+    synonyms: ['expand', 'collapse', 'details'],
+    softHint: true,
+  },
+
+  // Switch / toggle
+  // Plain "toggle" is a soft hint — "details toggle" already routed above to
+  // disclosure; in other contexts the matcher should fall back to a
+  // label-only retry rather than hard-pinning the type.
+  { type: 'switch', synonyms: ['switch'] },
+  { type: 'switch', synonyms: ['toggle'], softHint: true },
+
+  // Misc
+  { type: 'slider', synonyms: ['slider'] },
+  { type: 'label', synonyms: ['label'] },
+  { type: 'heading', synonyms: ['heading'] },
 ];
+
+/**
+ * Compiled regex form of ELEMENT_TYPE_SYNONYMS, with an order that always
+ * tries the longest phrase first. Built once at module load.
+ *
+ * Each compiled entry preserves a back-reference to the source synonym so
+ * downstream consumers (e.g., `find.ts`) can ask "was this a soft hint?".
+ */
+interface CompiledSynonym {
+  pattern: RegExp;
+  type: string;
+  softHint: boolean;
+  /** The original synonym text — useful for debugging / introspection. */
+  synonym: string;
+  /** Word count of the synonym; longer phrases sort first. */
+  wordCount: number;
+}
+
+function compileSynonym(type: string, synonym: string, softHint: boolean): CompiledSynonym {
+  // Multi-word synonyms require at least one whitespace between tokens — we
+  // intentionally do NOT collapse "text box" to also match "textbox", because
+  // "textbox" is a distinct ARIA role that maps to `input`. The synonym table
+  // lists both forms explicitly when they should both be recognised
+  // (e.g., "drop down" + "dropdown", "check box" + "checkbox").
+  const tokens = synonym.trim().split(/\s+/);
+  const escaped = tokens.map((t) => escapeRegExp(t)).join('\\s+');
+  return {
+    pattern: new RegExp(`\\b${escaped}\\b`, 'i'),
+    type,
+    softHint,
+    synonym,
+    wordCount: tokens.length,
+  };
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const COMPILED_ELEMENT_TYPE_SYNONYMS: CompiledSynonym[] = (() => {
+  const compiled: CompiledSynonym[] = [];
+  for (const entry of ELEMENT_TYPE_SYNONYMS) {
+    for (const syn of entry.synonyms) {
+      compiled.push(compileSynonym(entry.type, syn, entry.softHint === true));
+    }
+  }
+  // Sort by word count desc, then synonym length desc, so longer phrases win.
+  compiled.sort((a, b) => {
+    if (b.wordCount !== a.wordCount) return b.wordCount - a.wordCount;
+    return b.synonym.length - a.synonym.length;
+  });
+  return compiled;
+})();
+
+/**
+ * Whether the decomposer's type guess on this result is advisory.
+ *
+ * Soft-hint synonyms (e.g., bare "toggle", "details") set
+ * `__softTypeHint = true` on the decomposed result. Consumers such as
+ * `find.ts` use this to relax type pinning when the type-constrained
+ * search returns nothing — preserving label-driven matches.
+ */
+export function isSoftTypeHint(decomposed: DecomposedTarget): boolean {
+  return decomposed.__softTypeHint === true;
+}
 
 // Spatial relation patterns — order matters (longer/more specific first)
 const SPATIAL_PATTERNS: Array<{ pattern: RegExp; relation: SpatialRelation }> = [
@@ -280,13 +420,19 @@ function extractOrdinal(text: string, result: DecomposedTarget): string {
 }
 
 /**
- * Extract element type from description
+ * Extract element type from description.
+ *
+ * Driven by the compiled synonym table. Longer phrases match first so
+ * "details toggle" → disclosure beats "toggle" → switch.
  */
 function extractElementType(text: string, result: DecomposedTarget): string {
-  for (const { pattern, type } of ELEMENT_TYPES) {
-    if (pattern.test(text)) {
-      result.elementType = type;
-      return text.replace(pattern, ' ').trim();
+  for (const entry of COMPILED_ELEMENT_TYPE_SYNONYMS) {
+    if (entry.pattern.test(text)) {
+      result.elementType = entry.type;
+      if (entry.softHint) {
+        result.__softTypeHint = true;
+      }
+      return text.replace(entry.pattern, ' ').trim();
     }
   }
   return text;

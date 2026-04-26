@@ -218,3 +218,159 @@ describe('find() — broadened matcher (B3)', () => {
     expect(result.decomposed.name).toBe('foo');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Disclosure-family integration — verifies that ai/find lands on a
+// type: 'disclosure' element even when the natural-language query contains
+// the verb "toggle" (which the decomposer maps to switch as a soft hint).
+//
+// This is the regression that motivated Phase 2: "Advanced details toggle"
+// against a registered disclosure should succeed, not fall through to
+// found:false.
+// ---------------------------------------------------------------------------
+describe('find() — disclosure family + soft-type fallback', () => {
+  let engine: SearchEngine;
+
+  beforeEach(() => {
+    engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+  });
+
+  it('finds a disclosure widget by its label when verb maps to "switch"', () => {
+    // Real-world fixture: Builder UI registers an "Advanced" disclosure with
+    // type: 'disclosure'. Free-form NL query says "Advanced details toggle".
+    const button = document.createElement('button');
+    button.textContent = 'Advanced details';
+    attachToDocument(button);
+
+    const reg = makeRegistered('ui-bridge-advanced-disclosure', button, {
+      type: 'disclosure',
+      label: 'Advanced details',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('Advanced details toggle', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('ui-bridge-advanced-disclosure');
+    }
+  });
+
+  it('finds a disclosure widget by the bare phrase "details toggle"', () => {
+    const button = document.createElement('button');
+    button.textContent = 'Settings details';
+    attachToDocument(button);
+
+    const reg = makeRegistered('settings-disclosure', button, {
+      type: 'disclosure',
+      label: 'Settings details',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('Settings details toggle', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('settings-disclosure');
+    }
+  });
+
+  it('still finds a real switch by "X toggle" when no disclosure exists', () => {
+    // Regression: ensure the disclosure synonyms didn't break existing
+    // switch-style elements. "dark mode toggle" → switch type, and a
+    // genuine type: 'switch' element should still be matched.
+    const button = document.createElement('button');
+    button.setAttribute('role', 'switch');
+    button.textContent = 'Dark mode';
+    attachToDocument(button);
+
+    const reg = makeRegistered('dark-mode-switch', button, {
+      type: 'switch',
+      label: 'Dark mode',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('Dark mode toggle', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('dark-mode-switch');
+    }
+  });
+
+  it('soft-type fallback: prefers a disclosure with matching label over a switch with non-matching label', () => {
+    // Two fixtures co-exist on the page:
+    //   - a disclosure labelled "Advanced details" (the real target)
+    //   - a switch labelled "Notifications" (a distractor)
+    // Query "Advanced details toggle" decomposes to {type: switch,
+    // text: "Advanced details"}. With the soft-hint fallback, the matcher
+    // should land on the disclosure, not the switch.
+    const disclosureBtn = document.createElement('button');
+    disclosureBtn.textContent = 'Advanced details';
+
+    const switchBtn = document.createElement('button');
+    switchBtn.setAttribute('role', 'switch');
+    switchBtn.textContent = 'Notifications';
+
+    attachToDocument(disclosureBtn, switchBtn);
+
+    const disclosureReg = makeRegistered('adv-disclosure', disclosureBtn, {
+      type: 'disclosure',
+      label: 'Advanced details',
+    });
+    const switchReg = makeRegistered('notif-switch', switchBtn, {
+      type: 'switch',
+      label: 'Notifications',
+    });
+    engine.updateElements([disclosureReg, switchReg]);
+
+    const result = find('Advanced details toggle', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('adv-disclosure');
+    }
+  });
+
+  it('soft-type fallback: bare verb "expand X" lands on disclosure', () => {
+    // The decomposer maps bare "expand" → disclosure as a soft hint. With a
+    // single disclosure on the page, ai/find should land on it directly.
+    // (No fallback triggers because the type-constrained search already
+    // finds the right element.)
+    const button = document.createElement('button');
+    button.textContent = 'Logs';
+    attachToDocument(button);
+
+    const reg = makeRegistered('logs-disclosure', button, {
+      type: 'disclosure',
+      label: 'Logs',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('expand Logs', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('logs-disclosure');
+    }
+  });
+
+  it('soft-type fallback: when type-constrained search misses, label-only retry succeeds', () => {
+    // Contrived but precise: a button (not a disclosure) labelled "Job
+    // details" exists. Query "Job details" decomposes to {type:
+    // 'disclosure' (soft hint), text: 'Job'}. The first pass with
+    // type=disclosure misses. The fallback retries without `type` and
+    // lands on the button via label match.
+    const button = document.createElement('button');
+    button.textContent = 'Job details';
+    attachToDocument(button);
+
+    const reg = makeRegistered('job-details-btn', button, {
+      type: 'button',
+      label: 'Job details',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('Job details', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('job-details-btn');
+    }
+  });
+});

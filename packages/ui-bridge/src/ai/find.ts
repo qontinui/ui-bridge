@@ -15,7 +15,7 @@
 
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from './types';
 import type { SearchEngine } from './search-engine';
-import { decomposeTarget } from './target-decomposer';
+import { decomposeTarget, isSoftTypeHint } from './target-decomposer';
 import type { DecomposedTarget } from './target-decomposer';
 
 // ============================================================================
@@ -191,7 +191,7 @@ export function find(
   }
 
   // Execute search
-  const searchResponse = engine.search(criteria);
+  let searchResponse = engine.search(criteria);
 
   // Apply context-aware adjustments
   let results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
@@ -207,7 +207,40 @@ export function find(
   }
 
   // Filter by confidence threshold
-  const viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  let viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+
+  // -----------------------------------------------------------------------
+  // Soft-type fallback
+  //
+  // If the decomposer flagged the elementType as a soft hint (e.g., bare
+  // "toggle" → switch, "details" → disclosure) AND no viable results came
+  // back, retry without the type constraint. This preserves label-driven
+  // matches when the verb-to-type guess is wrong (e.g., "Advanced details
+  // toggle" should land on a `type: disclosure` element even though the
+  // hint pointed at `switch`).
+  //
+  // Important: only retry when we actually narrowed by type. If the user
+  // gave structured criteria and pinned `type` themselves, we don't relax
+  // it — they meant it.
+  // -----------------------------------------------------------------------
+  if (
+    viableResults.length === 0 &&
+    typeof query === 'string' &&
+    isSoftTypeHint(decomposed) &&
+    criteria.type
+  ) {
+    const relaxed: SearchCriteria = { ...criteria };
+    delete relaxed.type;
+    searchResponse = engine.search(relaxed);
+    results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+    if (decomposed.stateFilter) {
+      results = applyStateFilter(results, decomposed.stateFilter);
+    }
+    if (decomposed.ordinal) {
+      results = applyOrdinalFilter(results, decomposed.ordinal);
+    }
+    viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  }
 
   const durationMs = performance.now() - startTime;
 
