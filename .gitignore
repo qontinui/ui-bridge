@@ -9,6 +9,7 @@ venv/
 
 # Build outputs
 dist/
+!packages/ui-bridge/dist/
 build/
 *.tsbuildinfo
 .next/
