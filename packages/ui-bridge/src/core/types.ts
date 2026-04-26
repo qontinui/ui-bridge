@@ -9,6 +9,13 @@ import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-t
 export type { CapturedError } from '../debug/browser-capture-types';
 import type { ErrorSeverity } from '../debug/error-severity';
 import type { ErrorImpact } from '../debug/error-impact';
+import type { SnapshotPageContext } from '../navigation/types';
+import type { SnapshotModalContext } from '../modal/types';
+import type { SnapshotToastContext } from '../toast/types';
+import type { SnapshotRelationshipContext } from '../relationships/types';
+import type { SnapshotDragDropContext } from '../drag-drop/types';
+import type { SnapshotUndoContext } from '../undo/types';
+import type { SnapshotShortcutContext } from '../shortcuts/types';
 
 // ============================================================================
 // Core Element Types
@@ -1252,7 +1259,63 @@ export interface BridgeSnapshot {
     description?: string;
     stepCount: number;
   }>;
+  /** Page/route context (populated when a navigationTracker enricher is registered) */
+  page?: SnapshotPageContext;
+  /** Modal/dialog/popover context (populated when a modalDetector enricher is registered) */
+  modalStack?: SnapshotModalContext;
+  /** Toast/notification context (populated when a toastCapture enricher is registered) */
+  toasts?: SnapshotToastContext;
+  /** Element-relationship context (populated when a relationshipTracker enricher is registered) */
+  relationships?: SnapshotRelationshipContext;
+  /** Drag-and-drop context (populated when a dragDropDetector enricher is registered) */
+  dragDrop?: SnapshotDragDropContext;
+  /** Undo/redo context (populated when an undoTracker enricher is registered) */
+  undoRedo?: SnapshotUndoContext;
+  /** Keyboard shortcut context (populated when a shortcutTracker enricher is registered) */
+  shortcuts?: SnapshotShortcutContext;
 }
+
+/**
+ * Canonical enricher slot. Each tracker exposes a `getSnapshot*Context()` method
+ * that the registry calls during `createSnapshot`/`createSnapshotAsync`. Slots
+ * that take element pairs receive them from the registry — callers don't have
+ * to wire that themselves.
+ */
+export interface SnapshotEnrichers {
+  navigationTracker?: { getSnapshotPageContext(): SnapshotPageContext };
+  modalDetector?: { getSnapshotModalContext(): SnapshotModalContext };
+  toastCapture?: { getSnapshotToastContext(): SnapshotToastContext };
+  relationshipTracker?: {
+    getSnapshotRelationshipContext(
+      elements?: Array<{ id: string; element: Element }>
+    ): SnapshotRelationshipContext;
+  };
+  dragDropDetector?: {
+    getSnapshotDragDropContext(
+      elements?: Array<{ id: string; element: Element }>
+    ): SnapshotDragDropContext;
+  };
+  undoTracker?: { getSnapshotUndoContext(): SnapshotUndoContext };
+  shortcutTracker?: { getSnapshotShortcutContext(): SnapshotShortcutContext };
+}
+
+/**
+ * Pluggable snapshot enricher: receives base context and returns extra fields
+ * that get `Object.assign`ed onto the snapshot. Used for ad-hoc/custom trackers
+ * (e.g. runner sidebar tabs) without growing the canonical enricher set.
+ *
+ * `elements` is the live list of registered elements (id + DOM node pairs).
+ * `getActiveTab` is the same provider passed to `createSnapshot{,Async}` so
+ * enrichers that care about tab state can read it without separate plumbing.
+ * `snapshotSoFar` is the in-progress base snapshot — enrichers may inspect it
+ * (e.g. read `route` or already-attached canonical fields) but must not mutate
+ * it; return new fields instead.
+ */
+export type SnapshotEnricher = (ctx: {
+  elements: Array<{ id: string; element: Element }>;
+  getActiveTab?: () => string | null | undefined;
+  snapshotSoFar: BridgeSnapshot;
+}) => Record<string, unknown>;
 
 /**
  * Event types emitted by the bridge

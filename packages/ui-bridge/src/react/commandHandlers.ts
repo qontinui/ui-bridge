@@ -706,7 +706,7 @@ export async function executeCommand(
       // RegisteredElement carries them. Prior code emitted the much sparser
       // `{id,type,label,actions,state}` shape and dropped every other field.
       const serializeOpts = componentBasePath !== undefined ? { componentBasePath } : {};
-      return {
+      const result: Record<string, unknown> = {
         timestamp: now,
         snapshotTakenAtMs: now,
         ...(route !== undefined ? { route } : {}),
@@ -738,6 +738,27 @@ export async function executeCommand(
         })),
         activeRuns: [],
       };
+
+      // Run the registry's snapshot enrichers (canonical seven + any
+      // pluggable extras) so the relay snapshot picks up the same enriched
+      // fields as `registry.createSnapshot()`. Without this, fields like
+      // `page`, `modalStack`, `toasts`, `relationships`, `dragDrop`,
+      // `undoRedo`, `shortcuts` would never reach WS clients — exactly the
+      // drift class memory note `proj_issue_snapshot_two_channel_drift.md`
+      // is about. The relay shape isn't a `BridgeSnapshot` (workflows have
+      // `steps`, components have `state`/`elementIds`), but the enricher
+      // helper only mutates known canonical fields plus whatever custom
+      // enrichers `Object.assign`, so the cast is safe.
+      try {
+        const reg = getGlobalRegistry();
+        reg.runSnapshotEnrichers(result as unknown as import('../core/types').BridgeSnapshot);
+      } catch {
+        // Defensive: if the global registry is unavailable for any reason,
+        // fall through with the un-enriched relay shape rather than failing
+        // the whole snapshot.
+      }
+
+      return result;
     }
 
     case 'getElementState': {

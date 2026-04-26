@@ -366,19 +366,51 @@ export interface CreateHandlersConfig {
    * Accepts either the full BrowserEventCaptureLike or the legacy ConsoleCapturelike.
    */
   consoleCapture?: BrowserEventCaptureLike | ConsoleCapturelike;
-  /** Navigation tracker instance for page/route awareness in snapshots */
+  /**
+   * Navigation tracker instance for page/route awareness in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ navigationTracker })`
+   * is now the source of truth — `<UIBridgeProvider>` wires it automatically.
+   * This field is retained only because some callers still pass it, and because
+   * `modalDetector` / `undoTracker` etc. remain required for non-snapshot paths.
+   */
   navigationTracker?: NavigationTracker;
-  /** Shortcut tracker instance for keyboard shortcut discovery in snapshots */
+  /**
+   * Shortcut tracker instance for keyboard shortcut discovery in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ shortcutTracker })`
+   * is now the source of truth.
+   */
   shortcutTracker?: ShortcutTracker;
-  /** Modal detector instance for modal/dialog stack detection in snapshots */
+  /**
+   * Modal detector instance for modal/dialog stack detection in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ modalDetector })`
+   * is now the source of truth. Still consumed by non-snapshot code paths
+   * (e.g. action-executor modal scoping).
+   */
   modalDetector?: ModalDetector;
-  /** Toast capture instance for toast/notification detection in snapshots */
+  /**
+   * Toast capture instance for toast/notification detection in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ toastCapture })`
+   * is now the source of truth.
+   */
   toastCapture?: ToastCapture;
-  /** Relationship tracker instance for element relationship hints in snapshots */
+  /**
+   * Relationship tracker instance for element relationship hints in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ relationshipTracker })`
+   * is now the source of truth.
+   */
   relationshipTracker?: RelationshipTracker;
-  /** Drag-drop detector instance for drag source and drop zone discovery in snapshots */
+  /**
+   * Drag-drop detector instance for drag source and drop zone discovery in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ dragDropDetector })`
+   * is now the source of truth.
+   */
   dragDropDetector?: DragDropDetector;
-  /** Undo tracker instance for undo/redo awareness in snapshots */
+  /**
+   * Undo tracker instance for undo/redo awareness in snapshots.
+   * @deprecated For snapshot enrichment, the registry's `setEnrichers({ undoTracker })`
+   * is now the source of truth. Still REQUIRED for non-snapshot paths:
+   * `recordAction` (action history) and `/control/undo` / `/control/redo`.
+   */
   undoTracker?: UndoTracker;
   /** Spec store instance for serving loaded specs (defaults to global singleton) */
   specStore?: import('../specs/store').SpecStore;
@@ -691,28 +723,15 @@ export function createHandlers(
   // Console/browser event capture
   const consoleCapture = config.consoleCapture ?? null;
 
-  // Navigation tracker for page/route awareness
-  const navigationTracker = config.navigationTracker ?? null;
-
-  // Shortcut tracker for keyboard shortcut discovery
-  const shortcutTracker = config.shortcutTracker ?? null;
-
-  // Modal detector for modal/dialog stack
+  // Modal detector for modal-aware AI find scoping (kept; the registry
+  // owns snapshot.modalStack enrichment via setEnrichers).
   const modalDetector = config.modalDetector ?? null;
-
-  // Toast capture for notification detection
-  const toastCapture = config.toastCapture ?? null;
-
-  // Relationship tracker for element relationship hints
-  const relationshipTracker = config.relationshipTracker ?? null;
-
-  // Drag-drop detector for drag source and drop zone discovery
-  const dragDropDetector = config.dragDropDetector ?? null;
 
   // Navigation adapter for app-agnostic page navigation
   const navAdapter: NavigationAdapter = config.navigationAdapter ?? new WindowLocationAdapter();
 
-  // Undo tracker for undo/redo awareness
+  // Undo tracker for action recording (recordAction) and /control/undo
+  // /control/redo. Snapshot's undoRedo is enriched by the registry.
   const undoTracker = config.undoTracker ?? null;
 
   // Spec store for /control/specs
@@ -1864,12 +1883,21 @@ export function createHandlers(
           };
         }
 
-        // Enrich snapshot with page/route context
-        if (navigationTracker) {
-          snapshot.page = navigationTracker.getSnapshotPageContext();
-        }
-        // Fallback: always include basic page context from window.location
-        if (!snapshot.page) {
+        // Snapshot enrichment for the seven canonical tracker fields
+        // (page, modalStack, toasts, relationships, dragDrop, undoRedo,
+        // shortcuts) is now driven by `registry.createSnapshot()` itself —
+        // any host that mounts `<UIBridgeProvider>` wires those trackers
+        // through `registry.setEnrichers(...)` once at startup. The handler
+        // config still accepts tracker fields for non-snapshot paths
+        // (`recordAction`, `/control/undo`, `/control/redo`); see
+        // CreateHandlersConfig JSDoc for the deprecation note.
+
+        // Page-context fallback: handlers.ts can be used standalone (no React
+        // provider, so no `navigationTracker` enricher was ever wired). When
+        // the registry didn't populate `snapshot.page`, fill it in from
+        // window.location so external HTTP consumers always get a baseline
+        // page shape.
+        if (!snapshot.page && typeof window !== 'undefined') {
           snapshot.page = {
             url: window.location.href,
             title: document.title,
@@ -1878,49 +1906,6 @@ export function createHandlers(
             hash: window.location.hash,
             recentNavigations: [],
           };
-        }
-
-        // Enrich snapshot with keyboard shortcuts if shortcut tracker is available
-        if (shortcutTracker) {
-          snapshot.shortcuts = shortcutTracker.getSnapshotShortcutContext();
-        }
-
-        // Enrich snapshot with modal/dialog stack if detector is available
-        if (modalDetector) {
-          snapshot.modalStack = modalDetector.getSnapshotModalContext();
-        }
-
-        // Enrich snapshot with toast/notification state if capture is available
-        if (toastCapture) {
-          snapshot.toasts = toastCapture.getSnapshotToastContext();
-        }
-
-        // Enrich snapshot with element relationships if tracker is available
-        if (relationshipTracker) {
-          const allElements = registry.getAllElements() as Array<{ id: string; element: Element }>;
-          const elementPairs = allElements.map((el) => ({
-            id: el.id,
-            element: el.element,
-          }));
-          snapshot.relationships = relationshipTracker.getSnapshotRelationshipContext(elementPairs);
-        }
-
-        // Enrich snapshot with drag source and drop zone discovery if detector is available
-        if (dragDropDetector) {
-          const allElementsForDnD = registry.getAllElements() as Array<{
-            id: string;
-            element: Element;
-          }>;
-          const elementPairsForDnD = allElementsForDnD.map((el) => ({
-            id: el.id,
-            element: el.element,
-          }));
-          snapshot.dragDrop = dragDropDetector.getSnapshotDragDropContext(elementPairsForDnD);
-        }
-
-        // Enrich snapshot with undo/redo awareness if tracker is available
-        if (undoTracker) {
-          snapshot.undoRedo = undoTracker.getSnapshotUndoContext();
         }
 
         // Enrich snapshot with viewport/scroll context

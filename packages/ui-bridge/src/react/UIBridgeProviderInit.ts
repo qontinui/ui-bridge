@@ -123,6 +123,20 @@ export function initializeUIBridge({
     });
   }
 
+  // Wire the seven canonical trackers into the registry so any caller of
+  // `createSnapshot{,Async}` gets enriched output without manual glue —
+  // including non-React consumers (HTTP control endpoints, the WS server,
+  // window.__UI_BRIDGE__ tooling) that never see this provider directly.
+  registry.setEnrichers({
+    navigationTracker,
+    modalDetector,
+    toastCapture,
+    relationshipTracker,
+    dragDropDetector,
+    undoTracker,
+    shortcutTracker,
+  });
+
   return {
     registry,
     renderLog,
