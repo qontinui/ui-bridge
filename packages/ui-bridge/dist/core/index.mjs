@@ -1765,6 +1765,15 @@ var UIBridgeRegistry = class {
     this.storeListeners = /* @__PURE__ */ new Set();
     this.cachedSnapshot = null;
     this.notifyScheduled = false;
+    // ── Snapshot enricher slots ───────────────────────────────────────────────
+    // Canonical enrichers wire the seven first-party trackers (navigation, modal,
+    // toast, relationships, drag-drop, undo, shortcuts) into createSnapshot{,Async}
+    // so any caller of those methods gets enriched output without manual glue.
+    // `snapshotExtras` is the open-ended escape hatch for ad-hoc trackers (e.g.
+    // a runner sidebar tab map) that aren't worth promoting into the canonical
+    // set yet.
+    this.enrichers = {};
+    this.snapshotExtras = /* @__PURE__ */ new Map();
     this.options = options;
     this.__instanceTag = Math.random().toString(36).slice(2, 8);
   }
@@ -1776,6 +1785,31 @@ var UIBridgeRegistry = class {
    */
   getInstanceTag() {
     return this.__instanceTag;
+  }
+  // ============================================================================
+  // Snapshot Enricher Slots
+  // ============================================================================
+  /**
+   * Register/replace canonical enrichers (navigation/modal/toast/relationships/
+   * drag-drop/undo/shortcuts). HMR-safe — calling with a partial set merges into
+   * existing slots instead of clobbering them, so a remount that re-runs init
+   * for one tracker doesn't drop the others.
+   */
+  setEnrichers(e) {
+    this.enrichers = { ...this.enrichers, ...e };
+  }
+  /**
+   * Register a custom snapshot enricher. The returned object will be
+   * `Object.assign`ed onto the snapshot, so use unique top-level keys to avoid
+   * clobbering canonical fields. Returns a disposer.
+   */
+  registerSnapshotEnricher(name, fn) {
+    this.snapshotExtras.set(name, fn);
+    return () => this.unregisterSnapshotEnricher(name);
+  }
+  /** Remove a custom snapshot enricher by name */
+  unregisterSnapshotEnricher(name) {
+    this.snapshotExtras.delete(name);
   }
   /**
    * Subscribe to registry changes (for useSyncExternalStore).
@@ -2943,12 +2977,121 @@ var UIBridgeRegistry = class {
     }
   }
   /**
+   * Run every registered snapshot enricher (canonical + pluggable extras) and
+   * mutate `snapshot` in place with their output. Each call is wrapped in its
+   * own try/catch so a misbehaving tracker can never break the rest of the
+   * snapshot. Shared by `createSnapshot` and `createSnapshotAsync` so both
+   * paths emit identically-enriched output.
+   *
+   * Also exposed as the public {@link runSnapshotEnrichers} entry point for
+   * callers that build a snapshot shape outside `createSnapshot{,Async}` (e.g.
+   * the relay/WS dispatcher in `commandHandlers.getControlSnapshot`, which
+   * keeps a richer workflow + component shape but still wants the seven
+   * canonical fields). Routing both shapes through this single helper keeps
+   * the snapshot-two-channel-drift class structurally impossible — see
+   * memory note `proj_issue_snapshot_two_channel_drift.md`.
+   */
+  runSnapshotEnrichers(snapshot, options = {}) {
+    this.runEnrichers(snapshot, options);
+  }
+  runEnrichers(snapshot, options = {}) {
+    if (this.enrichers.navigationTracker) {
+      try {
+        snapshot.page = this.enrichers.navigationTracker.getSnapshotPageContext();
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] page enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.modalDetector) {
+      try {
+        snapshot.modalStack = this.enrichers.modalDetector.getSnapshotModalContext();
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] modalStack enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.toastCapture) {
+      try {
+        snapshot.toasts = this.enrichers.toastCapture.getSnapshotToastContext();
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] toasts enricher threw:`, error);
+        }
+      }
+    }
+    let elementPairs = null;
+    const getElementPairs = () => {
+      if (elementPairs === null) {
+        elementPairs = this.getAllElements().map((e) => ({ id: e.id, element: e.element }));
+      }
+      return elementPairs;
+    };
+    if (this.enrichers.relationshipTracker) {
+      try {
+        snapshot.relationships = this.enrichers.relationshipTracker.getSnapshotRelationshipContext(getElementPairs());
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] relationships enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.dragDropDetector) {
+      try {
+        snapshot.dragDrop = this.enrichers.dragDropDetector.getSnapshotDragDropContext(getElementPairs());
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] dragDrop enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.undoTracker) {
+      try {
+        snapshot.undoRedo = this.enrichers.undoTracker.getSnapshotUndoContext();
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] undoRedo enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.shortcutTracker) {
+      try {
+        snapshot.shortcuts = this.enrichers.shortcutTracker.getSnapshotShortcutContext();
+      } catch (error) {
+        if (this.options.verbose) {
+          console.warn(`[ui-bridge] shortcuts enricher threw:`, error);
+        }
+      }
+    }
+    if (this.snapshotExtras.size > 0) {
+      const ctx = {
+        elements: getElementPairs(),
+        getActiveTab: options.getActiveTab,
+        snapshotSoFar: snapshot
+      };
+      for (const [name, fn] of this.snapshotExtras) {
+        try {
+          const extra = fn(ctx);
+          if (extra && typeof extra === "object") {
+            Object.assign(snapshot, extra);
+          }
+        } catch (error) {
+          if (this.options.verbose) {
+            console.warn(`[ui-bridge] snapshot enricher "${name}" threw:`, error);
+          }
+        }
+      }
+    }
+  }
+  /**
    * Create a snapshot of the current state
    */
   createSnapshot(options = {}) {
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
-    return {
+    const snapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
@@ -2972,6 +3115,8 @@ var UIBridgeRegistry = class {
         stepCount: wf.steps.length
       }))
     };
+    this.runEnrichers(snapshot, { getActiveTab: options.getActiveTab });
+    return snapshot;
   }
   /**
    * Create a snapshot asynchronously, processing elements in batches to avoid
@@ -2993,7 +3138,7 @@ var UIBridgeRegistry = class {
     }
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
-    return {
+    const snapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
@@ -3017,6 +3162,8 @@ var UIBridgeRegistry = class {
         stepCount: wf.steps.length
       }))
     };
+    this.runEnrichers(snapshot, { getActiveTab: options.getActiveTab });
+    return snapshot;
   }
   /**
    * Clear all registrations

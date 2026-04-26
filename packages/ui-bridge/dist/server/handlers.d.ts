@@ -1,17 +1,17 @@
-import { S as SpecStore } from '../store-VpZuW1dZ.js';
-import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-DZdu2Fhp.js';
-import { a as UIBridgeServerHandlers } from '../types-ggv9tCkC.js';
+import { S as SpecStore } from '../store-CivVjigV.js';
+import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-X8pyInrK.js';
+import { a as UIBridgeServerHandlers } from '../types-Deyej5ZQ.js';
 import { C as CompositeIdleConfig } from '../types-BFG8zj15.js';
 import { N as NavigationAdapter } from '../navigation-adapter-D0eod-Ve.js';
 import { RenderLogEntry } from '../render-log/index.js';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CgDfJ8ao.js';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-qX-mGJ1B.js';
 import { AnnotationStore } from '../annotations/index.js';
 import { N as NetworkTrackerConfig } from '../tracker-DpZSyunJ.js';
-import '../types-MG0zeRbG.js';
-import '../find-DdQR0cOJ.js';
-import '../style-types-DdeV3Fbs.js';
+import '../types-BJNqi4sD.js';
+import '../find-C0kko3p_.js';
+import '../style-types-pdY9PB8y.js';
 import '../types-C7D5seeQ.js';
-import '../error-snapshot-Dl44Q4Hh.js';
+import '../error-snapshot-CqeLUvzV.js';
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -107,19 +107,51 @@ interface CreateHandlersConfig {
      * Accepts either the full BrowserEventCaptureLike or the legacy ConsoleCapturelike.
      */
     consoleCapture?: BrowserEventCaptureLike | ConsoleCapturelike;
-    /** Navigation tracker instance for page/route awareness in snapshots */
+    /**
+     * Navigation tracker instance for page/route awareness in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ navigationTracker })`
+     * is now the source of truth — `<UIBridgeProvider>` wires it automatically.
+     * This field is retained only because some callers still pass it, and because
+     * `modalDetector` / `undoTracker` etc. remain required for non-snapshot paths.
+     */
     navigationTracker?: NavigationTracker;
-    /** Shortcut tracker instance for keyboard shortcut discovery in snapshots */
+    /**
+     * Shortcut tracker instance for keyboard shortcut discovery in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ shortcutTracker })`
+     * is now the source of truth.
+     */
     shortcutTracker?: ShortcutTracker;
-    /** Modal detector instance for modal/dialog stack detection in snapshots */
+    /**
+     * Modal detector instance for modal/dialog stack detection in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ modalDetector })`
+     * is now the source of truth. Still consumed by non-snapshot code paths
+     * (e.g. action-executor modal scoping).
+     */
     modalDetector?: ModalDetector;
-    /** Toast capture instance for toast/notification detection in snapshots */
+    /**
+     * Toast capture instance for toast/notification detection in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ toastCapture })`
+     * is now the source of truth.
+     */
     toastCapture?: ToastCapture;
-    /** Relationship tracker instance for element relationship hints in snapshots */
+    /**
+     * Relationship tracker instance for element relationship hints in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ relationshipTracker })`
+     * is now the source of truth.
+     */
     relationshipTracker?: RelationshipTracker;
-    /** Drag-drop detector instance for drag source and drop zone discovery in snapshots */
+    /**
+     * Drag-drop detector instance for drag source and drop zone discovery in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ dragDropDetector })`
+     * is now the source of truth.
+     */
     dragDropDetector?: DragDropDetector;
-    /** Undo tracker instance for undo/redo awareness in snapshots */
+    /**
+     * Undo tracker instance for undo/redo awareness in snapshots.
+     * @deprecated For snapshot enrichment, the registry's `setEnrichers({ undoTracker })`
+     * is now the source of truth. Still REQUIRED for non-snapshot paths:
+     * `recordAction` (action history) and `/control/undo` / `/control/redo`.
+     */
     undoTracker?: UndoTracker;
     /** Spec store instance for serving loaded specs (defaults to global singleton) */
     specStore?: SpecStore;
