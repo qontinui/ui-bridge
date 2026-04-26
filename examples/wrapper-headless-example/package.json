@@ -1,0 +1,24 @@
+{
+  "name": "ui-bridge-wrapper-headless-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference Playwright-transport wrapper. Drives any web app via @qontinui/ui-bridge-wrapper using HeadlessTransport (CI default) or HeadedTransport (debugging) — selectable via env var.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node --import tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@qontinui/ui-bridge-headless": "*",
+    "@qontinui/ui-bridge-wrapper": "*",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>UI Bridge headless example fixture</title>
+  </head>
+  <body>
+    <h1 id="heading">Initial heading</h1>
+    <button data-test="primary" type="button">Click me</button>
+    <input name="email" type="email" placeholder="email" />
+    <script>
+      (function () {
+        var btn = document.querySelector('button[data-test="primary"]');
+        var h1 = document.getElementById('heading');
+        if (btn && h1) {
+          btn.addEventListener('click', function () {
+            h1.textContent = 'Heading clicked';
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
