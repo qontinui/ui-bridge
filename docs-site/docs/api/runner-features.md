@@ -673,3 +673,41 @@ app is still loading" from "the app is fully usable." External
 pollers spawning a temp runner should wait until `frontendReady: true`
 before issuing UI Bridge calls — otherwise the first few requests may
 hit the 503 transport-failure path until the React listener attaches.
+
+## Multi-instance registry
+
+Endpoints for the runner's view of every other runner that's been
+spawned, registered, or saved as a slot.
+
+```http
+GET    /runners                       # supervisor-compatible listing
+GET    /instances                     # in-memory registered map
+POST   /instances/register            # external runner reports in
+POST   /instances/{id}/heartbeat      # external runner pulses
+DELETE /instances/{id}                # deregister immediately
+POST   /instances/purge-stale         # heartbeat-based sweep
+```
+
+`GET /runners` merges the primary's self-view, the Postgres
+`runner_instances` table, and the in-memory `registered` map into one
+list with `running`/`api_responding` flags. The runner UI's
+Orchestration Loop and Settings → Runner Instances panels go through
+the Tauri command `get_runner_instances` instead, which adds a live
+`/status` probe per row and tags each entry with
+`source: "configured" | "discovered"`. The HTTP endpoint reflects DB
+heartbeat status, the Tauri command reflects current liveness — prefer
+the Tauri command when accuracy matters more than cross-process reach.
+
+**Polling cadence is a consumer concern.** Both the HTTP endpoint and
+the Tauri command answer on demand — they don't push. The OL panel
+re-polls `get_runner_instances` every 5s, the run-status pane every 3s.
+External pollers should pick a cadence matched to how stale they can
+tolerate the data; under the hood each call costs one DB read plus a
+parallel sweep of `/status` probes (1s timeout each, but run via
+`join_all` so the wall time is bounded by the slowest single probe).
+
+`DELETE /instances/{id}` reclaims a slot immediately rather than
+waiting on `purge-stale` to mark it unhealthy. Returns 200 with
+`{removed_in_memory, removed_db}` flags, or 404 if the id wasn't
+known on either side. Use this to clean up after a crashed external
+runner that didn't get a chance to deregister itself.
