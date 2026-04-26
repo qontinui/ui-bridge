@@ -742,6 +742,90 @@ pollers spawning a temp runner should wait until `frontendReady: true`
 before issuing UI Bridge calls — otherwise the first few requests may
 hit the 503 transport-failure path until the React listener attaches.
 
+## Health stream (SSE — supervisor only)
+
+```http
+GET http://localhost:9875/health/stream
+```
+
+Server-Sent Events stream of supervisor-aggregated health snapshots.
+**This endpoint lives on the supervisor (port 9875), not the runner.**
+The Tauri runner exposes only the one-shot `GET /health` documented
+above.
+
+- **Event name:** `health`. Each non-empty frame is wire-encoded as
+  `event: health\ndata: <json>\n\n`.
+- **Cadence:** ticks every 3 seconds. The supervisor diffs the JSON
+  against the previous tick — if nothing changed, it emits an SSE
+  comment (`: keepalive`) instead of a `health` event, so consumers
+  only see frames when state actually moved.
+- **Keep-alive:** the underlying `Sse` writer also injects a comment
+  every 15 seconds via `KeepAlive::interval`. The server does not set
+  an explicit `retry:` directive — clients use the EventSource default
+  (~3s).
+- **Reconnection:** standard `EventSource` auto-reconnect. Because the
+  payload always includes the full snapshot (not a delta), a missed
+  tick is harmless: the next emitted event is fully self-describing.
+
+Top-level payload fields (sample taken from a live supervisor,
+truncated for readability):
+
+```json
+{
+  "status": "healthy",
+  "runner": { "running": true, "pid": 23036, "api_responding": true, "started_at": null },
+  "ports": { "api_port": { "port": 9876, "in_use": true } },
+  "watchdog": { "enabled": false, "restart_attempts": 0, ... },
+  "build": {
+    "in_progress": false,
+    "available_slots": 3,
+    "error_detected": false,
+    "last_build_at": "2026-04-26T19:02:29.267175100+00:00",
+    "frontend_stale_any": false,
+    "lkg": { "built_at": "2026-04-26T19:07:30.711213500+00:00", "source_slot": 0, "exe_size": 243111424 }
+  },
+  "expo": { "running": false, "pid": null, "port": 8081, "configured": false },
+  "supervisor": { "version": "0.1.0", "project_dir": "..." },
+  "runners": [
+    { "id": "primary", "name": "Primary", "port": 9876, "is_primary": true,
+      "running": true, "pid": 23036, "api_responding": true,
+      "derived_status": { "kind": "healthy" }, ... },
+    { "id": "test-19dcb32b9d2-e", "name": "test-9877", "port": 9877,
+      "is_primary": false, "running": true, "api_responding": true,
+      "derived_status": { "kind": "healthy" }, ... }
+  ],
+  "sdkFeatures": ["softNavigate", "snapshotActiveTab", "waitForElement", ...],
+  "sdkFeaturesDocUrl": "https://github.com/qontinui/ui-bridge/blob/main/docs-site/docs/api/runner-features.md",
+  "buildId": "2026-04-26T18:21:02+00:00"
+}
+```
+
+The `runners[]` shape mirrors `RunnerInstanceHealth` from
+`GET /health` — same fields, same `derived_status` enum
+(`healthy` / `degraded` / `errored` / `offline` / `starting`).
+
+**Use cases.**
+
+- **Build-id watcher.** Pair the stream's `buildId` field with the
+  `<meta name="build-id">` tag the supervisor injects into every HTML
+  serve. When the streamed value diverges from the meta tag, the
+  supervisor binary has been rebuilt and the open dashboard tab is
+  serving a stale bundle — prompt the user to refresh. The reference
+  consumer is the `useBuildIdWatcher` hook in
+  `@qontinui/ui-bridge/react` (`packages/ui-bridge/src/react/useBuildIdWatcher.ts`)
+  which the dashboard's `BootIdWatcher` mounts at the root.
+- **Live fleet status.** Subscribe to `runners[]` instead of polling
+  `GET /runners` every few seconds. The supervisor's background
+  health-cache refresher feeds this array, so it carries the same
+  `api_responding` / `derived_status` data without the per-tick HTTP
+  cost.
+
+Quick smoke-test:
+
+```bash
+curl -s -N -m 3 http://localhost:9875/health/stream | head -5
+```
+
 ## Multi-instance registry
 
 Endpoints for the runner's view of every other runner that's been
