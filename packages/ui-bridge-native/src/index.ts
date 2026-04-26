@@ -22,6 +22,7 @@ export {
   type NativeActionRequest,
   type NativeActionResponse,
   type NativeBridgeSnapshot,
+  type NativeRegistrationCoverage,
   type NativeModalInfo,
   type NativeSnapshotModalContext,
   type NativeCapturedToast,
@@ -149,6 +150,10 @@ export {
   type NavigationProvider,
   type ScreenshotProvider,
   type RouteProvider,
+  type FillFormFieldInput,
+  type FillFormFieldResult,
+  type FillFormRequest,
+  type FillFormResponse,
   UI_BRIDGE_NATIVE_ROUTES,
 } from './server/types';
 

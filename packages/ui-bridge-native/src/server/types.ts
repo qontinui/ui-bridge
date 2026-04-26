@@ -222,6 +222,13 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Clear loaded style guide',
   },
 
+  // AI helpers
+  AI_FILL_FORM: {
+    method: 'POST',
+    path: '/ui-bridge/ai/fill-form',
+    description: 'Fill multiple input elements in a single call',
+  },
+
   // Health
   HEALTH: {
     method: 'GET',
@@ -229,6 +236,51 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Health check',
   },
 };
+
+/**
+ * Request body for `POST /ai/fill-form`.
+ *
+ * The mobile native bridge has no `setValue` action — text inputs are driven
+ * via the `type` action (which calls `onChangeText`). The fillForm handler
+ * dispatches each field as `executor.executeAction(elementId, { action: 'type',
+ * params: { text: value, clear: true } })` so existing values are atomically
+ * replaced (matching the web bridge's "setValue" semantics).
+ *
+ * Shape mirrors the runner's `POST /ui-bridge/ai/fill-form` documented in
+ * docs-site/api/runner-features.md (array-of-pairs form), so callers can use
+ * the same JSON across mobile and web/runner without special-casing.
+ */
+export interface FillFormFieldInput {
+  /** Target element id (registered id, testID, accessibilityLabel, etc.) */
+  elementId: string;
+  /** Text value to write into the input. */
+  value: string;
+}
+
+export interface FillFormRequest {
+  fields: FillFormFieldInput[];
+}
+
+/**
+ * Per-field outcome returned by `POST /ai/fill-form`.
+ */
+export interface FillFormFieldResult {
+  /** Element id from the request, echoed back. */
+  elementId: string;
+  /** Whether `executor.executeAction` reported success for this field. */
+  success: boolean;
+  /** Error message when `success === false`. Omitted on success. */
+  error?: string;
+}
+
+/**
+ * Response payload returned in `APIResponse.data` for `POST /ai/fill-form`.
+ */
+export interface FillFormResponse {
+  results: FillFormFieldResult[];
+  succeededCount: number;
+  failedCount: number;
+}
 
 /**
  * API response wrapper
@@ -324,6 +376,9 @@ export interface NativeServerHandlers {
   getMethods: HandlerFunction<{
     methods: Array<{ method: string; httpMethods?: string[]; description?: string }>;
   }>;
+
+  // AI helpers
+  fillForm: HandlerFunction<FillFormResponse>;
 
   // Health
   health: HandlerFunction<{ status: string; timestamp: number }>;

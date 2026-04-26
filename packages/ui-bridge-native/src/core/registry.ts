@@ -15,6 +15,7 @@ import type {
   NativeBridgeSnapshot,
   NativeElementIdentifier,
   NativeElementRef,
+  NativeRegistrationCoverage,
   NativeSnapshotEnrichers,
   NativeSnapshotEnricher,
   Workflow,
@@ -130,6 +131,13 @@ export class NativeUIBridgeRegistry {
   private config: NativeRegistryConfig;
   private enrichers: NativeSnapshotEnrichers = {};
   private snapshotExtras = new Map<string, NativeSnapshotEnricher>();
+  /**
+   * Sticky flag: flips `true` the first time any element is registered and
+   * stays `true` even after elements are unregistered. Lets agents distinguish
+   * "this route never wired any elements" from "this route registered then
+   * unmounted".
+   */
+  private everHadRegistrations = false;
 
   constructor(config: NativeRegistryConfig = {}) {
     this.config = config;
@@ -243,6 +251,7 @@ export class NativeUIBridgeRegistry {
     };
 
     this.elements.set(id, registered);
+    this.everHadRegistrations = true;
 
     this.emit('element:registered', { id, type, label });
 
@@ -642,6 +651,7 @@ export class NativeUIBridgeRegistry {
       })),
       currentRoute: routeInfo?.currentRoute ?? null,
       segments: routeInfo?.segments,
+      registration: this.getRegistrationCoverage(),
     };
 
     // Canonical enrichers — each in its own try/catch so a misbehaving tracker
@@ -702,6 +712,29 @@ export class NativeUIBridgeRegistry {
       elements: this.elements.size,
       components: this.components.size,
       workflows: this.workflows.size,
+    };
+  }
+
+  /**
+   * Compute registration coverage metadata for the current registry state.
+   *
+   * Groups currently-registered elements by `registrationRoute`, bucketing
+   * elements without a route under `'?'`. `everHadRegistrations` is sticky —
+   * once true, it stays true for the lifetime of the registry instance.
+   */
+  getRegistrationCoverage(): NativeRegistrationCoverage {
+    const byRoute: Record<string, number> = {};
+    for (const element of this.elements.values()) {
+      const key =
+        element.registrationRoute == null || element.registrationRoute === ''
+          ? '?'
+          : element.registrationRoute;
+      byRoute[key] = (byRoute[key] ?? 0) + 1;
+    }
+    return {
+      totalRegistered: this.elements.size,
+      everHadRegistrations: this.everHadRegistrations,
+      byRoute,
     };
   }
 

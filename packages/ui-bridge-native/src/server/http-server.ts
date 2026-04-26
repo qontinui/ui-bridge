@@ -151,6 +151,9 @@ const WS_ROUTES: readonly WsRoute[] = [
 
   // Meta / Introspection
   { pattern: 'meta/methods', handler: 'getMethods', httpMethods: ['GET'] },
+
+  // AI helpers — mobile parity with the runner's `/ui-bridge/ai/*` family.
+  { pattern: 'ai/fill-form', handler: 'fillForm', httpMethods: ['POST'] },
 ];
 
 // ── _help payload ───────────────────────────────────────────────────────────
@@ -193,6 +196,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   saveBaseline: 'Save a quality baseline snapshot',
   diffBaseline: 'Diff current UI against a saved baseline',
   getMethods: 'List every handler name (legacy introspection)',
+  fillForm:
+    'Fill multiple inputs in one call: body { fields: [{elementId, value}] } — each field dispatches `type` + `clear:true`',
 };
 
 /** Static reference for common action names + their params. */

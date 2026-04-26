@@ -7,7 +7,14 @@
 import { type NativeUIBridgeRegistry, extractHandlerNames } from '../core/registry';
 import type { WorkflowStep } from '../core/types';
 import type { NativeActionExecutor } from '../control/types';
-import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
+import type {
+  APIResponse,
+  FillFormFieldInput,
+  FillFormFieldResult,
+  FillFormResponse,
+  HandlerContext,
+  NativeServerHandlers,
+} from './types';
 import { createDesignHandlers } from './design-handlers';
 
 /**
@@ -562,16 +569,104 @@ export function createServerHandlers(
       return error('Methods introspection not configured', 'NOT_SUPPORTED');
     },
 
+    // AI helpers
+    //
+    // Mobile-side parity with the runner's `POST /ui-bridge/ai/fill-form`.
+    // Each entry in `fields` is dispatched through the existing executor as a
+    // `type` action with `clear: true` so the input value is replaced
+    // atomically (the closest native equivalent to the web bridge's
+    // "setValue" semantics — there is no `setValue` action on native).
+    //
+    // Failures do not short-circuit: every field is attempted, and the
+    // response carries per-field success/error plus aggregate counts.
+    fillForm: async (ctx: HandlerContext): Promise<APIResponse<FillFormResponse>> => {
+      const body = ctx.body as { fields?: unknown } | undefined;
+      const rawFields = body?.fields;
+
+      if (!Array.isArray(rawFields)) {
+        return error('Request body must include "fields" array', 'INVALID_REQUEST');
+      }
+
+      const results: FillFormFieldResult[] = [];
+
+      for (let i = 0; i < rawFields.length; i++) {
+        const field = rawFields[i] as Partial<FillFormFieldInput> | null | undefined;
+
+        // Validate per-field shape; record the failure but keep going so the
+        // caller gets a complete picture of what worked and what didn't.
+        if (!field || typeof field !== 'object') {
+          results.push({
+            elementId: '',
+            success: false,
+            error: `fields[${i}] must be an object with "elementId" and "value"`,
+          });
+          continue;
+        }
+
+        const { elementId, value } = field;
+
+        if (typeof elementId !== 'string' || elementId.length === 0) {
+          results.push({
+            elementId: typeof elementId === 'string' ? elementId : '',
+            success: false,
+            error: `fields[${i}] is missing a non-empty "elementId"`,
+          });
+          continue;
+        }
+
+        if (typeof value !== 'string') {
+          results.push({
+            elementId,
+            success: false,
+            error: `fields[${i}] is missing a string "value"`,
+          });
+          continue;
+        }
+
+        try {
+          const response = await executor.executeAction(elementId, {
+            action: 'type',
+            params: { text: value, clear: true },
+          });
+
+          if (response.success) {
+            results.push({ elementId, success: true });
+          } else {
+            results.push({
+              elementId,
+              success: false,
+              error: response.error ?? 'Action failed',
+            });
+          }
+        } catch (err) {
+          // executor.executeAction normally captures errors itself, but a
+          // bespoke executor implementation may still throw — surface that.
+          results.push({
+            elementId,
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const succeededCount = results.filter((r) => r.success).length;
+      const failedCount = results.length - succeededCount;
+
+      return success({ results, succeededCount, failedCount });
+    },
+
     // Design Review
     ...designHandlers,
 
     // Health
     health: async () => {
       const stats = registry.getStats();
+      const registration = registry.getRegistrationCoverage();
       const response: Record<string, unknown> = {
         status: 'healthy',
         timestamp: Date.now(),
         ...stats,
+        registration,
       };
 
       if (config?.appInfo) {

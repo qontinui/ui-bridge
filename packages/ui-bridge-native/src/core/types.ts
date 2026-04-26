@@ -348,6 +348,25 @@ export interface NativeActionResponse {
 }
 
 /**
+ * Registration coverage metadata. Lets automation agents detect routes that
+ * have interactive controls but never registered any of them with the bridge,
+ * without having to read source code.
+ *
+ * - `totalRegistered`: number of elements currently in the registry.
+ * - `everHadRegistrations`: sticks `true` once any element is registered, even
+ *   after every element has been unregistered. A route that registered then
+ *   unmounted should NOT be reported as "never wired".
+ * - `byRoute`: count of currently-registered elements grouped by
+ *   `registrationRoute`. Elements registered without a route are bucketed
+ *   under `'?'`, which is itself a useful diagnostic signal.
+ */
+export interface NativeRegistrationCoverage {
+  totalRegistered: number;
+  everHadRegistrations: boolean;
+  byRoute: Record<string, number>;
+}
+
+/**
  * Snapshot of the entire native UI bridge state
  */
 export interface NativeBridgeSnapshot {
@@ -392,6 +411,11 @@ export interface NativeBridgeSnapshot {
   toasts?: NativeSnapshotToastContext;
   /** Undo/redo context (populated when an undoTracker enricher is registered) */
   undoRedo?: NativeSnapshotUndoContext;
+  /**
+   * Registration coverage metadata so agents can detect routes that have
+   * interactive controls but did not register them with the bridge.
+   */
+  registration?: NativeRegistrationCoverage;
 }
 
 // ============================================================================
