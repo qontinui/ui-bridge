@@ -617,28 +617,14 @@ export function createRelayHandlers(
       ) as APIResponse<FindResponse>;
     },
 
+    /**
+     * @deprecated Use {@link find} instead. `discover()` is a back-compat alias
+     * that forwards to `find()`. The runner only dispatches the `find` action,
+     * so browser-side wrappers no longer need a separate `discover` handler.
+     * Will be removed in a future major version.
+     */
     async discover(request) {
-      const {
-        targetTabId,
-        recency: recencyParam,
-        ...payload
-      } = (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
-      const result = await relayCommand<FindResponse>('discover', payload, { targetTabId });
-      if (result.success) return result;
-      // Relay failed — fall back to filtering cached snapshot elements
-      const recency = parseRecency(recencyParam);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
-      const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
-      const _meta = staleMeta();
-      return success(
-        {
-          elements: filtered as unknown as FindResponse['elements'],
-          total: filtered.length,
-          durationMs: 0,
-          timestamp: Date.now(),
-        },
-        _meta
-      ) as APIResponse<FindResponse>;
+      return handlers.find(request);
     },
 
     async getElementImages(request) {
@@ -1153,12 +1139,24 @@ export function createRelayHandlers(
     // Clipboard (relayed to browser for gesture-based access)
     // ========================================================================
 
+    /**
+     * @deprecated Use {@link setClipboard} instead. `clipboardWrite()` is a
+     * back-compat alias that forwards to `setClipboard()`. The runner only
+     * dispatches the `setClipboard` action.
+     * Will be removed in a future major version.
+     */
     async clipboardWrite(request: unknown) {
-      return relayCommand('clipboardWrite', request);
+      return handlers.setClipboard(request as Parameters<typeof handlers.setClipboard>[0]);
     },
 
+    /**
+     * @deprecated Use {@link getClipboard} instead. `clipboardRead()` is a
+     * back-compat alias that forwards to `getClipboard()`. The runner only
+     * dispatches the `getClipboard` action.
+     * Will be removed in a future major version.
+     */
     async clipboardRead() {
-      return relayCommand('clipboardRead');
+      return handlers.getClipboard();
     },
 
     // ========================================================================
