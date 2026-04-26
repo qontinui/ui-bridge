@@ -71,7 +71,31 @@ const builds = [
     entryPoints: ['src/content/live-relay.ts'],
     outfile: `${outdir}/content/live-relay.js`,
     format: 'iife',
-    external: ['@qontinui/ui-bridge-headless', 'playwright', 'playwright-core', 'ws'],
+    // Mark unreachable code paths external so the resolver doesn't try to
+    // bundle Playwright / Node-only modules. Node built-ins (http, https,
+    // fs, net, ...) are reachable through ApiTransport's optional adapter
+    // path that the live transport never invokes; listing them here is a
+    // safety belt for any future dynamic import the wrapper barrel adds.
+    external: [
+      '@qontinui/ui-bridge-headless',
+      'playwright',
+      'playwright-core',
+      'ws',
+      'http',
+      'https',
+      'fs',
+      'net',
+      'tty',
+      'os',
+      'path',
+      'stream',
+      'url',
+      'util',
+      'crypto',
+      'zlib',
+      'child_process',
+      'events',
+    ],
   },
   {
     entryPoints: ['src/popup/popup.ts'],
