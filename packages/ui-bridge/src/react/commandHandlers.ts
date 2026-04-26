@@ -12,7 +12,7 @@ import type {
   ElementAssertionFailure,
   ElementAssertionResult,
 } from '../core/types';
-import { getGlobalRegistry } from '../core/registry';
+import { getGlobalRegistry, serializeRegisteredElement } from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
@@ -633,13 +633,33 @@ export async function executeCommand(
       if (typeof window !== 'undefined' && window.location?.pathname) {
         route = window.location.pathname;
       }
+      // Phase 6: relay callers can pin the component-action base path so the
+      // serialized `componentActionBasePath` matches the host's mount prefix
+      // (e.g. the runner's `/ui-bridge/control/component`). Defaults to the
+      // standalone-server prefix when omitted, matching `createSnapshot`'s
+      // contract.
+      const rawComponentBasePath = (payload as { componentBasePath?: unknown }).componentBasePath;
+      const componentBasePath =
+        typeof rawComponentBasePath === 'string' && rawComponentBasePath.length > 0
+          ? rawComponentBasePath
+          : undefined;
       const now = Date.now();
+      // Delegate per-element serialization to the canonical
+      // `serializeRegisteredElement` so the relay snapshot matches what
+      // `registry.createSnapshot()` emits server-side: tagName, identifier,
+      // category/kind, role/content/contentMetadata/mediaMetadata,
+      // ownedByComponent, componentActionBasePath, bbox, visible, origin,
+      // variant/position/color/contextPath, stableRef, route, and
+      // customActions all come along automatically when the underlying
+      // RegisteredElement carries them. Prior code emitted the much sparser
+      // `{id,type,label,actions,state}` shape and dropped every other field.
+      const serializeOpts = componentBasePath !== undefined ? { componentBasePath } : {};
       return {
         timestamp: now,
         snapshotTakenAtMs: now,
         ...(route !== undefined ? { route } : {}),
         registration,
-        elements: elements.map(elementToSnapshot),
+        elements: elements.map((el) => serializeRegisteredElement(el, serializeOpts)),
         components: components.map((c) => ({
           id: c.id,
           name: c.name,
@@ -647,7 +667,17 @@ export async function executeCommand(
           actions: c.actions,
           elementIds: c.elementIds,
           state: c.getState?.() ?? {},
+          // Mirror `createSnapshot`: tell callers exactly how to invoke any
+          // action on this component without grepping docs. Honours the
+          // caller-provided `componentBasePath` when present so relay
+          // consumers behind a mount prefix (the runner) get usable paths.
+          actionInvocationPath: `${componentBasePath ?? '/control/component'}/${c.id}/action/{actionId}`,
         })),
+        // Relay handler keeps the legacy `steps` array (not `stepCount`)
+        // alongside `activeRuns: []` because existing relay-driven callers
+        // (runner Tauri IPC, command-relay HTTP wrappers) read these fields
+        // directly. `createSnapshot()` returns the leaner shape; the relay's
+        // workflow shape intentionally stays richer here.
         workflows: workflows.map((w) => ({
           id: w.id,
           name: w.name,
@@ -662,21 +692,20 @@ export async function executeCommand(
       const el = getElement(payload.id as string);
       if (!el) throw new Error(`Element ${payload.id} not found`);
       const state = el.getState();
+      // Spread the full canonical `ElementState` so callers see every field
+      // the SDK populates (role, accessibleName, normalizedRect,
+      // selectedOptions, availableOptions, textContent, innerHTML, href,
+      // dataRoute, opacityHidden, ariaCurrent, required, validationState,
+      // constraints, mediaMetadata, scrollInfo, …). Legacy aliases
+      // `isVisible`/`isEnabled`/`text` are preserved for back-compat with
+      // existing relay callers that read those names. New code should prefer
+      // `visible`/`enabled`/`textContent` from the spread state.
       return {
         id: el.id,
+        ...state,
         isVisible: state.visible,
         isEnabled: state.enabled,
-        focused: state.focused,
         text: state.textContent,
-        value: state.value,
-        checked: state.checked,
-        rect: state.rect,
-        ariaExpanded: state.ariaExpanded,
-        ariaSelected: state.ariaSelected,
-        ariaPressed: state.ariaPressed,
-        ariaChecked: state.ariaChecked,
-        inViewport: state.inViewport,
-        computedStyles: state.computedStyles,
       };
     }
 

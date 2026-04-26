@@ -44,6 +44,13 @@ export interface CommandRelayListenerProps {
   framework?: string;
   /** Capability tags. Default: ['control']. */
   capabilities?: string[];
+  /**
+   * Optional SDK / app version string forwarded to the server on each
+   * heartbeat. Lets `/supervisor-bridge/health` (and equivalent runner
+   * endpoints) report what's actually connected instead of build-time
+   * defaults baked into the static config.
+   */
+  version?: string;
 }
 
 export function CommandRelayListener(props: CommandRelayListenerProps): null {
@@ -58,6 +65,7 @@ export function CommandRelayListener(props: CommandRelayListenerProps): null {
     appType: props.appType,
     framework: props.framework,
     capabilities: props.capabilities,
+    version: props.version,
   };
   useCommandRelay(options);
   return null;

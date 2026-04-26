@@ -77,6 +77,12 @@ export interface UseCommandRelayOptions {
   framework?: string;
   /** Capability tags. Default: ['control']. */
   capabilities?: string[];
+  /**
+   * Optional SDK / app version string surfaced on heartbeats so the server
+   * can report what is actually connected (rather than relying on
+   * build-time defaults baked into a static config).
+   */
+  version?: string;
 }
 
 /**
@@ -326,21 +332,44 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // Heartbeat
   // ========================================================================
 
+  // Resolve heartbeat metadata fields once per render — these mirror the
+  // identity fields used by phone-home registration so the server's
+  // "what's actually connected right now" view matches the runner registry.
+  const heartbeatAppId = options?.appId;
+  const heartbeatAppName = options?.appName;
+  const heartbeatAppType = options?.appType;
+  const heartbeatFramework = options?.framework;
+  const heartbeatCapabilities = options?.capabilities;
+  const heartbeatVersion = options?.version;
+
   useEffect(() => {
     if (!enabled) return;
 
     const sendHeartbeat = async () => {
       try {
+        // Build heartbeat body. Metadata fields are included only when the
+        // host app passes them, so older servers that don't read these stay
+        // backwards-compatible (extra JSON fields are simply ignored on the
+        // wire). Server uses them to populate `uiBridge` on health probes
+        // for the actually-connected tab(s).
+        const body: Record<string, unknown> = {
+          timestamp: Date.now(),
+          tabId,
+          url: typeof window !== 'undefined' ? window.location.href : undefined,
+          title: typeof document !== 'undefined' ? document.title : undefined,
+          visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
+        };
+        if (heartbeatAppId !== undefined) body.appId = heartbeatAppId;
+        if (heartbeatAppName !== undefined) body.appName = heartbeatAppName;
+        if (heartbeatAppType !== undefined) body.appType = heartbeatAppType;
+        if (heartbeatFramework !== undefined) body.framework = heartbeatFramework;
+        if (heartbeatCapabilities !== undefined) body.capabilities = heartbeatCapabilities;
+        if (heartbeatVersion !== undefined) body.version = heartbeatVersion;
+
         const resp = await fetch(`${basePath}/heartbeat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            timestamp: Date.now(),
-            tabId,
-            url: typeof window !== 'undefined' ? window.location.href : undefined,
-            title: typeof document !== 'undefined' ? document.title : undefined,
-            visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
-          }),
+          body: JSON.stringify(body),
         });
         // Recovery: the server reports whether our tabId is a registered SSE
         // listener. If it is not (e.g. after a client-side navigation that
@@ -372,7 +401,18 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     sendHeartbeat();
     const interval = setInterval(sendHeartbeat, heartbeatIntervalMs);
     return () => clearInterval(interval);
-  }, [enabled, basePath, heartbeatIntervalMs, tabId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- capabilities is a stable array reference for the component's lifetime
+  }, [
+    enabled,
+    basePath,
+    heartbeatIntervalMs,
+    tabId,
+    heartbeatAppId,
+    heartbeatAppName,
+    heartbeatAppType,
+    heartbeatFramework,
+    heartbeatVersion,
+  ]);
 
   // ========================================================================
   // Phone-home registration

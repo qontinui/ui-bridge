@@ -125,3 +125,7 @@ export {
   DEFAULT_CAPTURE_HOST_IDS,
   type CaptureHostFrameProps,
 } from './CaptureHostFrame';
+
+// Build-id watcher — detect when the server has shipped a new bundle and
+// prompt connected tabs to refresh.
+export { useBuildIdWatcher, type UseBuildIdWatcherOptions } from './useBuildIdWatcher';

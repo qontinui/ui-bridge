@@ -90,6 +90,58 @@ synchronously via `RouteProvider.subscribe()`, so a snapshot taken
 immediately after `/control/page/navigate` already reflects cleared
 layouts for the departed route.
 
+### Snapshot field provenance
+
+`/control/snapshot` is served by three different code paths depending
+on the host: the canonical SDK registry (`registry.createSnapshot`,
+shared by every wrapper and SPA), the React/IPC relay handler
+(`commandHandlers.ts:getControlSnapshot`, used when a CommandRelay sits
+between HTTP and the page — supervisor dashboard, Next.js host), and
+the Tauri runner's discovery enrichment
+(`useDiscoveryEvents.ts: enrichedSnapshot`). Each path adds different
+top-level keys, so the supervisor dashboard's snapshot has a strict
+subset of the runner's keys. Tests that assume a single shape will
+miss data on lean hosts or fail on rich ones — target the union and
+branch on `appType` (or feature-detect the field) when a probe is
+host-specific.
+
+| Field               | Source             | What it carries                                                                                          |
+| ------------------- | ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `timestamp`         | registry-native    | `Date.now()` when the snapshot was built (legacy alias of `snapshotTakenAtMs`).                          |
+| `snapshotTakenAtMs` | registry-native    | Server epoch ms when the snapshot was built — same value as `timestamp`, kept for forward-compat.        |
+| `route`             | registry-native    | `window.location.pathname` at snapshot time. Optional — omitted when `window` is absent (SSR/tests).     |
+| `activeTab`         | registry-native\*  | Active tab id when the host supplies a `getActiveTab` callback. \*Runner is the only current provider.   |
+| `registration`      | registry-native    | `{ totalRegistered, everHadRegistrations, byRoute }` — bridge-coverage diagnostics for the F3 contract.  |
+| `elements`          | registry-native    | All registered `useUIElement` records (each with nested `state`, `bbox`, `identifier`, etc.).            |
+| `components`        | registry-native    | Registered components, each with `id`/`name`/`actions`/`elementIds`/`actionInvocationPath`.              |
+| `workflows`         | registry-native    | Registered workflows. Shape differs by source — see "Shape drift" below.                                 |
+| `activeRuns`        | relay-handler-only | Always `[]` from the relay path; the workflow-engine populates this on hosts that own a runtime.         |
+| `availableTabs`     | runner-only        | `[{ id, label, canonical, active }]` — full tab catalogue, lets you switch tabs without `/control/tabs`. |
+| `tabActivation`     | runner-only        | Static hint object — `{ description, method, path, bodyExample }` for `POST /control/tab/activate`.      |
+| `page`              | runner-only        | `NavigationTracker.getSnapshotPageContext()` — current page metadata (title, route history, etc.).       |
+| `modalStack`        | runner-only        | `ModalDetector.getSnapshotModalContext()` — active modals/dialogs/drawers in z-order.                    |
+| `toasts`            | runner-only        | `ToastCapture.getSnapshotToastContext()` — active and recently dismissed toasts.                         |
+| `relationships`     | runner-only        | `RelationshipTracker.getSnapshotRelationshipContext()` — declared + ARIA-derived element relationships.  |
+| `dragDrop`          | runner-only        | `DragDropDetector.getSnapshotDragDropContext()` — drag sources and drop zones detected in the UI.        |
+| `undoRedo`          | runner-only        | `UndoTracker.getSnapshotUndoContext()` — undo/redo availability and stack depth.                         |
+| `shortcuts`         | runner-only        | `ShortcutTracker.getSnapshotShortcutContext()` — keyboard shortcuts discovered in the application.       |
+
+**Shape drift on shared fields.** Even when a field name appears in
+both paths, the shape is not always identical:
+
+- `workflows[].steps` (relay) vs `workflows[].stepCount` (registry).
+  The relay path keeps the full `steps` array because existing
+  relay-driven callers read it directly; `createSnapshot` returns the
+  leaner shape with just a count.
+- `components[].state` (relay) is `c.getState?.() ?? {}`; the registry
+  path omits `state` from the snapshot-level component summary
+  entirely (state is read per-component via `/control/component/:id`).
+
+**Optional fields not currently emitted by the runner enrichment** but
+declared on the `ControlSnapshot` type for future use:
+`viewport`, `errorSummary`, `fallbackScreenshot`. Tests should treat
+their absence as "feature not on this build," not "bug."
+
 ### Discover
 
 ```http
