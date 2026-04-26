@@ -138,8 +138,23 @@ export async function runWrapperEntrypoint(opts: RunWrapperEntrypointOptions): P
   }
 
   await opts.transport.ready();
+
+  // When the runner spawns the wrapper as a daemon, it expects a tiny
+  // HTTP server at `http://127.0.0.1:<WRAPPER_PORT>/dispatch` so it can
+  // route action calls to us. The api transport doesn't bind a port on
+  // its own (it's a pure in-process dispatcher), so we open one here
+  // when WRAPPER_PORT is set in the environment. Skipped silently when
+  // unset — that's the "run standalone, no runner" mode used in tests
+  // and the `_probe-*.mjs` scripts.
+  const wrapperPort = parsePort(process.env['WRAPPER_PORT']);
+  if (wrapperPort != null) {
+    await startDispatchServer(opts.transport, wrapperPort, logName);
+  }
+
   process.stdout.write(
-    `[${logName}] ready (transport=${opts.transport.kind}); press Ctrl+C to exit.\n`
+    `[${logName}] ready (transport=${opts.transport.kind}${
+      wrapperPort != null ? `, port=${wrapperPort}` : ''
+    }); press Ctrl+C to exit.\n`
   );
 
   const shutdown = async (signal: NodeJS.Signals): Promise<never> => {
@@ -162,5 +177,95 @@ export async function runWrapperEntrypoint(opts: RunWrapperEntrypointOptions): P
   // Park forever; the signal handlers are the only exit path.
   return new Promise<never>(() => {
     /* never resolves */
+  });
+}
+
+function parsePort(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 && n < 65_536 ? n : null;
+}
+
+/**
+ * Bind a tiny HTTP server on `127.0.0.1:<port>` exposing two endpoints:
+ *
+ *   - `GET /health` — returns `{ ok: true }` so the runner's manager can
+ *     poll for readiness.
+ *   - `POST /dispatch` — body `{ action, params }`, dispatches via the
+ *     transport's `HandlerRegistry`, and returns
+ *     `{ success: true, data: <result> }` on success or
+ *     `{ success: false, error: <message> }` on failure.
+ *
+ * Loopback-only by design — the wrapper's port is meant for the runner
+ * to talk to it, never an external client. Uses Node's built-in `http`
+ * module to avoid pulling in a framework dep.
+ */
+async function startDispatchServer(
+  transport: WrapperTransport,
+  port: number,
+  logName: string
+): Promise<void> {
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/dispatch') {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        body += chunk;
+        // Defensive cap — generous enough for any reasonable params payload.
+        if (body.length > 10 * 1024 * 1024) {
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        let parsed: { action?: unknown; params?: unknown };
+        try {
+          parsed = JSON.parse(body || '{}') as typeof parsed;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: `bad request body: ${msg}` }));
+          return;
+        }
+        const action = typeof parsed.action === 'string' ? parsed.action : '';
+        if (!action) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'missing required field: action' }));
+          return;
+        }
+        transport
+          .dispatch(action, parsed.params)
+          .then((result) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, data: result }));
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: msg }));
+          });
+      });
+      req.on('error', () => {
+        // Connection-level errors get logged to stderr; we don't have a
+        // response stream to write to once the request errors.
+        process.stderr.write(`[${logName}] request error during dispatch\n`);
+      });
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: 'not found' }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
   });
 }
