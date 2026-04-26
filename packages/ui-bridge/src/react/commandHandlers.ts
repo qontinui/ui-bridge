@@ -408,6 +408,28 @@ async function getIdleDetector() {
   }
 }
 
+/**
+ * Wait briefly for the DOM idle signal so the registry settles before a
+ * read. Mirrors the standalone server's `awaitDOMSettled` so the relay
+ * path's aiFind/aiExecute/aiAssert see the same element set as
+ * `/control/snapshot` (which already settles inside `getControlSnapshot`).
+ * Without this, navigation-triggered re-renders register elements
+ * lazily and the relay's `registry.getAllElements()` snapshot can be
+ * strictly smaller than what the snapshot endpoint returned moments
+ * earlier — the long-standing 193-vs-118 divergence symptom.
+ */
+async function awaitDOMSettledRelay(timeout = 500): Promise<void> {
+  const detector = await getIdleDetector();
+  if (!detector) return;
+  const domSignal = detector.getSignal?.('dom');
+  if (!domSignal || domSignal.isIdle?.()) return;
+  try {
+    await domSignal.waitForIdle({ timeout, minStableMs: 0 });
+  } catch {
+    /* timeout — return whatever is registered now */
+  }
+}
+
 // Annotation store singleton (lazy-initialized)
 async function getAnnotationStore() {
   try {
@@ -581,12 +603,42 @@ let loadedStyleGuide: unknown = null;
 // Main Command Executor
 // ============================================================================
 
+// Actions whose result depends on the registry being settled — they read
+// `elements` and dispatch matchers that fail silently when registrations
+// are still in flight. We DOM-settle once up front for these so the
+// `registry.getAllElements()` read below sees the same element set the
+// snapshot endpoint would see.
+const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
+  'aiFind',
+  'aiSearch',
+  'aiExecute',
+  'aiAssert',
+  'aiAssertBatch',
+]);
+
 export async function executeCommand(
   action: string,
   payload: P,
   bridge: BridgeAccess
 ): Promise<unknown> {
   const g = getBridge();
+
+  // For AI actions, wait for the DOM to settle BEFORE reading the registry
+  // so we observe the same element set `/control/snapshot` would (which
+  // settles inside `getControlSnapshot`). Without this the relay path's
+  // `getAllElements()` can run mid-route-change and miss elements still
+  // being registered — the 193-vs-118 divergence the previous ai/find
+  // commit only partially closed.
+  if (SETTLE_BEFORE_READ_ACTIONS.has(action)) {
+    const settleTimeout =
+      typeof (payload as { settleTimeout?: unknown })?.settleTimeout === 'number'
+        ? ((payload as { settleTimeout?: number }).settleTimeout as number)
+        : undefined;
+    const skipSettle = (payload as { skipSettle?: unknown })?.skipSettle === true;
+    if (!skipSettle) {
+      await awaitDOMSettledRelay(settleTimeout);
+    }
+  }
 
   // Read elements, components, and workflows from the live global registry
   // instead of the stale memoized bridge arrays. The bridge collections are

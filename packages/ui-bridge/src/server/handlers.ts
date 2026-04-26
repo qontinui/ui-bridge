@@ -2365,8 +2365,30 @@ export function createHandlers(
       query: string;
       context?: FindContext;
       confidenceThreshold?: number;
+      /**
+       * Skip the pre-read DOM-settle wait. Default false. The settle wait
+       * matches what `/control/snapshot`, `/control/find`, and
+       * `/control/discover` do before reading the registry — without it,
+       * `aiFind` could read the registry mid-populate during hot navigation
+       * or auto-register settle and see strictly fewer elements than the
+       * snapshot endpoint, which is exactly the divergence symptom this
+       * code path was previously producing.
+       */
+      skipSettle?: boolean;
+      /** Optional override for the settle wait timeout in ms (default 500). */
+      settleTimeout?: number;
     }): Promise<APIResponse<FindResult>> => {
       try {
+        // Wait for the DOM to quiesce before refreshing elements so we read
+        // a stable registry — same pattern used by `find`, `discover`, and
+        // `getControlSnapshot`. Without this, in-flight registrations from
+        // a route change or first-paint settle aren't visible yet and the
+        // search engine sees a smaller element set than the snapshot
+        // endpoint observed moments later.
+        if (!request.skipSettle) {
+          await awaitDOMSettled(request.settleTimeout);
+        }
+
         // Refresh elements before search
         refreshElements();
 
@@ -2398,6 +2420,16 @@ export function createHandlers(
 
     aiExecute: async (request: NLActionRequest): Promise<APIResponse<NLActionResponse>> => {
       try {
+        // Settle the DOM before reading elements, mirroring `aiFind`. The
+        // withDiff path below feeds settle config to changeTracker, which
+        // settles inside `executeWithDiff`; for the plain path here we
+        // settle once up front so the search engine sees the same element
+        // set as `/control/snapshot` and `/ai/find`.
+        const reqAny = request as { skipSettle?: boolean; settleTimeout?: number };
+        if (!reqAny.skipSettle && !(request as any).withDiff) {
+          await awaitDOMSettled(reqAny.settleTimeout);
+        }
+
         // Refresh elements before execution
         refreshElements();
 
@@ -2437,6 +2469,12 @@ export function createHandlers(
       request: AssertionRequest & { assertion?: string }
     ): Promise<APIResponse<AssertionResult>> => {
       try {
+        // Same settle-then-read pattern as aiFind/aiExecute so mid-navigation
+        // assertions don't observe a stale registry.
+        const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
+        if (!reqAny.skipSettle) {
+          await awaitDOMSettled(reqAny.settleTimeout);
+        }
         // Refresh elements before assertion
         refreshElements();
         // Support natural language assertions: {assertion: "a button exists"} → {target, type}
@@ -2452,6 +2490,10 @@ export function createHandlers(
       request: BatchAssertionRequest & { assertions?: (AssertionRequest | string)[] }
     ): Promise<APIResponse<BatchAssertionResult>> => {
       try {
+        const reqAny = request as unknown as { skipSettle?: boolean; settleTimeout?: number };
+        if (!reqAny.skipSettle) {
+          await awaitDOMSettled(reqAny.settleTimeout);
+        }
         // Refresh elements before batch assertion
         refreshElements();
         const normalized = normalizeBatchAssertions(request);
