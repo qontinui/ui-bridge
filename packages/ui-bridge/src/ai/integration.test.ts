@@ -376,6 +376,35 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       expect(response.durationMs).toBeGreaterThan(0);
       expect(response.timestamp).toBeGreaterThan(0);
     });
+
+    it('should route "click element <id>" by exact id, bypassing fuzzy match', async () => {
+      // Synthesise an element whose label has nothing to do with its id, so a
+      // fuzzy text match against the id-style instruction would never find it.
+      const disclosure = createMockElement(
+        'ui-bridge-advanced-disclosure',
+        'button',
+        'Advanced: per-stage controls — pick specific pages, toggle specs / tutorials / videos, inspect each stage'
+      );
+      executor.updateElements([...elements, disclosure]);
+
+      const response = await executor.execute({
+        instruction: 'click element ui-bridge-advanced-disclosure',
+      });
+
+      expect(response.success).toBe(true);
+      expect(response.elementUsed.id).toBe('ui-bridge-advanced-disclosure');
+      expect(response.confidence).toBeGreaterThanOrEqual(0.99);
+    });
+
+    it('should fall back to fuzzy match when "click element <id>" id is unknown', async () => {
+      // Id-style instruction but no element registered with that id.
+      const response = await executor.execute({
+        instruction: 'click element does-not-exist',
+      });
+
+      expect(response.success).toBe(false);
+      expect(response.errorCode).toBe('ELEMENT_NOT_FOUND');
+    });
   });
 
   describe('Full flow integration', () => {

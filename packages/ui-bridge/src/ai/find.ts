@@ -222,6 +222,21 @@ export function find(
   // Important: only retry when we actually narrowed by type. If the user
   // gave structured criteria and pinned `type` themselves, we don't relax
   // it — they meant it.
+  //
+  // B4 — Extended fallback for hard-pinned synonyms.
+  //
+  // Multi-word phrases like "details toggle" hit the disclosure synonym
+  // table without the soft-hint flag, so the soft-fallback above never
+  // fires. If the type guess turns out to be wrong for the page (e.g.,
+  // "details toggle" → disclosure but the page has only buttons), the
+  // type-narrowed search returns nothing forever. The cache check below
+  // catches that situation: when the cached elements contain no element of
+  // the criteria.type, the type guess is unhelpful in this context — so we
+  // retry without it. This relaxes only when the type isn't even present
+  // on the page; structured callers who pinned `type` against an
+  // intentionally empty page still get found:false (their decomposed
+  // shape never has elementType set, so the gate's `criteria.type` clause
+  // is never true for them).
   // -----------------------------------------------------------------------
   if (
     viableResults.length === 0 &&
@@ -240,6 +255,36 @@ export function find(
       results = applyOrdinalFilter(results, decomposed.ordinal);
     }
     viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  }
+
+  // B4: hard-pinned synonym fallback — relax `criteria.type` when no
+  // element of that type exists on the page at all. Only triggers for
+  // free-form NL queries (typeof query === 'string'); structured callers
+  // who pinned `type` themselves never had a `decomposed.elementType` set
+  // in the first place, so this branch is gated on the type having come
+  // from the decomposer.
+  if (
+    viableResults.length === 0 &&
+    typeof query === 'string' &&
+    criteria.type &&
+    decomposed.elementType
+  ) {
+    const cachedTypeLower = String(criteria.type).toLowerCase();
+    const cachedSummaries = engine.getCachedElementSummaries();
+    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
+    if (!typeIsPresent) {
+      const relaxed: SearchCriteria = { ...criteria };
+      delete relaxed.type;
+      searchResponse = engine.search(relaxed);
+      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+      if (decomposed.stateFilter) {
+        results = applyStateFilter(results, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        results = applyOrdinalFilter(results, decomposed.ordinal);
+      }
+      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+    }
   }
 
   const durationMs = performance.now() - startTime;
@@ -304,6 +349,16 @@ export function find(
 /**
  * Convert a decomposed target into structured SearchCriteria,
  * resolving spatial references via two-pass search.
+ *
+ * B1 — Mirror non-redundant decomposed source-signal fields into the
+ * structured criteria. The decomposer fills `label`/`ariaLabel`/`placeholder`/
+ * `name` for free-form NL queries, but for single-word fallbacks every mirror
+ * carries the exact same string as `elementText`. Forwarding identical mirrors
+ * inflates `totalWeight` in the scoring loop without adding any new signal —
+ * we only forward a mirror when it carries a value that differs from
+ * `elementText`. Multi-token decomposition (rare today, but possible as the
+ * decomposer evolves) gets the richer matching it deserves; trivial
+ * single-word queries don't pay the dilution tax.
  */
 function resolveCriteria(
   decomposed: DecomposedTarget,
@@ -324,6 +379,24 @@ function resolveCriteria(
   if (decomposed.elementType) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     criteria.type = decomposed.elementType as any;
+  }
+
+  // B1: lift accessibleName / placeholder mirrors when they carry distinct
+  // signal. The decomposer mirrors `elementText` into all four source fields
+  // for free-form queries, so we skip mirrors that are exactly equal to the
+  // primary text — they would only re-probe the same string against the same
+  // sources without adding any extra information.
+  if (decomposed.label && decomposed.label !== decomposed.elementText) {
+    criteria.accessibleName = decomposed.label;
+  } else if (
+    decomposed.ariaLabel &&
+    decomposed.ariaLabel !== decomposed.elementText &&
+    !criteria.accessibleName
+  ) {
+    criteria.accessibleName = decomposed.ariaLabel;
+  }
+  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
+    criteria.placeholder = decomposed.placeholder;
   }
 
   // Two-pass: resolve spatial reference

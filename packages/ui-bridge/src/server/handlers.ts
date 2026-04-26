@@ -1062,9 +1062,34 @@ export function createHandlers(
       : undefined,
   });
 
-  // Helper to get fresh elements and update AI modules
+  // -----------------------------------------------------------------------
+  // Helper to get fresh elements and update AI modules.
+  //
+  // B0 — Use the same composition snapshot's `getControlSnapshot` builds
+  // (registry → DOM-fallback) so the SearchEngine, NLActionExecutor, and
+  // AssertionExecutor see exactly the elements the snapshot endpoint
+  // returns. Earlier, `refreshElements()` was bare `registry.getAllElements()`
+  // while `getControlSnapshot` had a DOM-fallback for the case where
+  // `createSnapshot()` lagged behind. That left the AI modules blind during
+  // hot navigation/auto-register settle while snapshot callers still
+  // succeeded — a registry-vs-cache discrepancy that produced the
+  // "snapshot has it, /ai/find doesn't" symptom this work targets.
+  //
+  // The merged set is built here and shared across all three consumers so
+  // they cannot drift again. The consumers all accept the loose
+  // `Array<DiscoveredElement | RegisteredElement>` shape, so feeding raw
+  // RegisteredElement entries (preferred — they expose `.element` and
+  // `.getState()`) or DOM-fallback DiscoveredElement entries works
+  // uniformly.
+  // -----------------------------------------------------------------------
   function refreshElements(): void {
-    const elements = registry.getAllElements();
+    let elements: unknown[] = registry.getAllElements();
+    if (elements.length === 0) {
+      const domElements = scanDOMForInteractiveElements();
+      if (domElements.length > 0) {
+        elements = domElements;
+      }
+    }
     searchEngine.updateElements(elements as any[]);
     nlExecutor.updateElements(elements as any[]);
     nlExecutor.setActionExecutor(actionExecutor as any);
@@ -6378,8 +6403,18 @@ export function createAIHandlers(
   const snapshotManager = new SemanticSnapshotManager();
   const diffManager = new SemanticDiffManager();
 
+  // B0 — Match the registry-then-DOM-fallback composition the snapshot
+  // endpoint uses, so the SearchEngine and friends never see a strictly
+  // smaller element set than `/control/snapshot`. See the longer comment on
+  // the primary `refreshElements` definition above.
   function refreshElements(): void {
-    const elements = registry.getAllElements();
+    let elements: unknown[] = registry.getAllElements();
+    if (elements.length === 0) {
+      const domElements = scanDOMForInteractiveElements();
+      if (domElements.length > 0) {
+        elements = domElements;
+      }
+    }
     searchEngine.updateElements(elements as any[]);
     nlExecutor.updateElements(elements as any[]);
     nlExecutor.setActionExecutor(actionExecutor as any);

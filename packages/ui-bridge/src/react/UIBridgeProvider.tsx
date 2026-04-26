@@ -27,7 +27,7 @@ import type {
   WSConnectionState,
   WSSubscriptionOptions,
 } from '../core/types';
-import { UIBridgeRegistry, resetGlobalRegistry } from '../core/registry';
+import { UIBridgeRegistry, setGlobalRegistry } from '../core/registry';
 import { UIBridgeWSClient } from '../core/websocket-client';
 import { createActionExecutor } from '../control/action-executor';
 import { createWorkflowEngine } from '../control/workflow-engine';
@@ -285,7 +285,26 @@ export function UIBridgeProvider({
     };
   }, [registry, wsClient, changeObserver]);
 
+  // Re-assert this provider's registry as the global on every mount. Without
+  // this, a remount (React StrictMode in dev, or any unmount/remount cycle in
+  // production) would leave the global pointing at a torn-down instance and
+  // downstream consumers — `commandHandlers.ts` reads from
+  // `getGlobalRegistry()` for `aiFind` and friends — would silently see an
+  // empty registry while `useUIElement` continued registering into the live
+  // `bridge.registry` from React context. The runner's `/ui-bridge/ai/find`
+  // and `/ui-bridge/control/snapshot` came from two different element sources
+  // before this fix because of exactly that divergence.
+  useEffect(() => {
+    setGlobalRegistry(registry);
+  }, [registry]);
+
   // Unmount cleanup — tear down every tracker the init step installed.
+  // Note: we deliberately do NOT call resetGlobalRegistry() here. A nested or
+  // sibling provider may still be mounted (or about to remount under React
+  // StrictMode), and clearing the global mid-flight strands every consumer
+  // that resolves the registry through `getGlobalRegistry()` against a fresh,
+  // empty singleton. Tests use `resetGlobalRegistry()` directly when they
+  // need a clean slate — production code never should.
   useEffect(() => {
     return () => {
       renderLog?.stop();
@@ -296,7 +315,6 @@ export function UIBridgeProvider({
       toastCapture.uninstall();
       changeObserver.destroy();
       wsClient?.disconnect();
-      resetGlobalRegistry();
       clearProvidersOnWindow();
     };
   }, [

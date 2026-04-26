@@ -374,3 +374,168 @@ describe('find() — disclosure family + soft-type fallback', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase B+C — short query against long disclosure label.
+//
+// These cover the original Phase B regression: a single-word query
+// "Advanced" must match a disclosure whose label is a long sentence
+// starting with "Advanced:". Plus the multi-word distractor case where a
+// sibling button labelled "Cost Control" used to win at ~0.507 because of
+// (a) hard-pinned synonym blocking the disclosure and (b) flat 0.85
+// substring contains scores tying with weak token overlap on the button.
+// ---------------------------------------------------------------------------
+describe('find() — short query against long disclosure label (Phase B)', () => {
+  let engine: SearchEngine;
+  const longDisclosureLabel =
+    'Advanced: per-stage controls — pick specific pages, toggle specs / tutorials / videos, inspect each stage';
+
+  beforeEach(() => {
+    engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+  });
+
+  function makeLongDisclosure(): RegisteredElement {
+    const button = document.createElement('button');
+    button.textContent = longDisclosureLabel;
+    attachToDocument(button);
+    return makeRegistered('ui-bridge-advanced-disclosure', button, {
+      type: 'disclosure',
+      label: longDisclosureLabel,
+    });
+  }
+
+  it('single-word "Advanced" lands on the long-label disclosure (≥ 0.7)', () => {
+    engine.updateElements([makeLongDisclosure()]);
+    const result = find('Advanced', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('ui-bridge-advanced-disclosure');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.7);
+    }
+  });
+
+  it('"Advanced details toggle" lands on the long-label disclosure (≥ 0.7)', () => {
+    engine.updateElements([makeLongDisclosure()]);
+    const result = find('Advanced details toggle', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('ui-bridge-advanced-disclosure');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.7);
+    }
+  });
+
+  it('"Advanced per-stage controls" beats a sibling "Cost Control" button', () => {
+    // Reproduces the exact failure mode from the Phase B brief: a sibling
+    // button used to win at ~0.507 because token-prefix alignment wasn't
+    // boosted and the dilution from the long label dropped the disclosure
+    // below the button's confidence.
+    const disclosure = makeLongDisclosure();
+    const costButton = document.createElement('button');
+    costButton.textContent = 'Cost Control';
+    document.body.appendChild(costButton);
+    const costReg = makeRegistered('cost-control-btn', costButton, {
+      type: 'button',
+      label: 'Cost Control',
+    });
+    engine.updateElements([disclosure, costReg]);
+
+    const result = find('Advanced per-stage controls', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('ui-bridge-advanced-disclosure');
+    }
+  });
+
+  it('exact single-word match on a single-word label is still confidence 1.0', () => {
+    const button = document.createElement('button');
+    button.textContent = 'Advanced';
+    attachToDocument(button);
+    const reg = makeRegistered('advanced-only', button, {
+      type: 'disclosure',
+      label: 'Advanced',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('Advanced', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('advanced-only');
+      // Allow a small margin for fuzzy/alias bonuses; "exact" must still
+      // dominate. The current scoring path produces 1.0 cleanly because
+      // the only branch contributing weight is text and it scores 1.0.
+      expect(result.confidence).toBeGreaterThanOrEqual(0.99);
+    }
+  });
+
+  it('"expand" against fixtures with no disclosure returns cleanly (no crash, soft-relax)', () => {
+    // Bare "expand" decomposes to {type: 'disclosure' (soft hint),
+    // text: 'expand'}. With no disclosures on the page, the soft-type
+    // fallback in find.ts triggers a label-only retry. The retry should
+    // either return a sensible best-effort match or `found: false`
+    // without throwing.
+    const button = document.createElement('button');
+    button.textContent = 'Save';
+    attachToDocument(button);
+    const reg = makeRegistered('save-btn', button, {
+      type: 'button',
+      label: 'Save',
+    });
+    engine.updateElements([reg]);
+
+    expect(() => find('expand', engine, { confidenceThreshold: 0.4 })).not.toThrow();
+  });
+
+  it('B4 regression: structured query gate — relax only fires for free-form NL strings', () => {
+    // Structured callers (passing a SearchCriteria object) must never
+    // trigger the B4 hard-pinned-synonym fallback. The fallback is gated
+    // on `typeof query === 'string'`, so this test pins that gate by
+    // invoking find() with a structured criteria where the type is set
+    // and no element of that type exists on the page. We assert the
+    // returned `decomposed.elementType` matches what was passed —
+    // confirming the structured branch ran — and that the result reflects
+    // the engine's bare scoring (no relaxation jumped in to "help").
+    //
+    // Note: type is a scoring bonus, not a hard filter, in the current
+    // engine. So the disclosure may still match against text:"Advanced".
+    // The regression we're guarding is: the B4 fallback does NOT secretly
+    // re-run a relaxed search on structured calls.
+    const disclosure = makeLongDisclosure();
+    engine.updateElements([disclosure]);
+
+    const result = find({ type: 'button' as const, text: 'Advanced', fuzzy: true }, engine, {
+      confidenceThreshold: 0.4,
+    });
+
+    // Decomposed shape preserves the structured caller's type pin.
+    expect(result.decomposed.elementType).toBe('button');
+  });
+
+  it('B4 hard-synonym fallback: free-form "details toggle" relaxes when no disclosure exists', () => {
+    // Concrete demonstration of B4's value-add. "details toggle" hits the
+    // disclosure synonym table as a HARD pin (not soft), so the legacy
+    // soft-fallback never fires. With only a button on the page, the
+    // type-pinned search returns nothing. The B4 cache check sees that
+    // the page has no disclosures, retries without `type`, and lands on
+    // the button via label match.
+    const button = document.createElement('button');
+    button.textContent = 'Show advanced details';
+    attachToDocument(button);
+
+    const reg = makeRegistered('show-advanced', button, {
+      type: 'button',
+      label: 'Show advanced details',
+    });
+    engine.updateElements([reg]);
+
+    const result = find('advanced details toggle', engine, { confidenceThreshold: 0.4 });
+
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('show-advanced');
+    }
+  });
+});

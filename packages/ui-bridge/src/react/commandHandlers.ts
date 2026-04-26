@@ -1553,22 +1553,44 @@ export async function executeCommand(
     }
 
     case 'aiFind': {
-      const { createSearchEngine } = await import('../ai');
+      // B0 — Delegate to the canonical `find()` pipeline so the relay path
+      // (the runner's primary route) gets exactly the same matcher behavior
+      // as the standalone server's `aiFind` handler. Prior to this, the
+      // relay implementation here built a fresh SearchEngine and called
+      // `engine.search({text, type, fuzzy})` directly, bypassing target
+      // decomposition, soft-type fallback, B1 mirror lifting, and the B4
+      // hard-pinned synonym fallback — so the two transports diverged
+      // sharply on natural-language queries. Now both paths share the same
+      // engine + the same `find()` orchestration, and the registry
+      // source-of-truth is unambiguously `registry.getAllElements()` for
+      // both.
+      const { createSearchEngine, find } = await import('../ai');
       const engine = createSearchEngine({ includeHidden: true });
       engine.updateElements(elements);
-      const {
-        query,
-        type,
-        context: ctx,
-      } = payload as { query?: string; type?: string; context?: string };
-      const resp = engine.search({ text: query, type: type as never, fuzzy: true });
-      return {
-        results: resp.results,
-        total: resp.results.length,
-        query,
-        context: ctx,
-        timestamp: Date.now(),
+      const payloadObj = (payload ?? {}) as {
+        query?: string;
+        type?: string;
+        context?: import('../ai/find').FindContext;
+        confidenceThreshold?: number;
       };
+      const { query, type, context: ctx, confidenceThreshold } = payloadObj;
+      // Some legacy callers still send `{query, type}` as a structured
+      // shorthand. Promote that to a SearchCriteria so `find()` can dispatch
+      // through its structured-query path; otherwise treat the input as a
+      // free-text NL query so target decomposition runs.
+      const findInput: string | import('../ai/types').SearchCriteria =
+        typeof query === 'string' && query.length > 0
+          ? type
+            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              { text: query, type: type as any, fuzzy: true }
+            : query
+          : { fuzzy: true };
+      const result = find(findInput, engine, {
+        context: ctx,
+        confidenceThreshold,
+        pickFirst: true,
+      });
+      return result;
     }
 
     case 'aiExecute': {

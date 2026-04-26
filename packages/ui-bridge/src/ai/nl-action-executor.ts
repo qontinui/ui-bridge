@@ -250,9 +250,30 @@ export class NLActionExecutor {
   }
 
   /**
-   * Build search criteria from a parsed action
+   * Build search criteria from a parsed action.
+   *
+   * If `targetDescription` is `"element <kebab-id>"`, treat it as a direct
+   * id lookup against the cached element registry — the planner uses this
+   * form to bypass fuzzy label matching for elements with stable ids
+   * (e.g. registered disclosures). Falls back to text + type-hint matching
+   * for free-form descriptions.
    */
   private buildSearchCriteria(parsed: ParsedAction): SearchCriteria {
+    const idMatch = parsed.targetDescription.match(/^element\s+([\w-]+)$/i);
+    if (idMatch) {
+      const id = idMatch[1];
+      const exists = this.elements.some((el) => el.id === id);
+      if (exists) {
+        // Pin to this exact id; skip text/fuzzy/type so the search is
+        // effectively a registry lookup with confidence 1.0.
+        return { idPattern: id };
+      }
+      // Id-style instruction but no element with that id is in the
+      // current page's registry — fall through to fuzzy matching so the
+      // existing ELEMENT_NOT_FOUND failure path runs with the full
+      // targetDescription, giving the caller useful diagnostics.
+    }
+
     const criteria: SearchCriteria = {
       text: parsed.targetDescription,
       fuzzy: true,

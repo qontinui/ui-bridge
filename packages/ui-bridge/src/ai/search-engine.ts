@@ -25,6 +25,147 @@ import {
 import { getGlobalAnnotationStore } from '../annotations';
 
 /**
+ * Returns true when `UI_BRIDGE_DEBUG_FIND === '1'` is set in the runtime
+ * environment. Runtime-safe across Node (server-side / vitest) and webview
+ * (browser, where `process` is undefined).
+ *
+ * This gate is permanent — keep instrumentation behind it as a stable
+ * diagnostic affordance for `/ui-bridge/ai/find` triage.
+ */
+function isFindDebugEnabled(): boolean {
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+    return proc?.env?.UI_BRIDGE_DEBUG_FIND === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Truncate a string to `max` chars for safe logging — long labels would
+ * otherwise blow up console output / response payloads.
+ */
+function truncForDebug(s: string | undefined, max = 80): string | undefined {
+  if (!s) return s;
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * Punctuation that should be stripped from tokens before alignment checks.
+ * Matches the characters most commonly used to terminate or join label words
+ * in real UIs: `: , . ; — - / ( )` and family. We keep apostrophes and
+ * intra-word digits intact so brand-shaped labels still tokenize sensibly.
+ */
+const TOKEN_PUNCTUATION_RE = /[:,.;!?/()\\[\]{}<>"`—–-]+/g;
+
+/**
+ * Split a string into lowercased word-tokens with surrounding punctuation
+ * removed. "Advanced:" → ["advanced"]. "per-stage controls" → ["per", "stage",
+ * "controls"]. Empty tokens (from runs of punctuation) are dropped.
+ */
+function tokenizeForAlignment(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(TOKEN_PUNCTUATION_RE, ' ')
+    .replace(/_+/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Result of comparing the query's tokens to the target's tokens.
+ *
+ *   - `prefix-aligned`     — every query token is a prefix of some target
+ *                            token (case-insensitive, post-punctuation-strip).
+ *                            Models the "your keyword introduces the label"
+ *                            relationship like "Advanced" → "Advanced: …".
+ *   - `all-tokens-present` — every query token appears as a complete or
+ *                            partial substring of the target string. Captures
+ *                            "per stage" → "per-stage controls" without the
+ *                            stricter prefix requirement.
+ *   - `partial`            — at least one query token matches; some don't.
+ *                            Better than nothing, weaker than full coverage.
+ *   - `none`               — no token overlap.
+ */
+type TokenAlignmentKind = 'prefix-aligned' | 'all-tokens-present' | 'partial' | 'none';
+
+interface TokenAlignmentResult {
+  kind: TokenAlignmentKind;
+  matchedTokenCount: number;
+  totalQueryTokens: number;
+}
+
+/**
+ * Compare a query string against a target string and report the strongest
+ * token-level relationship between them. Returns `kind: 'none'` when nothing
+ * lines up so the caller can fall through to a literal substring check.
+ *
+ * The order of checks is monotonic by signal strength: prefix-alignment is
+ * the tightest, then all-tokens-anywhere, then partial. We never down-grade
+ * a prefix-aligned hit to "partial" even when not every target token has a
+ * query token — only the query's coverage of the target matters here.
+ */
+function analyzeTokenAlignment(query: string, target: string): TokenAlignmentResult {
+  const queryTokens = tokenizeForAlignment(query);
+  const targetTokens = tokenizeForAlignment(target);
+  const totalQueryTokens = queryTokens.length;
+
+  if (totalQueryTokens === 0 || targetTokens.length === 0) {
+    return { kind: 'none', matchedTokenCount: 0, totalQueryTokens };
+  }
+
+  // Pass 1: prefix alignment. Each query token must be a prefix of some
+  // target token. We don't require ordered/positional alignment — a
+  // "clear filters" query against "filters: clear all" should still
+  // qualify, mirroring user expectations for keyword queries.
+  let prefixMatches = 0;
+  for (const qt of queryTokens) {
+    if (targetTokens.some((tt) => tt.startsWith(qt))) {
+      prefixMatches += 1;
+    }
+  }
+  if (prefixMatches === totalQueryTokens) {
+    return { kind: 'prefix-aligned', matchedTokenCount: prefixMatches, totalQueryTokens };
+  }
+
+  // Pass 2: every query token appears somewhere in the target. Allows the
+  // query token to land mid-target-token (e.g., "stage" → "per-stage"
+  // pre-tokenization, but here we already split — so this is "stage" →
+  // any target token containing "stage" as substring).
+  let presenceMatches = 0;
+  for (const qt of queryTokens) {
+    if (targetTokens.some((tt) => tt.includes(qt))) {
+      presenceMatches += 1;
+    }
+  }
+  if (presenceMatches === totalQueryTokens) {
+    return {
+      kind: 'all-tokens-present',
+      matchedTokenCount: presenceMatches,
+      totalQueryTokens,
+    };
+  }
+
+  if (presenceMatches > 0) {
+    return { kind: 'partial', matchedTokenCount: presenceMatches, totalQueryTokens };
+  }
+
+  return { kind: 'none', matchedTokenCount: 0, totalQueryTokens };
+}
+
+/**
+ * Internal export for unit tests — exposes the alignment helper without
+ * leaking the broader `SearchableElement` shape. Test-only consumers should
+ * import this name explicitly.
+ *
+ * @internal
+ */
+export const __scoringInternals = {
+  analyzeTokenAlignment,
+  tokenizeForAlignment,
+};
+
+/**
  * Configuration for the search engine
  */
 export interface SearchEngineConfig {
@@ -108,6 +249,20 @@ export class SearchEngine {
   ): void {
     this.cachedElements = elements.map((el) => this.toSearchable(el, getState));
     this.cacheTimestamp = Date.now();
+  }
+
+  /**
+   * Peek at the engine's current cache of {id, type} pairs.
+   *
+   * Used by callers like `find.ts` that need to know whether a given
+   * element-type guess is even present in the cached page before deciding to
+   * relax type-pinned criteria. Returns a copy so callers can iterate freely
+   * without affecting the engine's internal state — and never exposes the
+   * full `SearchableElement` shape so we don't leak internal scoring helpers
+   * across the module boundary.
+   */
+  getCachedElementSummaries(): Array<{ id: string; type: string }> {
+    return this.cachedElements.map((el) => ({ id: el.id, type: el.type }));
   }
 
   /**
@@ -321,11 +476,70 @@ export class SearchEngine {
       searchableElements = searchableElements.filter((el) => el.state.visible);
     }
 
+    // -------------------------------------------------------------------
+    // Diagnostic instrumentation — gated on UI_BRIDGE_DEBUG_FIND === '1'.
+    // Permanent affordance for triaging /ui-bridge/ai/find empty-result
+    // cases. Two surfaces:
+    //   1) `console.debug('[ui-bridge:find] ...')` — visible in the
+    //      webview devtools console and (if a log-forwarding plugin is
+    //      installed) the host stderr.
+    //   2) `globalThis.__UI_BRIDGE_LAST_FIND_DIAGNOSTIC__` — last
+    //      diagnostic payload, readable via /control/page/evaluate. This
+    //      is the reliable path on Tauri runners where webview console is
+    //      not piped to stderr.
+    // We collect pre-score state up front, then update with scored data
+    // after the scoring loop completes.
+    // -------------------------------------------------------------------
+    const debugEnabled = isFindDebugEnabled();
+    let candidateElementsForDebug:
+      | Array<{ id: string; type: string; labelText?: string; ariaLabel?: string }>
+      | undefined;
+    let allScoredForDebug:
+      | Array<{ id: string; confidence: number; scores: SearchResult['scores'] }>
+      | undefined;
+    if (debugEnabled) {
+      const criteriaTypeLower = criteria.type?.toLowerCase();
+      candidateElementsForDebug = this.cachedElements
+        .filter((el) => {
+          const idHit = el.id.toLowerCase().includes('advanced');
+          const typeHit = criteriaTypeLower ? el.type.toLowerCase() === criteriaTypeLower : false;
+          return idHit || typeHit;
+        })
+        .map((el) => ({
+          id: el.id,
+          type: el.type,
+          labelText: truncForDebug(el.labelText),
+          ariaLabel: truncForDebug(el.ariaLabel),
+        }));
+      allScoredForDebug = [];
+      try {
+        console.debug('[ui-bridge:find] cachedElements.length=', this.cachedElements.length);
+        console.debug(
+          '[ui-bridge:find] searchableElements.length (post visibility filter)=',
+          searchableElements.length
+        );
+        console.debug('[ui-bridge:find] criteria=', JSON.stringify(criteria));
+        console.debug(
+          '[ui-bridge:find] candidateElements=',
+          JSON.stringify(candidateElementsForDebug)
+        );
+      } catch {
+        // logging never blocks the search
+      }
+    }
+
     // Score each element
     const results: SearchResult[] = [];
 
     for (const searchable of searchableElements) {
       const result = this.scoreElement(searchable, criteria);
+      if (debugEnabled && allScoredForDebug && result.confidence > 0) {
+        allScoredForDebug.push({
+          id: searchable.id,
+          confidence: result.confidence,
+          scores: result.scores,
+        });
+      }
       if (result.confidence >= (criteria.fuzzyThreshold ?? this.config.fuzzyThreshold)) {
         results.push(result);
       }
@@ -336,6 +550,38 @@ export class SearchEngine {
 
     // Limit results
     const limitedResults = results.slice(0, this.config.maxResults);
+
+    if (debugEnabled && allScoredForDebug && candidateElementsForDebug) {
+      const topScored = allScoredForDebug
+        .slice()
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 5);
+      const diagnostic = {
+        cachedElementsLength: this.cachedElements.length,
+        searchableElementsLength: searchableElements.length,
+        candidateElements: candidateElementsForDebug,
+        topScored,
+        criteria,
+        threshold: criteria.fuzzyThreshold ?? this.config.fuzzyThreshold,
+        resultsAboveThreshold: limitedResults.length,
+        timestamp: Date.now(),
+      };
+      try {
+        console.debug('[ui-bridge:find] topScored=', JSON.stringify(topScored));
+      } catch {
+        // logging never blocks
+      }
+      // Side-channel: store on globalThis so /control/page/evaluate can
+      // read the last diagnostic payload without requiring webview console
+      // capture. This is the primary read-out path on Tauri runners.
+      try {
+        (
+          globalThis as { __UI_BRIDGE_LAST_FIND_DIAGNOSTIC__?: unknown }
+        ).__UI_BRIDGE_LAST_FIND_DIAGNOSTIC__ = diagnostic;
+      } catch {
+        // globalThis assign should never throw; swallow defensively
+      }
+    }
 
     return {
       results: limitedResults,
@@ -429,6 +675,42 @@ export class SearchEngine {
       ...DEFAULT_FUZZY_CONFIG,
       threshold: criteria.fuzzyThreshold ?? this.config.fuzzyThreshold,
     };
+
+    // ----------------------------------------------------------------------
+    // B2 — Dilution-safe scoring while preserving "user-supplied criteria
+    // is a real constraint" semantics.
+    //
+    // The scoring helpers below already pick the *max* across populated
+    // source fields (label/aria/placeholder/text/value/name) so multiple
+    // sources don't dilute each other internally. The dilution problem the
+    // plan calls out is between scoring *branches*: the alias-only bonus
+    // path, plus type matching, were the only branches that previously
+    // contributed weight ONLY when matched, while the primary text /
+    // textContent / accessibleName / role / spatial branches added weight
+    // unconditionally on the primary criteria's presence — so an element
+    // that scored 0 against `criteria.text` "spent" 0.35 of its weight on
+    // nothing.
+    //
+    // The compromise applied here:
+    //   - Primary criteria branches (text, textContent, textContains,
+    //     accessibleName, role, spatial) STILL count their full weight
+    //     even when score=0. Pinning a text query and getting zero text
+    //     match is a real signal — we should not let an element claim
+    //     full confidence purely on a synonym-alias bonus when the user
+    //     asked for literal text. This preserves the legacy semantics for
+    //     `textContains: "Save"` against a `Submit` button (alias-only
+    //     match should not dominate a literal text match).
+    //   - The bonus branches (alias, type) and source-conditional branches
+    //     (placeholder, title, idPattern) keep their existing behavior of
+    //     only contributing weight on a positive score; no regression risk.
+    // The actual long-label vs short-label "dilution" the plan worried
+    // about lives inside `scoreTextMatch`, which already takes the max
+    // over populated sources — so a long label that happens to have more
+    // attributes set does NOT pile on additional text-source weight. The
+    // B3 token-prefix boost above is what closes the long-label-loses
+    // concern in practice; the dilution-safe gating below is restricted to
+    // bonus branches to avoid breaking alias-driven recall.
+    // ----------------------------------------------------------------------
 
     // Text matching
     if (criteria.text) {
@@ -687,13 +969,41 @@ export class SearchEngine {
           }
         }
 
-        // Substring/contains check — placeholders and labels are often
-        // sentence-shaped ("What would you like to do?") while queries are
-        // a single keyword. `wordSimilarity` requires reasonable token overlap;
-        // a literal substring is a strong signal even when overlap is low.
-        if (targetText.toLowerCase().includes(text.toLowerCase())) {
-          // Slightly under-weight contains vs. exact/fuzzy to avoid false
-          // positives where the query is one common word.
+        // B3 — Graduated substring/token-prefix scoring.
+        //
+        // A single 0.85 contains-score conflated three very different
+        // structural relationships between query and target:
+        //   1. "Advanced" → "Advanced: per-stage controls" — every query
+        //      token prefix-aligns with a target token. Strongest signal:
+        //      the user's keyword introduces the target. → 0.95.
+        //   2. "per stage" → "Advanced: per-stage controls" — every query
+        //      token appears somewhere in the target, but not all as
+        //      prefixes. Solid signal. → 0.85.
+        //   3. "xyz advanced" → "Advanced: per-stage controls" — only some
+        //      query tokens appear; the others are unrelated noise. Weak
+        //      signal that should still beat outright misses but lose to
+        //      cleaner matches. → 0.7.
+        // Punctuation is stripped from tokens (`Advanced:` → `advanced`)
+        // so a label that ends a heading with `:` or `.` still aligns.
+        const tokenAnalysis = analyzeTokenAlignment(text, targetText);
+        if (tokenAnalysis.kind !== 'none') {
+          const baseScore =
+            tokenAnalysis.kind === 'prefix-aligned'
+              ? 0.95
+              : tokenAnalysis.kind === 'all-tokens-present'
+                ? 0.85
+                : 0.7;
+          const score = baseScore * weight;
+          if (score > maxScore) {
+            maxScore = score;
+            reasons.push(
+              `${sourceLabel} ${tokenAnalysis.kind === 'prefix-aligned' ? 'prefix-aligns' : tokenAnalysis.kind === 'all-tokens-present' ? 'contains all tokens of' : 'partially contains'} "${text}"`
+            );
+          }
+        } else if (targetText.toLowerCase().includes(text.toLowerCase())) {
+          // Fallback: literal-substring match that didn't tokenize cleanly
+          // (e.g., the query is a single contiguous chunk inside a longer
+          // word). Treat as the legacy "contains" signal.
           const score = 0.85 * weight;
           if (score > maxScore) {
             maxScore = score;

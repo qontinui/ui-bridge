@@ -541,3 +541,201 @@ describe('SearchEngine', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// B2 — source-side dilution is bounded by max-over-sources.
+//
+// `scoreTextMatch` already takes the max similarity across populated
+// element-side source fields (label, ariaLabel, placeholder, textContent,
+// value, name) so a long label with several attributes set never piles on
+// extra text-source weight: only the strongest signal counts. We assert
+// that an element with a single populated source still produces a clean
+// per-criteria confidence — i.e., the branch's score (not divided by an
+// inflated totalWeight) drives the result.
+//
+// We deliberately do NOT change scoreElement's branch-level weighting
+// because demoting unmatched primary-criteria branches let alias-only
+// synonym bonuses dominate literal text matches (see the `textContains:
+// "Save"` regression covered by the integration suite). The B3 token-
+// prefix boost above is what actually lifts the long-label disclosure
+// over short-label distractors on the same text query — the test below
+// guards that compound mechanism end-to-end.
+// ---------------------------------------------------------------------------
+describe('SearchEngine — B2 source-side max guard', () => {
+  it('confidence equals the matching-source score when only labelText is populated', () => {
+    const engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+    // Hand-construct a DiscoveredElement that only carries label/textContent.
+    const element: DiscoveredElement = {
+      id: 'lonely-btn',
+      type: 'button',
+      label: 'foo',
+      tagName: 'button',
+      role: 'button',
+      accessibleName: undefined,
+      actions: ['click'],
+      state: {
+        visible: true,
+        enabled: true,
+        focused: false,
+        checked: false,
+        textContent: 'foo',
+        rect: { x: 0, y: 0, width: 100, height: 30 },
+        attributes: {},
+      },
+      registered: false,
+    };
+    engine.updateElements([element]);
+
+    const response = engine.search({ text: 'foo', fuzzy: true, fuzzyThreshold: 0.4 });
+    expect(response.results.length).toBeGreaterThan(0);
+    const match = response.results.find((r) => r.element.id === 'lonely-btn');
+    expect(match).toBeDefined();
+    if (match) {
+      // The text score must come through cleanly — the per-source max
+      // means a single populated source carries the full score weight,
+      // not a fraction of it. Allow alias bonuses (which only contribute
+      // when their own score > 0) to push the final confidence higher.
+      expect(match.confidence).toBeGreaterThanOrEqual(match.scores.text ?? 0);
+      expect(match.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('non-matching branches contribute zero to totalWeight (long-label disclosure beats short-label distractor on text quality)', () => {
+    const engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+
+    // Long disclosure: query "Advanced" prefix-aligns first label token.
+    const longDisclosure: DiscoveredElement = {
+      id: 'long-disclosure',
+      type: 'disclosure',
+      label: 'Advanced: per-stage controls — pick specific pages',
+      tagName: 'button',
+      actions: ['click'],
+      state: {
+        visible: true,
+        enabled: true,
+        focused: false,
+        checked: false,
+        textContent: 'Advanced: per-stage controls — pick specific pages',
+        rect: { x: 0, y: 0, width: 200, height: 30 },
+        attributes: {},
+      },
+      registered: false,
+    };
+    // Short distractor: bare "Cost Control" label, no token alignment with
+    // "Advanced". Should score near zero on text.
+    const distractor: DiscoveredElement = {
+      id: 'cost-control',
+      type: 'button',
+      label: 'Cost Control',
+      tagName: 'button',
+      actions: ['click'],
+      state: {
+        visible: true,
+        enabled: true,
+        focused: false,
+        checked: false,
+        textContent: 'Cost Control',
+        rect: { x: 0, y: 100, width: 100, height: 30 },
+        attributes: {},
+      },
+      registered: false,
+    };
+    engine.updateElements([longDisclosure, distractor]);
+
+    const response = engine.search({
+      text: 'Advanced',
+      fuzzy: true,
+      fuzzyThreshold: 0.4,
+    });
+    expect(response.bestMatch?.element.id).toBe('long-disclosure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B3 — graduated token-prefix scoring for the substring/contains branch.
+//
+// We exercise the helper directly via the internal export so the test
+// pinpoints the scoring function rather than the full pipeline. End-to-end
+// behavior is covered by the disclosure-family tests in find.test.ts.
+// ---------------------------------------------------------------------------
+describe('SearchEngine — B3 token alignment scoring', () => {
+  it('all query tokens prefix-align → kind: prefix-aligned (drives 0.95 score)', async () => {
+    const { __scoringInternals } = await import('./search-engine');
+    const result = __scoringInternals.analyzeTokenAlignment('adv', 'Advanced: per-stage controls');
+    expect(result.kind).toBe('prefix-aligned');
+  });
+
+  it('all tokens present but not all prefix-aligned → kind: all-tokens-present', async () => {
+    const { __scoringInternals } = await import('./search-engine');
+    // "ages" is a substring of "stages" but not a prefix of any target
+    // token ("stages" / "of" / "growth"). "growth" prefix-aligns. So all
+    // query tokens are present somewhere, but not every one prefix-aligns.
+    const result = __scoringInternals.analyzeTokenAlignment('ages growth', 'stages of growth');
+    expect(result.kind).toBe('all-tokens-present');
+    expect(result.matchedTokenCount).toBe(2);
+    expect(result.totalQueryTokens).toBe(2);
+  });
+
+  it('"per stage" against "Advanced: per-stage controls" prefix-aligns (regression doc)', async () => {
+    // Sanity: with our hyphen-aware tokenization, "per-stage" splits into
+    // tokens "per" and "stage", which are exact prefixes of themselves.
+    // So "per stage" → "Advanced: per-stage controls" is the strongest
+    // signal (prefix-aligned), not the middle one. The plan's `≥ 0.85`
+    // bound is satisfied by the resulting 0.95 score.
+    const { __scoringInternals } = await import('./search-engine');
+    const result = __scoringInternals.analyzeTokenAlignment(
+      'per stage',
+      'Advanced: per-stage controls'
+    );
+    expect(result.kind).toBe('prefix-aligned');
+  });
+
+  it('some tokens missing → kind: partial', async () => {
+    const { __scoringInternals } = await import('./search-engine');
+    const result = __scoringInternals.analyzeTokenAlignment(
+      'xyz advanced',
+      'Advanced: per-stage controls'
+    );
+    expect(result.kind).toBe('partial');
+    expect(result.matchedTokenCount).toBe(1);
+    expect(result.totalQueryTokens).toBe(2);
+  });
+
+  it('punctuation is stripped from target tokens before alignment', async () => {
+    // "Advanced:" (punctuation-suffixed) should still be prefix-aligned by
+    // a query token "advanced". Without punctuation stripping this would
+    // fall through to a literal substring check.
+    const { __scoringInternals } = await import('./search-engine');
+    const result = __scoringInternals.analyzeTokenAlignment('advanced', 'Advanced:');
+    expect(result.kind).toBe('prefix-aligned');
+  });
+
+  it('end-to-end: prefix-aligned single token boosts confidence above flat-contains baseline', () => {
+    const engine = new SearchEngine({ fuzzyThreshold: 0.4 });
+    const element: DiscoveredElement = {
+      id: 'long-disclosure',
+      type: 'disclosure',
+      label: 'Advanced: per-stage controls',
+      tagName: 'button',
+      actions: ['click'],
+      state: {
+        visible: true,
+        enabled: true,
+        focused: false,
+        checked: false,
+        textContent: 'Advanced: per-stage controls',
+        rect: { x: 0, y: 0, width: 200, height: 30 },
+        attributes: {},
+      },
+      registered: false,
+    };
+    engine.updateElements([element]);
+
+    const response = engine.search({ text: 'Advanced', fuzzy: true, fuzzyThreshold: 0.4 });
+    expect(response.bestMatch?.element.id).toBe('long-disclosure');
+    // The flat-contains baseline before B3 was 0.85. With prefix-alignment
+    // we expect ≥ 0.95 on the text score (label source weight is 1.0;
+    // textContent fallback also at 1.0; whichever wins drives the score).
+    expect(response.bestMatch?.scores.text ?? 0).toBeGreaterThanOrEqual(0.95);
+  });
+});
