@@ -78,6 +78,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Wrappers',
+      items: ['wrappers/authoring', 'wrappers/action-vocabulary'],
+    },
+    {
+      type: 'category',
       label: 'Python Client',
       items: ['python/installation', 'python/usage', 'python/ai-client', 'python/types'],
     },
