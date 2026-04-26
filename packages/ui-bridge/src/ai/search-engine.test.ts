@@ -2,8 +2,13 @@
  * Search Engine Tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { SearchEngine, createSearchEngine, DEFAULT_SEARCH_CONFIG } from './search-engine';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  SearchEngine,
+  createSearchEngine,
+  DEFAULT_SEARCH_CONFIG,
+  isFindDebugEnabled,
+} from './search-engine';
 import type { DiscoveredElement } from '../control/types';
 
 // Helper to create mock discovered elements
@@ -737,5 +742,154 @@ describe('SearchEngine — B3 token alignment scoring', () => {
     // we expect ≥ 0.95 on the text score (label source weight is 1.0;
     // textContent fallback also at 1.0; whichever wins drives the score).
     expect(response.bestMatch?.scores.text ?? 0).toBeGreaterThanOrEqual(0.95);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isFindDebugEnabled — dual-channel gate (env var OR localStorage).
+//
+// Item 2 of the cozy-crafting-donut plan: the qontinui-runner webview
+// executes each /ui-bridge/control/page/evaluate call in an isolated VM
+// context, so mutations to `process.env` made by one evaluate call don't
+// survive into the next. The gate now also reads localStorage, which is
+// shared across all evaluate calls in the same origin and therefore can
+// be flipped at runtime without respawning the runner.
+//
+// We mock both globals with vi.stubGlobal / vi.unstubAllGlobals (matches
+// the bbox-tracker.test.ts pattern). Each test snapshots and restores the
+// pre-existing UI_BRIDGE_DEBUG_FIND env value to avoid bleeding state into
+// other suites that share this process.
+// ---------------------------------------------------------------------------
+describe('isFindDebugEnabled — dual-channel gate', () => {
+  let originalEnvValue: string | undefined;
+
+  beforeEach(() => {
+    // Snapshot pre-existing env so we can restore it; vi.stubGlobal won't
+    // touch process.env directly, only `globalThis.process` as a whole, so
+    // we mutate process.env in place and restore.
+    originalEnvValue = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env?.UI_BRIDGE_DEBUG_FIND;
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (env) {
+      delete env.UI_BRIDGE_DEBUG_FIND;
+    }
+  });
+
+  afterEach(() => {
+    // Restore env exactly as we found it.
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (env) {
+      if (originalEnvValue === undefined) {
+        delete env.UI_BRIDGE_DEBUG_FIND;
+      } else {
+        env.UI_BRIDGE_DEBUG_FIND = originalEnvValue;
+      }
+    }
+    vi.unstubAllGlobals();
+  });
+
+  it('returns true when only the env var is set to "1"', () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (!env) {
+      throw new Error('expected globalThis.process.env to exist in vitest Node runtime');
+    }
+    env.UI_BRIDGE_DEBUG_FIND = '1';
+    // Ensure localStorage is NOT providing the signal.
+    vi.stubGlobal('localStorage', undefined);
+
+    expect(isFindDebugEnabled()).toBe(true);
+  });
+
+  it('returns true when only localStorage is set to "1"', () => {
+    // Env not set (cleared by beforeEach).
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'UI_BRIDGE_DEBUG_FIND' ? '1' : null),
+    });
+
+    expect(isFindDebugEnabled()).toBe(true);
+  });
+
+  it('returns true when both env and localStorage are set', () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (!env) {
+      throw new Error('expected globalThis.process.env to exist in vitest Node runtime');
+    }
+    env.UI_BRIDGE_DEBUG_FIND = '1';
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'UI_BRIDGE_DEBUG_FIND' ? '1' : null),
+    });
+
+    expect(isFindDebugEnabled()).toBe(true);
+  });
+
+  it('returns false when neither env nor localStorage is set', () => {
+    // Env cleared by beforeEach.
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+    });
+
+    expect(isFindDebugEnabled()).toBe(false);
+  });
+
+  it('returns false (and does not throw) when localStorage is undefined', () => {
+    // Simulates the Node test environment / non-browser runtimes — env
+    // also unset, so the only signal source is missing entirely.
+    vi.stubGlobal('localStorage', undefined);
+
+    expect(() => isFindDebugEnabled()).not.toThrow();
+    expect(isFindDebugEnabled()).toBe(false);
+  });
+
+  it('returns false (and does not throw) when localStorage.getItem throws', () => {
+    // Simulates Safari private-mode SecurityError or sandboxed-iframe
+    // localStorage access denial — the gate must swallow the throw.
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('SecurityError: localStorage is not available');
+      },
+    });
+
+    expect(() => isFindDebugEnabled()).not.toThrow();
+    expect(isFindDebugEnabled()).toBe(false);
+  });
+
+  it('returns false when env value is "0"', () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (!env) {
+      throw new Error('expected globalThis.process.env to exist in vitest Node runtime');
+    }
+    env.UI_BRIDGE_DEBUG_FIND = '0';
+    vi.stubGlobal('localStorage', { getItem: () => null });
+
+    expect(isFindDebugEnabled()).toBe(false);
+  });
+
+  it('returns false when env value is "true" (only the literal "1" enables the gate)', () => {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
+    if (!env) {
+      throw new Error('expected globalThis.process.env to exist in vitest Node runtime');
+    }
+    env.UI_BRIDGE_DEBUG_FIND = 'true';
+    vi.stubGlobal('localStorage', { getItem: () => null });
+
+    expect(isFindDebugEnabled()).toBe(false);
+  });
+
+  it('returns false when localStorage value is "0" or any other non-"1" value', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'UI_BRIDGE_DEBUG_FIND' ? '0' : null),
+    });
+    expect(isFindDebugEnabled()).toBe(false);
+
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'UI_BRIDGE_DEBUG_FIND' ? 'true' : null),
+    });
+    expect(isFindDebugEnabled()).toBe(false);
   });
 });

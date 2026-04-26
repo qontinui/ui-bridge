@@ -644,6 +644,46 @@ describe('UIBridgeRegistry', () => {
     });
   });
 
+  describe('instance tag', () => {
+    // The __instanceTag is a 6-char base-36 string assigned at construction
+    // time. It exists so UI_BRIDGE_DEBUG_FIND diagnostics can fingerprint
+    // registry identity across the React-context path and the module-level
+    // singleton path. See ai/search-engine.ts diagnostic block for the
+    // consumer.
+    it('assigns a non-empty string tag at construction', () => {
+      const r = new UIBridgeRegistry();
+      expect(typeof r.__instanceTag).toBe('string');
+      expect(r.__instanceTag.length).toBeGreaterThan(0);
+    });
+
+    it('assigns distinct tags to separate instances', () => {
+      const tags = new Set<string>();
+      // 50 instances is plenty to detect a constant collision; with 6 chars
+      // of base-36 entropy (~2 billion values) random duplicates are
+      // astronomically unlikely.
+      for (let i = 0; i < 50; i++) {
+        tags.add(new UIBridgeRegistry().__instanceTag);
+      }
+      expect(tags.size).toBe(50);
+    });
+
+    it('exposes the tag via getInstanceTag() for external diagnostics', () => {
+      const r = new UIBridgeRegistry();
+      expect(r.getInstanceTag()).toBe(r.__instanceTag);
+    });
+
+    it('preserves the tag across mutations', () => {
+      const r = new UIBridgeRegistry();
+      const before = r.__instanceTag;
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      r.registerElement('test-btn', btn);
+      r.unregisterElement('test-btn');
+      r.clear();
+      expect(r.__instanceTag).toBe(before);
+    });
+  });
+
   describe('global registry', () => {
     it('should set and get global registry', () => {
       const newRegistry = new UIBridgeRegistry();

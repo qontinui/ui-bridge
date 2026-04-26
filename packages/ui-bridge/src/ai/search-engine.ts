@@ -23,22 +23,61 @@ import {
   areSynonyms,
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
+import { getGlobalRegistry } from '../core/registry';
 
 /**
- * Returns true when `UI_BRIDGE_DEBUG_FIND === '1'` is set in the runtime
- * environment. Runtime-safe across Node (server-side / vitest) and webview
- * (browser, where `process` is undefined).
+ * Returns true when the `UI_BRIDGE_DEBUG_FIND` find-diagnostic flag is enabled
+ * via either of two channels:
+ *
+ *   1. `globalThis.process.env.UI_BRIDGE_DEBUG_FIND === '1'` — the Node /
+ *      vitest path, also honoured at runner spawn time when the supervisor
+ *      forwards the env var into the webview process.
+ *   2. `globalThis.localStorage.getItem('UI_BRIDGE_DEBUG_FIND') === '1'` —
+ *      the webview path. The qontinui-runner's `/ui-bridge/control/page/
+ *      evaluate` endpoint executes each call in an isolated VM context, so
+ *      mutations to `process.env` set by one evaluate call do not persist
+ *      into the next. localStorage is shared across all evaluate calls in
+ *      the same origin, so writes via
+ *      `localStorage.setItem('UI_BRIDGE_DEBUG_FIND','1')` survive and the
+ *      subsequent `/ai/find` request sees the gate as enabled.
+ *
+ * Either channel set is sufficient — they OR together. Both wrapped in
+ * try/catch so missing-globals (Node test runner) and getter-throws
+ * (Safari private-mode-style failures) never escape.
  *
  * This gate is permanent — keep instrumentation behind it as a stable
  * diagnostic affordance for `/ui-bridge/ai/find` triage.
+ *
+ * Exported for unit testing — kept on the public surface alongside
+ * `__scoringInternals` so consumers don't have to fork module internals to
+ * exercise the gate semantics.
+ *
+ * @internal
  */
-function isFindDebugEnabled(): boolean {
+export function isFindDebugEnabled(): boolean {
   try {
     const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
-    return proc?.env?.UI_BRIDGE_DEBUG_FIND === '1';
+    if (proc?.env?.UI_BRIDGE_DEBUG_FIND === '1') {
+      return true;
+    }
   } catch {
-    return false;
+    // process / env access threw — fall through to localStorage check.
   }
+
+  try {
+    const ls = (globalThis as { localStorage?: { getItem?: (key: string) => string | null } })
+      .localStorage;
+    if (ls && typeof ls.getItem === 'function') {
+      if (ls.getItem('UI_BRIDGE_DEBUG_FIND') === '1') {
+        return true;
+      }
+    }
+  } catch {
+    // localStorage missing or threw (Safari private mode / SecurityError) —
+    // treat as not-enabled.
+  }
+
+  return false;
 }
 
 /**
@@ -556,6 +595,71 @@ export class SearchEngine {
         .slice()
         .sort((a, b) => b.confidence - a.confidence)
         .slice(0, 5);
+
+      // Registry-instance fingerprinting. The runner has historically shown
+      // a divergence between `/control/snapshot` (which iterates the React
+      // context's `bridge.registry`) and `/ui-bridge/ai/find` (which reads
+      // `getGlobalRegistry()`). When the two paths return different element
+      // counts, the most likely explanation is that they're talking to
+      // *different registry instances* — multiple bundles each with their
+      // own module-level `globalRegistry` singleton.
+      //
+      // We collect every reachable registry instance's tag here so a single
+      // /ai/find call paints the full map.
+      let registryTags:
+        | {
+            getGlobalRegistryTag: string | null;
+            windowProvidersTag: string | null;
+            windowProvidersHasRegistry: boolean;
+            allWindowTags: Array<{ source: string; tag: string }>;
+          }
+        | undefined;
+      try {
+        const tags: Array<{ source: string; tag: string }> = [];
+        let getGlobalRegistryTag: string | null = null;
+        try {
+          const reg = getGlobalRegistry() as unknown as { __instanceTag?: string };
+          if (reg && typeof reg.__instanceTag === 'string') {
+            getGlobalRegistryTag = reg.__instanceTag;
+            tags.push({ source: 'getGlobalRegistry()', tag: reg.__instanceTag });
+          }
+        } catch {
+          // getGlobalRegistry() may throw in unusual sandbox contexts; treat as null.
+        }
+
+        // The provider exposes itself on `window.__UI_BRIDGE__` via
+        // exposeProviderOnWindow. We don't currently put the registry there
+        // directly, but if it ever appears we want the diagnostic to surface
+        // it. Walk the well-known global to find any UIBridgeRegistry-shaped
+        // object and capture its tag.
+        let windowProvidersTag: string | null = null;
+        let windowProvidersHasRegistry = false;
+        try {
+          const w = (globalThis as { __UI_BRIDGE__?: Record<string, unknown> }).__UI_BRIDGE__;
+          if (w && typeof w === 'object') {
+            const candidate = (w as { registry?: { __instanceTag?: string } }).registry;
+            if (candidate && typeof candidate.__instanceTag === 'string') {
+              windowProvidersHasRegistry = true;
+              windowProvidersTag = candidate.__instanceTag;
+              tags.push({
+                source: 'globalThis.__UI_BRIDGE__.registry',
+                tag: candidate.__instanceTag,
+              });
+            }
+          }
+        } catch {
+          // window walk failed — leave defaults.
+        }
+        registryTags = {
+          getGlobalRegistryTag,
+          windowProvidersTag,
+          windowProvidersHasRegistry,
+          allWindowTags: tags,
+        };
+      } catch {
+        // Tag collection never blocks the search.
+      }
+
       const diagnostic = {
         cachedElementsLength: this.cachedElements.length,
         searchableElementsLength: searchableElements.length,
@@ -564,6 +668,7 @@ export class SearchEngine {
         criteria,
         threshold: criteria.fuzzyThreshold ?? this.config.fuzzyThreshold,
         resultsAboveThreshold: limitedResults.length,
+        registryTags,
         timestamp: Date.now(),
       };
       try {

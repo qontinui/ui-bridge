@@ -615,6 +615,22 @@ export interface RegistrySnapshot {
 }
 
 export class UIBridgeRegistry {
+  /**
+   * Stable per-instance tag assigned at construction time. Used by
+   * UI_BRIDGE_DEBUG_FIND diagnostics to detect duplicate registry instances
+   * across the React-context path (`bridge.registry`) and the module-level
+   * singleton path (`getGlobalRegistry()`). The runner has historically
+   * shown a 193-vs-118 element divergence between the two paths; the tag
+   * lets a single diagnostic run answer "is this the same registry or two
+   * different ones?" empirically without re-deploying instrumentation.
+   *
+   * Six chars of base-36 entropy — collision-safe within a single page
+   * lifetime (~2 billion possible values, dozens of registries at most).
+   * Public so external diagnostic tools can read it via reflection without
+   * needing a getter call.
+   */
+  public readonly __instanceTag: string;
+
   private elements = new Map<string, RegisteredElement>();
   private components = new Map<string, RegisteredComponent>();
   private workflows = new Map<string, Workflow>();
@@ -657,6 +673,17 @@ export class UIBridgeRegistry {
 
   constructor(options: RegistryOptions = {}) {
     this.options = options;
+    this.__instanceTag = Math.random().toString(36).slice(2, 8);
+  }
+
+  /**
+   * Public accessor for the instance tag — equivalent to reading
+   * `__instanceTag` directly, but kept as a method so external diagnostic
+   * code (which sees the type from `dist/`) can call it without TypeScript
+   * complaining about touching internal fields.
+   */
+  getInstanceTag(): string {
+    return this.__instanceTag;
   }
 
   /**
@@ -2354,31 +2381,84 @@ export class UIBridgeRegistry {
 }
 
 /**
- * Default global registry instance
+ * Default global registry instance.
+ *
+ * ── Why this lives on `globalThis` instead of module scope ────────────────
+ *
+ * The SDK is published with multiple subpath exports (./, ./core, ./react,
+ * ./ai, …) and each subpath is bundled independently by tsup. A consumer
+ * that imports `getGlobalRegistry` from `@qontinui/ui-bridge` (root) loads
+ * `dist/index.mjs`; an import from `@qontinui/ui-bridge/core` loads
+ * `dist/core/index.mjs`; and so on. Each bundle *physically duplicates* the
+ * registry module's source — including any `let globalRegistry = null`
+ * declaration. With a module-scope binding, every bundle would have its
+ * own private slot and `setGlobalRegistry` calls in one bundle would be
+ * invisible to `getGlobalRegistry` callers in another. That is exactly the
+ * 193-vs-118 element divergence reported between `/control/snapshot` (which
+ * iterates the React-context registry) and `/ui-bridge/ai/find` (which
+ * reads the global singleton): the runner pulls `useBuildIdWatcher` from
+ * `@qontinui/ui-bridge/react` and other code from the root entry, so two
+ * different `globalRegistry` slots ended up in flight.
+ *
+ * Storing the slot on a Symbol-keyed `globalThis` property fixes this:
+ * every bundle's `getGlobalRegistry`/`setGlobalRegistry` reads and writes
+ * the same global property, no matter how many SDK-bundle copies are loaded.
+ * Symbol.for('@qontinui/ui-bridge/registry') is intentionally cross-realm
+ * stable so even when two copies of the registry source are bundled into
+ * separate vite chunks, they coordinate through the well-known symbol key.
  */
-let globalRegistry: UIBridgeRegistry | null = null;
+const REGISTRY_KEY = Symbol.for('@qontinui/ui-bridge/globalRegistry');
+
+interface GlobalRegistrySlot {
+  [REGISTRY_KEY]?: UIBridgeRegistry | null;
+}
+
+function getRegistrySlot(): GlobalRegistrySlot {
+  return globalThis as GlobalRegistrySlot;
+}
 
 /**
- * Get or create the global registry
+ * Get or create the global registry.
+ *
+ * Reads from the cross-bundle `globalThis[Symbol.for(...)]` slot so every
+ * SDK bundle shares one live instance, then lazily creates one if no
+ * provider has yet called `setGlobalRegistry`.
  */
 export function getGlobalRegistry(): UIBridgeRegistry {
-  if (!globalRegistry) {
-    globalRegistry = new UIBridgeRegistry();
+  const slot = getRegistrySlot();
+  let current = slot[REGISTRY_KEY] ?? null;
+  if (!current) {
+    current = new UIBridgeRegistry();
+    slot[REGISTRY_KEY] = current;
   }
-  return globalRegistry;
+  return current;
 }
 
 /**
- * Set the global registry
+ * Set the global registry.
+ *
+ * Writes the cross-bundle `globalThis[Symbol.for(...)]` slot so subsequent
+ * `getGlobalRegistry()` calls — from any bundle — see this exact instance.
+ * Called by `UIBridgeProviderInit.initializeUIBridge` and re-asserted on
+ * every mount of `UIBridgeProvider` (see the useEffect there) so a remount
+ * never strands the global at a torn-down instance.
  */
 export function setGlobalRegistry(registry: UIBridgeRegistry): void {
-  globalRegistry = registry;
+  const slot = getRegistrySlot();
+  slot[REGISTRY_KEY] = registry;
 }
 
 /**
- * Reset the global registry
+ * Reset the global registry.
+ *
+ * Clears the live instance and removes the cross-bundle slot so the next
+ * `getGlobalRegistry()` lazily creates a fresh one. Tests use this; the
+ * provider deliberately does NOT call this on unmount to avoid stranding
+ * sibling consumers at a torn-down singleton mid-lifecycle.
  */
 export function resetGlobalRegistry(): void {
-  globalRegistry?.clear();
-  globalRegistry = null;
+  const slot = getRegistrySlot();
+  const current = slot[REGISTRY_KEY] ?? null;
+  current?.clear();
+  slot[REGISTRY_KEY] = null;
 }

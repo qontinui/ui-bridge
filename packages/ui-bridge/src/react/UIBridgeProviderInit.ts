@@ -153,6 +153,12 @@ export function exposeProviderOnWindow(internals: UIBridgeInternals): void {
   const root = (w.__UI_BRIDGE__ ??= {}) as Record<string, unknown>;
 
   root.specs = { getGlobalSpecStore };
+  // Expose the provider's registry alongside the other trackers so diagnostic
+  // tooling can compare the React-context registry against the module-level
+  // singleton without having to thread context through. Used by
+  // search-engine's `UI_BRIDGE_DEBUG_FIND` path to fingerprint instance
+  // identity (see `__UI_BRIDGE_LAST_FIND_DIAGNOSTIC__.registryTags`).
+  root.registry = internals.registry;
   root.browserCapture = internals.browserCapture;
   // Backward-compat alias (same instance supports getSince / getRecent).
   root.consoleCapture = internals.browserCapture;
