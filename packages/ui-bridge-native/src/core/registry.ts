@@ -15,6 +15,8 @@ import type {
   NativeBridgeSnapshot,
   NativeElementIdentifier,
   NativeElementRef,
+  NativeSnapshotEnrichers,
+  NativeSnapshotEnricher,
   Workflow,
   BridgeEvent,
   BridgeEventType,
@@ -126,9 +128,38 @@ export class NativeUIBridgeRegistry {
   private workflows = new Map<string, Workflow>();
   private eventListeners = new Map<BridgeEventType, Set<BridgeEventListener>>();
   private config: NativeRegistryConfig;
+  private enrichers: NativeSnapshotEnrichers = {};
+  private snapshotExtras = new Map<string, NativeSnapshotEnricher>();
 
   constructor(config: NativeRegistryConfig = {}) {
     this.config = config;
+  }
+
+  // ============================================================================
+  // Snapshot Enricher Slots
+  // ============================================================================
+
+  /**
+   * Register/replace canonical enrichers (modal/toast/undo). HMR-safe — calling
+   * with a partial set merges into existing slots instead of clobbering them.
+   */
+  setEnrichers(e: Partial<NativeSnapshotEnrichers>): void {
+    this.enrichers = { ...this.enrichers, ...e };
+  }
+
+  /**
+   * Register a custom snapshot enricher. The returned object will be
+   * `Object.assign`ed onto the snapshot, so use unique top-level keys to avoid
+   * clobbering canonical fields. Returns a disposer.
+   */
+  registerSnapshotEnricher(name: string, fn: NativeSnapshotEnricher): () => void {
+    this.snapshotExtras.set(name, fn);
+    return () => this.unregisterSnapshotEnricher(name);
+  }
+
+  /** Remove a custom snapshot enricher by name */
+  unregisterSnapshotEnricher(name: string): void {
+    this.snapshotExtras.delete(name);
   }
 
   // ============================================================================
@@ -580,7 +611,7 @@ export class NativeUIBridgeRegistry {
       elements = elements.filter((e) => e.registrationRoute === currentRoute);
     }
 
-    return {
+    const snapshot: NativeBridgeSnapshot = {
       timestamp: Date.now(),
       elements: elements.map((e) => {
         const handlers = extractHandlerNames(e.props);
@@ -612,6 +643,55 @@ export class NativeUIBridgeRegistry {
       currentRoute: routeInfo?.currentRoute ?? null,
       segments: routeInfo?.segments,
     };
+
+    // Canonical enrichers — each in its own try/catch so a misbehaving tracker
+    // can never break the rest of the snapshot.
+    if (this.enrichers.modalDetector) {
+      try {
+        snapshot.modalStack = this.enrichers.modalDetector.getSnapshotModalContext();
+      } catch (error) {
+        if (this.config.verbose) {
+          console.warn(`[ui-bridge-native] modalDetector enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.toastCapture) {
+      try {
+        snapshot.toasts = this.enrichers.toastCapture.getSnapshotToastContext();
+      } catch (error) {
+        if (this.config.verbose) {
+          console.warn(`[ui-bridge-native] toastCapture enricher threw:`, error);
+        }
+      }
+    }
+    if (this.enrichers.undoTracker) {
+      try {
+        snapshot.undoRedo = this.enrichers.undoTracker.getSnapshotUndoContext();
+      } catch (error) {
+        if (this.config.verbose) {
+          console.warn(`[ui-bridge-native] undoTracker enricher threw:`, error);
+        }
+      }
+    }
+
+    // Custom enrichers — keys assign-merged onto the snapshot
+    if (this.snapshotExtras.size > 0) {
+      const ctx = { elements, currentRoute: routeInfo?.currentRoute ?? null };
+      for (const [name, fn] of this.snapshotExtras) {
+        try {
+          const extra = fn(ctx);
+          if (extra && typeof extra === 'object') {
+            Object.assign(snapshot, extra);
+          }
+        } catch (error) {
+          if (this.config.verbose) {
+            console.warn(`[ui-bridge-native] snapshot enricher "${name}" threw:`, error);
+          }
+        }
+      }
+    }
+
+    return snapshot;
   }
 
   /**

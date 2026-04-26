@@ -22,6 +22,13 @@ export {
   type NativeActionRequest,
   type NativeActionResponse,
   type NativeBridgeSnapshot,
+  type NativeModalInfo,
+  type NativeSnapshotModalContext,
+  type NativeCapturedToast,
+  type NativeSnapshotToastContext,
+  type NativeSnapshotUndoContext,
+  type NativeSnapshotEnrichers,
+  type NativeSnapshotEnricher,
   type NativeUIBridgeFeatures,
   type NativeUIBridgeConfig,
   type NativeFindRequest,
@@ -95,6 +102,24 @@ export {
   type ComponentActionRequest,
   type ComponentActionResponse,
 } from './react/useUIBridge';
+
+export { useUIBridgeModal, type UseUIBridgeModalOptions } from './react/useUIBridgeModal';
+
+export {
+  useUIBridgeToast,
+  useToastRecorder,
+  type UseUIBridgeToastOptions,
+  type ToastRecorderInput,
+} from './react/useUIBridgeToast';
+
+// Tracker classes (modal/toast/undo) — usually consumed via hooks but exported
+// so non-React contexts (e.g. unit tests, custom enrichers) can instantiate them.
+export { ModalDetector } from './modal/modal-detector';
+export type { ModalPushInput } from './modal/modal-detector';
+export { ToastCapture } from './toast/toast-capture';
+export type { ToastRecordInput, ToastCaptureConfig } from './toast/toast-capture';
+export { UndoTracker } from './undo';
+export type { ActionRecord, DeclaredUndoState, UndoTrackerConfig } from './undo';
 
 // Control exports
 export {

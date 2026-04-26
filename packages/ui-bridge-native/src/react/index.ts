@@ -9,3 +9,7 @@ export * from './useUIElement';
 export * from './useUIComponent';
 export * from './useUIBridge';
 export * from './useAutoRegister';
+export { useUIBridgeModal } from './useUIBridgeModal';
+export type { UseUIBridgeModalOptions } from './useUIBridgeModal';
+export { useUIBridgeToast, useToastRecorder } from './useUIBridgeToast';
+export type { UseUIBridgeToastOptions, ToastRecorderInput } from './useUIBridgeToast';

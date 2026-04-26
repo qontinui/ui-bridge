@@ -85,6 +85,24 @@ export interface WaitResult {
 }
 
 /**
+ * Action event emitted after executeAction completes (success or failure).
+ */
+export interface NativeActionEvent {
+  elementId: string;
+  action: string;
+  params?: unknown;
+  success: boolean;
+  error?: string;
+  /** ms since epoch when the executor finished the action */
+  timestamp: number;
+  /** request id propagated from ControlActionRequest, if any */
+  requestId?: string;
+  durationMs: number;
+}
+
+export type NativeActionListener = (event: NativeActionEvent) => void;
+
+/**
  * Native action executor interface
  */
 export interface NativeActionExecutor {
@@ -110,6 +128,9 @@ export interface NativeActionExecutor {
    * Wait for element conditions
    */
   waitForElement(elementId: string, options: WaitOptions): Promise<WaitResult>;
+
+  /** Subscribe to action events. Returns an unsubscribe function. */
+  onActionExecuted(listener: NativeActionListener): () => void;
 }
 
 /**

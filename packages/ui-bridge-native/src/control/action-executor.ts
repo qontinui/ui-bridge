@@ -22,6 +22,8 @@ import type {
   ComponentActionResponse,
   WaitResult,
   NativeActionExecutor,
+  NativeActionEvent,
+  NativeActionListener,
   TypeActionParams,
   ScrollActionParams,
   SwipeActionParams,
@@ -51,7 +53,27 @@ function sleep(ms: number): Promise<void> {
  * Default native action executor implementation
  */
 export class DefaultNativeActionExecutor implements NativeActionExecutor {
+  private actionListeners = new Set<NativeActionListener>();
+
   constructor(private registry: NativeUIBridgeRegistry) {}
+
+  onActionExecuted(listener: NativeActionListener): () => void {
+    this.actionListeners.add(listener);
+    return () => {
+      this.actionListeners.delete(listener);
+    };
+  }
+
+  /** Notify listeners out-of-band; isolate each invocation so one bad listener can't poison the rest. */
+  private emitActionEvent(event: NativeActionEvent): void {
+    for (const listener of this.actionListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn(`[ui-bridge-native] Action listener error:`, error);
+      }
+    }
+  }
 
   /**
    * Execute an action on an element
@@ -73,11 +95,23 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       }
 
       if (!registered) {
+        const failTime = Date.now();
+        const errorMsg = `Element not found: ${elementId}`;
+        this.emitActionEvent({
+          elementId,
+          action: request.action,
+          params: request.params,
+          success: false,
+          error: errorMsg,
+          timestamp: failTime,
+          requestId: request.requestId,
+          durationMs: failTime - startTime,
+        });
         return {
           success: false,
-          error: `Element not found: ${elementId}`,
-          durationMs: Date.now() - startTime,
-          timestamp: Date.now(),
+          error: errorMsg,
+          durationMs: failTime - startTime,
+          timestamp: failTime,
           requestId: request.requestId,
         };
       }
@@ -87,11 +121,23 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         const waitResult = await this.waitForElementInternal(registered.id, request.waitOptions);
         waitDurationMs = waitResult.waitedMs;
         if (!waitResult.met) {
+          const failTime = Date.now();
+          const errorMsg = waitResult.error || 'Wait condition not met';
+          this.emitActionEvent({
+            elementId,
+            action: request.action,
+            params: request.params,
+            success: false,
+            error: errorMsg,
+            timestamp: failTime,
+            requestId: request.requestId,
+            durationMs: failTime - startTime,
+          });
           return {
             success: false,
-            error: waitResult.error || 'Wait condition not met',
-            durationMs: Date.now() - startTime,
-            timestamp: Date.now(),
+            error: errorMsg,
+            durationMs: failTime - startTime,
+            timestamp: failTime,
             requestId: request.requestId,
             waitDurationMs,
           };
@@ -101,22 +147,44 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       // Execute the action
       const result = await this.performAction(registered, request.action, request.params);
 
+      const successTime = Date.now();
+      this.emitActionEvent({
+        elementId,
+        action: request.action,
+        params: request.params,
+        success: true,
+        timestamp: successTime,
+        requestId: request.requestId,
+        durationMs: successTime - startTime,
+      });
       return {
         success: true,
         elementState: registered.getState(),
         result,
-        durationMs: Date.now() - startTime,
-        timestamp: Date.now(),
+        durationMs: successTime - startTime,
+        timestamp: successTime,
         requestId: request.requestId,
         waitDurationMs,
       };
     } catch (error) {
+      const failTime = Date.now();
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.emitActionEvent({
+        elementId,
+        action: request.action,
+        params: request.params,
+        success: false,
+        error: errorMsg,
+        timestamp: failTime,
+        requestId: request.requestId,
+        durationMs: failTime - startTime,
+      });
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMsg,
         stack: error instanceof Error ? error.stack : undefined,
-        durationMs: Date.now() - startTime,
-        timestamp: Date.now(),
+        durationMs: failTime - startTime,
+        timestamp: failTime,
         requestId: request.requestId,
         waitDurationMs,
       };

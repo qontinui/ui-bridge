@@ -386,7 +386,106 @@ export interface NativeBridgeSnapshot {
   currentRoute?: string | null;
   /** Current route segments (if a RouteProvider is configured) */
   segments?: string[];
+  /** Modal/sheet/drawer context (populated when a modalDetector enricher is registered) */
+  modalStack?: NativeSnapshotModalContext;
+  /** Toast/snackbar context (populated when a toastCapture enricher is registered) */
+  toasts?: NativeSnapshotToastContext;
+  /** Undo/redo context (populated when an undoTracker enricher is registered) */
+  undoRedo?: NativeSnapshotUndoContext;
 }
+
+// ============================================================================
+// Snapshot Enrichers (modal / toast / undo)
+// ============================================================================
+
+/** A single detected modal-like surface (modal, sheet, drawer, popover, alert) */
+export interface NativeModalInfo {
+  id: string;
+  title?: string;
+  type: 'modal' | 'sheet' | 'drawer' | 'popover' | 'alertdialog' | 'dialog';
+  /** Whether the modal blocks interaction with the underlying UI */
+  blocking: boolean;
+  /** Whether it can be dismissed by the user (backdrop tap, swipe, esc, etc.) */
+  dismissible: boolean;
+  detectedAt: number;
+}
+
+/**
+ * Modal context attached to a snapshot. Field names match the web SDK's
+ * `SnapshotModalContext` so external agents can write transport-agnostic checks
+ * like `snapshot.modalStack?.hasBlockingModal`.
+ */
+export interface NativeSnapshotModalContext {
+  modals: NativeModalInfo[];
+  topModal?: NativeModalInfo;
+  hasBlockingModal: boolean;
+  count: number;
+}
+
+/** A captured toast/snackbar */
+export interface NativeCapturedToast {
+  id: string;
+  message: string;
+  level: 'info' | 'success' | 'warning' | 'error' | 'loading' | 'unknown';
+  appearedAt: number;
+  dismissedAt?: number;
+  visible: boolean;
+  /** Total duration in ms (lifetime so far if still visible, total if dismissed) */
+  durationMs: number;
+}
+
+/** Toast context attached to a snapshot */
+export interface NativeSnapshotToastContext {
+  /** Toasts currently on screen */
+  active: NativeCapturedToast[];
+  /** Recently-dismissed toasts retained by the capture buffer (most recent first) */
+  recent: NativeCapturedToast[];
+  /** Total number of toasts ever captured by this tracker */
+  totalCaptured: number;
+}
+
+/**
+ * Undo/redo context attached to a snapshot. Mirrors the web SDK's
+ * `SnapshotUndoContext` minus DOM-only fields — RN has no `document.execCommand`
+ * or selectors, so the native variant relies entirely on developer declaration.
+ */
+export interface NativeSnapshotUndoContext {
+  /** Whether undo appears to be available */
+  canUndo: boolean;
+  /** Whether redo appears to be available */
+  canRedo: boolean;
+  /** Description of what undo would reverse */
+  undoDescription?: string;
+  /** Description of what redo would restore */
+  redoDescription?: string;
+  /** Undo stack depth (if known) */
+  undoDepth?: number;
+  /** Redo stack depth (if known) */
+  redoDepth?: number;
+  /** Human-readable summary for AI */
+  summary: string;
+}
+
+/**
+ * Canonical enricher slot. Each tracker exposes a `getSnapshot*Context()` method
+ * that the registry calls during `createSnapshot`. NavigationTracker is intentionally
+ * NOT here — route info already flows through `currentRoute` / `segments`.
+ */
+export interface NativeSnapshotEnrichers {
+  modalDetector?: { getSnapshotModalContext(): NativeSnapshotModalContext };
+  toastCapture?: { getSnapshotToastContext(): NativeSnapshotToastContext };
+  undoTracker?: { getSnapshotUndoContext(): NativeSnapshotUndoContext };
+}
+
+/**
+ * Pluggable snapshot enricher: receives base context and returns extra fields
+ * that get `Object.assign`ed onto the snapshot. Used for ad-hoc/custom trackers
+ * (e.g. runner sidebar tabs) without growing the canonical enricher set.
+ */
+export type NativeSnapshotEnricher = (ctx: {
+  elements: RegisteredNativeElement[];
+  currentRoute: string | null;
+}) => Record<string, unknown>;
 
 /**
  * UI Bridge Native feature flags

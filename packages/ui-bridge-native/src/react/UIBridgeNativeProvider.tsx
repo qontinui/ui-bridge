@@ -35,6 +35,9 @@ import type { RouteProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
 import { DeviceAnnouncer } from '../transport/DeviceAnnouncer';
 import { CloudRelayClient, type CloudRelayConfig } from '../transport/CloudRelayClient';
+import { ModalDetector } from '../modal/modal-detector';
+import { ToastCapture } from '../toast/toast-capture';
+import { UndoTracker } from '../undo/undo-tracker';
 
 /**
  * UI Bridge Native context value
@@ -48,6 +51,12 @@ export interface UIBridgeNativeContextValue {
   registry: NativeUIBridgeRegistry;
   /** Action executor */
   executor: NativeActionExecutor;
+  /** Modal stack tracker (declarative pushModal/dismissModal) */
+  modalDetector: ModalDetector;
+  /** Toast/snackbar tracker (declarative recordToast/dismissToast) */
+  toastCapture: ToastCapture;
+  /** Undo/redo action-correlation tracker */
+  undoTracker: UndoTracker;
   /** Get all registered elements */
   getElements: () => RegisteredNativeElement[];
   /** Get all registered components */
@@ -166,6 +175,9 @@ export function UIBridgeNativeProvider({
 }: UIBridgeNativeProviderProps) {
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
+  const modalDetectorRef = useRef<ModalDetector | null>(null);
+  const toastCaptureRef = useRef<ToastCapture | null>(null);
+  const undoTrackerRef = useRef<UndoTracker | null>(null);
   const [serverRunning, setServerRunning] = useState(false);
 
   // Initialize on first render
@@ -185,6 +197,16 @@ export function UIBridgeNativeProvider({
   }
 
   const executor = executorRef.current;
+
+  // Trackers — lazy-init the same way as registry/executor so each provider
+  // lifecycle has exactly one stable instance.
+  if (!modalDetectorRef.current) modalDetectorRef.current = new ModalDetector();
+  if (!toastCaptureRef.current) toastCaptureRef.current = new ToastCapture();
+  if (!undoTrackerRef.current) undoTrackerRef.current = new UndoTracker();
+
+  const modalDetector = modalDetectorRef.current;
+  const toastCapture = toastCaptureRef.current;
+  const undoTracker = undoTrackerRef.current;
 
   // Server instance (persisted across renders)
   const serverRef = useRef<NativeUIBridgeServer | null>(null);
@@ -443,6 +465,29 @@ export function UIBridgeNativeProvider({
     });
   }, [routeProvider, registry]);
 
+  // Wire trackers into the registry's snapshot enricher slots. Trackers are
+  // stable refs, so this effect runs exactly once per provider lifecycle.
+  useEffect(() => {
+    registry.setEnrichers({ modalDetector, toastCapture, undoTracker });
+  }, [registry, modalDetector, toastCapture, undoTracker]);
+
+  // Mirror successful bridge actions into UndoTracker's rolling history so
+  // snapshots can surface action-correlation undo context without each
+  // action site needing to call recordAction manually.
+  useEffect(() => {
+    const unsubscribe = executor.onActionExecuted((event) => {
+      if (!event.success) return;
+      undoTracker.recordAction({
+        id: event.requestId ?? `action-${event.timestamp}`,
+        type: event.action,
+        targetId: event.elementId,
+        timestamp: event.timestamp,
+        reversible: true,
+      });
+    });
+    return unsubscribe;
+  }, [executor, undoTracker]);
+
   const on = useCallback(
     <T = unknown,>(type: BridgeEventType, listener: BridgeEventListener<T>) =>
       registry.on(type, listener),
@@ -461,6 +506,9 @@ export function UIBridgeNativeProvider({
       config,
       registry,
       executor,
+      modalDetector,
+      toastCapture,
+      undoTracker,
       getElements,
       getComponents,
       createSnapshot,
@@ -477,6 +525,9 @@ export function UIBridgeNativeProvider({
       config,
       registry,
       executor,
+      modalDetector,
+      toastCapture,
+      undoTracker,
       getElements,
       getComponents,
       createSnapshot,
