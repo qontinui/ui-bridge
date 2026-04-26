@@ -401,3 +401,112 @@ describe('executeCommand · getControlSnapshot · graceful degradation', () => {
     });
   });
 });
+
+/**
+ * Property-based regression guard for the two-channel snapshot drift bug.
+ *
+ * Background: in April 2026 (~24h window before commit a8a4bb4) the SDK had
+ * two paths emitting snapshots — `registry.createSnapshot()` (canonical, used
+ * by the runner) and `executeCommand('getControlSnapshot', ...)` (relay
+ * handler, used by the supervisor dashboard) — and they silently drifted.
+ * `createSnapshot` gained new top-level fields (registration, route,
+ * snapshotTakenAtMs in d50ce72) but the relay handler built its own minimal
+ * payload inline and never picked them up.
+ *
+ * The 12 hand-written shape tests above assert *expected fields are present*
+ * in the relay snapshot — they would NOT catch a future regression that adds
+ * a new field to `createSnapshot` and forgets to mirror it in the relay path.
+ *
+ * This block adds a property test instead: every top-level key emitted by
+ * `registry.createSnapshot()` must also appear in the relay handler's output.
+ * Set inclusion only — the relay is allowed to add extra fields like
+ * `activeRuns` that the canonical snapshot doesn't carry.
+ */
+
+/**
+ * Asserts every top-level key in `canonical` is also present in `relay`.
+ * Failure message lists the missing keys explicitly so CI logs surface the
+ * regression at a glance instead of forcing a debug session.
+ */
+function expectAllCanonicalKeysPresent(
+  canonical: Record<string, unknown>,
+  relay: Record<string, unknown>
+): void {
+  const canonicalKeys = new Set(Object.keys(canonical));
+  const relayKeys = new Set(Object.keys(relay));
+  const missing = [...canonicalKeys].filter((k) => !relayKeys.has(k));
+  expect(
+    missing,
+    `expected getControlSnapshot to emit all canonical fields, but missing: [${missing.join(', ')}]`
+  ).toEqual([]);
+}
+
+describe('two-channel drift guard', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    window.history.pushState(null, '', '/');
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+    resetGlobalRegistry();
+    vi.restoreAllMocks();
+  });
+
+  it('every top-level key emitted by registry.createSnapshot is also emitted by getControlSnapshot', async () => {
+    // Populate the registry with at least one element + component + workflow
+    // so neither snapshot is empty. An empty registry might happen to have a
+    // smaller key set (e.g. omit conditional fields), defeating the property
+    // test — registering across all three categories exercises every branch
+    // that contributes top-level keys.
+    const registry = getGlobalRegistry();
+    const btn = document.createElement('button');
+    btn.textContent = 'Save';
+    container.appendChild(btn);
+    registry.registerElement('save-btn', btn, { type: 'button', label: 'Save' });
+    registry.registerComponent('login-form', {
+      name: 'Login Form',
+      actions: [{ id: 'submit', handler: () => {} }],
+    });
+    registry.registerWorkflow({
+      id: 'demo-workflow',
+      name: 'Demo Workflow',
+      steps: [],
+    });
+
+    // Both snapshots must observe the same registry state. `createSnapshot`
+    // pulls directly from `this.*` on the registry; `executeCommand` reads
+    // via `getGlobalRegistry()` (see commandHandlers.ts:648), so a single
+    // global registry instance is enough.
+    const canonical = registry.createSnapshot() as unknown as Record<string, unknown>;
+    const relay = (await getSnapshot()) as unknown as Record<string, unknown>;
+
+    expectAllCanonicalKeysPresent(canonical, relay);
+  });
+
+  it('relay handler is allowed to add fields beyond the canonical set', async () => {
+    // This test documents the intentional-divergence direction: the relay
+    // handler emits `activeRuns` that `createSnapshot` does NOT carry. A
+    // future reader who sees the property-test pass should not assume the
+    // two paths are bidirectionally identical — the relay is a superset by
+    // design (run tracking is server-side only, surfaced through the relay).
+    const registry = getGlobalRegistry();
+    const btn = document.createElement('button');
+    container.appendChild(btn);
+    registry.registerElement('btn-1', btn);
+
+    const canonical = registry.createSnapshot() as unknown as Record<string, unknown>;
+    const relay = (await getSnapshot()) as unknown as Record<string, unknown>;
+
+    // Relay carries activeRuns; canonical does not. If this ever flips,
+    // either createSnapshot grew an activeRuns field (in which case this
+    // test should be updated and the property-test will start covering it)
+    // or the relay dropped activeRuns (a regression for dashboard consumers).
+    expect(relay).toHaveProperty('activeRuns');
+    expect(canonical).not.toHaveProperty('activeRuns');
+  });
+});
