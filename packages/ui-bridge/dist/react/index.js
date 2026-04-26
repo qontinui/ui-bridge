@@ -19,6 +19,173 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// src/core/element-identifier.ts
+function generateXPath(element) {
+  if (element.id) {
+    return `//*[@id="${element.id}"]`;
+  }
+  const parts = [];
+  let current = element;
+  while (current && current.nodeType === Node.ELEMENT_NODE) {
+    let selector = current.nodeName.toLowerCase();
+    const testId = current.getAttribute("data-testid");
+    if (testId) {
+      selector += `[@data-testid="${testId}"]`;
+      parts.unshift(selector);
+      break;
+    }
+    const id = current.id;
+    if (id) {
+      selector += `[@id="${id}"]`;
+      parts.unshift(selector);
+      break;
+    }
+    const parentEl = current.parentElement;
+    if (parentEl) {
+      const currentEl = current;
+      const siblings = Array.from(parentEl.children).filter(
+        (child) => child.nodeName === currentEl.nodeName
+      );
+      if (siblings.length > 1) {
+        const index = siblings.indexOf(currentEl) + 1;
+        selector += `[${index}]`;
+      }
+    }
+    parts.unshift(selector);
+    current = parentEl;
+  }
+  return "/" + parts.join("/");
+}
+function generateCSSSelector(element) {
+  const testId = element.getAttribute("data-testid");
+  if (testId) {
+    return `[data-testid="${testId}"]`;
+  }
+  const awasId = element.getAttribute("data-awas-element");
+  if (awasId) {
+    return `[data-awas-element="${awasId}"]`;
+  }
+  if (element.id) {
+    return `#${CSS.escape(element.id)}`;
+  }
+  const path = [];
+  let current = element;
+  while (current && current.nodeType === Node.ELEMENT_NODE) {
+    let selector = current.nodeName.toLowerCase();
+    const parentTestId = current.getAttribute("data-testid");
+    if (parentTestId && current !== element) {
+      path.unshift(`[data-testid="${parentTestId}"]`);
+      break;
+    }
+    if (current.id) {
+      path.unshift(`#${CSS.escape(current.id)}`);
+      break;
+    }
+    const parentEl = current.parentElement;
+    if (parentEl) {
+      const currentEl = current;
+      const siblings = Array.from(parentEl.children);
+      const sameTagSiblings = siblings.filter(
+        (s) => s.nodeName === currentEl.nodeName
+      );
+      if (sameTagSiblings.length > 1) {
+        const index = siblings.indexOf(currentEl) + 1;
+        selector += `:nth-child(${index})`;
+      }
+    }
+    path.unshift(selector);
+    current = current.parentElement;
+  }
+  return path.join(" > ");
+}
+function getBestIdentifier(element) {
+  const uiBridgeTestId = element.getAttribute("data-ui-bridge-test-id")?.trim();
+  if (uiBridgeTestId) return uiBridgeTestId;
+  const testId = element.getAttribute("data-testid");
+  if (testId) return testId;
+  const awasId = element.getAttribute("data-awas-element");
+  if (awasId) return awasId;
+  if (element.id) return element.id;
+  return generateCSSSelector(element);
+}
+function createElementIdentifier(element) {
+  return {
+    testId: element.getAttribute("data-testid") || void 0,
+    awasId: element.getAttribute("data-awas-element") || void 0,
+    htmlId: element.id || void 0,
+    xpath: generateXPath(element),
+    selector: generateCSSSelector(element)
+  };
+}
+function findElementByIdentifier(identifier, root = document) {
+  if (typeof identifier === "string") {
+    const byTestId = root.querySelector(`[data-testid="${identifier}"]`);
+    if (byTestId) return byTestId;
+    const byAwasId = root.querySelector(`[data-awas-element="${identifier}"]`);
+    if (byAwasId) return byAwasId;
+    const byId = root.querySelector(`#${CSS.escape(identifier)}`);
+    if (byId) return byId;
+    try {
+      const bySelector = root.querySelector(identifier);
+      if (bySelector) return bySelector;
+    } catch {
+    }
+    try {
+      const result = document.evaluate(
+        identifier,
+        root,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      );
+      if (result.singleNodeValue instanceof HTMLElement) {
+        return result.singleNodeValue;
+      }
+    } catch {
+    }
+    return null;
+  }
+  if (identifier.testId) {
+    const el = root.querySelector(`[data-testid="${identifier.testId}"]`);
+    if (el) return el;
+  }
+  if (identifier.awasId) {
+    const el = root.querySelector(`[data-awas-element="${identifier.awasId}"]`);
+    if (el) return el;
+  }
+  if (identifier.htmlId) {
+    const el = root.querySelector(`#${CSS.escape(identifier.htmlId)}`);
+    if (el) return el;
+  }
+  if (identifier.selector) {
+    try {
+      const el = root.querySelector(identifier.selector);
+      if (el) return el;
+    } catch {
+    }
+  }
+  if (identifier.xpath) {
+    try {
+      const result = document.evaluate(
+        identifier.xpath,
+        root,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      );
+      if (result.singleNodeValue instanceof HTMLElement) {
+        return result.singleNodeValue;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+var init_element_identifier = __esm({
+  "src/core/element-identifier.ts"() {
+  }
+});
+
 // src/core/class-name.ts
 function classString(el) {
   if (!el) return "";
@@ -33,6 +200,386 @@ function classList(el) {
 }
 var init_class_name = __esm({
   "src/core/class-name.ts"() {
+  }
+});
+
+// src/core/element-fingerprint.ts
+function computeStructuralPath(element) {
+  const parts = [];
+  let current = element;
+  while (current && current.tagName !== "BODY" && current.tagName !== "HTML") {
+    parts.unshift(current.tagName.toLowerCase());
+    current = current.parentElement;
+  }
+  return parts.join(" > ");
+}
+function computePositionZone(element) {
+  let ancestor = element;
+  while (ancestor) {
+    if (ancestor.getAttribute("role") === "dialog" || ancestor.getAttribute("aria-modal") === "true" || ancestor.tagName === "DIALOG") {
+      return "modal";
+    }
+    ancestor = ancestor.parentElement;
+  }
+  const rect = element.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (vw === 0 || vh === 0) return "main";
+  const centerY = (rect.top + rect.bottom) / 2 / vh;
+  const centerX = (rect.left + rect.right) / 2 / vw;
+  if (centerY < 0.1) return "header";
+  if (centerY > 0.9) return "footer";
+  if (centerX < 0.2) return "sidebar-left";
+  if (centerX > 0.8) return "sidebar-right";
+  return "main";
+}
+function computeRole(element) {
+  const explicit = element.getAttribute("role");
+  if (explicit) return explicit;
+  const implicit = IMPLICIT_ROLES[element.tagName];
+  if (typeof implicit === "function") return implicit(element);
+  if (typeof implicit === "string") return implicit;
+  return "";
+}
+function computeAccessibleName(element) {
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) return normalizeName(ariaLabel);
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean);
+    if (parts.length > 0) return normalizeName(parts.join(" "));
+  }
+  const tag = element.tagName;
+  if (tag === "BUTTON" || tag === "A" || tag === "SUMMARY" || tag.match(/^H[1-6]$/) || element.getAttribute("role") === "button" || element.getAttribute("role") === "link" || element.getAttribute("role") === "tab") {
+    const text = element.textContent?.trim();
+    if (text) return normalizeName(text);
+  }
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    if (element.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+      if (label?.textContent?.trim()) return normalizeName(label.textContent.trim());
+    }
+    const wrappingLabel = element.closest("label");
+    if (wrappingLabel?.textContent?.trim()) return normalizeName(wrappingLabel.textContent.trim());
+    const placeholder = element.getAttribute("placeholder");
+    if (placeholder) return normalizeName(placeholder);
+  }
+  return void 0;
+}
+function normalizeName(name) {
+  let normalized = name.trim();
+  for (const pattern of DYNAMIC_PATTERNS) {
+    normalized = normalized.replace(pattern, "{\u2026}");
+  }
+  normalized = normalized.replace(/\s+/g, " ");
+  if (normalized.length > 50) {
+    normalized = normalized.slice(0, 50);
+  }
+  return normalized;
+}
+function computeSizeCategory(element) {
+  const rect = element.getBoundingClientRect();
+  const viewportArea = window.innerWidth * window.innerHeight;
+  if (viewportArea === 0) return "medium";
+  const ratio = rect.width * rect.height / viewportArea;
+  if (ratio < 5e-3) return "icon";
+  if (ratio < 0.01) return "button";
+  if (ratio < 0.03) return "small";
+  if (ratio < 0.1) return "medium";
+  if (ratio < 0.3) return "large";
+  if (ratio < 0.6) return "fullwidth";
+  return "panel";
+}
+function computeLandmarkContext(element) {
+  let current = element.parentElement;
+  while (current && current.tagName !== "BODY" && current.tagName !== "HTML") {
+    const role = current.getAttribute("role");
+    if (role && ARIA_LANDMARKS.has(role)) {
+      return { landmark: role, label: current.getAttribute("aria-label") || void 0 };
+    }
+    const implicitLandmark = IMPLICIT_LANDMARKS[current.tagName];
+    if (implicitLandmark) {
+      return { landmark: implicitLandmark, label: current.getAttribute("aria-label") || void 0 };
+    }
+    current = current.parentElement;
+  }
+  return { landmark: "", label: void 0 };
+}
+function computeRepeatPattern(element) {
+  const parent = element.parentElement;
+  if (!parent) return void 0;
+  const parentRole = parent.getAttribute("role");
+  const parentTag = parent.tagName;
+  let containerType;
+  if (parentRole === "list" || parentTag === "UL" || parentTag === "OL") {
+    containerType = "list";
+  } else if (parentRole === "grid" || parentRole === "row") {
+    containerType = "grid";
+  } else if (parentTag === "TABLE" || parentTag === "TBODY" || parentTag === "THEAD") {
+    containerType = "table";
+  }
+  if (!containerType) {
+    const children = Array.from(parent.children);
+    if (children.length >= 3) {
+      const signature = (el) => `${el.tagName}|${classString(el)}`;
+      const sig = signature(element);
+      const matches = children.filter((c) => signature(c) === sig);
+      if (matches.length >= 3) {
+        containerType = "list";
+      } else {
+        return void 0;
+      }
+    } else {
+      return void 0;
+    }
+  }
+  const siblings = Array.from(parent.children);
+  const itemTag = element.tagName;
+  const itemClass = classString(element);
+  const matchingSiblings = siblings.filter(
+    (s) => s.tagName === itemTag && classString(s) === itemClass
+  );
+  const index = matchingSiblings.indexOf(element);
+  const containerSelector = generateSimpleSelector(parent);
+  const itemClassTokens = classList(element);
+  const itemSelector = `${element.tagName.toLowerCase()}${itemClassTokens.length > 0 ? "." + itemClassTokens.map((c) => CSS.escape(c)).join(".") : ""}`;
+  return {
+    type: containerType,
+    containerSelector,
+    itemSelector,
+    index: Math.max(0, index),
+    totalCount: matchingSiblings.length
+  };
+}
+function generateSimpleSelector(element) {
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  const testId = element.getAttribute("data-testid");
+  if (testId) return `[data-testid="${testId}"]`;
+  return element.tagName.toLowerCase();
+}
+function computeHashSync(structuralPath, positionZone, role, accessibleName, sizeCategory) {
+  const input = `${structuralPath}|${positionZone}|${role}|${accessibleName ?? ""}|${sizeCategory}`;
+  let h1 = 2166136261;
+  let h2 = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    h1 ^= c;
+    h1 = Math.imul(h1, 16777619);
+    h2 ^= c * 31;
+    h2 = Math.imul(h2, 16777619);
+  }
+  const hex1 = (h1 >>> 0).toString(16).padStart(8, "0");
+  const hex2 = (h2 >>> 0).toString(16).padStart(8, "0");
+  return hex1 + hex2;
+}
+function computeElementFingerprint(element) {
+  const structuralPath = computeStructuralPath(element);
+  const positionZone = computePositionZone(element);
+  const role = computeRole(element);
+  const accessibleName = computeAccessibleName(element);
+  const sizeCategory = computeSizeCategory(element);
+  const { landmark, label: landmarkLabel } = computeLandmarkContext(element);
+  const repeatPattern = computeRepeatPattern(element);
+  const rect = element.getBoundingClientRect();
+  const vw = window.innerWidth || 1;
+  const vh = window.innerHeight || 1;
+  const fingerprint = {
+    hash: computeHashSync(structuralPath, positionZone, role, accessibleName, sizeCategory),
+    structuralPath,
+    positionZone,
+    landmarkContext: landmark,
+    role,
+    tagName: element.tagName.toLowerCase(),
+    sizeCategory,
+    relativePosition: {
+      top: Math.round(rect.top / vh * 1e3) / 1e3,
+      left: Math.round(rect.left / vw * 1e3) / 1e3
+    },
+    isRepeating: repeatPattern !== void 0
+  };
+  if (landmarkLabel) fingerprint.landmarkLabel = landmarkLabel;
+  if (accessibleName) fingerprint.accessibleName = accessibleName;
+  if (repeatPattern) fingerprint.repeatPattern = repeatPattern;
+  return fingerprint;
+}
+function findNearestRegisteredElement(target, registry2) {
+  let current = target;
+  while (current && current.tagName !== "BODY") {
+    const registered = registry2.findByDOMElement(current);
+    if (registered) return registered;
+    current = current.parentElement;
+  }
+  return void 0;
+}
+var ARIA_LANDMARKS, IMPLICIT_LANDMARKS, IMPLICIT_ROLES, DYNAMIC_PATTERNS;
+var init_element_fingerprint = __esm({
+  "src/core/element-fingerprint.ts"() {
+    init_class_name();
+    ARIA_LANDMARKS = /* @__PURE__ */ new Set([
+      "banner",
+      "complementary",
+      "contentinfo",
+      "form",
+      "main",
+      "navigation",
+      "region",
+      "search"
+    ]);
+    IMPLICIT_LANDMARKS = {
+      NAV: "navigation",
+      MAIN: "main",
+      HEADER: "banner",
+      FOOTER: "contentinfo",
+      ASIDE: "complementary",
+      FORM: "form",
+      SEARCH: "search"
+    };
+    IMPLICIT_ROLES = {
+      BUTTON: "button",
+      A: (el) => el.hasAttribute("href") ? "link" : "",
+      INPUT: (el) => {
+        const type = el.type?.toLowerCase();
+        if (type === "checkbox") return "checkbox";
+        if (type === "radio") return "radio";
+        if (type === "range") return "slider";
+        if (type === "submit" || type === "reset" || type === "button") return "button";
+        return "textbox";
+      },
+      SELECT: (el) => el.multiple ? "listbox" : "combobox",
+      TEXTAREA: "textbox",
+      IMG: "img",
+      TABLE: "table",
+      UL: "list",
+      OL: "list",
+      LI: "listitem",
+      H1: "heading",
+      H2: "heading",
+      H3: "heading",
+      H4: "heading",
+      H5: "heading",
+      H6: "heading",
+      DIALOG: "dialog",
+      DETAILS: "group",
+      SUMMARY: "button",
+      PROGRESS: "progressbar",
+      METER: "meter"
+    };
+    DYNAMIC_PATTERNS = [
+      // UUIDs
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+      // ISO dates
+      /\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?/g,
+      // Timestamps (10+ digits)
+      /\b\d{10,13}\b/g,
+      // Standalone numbers (3+ digits, not part of a word)
+      /\b\d{3,}\b/g,
+      // Common date formats (MM/DD/YYYY, DD.MM.YYYY)
+      /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/g,
+      // Time patterns
+      /\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?/g
+    ];
+  }
+});
+
+// src/core/stable-ref.ts
+function buildSemanticPath(element) {
+  const parts = [];
+  let current = element;
+  let depth = 0;
+  while (current && current.tagName !== "BODY" && current.tagName !== "HTML" && depth < 8) {
+    let selector = current.tagName.toLowerCase();
+    const testId = current.getAttribute("data-testid");
+    if (testId) {
+      parts.unshift(`[data-testid="${testId}"]`);
+      break;
+    }
+    const htmlId = current.id;
+    if (htmlId && !/^:r[0-9a-z]+:$/.test(htmlId)) {
+      parts.unshift(`#${CSS.escape(htmlId)}`);
+      break;
+    }
+    const role = current.getAttribute("role");
+    if (role) {
+      selector += `[role="${role}"]`;
+    }
+    const classes = Array.from(current.classList).filter(
+      (c) => c.length > 2 && !c.startsWith("css-") && !c.startsWith("_")
+    );
+    if (classes.length > 0) {
+      selector += `.${CSS.escape(classes[0])}`;
+    }
+    parts.unshift(selector);
+    current = current.parentElement;
+    depth++;
+  }
+  return parts.length > 0 ? parts.join(" > ") : void 0;
+}
+function createStableRef(element) {
+  const fingerprint = computeElementFingerprint(element.element);
+  const semanticPath = buildSemanticPath(element.element) ?? element.element.tagName.toLowerCase();
+  const idStrategy = element.element.getAttribute("data-testid") ? "data-testid" : element.element.id && !/^:r[0-9a-z]+:$/.test(element.element.id) ? "html-id" : "prefer-existing";
+  const stableId = element.element.getAttribute("data-ui-bridge-id") || void 0;
+  return {
+    id: element.id,
+    idStrategy,
+    primaryId: element.id,
+    fingerprint: fingerprint.hash,
+    semanticPath,
+    stableId,
+    lastSeenAt: Date.now()
+  };
+}
+function resolveStableRef(ref) {
+  const registry2 = getGlobalRegistry();
+  const byId = registry2.getElement(ref.primaryId);
+  if (byId && byId.mounted && byId.element.isConnected) {
+    return byId;
+  }
+  if (typeof document !== "undefined") {
+    const byAttr = document.querySelector(
+      `[data-ui-bridge-id="${CSS.escape(ref.primaryId)}"]`
+    );
+    if (byAttr) {
+      const registered = registry2.findByDOMElement(byAttr);
+      if (registered && registered.mounted) {
+        return registered;
+      }
+      const nearest = findNearestRegisteredElement(byAttr, registry2);
+      if (nearest && nearest.mounted) {
+        return nearest;
+      }
+    }
+  }
+  const allElements = registry2.getAllElements();
+  for (const el of allElements) {
+    if (!el.mounted || !el.element.isConnected) continue;
+    const fp = computeElementFingerprint(el.element);
+    if (fp.hash === ref.fingerprint) {
+      return el;
+    }
+  }
+  if (ref.semanticPath && typeof document !== "undefined") {
+    try {
+      const byPath = document.querySelector(ref.semanticPath);
+      if (byPath) {
+        const registered = registry2.findByDOMElement(byPath);
+        if (registered && registered.mounted) {
+          return registered;
+        }
+        const nearest = findNearestRegisteredElement(byPath, registry2);
+        if (nearest && nearest.mounted) {
+          return nearest;
+        }
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+var init_stable_ref = __esm({
+  "src/core/stable-ref.ts"() {
+    init_registry();
+    init_element_fingerprint();
   }
 });
 
@@ -680,6 +1227,1745 @@ var init_alias_generator = __esm({
       "nav-text",
       "content-generic"
     ]);
+  }
+});
+
+// src/core/registry.ts
+function serializeRegisteredElement(el, options = {}) {
+  const componentBasePath = options.componentBasePath ?? "/control/component";
+  const kind = el.category === "content" ? "content" : el.category === "interactive" ? "interactive" : void 0;
+  return {
+    id: el.id,
+    type: el.type,
+    tagName: el.element.tagName.toLowerCase(),
+    label: el.label,
+    identifier: el.getIdentifier(),
+    state: el.getState(),
+    actions: el.actions,
+    customActions: el.customActions ? Object.keys(el.customActions) : void 0,
+    category: el.category,
+    kind,
+    content: el.content,
+    role: el.role,
+    contentMetadata: el.contentMetadata,
+    mediaMetadata: el.mediaMetadata,
+    ownedByComponent: el.ownedByComponent,
+    componentActionBasePath: el.ownedByComponent ? `${componentBasePath}/${el.ownedByComponent}` : void 0,
+    // Live bbox/visibility maintained by `useUIElement`. Present for elements
+    // whose hook attached a ref (or that matched via `[data-ui-bridge-id]`).
+    // Runners use this to dispatch clicks via DOM coords without VLM grounding.
+    bbox: el.bbox,
+    visible: el.visible,
+    // `'hook'` for explicit useUIElement registrations, `'auto'` for
+    // DOM-walker entries from useAutoRegister. Snapshot consumers that care
+    // about developer-instrumented vs. scanner-discovered elements filter here.
+    origin: el.origin,
+    // Structured disambiguation metadata (all optional). Passthrough of the
+    // four hints the consumer set on `useUIElement` so NL queries can rank
+    // candidates without VLM grounding. Absent fields keep today's behavior.
+    variant: el.variant,
+    position: el.position,
+    color: el.color,
+    contextPath: el.contextPath,
+    stableRef: el.element?.isConnected ? (() => {
+      const ref = createStableRef(el);
+      return {
+        id: ref.id,
+        fingerprint: ref.fingerprint,
+        semanticPath: ref.semanticPath,
+        stableId: ref.stableId
+      };
+    })() : void 0,
+    // Route captured at registration time. Mirrored on the snapshot element
+    // so consumers can cross-check `registration.byRoute` against individual
+    // entries without a second call.
+    route: el.route
+  };
+}
+function captureFormControlState(element, state) {
+  if (element.required || element.getAttribute("aria-required") === "true") {
+    state.required = true;
+  }
+  if ("validity" in element) {
+    const v = element.validity;
+    if (!v.valid || element.validationMessage) {
+      state.validationState = {
+        valid: v.valid,
+        validationMessage: element.validationMessage || void 0,
+        valueMissing: v.valueMissing || void 0,
+        typeMismatch: v.typeMismatch || void 0,
+        patternMismatch: v.patternMismatch || void 0,
+        tooShort: v.tooShort || void 0,
+        tooLong: v.tooLong || void 0,
+        rangeUnderflow: v.rangeUnderflow || void 0,
+        rangeOverflow: v.rangeOverflow || void 0,
+        stepMismatch: v.stepMismatch || void 0,
+        customError: v.customError || void 0
+      };
+    }
+  }
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    const constraints = {};
+    let hasConstraint = false;
+    if (element instanceof HTMLInputElement) {
+      if (element.pattern) {
+        constraints.pattern = element.pattern;
+        hasConstraint = true;
+      }
+      if (element.min) {
+        constraints.min = element.min;
+        hasConstraint = true;
+      }
+      if (element.max) {
+        constraints.max = element.max;
+        hasConstraint = true;
+      }
+      if (element.step && element.step !== "any") {
+        constraints.step = element.step;
+        hasConstraint = true;
+      }
+    }
+    if (element.minLength > 0) {
+      constraints.minLength = element.minLength;
+      hasConstraint = true;
+    }
+    if (element.maxLength >= 0 && element.maxLength < 524288) {
+      constraints.maxLength = element.maxLength;
+      hasConstraint = true;
+    }
+    if (hasConstraint) {
+      state.constraints = constraints;
+    }
+  }
+}
+function computeAccessibleName2(element) {
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) return ariaLabel;
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter((t) => !!t);
+    if (parts.length > 0) return parts.join(" ");
+  }
+  if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+    if (element.id) {
+      const label = document.querySelector(`label[for="${element.id}"]`);
+      const labelText = label?.textContent?.trim();
+      if (labelText) return labelText;
+    }
+  }
+  const title = element.getAttribute("title");
+  if (title) return title;
+  const rawText = element.textContent?.trim();
+  if (rawText) {
+    return rawText.length <= 80 ? rawText : rawText.slice(0, 80);
+  }
+  return void 0;
+}
+function getElementState(element) {
+  const rect = element.getBoundingClientRect();
+  const computedStyle = window.getComputedStyle(element);
+  const inViewport = rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0;
+  const roleAttr = element.getAttribute("role") || void 0;
+  const accessibleName = computeAccessibleName2(element);
+  const state = {
+    visible: isElementVisible(element, rect, computedStyle, inViewport),
+    enabled: !isElementDisabled(element),
+    focused: document.activeElement === element,
+    role: roleAttr,
+    accessibleName,
+    rect: {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left
+    },
+    textContent: element.textContent?.trim() || void 0,
+    computedStyles: {
+      display: computedStyle.display,
+      visibility: computedStyle.visibility,
+      opacity: computedStyle.opacity,
+      pointerEvents: computedStyle.pointerEvents,
+      cursor: computedStyle.cursor,
+      color: computedStyle.color,
+      backgroundColor: computedStyle.backgroundColor,
+      colorScheme: computedStyle.colorScheme,
+      fontSize: computedStyle.fontSize,
+      fontWeight: computedStyle.fontWeight,
+      lineHeight: computedStyle.lineHeight,
+      overflow: computedStyle.overflow,
+      textOverflow: computedStyle.textOverflow,
+      whiteSpace: computedStyle.whiteSpace,
+      position: computedStyle.position,
+      zIndex: computedStyle.zIndex,
+      padding: computedStyle.padding,
+      margin: computedStyle.margin,
+      borderColor: computedStyle.borderColor,
+      borderWidth: computedStyle.borderWidth,
+      borderRadius: computedStyle.borderRadius
+    },
+    inViewport
+  };
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (vw > 0 && vh > 0) {
+    state.normalizedRect = {
+      x: rect.x / vw,
+      y: rect.y / vh,
+      width: rect.width / vw,
+      height: rect.height / vh
+    };
+  }
+  if (isScrollContainer(element, computedStyle)) {
+    state.scrollInfo = {
+      scrollTop: element.scrollTop,
+      scrollLeft: element.scrollLeft,
+      scrollHeight: element.scrollHeight,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      canScrollUp: element.scrollTop > 0,
+      canScrollDown: element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+      canScrollLeft: element.scrollLeft > 0,
+      canScrollRight: element.scrollLeft + element.clientWidth < element.scrollWidth - 1
+    };
+  }
+  if (!state.textContent) {
+    state.textContent = element.getAttribute("aria-label") || element.getAttribute("title") || void 0;
+  }
+  const opacityVal = parseFloat(computedStyle.opacity);
+  if (opacityVal === 0) {
+    state.opacityHidden = true;
+  }
+  const contentLabel = element.getAttribute("data-content-label");
+  if (contentLabel) {
+    state.dataContentLabel = contentLabel;
+  }
+  const contentRole = element.getAttribute("data-content-role");
+  if (contentRole) {
+    state.dataContentRole = contentRole;
+  }
+  const ariaSelected = element.getAttribute("aria-selected");
+  if (ariaSelected !== null) {
+    state.ariaSelected = ariaSelected === "true";
+  }
+  const ariaPressed = element.getAttribute("aria-pressed");
+  if (ariaPressed !== null) {
+    state.ariaPressed = ariaPressed === "mixed" ? "mixed" : ariaPressed === "true";
+  }
+  const ariaCurrent = element.getAttribute("aria-current");
+  if (ariaCurrent !== null && ariaCurrent !== "false") {
+    state.ariaCurrent = ariaCurrent;
+  }
+  const ariaExpanded = element.getAttribute("aria-expanded");
+  if (ariaExpanded !== null) {
+    state.ariaExpanded = ariaExpanded === "true";
+  } else if (element instanceof HTMLDetailsElement) {
+    state.ariaExpanded = element.open;
+  } else if (element.tagName === "SUMMARY") {
+    const parentDetails = element.closest("details");
+    if (parentDetails instanceof HTMLDetailsElement) {
+      state.ariaExpanded = parentDetails.open;
+    }
+  }
+  const ariaCheckedAttr = element.getAttribute("aria-checked");
+  if (ariaCheckedAttr !== null) {
+    state.ariaChecked = ariaCheckedAttr === "mixed" ? "mixed" : ariaCheckedAttr === "true";
+    const role = element.getAttribute("role");
+    if (role === "switch" || role === "checkbox" || role === "menuitemcheckbox" || role === "menuitemradio" || role === "radio") {
+      state.checked = ariaCheckedAttr === "true";
+    }
+  }
+  if (element instanceof HTMLInputElement) {
+    state.value = element.value;
+    if (element.type === "checkbox" || element.type === "radio") {
+      state.checked = element.checked;
+    }
+    captureFormControlState(element, state);
+  } else if (element instanceof HTMLTextAreaElement) {
+    state.value = element.value;
+    captureFormControlState(element, state);
+  } else if (element instanceof HTMLSelectElement) {
+    state.value = element.value;
+    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.availableOptions = Array.from(element.options).map((opt) => ({
+      value: opt.value,
+      label: opt.label || opt.textContent?.trim() || opt.value,
+      selected: opt.selected
+    }));
+    captureFormControlState(element, state);
+  }
+  if (element instanceof HTMLAnchorElement && element.href) {
+    state.href = element.href;
+  }
+  const dataRoute = element.getAttribute("data-route");
+  if (dataRoute) {
+    state.dataRoute = dataRoute;
+  }
+  return state;
+}
+function isElementVisible(element, rect, style, inViewport) {
+  if (rect.width === 0 || rect.height === 0) return false;
+  if (style.display === "none") return false;
+  if (style.visibility === "hidden") return false;
+  if (parseFloat(style.opacity) === 0) return false;
+  if (!inViewport) return false;
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
+    const hit = document.elementFromPoint(cx, cy);
+    if (hit !== null && hit !== element && !element.contains(hit)) {
+      return false;
+    }
+  }
+  return true;
+}
+function isScrollContainer(element, style) {
+  if (element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth) {
+    return false;
+  }
+  const oy = style.overflowY;
+  const ox = style.overflowX;
+  return oy === "auto" || oy === "scroll" || ox === "auto" || ox === "scroll";
+}
+function isElementDisabled(element) {
+  if ("disabled" in element && element.disabled) {
+    return true;
+  }
+  if (element.getAttribute("aria-disabled") === "true") {
+    return true;
+  }
+  return false;
+}
+function inferActions(type) {
+  const baseActions = ["focus", "blur", "hover", "scroll", "scrollIntoView"];
+  switch (type) {
+    case "button":
+      return [...baseActions, "click", "doubleClick", "rightClick", "middleClick"];
+    case "input":
+      return [...baseActions, "click", "type", "clear"];
+    case "textarea":
+      return [...baseActions, "click", "type", "clear"];
+    case "select":
+      return [...baseActions, "click", "select"];
+    case "checkbox":
+      return [...baseActions, "click", "check", "uncheck", "toggle"];
+    case "radio":
+      return [...baseActions, "click", "check"];
+    case "link":
+      return [...baseActions, "click"];
+    case "form":
+      return ["focus", "blur"];
+    case "menu":
+    case "menuitem":
+      return [...baseActions, "click"];
+    case "tab":
+      return [...baseActions, "click", "middleClick"];
+    case "dialog":
+      return ["focus", "blur"];
+    case "custom":
+    default:
+      return [...baseActions, "click"];
+  }
+}
+function inferElementType(element) {
+  const tagName = element.tagName.toLowerCase();
+  const role = element.getAttribute("role");
+  if (role) {
+    switch (role) {
+      case "button":
+        return "button";
+      case "textbox":
+        return "input";
+      case "checkbox":
+        return "checkbox";
+      case "radio":
+        return "radio";
+      case "link":
+        return "link";
+      case "listbox":
+      case "combobox":
+        return "select";
+      case "menu":
+        return "menu";
+      case "menuitem":
+        return "menuitem";
+      case "tab":
+        return "tab";
+      case "dialog":
+        return "dialog";
+    }
+  }
+  switch (tagName) {
+    case "button":
+      return "button";
+    case "input": {
+      const inputType = element.type;
+      if (inputType === "checkbox") return "checkbox";
+      if (inputType === "radio") return "radio";
+      if (inputType === "submit" || inputType === "button") return "button";
+      return "input";
+    }
+    case "textarea":
+      return "textarea";
+    case "select":
+      return "select";
+    case "a":
+      return "link";
+    case "form":
+      return "form";
+    default:
+      return "custom";
+  }
+}
+function getRegistrySlot() {
+  return globalThis;
+}
+function getGlobalRegistry() {
+  const slot = getRegistrySlot();
+  let current = slot[REGISTRY_KEY] ?? null;
+  if (!current) {
+    current = new UIBridgeRegistry();
+    slot[REGISTRY_KEY] = current;
+  }
+  return current;
+}
+function setGlobalRegistry(registry2) {
+  const slot = getRegistrySlot();
+  slot[REGISTRY_KEY] = registry2;
+}
+var DEFAULT_REMOUNT_CACHE_WINDOW_MS, UIBridgeRegistry, REGISTRY_KEY;
+var init_registry = __esm({
+  "src/core/registry.ts"() {
+    init_element_identifier();
+    init_element_fingerprint();
+    init_stable_ref();
+    init_fuzzy_matcher();
+    init_alias_generator();
+    DEFAULT_REMOUNT_CACHE_WINDOW_MS = 2e3;
+    UIBridgeRegistry = class {
+      constructor(options = {}) {
+        this.elements = /* @__PURE__ */ new Map();
+        this.components = /* @__PURE__ */ new Map();
+        this.workflows = /* @__PURE__ */ new Map();
+        this.eventListeners = /* @__PURE__ */ new Map();
+        // State management
+        this.states = /* @__PURE__ */ new Map();
+        this.stateGroups = /* @__PURE__ */ new Map();
+        this.transitions = /* @__PURE__ */ new Map();
+        this.activeStates = /* @__PURE__ */ new Set();
+        // Recently removed elements for remount ID preservation
+        this.recentlyRemoved = /* @__PURE__ */ new Map();
+        // ── F3: Snapshot registration metadata ────────────────────────────────────
+        // Sticky latch: flips true the first time any element registers and stays
+        // true for the rest of this registry instance's lifetime, including across
+        // unregister cycles. Lets snapshot consumers distinguish "bridge has never
+        // seen a registration" (no SDK coverage on this page) from "registrations
+        // happened but are all unmounted now". Never reset except on `clear()`.
+        this.everHadRegistrationsFlag = false;
+        // Per-route tally of currently-registered elements. Mirrors
+        // `elements.size` partitioned by `RegisteredElement.route`. Incremented on
+        // register, decremented on unregister, and a zero count is dropped from
+        // the map so `byRoute` never emits `{ "/foo": 0 }`. Elements registered
+        // without a route (non-DOM environment) are tracked under the empty-string
+        // key `""` — snapshot serialization filters that bucket out.
+        this.routeCounts = /* @__PURE__ */ new Map();
+        // External store pattern for useSyncExternalStore
+        this.storeVersion = 0;
+        this.storeListeners = /* @__PURE__ */ new Set();
+        this.cachedSnapshot = null;
+        this.notifyScheduled = false;
+        this.options = options;
+        this.__instanceTag = Math.random().toString(36).slice(2, 8);
+      }
+      /**
+       * Public accessor for the instance tag — equivalent to reading
+       * `__instanceTag` directly, but kept as a method so external diagnostic
+       * code (which sees the type from `dist/`) can call it without TypeScript
+       * complaining about touching internal fields.
+       */
+      getInstanceTag() {
+        return this.__instanceTag;
+      }
+      /**
+       * Subscribe to registry changes (for useSyncExternalStore).
+       * Returns an unsubscribe function.
+       */
+      subscribe(callback) {
+        this.storeListeners.add(callback);
+        return () => {
+          this.storeListeners.delete(callback);
+        };
+      }
+      /**
+       * Get a stable snapshot reference that changes only when the registry mutates.
+       * Designed for useSyncExternalStore.
+       */
+      getSnapshot() {
+        if (!this.cachedSnapshot || this.cachedSnapshot.version !== this.storeVersion) {
+          this.cachedSnapshot = {
+            elements: Array.from(this.elements.values()),
+            components: Array.from(this.components.values()),
+            workflows: Array.from(this.workflows.values()),
+            version: this.storeVersion
+          };
+        }
+        return this.cachedSnapshot;
+      }
+      notifyStoreListeners() {
+        this.storeVersion++;
+        this.cachedSnapshot = null;
+        if (this.notifyScheduled) return;
+        this.notifyScheduled = true;
+        queueMicrotask(() => {
+          this.notifyScheduled = false;
+          for (const listener of this.storeListeners) {
+            listener();
+          }
+        });
+      }
+      /**
+       * Emit an event
+       */
+      emit(type, data) {
+        const event = {
+          type,
+          timestamp: Date.now(),
+          data
+        };
+        this.options.onEvent?.(event);
+        const listeners = this.eventListeners.get(type);
+        if (listeners) {
+          for (const listener of listeners) {
+            try {
+              listener(event);
+            } catch (error) {
+              console.error(`Error in event listener for ${type}:`, error);
+            }
+          }
+        }
+        if (this.options.verbose) {
+          console.log("[UIBridge]", type, data);
+        }
+        if (typeof type === "string" && (type.startsWith("element:") || type.startsWith("component:") || type.startsWith("workflow:"))) {
+          this.notifyStoreListeners();
+        }
+        this.options.elementEventLog?.ingest(event);
+      }
+      /**
+       * Register an event listener
+       */
+      on(type, listener) {
+        if (!this.eventListeners.has(type)) {
+          this.eventListeners.set(type, /* @__PURE__ */ new Set());
+        }
+        this.eventListeners.get(type).add(listener);
+        return () => {
+          this.eventListeners.get(type)?.delete(listener);
+        };
+      }
+      /**
+       * Dispatch an event from external sources (e.g., NavigationTracker).
+       * Prefer using registry methods (registerElement, etc.) for internal events.
+       */
+      dispatchEvent(type, data) {
+        this.emit(type, data);
+      }
+      /**
+       * Remove an event listener
+       */
+      off(type, listener) {
+        this.eventListeners.get(type)?.delete(listener);
+      }
+      /**
+       * Register an element
+       */
+      /**
+       * Update a registered element's metadata/options in place.
+       * See `updateComponent` for rationale. Does not replace the DOM element
+       * reference — use `registerElement` if the element itself changed.
+       */
+      updateElement(id, options) {
+        const existing = this.elements.get(id);
+        if (!existing) return false;
+        if (options.type !== void 0) existing.type = options.type;
+        if (options.label !== void 0) existing.label = options.label;
+        if (options.actions !== void 0) existing.actions = options.actions;
+        if (options.customActions !== void 0) existing.customActions = options.customActions;
+        if (options.category !== void 0) existing.category = options.category;
+        if (options.contentMetadata !== void 0) existing.contentMetadata = options.contentMetadata;
+        if (options.mediaMetadata !== void 0) existing.mediaMetadata = options.mediaMetadata;
+        if (options.variant !== void 0) existing.variant = options.variant;
+        if (options.position !== void 0) existing.position = options.position;
+        if (options.color !== void 0) existing.color = options.color;
+        if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
+        return true;
+      }
+      /**
+       * Update the live viewport-relative bounding box and visibility for a
+       * registered element. Called by `useUIElement`'s ResizeObserver + scroll
+       * listeners and MUST NOT emit events or bump `storeVersion` — bbox updates
+       * fire on every scroll/resize and would cause `useSyncExternalStore`
+       * consumers to re-render continuously (React error #185).
+       *
+       * Returns `false` if the element is not registered.
+       */
+      updateElementBbox(id, bbox, visible) {
+        const existing = this.elements.get(id);
+        if (!existing) return false;
+        existing.bbox = bbox;
+        existing.visible = visible;
+        return true;
+      }
+      /**
+       * Action-driven state refresh.
+       *
+       * Action handlers (`type`, `clear`, `setValue`, `check`, `uncheck`, `toggle`,
+       * `select`, `sendKeys`, `focus`, `blur`) call this after mutating the DOM so
+       * subsequent `getElement(id)` / snapshot reads see the post-action state
+       * even when React detaches/re-creates the underlying DOM node between the
+       * action and the next read.
+       *
+       * The fields in `updates` overlay the live `getElementState(element)` read
+       * (cached values win for `value`, `checked`, `focused`, etc.). Other fields
+       * (rect, computedStyles, scrollInfo) keep flowing from the live DOM read so
+       * layout stays accurate. Pass `undefined` for `updates` to clear the
+       * overlay.
+       *
+       * Returns `false` if `id` is not registered.
+       */
+      refreshElement(id, updates) {
+        const existing = this.elements.get(id);
+        if (!existing) return false;
+        const ref = existing.__stateOverridesRef;
+        if (!ref) {
+          existing.cachedStateOverrides = updates;
+          return true;
+        }
+        if (updates === void 0) {
+          ref.value = void 0;
+          existing.cachedStateOverrides = void 0;
+        } else {
+          const merged = { ...ref.value ?? {}, ...updates };
+          ref.value = merged;
+          existing.cachedStateOverrides = merged;
+        }
+        return true;
+      }
+      registerElement(id, element, options = {}) {
+        const type = options.type ?? inferElementType(element);
+        const actions = options.actions ?? inferActions(type);
+        let actualId = id;
+        if (this.options.preserveIdAcrossRemount) {
+          const now = Date.now();
+          const cacheWindow = this.options.remountCacheWindowMs ?? DEFAULT_REMOUNT_CACHE_WINDOW_MS;
+          const fp = computeElementFingerprint(element).hash;
+          for (const [key, entry] of this.recentlyRemoved) {
+            if (now - entry.removedAt > cacheWindow) {
+              this.recentlyRemoved.delete(key);
+              continue;
+            }
+            if (entry.fingerprint === fp) {
+              actualId = entry.id;
+              this.recentlyRemoved.delete(key);
+              break;
+            }
+          }
+        }
+        let ownedByComponent = options.ownedByComponent;
+        if (!ownedByComponent && element && typeof element.closest === "function") {
+          const scope = element.closest("[data-ui-bridge-component]");
+          const attr = scope?.getAttribute("data-ui-bridge-component");
+          if (attr) ownedByComponent = attr;
+        }
+        let route;
+        if (options.route === null) {
+          route = void 0;
+        } else if (typeof options.route === "string") {
+          route = options.route;
+        } else if (typeof window !== "undefined" && window.location?.pathname) {
+          route = window.location.pathname;
+        }
+        const stateOverridesRef = {
+          value: void 0
+        };
+        const computeState = () => {
+          const live = getElementState(element);
+          return live;
+        };
+        const registered = {
+          id: actualId,
+          element,
+          type,
+          label: options.label,
+          actions,
+          customActions: options.customActions,
+          getState: computeState,
+          getIdentifier: () => createElementIdentifier(element),
+          registeredAt: Date.now(),
+          mounted: true,
+          category: options.category ?? "interactive",
+          contentMetadata: options.contentMetadata,
+          mediaMetadata: options.mediaMetadata,
+          ownedByComponent,
+          // Default programmatic registrations to `'hook'` — only the DOM walker
+          // in useAutoRegister passes `'auto'`. Tests and external callers that
+          // pre-date this field stay on the `'hook'` side of any filter.
+          origin: options.origin ?? "hook",
+          // Structured disambiguation metadata (all optional). Snapshots echo
+          // these through verbatim so NL queries can rank candidates without
+          // VLM pixel grounding.
+          variant: options.variant,
+          position: options.position,
+          color: options.color,
+          contextPath: options.contextPath,
+          route,
+          // Content/role fields for data-ui-bridge-content semantic elements.
+          // Undefined for interactive elements and for content registered via
+          // the heading/paragraph/table-cell content-discovery path.
+          content: options.content,
+          role: options.role
+        };
+        Object.defineProperty(registered, "__stateOverridesRef", {
+          value: stateOverridesRef,
+          enumerable: false,
+          writable: false,
+          configurable: true
+        });
+        const prior = this.elements.get(actualId);
+        if (prior) {
+          this.decrementRouteCount(prior.route);
+        }
+        this.elements.set(actualId, registered);
+        this.everHadRegistrationsFlag = true;
+        this.incrementRouteCount(route);
+        this.emit("element:registered", { id: actualId, type, label: options.label });
+        return registered;
+      }
+      incrementRouteCount(route) {
+        const key = route ?? "";
+        this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+      }
+      decrementRouteCount(route) {
+        const key = route ?? "";
+        const next = (this.routeCounts.get(key) ?? 0) - 1;
+        if (next <= 0) {
+          this.routeCounts.delete(key);
+        } else {
+          this.routeCounts.set(key, next);
+        }
+      }
+      /**
+       * Register a content (non-interactive) element
+       */
+      registerContentElement(id, element, options) {
+        return this.registerElement(id, element, {
+          type: options.contentType,
+          label: options.label,
+          actions: [],
+          category: "content",
+          contentMetadata: options.contentMetadata,
+          origin: options.origin ?? "auto"
+        });
+      }
+      /**
+       * Get all content (non-interactive) elements
+       */
+      getAllContentElements() {
+        return Array.from(this.elements.values()).filter((el) => el.category === "content");
+      }
+      /**
+       * Register a media element (image, video, canvas, SVG, etc.)
+       *
+       * If a `refreshMetadata` callback is provided, mediaMetadata is re-captured
+       * on every `getState()` call so loading transitions and video state stay fresh.
+       */
+      registerMediaElement(id, element, options) {
+        const registered = this.registerElement(id, element, {
+          type: options.mediaType,
+          label: options.label,
+          actions: [],
+          category: "media",
+          mediaMetadata: options.mediaMetadata,
+          origin: options.origin ?? "auto"
+        });
+        if (options.refreshMetadata) {
+          const originalGetState = registered.getState;
+          const refreshFn = options.refreshMetadata;
+          registered.getState = () => {
+            const state = originalGetState();
+            const freshMeta = refreshFn(element);
+            registered.mediaMetadata = freshMeta;
+            state.mediaMetadata = freshMeta;
+            return state;
+          };
+        }
+        return registered;
+      }
+      /**
+       * Get all interactive elements
+       */
+      getAllInteractiveElements() {
+        return Array.from(this.elements.values()).filter(
+          (el) => el.category !== "content" && el.category !== "media"
+        );
+      }
+      /**
+       * Get all media elements
+       */
+      getAllMediaElements() {
+        return Array.from(this.elements.values()).filter((el) => el.category === "media");
+      }
+      /**
+       * Unregister an element
+       */
+      unregisterElement(id) {
+        const registered = this.elements.get(id);
+        if (registered) {
+          if (this.options.preserveIdAcrossRemount && registered.element) {
+            const fp = computeElementFingerprint(registered.element).hash;
+            this.recentlyRemoved.set(fp, { id, fingerprint: fp, removedAt: Date.now() });
+            if (this.recentlyRemoved.size > 100) {
+              const firstKey = this.recentlyRemoved.keys().next().value;
+              if (firstKey !== void 0) {
+                this.recentlyRemoved.delete(firstKey);
+              }
+            }
+          }
+          registered.mounted = false;
+          this.elements.delete(id);
+          this.decrementRouteCount(registered.route);
+          this.emit("element:unregistered", { id });
+          this.options.elementEventLog?.removeElement(id);
+          return true;
+        }
+        return false;
+      }
+      /**
+       * Get a registered element
+       */
+      getElement(id) {
+        return this.elements.get(id);
+      }
+      /**
+       * Get all registered elements
+       */
+      getAllElements() {
+        return Array.from(this.elements.values());
+      }
+      /**
+       * Find element by DOM element reference
+       */
+      findByDOMElement(element) {
+        for (const registered of this.elements.values()) {
+          if (registered.element === element) {
+            return registered;
+          }
+        }
+        return void 0;
+      }
+      /**
+       * Get element event history from the element event log.
+       */
+      getElementHistory(elementId, options) {
+        return this.options.elementEventLog?.getHistory(elementId, options) ?? [];
+      }
+      /**
+       * Set the log level override for a specific element.
+       */
+      setElementLogLevel(elementId, level) {
+        this.options.elementEventLog?.setElementLogLevel(elementId, level);
+      }
+      /**
+       * Get the effective log level for an element.
+       */
+      getElementLogLevel(elementId) {
+        return this.options.elementEventLog?.getElementLogLevel(elementId) ?? "silent";
+      }
+      /**
+       * Search for elements using AI search criteria
+       */
+      searchElements(criteria) {
+        const results = [];
+        const threshold = criteria.fuzzyThreshold ?? 0.7;
+        for (const element of this.elements.values()) {
+          if (!element.mounted) continue;
+          const state = element.getState();
+          if (!criteria.fuzzy && !state.visible) continue;
+          const aliases = element.aliases ?? this.generateElementAliases(element);
+          const textContent = state.textContent?.trim() || "";
+          const label = element.label || "";
+          let maxScore = 0;
+          const matchReasons = [];
+          const scores = {};
+          if (criteria.text) {
+            if (textContent.toLowerCase() === criteria.text.toLowerCase() || label.toLowerCase() === criteria.text.toLowerCase()) {
+              maxScore = 1;
+              matchReasons.push("exact text match");
+              scores.text = 1;
+            } else if (criteria.fuzzy !== false) {
+              const textResult = fuzzyMatch(criteria.text, textContent, { threshold });
+              const labelResult = fuzzyMatch(criteria.text, label, { threshold });
+              const bestResult = textResult.similarity > labelResult.similarity ? textResult : labelResult;
+              if (bestResult.isMatch) {
+                scores.text = bestResult.similarity;
+                if (bestResult.similarity > maxScore) {
+                  maxScore = bestResult.similarity;
+                  matchReasons.push(`text similarity: ${(bestResult.similarity * 100).toFixed(0)}%`);
+                }
+              }
+            }
+          }
+          if (criteria.textContains) {
+            if (textContent.toLowerCase().includes(criteria.textContains.toLowerCase()) || label.toLowerCase().includes(criteria.textContains.toLowerCase())) {
+              const containsScore = 0.85;
+              scores.text = Math.max(scores.text ?? 0, containsScore);
+              if (containsScore > maxScore) {
+                maxScore = containsScore;
+                matchReasons.push("text contains");
+              }
+            }
+          }
+          if (criteria.accessibleName) {
+            const ariaLabel = element.element.getAttribute("aria-label") || "";
+            const accessibleName = ariaLabel || label || textContent;
+            if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
+              scores.accessibility = 1;
+              if (1 > maxScore) {
+                maxScore = 1;
+                matchReasons.push("accessible name match");
+              }
+            } else if (criteria.fuzzy !== false) {
+              const result = fuzzyMatch(criteria.accessibleName, accessibleName, { threshold });
+              if (result.isMatch) {
+                scores.accessibility = result.similarity;
+                if (result.similarity > maxScore) {
+                  maxScore = result.similarity;
+                  matchReasons.push(
+                    `accessible name similarity: ${(result.similarity * 100).toFixed(0)}%`
+                  );
+                }
+              }
+            }
+          }
+          if (criteria.role) {
+            const role = element.element.getAttribute("role") || this.inferRole(element.type);
+            if (role?.toLowerCase() === criteria.role.toLowerCase()) {
+              scores.role = 1;
+              if (1 > maxScore) {
+                maxScore = 1;
+                matchReasons.push(`role: ${criteria.role}`);
+              }
+            }
+          }
+          if (criteria.type) {
+            if (element.type === criteria.type) {
+              const typeScore = 0.9;
+              scores.role = Math.max(scores.role ?? 0, typeScore);
+              if (typeScore > maxScore) {
+                maxScore = typeScore;
+                matchReasons.push(`type: ${criteria.type}`);
+              }
+            }
+          }
+          for (const alias of aliases) {
+            const searchText = criteria.text || criteria.textContains || criteria.accessibleName;
+            if (searchText) {
+              if (alias.toLowerCase() === searchText.toLowerCase()) {
+                scores.fuzzy = 1;
+                if (1 > maxScore) {
+                  maxScore = 1;
+                  matchReasons.push(`alias: "${alias}"`);
+                }
+              } else if (criteria.fuzzy !== false) {
+                const result = fuzzyMatch(searchText, alias, { threshold });
+                if (result.isMatch && result.similarity > (scores.fuzzy ?? 0)) {
+                  scores.fuzzy = result.similarity;
+                  if (result.similarity > maxScore) {
+                    maxScore = result.similarity;
+                    matchReasons.push(`fuzzy alias: "${alias}"`);
+                  }
+                }
+              }
+            }
+          }
+          if (maxScore >= threshold) {
+            const aiElement = {
+              id: element.id,
+              type: element.type,
+              label: element.label,
+              tagName: element.element.tagName.toLowerCase(),
+              role: element.element.getAttribute("role") || void 0,
+              accessibleName: element.element.getAttribute("aria-label") || element.label,
+              actions: element.actions,
+              state,
+              registered: true,
+              description: element.description || generateDescription({
+                textContent,
+                ariaLabel: element.element.getAttribute("aria-label"),
+                elementType: element.type,
+                id: element.id,
+                labelText: element.label
+              }),
+              aliases,
+              purpose: element.purpose,
+              suggestedActions: [],
+              semanticType: element.semanticType
+            };
+            results.push({
+              element: aiElement,
+              confidence: maxScore,
+              matchReasons,
+              scores
+            });
+          }
+        }
+        results.sort((a, b) => b.confidence - a.confidence);
+        return results;
+      }
+      /**
+       * Find element by visible text
+       */
+      findByText(text, fuzzy = true) {
+        const results = this.searchElements({ text, fuzzy, fuzzyThreshold: fuzzy ? 0.7 : 1 });
+        if (results.length > 0) {
+          return this.elements.get(results[0].element.id);
+        }
+        return void 0;
+      }
+      /**
+       * Find element by accessible name
+       */
+      findByAccessibleName(name) {
+        const results = this.searchElements({ accessibleName: name, fuzzy: true });
+        if (results.length > 0) {
+          return this.elements.get(results[0].element.id);
+        }
+        return void 0;
+      }
+      /**
+       * Generate aliases for an element
+       */
+      generateElementAliases(element) {
+        const state = element.getState();
+        return generateAliases({
+          textContent: state.textContent,
+          ariaLabel: element.element.getAttribute("aria-label"),
+          placeholder: element.element.getAttribute("placeholder"),
+          title: element.element.getAttribute("title"),
+          elementType: element.type,
+          tagName: element.element.tagName.toLowerCase(),
+          id: element.id,
+          labelText: element.label
+        });
+      }
+      /**
+       * Infer ARIA role from element type
+       */
+      inferRole(type) {
+        const roleMap = {
+          button: "button",
+          input: "textbox",
+          select: "combobox",
+          checkbox: "checkbox",
+          radio: "radio",
+          link: "link",
+          form: void 0,
+          textarea: "textbox",
+          menu: "menu",
+          menuitem: "menuitem",
+          tab: "tab",
+          dialog: "dialog",
+          disclosure: "group",
+          custom: void 0,
+          switch: "switch",
+          slider: "slider",
+          combobox: "combobox",
+          listbox: "listbox",
+          option: "option",
+          textbox: "textbox",
+          generic: void 0,
+          image: "img",
+          video: void 0,
+          canvas: void 0,
+          svg: "img",
+          picture: "img"
+        };
+        return roleMap[type];
+      }
+      /**
+       * Update a component's options in place, without emitting a
+       * `component:registered` event. Returns `false` if the component is not
+       * currently registered — callers should fall back to `registerComponent`.
+       *
+       * Preserves `registeredAt` and `mounted`. Intended for React hooks that
+       * want to reflect option changes on the same mounted consumer without
+       * firing a full re-register (which would churn `useSyncExternalStore`
+       * subscribers).
+       */
+      updateComponent(id, options) {
+        const existing = this.components.get(id);
+        if (!existing) return false;
+        if (options.name !== void 0) existing.name = options.name;
+        if (options.description !== void 0) existing.description = options.description;
+        if (options.actions !== void 0) {
+          existing.actions = options.actions.map((a) => ({
+            id: a.id,
+            label: a.label,
+            description: a.description,
+            paramSchema: a.paramSchema,
+            handler: a.handler
+          }));
+        }
+        if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
+        if (options.getState !== void 0) existing.getState = options.getState;
+        if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
+        return true;
+      }
+      /**
+       * Register a component
+       */
+      registerComponent(id, options) {
+        const registered = {
+          id,
+          name: options.name,
+          description: options.description,
+          actions: options.actions?.map((a) => ({
+            id: a.id,
+            label: a.label,
+            description: a.description,
+            paramSchema: a.paramSchema,
+            handler: a.handler
+          })) ?? [],
+          elementIds: options.elementIds,
+          registeredAt: Date.now(),
+          mounted: true,
+          getState: options.getState,
+          getComputed: options.getComputed
+        };
+        this.components.set(id, registered);
+        this.emit("component:registered", { id, name: options.name });
+        return registered;
+      }
+      /**
+       * Unregister a component
+       */
+      unregisterComponent(id) {
+        const component = this.components.get(id);
+        if (component) {
+          component.mounted = false;
+          this.components.delete(id);
+          this.emit("component:unregistered", { id });
+          return true;
+        }
+        return false;
+      }
+      /**
+       * Get a registered component
+       */
+      getComponent(id) {
+        return this.components.get(id);
+      }
+      /**
+       * Get all registered components
+       */
+      getAllComponents() {
+        return Array.from(this.components.values());
+      }
+      /**
+       * Get the current state and computed properties of a component
+       */
+      getComponentState(id) {
+        const component = this.components.get(id);
+        if (!component || !component.mounted) {
+          return null;
+        }
+        return {
+          state: component.getState?.() ?? {},
+          computed: component.getComputed?.() ?? {},
+          timestamp: Date.now()
+        };
+      }
+      /**
+       * Register a workflow
+       */
+      registerWorkflow(workflow) {
+        this.workflows.set(workflow.id, workflow);
+        this.notifyStoreListeners();
+        return workflow;
+      }
+      /**
+       * Unregister a workflow
+       */
+      unregisterWorkflow(id) {
+        const deleted = this.workflows.delete(id);
+        if (deleted) this.notifyStoreListeners();
+        return deleted;
+      }
+      /**
+       * Get a workflow
+       */
+      getWorkflow(id) {
+        return this.workflows.get(id);
+      }
+      /**
+       * Get all workflows
+       */
+      getAllWorkflows() {
+        return Array.from(this.workflows.values());
+      }
+      // ==========================================================================
+      // State Management
+      // ==========================================================================
+      /**
+       * Register a state
+       */
+      registerState(state) {
+        this.states.set(state.id, state);
+        this.emit("element:registered", { id: state.id, type: "state", name: state.name });
+        return state;
+      }
+      /**
+       * Update a state's stored options in place. See `updateComponent` for
+       * rationale — avoids re-emitting `element:registered`/`unregistered`
+       * pairs on every option change so `useSyncExternalStore` consumers don't
+       * re-render on minor metadata edits.
+       */
+      updateState(state) {
+        if (!this.states.has(state.id)) return false;
+        this.states.set(state.id, state);
+        return true;
+      }
+      /**
+       * Unregister a state
+       */
+      unregisterState(id) {
+        const state = this.states.get(id);
+        if (state) {
+          this.activeStates.delete(id);
+          this.states.delete(id);
+          this.emit("element:unregistered", { id, type: "state" });
+          return true;
+        }
+        return false;
+      }
+      /**
+       * Get a registered state
+       */
+      getState(id) {
+        return this.states.get(id);
+      }
+      /**
+       * Get all registered states
+       */
+      getAllStates() {
+        return Array.from(this.states.values());
+      }
+      /**
+       * Register a state group
+       */
+      registerStateGroup(group) {
+        this.stateGroups.set(group.id, group);
+        return group;
+      }
+      /** In-place update — see `updateComponent`. */
+      updateStateGroup(group) {
+        if (!this.stateGroups.has(group.id)) return false;
+        this.stateGroups.set(group.id, group);
+        return true;
+      }
+      /**
+       * Unregister a state group
+       */
+      unregisterStateGroup(id) {
+        return this.stateGroups.delete(id);
+      }
+      /**
+       * Get a state group
+       */
+      getStateGroup(id) {
+        return this.stateGroups.get(id);
+      }
+      /**
+       * Get all state groups
+       */
+      getAllStateGroups() {
+        return Array.from(this.stateGroups.values());
+      }
+      /**
+       * Register a transition
+       */
+      registerTransition(transition) {
+        this.transitions.set(transition.id, transition);
+        return transition;
+      }
+      /** In-place update — see `updateComponent`. */
+      updateTransition(transition) {
+        if (!this.transitions.has(transition.id)) return false;
+        this.transitions.set(transition.id, transition);
+        return true;
+      }
+      /**
+       * Unregister a transition
+       */
+      unregisterTransition(id) {
+        return this.transitions.delete(id);
+      }
+      /**
+       * Get a transition
+       */
+      getTransition(id) {
+        return this.transitions.get(id);
+      }
+      /**
+       * Get all transitions
+       */
+      getAllTransitions() {
+        return Array.from(this.transitions.values());
+      }
+      /**
+       * Get currently active states
+       */
+      getActiveStates() {
+        return Array.from(this.activeStates);
+      }
+      /**
+       * Check if a state is active
+       */
+      isStateActive(id) {
+        return this.activeStates.has(id);
+      }
+      /**
+       * Activate a state
+       */
+      activateState(id) {
+        const state = this.states.get(id);
+        if (!state) {
+          return false;
+        }
+        for (const activeId of this.activeStates) {
+          const activeState = this.states.get(activeId);
+          if (activeState?.blocking && activeState.id !== id) {
+            return false;
+          }
+          if (activeState?.blocks?.includes(id)) {
+            return false;
+          }
+        }
+        const wasActive = this.activeStates.has(id);
+        this.activeStates.add(id);
+        if (!wasActive) {
+          this.emit("element:stateChanged", {
+            stateId: id,
+            active: true,
+            activeStates: this.getActiveStates()
+          });
+        }
+        return true;
+      }
+      /**
+       * Deactivate a state
+       */
+      deactivateState(id) {
+        const wasActive = this.activeStates.has(id);
+        this.activeStates.delete(id);
+        if (wasActive) {
+          this.emit("element:stateChanged", {
+            stateId: id,
+            active: false,
+            activeStates: this.getActiveStates()
+          });
+        }
+        return wasActive;
+      }
+      /**
+       * Activate multiple states
+       */
+      activateStates(ids) {
+        const activated = [];
+        for (const id of ids) {
+          if (this.activateState(id)) {
+            activated.push(id);
+          }
+        }
+        return activated;
+      }
+      /**
+       * Deactivate multiple states
+       */
+      deactivateStates(ids) {
+        const deactivated = [];
+        for (const id of ids) {
+          if (this.deactivateState(id)) {
+            deactivated.push(id);
+          }
+        }
+        return deactivated;
+      }
+      /**
+       * Activate a state group (all states in the group)
+       */
+      activateStateGroup(groupId) {
+        const group = this.stateGroups.get(groupId);
+        if (!group) return [];
+        return this.activateStates(group.states);
+      }
+      /**
+       * Deactivate a state group (all states in the group)
+       */
+      deactivateStateGroup(groupId) {
+        const group = this.stateGroups.get(groupId);
+        if (!group) return [];
+        return this.deactivateStates(group.states);
+      }
+      /**
+       * Check if a transition can be executed from current state
+       */
+      canExecuteTransition(transitionId) {
+        const transition = this.transitions.get(transitionId);
+        if (!transition) return false;
+        return transition.fromStates.some((stateId) => this.activeStates.has(stateId));
+      }
+      /**
+       * Execute a transition
+       */
+      async executeTransition(transitionId) {
+        const startTime = performance.now();
+        const transition = this.transitions.get(transitionId);
+        if (!transition) {
+          return {
+            success: false,
+            activatedStates: [],
+            deactivatedStates: [],
+            error: `Transition not found: ${transitionId}`,
+            durationMs: performance.now() - startTime
+          };
+        }
+        if (!this.canExecuteTransition(transitionId)) {
+          return {
+            success: false,
+            activatedStates: [],
+            deactivatedStates: [],
+            error: "Precondition not met: none of the fromStates are active",
+            failedPhase: "precondition",
+            durationMs: performance.now() - startTime
+          };
+        }
+        try {
+          const deactivated = this.deactivateStates(transition.exitStates);
+          if (transition.exitGroups) {
+            for (const groupId of transition.exitGroups) {
+              deactivated.push(...this.deactivateStateGroup(groupId));
+            }
+          }
+          const activated = this.activateStates(transition.activateStates);
+          if (transition.activateGroups) {
+            for (const groupId of transition.activateGroups) {
+              activated.push(...this.activateStateGroup(groupId));
+            }
+          }
+          return {
+            success: true,
+            activatedStates: activated,
+            deactivatedStates: deactivated,
+            durationMs: performance.now() - startTime
+          };
+        } catch (error) {
+          return {
+            success: false,
+            activatedStates: [],
+            deactivatedStates: [],
+            error: error instanceof Error ? error.message : String(error),
+            failedPhase: "execution",
+            durationMs: performance.now() - startTime
+          };
+        }
+      }
+      /**
+       * Find a path from current state to target states
+       *
+       * Uses a simple BFS algorithm for pathfinding.
+       * For more advanced pathfinding (Dijkstra, A*), use the Python state manager service.
+       */
+      findPath(targetStates) {
+        if (targetStates.every((t) => this.activeStates.has(t))) {
+          return {
+            found: true,
+            transitions: [],
+            totalCost: 0,
+            targetStates,
+            estimatedSteps: 0
+          };
+        }
+        const queue = [
+          { activeStates: new Set(this.activeStates), path: [], cost: 0 }
+        ];
+        const visited = /* @__PURE__ */ new Set();
+        while (queue.length > 0) {
+          const current = queue.shift();
+          const stateKey = Array.from(current.activeStates).sort().join(",");
+          if (visited.has(stateKey)) continue;
+          visited.add(stateKey);
+          if (targetStates.every((t) => current.activeStates.has(t))) {
+            return {
+              found: true,
+              transitions: current.path,
+              totalCost: current.cost,
+              targetStates,
+              estimatedSteps: current.path.length
+            };
+          }
+          for (const transition of this.transitions.values()) {
+            const canExecute = transition.fromStates.some((s) => current.activeStates.has(s));
+            if (!canExecute) continue;
+            const newActive = new Set(current.activeStates);
+            for (const s of transition.exitStates) newActive.delete(s);
+            for (const s of transition.activateStates) newActive.add(s);
+            const newCost = current.cost + (transition.pathCost ?? 1);
+            queue.push({
+              activeStates: newActive,
+              path: [...current.path, transition.id],
+              cost: newCost
+            });
+          }
+        }
+        return {
+          found: false,
+          transitions: [],
+          totalCost: 0,
+          targetStates,
+          estimatedSteps: 0
+        };
+      }
+      /**
+       * Navigate to target states using pathfinding
+       */
+      async navigateTo(targetStates) {
+        const startTime = performance.now();
+        const path = this.findPath(targetStates);
+        if (!path.found) {
+          return {
+            success: false,
+            path,
+            executedTransitions: [],
+            finalActiveStates: this.getActiveStates(),
+            error: `No path found to target states: ${targetStates.join(", ")}`,
+            durationMs: performance.now() - startTime
+          };
+        }
+        const executedTransitions = [];
+        for (const transitionId of path.transitions) {
+          const result = await this.executeTransition(transitionId);
+          if (!result.success) {
+            return {
+              success: false,
+              path,
+              executedTransitions,
+              finalActiveStates: this.getActiveStates(),
+              error: result.error,
+              durationMs: performance.now() - startTime
+            };
+          }
+          executedTransitions.push(transitionId);
+        }
+        return {
+          success: true,
+          path,
+          executedTransitions,
+          finalActiveStates: this.getActiveStates(),
+          durationMs: performance.now() - startTime
+        };
+      }
+      /**
+       * Create a state snapshot
+       */
+      createStateSnapshot() {
+        return {
+          timestamp: Date.now(),
+          activeStates: this.getActiveStates(),
+          states: this.getAllStates(),
+          groups: this.getAllStateGroups(),
+          transitions: this.getAllTransitions()
+        };
+      }
+      /**
+       * Whether this registry instance has ever had an element register in its
+       * lifetime. Sticky — flips true on first `registerElement` and stays true
+       * until `clear()`.  Exposed primarily for tests; production code should
+       * read `BridgeSnapshot.registration.everHadRegistrations`.
+       */
+      hasEverHadRegistrations() {
+        return this.everHadRegistrationsFlag;
+      }
+      /**
+       * Per-route counts of currently-registered elements. Returns a plain
+       * object copy so callers can't mutate the internal map. Elements with
+       * an undefined route are omitted. Exposed primarily for tests; production
+       * code should read `BridgeSnapshot.registration.byRoute`.
+       */
+      getCountsByRoute() {
+        const out = {};
+        for (const [route, count] of this.routeCounts) {
+          if (route === "") continue;
+          if (count > 0) out[route] = count;
+        }
+        return out;
+      }
+      /**
+       * Build the F3 registration-diagnostics metadata for a snapshot. Shared
+       * by `createSnapshot` and `createSnapshotAsync` so both paths emit the
+       * same shape.
+       */
+      buildRegistrationMetadata() {
+        return {
+          totalRegistered: this.elements.size,
+          everHadRegistrations: this.everHadRegistrationsFlag,
+          byRoute: this.getCountsByRoute()
+        };
+      }
+      /**
+       * Best-effort read of the current page route. Matches the default source
+       * `registerElement` uses, so the snapshot's top-level `route` lines up
+       * with the `byRoute` keys under normal operation.
+       */
+      currentRoute() {
+        if (typeof window !== "undefined" && window.location?.pathname) {
+          return window.location.pathname;
+        }
+        return void 0;
+      }
+      /**
+       * Resolve the optional `activeTab` field for a snapshot. Applications that
+       * decouple their visible pane from `window.location` (e.g. the runner's
+       * tab-based shell) supply a `getActiveTab` callback in the snapshot options;
+       * the SDK itself has no concept of "tab", so without a provider the field
+       * stays undefined and non-tab-based consumers are unaffected. Errors thrown
+       * by the provider are swallowed so a buggy host can never break the rest of
+       * the snapshot.
+       */
+      resolveActiveTab(getActiveTab) {
+        if (!getActiveTab) return void 0;
+        try {
+          const value = getActiveTab();
+          return typeof value === "string" && value.length > 0 ? value : void 0;
+        } catch {
+          return void 0;
+        }
+      }
+      /**
+       * Create a snapshot of the current state
+       */
+      createSnapshot(options = {}) {
+        const takenAt = Date.now();
+        const activeTab = this.resolveActiveTab(options.getActiveTab);
+        return {
+          timestamp: takenAt,
+          snapshotTakenAtMs: takenAt,
+          route: this.currentRoute(),
+          ...activeTab !== void 0 ? { activeTab } : {},
+          registration: this.buildRegistrationMetadata(),
+          elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
+          components: this.getAllComponents().map((comp) => ({
+            id: comp.id,
+            name: comp.name,
+            description: comp.description,
+            actions: comp.actions.map((a) => a.id),
+            // Tell the caller exactly how to invoke any action on this component
+            // without having to grep docs or guess the route shape.
+            actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
+            elementIds: comp.elementIds
+          })),
+          workflows: this.getAllWorkflows().map((wf) => ({
+            id: wf.id,
+            name: wf.name,
+            description: wf.description,
+            stepCount: wf.steps.length
+          }))
+        };
+      }
+      /**
+       * Create a snapshot asynchronously, processing elements in batches to avoid
+       * blocking the main thread. This prevents "Page Unresponsive" dialogs when
+       * there are many registered elements (200-500+), since getState() and
+       * getIdentifier() force layout/style recalculation for each element.
+       */
+      async createSnapshotAsync(batchSize = 50, options = {}) {
+        const allElements = this.getAllElements();
+        const elementSnapshots = [];
+        for (let i = 0; i < allElements.length; i += batchSize) {
+          const batch = allElements.slice(i, i + batchSize);
+          for (const el of batch) {
+            elementSnapshots.push(serializeRegisteredElement(el, options));
+          }
+          if (i + batchSize < allElements.length) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        const takenAt = Date.now();
+        const activeTab = this.resolveActiveTab(options.getActiveTab);
+        return {
+          timestamp: takenAt,
+          snapshotTakenAtMs: takenAt,
+          route: this.currentRoute(),
+          ...activeTab !== void 0 ? { activeTab } : {},
+          registration: this.buildRegistrationMetadata(),
+          elements: elementSnapshots,
+          components: this.getAllComponents().map((comp) => ({
+            id: comp.id,
+            name: comp.name,
+            description: comp.description,
+            actions: comp.actions.map((a) => a.id),
+            // Tell the caller exactly how to invoke any action on this component
+            // without having to grep docs or guess the route shape.
+            actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
+            elementIds: comp.elementIds
+          })),
+          workflows: this.getAllWorkflows().map((wf) => ({
+            id: wf.id,
+            name: wf.name,
+            description: wf.description,
+            stepCount: wf.steps.length
+          }))
+        };
+      }
+      /**
+       * Clear all registrations
+       */
+      clear() {
+        this.elements.clear();
+        this.components.clear();
+        this.workflows.clear();
+        this.eventListeners.clear();
+        this.states.clear();
+        this.stateGroups.clear();
+        this.transitions.clear();
+        this.activeStates.clear();
+        this.routeCounts.clear();
+        this.everHadRegistrationsFlag = false;
+      }
+      /**
+       * Get registry statistics
+       */
+      getStats() {
+        const elements2 = this.getAllElements();
+        const components2 = this.getAllComponents();
+        return {
+          elementCount: elements2.length,
+          componentCount: components2.length,
+          workflowCount: this.workflows.size,
+          mountedElementCount: elements2.filter((e) => e.mounted).length,
+          mountedComponentCount: components2.filter((c) => c.mounted).length,
+          stateCount: this.states.size,
+          stateGroupCount: this.stateGroups.size,
+          transitionCount: this.transitions.size,
+          activeStateCount: this.activeStates.size
+        };
+      }
+    };
+    REGISTRY_KEY = /* @__PURE__ */ Symbol.for("@qontinui/ui-bridge/globalRegistry");
   }
 });
 
@@ -2536,15 +4822,77 @@ var init_idle = __esm({
 });
 
 // src/ai/search-engine.ts
+function isFindDebugEnabled() {
+  try {
+    const proc = globalThis.process;
+    if (proc?.env?.UI_BRIDGE_DEBUG_FIND === "1") {
+      return true;
+    }
+  } catch {
+  }
+  try {
+    const ls = globalThis.localStorage;
+    if (ls && typeof ls.getItem === "function") {
+      if (ls.getItem("UI_BRIDGE_DEBUG_FIND") === "1") {
+        return true;
+      }
+    }
+  } catch {
+  }
+  return false;
+}
+function truncForDebug(s, max = 80) {
+  if (!s) return s;
+  return s.length > max ? `${s.slice(0, max)}\u2026` : s;
+}
+function tokenizeForAlignment(s) {
+  return s.toLowerCase().replace(TOKEN_PUNCTUATION_RE, " ").replace(/_+/g, " ").split(/\s+/).filter((t) => t.length > 0);
+}
+function analyzeTokenAlignment(query, target) {
+  const queryTokens = tokenizeForAlignment(query);
+  const targetTokens = tokenizeForAlignment(target);
+  const totalQueryTokens = queryTokens.length;
+  if (totalQueryTokens === 0 || targetTokens.length === 0) {
+    return { kind: "none", matchedTokenCount: 0, totalQueryTokens };
+  }
+  let prefixMatches = 0;
+  for (const qt of queryTokens) {
+    if (targetTokens.some((tt) => tt.startsWith(qt))) {
+      prefixMatches += 1;
+    }
+  }
+  if (prefixMatches === totalQueryTokens) {
+    return { kind: "prefix-aligned", matchedTokenCount: prefixMatches, totalQueryTokens };
+  }
+  let presenceMatches = 0;
+  for (const qt of queryTokens) {
+    if (targetTokens.some((tt) => tt.includes(qt))) {
+      presenceMatches += 1;
+    }
+  }
+  if (presenceMatches === totalQueryTokens) {
+    return {
+      kind: "all-tokens-present",
+      matchedTokenCount: presenceMatches,
+      totalQueryTokens
+    };
+  }
+  if (presenceMatches > 0) {
+    return { kind: "partial", matchedTokenCount: presenceMatches, totalQueryTokens };
+  }
+  return { kind: "none", matchedTokenCount: 0, totalQueryTokens };
+}
 function createSearchEngine(config) {
   return new SearchEngine(config);
 }
-var DEFAULT_SEARCH_CONFIG, _SearchEngine, SearchEngine;
+var TOKEN_PUNCTUATION_RE, DEFAULT_SEARCH_CONFIG, _SearchEngine, SearchEngine;
 var init_search_engine = __esm({
   "src/ai/search-engine.ts"() {
     init_fuzzy_matcher();
     init_alias_generator();
     init_annotations();
+    init_registry();
+    TOKEN_PUNCTUATION_RE = /[:,.;!?/()\\[\]{}<>"`—–-]+/g;
     DEFAULT_SEARCH_CONFIG = {
       fuzzyThreshold: 0.7,
       textWeight: 0.35,
@@ -2569,6 +4917,19 @@ var init_search_engine = __esm({
       updateElements(elements2, getState) {
         this.cachedElements = elements2.map((el) => this.toSearchable(el, getState));
         this.cacheTimestamp = Date.now();
+      }
+      /**
+       * Peek at the engine's current cache of {id, type} pairs.
+       *
+       * Used by callers like `find.ts` that need to know whether a given
+       * element-type guess is even present in the cached page before deciding to
+       * relax type-pinned criteria. Returns a copy so callers can iterate freely
+       * without affecting the engine's internal state — and never exposes the
+       * full `SearchableElement` shape so we don't leak internal scoring helpers
+       * across the module boundary.
+       */
+      getCachedElementSummaries() {
+        return this.cachedElements.map((el) => ({ id: el.id, type: el.type }));
       }
       /**
        * Convert an element to searchable format
@@ -2727,15 +5088,111 @@ var init_search_engine = __esm({
         if (!this.config.includeHidden && !criteria.fuzzy) {
           searchableElements = searchableElements.filter((el) => el.state.visible);
         }
+        const debugEnabled = isFindDebugEnabled();
+        let candidateElementsForDebug;
+        let allScoredForDebug;
+        if (debugEnabled) {
+          const criteriaTypeLower = criteria.type?.toLowerCase();
+          candidateElementsForDebug = this.cachedElements.filter((el) => {
+            const idHit = el.id.toLowerCase().includes("advanced");
+            const typeHit = criteriaTypeLower ? el.type.toLowerCase() === criteriaTypeLower : false;
+            return idHit || typeHit;
+          }).map((el) => ({
+            id: el.id,
+            type: el.type,
+            labelText: truncForDebug(el.labelText),
+            ariaLabel: truncForDebug(el.ariaLabel)
+          }));
+          allScoredForDebug = [];
+          try {
+            console.debug("[ui-bridge:find] cachedElements.length=", this.cachedElements.length);
+            console.debug(
+              "[ui-bridge:find] searchableElements.length (post visibility filter)=",
+              searchableElements.length
+            );
+            console.debug("[ui-bridge:find] criteria=", JSON.stringify(criteria));
+            console.debug(
+              "[ui-bridge:find] candidateElements=",
+              JSON.stringify(candidateElementsForDebug)
+            );
+          } catch {
+          }
+        }
         const results = [];
         for (const searchable of searchableElements) {
           const result = this.scoreElement(searchable, criteria);
+          if (debugEnabled && allScoredForDebug && result.confidence > 0) {
+            allScoredForDebug.push({
+              id: searchable.id,
+              confidence: result.confidence,
+              scores: result.scores
+            });
+          }
           if (result.confidence >= (criteria.fuzzyThreshold ?? this.config.fuzzyThreshold)) {
             results.push(result);
           }
         }
         results.sort((a, b) => b.confidence - a.confidence);
         const limitedResults = results.slice(0, this.config.maxResults);
+        if (debugEnabled && allScoredForDebug && candidateElementsForDebug) {
+          const topScored = allScoredForDebug.slice().sort((a, b) => b.confidence - a.confidence).slice(0, 5);
+          let registryTags;
+          try {
+            const tags = [];
+            let getGlobalRegistryTag = null;
+            try {
+              const reg = getGlobalRegistry();
+              if (reg && typeof reg.__instanceTag === "string") {
+                getGlobalRegistryTag = reg.__instanceTag;
+                tags.push({ source: "getGlobalRegistry()", tag: reg.__instanceTag });
+              }
+            } catch {
+            }
+            let windowProvidersTag = null;
+            let windowProvidersHasRegistry = false;
+            try {
+              const w = globalThis.__UI_BRIDGE__;
+              if (w && typeof w === "object") {
+                const candidate = w.registry;
+                if (candidate && typeof candidate.__instanceTag === "string") {
+                  windowProvidersHasRegistry = true;
+                  windowProvidersTag = candidate.__instanceTag;
+                  tags.push({
+                    source: "globalThis.__UI_BRIDGE__.registry",
+                    tag: candidate.__instanceTag
+                  });
+                }
+              }
+            } catch {
+            }
+            registryTags = {
+              getGlobalRegistryTag,
+              windowProvidersTag,
+              windowProvidersHasRegistry,
+              allWindowTags: tags
+            };
+          } catch {
+          }
+          const diagnostic = {
+            cachedElementsLength: this.cachedElements.length,
+            searchableElementsLength: searchableElements.length,
+            candidateElements: candidateElementsForDebug,
+            topScored,
+            criteria,
+            threshold: criteria.fuzzyThreshold ?? this.config.fuzzyThreshold,
+            resultsAboveThreshold: limitedResults.length,
+            registryTags,
+            timestamp: Date.now()
+          };
+          try {
+            console.debug("[ui-bridge:find] topScored=", JSON.stringify(topScored));
+          } catch {
+          }
+          try {
+            globalThis.__UI_BRIDGE_LAST_FIND_DIAGNOSTIC__ = diagnostic;
+          } catch {
+          }
+        }
         return {
           results: limitedResults,
           bestMatch: limitedResults.length > 0 ? limitedResults[0] : null,
@@ -2993,7 +5450,17 @@ var init_search_engine = __esm({
                 reasons.push(`${sourceLabel} word match: ${(wordSim * 100).toFixed(0)}%`);
               }
             }
-            if (targetText.toLowerCase().includes(text.toLowerCase())) {
+            const tokenAnalysis = analyzeTokenAlignment(text, targetText);
+            if (tokenAnalysis.kind !== "none") {
+              const baseScore = tokenAnalysis.kind === "prefix-aligned" ? 0.95 : tokenAnalysis.kind === "all-tokens-present" ? 0.85 : 0.7;
+              const score = baseScore * weight;
+              if (score > maxScore) {
+                maxScore = score;
+                reasons.push(
+                  `${sourceLabel} ${tokenAnalysis.kind === "prefix-aligned" ? "prefix-aligns" : tokenAnalysis.kind === "all-tokens-present" ? "contains all tokens of" : "partially contains"} "${text}"`
+                );
+              }
+            } else if (targetText.toLowerCase().includes(text.toLowerCase())) {
               const score = 0.85 * weight;
               if (score > maxScore) {
                 maxScore = score;
@@ -5099,9 +7566,23 @@ var init_nl_action_executor = __esm({
         }
       }
       /**
-       * Build search criteria from a parsed action
+       * Build search criteria from a parsed action.
+       *
+       * If `targetDescription` is `"element <kebab-id>"`, treat it as a direct
+       * id lookup against the cached element registry — the planner uses this
+       * form to bypass fuzzy label matching for elements with stable ids
+       * (e.g. registered disclosures). Falls back to text + type-hint matching
+       * for free-form descriptions.
        */
       buildSearchCriteria(parsed) {
+        const idMatch = parsed.targetDescription.match(/^element\s+([\w-]+)$/i);
+        if (idMatch) {
+          const id = idMatch[1];
+          const exists = this.elements.some((el) => el.id === id);
+          if (exists) {
+            return { idPattern: id };
+          }
+        }
         const criteria = {
           text: parsed.targetDescription,
           fuzzy: true,
@@ -5561,6 +8042,24 @@ function find(query, engine, options) {
     }
     viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
   }
+  if (viableResults.length === 0 && typeof query === "string" && criteria.type && decomposed.elementType) {
+    const cachedTypeLower = String(criteria.type).toLowerCase();
+    const cachedSummaries = engine.getCachedElementSummaries();
+    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
+    if (!typeIsPresent) {
+      const relaxed = { ...criteria };
+      delete relaxed.type;
+      searchResponse = engine.search(relaxed);
+      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+      if (decomposed.stateFilter) {
+        results = applyStateFilter(results, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        results = applyOrdinalFilter(results, decomposed.ordinal);
+      }
+      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+    }
+  }
   const durationMs = performance.now() - startTime;
   if (viableResults.length === 0) {
     return {
@@ -5612,6 +8111,14 @@ function resolveCriteria(decomposed, engine, opts) {
   }
   if (decomposed.elementType) {
     criteria.type = decomposed.elementType;
+  }
+  if (decomposed.label && decomposed.label !== decomposed.elementText) {
+    criteria.accessibleName = decomposed.label;
+  } else if (decomposed.ariaLabel && decomposed.ariaLabel !== decomposed.elementText && !criteria.accessibleName) {
+    criteria.accessibleName = decomposed.ariaLabel;
+  }
+  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
+    criteria.placeholder = decomposed.placeholder;
   }
   if (decomposed.spatial) {
     const refResult = engine.findBest({
@@ -12384,2255 +14891,8 @@ var init_ai = __esm({
   }
 });
 
-// src/core/element-identifier.ts
-function generateXPath(element) {
-  if (element.id) {
-    return `//*[@id="${element.id}"]`;
-  }
-  const parts = [];
-  let current = element;
-  while (current && current.nodeType === Node.ELEMENT_NODE) {
-    let selector = current.nodeName.toLowerCase();
-    const testId = current.getAttribute("data-testid");
-    if (testId) {
-      selector += `[@data-testid="${testId}"]`;
-      parts.unshift(selector);
-      break;
-    }
-    const id = current.id;
-    if (id) {
-      selector += `[@id="${id}"]`;
-      parts.unshift(selector);
-      break;
-    }
-    const parentEl = current.parentElement;
-    if (parentEl) {
-      const currentEl = current;
-      const siblings = Array.from(parentEl.children).filter(
-        (child) => child.nodeName === currentEl.nodeName
-      );
-      if (siblings.length > 1) {
-        const index = siblings.indexOf(currentEl) + 1;
-        selector += `[${index}]`;
-      }
-    }
-    parts.unshift(selector);
-    current = parentEl;
-  }
-  return "/" + parts.join("/");
-}
-function generateCSSSelector(element) {
-  const testId = element.getAttribute("data-testid");
-  if (testId) {
-    return `[data-testid="${testId}"]`;
-  }
-  const awasId = element.getAttribute("data-awas-element");
-  if (awasId) {
-    return `[data-awas-element="${awasId}"]`;
-  }
-  if (element.id) {
-    return `#${CSS.escape(element.id)}`;
-  }
-  const path = [];
-  let current = element;
-  while (current && current.nodeType === Node.ELEMENT_NODE) {
-    let selector = current.nodeName.toLowerCase();
-    const parentTestId = current.getAttribute("data-testid");
-    if (parentTestId && current !== element) {
-      path.unshift(`[data-testid="${parentTestId}"]`);
-      break;
-    }
-    if (current.id) {
-      path.unshift(`#${CSS.escape(current.id)}`);
-      break;
-    }
-    const parentEl = current.parentElement;
-    if (parentEl) {
-      const currentEl = current;
-      const siblings = Array.from(parentEl.children);
-      const sameTagSiblings = siblings.filter(
-        (s) => s.nodeName === currentEl.nodeName
-      );
-      if (sameTagSiblings.length > 1) {
-        const index = siblings.indexOf(currentEl) + 1;
-        selector += `:nth-child(${index})`;
-      }
-    }
-    path.unshift(selector);
-    current = current.parentElement;
-  }
-  return path.join(" > ");
-}
-function getBestIdentifier(element) {
-  const uiBridgeTestId = element.getAttribute("data-ui-bridge-test-id")?.trim();
-  if (uiBridgeTestId) return uiBridgeTestId;
-  const testId = element.getAttribute("data-testid");
-  if (testId) return testId;
-  const awasId = element.getAttribute("data-awas-element");
-  if (awasId) return awasId;
-  if (element.id) return element.id;
-  return generateCSSSelector(element);
-}
-function createElementIdentifier(element) {
-  return {
-    testId: element.getAttribute("data-testid") || void 0,
-    awasId: element.getAttribute("data-awas-element") || void 0,
-    htmlId: element.id || void 0,
-    xpath: generateXPath(element),
-    selector: generateCSSSelector(element)
-  };
-}
-function findElementByIdentifier(identifier, root = document) {
-  if (typeof identifier === "string") {
-    const byTestId = root.querySelector(`[data-testid="${identifier}"]`);
-    if (byTestId) return byTestId;
-    const byAwasId = root.querySelector(`[data-awas-element="${identifier}"]`);
-    if (byAwasId) return byAwasId;
-    const byId = root.querySelector(`#${CSS.escape(identifier)}`);
-    if (byId) return byId;
-    try {
-      const bySelector = root.querySelector(identifier);
-      if (bySelector) return bySelector;
-    } catch {
-    }
-    try {
-      const result = document.evaluate(
-        identifier,
-        root,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      );
-      if (result.singleNodeValue instanceof HTMLElement) {
-        return result.singleNodeValue;
-      }
-    } catch {
-    }
-    return null;
-  }
-  if (identifier.testId) {
-    const el = root.querySelector(`[data-testid="${identifier.testId}"]`);
-    if (el) return el;
-  }
-  if (identifier.awasId) {
-    const el = root.querySelector(`[data-awas-element="${identifier.awasId}"]`);
-    if (el) return el;
-  }
-  if (identifier.htmlId) {
-    const el = root.querySelector(`#${CSS.escape(identifier.htmlId)}`);
-    if (el) return el;
-  }
-  if (identifier.selector) {
-    try {
-      const el = root.querySelector(identifier.selector);
-      if (el) return el;
-    } catch {
-    }
-  }
-  if (identifier.xpath) {
-    try {
-      const result = document.evaluate(
-        identifier.xpath,
-        root,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      );
-      if (result.singleNodeValue instanceof HTMLElement) {
-        return result.singleNodeValue;
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-
-// src/core/element-fingerprint.ts
-init_class_name();
-var ARIA_LANDMARKS = /* @__PURE__ */ new Set([
-  "banner",
-  "complementary",
-  "contentinfo",
-  "form",
-  "main",
-  "navigation",
-  "region",
-  "search"
-]);
-var IMPLICIT_LANDMARKS = {
-  NAV: "navigation",
-  MAIN: "main",
-  HEADER: "banner",
-  FOOTER: "contentinfo",
-  ASIDE: "complementary",
-  FORM: "form",
-  SEARCH: "search"
-};
-var IMPLICIT_ROLES = {
-  BUTTON: "button",
-  A: (el) => el.hasAttribute("href") ? "link" : "",
-  INPUT: (el) => {
-    const type = el.type?.toLowerCase();
-    if (type === "checkbox") return "checkbox";
-    if (type === "radio") return "radio";
-    if (type === "range") return "slider";
-    if (type === "submit" || type === "reset" || type === "button") return "button";
-    return "textbox";
-  },
-  SELECT: (el) => el.multiple ? "listbox" : "combobox",
-  TEXTAREA: "textbox",
-  IMG: "img",
-  TABLE: "table",
-  UL: "list",
-  OL: "list",
-  LI: "listitem",
-  H1: "heading",
-  H2: "heading",
-  H3: "heading",
-  H4: "heading",
-  H5: "heading",
-  H6: "heading",
-  DIALOG: "dialog",
-  DETAILS: "group",
-  SUMMARY: "button",
-  PROGRESS: "progressbar",
-  METER: "meter"
-};
-var DYNAMIC_PATTERNS = [
-  // UUIDs
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-  // ISO dates
-  /\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?/g,
-  // Timestamps (10+ digits)
-  /\b\d{10,13}\b/g,
-  // Standalone numbers (3+ digits, not part of a word)
-  /\b\d{3,}\b/g,
-  // Common date formats (MM/DD/YYYY, DD.MM.YYYY)
-  /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/g,
-  // Time patterns
-  /\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?/g
-];
-function computeStructuralPath(element) {
-  const parts = [];
-  let current = element;
-  while (current && current.tagName !== "BODY" && current.tagName !== "HTML") {
-    parts.unshift(current.tagName.toLowerCase());
-    current = current.parentElement;
-  }
-  return parts.join(" > ");
-}
-function computePositionZone(element) {
-  let ancestor = element;
-  while (ancestor) {
-    if (ancestor.getAttribute("role") === "dialog" || ancestor.getAttribute("aria-modal") === "true" || ancestor.tagName === "DIALOG") {
-      return "modal";
-    }
-    ancestor = ancestor.parentElement;
-  }
-  const rect = element.getBoundingClientRect();
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (vw === 0 || vh === 0) return "main";
-  const centerY = (rect.top + rect.bottom) / 2 / vh;
-  const centerX = (rect.left + rect.right) / 2 / vw;
-  if (centerY < 0.1) return "header";
-  if (centerY > 0.9) return "footer";
-  if (centerX < 0.2) return "sidebar-left";
-  if (centerX > 0.8) return "sidebar-right";
-  return "main";
-}
-function computeRole(element) {
-  const explicit = element.getAttribute("role");
-  if (explicit) return explicit;
-  const implicit = IMPLICIT_ROLES[element.tagName];
-  if (typeof implicit === "function") return implicit(element);
-  if (typeof implicit === "string") return implicit;
-  return "";
-}
-function computeAccessibleName(element) {
-  const ariaLabel = element.getAttribute("aria-label");
-  if (ariaLabel) return normalizeName(ariaLabel);
-  const labelledBy = element.getAttribute("aria-labelledby");
-  if (labelledBy) {
-    const parts = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean);
-    if (parts.length > 0) return normalizeName(parts.join(" "));
-  }
-  const tag = element.tagName;
-  if (tag === "BUTTON" || tag === "A" || tag === "SUMMARY" || tag.match(/^H[1-6]$/) || element.getAttribute("role") === "button" || element.getAttribute("role") === "link" || element.getAttribute("role") === "tab") {
-    const text = element.textContent?.trim();
-    if (text) return normalizeName(text);
-  }
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-    if (element.id) {
-      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
-      if (label?.textContent?.trim()) return normalizeName(label.textContent.trim());
-    }
-    const wrappingLabel = element.closest("label");
-    if (wrappingLabel?.textContent?.trim()) return normalizeName(wrappingLabel.textContent.trim());
-    const placeholder = element.getAttribute("placeholder");
-    if (placeholder) return normalizeName(placeholder);
-  }
-  return void 0;
-}
-function normalizeName(name) {
-  let normalized = name.trim();
-  for (const pattern of DYNAMIC_PATTERNS) {
-    normalized = normalized.replace(pattern, "{\u2026}");
-  }
-  normalized = normalized.replace(/\s+/g, " ");
-  if (normalized.length > 50) {
-    normalized = normalized.slice(0, 50);
-  }
-  return normalized;
-}
-function computeSizeCategory(element) {
-  const rect = element.getBoundingClientRect();
-  const viewportArea = window.innerWidth * window.innerHeight;
-  if (viewportArea === 0) return "medium";
-  const ratio = rect.width * rect.height / viewportArea;
-  if (ratio < 5e-3) return "icon";
-  if (ratio < 0.01) return "button";
-  if (ratio < 0.03) return "small";
-  if (ratio < 0.1) return "medium";
-  if (ratio < 0.3) return "large";
-  if (ratio < 0.6) return "fullwidth";
-  return "panel";
-}
-function computeLandmarkContext(element) {
-  let current = element.parentElement;
-  while (current && current.tagName !== "BODY" && current.tagName !== "HTML") {
-    const role = current.getAttribute("role");
-    if (role && ARIA_LANDMARKS.has(role)) {
-      return { landmark: role, label: current.getAttribute("aria-label") || void 0 };
-    }
-    const implicitLandmark = IMPLICIT_LANDMARKS[current.tagName];
-    if (implicitLandmark) {
-      return { landmark: implicitLandmark, label: current.getAttribute("aria-label") || void 0 };
-    }
-    current = current.parentElement;
-  }
-  return { landmark: "", label: void 0 };
-}
-function computeRepeatPattern(element) {
-  const parent = element.parentElement;
-  if (!parent) return void 0;
-  const parentRole = parent.getAttribute("role");
-  const parentTag = parent.tagName;
-  let containerType;
-  if (parentRole === "list" || parentTag === "UL" || parentTag === "OL") {
-    containerType = "list";
-  } else if (parentRole === "grid" || parentRole === "row") {
-    containerType = "grid";
-  } else if (parentTag === "TABLE" || parentTag === "TBODY" || parentTag === "THEAD") {
-    containerType = "table";
-  }
-  if (!containerType) {
-    const children = Array.from(parent.children);
-    if (children.length >= 3) {
-      const signature = (el) => `${el.tagName}|${classString(el)}`;
-      const sig = signature(element);
-      const matches = children.filter((c) => signature(c) === sig);
-      if (matches.length >= 3) {
-        containerType = "list";
-      } else {
-        return void 0;
-      }
-    } else {
-      return void 0;
-    }
-  }
-  const siblings = Array.from(parent.children);
-  const itemTag = element.tagName;
-  const itemClass = classString(element);
-  const matchingSiblings = siblings.filter(
-    (s) => s.tagName === itemTag && classString(s) === itemClass
-  );
-  const index = matchingSiblings.indexOf(element);
-  const containerSelector = generateSimpleSelector(parent);
-  const itemClassTokens = classList(element);
-  const itemSelector = `${element.tagName.toLowerCase()}${itemClassTokens.length > 0 ? "." + itemClassTokens.map((c) => CSS.escape(c)).join(".") : ""}`;
-  return {
-    type: containerType,
-    containerSelector,
-    itemSelector,
-    index: Math.max(0, index),
-    totalCount: matchingSiblings.length
-  };
-}
-function generateSimpleSelector(element) {
-  if (element.id) return `#${CSS.escape(element.id)}`;
-  const testId = element.getAttribute("data-testid");
-  if (testId) return `[data-testid="${testId}"]`;
-  return element.tagName.toLowerCase();
-}
-function computeHashSync(structuralPath, positionZone, role, accessibleName, sizeCategory) {
-  const input = `${structuralPath}|${positionZone}|${role}|${accessibleName ?? ""}|${sizeCategory}`;
-  let h1 = 2166136261;
-  let h2 = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    const c = input.charCodeAt(i);
-    h1 ^= c;
-    h1 = Math.imul(h1, 16777619);
-    h2 ^= c * 31;
-    h2 = Math.imul(h2, 16777619);
-  }
-  const hex1 = (h1 >>> 0).toString(16).padStart(8, "0");
-  const hex2 = (h2 >>> 0).toString(16).padStart(8, "0");
-  return hex1 + hex2;
-}
-function computeElementFingerprint(element) {
-  const structuralPath = computeStructuralPath(element);
-  const positionZone = computePositionZone(element);
-  const role = computeRole(element);
-  const accessibleName = computeAccessibleName(element);
-  const sizeCategory = computeSizeCategory(element);
-  const { landmark, label: landmarkLabel } = computeLandmarkContext(element);
-  const repeatPattern = computeRepeatPattern(element);
-  const rect = element.getBoundingClientRect();
-  const vw = window.innerWidth || 1;
-  const vh = window.innerHeight || 1;
-  const fingerprint = {
-    hash: computeHashSync(structuralPath, positionZone, role, accessibleName, sizeCategory),
-    structuralPath,
-    positionZone,
-    landmarkContext: landmark,
-    role,
-    tagName: element.tagName.toLowerCase(),
-    sizeCategory,
-    relativePosition: {
-      top: Math.round(rect.top / vh * 1e3) / 1e3,
-      left: Math.round(rect.left / vw * 1e3) / 1e3
-    },
-    isRepeating: repeatPattern !== void 0
-  };
-  if (landmarkLabel) fingerprint.landmarkLabel = landmarkLabel;
-  if (accessibleName) fingerprint.accessibleName = accessibleName;
-  if (repeatPattern) fingerprint.repeatPattern = repeatPattern;
-  return fingerprint;
-}
-function findNearestRegisteredElement(target, registry2) {
-  let current = target;
-  while (current && current.tagName !== "BODY") {
-    const registered = registry2.findByDOMElement(current);
-    if (registered) return registered;
-    current = current.parentElement;
-  }
-  return void 0;
-}
-
-// src/core/stable-ref.ts
-function buildSemanticPath(element) {
-  const parts = [];
-  let current = element;
-  let depth = 0;
-  while (current && current.tagName !== "BODY" && current.tagName !== "HTML" && depth < 8) {
-    let selector = current.tagName.toLowerCase();
-    const testId = current.getAttribute("data-testid");
-    if (testId) {
-      parts.unshift(`[data-testid="${testId}"]`);
-      break;
-    }
-    const htmlId = current.id;
-    if (htmlId && !/^:r[0-9a-z]+:$/.test(htmlId)) {
-      parts.unshift(`#${CSS.escape(htmlId)}`);
-      break;
-    }
-    const role = current.getAttribute("role");
-    if (role) {
-      selector += `[role="${role}"]`;
-    }
-    const classes = Array.from(current.classList).filter(
-      (c) => c.length > 2 && !c.startsWith("css-") && !c.startsWith("_")
-    );
-    if (classes.length > 0) {
-      selector += `.${CSS.escape(classes[0])}`;
-    }
-    parts.unshift(selector);
-    current = current.parentElement;
-    depth++;
-  }
-  return parts.length > 0 ? parts.join(" > ") : void 0;
-}
-function createStableRef(element) {
-  const fingerprint = computeElementFingerprint(element.element);
-  const semanticPath = buildSemanticPath(element.element) ?? element.element.tagName.toLowerCase();
-  const idStrategy = element.element.getAttribute("data-testid") ? "data-testid" : element.element.id && !/^:r[0-9a-z]+:$/.test(element.element.id) ? "html-id" : "prefer-existing";
-  const stableId = element.element.getAttribute("data-ui-bridge-id") || void 0;
-  return {
-    id: element.id,
-    idStrategy,
-    primaryId: element.id,
-    fingerprint: fingerprint.hash,
-    semanticPath,
-    stableId,
-    lastSeenAt: Date.now()
-  };
-}
-function resolveStableRef(ref) {
-  const registry2 = getGlobalRegistry();
-  const byId = registry2.getElement(ref.primaryId);
-  if (byId && byId.mounted && byId.element.isConnected) {
-    return byId;
-  }
-  if (typeof document !== "undefined") {
-    const byAttr = document.querySelector(
-      `[data-ui-bridge-id="${CSS.escape(ref.primaryId)}"]`
-    );
-    if (byAttr) {
-      const registered = registry2.findByDOMElement(byAttr);
-      if (registered && registered.mounted) {
-        return registered;
-      }
-      const nearest = findNearestRegisteredElement(byAttr, registry2);
-      if (nearest && nearest.mounted) {
-        return nearest;
-      }
-    }
-  }
-  const allElements = registry2.getAllElements();
-  for (const el of allElements) {
-    if (!el.mounted || !el.element.isConnected) continue;
-    const fp = computeElementFingerprint(el.element);
-    if (fp.hash === ref.fingerprint) {
-      return el;
-    }
-  }
-  if (ref.semanticPath && typeof document !== "undefined") {
-    try {
-      const byPath = document.querySelector(ref.semanticPath);
-      if (byPath) {
-        const registered = registry2.findByDOMElement(byPath);
-        if (registered && registered.mounted) {
-          return registered;
-        }
-        const nearest = findNearestRegisteredElement(byPath, registry2);
-        if (nearest && nearest.mounted) {
-          return nearest;
-        }
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-
-// src/core/registry.ts
-init_fuzzy_matcher();
-init_alias_generator();
-function serializeRegisteredElement(el, options = {}) {
-  const componentBasePath = options.componentBasePath ?? "/control/component";
-  const kind = el.category === "content" ? "content" : el.category === "interactive" ? "interactive" : void 0;
-  return {
-    id: el.id,
-    type: el.type,
-    tagName: el.element.tagName.toLowerCase(),
-    label: el.label,
-    identifier: el.getIdentifier(),
-    state: el.getState(),
-    actions: el.actions,
-    customActions: el.customActions ? Object.keys(el.customActions) : void 0,
-    category: el.category,
-    kind,
-    content: el.content,
-    role: el.role,
-    contentMetadata: el.contentMetadata,
-    mediaMetadata: el.mediaMetadata,
-    ownedByComponent: el.ownedByComponent,
-    componentActionBasePath: el.ownedByComponent ? `${componentBasePath}/${el.ownedByComponent}` : void 0,
-    // Live bbox/visibility maintained by `useUIElement`. Present for elements
-    // whose hook attached a ref (or that matched via `[data-ui-bridge-id]`).
-    // Runners use this to dispatch clicks via DOM coords without VLM grounding.
-    bbox: el.bbox,
-    visible: el.visible,
-    // `'hook'` for explicit useUIElement registrations, `'auto'` for
-    // DOM-walker entries from useAutoRegister. Snapshot consumers that care
-    // about developer-instrumented vs. scanner-discovered elements filter here.
-    origin: el.origin,
-    // Structured disambiguation metadata (all optional). Passthrough of the
-    // four hints the consumer set on `useUIElement` so NL queries can rank
-    // candidates without VLM grounding. Absent fields keep today's behavior.
-    variant: el.variant,
-    position: el.position,
-    color: el.color,
-    contextPath: el.contextPath,
-    stableRef: el.element?.isConnected ? (() => {
-      const ref = createStableRef(el);
-      return {
-        id: ref.id,
-        fingerprint: ref.fingerprint,
-        semanticPath: ref.semanticPath,
-        stableId: ref.stableId
-      };
-    })() : void 0,
-    // Route captured at registration time. Mirrored on the snapshot element
-    // so consumers can cross-check `registration.byRoute` against individual
-    // entries without a second call.
-    route: el.route
-  };
-}
-function captureFormControlState(element, state) {
-  if (element.required || element.getAttribute("aria-required") === "true") {
-    state.required = true;
-  }
-  if ("validity" in element) {
-    const v = element.validity;
-    if (!v.valid || element.validationMessage) {
-      state.validationState = {
-        valid: v.valid,
-        validationMessage: element.validationMessage || void 0,
-        valueMissing: v.valueMissing || void 0,
-        typeMismatch: v.typeMismatch || void 0,
-        patternMismatch: v.patternMismatch || void 0,
-        tooShort: v.tooShort || void 0,
-        tooLong: v.tooLong || void 0,
-        rangeUnderflow: v.rangeUnderflow || void 0,
-        rangeOverflow: v.rangeOverflow || void 0,
-        stepMismatch: v.stepMismatch || void 0,
-        customError: v.customError || void 0
-      };
-    }
-  }
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    const constraints = {};
-    let hasConstraint = false;
-    if (element instanceof HTMLInputElement) {
-      if (element.pattern) {
-        constraints.pattern = element.pattern;
-        hasConstraint = true;
-      }
-      if (element.min) {
-        constraints.min = element.min;
-        hasConstraint = true;
-      }
-      if (element.max) {
-        constraints.max = element.max;
-        hasConstraint = true;
-      }
-      if (element.step && element.step !== "any") {
-        constraints.step = element.step;
-        hasConstraint = true;
-      }
-    }
-    if (element.minLength > 0) {
-      constraints.minLength = element.minLength;
-      hasConstraint = true;
-    }
-    if (element.maxLength >= 0 && element.maxLength < 524288) {
-      constraints.maxLength = element.maxLength;
-      hasConstraint = true;
-    }
-    if (hasConstraint) {
-      state.constraints = constraints;
-    }
-  }
-}
-function computeAccessibleName2(element) {
-  const ariaLabel = element.getAttribute("aria-label");
-  if (ariaLabel) return ariaLabel;
-  const labelledBy = element.getAttribute("aria-labelledby");
-  if (labelledBy) {
-    const parts = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter((t) => !!t);
-    if (parts.length > 0) return parts.join(" ");
-  }
-  if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
-    if (element.id) {
-      const label = document.querySelector(`label[for="${element.id}"]`);
-      const labelText = label?.textContent?.trim();
-      if (labelText) return labelText;
-    }
-  }
-  const title = element.getAttribute("title");
-  if (title) return title;
-  const rawText = element.textContent?.trim();
-  if (rawText) {
-    return rawText.length <= 80 ? rawText : rawText.slice(0, 80);
-  }
-  return void 0;
-}
-function getElementState(element) {
-  const rect = element.getBoundingClientRect();
-  const computedStyle = window.getComputedStyle(element);
-  const inViewport = rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0;
-  const roleAttr = element.getAttribute("role") || void 0;
-  const accessibleName = computeAccessibleName2(element);
-  const state = {
-    visible: isElementVisible(element, rect, computedStyle, inViewport),
-    enabled: !isElementDisabled(element),
-    focused: document.activeElement === element,
-    role: roleAttr,
-    accessibleName,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left
-    },
-    textContent: element.textContent?.trim() || void 0,
-    computedStyles: {
-      display: computedStyle.display,
-      visibility: computedStyle.visibility,
-      opacity: computedStyle.opacity,
-      pointerEvents: computedStyle.pointerEvents,
-      cursor: computedStyle.cursor,
-      color: computedStyle.color,
-      backgroundColor: computedStyle.backgroundColor,
-      colorScheme: computedStyle.colorScheme,
-      fontSize: computedStyle.fontSize,
-      fontWeight: computedStyle.fontWeight,
-      lineHeight: computedStyle.lineHeight,
-      overflow: computedStyle.overflow,
-      textOverflow: computedStyle.textOverflow,
-      whiteSpace: computedStyle.whiteSpace,
-      position: computedStyle.position,
-      zIndex: computedStyle.zIndex,
-      padding: computedStyle.padding,
-      margin: computedStyle.margin,
-      borderColor: computedStyle.borderColor,
-      borderWidth: computedStyle.borderWidth,
-      borderRadius: computedStyle.borderRadius
-    },
-    inViewport
-  };
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (vw > 0 && vh > 0) {
-    state.normalizedRect = {
-      x: rect.x / vw,
-      y: rect.y / vh,
-      width: rect.width / vw,
-      height: rect.height / vh
-    };
-  }
-  if (isScrollContainer(element, computedStyle)) {
-    state.scrollInfo = {
-      scrollTop: element.scrollTop,
-      scrollLeft: element.scrollLeft,
-      scrollHeight: element.scrollHeight,
-      scrollWidth: element.scrollWidth,
-      clientHeight: element.clientHeight,
-      clientWidth: element.clientWidth,
-      canScrollUp: element.scrollTop > 0,
-      canScrollDown: element.scrollTop + element.clientHeight < element.scrollHeight - 1,
-      canScrollLeft: element.scrollLeft > 0,
-      canScrollRight: element.scrollLeft + element.clientWidth < element.scrollWidth - 1
-    };
-  }
-  if (!state.textContent) {
-    state.textContent = element.getAttribute("aria-label") || element.getAttribute("title") || void 0;
-  }
-  const opacityVal = parseFloat(computedStyle.opacity);
-  if (opacityVal === 0) {
-    state.opacityHidden = true;
-  }
-  const contentLabel = element.getAttribute("data-content-label");
-  if (contentLabel) {
-    state.dataContentLabel = contentLabel;
-  }
-  const contentRole = element.getAttribute("data-content-role");
-  if (contentRole) {
-    state.dataContentRole = contentRole;
-  }
-  const ariaSelected = element.getAttribute("aria-selected");
-  if (ariaSelected !== null) {
-    state.ariaSelected = ariaSelected === "true";
-  }
-  const ariaPressed = element.getAttribute("aria-pressed");
-  if (ariaPressed !== null) {
-    state.ariaPressed = ariaPressed === "mixed" ? "mixed" : ariaPressed === "true";
-  }
-  const ariaCurrent = element.getAttribute("aria-current");
-  if (ariaCurrent !== null && ariaCurrent !== "false") {
-    state.ariaCurrent = ariaCurrent;
-  }
-  const ariaExpanded = element.getAttribute("aria-expanded");
-  if (ariaExpanded !== null) {
-    state.ariaExpanded = ariaExpanded === "true";
-  } else if (element instanceof HTMLDetailsElement) {
-    state.ariaExpanded = element.open;
-  } else if (element.tagName === "SUMMARY") {
-    const parentDetails = element.closest("details");
-    if (parentDetails instanceof HTMLDetailsElement) {
-      state.ariaExpanded = parentDetails.open;
-    }
-  }
-  const ariaCheckedAttr = element.getAttribute("aria-checked");
-  if (ariaCheckedAttr !== null) {
-    state.ariaChecked = ariaCheckedAttr === "mixed" ? "mixed" : ariaCheckedAttr === "true";
-    const role = element.getAttribute("role");
-    if (role === "switch" || role === "checkbox" || role === "menuitemcheckbox" || role === "menuitemradio" || role === "radio") {
-      state.checked = ariaCheckedAttr === "true";
-    }
-  }
-  if (element instanceof HTMLInputElement) {
-    state.value = element.value;
-    if (element.type === "checkbox" || element.type === "radio") {
-      state.checked = element.checked;
-    }
-    captureFormControlState(element, state);
-  } else if (element instanceof HTMLTextAreaElement) {
-    state.value = element.value;
-    captureFormControlState(element, state);
-  } else if (element instanceof HTMLSelectElement) {
-    state.value = element.value;
-    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
-    state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: opt.value,
-      label: opt.label || opt.textContent?.trim() || opt.value,
-      selected: opt.selected
-    }));
-    captureFormControlState(element, state);
-  }
-  if (element instanceof HTMLAnchorElement && element.href) {
-    state.href = element.href;
-  }
-  const dataRoute = element.getAttribute("data-route");
-  if (dataRoute) {
-    state.dataRoute = dataRoute;
-  }
-  return state;
-}
-function isElementVisible(element, rect, style, inViewport) {
-  if (rect.width === 0 || rect.height === 0) return false;
-  if (style.display === "none") return false;
-  if (style.visibility === "hidden") return false;
-  if (parseFloat(style.opacity) === 0) return false;
-  if (!inViewport) return false;
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
-    const hit = document.elementFromPoint(cx, cy);
-    if (hit !== null && hit !== element && !element.contains(hit)) {
-      return false;
-    }
-  }
-  return true;
-}
-function isScrollContainer(element, style) {
-  if (element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth) {
-    return false;
-  }
-  const oy = style.overflowY;
-  const ox = style.overflowX;
-  return oy === "auto" || oy === "scroll" || ox === "auto" || ox === "scroll";
-}
-function isElementDisabled(element) {
-  if ("disabled" in element && element.disabled) {
-    return true;
-  }
-  if (element.getAttribute("aria-disabled") === "true") {
-    return true;
-  }
-  return false;
-}
-function inferActions(type) {
-  const baseActions = ["focus", "blur", "hover", "scroll", "scrollIntoView"];
-  switch (type) {
-    case "button":
-      return [...baseActions, "click", "doubleClick", "rightClick", "middleClick"];
-    case "input":
-      return [...baseActions, "click", "type", "clear"];
-    case "textarea":
-      return [...baseActions, "click", "type", "clear"];
-    case "select":
-      return [...baseActions, "click", "select"];
-    case "checkbox":
-      return [...baseActions, "click", "check", "uncheck", "toggle"];
-    case "radio":
-      return [...baseActions, "click", "check"];
-    case "link":
-      return [...baseActions, "click"];
-    case "form":
-      return ["focus", "blur"];
-    case "menu":
-    case "menuitem":
-      return [...baseActions, "click"];
-    case "tab":
-      return [...baseActions, "click", "middleClick"];
-    case "dialog":
-      return ["focus", "blur"];
-    case "custom":
-    default:
-      return [...baseActions, "click"];
-  }
-}
-function inferElementType(element) {
-  const tagName = element.tagName.toLowerCase();
-  const role = element.getAttribute("role");
-  if (role) {
-    switch (role) {
-      case "button":
-        return "button";
-      case "textbox":
-        return "input";
-      case "checkbox":
-        return "checkbox";
-      case "radio":
-        return "radio";
-      case "link":
-        return "link";
-      case "listbox":
-      case "combobox":
-        return "select";
-      case "menu":
-        return "menu";
-      case "menuitem":
-        return "menuitem";
-      case "tab":
-        return "tab";
-      case "dialog":
-        return "dialog";
-    }
-  }
-  switch (tagName) {
-    case "button":
-      return "button";
-    case "input": {
-      const inputType = element.type;
-      if (inputType === "checkbox") return "checkbox";
-      if (inputType === "radio") return "radio";
-      if (inputType === "submit" || inputType === "button") return "button";
-      return "input";
-    }
-    case "textarea":
-      return "textarea";
-    case "select":
-      return "select";
-    case "a":
-      return "link";
-    case "form":
-      return "form";
-    default:
-      return "custom";
-  }
-}
-var DEFAULT_REMOUNT_CACHE_WINDOW_MS = 2e3;
-var UIBridgeRegistry = class {
-  constructor(options = {}) {
-    this.elements = /* @__PURE__ */ new Map();
-    this.components = /* @__PURE__ */ new Map();
-    this.workflows = /* @__PURE__ */ new Map();
-    this.eventListeners = /* @__PURE__ */ new Map();
-    // State management
-    this.states = /* @__PURE__ */ new Map();
-    this.stateGroups = /* @__PURE__ */ new Map();
-    this.transitions = /* @__PURE__ */ new Map();
-    this.activeStates = /* @__PURE__ */ new Set();
-    // Recently removed elements for remount ID preservation
-    this.recentlyRemoved = /* @__PURE__ */ new Map();
-    // ── F3: Snapshot registration metadata ────────────────────────────────────
-    // Sticky latch: flips true the first time any element registers and stays
-    // true for the rest of this registry instance's lifetime, including across
-    // unregister cycles. Lets snapshot consumers distinguish "bridge has never
-    // seen a registration" (no SDK coverage on this page) from "registrations
-    // happened but are all unmounted now". Never reset except on `clear()`.
-    this.everHadRegistrationsFlag = false;
-    // Per-route tally of currently-registered elements. Mirrors
-    // `elements.size` partitioned by `RegisteredElement.route`. Incremented on
-    // register, decremented on unregister, and a zero count is dropped from
-    // the map so `byRoute` never emits `{ "/foo": 0 }`. Elements registered
-    // without a route (non-DOM environment) are tracked under the empty-string
-    // key `""` — snapshot serialization filters that bucket out.
-    this.routeCounts = /* @__PURE__ */ new Map();
-    // External store pattern for useSyncExternalStore
-    this.storeVersion = 0;
-    this.storeListeners = /* @__PURE__ */ new Set();
-    this.cachedSnapshot = null;
-    this.notifyScheduled = false;
-    this.options = options;
-  }
-  /**
-   * Subscribe to registry changes (for useSyncExternalStore).
-   * Returns an unsubscribe function.
-   */
-  subscribe(callback) {
-    this.storeListeners.add(callback);
-    return () => {
-      this.storeListeners.delete(callback);
-    };
-  }
-  /**
-   * Get a stable snapshot reference that changes only when the registry mutates.
-   * Designed for useSyncExternalStore.
-   */
-  getSnapshot() {
-    if (!this.cachedSnapshot || this.cachedSnapshot.version !== this.storeVersion) {
-      this.cachedSnapshot = {
-        elements: Array.from(this.elements.values()),
-        components: Array.from(this.components.values()),
-        workflows: Array.from(this.workflows.values()),
-        version: this.storeVersion
-      };
-    }
-    return this.cachedSnapshot;
-  }
-  notifyStoreListeners() {
-    this.storeVersion++;
-    this.cachedSnapshot = null;
-    if (this.notifyScheduled) return;
-    this.notifyScheduled = true;
-    queueMicrotask(() => {
-      this.notifyScheduled = false;
-      for (const listener of this.storeListeners) {
-        listener();
-      }
-    });
-  }
-  /**
-   * Emit an event
-   */
-  emit(type, data) {
-    const event = {
-      type,
-      timestamp: Date.now(),
-      data
-    };
-    this.options.onEvent?.(event);
-    const listeners = this.eventListeners.get(type);
-    if (listeners) {
-      for (const listener of listeners) {
-        try {
-          listener(event);
-        } catch (error) {
-          console.error(`Error in event listener for ${type}:`, error);
-        }
-      }
-    }
-    if (this.options.verbose) {
-      console.log("[UIBridge]", type, data);
-    }
-    if (typeof type === "string" && (type.startsWith("element:") || type.startsWith("component:") || type.startsWith("workflow:"))) {
-      this.notifyStoreListeners();
-    }
-    this.options.elementEventLog?.ingest(event);
-  }
-  /**
-   * Register an event listener
-   */
-  on(type, listener) {
-    if (!this.eventListeners.has(type)) {
-      this.eventListeners.set(type, /* @__PURE__ */ new Set());
-    }
-    this.eventListeners.get(type).add(listener);
-    return () => {
-      this.eventListeners.get(type)?.delete(listener);
-    };
-  }
-  /**
-   * Dispatch an event from external sources (e.g., NavigationTracker).
-   * Prefer using registry methods (registerElement, etc.) for internal events.
-   */
-  dispatchEvent(type, data) {
-    this.emit(type, data);
-  }
-  /**
-   * Remove an event listener
-   */
-  off(type, listener) {
-    this.eventListeners.get(type)?.delete(listener);
-  }
-  /**
-   * Register an element
-   */
-  /**
-   * Update a registered element's metadata/options in place.
-   * See `updateComponent` for rationale. Does not replace the DOM element
-   * reference — use `registerElement` if the element itself changed.
-   */
-  updateElement(id, options) {
-    const existing = this.elements.get(id);
-    if (!existing) return false;
-    if (options.type !== void 0) existing.type = options.type;
-    if (options.label !== void 0) existing.label = options.label;
-    if (options.actions !== void 0) existing.actions = options.actions;
-    if (options.customActions !== void 0) existing.customActions = options.customActions;
-    if (options.category !== void 0) existing.category = options.category;
-    if (options.contentMetadata !== void 0) existing.contentMetadata = options.contentMetadata;
-    if (options.mediaMetadata !== void 0) existing.mediaMetadata = options.mediaMetadata;
-    if (options.variant !== void 0) existing.variant = options.variant;
-    if (options.position !== void 0) existing.position = options.position;
-    if (options.color !== void 0) existing.color = options.color;
-    if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
-    return true;
-  }
-  /**
-   * Update the live viewport-relative bounding box and visibility for a
-   * registered element. Called by `useUIElement`'s ResizeObserver + scroll
-   * listeners and MUST NOT emit events or bump `storeVersion` — bbox updates
-   * fire on every scroll/resize and would cause `useSyncExternalStore`
-   * consumers to re-render continuously (React error #185).
-   *
-   * Returns `false` if the element is not registered.
-   */
-  updateElementBbox(id, bbox, visible) {
-    const existing = this.elements.get(id);
-    if (!existing) return false;
-    existing.bbox = bbox;
-    existing.visible = visible;
-    return true;
-  }
-  /**
-   * Action-driven state refresh.
-   *
-   * Action handlers (`type`, `clear`, `setValue`, `check`, `uncheck`, `toggle`,
-   * `select`, `sendKeys`, `focus`, `blur`) call this after mutating the DOM so
-   * subsequent `getElement(id)` / snapshot reads see the post-action state
-   * even when React detaches/re-creates the underlying DOM node between the
-   * action and the next read.
-   *
-   * The fields in `updates` overlay the live `getElementState(element)` read
-   * (cached values win for `value`, `checked`, `focused`, etc.). Other fields
-   * (rect, computedStyles, scrollInfo) keep flowing from the live DOM read so
-   * layout stays accurate. Pass `undefined` for `updates` to clear the
-   * overlay.
-   *
-   * Returns `false` if `id` is not registered.
-   */
-  refreshElement(id, updates) {
-    const existing = this.elements.get(id);
-    if (!existing) return false;
-    const ref = existing.__stateOverridesRef;
-    if (!ref) {
-      existing.cachedStateOverrides = updates;
-      return true;
-    }
-    if (updates === void 0) {
-      ref.value = void 0;
-      existing.cachedStateOverrides = void 0;
-    } else {
-      const merged = { ...ref.value ?? {}, ...updates };
-      ref.value = merged;
-      existing.cachedStateOverrides = merged;
-    }
-    return true;
-  }
-  registerElement(id, element, options = {}) {
-    const type = options.type ?? inferElementType(element);
-    const actions = options.actions ?? inferActions(type);
-    let actualId = id;
-    if (this.options.preserveIdAcrossRemount) {
-      const now = Date.now();
-      const cacheWindow = this.options.remountCacheWindowMs ?? DEFAULT_REMOUNT_CACHE_WINDOW_MS;
-      const fp = computeElementFingerprint(element).hash;
-      for (const [key, entry] of this.recentlyRemoved) {
-        if (now - entry.removedAt > cacheWindow) {
-          this.recentlyRemoved.delete(key);
-          continue;
-        }
-        if (entry.fingerprint === fp) {
-          actualId = entry.id;
-          this.recentlyRemoved.delete(key);
-          break;
-        }
-      }
-    }
-    let ownedByComponent = options.ownedByComponent;
-    if (!ownedByComponent && element && typeof element.closest === "function") {
-      const scope = element.closest("[data-ui-bridge-component]");
-      const attr = scope?.getAttribute("data-ui-bridge-component");
-      if (attr) ownedByComponent = attr;
-    }
-    let route;
-    if (options.route === null) {
-      route = void 0;
-    } else if (typeof options.route === "string") {
-      route = options.route;
-    } else if (typeof window !== "undefined" && window.location?.pathname) {
-      route = window.location.pathname;
-    }
-    const stateOverridesRef = {
-      value: void 0
-    };
-    const computeState = () => {
-      const live = getElementState(element);
-      return live;
-    };
-    const registered = {
-      id: actualId,
-      element,
-      type,
-      label: options.label,
-      actions,
-      customActions: options.customActions,
-      getState: computeState,
-      getIdentifier: () => createElementIdentifier(element),
-      registeredAt: Date.now(),
-      mounted: true,
-      category: options.category ?? "interactive",
-      contentMetadata: options.contentMetadata,
-      mediaMetadata: options.mediaMetadata,
-      ownedByComponent,
-      // Default programmatic registrations to `'hook'` — only the DOM walker
-      // in useAutoRegister passes `'auto'`. Tests and external callers that
-      // pre-date this field stay on the `'hook'` side of any filter.
-      origin: options.origin ?? "hook",
-      // Structured disambiguation metadata (all optional). Snapshots echo
-      // these through verbatim so NL queries can rank candidates without
-      // VLM pixel grounding.
-      variant: options.variant,
-      position: options.position,
-      color: options.color,
-      contextPath: options.contextPath,
-      route,
-      // Content/role fields for data-ui-bridge-content semantic elements.
-      // Undefined for interactive elements and for content registered via
-      // the heading/paragraph/table-cell content-discovery path.
-      content: options.content,
-      role: options.role
-    };
-    Object.defineProperty(registered, "__stateOverridesRef", {
-      value: stateOverridesRef,
-      enumerable: false,
-      writable: false,
-      configurable: true
-    });
-    const prior = this.elements.get(actualId);
-    if (prior) {
-      this.decrementRouteCount(prior.route);
-    }
-    this.elements.set(actualId, registered);
-    this.everHadRegistrationsFlag = true;
-    this.incrementRouteCount(route);
-    this.emit("element:registered", { id: actualId, type, label: options.label });
-    return registered;
-  }
-  incrementRouteCount(route) {
-    const key = route ?? "";
-    this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
-  }
-  decrementRouteCount(route) {
-    const key = route ?? "";
-    const next = (this.routeCounts.get(key) ?? 0) - 1;
-    if (next <= 0) {
-      this.routeCounts.delete(key);
-    } else {
-      this.routeCounts.set(key, next);
-    }
-  }
-  /**
-   * Register a content (non-interactive) element
-   */
-  registerContentElement(id, element, options) {
-    return this.registerElement(id, element, {
-      type: options.contentType,
-      label: options.label,
-      actions: [],
-      category: "content",
-      contentMetadata: options.contentMetadata,
-      origin: options.origin ?? "auto"
-    });
-  }
-  /**
-   * Get all content (non-interactive) elements
-   */
-  getAllContentElements() {
-    return Array.from(this.elements.values()).filter((el) => el.category === "content");
-  }
-  /**
-   * Register a media element (image, video, canvas, SVG, etc.)
-   *
-   * If a `refreshMetadata` callback is provided, mediaMetadata is re-captured
-   * on every `getState()` call so loading transitions and video state stay fresh.
-   */
-  registerMediaElement(id, element, options) {
-    const registered = this.registerElement(id, element, {
-      type: options.mediaType,
-      label: options.label,
-      actions: [],
-      category: "media",
-      mediaMetadata: options.mediaMetadata,
-      origin: options.origin ?? "auto"
-    });
-    if (options.refreshMetadata) {
-      const originalGetState = registered.getState;
-      const refreshFn = options.refreshMetadata;
-      registered.getState = () => {
-        const state = originalGetState();
-        const freshMeta = refreshFn(element);
-        registered.mediaMetadata = freshMeta;
-        state.mediaMetadata = freshMeta;
-        return state;
-      };
-    }
-    return registered;
-  }
-  /**
-   * Get all interactive elements
-   */
-  getAllInteractiveElements() {
-    return Array.from(this.elements.values()).filter(
-      (el) => el.category !== "content" && el.category !== "media"
-    );
-  }
-  /**
-   * Get all media elements
-   */
-  getAllMediaElements() {
-    return Array.from(this.elements.values()).filter((el) => el.category === "media");
-  }
-  /**
-   * Unregister an element
-   */
-  unregisterElement(id) {
-    const registered = this.elements.get(id);
-    if (registered) {
-      if (this.options.preserveIdAcrossRemount && registered.element) {
-        const fp = computeElementFingerprint(registered.element).hash;
-        this.recentlyRemoved.set(fp, { id, fingerprint: fp, removedAt: Date.now() });
-        if (this.recentlyRemoved.size > 100) {
-          const firstKey = this.recentlyRemoved.keys().next().value;
-          if (firstKey !== void 0) {
-            this.recentlyRemoved.delete(firstKey);
-          }
-        }
-      }
-      registered.mounted = false;
-      this.elements.delete(id);
-      this.decrementRouteCount(registered.route);
-      this.emit("element:unregistered", { id });
-      this.options.elementEventLog?.removeElement(id);
-      return true;
-    }
-    return false;
-  }
-  /**
-   * Get a registered element
-   */
-  getElement(id) {
-    return this.elements.get(id);
-  }
-  /**
-   * Get all registered elements
-   */
-  getAllElements() {
-    return Array.from(this.elements.values());
-  }
-  /**
-   * Find element by DOM element reference
-   */
-  findByDOMElement(element) {
-    for (const registered of this.elements.values()) {
-      if (registered.element === element) {
-        return registered;
-      }
-    }
-    return void 0;
-  }
-  /**
-   * Get element event history from the element event log.
-   */
-  getElementHistory(elementId, options) {
-    return this.options.elementEventLog?.getHistory(elementId, options) ?? [];
-  }
-  /**
-   * Set the log level override for a specific element.
-   */
-  setElementLogLevel(elementId, level) {
-    this.options.elementEventLog?.setElementLogLevel(elementId, level);
-  }
-  /**
-   * Get the effective log level for an element.
-   */
-  getElementLogLevel(elementId) {
-    return this.options.elementEventLog?.getElementLogLevel(elementId) ?? "silent";
-  }
-  /**
-   * Search for elements using AI search criteria
-   */
-  searchElements(criteria) {
-    const results = [];
-    const threshold = criteria.fuzzyThreshold ?? 0.7;
-    for (const element of this.elements.values()) {
-      if (!element.mounted) continue;
-      const state = element.getState();
-      if (!criteria.fuzzy && !state.visible) continue;
-      const aliases = element.aliases ?? this.generateElementAliases(element);
-      const textContent = state.textContent?.trim() || "";
-      const label = element.label || "";
-      let maxScore = 0;
-      const matchReasons = [];
-      const scores = {};
-      if (criteria.text) {
-        if (textContent.toLowerCase() === criteria.text.toLowerCase() || label.toLowerCase() === criteria.text.toLowerCase()) {
-          maxScore = 1;
-          matchReasons.push("exact text match");
-          scores.text = 1;
-        } else if (criteria.fuzzy !== false) {
-          const textResult = fuzzyMatch(criteria.text, textContent, { threshold });
-          const labelResult = fuzzyMatch(criteria.text, label, { threshold });
-          const bestResult = textResult.similarity > labelResult.similarity ? textResult : labelResult;
-          if (bestResult.isMatch) {
-            scores.text = bestResult.similarity;
-            if (bestResult.similarity > maxScore) {
-              maxScore = bestResult.similarity;
-              matchReasons.push(`text similarity: ${(bestResult.similarity * 100).toFixed(0)}%`);
-            }
-          }
-        }
-      }
-      if (criteria.textContains) {
-        if (textContent.toLowerCase().includes(criteria.textContains.toLowerCase()) || label.toLowerCase().includes(criteria.textContains.toLowerCase())) {
-          const containsScore = 0.85;
-          scores.text = Math.max(scores.text ?? 0, containsScore);
-          if (containsScore > maxScore) {
-            maxScore = containsScore;
-            matchReasons.push("text contains");
-          }
-        }
-      }
-      if (criteria.accessibleName) {
-        const ariaLabel = element.element.getAttribute("aria-label") || "";
-        const accessibleName = ariaLabel || label || textContent;
-        if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
-          scores.accessibility = 1;
-          if (1 > maxScore) {
-            maxScore = 1;
-            matchReasons.push("accessible name match");
-          }
-        } else if (criteria.fuzzy !== false) {
-          const result = fuzzyMatch(criteria.accessibleName, accessibleName, { threshold });
-          if (result.isMatch) {
-            scores.accessibility = result.similarity;
-            if (result.similarity > maxScore) {
-              maxScore = result.similarity;
-              matchReasons.push(
-                `accessible name similarity: ${(result.similarity * 100).toFixed(0)}%`
-              );
-            }
-          }
-        }
-      }
-      if (criteria.role) {
-        const role = element.element.getAttribute("role") || this.inferRole(element.type);
-        if (role?.toLowerCase() === criteria.role.toLowerCase()) {
-          scores.role = 1;
-          if (1 > maxScore) {
-            maxScore = 1;
-            matchReasons.push(`role: ${criteria.role}`);
-          }
-        }
-      }
-      if (criteria.type) {
-        if (element.type === criteria.type) {
-          const typeScore = 0.9;
-          scores.role = Math.max(scores.role ?? 0, typeScore);
-          if (typeScore > maxScore) {
-            maxScore = typeScore;
-            matchReasons.push(`type: ${criteria.type}`);
-          }
-        }
-      }
-      for (const alias of aliases) {
-        const searchText = criteria.text || criteria.textContains || criteria.accessibleName;
-        if (searchText) {
-          if (alias.toLowerCase() === searchText.toLowerCase()) {
-            scores.fuzzy = 1;
-            if (1 > maxScore) {
-              maxScore = 1;
-              matchReasons.push(`alias: "${alias}"`);
-            }
-          } else if (criteria.fuzzy !== false) {
-            const result = fuzzyMatch(searchText, alias, { threshold });
-            if (result.isMatch && result.similarity > (scores.fuzzy ?? 0)) {
-              scores.fuzzy = result.similarity;
-              if (result.similarity > maxScore) {
-                maxScore = result.similarity;
-                matchReasons.push(`fuzzy alias: "${alias}"`);
-              }
-            }
-          }
-        }
-      }
-      if (maxScore >= threshold) {
-        const aiElement = {
-          id: element.id,
-          type: element.type,
-          label: element.label,
-          tagName: element.element.tagName.toLowerCase(),
-          role: element.element.getAttribute("role") || void 0,
-          accessibleName: element.element.getAttribute("aria-label") || element.label,
-          actions: element.actions,
-          state,
-          registered: true,
-          description: element.description || generateDescription({
-            textContent,
-            ariaLabel: element.element.getAttribute("aria-label"),
-            elementType: element.type,
-            id: element.id,
-            labelText: element.label
-          }),
-          aliases,
-          purpose: element.purpose,
-          suggestedActions: [],
-          semanticType: element.semanticType
-        };
-        results.push({
-          element: aiElement,
-          confidence: maxScore,
-          matchReasons,
-          scores
-        });
-      }
-    }
-    results.sort((a, b) => b.confidence - a.confidence);
-    return results;
-  }
-  /**
-   * Find element by visible text
-   */
-  findByText(text, fuzzy = true) {
-    const results = this.searchElements({ text, fuzzy, fuzzyThreshold: fuzzy ? 0.7 : 1 });
-    if (results.length > 0) {
-      return this.elements.get(results[0].element.id);
-    }
-    return void 0;
-  }
-  /**
-   * Find element by accessible name
-   */
-  findByAccessibleName(name) {
-    const results = this.searchElements({ accessibleName: name, fuzzy: true });
-    if (results.length > 0) {
-      return this.elements.get(results[0].element.id);
-    }
-    return void 0;
-  }
-  /**
-   * Generate aliases for an element
-   */
-  generateElementAliases(element) {
-    const state = element.getState();
-    return generateAliases({
-      textContent: state.textContent,
-      ariaLabel: element.element.getAttribute("aria-label"),
-      placeholder: element.element.getAttribute("placeholder"),
-      title: element.element.getAttribute("title"),
-      elementType: element.type,
-      tagName: element.element.tagName.toLowerCase(),
-      id: element.id,
-      labelText: element.label
-    });
-  }
-  /**
-   * Infer ARIA role from element type
-   */
-  inferRole(type) {
-    const roleMap = {
-      button: "button",
-      input: "textbox",
-      select: "combobox",
-      checkbox: "checkbox",
-      radio: "radio",
-      link: "link",
-      form: void 0,
-      textarea: "textbox",
-      menu: "menu",
-      menuitem: "menuitem",
-      tab: "tab",
-      dialog: "dialog",
-      disclosure: "group",
-      custom: void 0,
-      switch: "switch",
-      slider: "slider",
-      combobox: "combobox",
-      listbox: "listbox",
-      option: "option",
-      textbox: "textbox",
-      generic: void 0,
-      image: "img",
-      video: void 0,
-      canvas: void 0,
-      svg: "img",
-      picture: "img"
-    };
-    return roleMap[type];
-  }
-  /**
-   * Update a component's options in place, without emitting a
-   * `component:registered` event. Returns `false` if the component is not
-   * currently registered — callers should fall back to `registerComponent`.
-   *
-   * Preserves `registeredAt` and `mounted`. Intended for React hooks that
-   * want to reflect option changes on the same mounted consumer without
-   * firing a full re-register (which would churn `useSyncExternalStore`
-   * subscribers).
-   */
-  updateComponent(id, options) {
-    const existing = this.components.get(id);
-    if (!existing) return false;
-    if (options.name !== void 0) existing.name = options.name;
-    if (options.description !== void 0) existing.description = options.description;
-    if (options.actions !== void 0) {
-      existing.actions = options.actions.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        paramSchema: a.paramSchema,
-        handler: a.handler
-      }));
-    }
-    if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
-    if (options.getState !== void 0) existing.getState = options.getState;
-    if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
-    return true;
-  }
-  /**
-   * Register a component
-   */
-  registerComponent(id, options) {
-    const registered = {
-      id,
-      name: options.name,
-      description: options.description,
-      actions: options.actions?.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        paramSchema: a.paramSchema,
-        handler: a.handler
-      })) ?? [],
-      elementIds: options.elementIds,
-      registeredAt: Date.now(),
-      mounted: true,
-      getState: options.getState,
-      getComputed: options.getComputed
-    };
-    this.components.set(id, registered);
-    this.emit("component:registered", { id, name: options.name });
-    return registered;
-  }
-  /**
-   * Unregister a component
-   */
-  unregisterComponent(id) {
-    const component = this.components.get(id);
-    if (component) {
-      component.mounted = false;
-      this.components.delete(id);
-      this.emit("component:unregistered", { id });
-      return true;
-    }
-    return false;
-  }
-  /**
-   * Get a registered component
-   */
-  getComponent(id) {
-    return this.components.get(id);
-  }
-  /**
-   * Get all registered components
-   */
-  getAllComponents() {
-    return Array.from(this.components.values());
-  }
-  /**
-   * Get the current state and computed properties of a component
-   */
-  getComponentState(id) {
-    const component = this.components.get(id);
-    if (!component || !component.mounted) {
-      return null;
-    }
-    return {
-      state: component.getState?.() ?? {},
-      computed: component.getComputed?.() ?? {},
-      timestamp: Date.now()
-    };
-  }
-  /**
-   * Register a workflow
-   */
-  registerWorkflow(workflow) {
-    this.workflows.set(workflow.id, workflow);
-    this.notifyStoreListeners();
-    return workflow;
-  }
-  /**
-   * Unregister a workflow
-   */
-  unregisterWorkflow(id) {
-    const deleted = this.workflows.delete(id);
-    if (deleted) this.notifyStoreListeners();
-    return deleted;
-  }
-  /**
-   * Get a workflow
-   */
-  getWorkflow(id) {
-    return this.workflows.get(id);
-  }
-  /**
-   * Get all workflows
-   */
-  getAllWorkflows() {
-    return Array.from(this.workflows.values());
-  }
-  // ==========================================================================
-  // State Management
-  // ==========================================================================
-  /**
-   * Register a state
-   */
-  registerState(state) {
-    this.states.set(state.id, state);
-    this.emit("element:registered", { id: state.id, type: "state", name: state.name });
-    return state;
-  }
-  /**
-   * Update a state's stored options in place. See `updateComponent` for
-   * rationale — avoids re-emitting `element:registered`/`unregistered`
-   * pairs on every option change so `useSyncExternalStore` consumers don't
-   * re-render on minor metadata edits.
-   */
-  updateState(state) {
-    if (!this.states.has(state.id)) return false;
-    this.states.set(state.id, state);
-    return true;
-  }
-  /**
-   * Unregister a state
-   */
-  unregisterState(id) {
-    const state = this.states.get(id);
-    if (state) {
-      this.activeStates.delete(id);
-      this.states.delete(id);
-      this.emit("element:unregistered", { id, type: "state" });
-      return true;
-    }
-    return false;
-  }
-  /**
-   * Get a registered state
-   */
-  getState(id) {
-    return this.states.get(id);
-  }
-  /**
-   * Get all registered states
-   */
-  getAllStates() {
-    return Array.from(this.states.values());
-  }
-  /**
-   * Register a state group
-   */
-  registerStateGroup(group) {
-    this.stateGroups.set(group.id, group);
-    return group;
-  }
-  /** In-place update — see `updateComponent`. */
-  updateStateGroup(group) {
-    if (!this.stateGroups.has(group.id)) return false;
-    this.stateGroups.set(group.id, group);
-    return true;
-  }
-  /**
-   * Unregister a state group
-   */
-  unregisterStateGroup(id) {
-    return this.stateGroups.delete(id);
-  }
-  /**
-   * Get a state group
-   */
-  getStateGroup(id) {
-    return this.stateGroups.get(id);
-  }
-  /**
-   * Get all state groups
-   */
-  getAllStateGroups() {
-    return Array.from(this.stateGroups.values());
-  }
-  /**
-   * Register a transition
-   */
-  registerTransition(transition) {
-    this.transitions.set(transition.id, transition);
-    return transition;
-  }
-  /** In-place update — see `updateComponent`. */
-  updateTransition(transition) {
-    if (!this.transitions.has(transition.id)) return false;
-    this.transitions.set(transition.id, transition);
-    return true;
-  }
-  /**
-   * Unregister a transition
-   */
-  unregisterTransition(id) {
-    return this.transitions.delete(id);
-  }
-  /**
-   * Get a transition
-   */
-  getTransition(id) {
-    return this.transitions.get(id);
-  }
-  /**
-   * Get all transitions
-   */
-  getAllTransitions() {
-    return Array.from(this.transitions.values());
-  }
-  /**
-   * Get currently active states
-   */
-  getActiveStates() {
-    return Array.from(this.activeStates);
-  }
-  /**
-   * Check if a state is active
-   */
-  isStateActive(id) {
-    return this.activeStates.has(id);
-  }
-  /**
-   * Activate a state
-   */
-  activateState(id) {
-    const state = this.states.get(id);
-    if (!state) {
-      return false;
-    }
-    for (const activeId of this.activeStates) {
-      const activeState = this.states.get(activeId);
-      if (activeState?.blocking && activeState.id !== id) {
-        return false;
-      }
-      if (activeState?.blocks?.includes(id)) {
-        return false;
-      }
-    }
-    const wasActive = this.activeStates.has(id);
-    this.activeStates.add(id);
-    if (!wasActive) {
-      this.emit("element:stateChanged", {
-        stateId: id,
-        active: true,
-        activeStates: this.getActiveStates()
-      });
-    }
-    return true;
-  }
-  /**
-   * Deactivate a state
-   */
-  deactivateState(id) {
-    const wasActive = this.activeStates.has(id);
-    this.activeStates.delete(id);
-    if (wasActive) {
-      this.emit("element:stateChanged", {
-        stateId: id,
-        active: false,
-        activeStates: this.getActiveStates()
-      });
-    }
-    return wasActive;
-  }
-  /**
-   * Activate multiple states
-   */
-  activateStates(ids) {
-    const activated = [];
-    for (const id of ids) {
-      if (this.activateState(id)) {
-        activated.push(id);
-      }
-    }
-    return activated;
-  }
-  /**
-   * Deactivate multiple states
-   */
-  deactivateStates(ids) {
-    const deactivated = [];
-    for (const id of ids) {
-      if (this.deactivateState(id)) {
-        deactivated.push(id);
-      }
-    }
-    return deactivated;
-  }
-  /**
-   * Activate a state group (all states in the group)
-   */
-  activateStateGroup(groupId) {
-    const group = this.stateGroups.get(groupId);
-    if (!group) return [];
-    return this.activateStates(group.states);
-  }
-  /**
-   * Deactivate a state group (all states in the group)
-   */
-  deactivateStateGroup(groupId) {
-    const group = this.stateGroups.get(groupId);
-    if (!group) return [];
-    return this.deactivateStates(group.states);
-  }
-  /**
-   * Check if a transition can be executed from current state
-   */
-  canExecuteTransition(transitionId) {
-    const transition = this.transitions.get(transitionId);
-    if (!transition) return false;
-    return transition.fromStates.some((stateId) => this.activeStates.has(stateId));
-  }
-  /**
-   * Execute a transition
-   */
-  async executeTransition(transitionId) {
-    const startTime = performance.now();
-    const transition = this.transitions.get(transitionId);
-    if (!transition) {
-      return {
-        success: false,
-        activatedStates: [],
-        deactivatedStates: [],
-        error: `Transition not found: ${transitionId}`,
-        durationMs: performance.now() - startTime
-      };
-    }
-    if (!this.canExecuteTransition(transitionId)) {
-      return {
-        success: false,
-        activatedStates: [],
-        deactivatedStates: [],
-        error: "Precondition not met: none of the fromStates are active",
-        failedPhase: "precondition",
-        durationMs: performance.now() - startTime
-      };
-    }
-    try {
-      const deactivated = this.deactivateStates(transition.exitStates);
-      if (transition.exitGroups) {
-        for (const groupId of transition.exitGroups) {
-          deactivated.push(...this.deactivateStateGroup(groupId));
-        }
-      }
-      const activated = this.activateStates(transition.activateStates);
-      if (transition.activateGroups) {
-        for (const groupId of transition.activateGroups) {
-          activated.push(...this.activateStateGroup(groupId));
-        }
-      }
-      return {
-        success: true,
-        activatedStates: activated,
-        deactivatedStates: deactivated,
-        durationMs: performance.now() - startTime
-      };
-    } catch (error) {
-      return {
-        success: false,
-        activatedStates: [],
-        deactivatedStates: [],
-        error: error instanceof Error ? error.message : String(error),
-        failedPhase: "execution",
-        durationMs: performance.now() - startTime
-      };
-    }
-  }
-  /**
-   * Find a path from current state to target states
-   *
-   * Uses a simple BFS algorithm for pathfinding.
-   * For more advanced pathfinding (Dijkstra, A*), use the Python state manager service.
-   */
-  findPath(targetStates) {
-    if (targetStates.every((t) => this.activeStates.has(t))) {
-      return {
-        found: true,
-        transitions: [],
-        totalCost: 0,
-        targetStates,
-        estimatedSteps: 0
-      };
-    }
-    const queue = [
-      { activeStates: new Set(this.activeStates), path: [], cost: 0 }
-    ];
-    const visited = /* @__PURE__ */ new Set();
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const stateKey = Array.from(current.activeStates).sort().join(",");
-      if (visited.has(stateKey)) continue;
-      visited.add(stateKey);
-      if (targetStates.every((t) => current.activeStates.has(t))) {
-        return {
-          found: true,
-          transitions: current.path,
-          totalCost: current.cost,
-          targetStates,
-          estimatedSteps: current.path.length
-        };
-      }
-      for (const transition of this.transitions.values()) {
-        const canExecute = transition.fromStates.some((s) => current.activeStates.has(s));
-        if (!canExecute) continue;
-        const newActive = new Set(current.activeStates);
-        for (const s of transition.exitStates) newActive.delete(s);
-        for (const s of transition.activateStates) newActive.add(s);
-        const newCost = current.cost + (transition.pathCost ?? 1);
-        queue.push({
-          activeStates: newActive,
-          path: [...current.path, transition.id],
-          cost: newCost
-        });
-      }
-    }
-    return {
-      found: false,
-      transitions: [],
-      totalCost: 0,
-      targetStates,
-      estimatedSteps: 0
-    };
-  }
-  /**
-   * Navigate to target states using pathfinding
-   */
-  async navigateTo(targetStates) {
-    const startTime = performance.now();
-    const path = this.findPath(targetStates);
-    if (!path.found) {
-      return {
-        success: false,
-        path,
-        executedTransitions: [],
-        finalActiveStates: this.getActiveStates(),
-        error: `No path found to target states: ${targetStates.join(", ")}`,
-        durationMs: performance.now() - startTime
-      };
-    }
-    const executedTransitions = [];
-    for (const transitionId of path.transitions) {
-      const result = await this.executeTransition(transitionId);
-      if (!result.success) {
-        return {
-          success: false,
-          path,
-          executedTransitions,
-          finalActiveStates: this.getActiveStates(),
-          error: result.error,
-          durationMs: performance.now() - startTime
-        };
-      }
-      executedTransitions.push(transitionId);
-    }
-    return {
-      success: true,
-      path,
-      executedTransitions,
-      finalActiveStates: this.getActiveStates(),
-      durationMs: performance.now() - startTime
-    };
-  }
-  /**
-   * Create a state snapshot
-   */
-  createStateSnapshot() {
-    return {
-      timestamp: Date.now(),
-      activeStates: this.getActiveStates(),
-      states: this.getAllStates(),
-      groups: this.getAllStateGroups(),
-      transitions: this.getAllTransitions()
-    };
-  }
-  /**
-   * Whether this registry instance has ever had an element register in its
-   * lifetime. Sticky — flips true on first `registerElement` and stays true
-   * until `clear()`.  Exposed primarily for tests; production code should
-   * read `BridgeSnapshot.registration.everHadRegistrations`.
-   */
-  hasEverHadRegistrations() {
-    return this.everHadRegistrationsFlag;
-  }
-  /**
-   * Per-route counts of currently-registered elements. Returns a plain
-   * object copy so callers can't mutate the internal map. Elements with
-   * an undefined route are omitted. Exposed primarily for tests; production
-   * code should read `BridgeSnapshot.registration.byRoute`.
-   */
-  getCountsByRoute() {
-    const out = {};
-    for (const [route, count] of this.routeCounts) {
-      if (route === "") continue;
-      if (count > 0) out[route] = count;
-    }
-    return out;
-  }
-  /**
-   * Build the F3 registration-diagnostics metadata for a snapshot. Shared
-   * by `createSnapshot` and `createSnapshotAsync` so both paths emit the
-   * same shape.
-   */
-  buildRegistrationMetadata() {
-    return {
-      totalRegistered: this.elements.size,
-      everHadRegistrations: this.everHadRegistrationsFlag,
-      byRoute: this.getCountsByRoute()
-    };
-  }
-  /**
-   * Best-effort read of the current page route. Matches the default source
-   * `registerElement` uses, so the snapshot's top-level `route` lines up
-   * with the `byRoute` keys under normal operation.
-   */
-  currentRoute() {
-    if (typeof window !== "undefined" && window.location?.pathname) {
-      return window.location.pathname;
-    }
-    return void 0;
-  }
-  /**
-   * Resolve the optional `activeTab` field for a snapshot. Applications that
-   * decouple their visible pane from `window.location` (e.g. the runner's
-   * tab-based shell) supply a `getActiveTab` callback in the snapshot options;
-   * the SDK itself has no concept of "tab", so without a provider the field
-   * stays undefined and non-tab-based consumers are unaffected. Errors thrown
-   * by the provider are swallowed so a buggy host can never break the rest of
-   * the snapshot.
-   */
-  resolveActiveTab(getActiveTab) {
-    if (!getActiveTab) return void 0;
-    try {
-      const value = getActiveTab();
-      return typeof value === "string" && value.length > 0 ? value : void 0;
-    } catch {
-      return void 0;
-    }
-  }
-  /**
-   * Create a snapshot of the current state
-   */
-  createSnapshot(options = {}) {
-    const takenAt = Date.now();
-    const activeTab = this.resolveActiveTab(options.getActiveTab);
-    return {
-      timestamp: takenAt,
-      snapshotTakenAtMs: takenAt,
-      route: this.currentRoute(),
-      ...activeTab !== void 0 ? { activeTab } : {},
-      registration: this.buildRegistrationMetadata(),
-      elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
-      components: this.getAllComponents().map((comp) => ({
-        id: comp.id,
-        name: comp.name,
-        description: comp.description,
-        actions: comp.actions.map((a) => a.id),
-        // Tell the caller exactly how to invoke any action on this component
-        // without having to grep docs or guess the route shape.
-        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
-      })),
-      workflows: this.getAllWorkflows().map((wf) => ({
-        id: wf.id,
-        name: wf.name,
-        description: wf.description,
-        stepCount: wf.steps.length
-      }))
-    };
-  }
-  /**
-   * Create a snapshot asynchronously, processing elements in batches to avoid
-   * blocking the main thread. This prevents "Page Unresponsive" dialogs when
-   * there are many registered elements (200-500+), since getState() and
-   * getIdentifier() force layout/style recalculation for each element.
-   */
-  async createSnapshotAsync(batchSize = 50, options = {}) {
-    const allElements = this.getAllElements();
-    const elementSnapshots = [];
-    for (let i = 0; i < allElements.length; i += batchSize) {
-      const batch = allElements.slice(i, i + batchSize);
-      for (const el of batch) {
-        elementSnapshots.push(serializeRegisteredElement(el, options));
-      }
-      if (i + batchSize < allElements.length) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
-    const takenAt = Date.now();
-    const activeTab = this.resolveActiveTab(options.getActiveTab);
-    return {
-      timestamp: takenAt,
-      snapshotTakenAtMs: takenAt,
-      route: this.currentRoute(),
-      ...activeTab !== void 0 ? { activeTab } : {},
-      registration: this.buildRegistrationMetadata(),
-      elements: elementSnapshots,
-      components: this.getAllComponents().map((comp) => ({
-        id: comp.id,
-        name: comp.name,
-        description: comp.description,
-        actions: comp.actions.map((a) => a.id),
-        // Tell the caller exactly how to invoke any action on this component
-        // without having to grep docs or guess the route shape.
-        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
-      })),
-      workflows: this.getAllWorkflows().map((wf) => ({
-        id: wf.id,
-        name: wf.name,
-        description: wf.description,
-        stepCount: wf.steps.length
-      }))
-    };
-  }
-  /**
-   * Clear all registrations
-   */
-  clear() {
-    this.elements.clear();
-    this.components.clear();
-    this.workflows.clear();
-    this.eventListeners.clear();
-    this.states.clear();
-    this.stateGroups.clear();
-    this.transitions.clear();
-    this.activeStates.clear();
-    this.routeCounts.clear();
-    this.everHadRegistrationsFlag = false;
-  }
-  /**
-   * Get registry statistics
-   */
-  getStats() {
-    const elements2 = this.getAllElements();
-    const components2 = this.getAllComponents();
-    return {
-      elementCount: elements2.length,
-      componentCount: components2.length,
-      workflowCount: this.workflows.size,
-      mountedElementCount: elements2.filter((e) => e.mounted).length,
-      mountedComponentCount: components2.filter((c) => c.mounted).length,
-      stateCount: this.states.size,
-      stateGroupCount: this.stateGroups.size,
-      transitionCount: this.transitions.size,
-      activeStateCount: this.activeStates.size
-    };
-  }
-};
-var globalRegistry = null;
-function getGlobalRegistry() {
-  if (!globalRegistry) {
-    globalRegistry = new UIBridgeRegistry();
-  }
-  return globalRegistry;
-}
-function setGlobalRegistry(registry2) {
-  globalRegistry = registry2;
-}
-function resetGlobalRegistry() {
-  globalRegistry?.clear();
-  globalRegistry = null;
-}
+// src/react/UIBridgeProvider.tsx
+init_registry();
 
 // src/debug/error-severity.ts
 var SEVERITY_RANK = {
@@ -15006,6 +15266,7 @@ function computeFingerprint(event) {
 }
 
 // src/control/fill-form.ts
+init_element_identifier();
 function fillSingleField(element, value, clearFirst) {
   if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
     const checked = typeof value === "boolean" ? value : value === "true";
@@ -15231,6 +15492,7 @@ var ErrorImpactAssessor = class {
 };
 
 // src/control/action-executor.ts
+init_element_identifier();
 init_class_name();
 
 // src/ctr/types.ts
@@ -17831,6 +18093,9 @@ function createWorkflowEngine(registry2, executor) {
   return new DefaultWorkflowEngine(registry2, executor);
 }
 
+// src/react/UIBridgeProviderInit.ts
+init_registry();
+
 // src/core/websocket-client.ts
 function generateId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
@@ -18728,6 +18993,7 @@ function getGlobalSpecStore() {
 }
 
 // src/render-log/dom-capture.ts
+init_element_identifier();
 var CAPTURE_ATTRIBUTES = [
   "data-testid",
   "data-awas-element",
@@ -23402,6 +23668,7 @@ function exposeProviderOnWindow(internals) {
   const w = window;
   const root = w.__UI_BRIDGE__ ?? (w.__UI_BRIDGE__ = {});
   root.specs = { getGlobalSpecStore };
+  root.registry = internals.registry;
   root.browserCapture = internals.browserCapture;
   root.consoleCapture = internals.browserCapture;
   root.navigationTracker = internals.navigationTracker;
@@ -23543,6 +23810,9 @@ function UIBridgeProvider({
     };
   }, [registry2, wsClient, changeObserver2]);
   react.useEffect(() => {
+    setGlobalRegistry(registry2);
+  }, [registry2]);
+  react.useEffect(() => {
     return () => {
       renderLog?.stop();
       browserCapture.setOnEvent(null);
@@ -23552,7 +23822,6 @@ function UIBridgeProvider({
       toastCapture.uninstall();
       changeObserver2.destroy();
       wsClient?.disconnect();
-      resetGlobalRegistry();
       clearProvidersOnWindow();
     };
   }, [
@@ -26930,6 +27199,7 @@ function useUndoRedo(options) {
 }
 
 // src/react/commandHandlers.ts
+init_registry();
 init_nl_assertion_parser();
 
 // src/network/stubs.ts
@@ -27142,16 +27412,17 @@ var NetworkStubRegistry = class {
     return `stub_${rand}${this.counter.toString(36)}`;
   }
 };
-var globalRegistry2 = null;
+var globalRegistry = null;
 function getGlobalStubRegistry() {
-  if (!globalRegistry2) {
-    globalRegistry2 = new NetworkStubRegistry();
+  if (!globalRegistry) {
+    globalRegistry = new NetworkStubRegistry();
   }
-  return globalRegistry2;
+  return globalRegistry;
 }
 
 // src/react/commandHandlers.ts
 init_bookmarks();
+init_stable_ref();
 function getIntentStore() {
   const g2 = globalThis;
   if (!g2.__UI_BRIDGE_INTENTS__) g2.__UI_BRIDGE_INTENTS__ = /* @__PURE__ */ new Map();
@@ -27352,6 +27623,16 @@ async function getIdleDetector() {
     return null;
   }
 }
+async function awaitDOMSettledRelay(timeout = 500) {
+  const detector = await getIdleDetector();
+  if (!detector) return;
+  const domSignal = detector.getSignal?.("dom");
+  if (!domSignal || domSignal.isIdle?.()) return;
+  try {
+    await domSignal.waitForIdle({ timeout, minStableMs: 0 });
+  } catch {
+  }
+}
 async function getAnnotationStore() {
   try {
     const { getGlobalAnnotationStore: getGlobalAnnotationStore2 } = await Promise.resolve().then(() => (init_store(), store_exports));
@@ -27457,8 +27738,22 @@ var currentErrorSession = null;
 var errorSessions = [];
 var errorBaselines = /* @__PURE__ */ new Map();
 var loadedStyleGuide = null;
+var SETTLE_BEFORE_READ_ACTIONS = /* @__PURE__ */ new Set([
+  "aiFind",
+  "aiSearch",
+  "aiExecute",
+  "aiAssert",
+  "aiAssertBatch"
+]);
 async function executeCommand(action, payload, bridge) {
   const g = getBridge();
+  if (SETTLE_BEFORE_READ_ACTIONS.has(action)) {
+    const settleTimeout = typeof payload?.settleTimeout === "number" ? payload.settleTimeout : void 0;
+    const skipSettle = payload?.skipSettle === true;
+    if (!skipSettle) {
+      await awaitDOMSettledRelay(settleTimeout);
+    }
+  }
   const registry = getGlobalRegistry();
   const elements = registry.getAllElements();
   const components = registry.getAllComponents();
@@ -28260,22 +28555,21 @@ async function executeCommand(action, payload, bridge) {
       };
     }
     case "aiFind": {
-      const { createSearchEngine: createSearchEngine2 } = await Promise.resolve().then(() => (init_ai(), ai_exports));
+      const { createSearchEngine: createSearchEngine2, find: find2 } = await Promise.resolve().then(() => (init_ai(), ai_exports));
       const engine = createSearchEngine2({ includeHidden: true });
       engine.updateElements(elements);
-      const {
-        query,
-        type,
-        context: ctx
-      } = payload;
-      const resp = engine.search({ text: query, type, fuzzy: true });
-      return {
-        results: resp.results,
-        total: resp.results.length,
-        query,
+      const payloadObj = payload ?? {};
+      const { query, type, context: ctx, confidenceThreshold } = payloadObj;
+      const findInput = typeof query === "string" && query.length > 0 ? type ? (
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { text: query, type, fuzzy: true }
+      ) : query : { fuzzy: true };
+      const result = find2(findInput, engine, {
         context: ctx,
-        timestamp: Date.now()
-      };
+        confidenceThreshold,
+        pickFirst: true
+      });
+      return result;
     }
     case "aiExecute": {
       const t0 = performance.now();
@@ -30765,54 +31059,134 @@ function CaptureHostFrame(props) {
     echoElement
   ] });
 }
-function readMetaBuildId() {
+var DEFAULT_HEALTH_STREAM_URL = "/health/stream";
+var DEFAULT_POLL_INTERVAL_MS = 3e4;
+function readInitialBuildId() {
   if (typeof document === "undefined") return null;
-  return document.querySelector('meta[name="build-id"]')?.content ?? null;
+  const meta = document.querySelector('meta[name="build-id"]');
+  if (!meta) return null;
+  const content = meta.getAttribute("content");
+  return content && content.length > 0 ? content : null;
 }
-function useBuildIdWatcher({
-  healthStreamUrl,
-  pollUrl,
-  pollIntervalMs = 3e4,
-  onBuildIdChange
-}) {
-  const onChangeRef = react.useRef(onBuildIdChange);
-  onChangeRef.current = onBuildIdChange;
-  const firedRef = react.useRef(false);
+function useBuildIdWatcher(options = {}) {
+  const healthStreamUrl = options.healthStreamUrl ?? DEFAULT_HEALTH_STREAM_URL;
+  const pollUrl = options.pollUrl;
+  const getCurrentBuildId = options.getCurrentBuildId;
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const onBuildIdChange = options.onBuildIdChange;
+  const onBuildIdChangeRef = react.useRef(onBuildIdChange);
+  const getCurrentBuildIdRef = react.useRef(getCurrentBuildId);
   react.useEffect(() => {
-    const pageId = readMetaBuildId();
-    function check(serverBuildId) {
-      if (firedRef.current) return;
-      if (pageId !== null && serverBuildId !== pageId) {
-        firedRef.current = true;
-        onChangeRef.current(pageId, serverBuildId);
+    onBuildIdChangeRef.current = onBuildIdChange;
+  });
+  react.useEffect(() => {
+    getCurrentBuildIdRef.current = getCurrentBuildId;
+  });
+  const hasGetCurrentBuildId = getCurrentBuildId != null;
+  react.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const initial = readInitialBuildId();
+    if (initial == null) return;
+    let fired = false;
+    let cancelled = false;
+    const compare = (incoming) => {
+      if (cancelled || fired) return;
+      if (typeof incoming !== "string" || incoming.length === 0) return;
+      if (incoming === initial) return;
+      fired = true;
+      try {
+        onBuildIdChangeRef.current?.(initial, incoming);
+      } catch {
       }
-    }
-    if (healthStreamUrl) {
-      const source = new EventSource(healthStreamUrl);
-      source.addEventListener("message", (ev) => {
-        try {
-          const data = JSON.parse(ev.data);
-          if (data.buildId) check(data.buildId);
-        } catch {
-        }
-      });
-      return () => source.close();
+    };
+    if (hasGetCurrentBuildId) {
+      let timer = null;
+      const tick = () => {
+        if (cancelled || fired) return;
+        Promise.resolve().then(() => {
+          const getter = getCurrentBuildIdRef.current;
+          return getter ? getter() : void 0;
+        }).then((value) => compare(value)).catch(() => {
+        }).finally(() => {
+          if (cancelled || fired) return;
+          if (pollIntervalMs > 0) {
+            timer = setTimeout(tick, pollIntervalMs);
+          }
+        });
+      };
+      tick();
+      return () => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+      };
     }
     if (pollUrl) {
-      const url = pollUrl;
-      const interval = setInterval(async () => {
-        try {
-          const res = await fetch(url, { cache: "no-store" });
-          if (!res.ok) return;
-          const data = await res.json();
-          if (data.buildId) check(data.buildId);
-        } catch {
+      if (typeof fetch === "undefined") return;
+      let timer = null;
+      let activeController = null;
+      const tick = () => {
+        if (cancelled || fired) return;
+        const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+        activeController = controller;
+        const fetchOpts = { cache: "no-store" };
+        if (controller) fetchOpts.signal = controller.signal;
+        fetch(pollUrl, fetchOpts).then((r) => r.ok ? r.json() : null).then((body) => {
+          if (!body || typeof body !== "object") return;
+          compare(body.buildId);
+        }).catch((err) => {
+          if (err && typeof err === "object" && err.name === "AbortError") {
+            return;
+          }
+        }).finally(() => {
+          if (activeController === controller) activeController = null;
+          if (cancelled || fired) return;
+          if (pollIntervalMs > 0) {
+            timer = setTimeout(tick, pollIntervalMs);
+          }
+        });
+      };
+      tick();
+      return () => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+        if (activeController) {
+          try {
+            activeController.abort();
+          } catch {
+          }
+          activeController = null;
         }
-      }, pollIntervalMs);
-      return () => clearInterval(interval);
+      };
     }
-    return void 0;
-  }, [healthStreamUrl, pollUrl, pollIntervalMs]);
+    if (typeof EventSource === "undefined") return;
+    let source = null;
+    try {
+      source = new EventSource(healthStreamUrl);
+    } catch {
+      return;
+    }
+    if (!source) return;
+    const handleMessage = (e) => {
+      const raw = e.data;
+      if (typeof raw !== "string" || raw.length === 0) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (!parsed || typeof parsed !== "object") return;
+      compare(parsed.buildId);
+    };
+    source.addEventListener("message", handleMessage);
+    source.addEventListener("health", handleMessage);
+    return () => {
+      cancelled = true;
+      source?.removeEventListener("message", handleMessage);
+      source?.removeEventListener("health", handleMessage);
+      source?.close();
+    };
+  }, [healthStreamUrl, pollUrl, hasGetCurrentBuildId, pollIntervalMs]);
 }
 
 exports.AutoRegisterProvider = AutoRegisterProvider;

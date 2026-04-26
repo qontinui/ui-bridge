@@ -1,10 +1,10 @@
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import React$1, { ReactNode, ReactElement } from 'react';
-import { dG as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, em as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dt as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, el as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eo as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dN as UseUIRelationshipOptions, cz as InlineRelationship, dL as UseDragSourceOptions, dM as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-svkOxfrJ.js';
-import { U as UIBridgeWSClient } from '../websocket-client-dtbLmXfH.js';
+import { dG as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, em as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dt as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, el as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eo as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dN as UseUIRelationshipOptions, cz as InlineRelationship, dL as UseDragSourceOptions, dM as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-DZdu2Fhp.js';
+import { U as UIBridgeWSClient } from '../websocket-client-OMAZFwRE.js';
 import { RenderLogManager } from '../render-log/index.js';
-import { M as MetricsCollector } from '../metrics-CeiIr1WI.js';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CiTYbs9p.js';
+import { M as MetricsCollector } from '../metrics-DCjseqJu.js';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CgDfJ8ao.js';
 import { E as ElementAnnotation } from '../types-C7D5seeQ.js';
 
 /**
@@ -1525,31 +1525,81 @@ interface CaptureHostFrameProps {
  */
 declare function CaptureHostFrame(props: CaptureHostFrameProps): react_jsx_runtime.JSX.Element;
 
+/**
+ * useBuildIdWatcher Hook
+ *
+ * Detects when a server-side rebuild has shipped a new bundle while the
+ * dashboard tab is still running the old code. Pairs with a server that:
+ *
+ *   1. Injects `<meta name="build-id" content="...">` into the served HTML
+ *      so the initial value is observable from the document.
+ *   2. Either:
+ *      a. Emits `buildId` on a Server-Sent Events stream (default
+ *         `/health/stream`), or
+ *      b. Exposes a fetch-able snapshot the hook polls on an interval, or
+ *      c. Provides a custom getter (e.g. a Tauri `invoke` for desktop apps
+ *         where the binary's compiled-in build-id differs from the
+ *         meta tag baked into the embedded HTML at the time the webview
+ *         loaded it).
+ *
+ * On mount, the hook reads the meta-tag value as the "current" build-id and
+ * starts whichever source is configured. When the source reports a build-id
+ * that differs from the current value, `onBuildIdChange` is invoked once;
+ * subsequent events do not re-fire it. The source is torn down on unmount.
+ *
+ * No-ops cleanly when:
+ *   - The meta tag is missing (no initial build-id to compare against).
+ *   - The chosen source is unavailable (e.g. `EventSource` undefined in SSR,
+ *     `fetch` undefined in non-browser env).
+ *
+ * Usage (SSE — default; supervisor dashboard pattern):
+ *   useBuildIdWatcher({ onBuildIdChange: () => setStale(true) });
+ *
+ * Usage (polling — Next.js / qontinui-web / runner pattern):
+ *   useBuildIdWatcher({
+ *     pollUrl: '/api/health',
+ *     pollIntervalMs: 30_000,
+ *     onBuildIdChange: () => setStale(true),
+ *   });
+ *
+ * Usage (custom getter — e.g. Tauri invoke):
+ *   useBuildIdWatcher({
+ *     getCurrentBuildId: () => invoke<string>('get_build_id'),
+ *     pollIntervalMs: 0, // one-shot; binary swap is the only divergence cause
+ *     onBuildIdChange: () => setStale(true),
+ *   });
+ */
 interface UseBuildIdWatcherOptions {
     /**
-     * SSE endpoint that emits events containing a `buildId` field.
-     * Used by qontinui-supervisor's `/health/stream`.
-     * Mutually exclusive with `pollUrl`.
+     * URL of the SSE stream that emits a `buildId` field on each event payload.
+     * Defaults to `/health/stream`. Ignored when `pollUrl` or
+     * `getCurrentBuildId` is provided.
      */
     healthStreamUrl?: string;
     /**
-     * HTTP endpoint to poll for a `{ buildId: string }` response.
-     * Used by qontinui-web's `/api/health`.
-     * Mutually exclusive with `healthStreamUrl`.
+     * URL the hook will GET periodically. Response body must be JSON with a
+     * top-level `buildId` field. When set, the SSE path is not used.
      */
     pollUrl?: string;
-    /** Polling interval in ms when `pollUrl` is set. Default: 30000. */
+    /**
+     * Custom build-id getter. Called once on mount and (if `pollIntervalMs > 0`)
+     * on the configured interval. When set, the SSE and `pollUrl` paths are
+     * not used.
+     */
+    getCurrentBuildId?: () => Promise<string> | string;
+    /**
+     * Polling interval in milliseconds for `pollUrl` / `getCurrentBuildId`.
+     * Defaults to 30_000 (30s). Set to 0 for a one-shot check on mount only.
+     * Ignored for the SSE path.
+     */
     pollIntervalMs?: number;
-    /** Called once when the server build-id diverges from the page's meta tag. */
-    onBuildIdChange: (oldId: string | null, newId: string) => void;
+    /**
+     * Callback invoked the first time the watched source reports a build-id
+     * that differs from the value read from the `<meta name="build-id">` tag
+     * at mount time. Called at most once per mount.
+     */
+    onBuildIdChange?: (oldId: string, newId: string) => void;
 }
-/**
- * Watches for build-id changes via SSE stream or HTTP polling.
- *
- * On divergence between the server's current build-id and the value baked
- * into the page's `<meta name="build-id">` tag, calls `onBuildIdChange`
- * once. Suitable for both supervisor (SSE) and web (polling) hosts.
- */
-declare function useBuildIdWatcher({ healthStreamUrl, pollUrl, pollIntervalMs, onBuildIdChange, }: UseBuildIdWatcherOptions): void;
+declare function useBuildIdWatcher(options?: UseBuildIdWatcherOptions): void;
 
 export { type AutoRegisterOptions, AutoRegisterProvider, type AutoRegisterProviderProps, CaptureHostFrame, type CaptureHostFrameProps, CommandRelayListener, type CommandRelayListenerProps, type ComponentActionDef, type ComputedPropertyDef, type ContentDiscoveryOptions, DEFAULT_CAPTURE_HOST_IDS, type IdStrategy, type MediaDiscoveryOptions, type ShortcutDef, UIBridgeComponentScope, type UIBridgeComponentScopeProps, type UIBridgeContextValue, UIBridgeProvider, type UIBridgeProviderProps, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, type UseBuildIdWatcherOptions, type UseCommandRelayOptions, type UseUIBridgeEchoOptions, type UseUIBridgeReturn, type UseUIComponentOptions, type UseUIComponentReturn, type UseUIElementOptions, type UseUIElementReturn, type UseUINavigationReturn, type UseUIStateGroupOptions, type UseUIStateGroupReturn, type UseUIStateOptions, type UseUIStateReturn, type UseUITransitionOptions, type UseUITransitionReturn, pollForTaggedElement, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo };

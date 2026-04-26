@@ -1,17 +1,17 @@
-import { S as SpecStore } from '../store-Y6PVjSZx.js';
-import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-svkOxfrJ.js';
-import { a as UIBridgeServerHandlers } from '../types-MrIbC8tH.js';
+import { S as SpecStore } from '../store-VpZuW1dZ.js';
+import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-DZdu2Fhp.js';
+import { a as UIBridgeServerHandlers } from '../types-ggv9tCkC.js';
 import { C as CompositeIdleConfig } from '../types-BFG8zj15.js';
 import { N as NavigationAdapter } from '../navigation-adapter-D0eod-Ve.js';
 import { RenderLogEntry } from '../render-log/index.js';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CiTYbs9p.js';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CgDfJ8ao.js';
 import { AnnotationStore } from '../annotations/index.js';
 import { N as NetworkTrackerConfig } from '../tracker-DpZSyunJ.js';
-import '../types-D__LSm5P.js';
-import '../find-Cy9pKSdy.js';
-import '../style-types-DqStlGZJ.js';
+import '../types-MG0zeRbG.js';
+import '../find-DdQR0cOJ.js';
+import '../style-types-DdeV3Fbs.js';
 import '../types-C7D5seeQ.js';
-import '../error-snapshot-Cla7Go5B.js';
+import '../error-snapshot-Dl44Q4Hh.js';
 
 /**
  * Registry interface - minimal contract for handler usage

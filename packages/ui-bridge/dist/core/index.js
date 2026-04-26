@@ -1768,6 +1768,16 @@ var UIBridgeRegistry = class {
     this.cachedSnapshot = null;
     this.notifyScheduled = false;
     this.options = options;
+    this.__instanceTag = Math.random().toString(36).slice(2, 8);
+  }
+  /**
+   * Public accessor for the instance tag — equivalent to reading
+   * `__instanceTag` directly, but kept as a method so external diagnostic
+   * code (which sees the type from `dist/`) can call it without TypeScript
+   * complaining about touching internal fields.
+   */
+  getInstanceTag() {
+    return this.__instanceTag;
   }
   /**
    * Subscribe to registry changes (for useSyncExternalStore).
@@ -3044,12 +3054,18 @@ var UIBridgeRegistry = class {
     };
   }
 };
-var globalRegistry = null;
+var REGISTRY_KEY = /* @__PURE__ */ Symbol.for("@qontinui/ui-bridge/globalRegistry");
+function getRegistrySlot() {
+  return globalThis;
+}
 function getGlobalRegistry() {
-  if (!globalRegistry) {
-    globalRegistry = new UIBridgeRegistry();
+  const slot = getRegistrySlot();
+  let current = slot[REGISTRY_KEY] ?? null;
+  if (!current) {
+    current = new UIBridgeRegistry();
+    slot[REGISTRY_KEY] = current;
   }
-  return globalRegistry;
+  return current;
 }
 
 // src/core/find.ts

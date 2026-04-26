@@ -1,4 +1,4 @@
-import { c7 as ElementIdentifier, at as ElementState } from '../types-svkOxfrJ.js';
+import { c7 as ElementIdentifier, at as ElementState } from '../types-DZdu2Fhp.js';
 
 /**
  * DOM Capture Module
