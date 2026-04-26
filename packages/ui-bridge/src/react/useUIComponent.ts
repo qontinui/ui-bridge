@@ -180,13 +180,22 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     bridge.registry.registerComponent(id, {
       name,
       description,
-      actions: actionsRef.current.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        paramSchema: a.paramSchema,
-        handler: a.handler,
-      })),
+      actions: actionsRef.current.map((a) => {
+        const actionId = a.id;
+        return {
+          id: actionId,
+          label: a.label,
+          description: a.description,
+          paramSchema: a.paramSchema,
+          // Stable wrapper: always delegates to the latest handler in actionsRef
+          // so that handlers closing over React state see current values, not
+          // the stale closure captured at registration time.
+          handler: (params?: unknown) => {
+            const current = actionsRef.current.find((x) => x.id === actionId);
+            return current?.handler(params);
+          },
+        };
+      }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
       getComputed: createGetComputed(),
@@ -302,13 +311,19 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     const payload = {
       name,
       description,
-      actions: actionsRef.current.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        paramSchema: a.paramSchema,
-        handler: a.handler,
-      })),
+      actions: actionsRef.current.map((a) => {
+        const actionId = a.id;
+        return {
+          id: actionId,
+          label: a.label,
+          description: a.description,
+          paramSchema: a.paramSchema,
+          handler: (params?: unknown) => {
+            const current = actionsRef.current.find((x) => x.id === actionId);
+            return current?.handler(params);
+          },
+        };
+      }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
       getComputed: createGetComputed(),

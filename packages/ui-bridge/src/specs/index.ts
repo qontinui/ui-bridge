@@ -25,6 +25,15 @@ export type {
   SpecEvent,
   AssertionCondition,
   SetupAction,
+  // Testing section types
+  SpecTestingConfig,
+  SpecGroupTesting,
+  TestScenario,
+  TestStep,
+  TestFixture,
+  TestDataAsset,
+  AsyncStrategy,
+  TestInfrastructureRequirements,
 } from './types';
 
 // Re-export AI types used in spec assertions
