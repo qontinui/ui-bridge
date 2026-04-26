@@ -104,6 +104,15 @@ async function start(): Promise<void> {
         runnerUrl,
         appId,
         appName,
+        // Forward the page's origin and href so the runner's registry
+        // surfaces a real URL to the integration tool. Without these,
+        // the runner falls back to a synthetic "ws://runner/ui-bridge/ws"
+        // placeholder that's useless on the card.
+        options: {
+          origin: location.origin,
+          pageUrl: location.href,
+          appType: 'wrapper',
+        },
       },
       undefined,
       // Use the browser's native WebSocket. The wrapper picks this up
