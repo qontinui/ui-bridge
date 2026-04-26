@@ -262,7 +262,10 @@ describe('useBuildIdWatcher', () => {
         useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange })
       );
       await flush();
-      expect(fetchMock).toHaveBeenCalledWith('/api/health', { cache: 'no-store' });
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/health',
+        expect.objectContaining({ cache: 'no-store' })
+      );
       expect(onBuildIdChange).toHaveBeenCalledWith('build-A', 'build-B');
       expect(FakeEventSource.instances).toHaveLength(0);
     });
@@ -293,6 +296,136 @@ describe('useBuildIdWatcher', () => {
       );
       await flush();
       expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+
+    it('ticks again after pollIntervalMs and stops after unmount', async () => {
+      vi.useFakeTimers();
+      try {
+        setMetaBuildId('build-A');
+        const fetchMock = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ buildId: 'build-A' }),
+        } as unknown as Response);
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+        const onBuildIdChange = vi.fn();
+        const { unmount } = renderHook(() =>
+          useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 1000, onBuildIdChange })
+        );
+        // First tick fires synchronously on mount; flush microtasks.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // Advance past the interval — second tick should fire.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        // Unmount before the next tick, then advance again — no further calls.
+        unmount();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(onBuildIdChange).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('aborts in-flight fetch on unmount and does not invoke callback', async () => {
+      setMetaBuildId('build-A');
+      let capturedSignal: AbortSignal | undefined;
+      let resolveFetch: ((value: Response) => void) | null = null;
+      const fetchMock = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            capturedSignal = init?.signal ?? undefined;
+            resolveFetch = resolve;
+            // Reject when aborted, mirroring the real fetch contract.
+            if (capturedSignal) {
+              capturedSignal.addEventListener('abort', () => {
+                const err = new Error('aborted');
+                (err as { name: string }).name = 'AbortError';
+                reject(err);
+              });
+            }
+          })
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const onBuildIdChange = vi.fn();
+      const { unmount } = renderHook(() =>
+        useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange })
+      );
+
+      // Fetch is in flight; signal must have been passed.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal?.aborted).toBe(false);
+
+      unmount();
+
+      // Cleanup must abort the in-flight request.
+      expect(capturedSignal?.aborted).toBe(true);
+
+      // Even if the upstream resolves anyway, the callback must NOT fire.
+      resolveFetch?.({
+        ok: true,
+        json: () => Promise.resolve({ buildId: 'build-B' }),
+      } as unknown as Response);
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+
+    it('does not re-subscribe when only an inline onBuildIdChange lambda changes', async () => {
+      setMetaBuildId('build-A');
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ buildId: 'build-A' }),
+      } as unknown as Response);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { rerender } = renderHook(
+        ({ cb }: { cb: () => void }) =>
+          useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange: cb }),
+        { initialProps: { cb: () => {} } }
+      );
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Re-render with a brand-new inline lambda; if the effect re-subscribed,
+      // we'd see a second fetch on the new mount.
+      rerender({ cb: () => {} });
+      rerender({ cb: () => {} });
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes calls to the latest onBuildIdChange ref on rerender', async () => {
+      setMetaBuildId('build-A');
+      // Defer the fetch resolution until after the rerender so the latest cb
+      // is what compare() sees.
+      let resolveFetch: ((value: Response) => void) | null = null;
+      const fetchMock = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          })
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const first = vi.fn();
+      const second = vi.fn();
+      const { rerender } = renderHook(
+        ({ cb }: { cb: () => void }) =>
+          useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange: cb }),
+        { initialProps: { cb: first } }
+      );
+      // Swap callback before fetch resolves.
+      rerender({ cb: second });
+      resolveFetch?.({
+        ok: true,
+        json: () => Promise.resolve({ buildId: 'build-B' }),
+      } as unknown as Response);
+      await flush();
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith('build-A', 'build-B');
     });
   });
 });

@@ -43,7 +43,7 @@
  *   });
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export interface UseBuildIdWatcherOptions {
   /**
@@ -95,6 +95,24 @@ export function useBuildIdWatcher(options: UseBuildIdWatcherOptions = {}): void 
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const onBuildIdChange = options.onBuildIdChange;
 
+  // Stash callbacks in refs so re-renders with new inline lambdas don't
+  // re-subscribe the watcher. The main effect reads `.current` at call time
+  // so the latest callback is always used without listing it as a dep.
+  const onBuildIdChangeRef = useRef(onBuildIdChange);
+  const getCurrentBuildIdRef = useRef(getCurrentBuildId);
+
+  useEffect(() => {
+    onBuildIdChangeRef.current = onBuildIdChange;
+  });
+  useEffect(() => {
+    getCurrentBuildIdRef.current = getCurrentBuildId;
+  });
+
+  // Track *whether* a custom getter is configured (vs not) so the effect can
+  // pick the right branch. Identity changes of the getter itself should NOT
+  // re-subscribe — the ref above keeps callers up to date.
+  const hasGetCurrentBuildId = getCurrentBuildId != null;
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -110,19 +128,22 @@ export function useBuildIdWatcher(options: UseBuildIdWatcherOptions = {}): void 
       if (incoming === initial) return;
       fired = true;
       try {
-        onBuildIdChange?.(initial, incoming);
+        onBuildIdChangeRef.current?.(initial, incoming);
       } catch {
         /* swallow callback errors so we don't tear down the watcher */
       }
     };
 
     // --- Custom getter path (e.g. Tauri invoke) ---
-    if (getCurrentBuildId) {
+    if (hasGetCurrentBuildId) {
       let timer: ReturnType<typeof setTimeout> | null = null;
       const tick = () => {
         if (cancelled || fired) return;
         Promise.resolve()
-          .then(() => getCurrentBuildId())
+          .then(() => {
+            const getter = getCurrentBuildIdRef.current;
+            return getter ? getter() : undefined;
+          })
           .then((value) => compare(value))
           .catch(() => {
             /* getter failed — try again next tick */
@@ -145,18 +166,33 @@ export function useBuildIdWatcher(options: UseBuildIdWatcherOptions = {}): void 
     if (pollUrl) {
       if (typeof fetch === 'undefined') return;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let activeController: AbortController | null = null;
       const tick = () => {
         if (cancelled || fired) return;
-        fetch(pollUrl, { cache: 'no-store' })
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        activeController = controller;
+        const fetchOpts: RequestInit = { cache: 'no-store' };
+        if (controller) fetchOpts.signal = controller.signal;
+        fetch(pollUrl, fetchOpts)
           .then((r) => (r.ok ? r.json() : null))
           .then((body) => {
             if (!body || typeof body !== 'object') return;
             compare((body as { buildId?: unknown }).buildId);
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            // AbortError is the expected outcome of unmount-mid-flight; swallow
+            // silently. Other network errors also retry next tick.
+            if (
+              err &&
+              typeof err === 'object' &&
+              (err as { name?: unknown }).name === 'AbortError'
+            ) {
+              return;
+            }
             /* network error — retry next tick */
           })
           .finally(() => {
+            if (activeController === controller) activeController = null;
             if (cancelled || fired) return;
             if (pollIntervalMs > 0) {
               timer = setTimeout(tick, pollIntervalMs);
@@ -167,6 +203,14 @@ export function useBuildIdWatcher(options: UseBuildIdWatcherOptions = {}): void 
       return () => {
         cancelled = true;
         if (timer) clearTimeout(timer);
+        if (activeController) {
+          try {
+            activeController.abort();
+          } catch {
+            /* abort may throw in exotic environments — ignore */
+          }
+          activeController = null;
+        }
       };
     }
 
@@ -205,5 +249,11 @@ export function useBuildIdWatcher(options: UseBuildIdWatcherOptions = {}): void 
       source?.removeEventListener('health', handleMessage as EventListener);
       source?.close();
     };
-  }, [healthStreamUrl, pollUrl, getCurrentBuildId, pollIntervalMs, onBuildIdChange]);
+    // Intentionally omit `onBuildIdChange` and `getCurrentBuildId` from deps:
+    // both are captured via refs above so swapping inline lambdas across
+    // renders does not tear down the SSE/poll subscription. `pollUrl` and
+    // `healthStreamUrl` ARE deps because changing them is a legitimate
+    // re-subscribe trigger. `hasGetCurrentBuildId` flips the branch when the
+    // caller adds/removes the getter entirely.
+  }, [healthStreamUrl, pollUrl, hasGetCurrentBuildId, pollIntervalMs]);
 }
