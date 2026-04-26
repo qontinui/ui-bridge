@@ -26,6 +26,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
+import type { SnapshotPageContext } from '../navigation/types';
+import type { SnapshotModalContext } from '../modal/types';
+import type { SnapshotToastContext } from '../toast/types';
+import type { SnapshotRelationshipContext } from '../relationships/types';
+import type { SnapshotDragDropContext } from '../drag-drop/types';
+import type { SnapshotUndoContext } from '../undo/types';
+import type { SnapshotShortcutContext } from '../shortcuts/types';
 
 const emptyBridge: BridgeAccess = {
   elements: [],
@@ -399,5 +406,234 @@ describe('executeCommand · getControlSnapshot · graceful degradation', () => {
       everHadRegistrations: false,
       byRoute: {},
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 — relay/WS path now picks up registry enrichers via
+// `registry.runSnapshotEnrichers`. Mirrors the matrix from
+// `registry-enrichers.test.ts` so the two construction sites (canonical
+// `createSnapshot` and the relay's hand-built shape) cannot drift on enrichment.
+// ---------------------------------------------------------------------------
+
+function makePageContext(): SnapshotPageContext {
+  return {
+    url: 'http://localhost/test',
+    pathname: '/test',
+    search: '',
+    hash: '',
+    title: 'Test',
+    recentNavigations: [],
+  };
+}
+
+function makeModalContext(): SnapshotModalContext {
+  return {
+    modals: [],
+    hasBlockingModal: true,
+    count: 1,
+  };
+}
+
+function makeToastContext(): SnapshotToastContext {
+  return {
+    active: [],
+    recent: [],
+    totalCaptured: 7,
+  };
+}
+
+function makeRelationshipContext(): SnapshotRelationshipContext {
+  return {
+    relationships: [],
+    count: 2,
+    byOrigin: { declared: 1, aria: 1, html: 0 },
+  };
+}
+
+function makeDragDropContext(): SnapshotDragDropContext {
+  return {
+    dragSources: [],
+    dropZones: [],
+    count: { dragSources: 0, dropZones: 0 },
+    byOrigin: { declared: 0, aria: 0, dom: 0 },
+  };
+}
+
+function makeUndoContext(): SnapshotUndoContext {
+  return {
+    undoAvailable: true,
+    redoAvailable: false,
+    undoDescription: 'Typing',
+    summary: 'Can undo (Typing).',
+  };
+}
+
+function makeShortcutContext(): SnapshotShortcutContext {
+  return {
+    shortcuts: [],
+    totalCount: 0,
+    lastScanTimestamp: 1000,
+  };
+}
+
+/**
+ * Like `Snapshot` above, but with the seven canonical enriched fields
+ * available as optional reads. The relay shape isn't strictly typed as
+ * `BridgeSnapshot` (workflows have `steps`; components carry `state` /
+ * `elementIds`), but the enriched fields use the same shapes the SDK
+ * publishes — assertion just cares whether they appear at all.
+ */
+type EnrichedRelaySnapshot = Snapshot & {
+  page?: SnapshotPageContext;
+  modalStack?: SnapshotModalContext;
+  toasts?: SnapshotToastContext;
+  relationships?: SnapshotRelationshipContext;
+  dragDrop?: SnapshotDragDropContext;
+  undoRedo?: SnapshotUndoContext;
+  shortcuts?: SnapshotShortcutContext;
+  // Custom enrichers can attach arbitrary keys; let tests cast as needed.
+  [key: string]: unknown;
+};
+
+async function getEnrichedSnapshot(
+  payload: Record<string, unknown> = {}
+): Promise<EnrichedRelaySnapshot> {
+  return (await executeCommand(
+    'getControlSnapshot',
+    payload,
+    emptyBridge
+  )) as EnrichedRelaySnapshot;
+}
+
+describe('executeCommand · getControlSnapshot · enrichment', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    window.history.pushState(null, '', '/');
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+    resetGlobalRegistry();
+    vi.restoreAllMocks();
+  });
+
+  it('default (no enrichers wired) → none of the seven canonical fields appear', async () => {
+    const registry = getGlobalRegistry();
+    // Explicitly set empty enrichers to simulate a host that mounted the
+    // provider with no trackers (and to lock in the contract that an empty
+    // enricher map produces an un-enriched relay snapshot).
+    registry.setEnrichers({});
+
+    const snap = await getEnrichedSnapshot();
+
+    expect(snap.page).toBeUndefined();
+    expect(snap.modalStack).toBeUndefined();
+    expect(snap.toasts).toBeUndefined();
+    expect(snap.relationships).toBeUndefined();
+    expect(snap.dragDrop).toBeUndefined();
+    expect(snap.undoRedo).toBeUndefined();
+    expect(snap.shortcuts).toBeUndefined();
+  });
+
+  it('only the wired canonical fields populate; others stay absent', async () => {
+    const registry = getGlobalRegistry();
+    registry.setEnrichers({
+      modalDetector: { getSnapshotModalContext: () => makeModalContext() },
+    });
+
+    const snap = await getEnrichedSnapshot();
+
+    expect(snap.modalStack).toBeDefined();
+    expect(snap.modalStack?.hasBlockingModal).toBe(true);
+    expect(snap.modalStack?.count).toBe(1);
+
+    expect(snap.page).toBeUndefined();
+    expect(snap.toasts).toBeUndefined();
+    expect(snap.relationships).toBeUndefined();
+    expect(snap.dragDrop).toBeUndefined();
+    expect(snap.undoRedo).toBeUndefined();
+    expect(snap.shortcuts).toBeUndefined();
+  });
+
+  it('all seven enrichers wired → all seven canonical fields appear on the relay snapshot', async () => {
+    const registry = getGlobalRegistry();
+    registry.setEnrichers({
+      navigationTracker: { getSnapshotPageContext: () => makePageContext() },
+      modalDetector: { getSnapshotModalContext: () => makeModalContext() },
+      toastCapture: { getSnapshotToastContext: () => makeToastContext() },
+      relationshipTracker: {
+        getSnapshotRelationshipContext: () => makeRelationshipContext(),
+      },
+      dragDropDetector: {
+        getSnapshotDragDropContext: () => makeDragDropContext(),
+      },
+      undoTracker: { getSnapshotUndoContext: () => makeUndoContext() },
+      shortcutTracker: { getSnapshotShortcutContext: () => makeShortcutContext() },
+    });
+
+    const snap = await getEnrichedSnapshot();
+
+    expect(snap.page?.pathname).toBe('/test');
+    expect(snap.modalStack?.count).toBe(1);
+    expect(snap.toasts?.totalCaptured).toBe(7);
+    expect(snap.relationships?.count).toBe(2);
+    expect(snap.dragDrop?.count).toEqual({ dragSources: 0, dropZones: 0 });
+    expect(snap.undoRedo?.undoAvailable).toBe(true);
+    expect(snap.shortcuts?.lastScanTimestamp).toBe(1000);
+  });
+
+  it('a throwing canonical enricher does NOT break the relay snapshot — other fields still appear', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Swap in a verbose registry instance under the global slot so the
+    // enrichers' verbose-warn branch fires (the relay uses the global
+    // registry, not whatever we construct locally).
+    const registry = getGlobalRegistry();
+    // Mark verbose by reaching into the options pocket. The default global
+    // registry was constructed with `verbose: false`; this test only cares
+    // that other enrichers still attach when one throws, regardless of
+    // verbose. We assert no rethrow propagates.
+    registry.setEnrichers({
+      modalDetector: {
+        getSnapshotModalContext: () => {
+          throw new Error('boom');
+        },
+      },
+      toastCapture: { getSnapshotToastContext: () => makeToastContext() },
+      undoTracker: { getSnapshotUndoContext: () => makeUndoContext() },
+    });
+
+    const snap = await getEnrichedSnapshot();
+
+    expect(snap.modalStack).toBeUndefined();
+    expect(snap.toasts).toBeDefined();
+    expect(snap.toasts?.totalCaptured).toBe(7);
+    expect(snap.undoRedo).toBeDefined();
+    expect(snap.undoRedo?.undoAvailable).toBe(true);
+    // Base relay-snapshot fields untouched.
+    expect(snap.registration).toBeDefined();
+    expect(Array.isArray(snap.activeRuns)).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('custom enrichers registered via registerSnapshotEnricher attach to the relay snapshot', async () => {
+    const registry = getGlobalRegistry();
+    const dispose = registry.registerSnapshotEnricher('runner-tabs', () => ({
+      runnerTabs: { active: 'tab-terminal' },
+    }));
+
+    const snap = await getEnrichedSnapshot();
+    expect(snap.runnerTabs).toEqual({ active: 'tab-terminal' });
+
+    dispose();
+
+    const snap2 = await getEnrichedSnapshot();
+    expect(snap2.runnerTabs).toBeUndefined();
   });
 });
