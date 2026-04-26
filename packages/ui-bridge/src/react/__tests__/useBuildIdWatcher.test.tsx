@@ -177,4 +177,122 @@ describe('useBuildIdWatcher', () => {
     delete (globalThis as unknown as { EventSource?: unknown }).EventSource;
     expect(() => renderHook(() => useBuildIdWatcher({ onBuildIdChange: vi.fn() }))).not.toThrow();
   });
+
+  describe('getCurrentBuildId path', () => {
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    it('fires once when the getter returns a different build-id', async () => {
+      setMetaBuildId('build-A');
+      const onBuildIdChange = vi.fn();
+      const getCurrentBuildId = vi.fn().mockResolvedValue('build-B');
+      renderHook(() =>
+        useBuildIdWatcher({ getCurrentBuildId, pollIntervalMs: 0, onBuildIdChange })
+      );
+      await flush();
+      expect(getCurrentBuildId).toHaveBeenCalledTimes(1);
+      expect(onBuildIdChange).toHaveBeenCalledWith('build-A', 'build-B');
+      expect(FakeEventSource.instances).toHaveLength(0);
+    });
+
+    it('does not fire when the getter matches the meta tag', async () => {
+      setMetaBuildId('build-A');
+      const onBuildIdChange = vi.fn();
+      renderHook(() =>
+        useBuildIdWatcher({
+          getCurrentBuildId: () => Promise.resolve('build-A'),
+          pollIntervalMs: 0,
+          onBuildIdChange,
+        })
+      );
+      await flush();
+      expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+
+    it('swallows getter errors without crashing', async () => {
+      setMetaBuildId('build-A');
+      const onBuildIdChange = vi.fn();
+      renderHook(() =>
+        useBuildIdWatcher({
+          getCurrentBuildId: () => Promise.reject(new Error('boom')),
+          pollIntervalMs: 0,
+          onBuildIdChange,
+        })
+      );
+      await flush();
+      expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+
+    it('skips SSE when getCurrentBuildId is provided', () => {
+      setMetaBuildId('build-A');
+      renderHook(() =>
+        useBuildIdWatcher({
+          getCurrentBuildId: () => Promise.resolve('build-A'),
+          pollIntervalMs: 0,
+        })
+      );
+      expect(FakeEventSource.instances).toHaveLength(0);
+    });
+  });
+
+  describe('pollUrl path', () => {
+    let originalFetch: typeof fetch | undefined;
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+    });
+
+    afterEach(() => {
+      if (originalFetch === undefined) {
+        delete (globalThis as unknown as { fetch?: unknown }).fetch;
+      } else {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('fires once when /api/health returns a different build-id', async () => {
+      setMetaBuildId('build-A');
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ buildId: 'build-B' }),
+      } as unknown as Response);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const onBuildIdChange = vi.fn();
+      renderHook(() =>
+        useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange })
+      );
+      await flush();
+      expect(fetchMock).toHaveBeenCalledWith('/api/health', { cache: 'no-store' });
+      expect(onBuildIdChange).toHaveBeenCalledWith('build-A', 'build-B');
+      expect(FakeEventSource.instances).toHaveLength(0);
+    });
+
+    it('does not fire when /api/health matches the meta tag', async () => {
+      setMetaBuildId('build-A');
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ buildId: 'build-A' }),
+      } as unknown as Response) as unknown as typeof fetch;
+      const onBuildIdChange = vi.fn();
+      renderHook(() =>
+        useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange })
+      );
+      await flush();
+      expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+
+    it('ignores non-OK responses', async () => {
+      setMetaBuildId('build-A');
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve({ buildId: 'build-B' }),
+      } as unknown as Response) as unknown as typeof fetch;
+      const onBuildIdChange = vi.fn();
+      renderHook(() =>
+        useBuildIdWatcher({ pollUrl: '/api/health', pollIntervalMs: 0, onBuildIdChange })
+      );
+      await flush();
+      expect(onBuildIdChange).not.toHaveBeenCalled();
+    });
+  });
 });
