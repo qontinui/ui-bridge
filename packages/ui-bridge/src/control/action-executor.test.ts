@@ -329,3 +329,110 @@ describe('DefaultActionExecutor - toggle', () => {
     expect(clicks).toBe(2);
   });
 });
+
+describe('DefaultActionExecutor - param validation', () => {
+  // Required-param validation guards added so common caller mistakes
+  // (forgetting `text` on a `type` action, or passing `value` because that's
+  // what `select`/`setValue` use) surface as observable errors instead of
+  // returning success: true with the field unchanged.
+
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  it("type action without 'text' returns success: false with a descriptive error", async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('email-input', input, { type: 'input', label: 'Email' });
+
+    const result = await executor.executeAction('email-input', { action: 'type', params: {} });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/'text' string parameter/);
+    expect(input.value).toBe(''); // unchanged
+  });
+
+  it("type action with 'value' alias hints at the correct param name", async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('email-input', input, { type: 'input', label: 'Email' });
+
+    const result = await executor.executeAction('email-input', {
+      action: 'type',
+      // Cast through unknown so the test can simulate a JS caller passing the
+      // wrong key (TypeScript would catch this at compile time, but the bug
+      // we're guarding against ships from runtime callers — Rust handlers
+      // forwarding free-form JSON, NL parsers, end-users via curl, etc.).
+      params: { value: 'foo@example.com' } as unknown as { text: string },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/`value` — the `type` action expects `text`/);
+  });
+
+  it("type action with valid 'text' still works", async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('email-input', input, { type: 'input', label: 'Email' });
+
+    const result = await executor.executeAction('email-input', {
+      action: 'type',
+      params: { text: 'foo@example.com' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(input.value).toBe('foo@example.com');
+  });
+
+  it("select action without 'value' returns success: false", async () => {
+    const select = document.createElement('select');
+    const opt1 = document.createElement('option');
+    opt1.value = 'a';
+    opt1.text = 'A';
+    const opt2 = document.createElement('option');
+    opt2.value = 'b';
+    opt2.text = 'B';
+    select.appendChild(opt1);
+    select.appendChild(opt2);
+    container.appendChild(select);
+    registry.registerElement('size-select', select, { type: 'select', label: 'Size' });
+
+    const result = await executor.executeAction('size-select', {
+      action: 'select',
+      params: {} as unknown as { value: string },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/'value' parameter/);
+    expect(select.value).toBe('a'); // unchanged (default first option)
+  });
+
+  it("sendKeys action without 'keys' returns success: false", async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('search-input', input, { type: 'input', label: 'Search' });
+
+    const result = await executor.executeAction('search-input', {
+      action: 'sendKeys',
+      params: {} as unknown as { keys: { key: string }[] },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/'keys' array/);
+  });
+});

@@ -212,6 +212,22 @@ reads (`/control/element/{id}`, `/control/snapshot`) reflect the new
 value immediately. Click/hover/scroll do not write to the cache; the
 live DOM stays authoritative there.
 
+### Per-action param names (the easy mistakes)
+
+Each action defines its own param shape — the names are NOT interchangeable.
+Sending the wrong key now returns `success: false` with a descriptive error;
+prior to v0.x.y the action returned silent success, which was an invisible
+failure mode.
+
+| Action     | Required param              | Common mistake                                                               |
+| ---------- | --------------------------- | ---------------------------------------------------------------------------- |
+| `type`     | `text: string`              | Sending `value` (used by `select`/`setValue`)                                |
+| `select`   | `value: string \| string[]` | Sending `text` (used by `type`)                                              |
+| `setValue` | `value: string`             | Sending `text`                                                               |
+| `sendKeys` | `keys: [{key, modifiers?}]` | Sending `value: "Enter"` (it's an array of descriptors, not a single string) |
+
+If an action returns `success: false` with `error: "... requires a 'X' parameter ..."`, the param key was wrong or missing. Sending the wrong key for `type` triggers a hint pointing at the correct one.
+
 ## Page navigation
 
 ### Soft vs hard

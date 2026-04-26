@@ -1425,6 +1425,24 @@ export class DefaultActionExecutor implements ActionExecutor {
       throw new Error('Type action requires an input or textarea element');
     }
 
+    // Validate that the caller provided the required `text` parameter.
+    // Without this guard, a missing/misspelled key (e.g. callers sending
+    // `value` instead of `text` because that's what `select`/`setValue` use)
+    // produces a silent no-op: `options?.text || ''` was the empty string,
+    // the loop typed zero characters, and the action returned success — an
+    // invisible failure mode that costs minutes to diagnose. Throw a
+    // descriptive error instead so misuse surfaces immediately.
+    const optsAsRecord = options as unknown as Record<string, unknown> | undefined;
+    if (typeof options?.text !== 'string') {
+      const hasValueAlias = optsAsRecord != null && typeof optsAsRecord['value'] === 'string';
+      const hint = hasValueAlias
+        ? ' Got `value` — the `type` action expects `text` instead. (Tip: `select`/`setValue` use `value`, but `type` uses `text`.)'
+        : '';
+      throw new Error(
+        `Type action requires a 'text' string parameter (the characters to type into the field).${hint}`
+      );
+    }
+
     // Use the native value setter to bypass React's synthetic event system.
     // React overrides the value property; setting .value directly doesn't
     // trigger onChange. The native setter + dispatched 'input' event does.
@@ -1523,7 +1541,15 @@ export class DefaultActionExecutor implements ActionExecutor {
    * keyboard events (xterm.js terminals, CodeMirror, Monaco, canvas games).
    */
   private async performSendKeys(element: HTMLElement, options?: SendKeysAction): Promise<void> {
-    if (!options?.keys?.length) return;
+    // Validate that the caller provided a non-empty `keys` array. The previous
+    // `if (!options?.keys?.length) return;` returned silent success when the
+    // caller forgot the array (or sent it as `value: "Enter"` — a common
+    // mistake), making the misuse undebuggable.
+    if (!Array.isArray(options?.keys) || options.keys.length === 0) {
+      throw new Error(
+        "sendKeys action requires a non-empty 'keys' array of {key: '<KeyName>', modifiers?} descriptors. (Example: { keys: [{ key: 'Enter' }] }.)"
+      );
+    }
 
     element.focus();
     const delay = options.delay || 0;
@@ -1706,6 +1732,16 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private async performSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
+    // Validate that the caller provided a `value`. Without this guard, a
+    // missing or misspelled key produces `[undefined]` below, the loop
+    // matches no <option>, and the action returns success with the select
+    // unchanged — an invisible failure mode.
+    if (options?.value === undefined || options.value === null) {
+      throw new Error(
+        "select action requires a 'value' parameter (string or string[]) — the option value(s) to select."
+      );
+    }
+
     // Handle Radix/headless combobox elements (render as <button> with role="combobox")
     if (!(element instanceof HTMLSelectElement)) {
       const role = element.getAttribute('role');
