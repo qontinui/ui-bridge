@@ -7,6 +7,7 @@
  */
 
 import { Platform } from 'react-native';
+import { transportLogger } from './logger';
 
 export interface AnnouncerConfig {
   /** Stable device identifier */
@@ -92,7 +93,7 @@ export class DeviceAnnouncer {
    */
   async startMdnsAdvertise(ZeroconfCtor?: new () => ZeroconfService): Promise<void> {
     if (!ZeroconfCtor) {
-      console.log(
+      transportLogger.log(
         '[DeviceAnnouncer] mDNS advertisement skipped (no Zeroconf constructor provided). ' +
           'Pass one to enable mDNS.'
       );
@@ -112,9 +113,9 @@ export class DeviceAnnouncer {
       });
 
       this.state = { ...this.state, mdnsActive: true };
-      console.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
+      transportLogger.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
     } catch (err) {
-      console.warn('[DeviceAnnouncer] mDNS start failed:', err);
+      transportLogger.warn('[DeviceAnnouncer] mDNS start failed:', err);
     }
   }
 
@@ -134,7 +135,7 @@ export class DeviceAnnouncer {
 
     const url = `${this.config.cloudRelayUrl}?token=${encodeURIComponent(this.config.cloudToken)}`;
 
-    console.log('[DeviceAnnouncer] Cloud relay: connecting to', url);
+    transportLogger.log('[DeviceAnnouncer] Cloud relay: connecting to', url);
 
     const ws = new WebSocket(url);
     this.cloudWs = ws;
@@ -146,7 +147,7 @@ export class DeviceAnnouncer {
       }
       this.reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
       this.state = { ...this.state, cloudConnected: true };
-      console.log('[DeviceAnnouncer] Cloud relay: connected');
+      transportLogger.log('[DeviceAnnouncer] Cloud relay: connected');
 
       // Register this device with the backend
       ws.send(
@@ -164,7 +165,7 @@ export class DeviceAnnouncer {
     ws.onmessage = (event: MessageEvent) => {
       try {
         const msg = JSON.parse(event.data as string) as RelayMessage;
-        console.log('[DeviceAnnouncer] Cloud relay message:', msg.type);
+        transportLogger.log('[DeviceAnnouncer] Cloud relay message:', msg.type);
         // Tunneled HTTP requests are handled by CloudRelayClient when wired up
       } catch {
         // ignore malformed messages
@@ -179,7 +180,7 @@ export class DeviceAnnouncer {
     };
 
     ws.onerror = (err: Event) => {
-      console.warn('[DeviceAnnouncer] Cloud relay error:', err);
+      transportLogger.warn('[DeviceAnnouncer] Cloud relay error:', err);
       // onclose will fire after this and trigger reconnect
     };
   }
@@ -227,7 +228,7 @@ export class DeviceAnnouncer {
   private scheduleReconnect(): void {
     if (this.stopped) return;
     const delay = this.reconnectDelay;
-    console.log(`[DeviceAnnouncer] Cloud relay: reconnecting in ${delay}ms`);
+    transportLogger.log(`[DeviceAnnouncer] Cloud relay: reconnecting in ${delay}ms`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.stopped) {

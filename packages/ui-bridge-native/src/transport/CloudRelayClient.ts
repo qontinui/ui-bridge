@@ -7,6 +7,7 @@
  */
 
 import type { NativeUIBridgeServer } from '../server/http-server';
+import { transportLogger } from './logger';
 
 export interface CloudRelayConfig {
   /** WebSocket URL for the device bridge endpoint */
@@ -95,7 +96,7 @@ export class CloudRelayClient {
 
     const url = `${this.config.relayUrl}?token=${encodeURIComponent(this.config.authToken)}`;
 
-    console.log('[CloudRelayClient] Connecting to', url);
+    transportLogger.log('[CloudRelayClient] Connecting to', url);
 
     const ws = new WebSocket(url);
     this.ws = ws;
@@ -108,7 +109,7 @@ export class CloudRelayClient {
       this._isConnected = true;
       this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
 
-      console.log('[CloudRelayClient] Connected to relay');
+      transportLogger.log('[CloudRelayClient] Connected to relay');
 
       // Register as a device
       ws.send(
@@ -131,7 +132,7 @@ export class CloudRelayClient {
     };
 
     ws.onerror = (err: Event) => {
-      console.warn('[CloudRelayClient] WebSocket error:', err);
+      transportLogger.warn('[CloudRelayClient] WebSocket error:', err);
       // onclose will fire next and handle reconnect
     };
   }
@@ -141,7 +142,7 @@ export class CloudRelayClient {
     try {
       msg = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      console.warn('[CloudRelayClient] Received non-JSON message');
+      transportLogger.warn('[CloudRelayClient] Received non-JSON message');
       return;
     }
 
@@ -154,7 +155,7 @@ export class CloudRelayClient {
       typeof msg['method'] !== 'string' ||
       typeof msg['path'] !== 'string'
     ) {
-      console.warn('[CloudRelayClient] Malformed tunnel_request — missing required fields');
+      transportLogger.warn('[CloudRelayClient] Malformed tunnel_request — missing required fields');
       return;
     }
 
@@ -204,7 +205,7 @@ export class CloudRelayClient {
         body: bodyValue,
       };
     } catch (err) {
-      console.error('[CloudRelayClient] Error handling tunneled request:', err);
+      transportLogger.error('[CloudRelayClient] Error handling tunneled request:', err);
       return {
         id: req.id,
         status: 500,
@@ -220,7 +221,7 @@ export class CloudRelayClient {
   private scheduleReconnect(): void {
     if (this.stopped) return;
     const delay = this.reconnectDelay;
-    console.log(`[CloudRelayClient] Reconnecting in ${delay}ms`);
+    transportLogger.log(`[CloudRelayClient] Reconnecting in ${delay}ms`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.stopped) {
