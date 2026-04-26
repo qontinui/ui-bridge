@@ -17854,7 +17854,7 @@ var DefaultActionExecutor = class {
     const opts = { ...DEFAULT_WAIT_OPTIONS, ...options };
     const startTime = performance.now();
     const deadline = startTime + opts.timeout;
-    while (Date.now() < deadline) {
+    while (performance.now() < deadline) {
       const state = getElementState2(element);
       let allMet = true;
       if (opts.visible && !state.visible) allMet = false;

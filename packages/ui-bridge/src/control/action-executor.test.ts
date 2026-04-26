@@ -436,3 +436,120 @@ describe('DefaultActionExecutor - param validation', () => {
     expect(result.error).toMatch(/'keys' array/);
   });
 });
+
+describe('DefaultActionExecutor - waitOptions precondition', () => {
+  // Regression coverage for the time-base mixup at action-executor.ts:1220.
+  // The private `waitForElement` method used `performance.now()` to compute
+  // `deadline` but `Date.now()` to guard the polling loop. Date.now() is
+  // ~10¹² (epoch-millis) and performance.now() is ~10⁵ (page-relative),
+  // so `Date.now() < deadline` was always false on entry — every wait
+  // returned `met:false` immediately with a misleading "Timeout waiting for
+  // conditions after Nms" error, regardless of whether the conditions
+  // were actually met.
+  //
+  // Only one site in the codebase passes waitOptions to executeAction —
+  // `nl-action-executor.ts:366` — which is why this never surfaced in unit
+  // tests until the Home-page NL prompt flow exercised it.
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  // Stub getBoundingClientRect because jsdom doesn't compute layout —
+  // the default {0,0,0,0} rect makes isVisible() return false and would
+  // mask the wait behavior we want to verify.
+  function stubRect(
+    el: HTMLElement,
+    rect: { x: number; y: number; width: number; height: number }
+  ) {
+    el.getBoundingClientRect = () =>
+      ({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        top: rect.y,
+        left: rect.x,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
+        toJSON() {
+          return this;
+        },
+      }) as DOMRect;
+  }
+
+  it('passes the precondition immediately when an in-viewport element is already visible+enabled', async () => {
+    // Use `toggle` on a <details> rather than `click` because jsdom can't
+    // construct MouseEvent (`view is not of type Window`) — but we're
+    // testing the wait, not the action dispatch. toggle exercises the
+    // same waitOptions pre-check path and runs to completion in jsdom.
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Advanced';
+    details.appendChild(summary);
+    container.appendChild(details);
+    stubRect(details, { x: 50, y: 50, width: 200, height: 24 });
+    registry.registerElement('details-advanced', details, {
+      type: 'generic',
+      actions: ['toggle'],
+      label: 'Advanced',
+    });
+
+    const t0 = performance.now();
+    const result = await executor.executeAction('details-advanced', {
+      action: 'toggle',
+      waitOptions: { visible: true, enabled: true, timeout: 5000 },
+    });
+    const elapsed = performance.now() - t0;
+
+    expect(result.error, `unexpected error: ${result.error}`).toBeUndefined();
+    expect(result.success).toBe(true);
+    expect(details.open).toBe(true);
+    // The wait should observe `visible:true, enabled:true` on the very first
+    // poll iteration and return well under the 5s timeout. Anything close
+    // to 5s means the time-base mixup at line 1220 has regressed.
+    expect(elapsed).toBeLessThan(1000);
+    expect(result.waitDurationMs ?? 0).toBeLessThan(500);
+  });
+
+  it('returns a timeout failure that actually waits the configured duration when conditions are never met', async () => {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Hidden';
+    details.appendChild(summary);
+    // display:none makes isVisible() return false unambiguously.
+    details.style.display = 'none';
+    container.appendChild(details);
+    stubRect(details, { x: 50, y: 50, width: 200, height: 24 });
+    registry.registerElement('details-hidden', details, {
+      type: 'generic',
+      actions: ['toggle'],
+      label: 'Hidden',
+    });
+
+    const t0 = performance.now();
+    const result = await executor.executeAction('details-hidden', {
+      action: 'toggle',
+      waitOptions: { visible: true, timeout: 200 },
+    });
+    const elapsed = performance.now() - t0;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Timeout waiting for conditions/);
+    // The wait must actually wait — pre-fix it returned in <1ms because
+    // the while-loop body never executed. Post-fix it polls until the
+    // deadline (200ms ± one poll interval).
+    expect(elapsed).toBeGreaterThanOrEqual(180);
+    expect(elapsed).toBeLessThan(800);
+  });
+});

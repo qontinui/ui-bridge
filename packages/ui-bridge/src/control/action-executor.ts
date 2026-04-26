@@ -1217,7 +1217,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     const startTime = performance.now();
     const deadline = startTime + opts.timeout;
 
-    while (Date.now() < deadline) {
+    // Use performance.now() for the loop guard to match the time base used
+    // for `deadline`. Using Date.now() here would compare epoch-millis
+    // (~10¹²) against a page-relative number (~10⁵), making the condition
+    // immediately false and short-circuiting the wait — see action-executor
+    // wait-precondition regression test.
+    while (performance.now() < deadline) {
       const state = getElementState(element);
 
       // Check conditions
