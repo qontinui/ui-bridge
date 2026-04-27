@@ -501,10 +501,118 @@ Response on timeout: `{ reason: "timeout", lastKnownRoute?, elapsedMs }`.
 Aliased at `/control/wait-for-route-change` for symmetry with the rest
 of the `/control/` path family.
 
-## ai/find — what gets matched
+## ai/find — natural-language element lookup
 
-`POST /ai/find { query: "..." }` matches the query against the following
-sources, in precedence order:
+Resolves a free-form query (`"home button"`, `"the email field"`) to a
+single best-match registered element. This is the workhorse for
+"click the X" agent steps — it's a level above `/control/snapshot` +
+client-side filtering because it knows the host's labels, aliases, and
+synonym table.
+
+```http
+POST /ai/find
+{
+  "query": "home button"
+}
+```
+
+The body is `{ query: string }`. No other fields are honored today.
+
+### Response shape
+
+The response is **single-best-match**, not a list. The chosen element
+lives at `data.element`; runner-up candidates (if any) live at
+`data.alternatives`.
+
+```json
+{
+  "success": true,
+  "data": {
+    "found": true,
+    "elementId": "button-home-0",
+    "element": {
+      "id": "button-home-0",
+      "label": "Home",
+      "tagName": "button",
+      "type": "button",
+      "semanticType": "action-button",
+      "actions": ["focus", "blur", "click", "hover", "middleClick"],
+      "aliases": ["btn", "home", "main", "click", "start", "button", "dashboard"],
+      "description": "\"Home\" button",
+      "labelText": "Home",
+      "parentContext": "nav[Main navigation]",
+      "registered": true,
+      "state": {
+        "accessibleName": "Home",
+        "rect": {
+          /* ... */
+        },
+        "computedStyles": {
+          /* ... */
+        }
+      }
+    },
+    "confidence": 1,
+    "matchReasons": [
+      "exact label match",
+      "alias match: \"home\"",
+      "synonym match: \"home\" ~ \"main\""
+    ],
+    "decomposed": {
+      "ariaLabel": "Home",
+      "elementText": "Home",
+      "label": "Home",
+      "name": "Home",
+      "placeholder": "Home"
+    },
+    "suggestedActions": ["click \"home\""],
+    "alternatives": [],
+    "ambiguous": false,
+    "durationMs": 5.2
+  }
+}
+```
+
+Fields under `data`:
+
+- `found: bool` — cheap success check. `false` means nothing scored
+  above the match threshold; `element` and `elementId` will be absent
+  or null.
+- `elementId: string` — id of the chosen element. Pass straight to
+  `/control/element/:id/action`.
+- `element: ElementSummary` — the full chosen element, including its
+  registered actions, aliases, semantic type, and dynamic `state`
+  (rect, computed styles, accessibleName, etc.). **Single object,
+  not an array.**
+- `confidence: number` — 0..1 score for the chosen element. `1` is an
+  exact label/alias hit; lower scores typically come from synonym or
+  partial-text matches. Treat anything below ~0.6 as worth confirming.
+- `matchReasons: string[]` — human-readable explanations for _why_
+  this element won (e.g. `"exact label match"`, `"alias match: \"home\""`,
+  `"synonym match: \"home\" ~ \"main\""`). Useful for logs and for
+  surfacing "did the agent click the right thing" diagnostics.
+- `alternatives: ElementSummary[]` — runner-up candidates that also
+  scored. Empty when the win was unambiguous. Look here when you want
+  the "all reasonable matches" list a `matches[]` field would have
+  given you.
+- `ambiguous: bool` — `true` when the top score isn't a clear winner
+  over `alternatives[0]`. Pair with `alternatives` to disambiguate.
+- `suggestedActions: string[]` — natural-language hints like
+  `click "home"` you can pipe back into a higher-level planner.
+- `decomposed: object` — the parsed query terms broken out by signal
+  source (`label`, `ariaLabel`, `placeholder`, `name`, `elementText`).
+  Reflects what the matcher actually searched for.
+- `durationMs: number` — server-side match time.
+
+> **Common mistake:** `data.element` is a single object, not an array.
+> Earlier docs and some cheatsheets imply a `matches[]` list — that's
+> wrong. Use `data.alternatives` if you need the runner-up list, and
+> `data.found` to gate "did we find anything at all."
+
+### What gets matched
+
+The query is matched against the following element signals, in
+precedence order:
 
 1. associated `<label>` text (via `htmlFor` or wrapping ancestor)
 2. visible `textContent`
@@ -519,6 +627,35 @@ So an `<input placeholder="What would you like to do?">` matches
 user actually sees** — labels, button text, placeholders. Don't search
 by abstract concepts unless the abstract word literally appears
 on-screen.
+
+### Using the response
+
+Gate downstream logic on `data.found`:
+
+```bash
+RESP=$(curl -s -X POST $BASE/ai/find \
+  -H "Content-Type: application/json" \
+  -d '{"query":"home button"}')
+
+if [ "$(echo "$RESP" | jq -r '.data.found')" = "true" ]; then
+  ID=$(echo "$RESP" | jq -r '.data.elementId')
+  curl -X POST "$BASE/control/element/$ID/action" \
+    -H "Content-Type: application/json" \
+    -d '{"action":"click"}'
+fi
+```
+
+Handle ambiguity by checking `confidence` and `alternatives`:
+
+```bash
+CONF=$(echo "$RESP" | jq -r '.data.confidence')
+AMBIG=$(echo "$RESP" | jq -r '.data.ambiguous')
+
+if [ "$AMBIG" = "true" ] || awk "BEGIN { exit !($CONF < 0.6) }"; then
+  # Top match is shaky — surface alternatives to the planner / user
+  echo "$RESP" | jq '.data.alternatives[] | {id, label, semanticType}'
+fi
+```
 
 ## Change tracking & bookmarks
 
