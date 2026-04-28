@@ -516,7 +516,9 @@ POST /ai/find
 }
 ```
 
-The body is `{ query: string }`. No other fields are honored today.
+The body is `{ query: string, includeHidden?: bool }`.
+
+- `includeHidden` (bool, optional, default false): match elements regardless of visibility — useful when driving collapsed-sidebar nav.
 
 ### Response shape
 

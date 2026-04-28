@@ -855,6 +855,33 @@ export async function executeCommand(
               sivParams?.smooth !== false ? ('smooth' as const) : ('auto' as const);
             const sivBlock = sivParams?.block || 'center';
             const sivInline = sivParams?.inline || 'nearest';
+            // Already-in-viewport short-circuit: if the element is fully on
+            // screen, skip the underlying scroll so a pre-click "scroll into
+            // view" doesn't surface as a confusing failure when downstream
+            // detectors observe "no change". Mirrors the same shape returned
+            // by `performScrollIntoView` in @qontinui/ui-bridge-auto.
+            const sivRect = dom.getBoundingClientRect();
+            const sivFullyVisible =
+              typeof window !== 'undefined' &&
+              window.innerWidth > 0 &&
+              window.innerHeight > 0 &&
+              sivRect.width > 0 &&
+              sivRect.height > 0 &&
+              sivRect.top >= 0 &&
+              sivRect.left >= 0 &&
+              sivRect.bottom <= window.innerHeight &&
+              sivRect.right <= window.innerWidth;
+            if (sivFullyVisible) {
+              return {
+                success: true,
+                action: 'scrollIntoView',
+                elementId: id,
+                durationMs: performance.now() - startTime,
+                alreadyVisible: true,
+                scrolled: false,
+                timestamp: Date.now(),
+              };
+            }
             dom.scrollIntoView({ behavior: sivBehavior, block: sivBlock, inline: sivInline });
             // For smooth scrollIntoView, wait for the animation to settle before returning.
             // Use setTimeout instead of rAF — rAF doesn't fire when the tab is backgrounded.
@@ -863,7 +890,15 @@ export async function executeCommand(
             } else {
               await new Promise<void>((r) => setTimeout(r, 16));
             }
-            break;
+            return {
+              success: true,
+              action: 'scrollIntoView',
+              elementId: id,
+              durationMs: performance.now() - startTime,
+              alreadyVisible: false,
+              scrolled: true,
+              timestamp: Date.now(),
+            };
           }
           case 'scroll': {
             type ScrollDir = 'up' | 'down' | 'left' | 'right';
