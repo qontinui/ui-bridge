@@ -1,6 +1,5 @@
 {
   "name": "@qontinui/ui-bridge-native",
-
   "version": "0.2.0",
   "description": "UI Bridge Framework for React Native - Hooks and providers for UI observation and control in mobile apps",
   "main": "./dist/index.js",
@@ -73,7 +72,7 @@
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "https://github.com/qontinui/ui-bridge.git",
