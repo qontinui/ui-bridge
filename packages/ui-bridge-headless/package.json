@@ -39,7 +39,7 @@
     "testing",
     "automation"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "playwright": "^1.48.0"
   },

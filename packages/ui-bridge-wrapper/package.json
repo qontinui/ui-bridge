@@ -37,7 +37,7 @@
     "playwright",
     "websocket"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "https://github.com/qontinui/ui-bridge.git",

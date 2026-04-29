@@ -2,7 +2,7 @@
 
 A unified, modular framework for AI-driven UI observation, control, and debugging.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 ## What is UI Bridge
 
@@ -454,4 +454,4 @@ Contributions are welcome! Please read our contributing guidelines before submit
 
 ## License
 
-MIT License - see [LICENSE](./LICENSE) for details.
+Licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). See [LICENSE](./LICENSE) for full terms.
