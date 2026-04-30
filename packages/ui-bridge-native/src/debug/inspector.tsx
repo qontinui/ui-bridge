@@ -201,9 +201,9 @@ export function UIBridgeInspector({
   const [showInspector, setShowInspector] = useState(visible);
   const [selectedElement, setSelectedElement] = useState<RegisteredNativeElement | null>(null);
 
-  const elements = useMemo(() => (bridge ? bridge.getElements() : []), [bridge, showInspector]);
+  const elements = useMemo(() => (bridge ? bridge.getElements() : []), [bridge]);
 
-  const components = useMemo(() => (bridge ? bridge.getComponents() : []), [bridge, showInspector]);
+  const components = useMemo(() => (bridge ? bridge.getComponents() : []), [bridge]);
 
   const handleToggle = useCallback(() => {
     setShowInspector((prev) => !prev);

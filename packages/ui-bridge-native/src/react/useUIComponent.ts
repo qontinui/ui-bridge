@@ -231,7 +231,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   const registeredComponent = useMemo(() => {
     if (!bridge) return null;
     return bridge.registry.getComponent(id) || null;
-  }, [bridge, id, registeredRef.current]);
+  }, [bridge, id]);
 
   return {
     registered: registeredRef.current,

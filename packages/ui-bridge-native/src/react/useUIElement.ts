@@ -261,7 +261,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     registeredRef.current = false;
     registeredIdRef.current = null;
     setRegistered(false);
-  }, [bridge, registered, id]);
+  }, [bridge, id]);
 
   // Handle layout changes
   const onLayout = useCallback(

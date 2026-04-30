@@ -116,12 +116,14 @@ export function useAutoRegister(options: NativeAutoRegisterOptions = {}): Native
    * Cleanup on unmount
    */
   useEffect(() => {
+    // Capture ref at effect time so cleanup unregisters the exact same set
+    // of IDs, regardless of any future ref reassignment.
+    const registeredIds = registeredIdsRef.current;
     return () => {
-      // Unregister all elements on unmount
-      registeredIdsRef.current.forEach((id) => {
+      registeredIds.forEach((id) => {
         bridge?.registry.unregisterElement(id);
       });
-      registeredIdsRef.current.clear();
+      registeredIds.clear();
     };
   }, [bridge]);
 

@@ -398,8 +398,12 @@ export class NativeUIBridgeServer {
           data: { success: true, url, timestamp: Date.now() },
           timestamp: Date.now(),
         };
-      } catch (e: any) {
-        return { success: false, error: `Navigation failed: ${e.message}`, timestamp: Date.now() };
+      } catch (e: unknown) {
+        return {
+          success: false,
+          error: `Navigation failed: ${e instanceof Error ? e.message : String(e)}`,
+          timestamp: Date.now(),
+        };
       }
     };
 
@@ -423,10 +427,10 @@ export class NativeUIBridgeServer {
           data: { success: true, url, timestamp: Date.now() },
           timestamp: Date.now(),
         };
-      } catch (e: any) {
+      } catch (e: unknown) {
         return {
           success: false,
-          error: `Replace navigation failed: ${e.message}`,
+          error: `Replace navigation failed: ${e instanceof Error ? e.message : String(e)}`,
           timestamp: Date.now(),
         };
       }
@@ -443,10 +447,10 @@ export class NativeUIBridgeServer {
           data: { success: true, timestamp: Date.now() },
           timestamp: Date.now(),
         };
-      } catch (e: any) {
+      } catch (e: unknown) {
         return {
           success: false,
-          error: `Back navigation failed: ${e.message}`,
+          error: `Back navigation failed: ${e instanceof Error ? e.message : String(e)}`,
           timestamp: Date.now(),
         };
       }
@@ -467,8 +471,12 @@ export class NativeUIBridgeServer {
           data: { success: true, timestamp: Date.now() },
           timestamp: Date.now(),
         };
-      } catch (e: any) {
-        return { success: false, error: `Refresh failed: ${e.message}`, timestamp: Date.now() };
+      } catch (e: unknown) {
+        return {
+          success: false,
+          error: `Refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+          timestamp: Date.now(),
+        };
       }
     };
   }
@@ -537,10 +545,10 @@ export class NativeUIBridgeServer {
           data: { screenshot: result.base64, width: result.width, height: result.height },
           timestamp: Date.now(),
         };
-      } catch (e: any) {
+      } catch (e: unknown) {
         return {
           success: false,
-          error: `Screenshot capture failed: ${e.message}`,
+          error: `Screenshot capture failed: ${e instanceof Error ? e.message : String(e)}`,
           timestamp: Date.now(),
         };
       }

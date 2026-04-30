@@ -309,6 +309,7 @@ export function UIBridgeNativeProvider({
   }, [
     features.server,
     config.serverPort,
+    config.appInfo,
     registry,
     executor,
     serverAdapter,

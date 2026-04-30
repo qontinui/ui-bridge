@@ -381,5 +381,5 @@ export interface NativeServerHandlers {
   fillForm: HandlerFunction<FillFormResponse>;
 
   // Health
-  health: HandlerFunction<{ status: string; timestamp: number }>;
+  health: HandlerFunction<Record<string, unknown>>;
 }
