@@ -518,7 +518,7 @@ POST /ai/find
 
 The body is `{ query: string, includeHidden?: bool }`.
 
-- `includeHidden` (bool, optional, default false): match elements regardless of visibility — useful when driving collapsed-sidebar nav.
+- `includeHidden` (bool, optional, **default true**): match elements regardless of visibility — preserves historical front-end behaviour (the registry contains hidden elements like collapsed-sidebar children). Pass `false` to opt into the visibility filter.
 
 ### Response shape
 
