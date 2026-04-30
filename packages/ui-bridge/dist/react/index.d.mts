@@ -1,10 +1,10 @@
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import React$1, { ReactNode, ReactElement } from 'react';
-import { dI as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, eo as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dv as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, en as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eq as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dP as UseUIRelationshipOptions, cz as InlineRelationship, dN as UseDragSourceOptions, dO as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-X8pyInrK.mjs';
-import { U as UIBridgeWSClient } from '../websocket-client-DsaikyxH.mjs';
+import { dI as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, eo as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dv as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, en as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eq as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dP as UseUIRelationshipOptions, cz as InlineRelationship, dN as UseDragSourceOptions, dO as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-CXCbCmRP.mjs';
+import { U as UIBridgeWSClient } from '../websocket-client-BpGyzmso.mjs';
 import { RenderLogManager } from '../render-log/index.mjs';
-import { M as MetricsCollector } from '../metrics-Bi4IZDyI.mjs';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-CFal6A4y.mjs';
+import { M as MetricsCollector } from '../metrics-wXt2Iuwr.mjs';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-B0PMDmdH.mjs';
 import { E as ElementAnnotation } from '../types-C7D5seeQ.mjs';
 
 /**
@@ -557,6 +557,88 @@ declare function useUIBridge(): UseUIBridgeReturn;
 declare function useUIBridgeRequired(): UseUIBridgeReturn;
 
 /**
+ * IR Type Re-declarations
+ *
+ * These are local TYPE-ONLY mirrors of the canonical IR shapes published at
+ * `@qontinui/shared-types/ui-bridge-ir`
+ * (qontinui-schemas/ts/src/ui-bridge-ir/). They are duplicated here so that
+ * `@qontinui/ui-bridge` does not need to take a runtime dependency on
+ * `@qontinui/shared-types` just to expose IR-emitting metadata fields on its
+ * existing hooks.
+ *
+ * KEEP IN SYNC with `qontinui-schemas/ts/src/ui-bridge-ir/`. If you change
+ * an IR field there, mirror it here. The prompt for Phase 4 of the UI
+ * Bridge Redesign — Section 1 Foundations — explicitly authorizes this
+ * arrangement: build plugins emit IR using the canonical types; the SDK
+ * accepts structurally identical shapes.
+ *
+ * @see https://github.com/qontinui/qontinui-schemas (ui-bridge-ir module)
+ */
+/**
+ * Origin of an IR node. Set by the build plugin when extracting JSX wrappers,
+ * by hand when authoring a JSON IR file directly, or by a generation pipeline.
+ */
+interface IRProvenance {
+    /** How this declaration was authored. */
+    source: 'hand-authored' | 'build-plugin' | 'ai-generated' | 'migrated';
+    /** Source file (relative to the build root). */
+    file?: string;
+    /** Line number in the source file (1-based). */
+    line?: number;
+    /** Column in the source file (1-based). */
+    column?: number;
+    /** Build-plugin version that produced this node, if applicable. */
+    pluginVersion?: string;
+}
+/**
+ * Human-authored semantic context for an IR node. Aligns with the existing
+ * ElementAnnotation shape (../annotations/types.ts).
+ */
+interface IRMetadata {
+    /** Short human-readable description of what this state/transition represents. */
+    description?: string;
+    /** What this state/transition is for, intent-wise. */
+    purpose?: string;
+    /** Tags for grouping, filtering, and search. */
+    tags?: string[];
+    /** IDs of related elements/states/transitions. */
+    relatedElements?: string[];
+    /** Free-form notes for nuance that doesn't fit description/purpose. */
+    notes?: string;
+}
+/**
+ * Whether a transition is read-only, mutating, or destructive.
+ *
+ * - "read"        — query/navigate; no persistent state change.
+ * - "write"       — modifies persistent state but is reversible (or has an undo).
+ * - "destructive" — irreversible state change (delete, send, charge, deploy).
+ *
+ * Drives counterfactual analysis (section 6) and gates auto-regression
+ * generation (section 9) — destructive transitions are excluded from
+ * automatic walks.
+ */
+type IREffect = 'read' | 'write' | 'destructive';
+/**
+ * Minimal criteria to identify a DOM element.
+ *
+ * Mirrors `ElementCriteria` from `ui-bridge-auto/src/types/match.ts:20`.
+ */
+interface IRElementCriteria {
+    /** ARIA role or inferred role. */
+    role?: string;
+    /** Exact text content (trimmed). */
+    text?: string;
+    /** Substring match on text content (case-insensitive). */
+    textContains?: string;
+    /** ARIA label (case-insensitive substring match). */
+    ariaLabel?: string;
+    /** Element ID (exact string or pattern-source string). */
+    id?: string;
+    /** HTML attributes to check (exact string match). */
+    attributes?: Record<string, string>;
+}
+
+/**
  * useUIState Hook
  *
  * Register and manage UI states with UI Bridge.
@@ -564,6 +646,12 @@ declare function useUIBridgeRequired(): UseUIBridgeReturn;
 
 /**
  * useUIState options
+ *
+ * The IR-emitting metadata fields (`metadata`, `provenance`, `requiredElements`)
+ * are part of Phase 4 of the UI Bridge Redesign — Section 1 Foundations. They
+ * are additive: existing callers that pass only the legacy fields keep
+ * working unchanged. Build plugins that extract `<State>` JSX wrappers fill
+ * in `provenance` automatically; hand-authored callers usually omit it.
  */
 interface UseUIStateOptions {
     /** Unique identifier for the state */
@@ -582,8 +670,23 @@ interface UseUIStateOptions {
     group?: string;
     /** Cost for pathfinding (default: 1.0) */
     pathCost?: number;
-    /** Custom metadata */
-    metadata?: Record<string, unknown>;
+    /** Custom metadata.
+     *
+     * The IR-canonical {@link IRMetadata} shape (description / purpose / tags /
+     * relatedElements / notes) is preferred and routes into the global
+     * annotation store at registration time. Arbitrary `Record<string, unknown>`
+     * is still accepted for backwards compatibility — when it does NOT match
+     * the IRMetadata shape, no annotation is written.
+     */
+    metadata?: IRMetadata | Record<string, unknown>;
+    /** IR-canonical predicate shape — element criteria that should resolve to
+     *  the elements belonging to this state. Authoring-time superset of
+     *  `elements`: the build plugin emits this; the runtime SDK still accepts
+     *  the legacy `elements: string[]` for hand-authored callers. If both are
+     *  provided, `requiredElements` wins. */
+    requiredElements?: IRElementCriteria[];
+    /** Where this declaration came from (set by build plugins). */
+    provenance?: IRProvenance;
     /** Whether to automatically register on mount */
     autoRegister?: boolean;
     /** Initial active state */
@@ -704,6 +807,13 @@ declare function useStateSnapshot(): StateSnapshot | null;
 
 /**
  * useUITransition options
+ *
+ * The IR-emitting metadata fields (`effect`, `metadata`, `provenance`) are
+ * part of Phase 4 of the UI Bridge Redesign — Section 1 Foundations. They
+ * are additive: existing callers keep working unchanged. The values are
+ * stored on the registered transition's `metadata` bag (under `__ir`) for
+ * later consumption by the build plugin / counterfactual analysis pipeline
+ * (sections 6 and 9).
  */
 interface UseUITransitionOptions {
     /** Unique identifier for the transition */
@@ -726,6 +836,15 @@ interface UseUITransitionOptions {
     pathCost?: number;
     /** Whether source states remain visible during transition */
     staysVisible?: boolean;
+    /** Side-effect annotation. Drives counterfactual analysis (section 6) and
+     *  gates auto-regression generation (section 9) — destructive transitions
+     *  are excluded from automatic walks. Stored on the registered transition's
+     *  metadata bag; does NOT change runtime behavior in this section. */
+    effect?: IREffect;
+    /** IR-canonical semantic metadata routed through the global annotation store. */
+    metadata?: IRMetadata;
+    /** Where this declaration came from (set by build plugins). */
+    provenance?: IRProvenance;
     /** Whether to automatically register on mount */
     autoRegister?: boolean;
 }
@@ -783,6 +902,111 @@ declare function useTransitions(): UITransition[];
  * Get transitions that can be executed from current state.
  */
 declare function useAvailableTransitions(): UITransition[];
+
+/**
+ * `<State>` JSX wrapper.
+ *
+ * Authoring-time sugar around {@link useUIState}. The build plugin extracts
+ * `<State id="..." name="..." metadata={{...}}>` invocations into IR; at
+ * runtime the wrapper compiles to a `useUIState` call so behavior is
+ * delegated to the existing hook (no parallel registry, no behavior drift).
+ *
+ * Per Phase 4 / UI Bridge Redesign Section 1: this wrapper is purely
+ * additive — `useUIState` continues to work identically for callers that
+ * skip the JSX layer.
+ *
+ * @example
+ * ```tsx
+ * function LoginPage() {
+ *   return (
+ *     <State
+ *       id="login-form"
+ *       name="Login Form"
+ *       elements={['email-input', 'password-input', 'submit-btn']}
+ *       metadata={{
+ *         description: 'Form for authenticating existing users',
+ *         tags: ['auth', 'form'],
+ *       }}
+ *     >
+ *       <form>
+ *         <input id="email-input" />
+ *         <input id="password-input" type="password" />
+ *         <button id="submit-btn">Log in</button>
+ *       </form>
+ *     </State>
+ *   );
+ * }
+ * ```
+ */
+
+/**
+ * Props for the {@link State} component. Extends every option of
+ * {@link UseUIStateOptions} so the wrapper is a strict superset of the
+ * underlying hook.
+ */
+interface StateProps extends UseUIStateOptions {
+    /** Children rendered as-is — the wrapper has no DOM impact. */
+    children?: ReactNode;
+}
+/**
+ * Declarative wrapper for {@link useUIState}. Renders a `Fragment` so it has
+ * no DOM impact; runtime behavior is delegated entirely to the underlying
+ * hook.
+ */
+declare function State({ children, ...options }: StateProps): ReactElement;
+declare namespace State {
+    var displayName: string;
+}
+
+/**
+ * `<TransitionTo>` JSX wrapper.
+ *
+ * Authoring-time sugar around {@link useUITransition}. The component name
+ * reflects the destination — the `activateStates` set — so callers read as
+ * "transition to <these states>" at the call site.
+ *
+ * Like `<State>`, this wrapper compiles to a hook call at runtime; build
+ * plugins extract the JSX into IR. Renders a `Fragment` so it has no DOM
+ * impact.
+ *
+ * @example
+ * ```tsx
+ * function LoginButton() {
+ *   return (
+ *     <TransitionTo
+ *       id="open-login"
+ *       name="Open Login"
+ *       fromStates={['landing']}
+ *       activateStates={['login-form']}
+ *       exitStates={['landing']}
+ *       effect="read"
+ *       metadata={{ description: 'Navigate from landing to the login form' }}
+ *     >
+ *       <button>Log in</button>
+ *     </TransitionTo>
+ *   );
+ * }
+ * ```
+ */
+
+/**
+ * Props for the {@link TransitionTo} component. Extends every option of
+ * {@link UseUITransitionOptions} so the wrapper is a strict superset of the
+ * underlying hook.
+ */
+interface TransitionToProps extends UseUITransitionOptions {
+    /** Children rendered as-is — the wrapper has no DOM impact. */
+    children?: ReactNode;
+}
+/**
+ * Declarative wrapper for {@link useUITransition}. Renders a `Fragment` so
+ * it has no DOM impact; runtime behavior is delegated entirely to the
+ * underlying hook.
+ */
+declare function TransitionTo({ children, ...options }: TransitionToProps): ReactElement;
+declare namespace TransitionTo {
+    var displayName: string;
+}
 
 /**
  * useUINavigation Hook
@@ -1602,4 +1826,4 @@ interface UseBuildIdWatcherOptions {
 }
 declare function useBuildIdWatcher(options?: UseBuildIdWatcherOptions): void;
 
-export { type AutoRegisterOptions, AutoRegisterProvider, type AutoRegisterProviderProps, CaptureHostFrame, type CaptureHostFrameProps, CommandRelayListener, type CommandRelayListenerProps, type ComponentActionDef, type ComputedPropertyDef, type ContentDiscoveryOptions, DEFAULT_CAPTURE_HOST_IDS, type IdStrategy, type MediaDiscoveryOptions, type ShortcutDef, UIBridgeComponentScope, type UIBridgeComponentScopeProps, type UIBridgeContextValue, UIBridgeProvider, type UIBridgeProviderProps, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, type UseBuildIdWatcherOptions, type UseCommandRelayOptions, type UseUIBridgeEchoOptions, type UseUIBridgeReturn, type UseUIComponentOptions, type UseUIComponentReturn, type UseUIElementOptions, type UseUIElementReturn, type UseUINavigationReturn, type UseUIStateGroupOptions, type UseUIStateGroupReturn, type UseUIStateOptions, type UseUIStateReturn, type UseUITransitionOptions, type UseUITransitionReturn, pollForTaggedElement, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo };
+export { type AutoRegisterOptions, AutoRegisterProvider, type AutoRegisterProviderProps, CaptureHostFrame, type CaptureHostFrameProps, CommandRelayListener, type CommandRelayListenerProps, type ComponentActionDef, type ComputedPropertyDef, type ContentDiscoveryOptions, DEFAULT_CAPTURE_HOST_IDS, type IREffect, type IRElementCriteria, type IRMetadata, type IRProvenance, type IdStrategy, type MediaDiscoveryOptions, type ShortcutDef, State, type StateProps, TransitionTo, type TransitionToProps, UIBridgeComponentScope, type UIBridgeComponentScopeProps, type UIBridgeContextValue, UIBridgeProvider, type UIBridgeProviderProps, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, type UseBuildIdWatcherOptions, type UseCommandRelayOptions, type UseUIBridgeEchoOptions, type UseUIBridgeReturn, type UseUIComponentOptions, type UseUIComponentReturn, type UseUIElementOptions, type UseUIElementReturn, type UseUINavigationReturn, type UseUIStateGroupOptions, type UseUIStateGroupReturn, type UseUIStateOptions, type UseUIStateReturn, type UseUITransitionOptions, type UseUITransitionReturn, pollForTaggedElement, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo };

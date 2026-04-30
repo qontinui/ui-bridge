@@ -1581,6 +1581,19 @@ export interface UITransition {
   pathCost?: number;
   /** Whether source states remain visible during transition */
   staysVisible?: boolean;
+  /** IR-emitted authoring metadata bag — opaque to runtime behavior.
+   *
+   * Phase 4 / UI Bridge Redesign Section 1: when a `<TransitionTo>` JSX
+   * wrapper or `useUITransition` caller passes `effect`, `metadata`, or
+   * `provenance`, those values land here under `__ir`. Counterfactual
+   * analysis (section 6) and auto-regression generation (section 9) read
+   * this bag to gate destructive transitions and feed semantic context.
+   *
+   * The exact shape of `__ir` is not part of the runtime contract — only
+   * the build plugin / IR adapter consumes it. The runtime registry treats
+   * the field as opaque and round-trips it untouched.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**

@@ -1,5 +1,5 @@
-import { createContext, useState, useEffect, useRef, useMemo, useCallback, useContext, useSyncExternalStore } from 'react';
-import { jsx, Fragment, jsxs } from 'react/jsx-runtime';
+import { createContext, useState, useEffect, useRef, useMemo, useCallback, useContext, useSyncExternalStore, Fragment } from 'react';
+import { jsx, Fragment as Fragment$1, jsxs } from 'react/jsx-runtime';
 
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -27467,6 +27467,22 @@ function useUIBridgeRequired() {
   useUIBridgeContext();
   return useUIBridge();
 }
+
+// src/react/useUIState.ts
+init_annotations();
+var IR_METADATA_KEYS = /* @__PURE__ */ new Set([
+  "description",
+  "purpose",
+  "tags",
+  "relatedElements",
+  "notes"
+]);
+function isIRMetadata(value) {
+  if (!value || typeof value !== "object") return false;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+  return keys.every((k) => IR_METADATA_KEYS.has(k));
+}
 function useUIState(options) {
   const bridge2 = useUIBridgeOptional();
   const [registered, setRegistered] = useState(false);
@@ -27476,16 +27492,29 @@ function useUIState(options) {
   const {
     id,
     name,
-    elements: elements2 = [],
+    elements: rawElements,
+    requiredElements,
     activeWhen,
     blocking,
     blocks,
     group,
     pathCost,
-    metadata,
+    metadata: rawMetadata,
+    provenance: _provenance,
     autoRegister = true,
     initialActive = false
   } = options;
+  const metadata = rawMetadata;
+  const elements2 = useMemo(() => {
+    if (requiredElements && requiredElements.length > 0) {
+      const ids = [];
+      for (const criteria of requiredElements) {
+        if (criteria.id) ids.push(criteria.id);
+      }
+      return ids;
+    }
+    return rawElements ?? [];
+  }, [requiredElements, rawElements]);
   const registeredIdRef = useRef(null);
   const register = useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -27599,6 +27628,18 @@ function useUIState(options) {
     });
     return unsubscribe;
   }, [bridge2, id]);
+  const annotationKeyRef = useRef("");
+  useEffect(() => {
+    if (!isIRMetadata(rawMetadata)) return;
+    if (elements2.length === 0) return;
+    const serialized = JSON.stringify({ ids: elements2, metadata: rawMetadata });
+    if (serialized === annotationKeyRef.current) return;
+    annotationKeyRef.current = serialized;
+    const store = getGlobalAnnotationStore();
+    for (const elementId of elements2) {
+      store.set(elementId, rawMetadata);
+    }
+  }, [rawMetadata, elements2]);
   const activate = useCallback(() => {
     if (!bridge2) return false;
     const success = bridge2.registry.activateState(id);
@@ -27744,8 +27785,19 @@ function useUITransition(options) {
     actions,
     pathCost,
     staysVisible,
+    effect,
+    metadata: irMetadata,
+    provenance,
     autoRegister = true
   } = options;
+  const irBag = useMemo(() => {
+    if (!effect && !irMetadata && !provenance) return void 0;
+    const bag = {};
+    if (effect) bag.effect = effect;
+    if (irMetadata) bag.metadata = irMetadata;
+    if (provenance) bag.provenance = provenance;
+    return { __ir: bag };
+  }, [effect, irMetadata, provenance]);
   const registeredTransitionIdRef = useRef(null);
   const register = useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -27759,7 +27811,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     bridge2.registry.registerTransition(transition2);
     registeredRef.current = true;
@@ -27777,7 +27830,8 @@ function useUITransition(options) {
     exitGroups,
     actions,
     pathCost,
-    staysVisible
+    staysVisible,
+    irBag
   ]);
   const unregister = useCallback(() => {
     if (!bridge2 || !registeredRef.current) return;
@@ -27812,7 +27866,8 @@ function useUITransition(options) {
     activateGroups: activateGroups ?? null,
     exitGroups: exitGroups ?? null,
     pathCost: pathCost ?? null,
-    staysVisible: staysVisible ?? null
+    staysVisible: staysVisible ?? null,
+    irBag: irBag ?? null
   }) : null;
   useEffect(() => {
     if (!bridge2 || !registeredRef.current || transitionKey === null) return;
@@ -27826,7 +27881,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     const registeredTransitionId = registeredTransitionIdRef.current;
     if (registeredTransitionId === null) return;
@@ -27897,6 +27953,16 @@ function useAvailableTransitions() {
   }, [bridge2]);
   return available;
 }
+function State({ children, ...options }) {
+  useUIState(options);
+  return /* @__PURE__ */ jsx(Fragment, { children });
+}
+State.displayName = "UIBridge.State";
+function TransitionTo({ children, ...options }) {
+  useUITransition(options);
+  return /* @__PURE__ */ jsx(Fragment, { children });
+}
+TransitionTo.displayName = "UIBridge.TransitionTo";
 function useUINavigation() {
   const bridge2 = useUIBridgeOptional();
   const [isNavigating, setIsNavigating] = useState(false);
@@ -28018,7 +28084,7 @@ function AutoRegisterProvider({
   if (scopeToChildren) {
     return /* @__PURE__ */ jsx("div", { ref: containerRef, style: { display: "contents" }, children });
   }
-  return /* @__PURE__ */ jsx(Fragment, { children });
+  return /* @__PURE__ */ jsx(Fragment$1, { children });
 }
 
 // src/react/useUIAnnotation.ts
@@ -32580,7 +32646,7 @@ function Inspector({ getRegisteredElement, initialActive }) {
     }
   }, [initialActive]);
   if (!inspector.active) return null;
-  return /* @__PURE__ */ jsxs(Fragment, { children: [
+  return /* @__PURE__ */ jsxs(Fragment$1, { children: [
     inspector.bounds && /* @__PURE__ */ jsx(
       InspectorOverlay,
       {
@@ -38374,6 +38440,6 @@ var IpcArtifactStore = class {
   }
 };
 
-export { ANNOTATION_CONFIG_VERSION, API_CONFIG_VERSION, API_FILE_EXTENSION, ARCHITECTURE_CONFIG_VERSION, ARCHITECTURE_FILE_EXTENSION, AnnotationStore, ApiLayerExecutor, AssertionExecutor, AutoRegisterProvider, BUILT_IN_CONTEXTS, BackgroundObserver, BookmarkStore, BrowserEventCapture, BrowserEventStream, CONFIDENCE_BOOST, CONFIDENCE_PENALTY, CONSTRAINT_CONFIG_VERSION, CONSTRAINT_FILE_EXTENSION, CONTRACT_CONFIG_VERSION, CONTRACT_FILE_EXTENSION, CTR_CONFIG_VERSION, CTR_FILE_EXTENSION, CaptureHostFrame, CentralTargetRegistry, ChangeObserver, ChangeTracker, CommandRelayListener, CompositeIdleDetector, ContractExecutor, DATA_CONFIG_VERSION, DATA_FILE_EXTENSION, DEFAULT_ACTION_PARITY_CONFIG, DEFAULT_ALIAS_CONFIG, DEFAULT_ASSERTION_CONFIG, DEFAULT_CAPTURE_CONFIG, DEFAULT_CAPTURE_HOST_IDS, DEFAULT_COMPARISON_REPORT_CONFIG, DEFAULT_COMPONENT_COMPARISON_CONFIG, DEFAULT_CONTENT_COMPARISON_CONFIG, DEFAULT_CROSS_APP_DIFF_CONFIG, DEFAULT_DATA_EXTRACTION_CONFIG, DEFAULT_DIFF_CONFIG, DEFAULT_EXECUTOR_CONFIG, DEFAULT_FORMAT_ANALYSIS_CONFIG, DEFAULT_FUZZY_CONFIG, DEFAULT_LAYOUT_COMPARISON_CONFIG, DEFAULT_NAVIGATION_MAP_CONFIG, DEFAULT_NOISE_PATTERNS, DEFAULT_REGION_SEGMENTATION_CONFIG, DEFAULT_REMOUNT_CACHE_WINDOW_MS, DEFAULT_SEARCH_CONFIG, DEFAULT_SELECTOR_CONFIDENCE, DEFAULT_SNAPSHOT_CONFIG, DEFAULT_TABLE_EXTRACTION_CONFIG, DEFAULT_VIEWPORTS, DEPENDENCY_CONFIG_VERSION, DEPENDENCY_FILE_EXTENSION, DOMChangeObserver, DOMSettlingDetector, DefaultActionExecutor, DefaultWorkflowEngine, DragDropDetector, ElementEventLog, ErrorCodes, ErrorImpactAssessor, ErrorSession, ErrorSessionManager, ErrorSnapshotBuffer, FormMutationDetector, FormikAdapter, HIGHLIGHT_COLORS, InMemoryRenderLogStorage, InfoPanel, Inspector, InspectorOverlay, IpcArtifactStore, IpcLayerExecutor, LoadingIndicatorDetector, MATRIX_FILE_EXTENSION, MAX_BATCH_SIZE, METRIC_FUNCTIONS, MIN_CONFIDENCE_THRESHOLD, MatrixExecutor, MemoryArtifactStore, MemoryTrendAnalyzer, MetricsCollector, ModalDetector, NLActionExecutor, NavigationTracker, NetworkChainTracker, NetworkIdleDetector, NetworkRequestTracker, NetworkStubRegistry, ReactHookFormAdapter, Recency, RelationshipTracker, RenderLogManager, SEVERITY_RANK, SPEC_CONFIG_VERSION, SPEC_FILE_EXTENSION, STYLE_GUIDE_FILE_EXTENSION, STYLE_GUIDE_VERSION, SearchEngine, SemanticDiffManager, SemanticSnapshotManager, ShortcutTracker, SpecExecutor, SpecStore, StuckScreenDetector, TimelineBuffer, ToastCapture, ToastRingBuffer, UIBridgeComponentScope, UIBridgeProvider, UIBridgeRegistry, UIBridgeWSClient, UIQuery, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, UiLayerExecutor, UndoDetector, UndoTracker, VALID_ASSERTION_TYPES, VALID_SPEC_CATEGORIES, VALID_SPEC_SEVERITIES, VALID_SPEC_SOURCES, WAIT_FOR_ELEMENT_STATES, WindowLocationAdapter, __resetGlobalBookmarkStoreForTest, __resetGlobalStubRegistryForTest, analyzeActionParity, analyzeFormat, analyzeMediaBatch, analyzeMediaElement, analyzeMediaPage, analyzePageFormats, analyzeStructuredChanges, areSynonyms, autoPopulateCtr, batch, buildAccessibilityAudit, buildNavigationMap, buildPerformanceAudit, captureDOMSnapshot, captureElementScreenshot, captureEnvironment, captureFormSnapshot, captureInteractiveElements, captureMediaSnapshot, captureResponsiveSnapshots, captureStateVariations, checkContrastCompliance, classList, classString, classifyDataType, classifyEvent, classifyEvents, classifyRegionType, classifyStatusDirection, clusterColors, coerceAssertionType, colorDistance, compareComponents, compareContent, compareFormats, compareLayouts, compareMediaSnapshots, compareVisualRegression, computeAllFingerprints, computeContrastRatio, computeCrossAppDiff, computeDiff, computeElementFingerprint, computeFingerprint, computeFingerprintsWithMapping, computeHash, computeHealthReport, computeHealthScore, computeHealthStatus, computeProminence, contrastRatio, controlBatch, createActionExecutor, createAdapterRegistry, createArtifact, createAssertionExecutor, createBaseline, createBrokenImagesFindRequest, createChangeTracker, createCtrEntry, createDiffManager, createErrorContext, createMediaFindRequest, createMetricsCollector, createMissingAltFindRequest, createNLActionExecutor, createNextjsAdapter, createOversizedImagesFindRequest, createReactRouterAdapter, createRenderLogManager, createSearchEngine, createSimpleError, createSnapshotManager, createStableRef, createWSClient, createWorkflowEngine, decomposeTarget, deduplicateEvents, demoteSelector, describeAction2 as describeAction, describeDiff, detectFormatPattern, detectGridStructure, detectList, detectTable, diffFormSnapshots, diffSnapshots, discoverForms, emitToast, evaluateConstraint, evaluateElementPredicate, evaluateQuality, extractMessage4 as extractMessage, extractModifiers, extractPageData, extractReactState, extractSourceLocation, extractStructuredData, fillFormFields, filterBySeverity, find, findAllMatches, findBestMatch, findElements, findNearestRegisteredElement, formatDuration, formatErrorContext, formatPercentage, fuzzyContains, fuzzyMatch, generateAliases, generateComparisonReport, generateDescription, generateDiffSummary, generateElementDescription, generateNgrams, generatePageSummary, generatePurpose, generateSnapshotSummary, generateSuggestedActions, getActiveOverlays, getBestRecoverySuggestion, getCSSCustomProperties, getContext, getElementDesignData, getEventStack, getExtendedComputedStyles, getGlobalAnnotationStore, getGlobalArtifactStore, getGlobalBookmarkStore, getGlobalCtr, getGlobalRegistry, getGlobalSpecStore, getGlobalStubRegistry, getSynonyms, getViableSelectors, hasSignificantChanges, hasViableSelectors, hueDistance, inferPageType, installFrameworkOverlayCapture, installStubFetchInterceptor, isGrayscale, isNavigationElement, isRecoverableError, isSatisfiedBy, isValidAssertionType, isValidSpecCategory, isValidSpecSeverity, isValidSpecSource, jaroSimilarity, jaroWinklerSimilarity, levenshteinDistance, levenshteinSimilarity, listContexts, matchElements, mergeContext, mightRequireFetch, migrateFromTestGeneratorOutput, migrateLegacyAssertion, migrateLegacyTarget, networkProbe, ngramSimilarity, normalizeCombo, normalizeString, normalizeValue, parseColor2 as parseColor, parseNLAssertion, parseNLInstruction, parseNLInstructions, parseNumericValue, parseRecency, pollForTaggedElement, pollWaitForElement, promoteSelector, relativeLuminance, requiresFetch, resetGlobalAnnotationStore, resetGlobalArtifactStore, resetGlobalCtr, resetGlobalSpecStore, resolveStableRef, resolveTarget, resolveTokenValue, rgbToHsl, runStyleAudit, scanValidationErrors, segmentPageRegions, serializeRegisteredElement, serializeSnapshot, setGlobalArtifactStore, setGlobalCtr, showClickHighlight, showElementHighlight, snapshotFromRegisteredElement, splitCompoundInstruction, summarizeFormDiff, toastBuffer, tokenSimilarity, tokenize, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useInspector, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIBridgeToasts, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo, validateContractConfig, validateElement, validateParsedAction, validateSpecAssertion, validateSpecConfig, validateSpecGroup, validateStubRequest, validateWaitForElementRequest, waitFor, waitForElement, waitForElementStable, wordSimilarity };
+export { ANNOTATION_CONFIG_VERSION, API_CONFIG_VERSION, API_FILE_EXTENSION, ARCHITECTURE_CONFIG_VERSION, ARCHITECTURE_FILE_EXTENSION, AnnotationStore, ApiLayerExecutor, AssertionExecutor, AutoRegisterProvider, BUILT_IN_CONTEXTS, BackgroundObserver, BookmarkStore, BrowserEventCapture, BrowserEventStream, CONFIDENCE_BOOST, CONFIDENCE_PENALTY, CONSTRAINT_CONFIG_VERSION, CONSTRAINT_FILE_EXTENSION, CONTRACT_CONFIG_VERSION, CONTRACT_FILE_EXTENSION, CTR_CONFIG_VERSION, CTR_FILE_EXTENSION, CaptureHostFrame, CentralTargetRegistry, ChangeObserver, ChangeTracker, CommandRelayListener, CompositeIdleDetector, ContractExecutor, DATA_CONFIG_VERSION, DATA_FILE_EXTENSION, DEFAULT_ACTION_PARITY_CONFIG, DEFAULT_ALIAS_CONFIG, DEFAULT_ASSERTION_CONFIG, DEFAULT_CAPTURE_CONFIG, DEFAULT_CAPTURE_HOST_IDS, DEFAULT_COMPARISON_REPORT_CONFIG, DEFAULT_COMPONENT_COMPARISON_CONFIG, DEFAULT_CONTENT_COMPARISON_CONFIG, DEFAULT_CROSS_APP_DIFF_CONFIG, DEFAULT_DATA_EXTRACTION_CONFIG, DEFAULT_DIFF_CONFIG, DEFAULT_EXECUTOR_CONFIG, DEFAULT_FORMAT_ANALYSIS_CONFIG, DEFAULT_FUZZY_CONFIG, DEFAULT_LAYOUT_COMPARISON_CONFIG, DEFAULT_NAVIGATION_MAP_CONFIG, DEFAULT_NOISE_PATTERNS, DEFAULT_REGION_SEGMENTATION_CONFIG, DEFAULT_REMOUNT_CACHE_WINDOW_MS, DEFAULT_SEARCH_CONFIG, DEFAULT_SELECTOR_CONFIDENCE, DEFAULT_SNAPSHOT_CONFIG, DEFAULT_TABLE_EXTRACTION_CONFIG, DEFAULT_VIEWPORTS, DEPENDENCY_CONFIG_VERSION, DEPENDENCY_FILE_EXTENSION, DOMChangeObserver, DOMSettlingDetector, DefaultActionExecutor, DefaultWorkflowEngine, DragDropDetector, ElementEventLog, ErrorCodes, ErrorImpactAssessor, ErrorSession, ErrorSessionManager, ErrorSnapshotBuffer, FormMutationDetector, FormikAdapter, HIGHLIGHT_COLORS, InMemoryRenderLogStorage, InfoPanel, Inspector, InspectorOverlay, IpcArtifactStore, IpcLayerExecutor, LoadingIndicatorDetector, MATRIX_FILE_EXTENSION, MAX_BATCH_SIZE, METRIC_FUNCTIONS, MIN_CONFIDENCE_THRESHOLD, MatrixExecutor, MemoryArtifactStore, MemoryTrendAnalyzer, MetricsCollector, ModalDetector, NLActionExecutor, NavigationTracker, NetworkChainTracker, NetworkIdleDetector, NetworkRequestTracker, NetworkStubRegistry, ReactHookFormAdapter, Recency, RelationshipTracker, RenderLogManager, SEVERITY_RANK, SPEC_CONFIG_VERSION, SPEC_FILE_EXTENSION, STYLE_GUIDE_FILE_EXTENSION, STYLE_GUIDE_VERSION, SearchEngine, SemanticDiffManager, SemanticSnapshotManager, ShortcutTracker, SpecExecutor, SpecStore, State, StuckScreenDetector, TimelineBuffer, ToastCapture, ToastRingBuffer, TransitionTo, UIBridgeComponentScope, UIBridgeProvider, UIBridgeRegistry, UIBridgeWSClient, UIQuery, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, UiLayerExecutor, UndoDetector, UndoTracker, VALID_ASSERTION_TYPES, VALID_SPEC_CATEGORIES, VALID_SPEC_SEVERITIES, VALID_SPEC_SOURCES, WAIT_FOR_ELEMENT_STATES, WindowLocationAdapter, __resetGlobalBookmarkStoreForTest, __resetGlobalStubRegistryForTest, analyzeActionParity, analyzeFormat, analyzeMediaBatch, analyzeMediaElement, analyzeMediaPage, analyzePageFormats, analyzeStructuredChanges, areSynonyms, autoPopulateCtr, batch, buildAccessibilityAudit, buildNavigationMap, buildPerformanceAudit, captureDOMSnapshot, captureElementScreenshot, captureEnvironment, captureFormSnapshot, captureInteractiveElements, captureMediaSnapshot, captureResponsiveSnapshots, captureStateVariations, checkContrastCompliance, classList, classString, classifyDataType, classifyEvent, classifyEvents, classifyRegionType, classifyStatusDirection, clusterColors, coerceAssertionType, colorDistance, compareComponents, compareContent, compareFormats, compareLayouts, compareMediaSnapshots, compareVisualRegression, computeAllFingerprints, computeContrastRatio, computeCrossAppDiff, computeDiff, computeElementFingerprint, computeFingerprint, computeFingerprintsWithMapping, computeHash, computeHealthReport, computeHealthScore, computeHealthStatus, computeProminence, contrastRatio, controlBatch, createActionExecutor, createAdapterRegistry, createArtifact, createAssertionExecutor, createBaseline, createBrokenImagesFindRequest, createChangeTracker, createCtrEntry, createDiffManager, createErrorContext, createMediaFindRequest, createMetricsCollector, createMissingAltFindRequest, createNLActionExecutor, createNextjsAdapter, createOversizedImagesFindRequest, createReactRouterAdapter, createRenderLogManager, createSearchEngine, createSimpleError, createSnapshotManager, createStableRef, createWSClient, createWorkflowEngine, decomposeTarget, deduplicateEvents, demoteSelector, describeAction2 as describeAction, describeDiff, detectFormatPattern, detectGridStructure, detectList, detectTable, diffFormSnapshots, diffSnapshots, discoverForms, emitToast, evaluateConstraint, evaluateElementPredicate, evaluateQuality, extractMessage4 as extractMessage, extractModifiers, extractPageData, extractReactState, extractSourceLocation, extractStructuredData, fillFormFields, filterBySeverity, find, findAllMatches, findBestMatch, findElements, findNearestRegisteredElement, formatDuration, formatErrorContext, formatPercentage, fuzzyContains, fuzzyMatch, generateAliases, generateComparisonReport, generateDescription, generateDiffSummary, generateElementDescription, generateNgrams, generatePageSummary, generatePurpose, generateSnapshotSummary, generateSuggestedActions, getActiveOverlays, getBestRecoverySuggestion, getCSSCustomProperties, getContext, getElementDesignData, getEventStack, getExtendedComputedStyles, getGlobalAnnotationStore, getGlobalArtifactStore, getGlobalBookmarkStore, getGlobalCtr, getGlobalRegistry, getGlobalSpecStore, getGlobalStubRegistry, getSynonyms, getViableSelectors, hasSignificantChanges, hasViableSelectors, hueDistance, inferPageType, installFrameworkOverlayCapture, installStubFetchInterceptor, isGrayscale, isNavigationElement, isRecoverableError, isSatisfiedBy, isValidAssertionType, isValidSpecCategory, isValidSpecSeverity, isValidSpecSource, jaroSimilarity, jaroWinklerSimilarity, levenshteinDistance, levenshteinSimilarity, listContexts, matchElements, mergeContext, mightRequireFetch, migrateFromTestGeneratorOutput, migrateLegacyAssertion, migrateLegacyTarget, networkProbe, ngramSimilarity, normalizeCombo, normalizeString, normalizeValue, parseColor2 as parseColor, parseNLAssertion, parseNLInstruction, parseNLInstructions, parseNumericValue, parseRecency, pollForTaggedElement, pollWaitForElement, promoteSelector, relativeLuminance, requiresFetch, resetGlobalAnnotationStore, resetGlobalArtifactStore, resetGlobalCtr, resetGlobalSpecStore, resolveStableRef, resolveTarget, resolveTokenValue, rgbToHsl, runStyleAudit, scanValidationErrors, segmentPageRegions, serializeRegisteredElement, serializeSnapshot, setGlobalArtifactStore, setGlobalCtr, showClickHighlight, showElementHighlight, snapshotFromRegisteredElement, splitCompoundInstruction, summarizeFormDiff, toastBuffer, tokenSimilarity, tokenize, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useInspector, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIBridgeToasts, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo, validateContractConfig, validateElement, validateParsedAction, validateSpecAssertion, validateSpecConfig, validateSpecGroup, validateStubRequest, validateWaitForElementRequest, waitFor, waitForElement, waitForElementStable, wordSimilarity };
 //# sourceMappingURL=index.mjs.map
 //# sourceMappingURL=index.mjs.map

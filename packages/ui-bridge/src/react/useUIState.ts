@@ -6,10 +6,18 @@
 
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import type { UIState, UIStateGroup, StateSnapshot } from '../core/types';
+import { getGlobalAnnotationStore } from '../annotations';
+import type { IRElementCriteria, IRMetadata, IRProvenance } from './ir-types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
 /**
  * useUIState options
+ *
+ * The IR-emitting metadata fields (`metadata`, `provenance`, `requiredElements`)
+ * are part of Phase 4 of the UI Bridge Redesign — Section 1 Foundations. They
+ * are additive: existing callers that pass only the legacy fields keep
+ * working unchanged. Build plugins that extract `<State>` JSX wrappers fill
+ * in `provenance` automatically; hand-authored callers usually omit it.
  */
 export interface UseUIStateOptions {
   /** Unique identifier for the state */
@@ -28,12 +36,43 @@ export interface UseUIStateOptions {
   group?: string;
   /** Cost for pathfinding (default: 1.0) */
   pathCost?: number;
-  /** Custom metadata */
-  metadata?: Record<string, unknown>;
+  /** Custom metadata.
+   *
+   * The IR-canonical {@link IRMetadata} shape (description / purpose / tags /
+   * relatedElements / notes) is preferred and routes into the global
+   * annotation store at registration time. Arbitrary `Record<string, unknown>`
+   * is still accepted for backwards compatibility — when it does NOT match
+   * the IRMetadata shape, no annotation is written.
+   */
+  metadata?: IRMetadata | Record<string, unknown>;
+  /** IR-canonical predicate shape — element criteria that should resolve to
+   *  the elements belonging to this state. Authoring-time superset of
+   *  `elements`: the build plugin emits this; the runtime SDK still accepts
+   *  the legacy `elements: string[]` for hand-authored callers. If both are
+   *  provided, `requiredElements` wins. */
+  requiredElements?: IRElementCriteria[];
+  /** Where this declaration came from (set by build plugins). */
+  provenance?: IRProvenance;
   /** Whether to automatically register on mount */
   autoRegister?: boolean;
   /** Initial active state */
   initialActive?: boolean;
+}
+
+/**
+ * Best-effort detection of IR-shaped metadata so we know whether to forward
+ * it to the global annotation store. Conservative: rejects on any unknown
+ * key so we don't accidentally treat opaque `Record<string, unknown>` blobs
+ * as annotations. The shape is intentionally narrow — anything outside the
+ * documented IRMetadata fields is treated as legacy `metadata`.
+ */
+const IR_METADATA_KEYS = new Set(['description', 'purpose', 'tags', 'relatedElements', 'notes']);
+
+function isIRMetadata(value: unknown): value is IRMetadata {
+  if (!value || typeof value !== 'object') return false;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length === 0) return false;
+  return keys.every((k) => IR_METADATA_KEYS.has(k));
 }
 
 /**
@@ -102,16 +141,40 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
   const {
     id,
     name,
-    elements = [],
+    elements: rawElements,
+    requiredElements,
     activeWhen,
     blocking,
     blocks,
     group,
     pathCost,
-    metadata,
+    metadata: rawMetadata,
+    provenance: _provenance,
     autoRegister = true,
     initialActive = false,
   } = options;
+
+  // Normalize the metadata for the runtime registry, which keys it as
+  // `Record<string, unknown>`. `IRMetadata` (typed shape) and arbitrary
+  // record shapes both go through the same `as Record<string, unknown>` slot
+  // — the registry only round-trips the value, so this coercion is safe.
+  const metadata = rawMetadata as Record<string, unknown> | undefined;
+
+  // `requiredElements` (IR canonical) wins when both are provided. When the
+  // criteria carry an `id`, we promote it into the legacy `elements: string[]`
+  // contract that the runtime registry expects, preserving the existing
+  // element-grouping semantics. Criteria without an `id` are descriptive-only
+  // (resolved by the build plugin / adapter at IR time, not by this hook).
+  const elements = useMemo<string[]>(() => {
+    if (requiredElements && requiredElements.length > 0) {
+      const ids: string[] = [];
+      for (const criteria of requiredElements) {
+        if (criteria.id) ids.push(criteria.id);
+      }
+      return ids;
+    }
+    return rawElements ?? [];
+  }, [requiredElements, rawElements]);
 
   // Authoritative id of the currently-registered state. Captured at register
   // time (not at sync-effect time) so a prop change between register and the
@@ -271,6 +334,23 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
 
     return unsubscribe;
   }, [bridge, id]);
+
+  // IR metadata fan-out — when the caller passes IR-shaped metadata, we mirror
+  // it into the global annotation store keyed by each element ID. Mirrors the
+  // useUIAnnotation pattern (serialized-options ref) to avoid setState loops
+  // when consumers pass inline metadata objects.
+  const annotationKeyRef = useRef<string>('');
+  useEffect(() => {
+    if (!isIRMetadata(rawMetadata)) return;
+    if (elements.length === 0) return;
+    const serialized = JSON.stringify({ ids: elements, metadata: rawMetadata });
+    if (serialized === annotationKeyRef.current) return;
+    annotationKeyRef.current = serialized;
+    const store = getGlobalAnnotationStore();
+    for (const elementId of elements) {
+      store.set(elementId, rawMetadata);
+    }
+  }, [rawMetadata, elements]);
 
   // Activate state
   const activate = useCallback((): boolean => {

@@ -6,10 +6,18 @@
 
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import type { UITransition, TransitionResult, WorkflowStep } from '../core/types';
+import type { IREffect, IRMetadata, IRProvenance } from './ir-types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
 /**
  * useUITransition options
+ *
+ * The IR-emitting metadata fields (`effect`, `metadata`, `provenance`) are
+ * part of Phase 4 of the UI Bridge Redesign — Section 1 Foundations. They
+ * are additive: existing callers keep working unchanged. The values are
+ * stored on the registered transition's `metadata` bag (under `__ir`) for
+ * later consumption by the build plugin / counterfactual analysis pipeline
+ * (sections 6 and 9).
  */
 export interface UseUITransitionOptions {
   /** Unique identifier for the transition */
@@ -32,6 +40,15 @@ export interface UseUITransitionOptions {
   pathCost?: number;
   /** Whether source states remain visible during transition */
   staysVisible?: boolean;
+  /** Side-effect annotation. Drives counterfactual analysis (section 6) and
+   *  gates auto-regression generation (section 9) — destructive transitions
+   *  are excluded from automatic walks. Stored on the registered transition's
+   *  metadata bag; does NOT change runtime behavior in this section. */
+  effect?: IREffect;
+  /** IR-canonical semantic metadata routed through the global annotation store. */
+  metadata?: IRMetadata;
+  /** Where this declaration came from (set by build plugins). */
+  provenance?: IRProvenance;
   /** Whether to automatically register on mount */
   autoRegister?: boolean;
 }
@@ -97,8 +114,22 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
     actions,
     pathCost,
     staysVisible,
+    effect,
+    metadata: irMetadata,
+    provenance,
     autoRegister = true,
   } = options;
+
+  // Build the IR metadata bag stored on `transition.metadata.__ir`. This
+  // round-trips opaquely through the registry — runtime behavior unchanged.
+  const irBag = useMemo<Record<string, unknown> | undefined>(() => {
+    if (!effect && !irMetadata && !provenance) return undefined;
+    const bag: Record<string, unknown> = {};
+    if (effect) bag.effect = effect;
+    if (irMetadata) bag.metadata = irMetadata;
+    if (provenance) bag.provenance = provenance;
+    return { __ir: bag };
+  }, [effect, irMetadata, provenance]);
 
   // See useUIState for rationale on capturing id at register time.
   const registeredTransitionIdRef = useRef<string | null>(null);
@@ -118,6 +149,7 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
       actions,
       pathCost,
       staysVisible,
+      metadata: irBag,
     };
 
     bridge.registry.registerTransition(transition);
@@ -137,6 +169,7 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
     actions,
     pathCost,
     staysVisible,
+    irBag,
   ]);
 
   // Unregister the transition
@@ -185,6 +218,7 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
           exitGroups: exitGroups ?? null,
           pathCost: pathCost ?? null,
           staysVisible: staysVisible ?? null,
+          irBag: irBag ?? null,
         })
       : null;
   useEffect(() => {
@@ -200,6 +234,7 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
       actions,
       pathCost,
       staysVisible,
+      metadata: irBag,
     };
     const registeredTransitionId = registeredTransitionIdRef.current;
     if (registeredTransitionId === null) return;

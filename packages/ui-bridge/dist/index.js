@@ -27469,6 +27469,22 @@ function useUIBridgeRequired() {
   useUIBridgeContext();
   return useUIBridge();
 }
+
+// src/react/useUIState.ts
+init_annotations();
+var IR_METADATA_KEYS = /* @__PURE__ */ new Set([
+  "description",
+  "purpose",
+  "tags",
+  "relatedElements",
+  "notes"
+]);
+function isIRMetadata(value) {
+  if (!value || typeof value !== "object") return false;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+  return keys.every((k) => IR_METADATA_KEYS.has(k));
+}
 function useUIState(options) {
   const bridge2 = useUIBridgeOptional();
   const [registered, setRegistered] = react.useState(false);
@@ -27478,16 +27494,29 @@ function useUIState(options) {
   const {
     id,
     name,
-    elements: elements2 = [],
+    elements: rawElements,
+    requiredElements,
     activeWhen,
     blocking,
     blocks,
     group,
     pathCost,
-    metadata,
+    metadata: rawMetadata,
+    provenance: _provenance,
     autoRegister = true,
     initialActive = false
   } = options;
+  const metadata = rawMetadata;
+  const elements2 = react.useMemo(() => {
+    if (requiredElements && requiredElements.length > 0) {
+      const ids = [];
+      for (const criteria of requiredElements) {
+        if (criteria.id) ids.push(criteria.id);
+      }
+      return ids;
+    }
+    return rawElements ?? [];
+  }, [requiredElements, rawElements]);
   const registeredIdRef = react.useRef(null);
   const register = react.useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -27601,6 +27630,18 @@ function useUIState(options) {
     });
     return unsubscribe;
   }, [bridge2, id]);
+  const annotationKeyRef = react.useRef("");
+  react.useEffect(() => {
+    if (!isIRMetadata(rawMetadata)) return;
+    if (elements2.length === 0) return;
+    const serialized = JSON.stringify({ ids: elements2, metadata: rawMetadata });
+    if (serialized === annotationKeyRef.current) return;
+    annotationKeyRef.current = serialized;
+    const store = getGlobalAnnotationStore();
+    for (const elementId of elements2) {
+      store.set(elementId, rawMetadata);
+    }
+  }, [rawMetadata, elements2]);
   const activate = react.useCallback(() => {
     if (!bridge2) return false;
     const success = bridge2.registry.activateState(id);
@@ -27746,8 +27787,19 @@ function useUITransition(options) {
     actions,
     pathCost,
     staysVisible,
+    effect,
+    metadata: irMetadata,
+    provenance,
     autoRegister = true
   } = options;
+  const irBag = react.useMemo(() => {
+    if (!effect && !irMetadata && !provenance) return void 0;
+    const bag = {};
+    if (effect) bag.effect = effect;
+    if (irMetadata) bag.metadata = irMetadata;
+    if (provenance) bag.provenance = provenance;
+    return { __ir: bag };
+  }, [effect, irMetadata, provenance]);
   const registeredTransitionIdRef = react.useRef(null);
   const register = react.useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -27761,7 +27813,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     bridge2.registry.registerTransition(transition2);
     registeredRef.current = true;
@@ -27779,7 +27832,8 @@ function useUITransition(options) {
     exitGroups,
     actions,
     pathCost,
-    staysVisible
+    staysVisible,
+    irBag
   ]);
   const unregister = react.useCallback(() => {
     if (!bridge2 || !registeredRef.current) return;
@@ -27814,7 +27868,8 @@ function useUITransition(options) {
     activateGroups: activateGroups ?? null,
     exitGroups: exitGroups ?? null,
     pathCost: pathCost ?? null,
-    staysVisible: staysVisible ?? null
+    staysVisible: staysVisible ?? null,
+    irBag: irBag ?? null
   }) : null;
   react.useEffect(() => {
     if (!bridge2 || !registeredRef.current || transitionKey === null) return;
@@ -27828,7 +27883,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     const registeredTransitionId = registeredTransitionIdRef.current;
     if (registeredTransitionId === null) return;
@@ -27899,6 +27955,16 @@ function useAvailableTransitions() {
   }, [bridge2]);
   return available;
 }
+function State({ children, ...options }) {
+  useUIState(options);
+  return /* @__PURE__ */ jsxRuntime.jsx(react.Fragment, { children });
+}
+State.displayName = "UIBridge.State";
+function TransitionTo({ children, ...options }) {
+  useUITransition(options);
+  return /* @__PURE__ */ jsxRuntime.jsx(react.Fragment, { children });
+}
+TransitionTo.displayName = "UIBridge.TransitionTo";
 function useUINavigation() {
   const bridge2 = useUIBridgeOptional();
   const [isNavigating, setIsNavigating] = react.useState(false);
@@ -38447,9 +38513,11 @@ exports.STYLE_GUIDE_VERSION = STYLE_GUIDE_VERSION;
 exports.ShortcutTracker = ShortcutTracker;
 exports.SpecExecutor = SpecExecutor;
 exports.SpecStore = SpecStore;
+exports.State = State;
 exports.TimelineBuffer = TimelineBuffer;
 exports.ToastCapture = ToastCapture;
 exports.ToastRingBuffer = ToastRingBuffer;
+exports.TransitionTo = TransitionTo;
 exports.UIBridgeComponentScope = UIBridgeComponentScope;
 exports.UIBridgeProvider = UIBridgeProvider;
 exports.UIBridgeWSClient = UIBridgeWSClient;

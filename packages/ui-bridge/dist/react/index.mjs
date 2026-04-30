@@ -1,5 +1,5 @@
-import { createContext, useRef, useState, useMemo, useEffect, useCallback, useContext, useSyncExternalStore } from 'react';
-import { jsx, Fragment, jsxs } from 'react/jsx-runtime';
+import { createContext, useRef, useState, useMemo, useEffect, useCallback, useContext, useSyncExternalStore, Fragment } from 'react';
+import { jsx, Fragment as Fragment$1, jsxs } from 'react/jsx-runtime';
 
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -26633,6 +26633,22 @@ function useUIBridgeRequired() {
   useUIBridgeContext();
   return useUIBridge();
 }
+
+// src/react/useUIState.ts
+init_annotations();
+var IR_METADATA_KEYS = /* @__PURE__ */ new Set([
+  "description",
+  "purpose",
+  "tags",
+  "relatedElements",
+  "notes"
+]);
+function isIRMetadata(value) {
+  if (!value || typeof value !== "object") return false;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+  return keys.every((k) => IR_METADATA_KEYS.has(k));
+}
 function useUIState(options) {
   const bridge2 = useUIBridgeOptional();
   const [registered, setRegistered] = useState(false);
@@ -26642,16 +26658,29 @@ function useUIState(options) {
   const {
     id,
     name,
-    elements: elements2 = [],
+    elements: rawElements,
+    requiredElements,
     activeWhen,
     blocking,
     blocks,
     group,
     pathCost,
-    metadata,
+    metadata: rawMetadata,
+    provenance: _provenance,
     autoRegister = true,
     initialActive = false
   } = options;
+  const metadata = rawMetadata;
+  const elements2 = useMemo(() => {
+    if (requiredElements && requiredElements.length > 0) {
+      const ids = [];
+      for (const criteria of requiredElements) {
+        if (criteria.id) ids.push(criteria.id);
+      }
+      return ids;
+    }
+    return rawElements ?? [];
+  }, [requiredElements, rawElements]);
   const registeredIdRef = useRef(null);
   const register = useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -26765,6 +26794,18 @@ function useUIState(options) {
     });
     return unsubscribe;
   }, [bridge2, id]);
+  const annotationKeyRef = useRef("");
+  useEffect(() => {
+    if (!isIRMetadata(rawMetadata)) return;
+    if (elements2.length === 0) return;
+    const serialized = JSON.stringify({ ids: elements2, metadata: rawMetadata });
+    if (serialized === annotationKeyRef.current) return;
+    annotationKeyRef.current = serialized;
+    const store = getGlobalAnnotationStore();
+    for (const elementId of elements2) {
+      store.set(elementId, rawMetadata);
+    }
+  }, [rawMetadata, elements2]);
   const activate = useCallback(() => {
     if (!bridge2) return false;
     const success = bridge2.registry.activateState(id);
@@ -26910,8 +26951,19 @@ function useUITransition(options) {
     actions,
     pathCost,
     staysVisible,
+    effect,
+    metadata: irMetadata,
+    provenance,
     autoRegister = true
   } = options;
+  const irBag = useMemo(() => {
+    if (!effect && !irMetadata && !provenance) return void 0;
+    const bag = {};
+    if (effect) bag.effect = effect;
+    if (irMetadata) bag.metadata = irMetadata;
+    if (provenance) bag.provenance = provenance;
+    return { __ir: bag };
+  }, [effect, irMetadata, provenance]);
   const registeredTransitionIdRef = useRef(null);
   const register = useCallback(() => {
     if (!bridge2 || registeredRef.current) return;
@@ -26925,7 +26977,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     bridge2.registry.registerTransition(transition2);
     registeredRef.current = true;
@@ -26943,7 +26996,8 @@ function useUITransition(options) {
     exitGroups,
     actions,
     pathCost,
-    staysVisible
+    staysVisible,
+    irBag
   ]);
   const unregister = useCallback(() => {
     if (!bridge2 || !registeredRef.current) return;
@@ -26978,7 +27032,8 @@ function useUITransition(options) {
     activateGroups: activateGroups ?? null,
     exitGroups: exitGroups ?? null,
     pathCost: pathCost ?? null,
-    staysVisible: staysVisible ?? null
+    staysVisible: staysVisible ?? null,
+    irBag: irBag ?? null
   }) : null;
   useEffect(() => {
     if (!bridge2 || !registeredRef.current || transitionKey === null) return;
@@ -26992,7 +27047,8 @@ function useUITransition(options) {
       exitGroups,
       actions,
       pathCost,
-      staysVisible
+      staysVisible,
+      metadata: irBag
     };
     const registeredTransitionId = registeredTransitionIdRef.current;
     if (registeredTransitionId === null) return;
@@ -27063,6 +27119,16 @@ function useAvailableTransitions() {
   }, [bridge2]);
   return available;
 }
+function State({ children, ...options }) {
+  useUIState(options);
+  return /* @__PURE__ */ jsx(Fragment, { children });
+}
+State.displayName = "UIBridge.State";
+function TransitionTo({ children, ...options }) {
+  useUITransition(options);
+  return /* @__PURE__ */ jsx(Fragment, { children });
+}
+TransitionTo.displayName = "UIBridge.TransitionTo";
 function useUINavigation() {
   const bridge2 = useUIBridgeOptional();
   const [isNavigating, setIsNavigating] = useState(false);
@@ -27184,7 +27250,7 @@ function AutoRegisterProvider({
   if (scopeToChildren) {
     return /* @__PURE__ */ jsx("div", { ref: containerRef, style: { display: "contents" }, children });
   }
-  return /* @__PURE__ */ jsx(Fragment, { children });
+  return /* @__PURE__ */ jsx(Fragment$1, { children });
 }
 
 // src/react/useUIAnnotation.ts
@@ -31349,6 +31415,6 @@ function useBuildIdWatcher(options = {}) {
   }, [healthStreamUrl, pollUrl, hasGetCurrentBuildId, pollIntervalMs]);
 }
 
-export { AutoRegisterProvider, CaptureHostFrame, CommandRelayListener, DEFAULT_CAPTURE_HOST_IDS, UIBridgeComponentScope, UIBridgeProvider, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, pollForTaggedElement, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo };
+export { AutoRegisterProvider, CaptureHostFrame, CommandRelayListener, DEFAULT_CAPTURE_HOST_IDS, State, TransitionTo, UIBridgeComponentScope, UIBridgeProvider, UI_BRIDGE_CONTENT_ATTR, UI_BRIDGE_ID_ATTR, UI_BRIDGE_PERSIST_ATTR, UI_BRIDGE_ROLE_ATTR, UI_BRIDGE_TEST_ID_ATTR, pollForTaggedElement, trackElementBbox, useActiveStates, useAutoRegister, useAvailableTransitions, useBuildIdWatcher, useCanNavigateTo, useCommandRelay, useDragSource, useDropZone, useKeyboardShortcuts, useNavigationPath, useOwningComponent, usePageContext, useRouteAwareness, useStateSnapshot, useTransitions, useUIAnnotation, useUIBridge, useUIBridgeContext, useUIBridgeEcho, useUIBridgeOptional, useUIBridgeRequired, useUIComponent, useUIComponentAction, useUIElement, useUIElementRef, useUINavigation, useUIRelationship, useUIRelationships, useUIState, useUIStateGroup, useUITransition, useUndoRedo };
 //# sourceMappingURL=index.mjs.map
 //# sourceMappingURL=index.mjs.map

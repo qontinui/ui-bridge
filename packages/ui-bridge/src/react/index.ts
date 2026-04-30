@@ -67,6 +67,16 @@ export {
   type UseUITransitionReturn,
 } from './useUITransition';
 
+// IR-emitting JSX wrappers (Phase 4 / UI Bridge Redesign Section 1).
+// Authoring-time sugar — compile to useUIState / useUITransition under the
+// hood. Render a Fragment so they have no DOM impact.
+export { State, type StateProps } from './State';
+export { TransitionTo, type TransitionToProps } from './TransitionTo';
+
+// IR shape re-exports — kept narrow on purpose. These mirror the canonical
+// types published at @qontinui/shared-types/ui-bridge-ir.
+export type { IREffect, IRElementCriteria, IRMetadata, IRProvenance } from './ir-types';
+
 // Navigation hook
 export {
   useUINavigation,
