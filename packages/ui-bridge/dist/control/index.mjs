@@ -2144,11 +2144,19 @@ var DefaultActionExecutor = class {
         return this.performScroll(element, params);
       case "scrollIntoView": {
         const scrollParams = params;
-        return element.scrollIntoView({
+        if (typeof window !== "undefined" && window.innerWidth > 0 && window.innerHeight > 0 && typeof element.getBoundingClientRect === "function") {
+          const rect = element.getBoundingClientRect();
+          const fullyVisible = rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+          if (fullyVisible) {
+            return { alreadyVisible: true, scrolled: false };
+          }
+        }
+        element.scrollIntoView({
           behavior: scrollParams?.smooth ? "smooth" : "auto",
           block: scrollParams?.block || "center",
           inline: scrollParams?.inline || "nearest"
         });
+        return { alreadyVisible: false, scrolled: true };
       }
       case "check":
         return this.performCheck(element, true);

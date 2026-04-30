@@ -16936,11 +16936,19 @@ var DefaultActionExecutor = class {
         return this.performScroll(element, params);
       case "scrollIntoView": {
         const scrollParams = params;
-        return element.scrollIntoView({
+        if (typeof window !== "undefined" && window.innerWidth > 0 && window.innerHeight > 0 && typeof element.getBoundingClientRect === "function") {
+          const rect = element.getBoundingClientRect();
+          const fullyVisible = rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+          if (fullyVisible) {
+            return { alreadyVisible: true, scrolled: false };
+          }
+        }
+        element.scrollIntoView({
           behavior: scrollParams?.smooth ? "smooth" : "auto",
           block: scrollParams?.block || "center",
           inline: scrollParams?.inline || "nearest"
         });
+        return { alreadyVisible: false, scrolled: true };
       }
       case "check":
         return this.performCheck(element, true);
@@ -26638,13 +26646,7 @@ function useUIBridgeRequired() {
 
 // src/react/useUIState.ts
 init_annotations();
-var IR_METADATA_KEYS = /* @__PURE__ */ new Set([
-  "description",
-  "purpose",
-  "tags",
-  "relatedElements",
-  "notes"
-]);
+var IR_METADATA_KEYS = /* @__PURE__ */ new Set(["description", "purpose", "tags", "relatedElements", "notes"]);
 function isIRMetadata(value) {
   if (!value || typeof value !== "object") return false;
   const keys = Object.keys(value);
@@ -28116,13 +28118,34 @@ async function executeCommand(action, payload, bridge) {
             const sivBehavior = sivParams?.smooth !== false ? "smooth" : "auto";
             const sivBlock = sivParams?.block || "center";
             const sivInline = sivParams?.inline || "nearest";
+            const sivRect = dom.getBoundingClientRect();
+            const sivFullyVisible = typeof window !== "undefined" && window.innerWidth > 0 && window.innerHeight > 0 && sivRect.width > 0 && sivRect.height > 0 && sivRect.top >= 0 && sivRect.left >= 0 && sivRect.bottom <= window.innerHeight && sivRect.right <= window.innerWidth;
+            if (sivFullyVisible) {
+              return {
+                success: true,
+                action: "scrollIntoView",
+                elementId: id,
+                durationMs: performance.now() - startTime,
+                alreadyVisible: true,
+                scrolled: false,
+                timestamp: Date.now()
+              };
+            }
             dom.scrollIntoView({ behavior: sivBehavior, block: sivBlock, inline: sivInline });
             if (sivBehavior === "smooth") {
               await new Promise((r) => setTimeout(r, 400));
             } else {
               await new Promise((r) => setTimeout(r, 16));
             }
-            break;
+            return {
+              success: true,
+              action: "scrollIntoView",
+              elementId: id,
+              durationMs: performance.now() - startTime,
+              alreadyVisible: false,
+              scrolled: true,
+              timestamp: Date.now()
+            };
           }
           case "scroll": {
             const scrollParams = request.params;
