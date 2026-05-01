@@ -682,6 +682,13 @@ curl $BASE/ai/bookmarks/before-test/diff
 Bookmarks live in a process-wide singleton — `save` and `list` always
 agree, regardless of which dispatcher path served the request.
 
+**Path naming.** The list/save endpoints use the plural `/ai/bookmarks`;
+the per-resource endpoints historically used the singular
+`/ai/bookmark/:name` and `/ai/bookmark/:name/diff`. As of 2026-05-01 the
+plural variants are also accepted (`/ai/bookmarks/:name`,
+`/ai/bookmarks/:name/diff`) for symmetry with list/save. Both forms hit
+the same handlers; prefer the plural for new code.
+
 ## Forms
 
 ```bash

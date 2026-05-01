@@ -340,10 +340,17 @@ var UI_BRIDGE_ROUTES = [
   { method: "POST", path: "/ai/change-buffer/disable", handler: "disableChangeBuffer" },
   { method: "POST", path: "/ai/change-buffer/drain", handler: "drainChangeBuffer" },
   { method: "GET", path: "/ai/change-buffer/size", handler: "getChangeBufferSize" },
-  // Snapshot bookmarks (static routes before parameterized)
+  // Snapshot bookmarks (static routes before parameterized).
+  //
+  // The list/save endpoints use the plural `/ai/bookmarks` while the
+  // per-resource endpoints historically used the singular `/ai/bookmark/:name`.
+  // The plural variants are aliased to the same handlers so callers reading
+  // the canonical reference (which uses plural throughout) don't hit 404s
+  // when paths drift in their head.
   { method: "POST", path: "/ai/bookmarks", handler: "saveBookmark", bodyRequired: true },
   { method: "GET", path: "/ai/bookmarks", handler: "listBookmarks" },
   { method: "GET", path: "/ai/bookmark/:name", handler: "getBookmark", params: ["name"] },
+  { method: "GET", path: "/ai/bookmarks/:name", handler: "getBookmark", params: ["name"] },
   {
     method: "DELETE",
     path: "/ai/bookmark/:name",
@@ -351,8 +358,20 @@ var UI_BRIDGE_ROUTES = [
     params: ["name"]
   },
   {
+    method: "DELETE",
+    path: "/ai/bookmarks/:name",
+    handler: "deleteBookmark",
+    params: ["name"]
+  },
+  {
     method: "GET",
     path: "/ai/bookmark/:name/diff",
+    handler: "diffFromBookmark",
+    params: ["name"]
+  },
+  {
+    method: "GET",
+    path: "/ai/bookmarks/:name/diff",
     handler: "diffFromBookmark",
     params: ["name"]
   },
