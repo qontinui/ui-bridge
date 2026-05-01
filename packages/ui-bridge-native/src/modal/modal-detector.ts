@@ -31,8 +31,14 @@ export class ModalDetector {
     this.modals.set(modal.id, next);
   }
 
-  dismissModal(id: string): void {
-    this.modals.delete(id);
+  /**
+   * Remove a modal from the stack. Returns `true` if a modal with that id
+   * was actually deleted, `false` if nothing matched (idempotent so repeated
+   * calls don't throw, but callers — e.g. the HTTP test-hook endpoint — can
+   * surface the miss to clients).
+   */
+  dismissModal(id: string): boolean {
+    return this.modals.delete(id);
   }
 
   getSnapshotModalContext(): NativeSnapshotModalContext {

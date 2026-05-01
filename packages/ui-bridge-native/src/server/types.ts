@@ -75,6 +75,13 @@ export interface NativeServerConfig extends NativeUIBridgeConfig {
   cors?: boolean;
   /** Allowed origins for CORS */
   allowedOrigins?: string[];
+  /**
+   * Enable test-only HTTP endpoints (currently `control/modal/push` and
+   * `control/modal/dismiss/:id`) so external runners can drive registry
+   * state. Default `false`; the React provider mirrors
+   * `features.testHooks` into this slot.
+   */
+  testHooks?: boolean;
 }
 
 /**
@@ -229,6 +236,20 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Fill multiple input elements in a single call',
   },
 
+  // Test hooks — drive ModalDetector state from outside the React tree
+  // (gated by `features.testHooks`). Mirrors `pushModal` / `dismissModal`
+  // calls that components normally make in-process.
+  PUSH_MODAL: {
+    method: 'POST',
+    path: '/ui-bridge/control/modal/push',
+    description: 'Push a modal onto the modal stack (testHooks)',
+  },
+  DISMISS_MODAL: {
+    method: 'POST',
+    path: '/ui-bridge/control/modal/dismiss/:id',
+    description: 'Dismiss a modal by id (testHooks)',
+  },
+
   // Health
   HEALTH: {
     method: 'GET',
@@ -280,6 +301,42 @@ export interface FillFormResponse {
   results: FillFormFieldResult[];
   succeededCount: number;
   failedCount: number;
+}
+
+/**
+ * Request body for `POST /control/modal/push`.
+ *
+ * Mirrors `ModalDetector.pushModal`'s `ModalPushInput` shape; `metadata` is
+ * a free-form object the test runner can stash for later assertions but is
+ * not currently surfaced in the snapshot.
+ */
+export interface PushModalRequest {
+  id: string;
+  title?: string;
+  type?: string;
+  blocking?: boolean;
+  dismissible?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Response payload for `POST /control/modal/push`.
+ */
+export interface PushModalResponse {
+  pushed: boolean;
+  id: string;
+  title?: string;
+  type?: string;
+  blocking?: boolean;
+  dismissible?: boolean;
+  pushedAt: number;
+}
+
+/**
+ * Response payload for `POST /control/modal/dismiss/:id`.
+ */
+export interface DismissModalResponse {
+  dismissed: string;
 }
 
 /**
@@ -379,6 +436,10 @@ export interface NativeServerHandlers {
 
   // AI helpers
   fillForm: HandlerFunction<FillFormResponse>;
+
+  // Test hooks — modal stack manipulation
+  pushModal: HandlerFunction<PushModalResponse>;
+  dismissModal: HandlerFunction<DismissModalResponse>;
 
   // Health
   health: HandlerFunction<Record<string, unknown>>;

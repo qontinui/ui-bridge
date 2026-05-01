@@ -232,6 +232,7 @@ export function UIBridgeNativeProvider({
       serverPort: config.serverPort || 8087,
       cors: true,
       appInfo: config.appInfo,
+      testHooks: features.testHooks === true,
     });
 
     server.setAdapter(serverAdapter);
@@ -308,6 +309,7 @@ export function UIBridgeNativeProvider({
     }
   }, [
     features.server,
+    features.testHooks,
     config.serverPort,
     config.appInfo,
     registry,
@@ -361,6 +363,7 @@ export function UIBridgeNativeProvider({
             serverPort: config.serverPort || 8087,
             cors: true,
             appInfo: config.appInfo,
+            testHooks: features.testHooks === true,
           });
           if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
           if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);

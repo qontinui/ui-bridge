@@ -491,12 +491,32 @@ export interface NativeSnapshotUndoContext {
 }
 
 /**
+ * Modal-stack tracker contract. Surfaced in NativeSnapshotEnrichers so the
+ * test-hook HTTP endpoints (`control/modal/push`, `control/modal/dismiss/:id`)
+ * can drive the same instance the snapshot reads from. Any duck-typed
+ * implementation that satisfies this shape can fill the slot — production
+ * uses the `ModalDetector` class.
+ */
+export interface NativeModalDetectorLike {
+  getSnapshotModalContext(): NativeSnapshotModalContext;
+  pushModal(modal: {
+    id: string;
+    title?: string;
+    type?: NativeModalInfo['type'];
+    blocking?: boolean;
+    dismissible?: boolean;
+  }): void;
+  dismissModal(id: string): boolean | void;
+  getActive(): NativeModalInfo[];
+}
+
+/**
  * Canonical enricher slot. Each tracker exposes a `getSnapshot*Context()` method
  * that the registry calls during `createSnapshot`. NavigationTracker is intentionally
  * NOT here — route info already flows through `currentRoute` / `segments`.
  */
 export interface NativeSnapshotEnrichers {
-  modalDetector?: { getSnapshotModalContext(): NativeSnapshotModalContext };
+  modalDetector?: NativeModalDetectorLike;
   toastCapture?: { getSnapshotToastContext(): NativeSnapshotToastContext };
   undoTracker?: { getSnapshotUndoContext(): NativeSnapshotUndoContext };
 }
@@ -519,6 +539,14 @@ export interface NativeUIBridgeFeatures {
   server?: boolean;
   /** Enable debug tools (inspector overlay) */
   debug?: boolean;
+  /**
+   * Enable test-only HTTP endpoints that let external runners drive
+   * registry-internal state (currently `control/modal/push` and
+   * `control/modal/dismiss/:id`). Default `false` so production builds
+   * cannot have their modal stack manipulated remotely; set to `true`
+   * (typically gated on `__DEV__`) when running automated tests.
+   */
+  testHooks?: boolean;
 }
 
 /**

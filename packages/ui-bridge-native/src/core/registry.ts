@@ -156,6 +156,17 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Read-only accessor for the canonical enrichers slot. Returned object is
+   * the live reference, so callers can detect "no detector wired" via
+   * `getEnrichers().modalDetector === undefined`. Used by the test-hook HTTP
+   * handlers (`control/modal/push`, `control/modal/dismiss/:id`) which need
+   * to drive the ModalDetector directly without re-instantiating it.
+   */
+  getEnrichers(): Readonly<NativeSnapshotEnrichers> {
+    return this.enrichers;
+  }
+
+  /**
    * Register a custom snapshot enricher. The returned object will be
    * `Object.assign`ed onto the snapshot, so use unique top-level keys to avoid
    * clobbering canonical fields. Returns a disposer.

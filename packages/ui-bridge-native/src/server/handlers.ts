@@ -5,15 +5,23 @@
  */
 
 import { type NativeUIBridgeRegistry, extractHandlerNames } from '../core/registry';
-import type { NativeElementType, WaitOptions, WorkflowStep } from '../core/types';
+import type {
+  NativeElementType,
+  NativeModalInfo,
+  WaitOptions,
+  WorkflowStep,
+} from '../core/types';
 import type { NativeActionExecutor } from '../control/types';
 import type {
   APIResponse,
+  DismissModalResponse,
   FillFormFieldInput,
   FillFormFieldResult,
   FillFormResponse,
   HandlerContext,
   NativeServerHandlers,
+  PushModalRequest,
+  PushModalResponse,
 } from './types';
 import { createDesignHandlers } from './design-handlers';
 
@@ -429,8 +437,23 @@ export function createServerHandlers(
     },
 
     // Discovery
+    //
+    // Native parity with the runner's `POST /ui-bridge/ai/find`. The runner
+    // matches a free-text `query` against label > text > value > aria-label >
+    // placeholder > name. We replicate that here against the native registry's
+    // analogues:
+    //   1. `label` (the registered display label)
+    //   2. identifier fields: `testId`, `accessibilityLabel`, `treePath`, `uiId`
+    //   3. registered handler names (e.g. `onPress`, `onChangeText`)
+    //
+    // Match is case-insensitive substring. Empty/missing query falls back to
+    // the structured filters (types/visibleOnly/etc.) so callers that don't
+    // pass `query` still get the legacy behaviour. Once we've narrowed by
+    // query the response is shaped through the executor's NativeFindResponse
+    // envelope so the wire format stays stable.
     find: async (ctx: HandlerContext) => {
       const body = ctx.body as {
+        query?: string;
         types?: NativeElementType[];
         testIdPattern?: string;
         accessibilityLabelPattern?: string;
@@ -443,10 +466,68 @@ export function createServerHandlers(
         testIdPattern: body?.testIdPattern,
         accessibilityLabelPattern: body?.accessibilityLabelPattern,
         visibleOnly: body?.visibleOnly,
-        limit: body?.limit,
+        // When `query` is supplied we apply our own limit *after* ranking so
+        // the highest-priority matches survive the cap; defer slicing to us
+        // by widening here.
+        limit: body?.query && body.query.length > 0 ? undefined : body?.limit,
       });
 
-      return success(response);
+      const rawQuery = typeof body?.query === 'string' ? body.query.trim() : '';
+      if (rawQuery.length === 0) {
+        return success(response);
+      }
+
+      const needle = rawQuery.toLowerCase();
+      const containsNeedle = (value: unknown): boolean =>
+        typeof value === 'string' && value.toLowerCase().includes(needle);
+
+      // Score each discovered element by best-priority field match. Lower
+      // priorityRank wins; ties keep registry insertion order (stable sort).
+      const scored: Array<{ priorityRank: number; element: (typeof response.elements)[number] }> =
+        [];
+
+      for (const el of response.elements) {
+        let priorityRank = Number.POSITIVE_INFINITY;
+
+        // 1. label
+        if (containsNeedle(el.label)) {
+          priorityRank = Math.min(priorityRank, 0);
+        }
+
+        // 2. identifier fields
+        const ident = el.identifier;
+        if (ident) {
+          if (containsNeedle(ident.testId)) priorityRank = Math.min(priorityRank, 1);
+          if (containsNeedle(ident.accessibilityLabel)) priorityRank = Math.min(priorityRank, 1);
+          if (containsNeedle(ident.treePath)) priorityRank = Math.min(priorityRank, 1);
+          if (containsNeedle(ident.uiId)) priorityRank = Math.min(priorityRank, 1);
+        }
+
+        // 3. registered handler names — pull from the registry since the
+        // discovered envelope doesn't include props.
+        if (priorityRank === Number.POSITIVE_INFINITY) {
+          const registered = registry.getElement(el.id);
+          const handlers = extractHandlerNames(registered?.props);
+          if (handlers.some((h) => h.toLowerCase().includes(needle))) {
+            priorityRank = 2;
+          }
+        }
+
+        if (priorityRank !== Number.POSITIVE_INFINITY) {
+          scored.push({ priorityRank, element: el });
+        }
+      }
+
+      scored.sort((a, b) => a.priorityRank - b.priorityRank);
+
+      const limit = body?.limit && body.limit > 0 ? body.limit : undefined;
+      const filtered = limit ? scored.slice(0, limit) : scored;
+
+      return success({
+        ...response,
+        elements: filtered.map((s) => s.element),
+        total: filtered.length,
+      });
     },
 
     getSnapshot: async (ctx: HandlerContext) => {
@@ -653,6 +734,99 @@ export function createServerHandlers(
       const failedCount = results.length - succeededCount;
 
       return success({ results, succeededCount, failedCount });
+    },
+
+    // Test hooks — modal stack manipulation
+    //
+    // These two endpoints exist so external automation runners can drive
+    // ModalDetector state via HTTP, mirroring the in-tree `pushModal` /
+    // `dismissModal` calls that components normally make. They're gated by
+    // `features.testHooks` at the route layer (see http-server.ts); the
+    // handlers themselves still defend against a missing modalDetector
+    // because the bare server path used by CloudRelayClient may run before
+    // enrichers are wired.
+    pushModal: async (ctx: HandlerContext): Promise<APIResponse<PushModalResponse>> => {
+      const detector = registry.getEnrichers().modalDetector;
+      if (!detector) {
+        return error<PushModalResponse>(
+          'modal detector not registered',
+          'ENRICHER_UNAVAILABLE'
+        );
+      }
+
+      const body = ctx.body as Partial<PushModalRequest> | undefined;
+      const id = body?.id;
+      if (typeof id !== 'string' || id.length === 0) {
+        return error<PushModalResponse>(
+          'pushModal requires a non-empty "id"',
+          'INVALID_REQUEST'
+        );
+      }
+
+      const allowedTypes = ['modal', 'sheet', 'drawer', 'popover', 'alertdialog', 'dialog'];
+      const requestedType = body?.type;
+      if (
+        requestedType !== undefined &&
+        (typeof requestedType !== 'string' || !allowedTypes.includes(requestedType))
+      ) {
+        return error<PushModalResponse>(
+          `pushModal "type" must be one of: ${allowedTypes.join(', ')}`,
+          'INVALID_REQUEST'
+        );
+      }
+
+      detector.pushModal({
+        id,
+        title: body?.title,
+        // requestedType is narrowed by the allowedTypes guard above; the cast
+        // converts the validated string to the NativeModalInfo['type'] union.
+        type: requestedType as NativeModalInfo['type'] | undefined,
+        blocking: body?.blocking,
+        dismissible: body?.dismissible,
+      });
+
+      // Pull the canonicalised entry back out so the response reflects what's
+      // actually in the stack (defaults applied, detectedAt populated).
+      const stored = detector.getActive().find((m) => m.id === id);
+      return success<PushModalResponse>({
+        pushed: true,
+        id,
+        title: stored?.title,
+        type: stored?.type,
+        blocking: stored?.blocking,
+        dismissible: stored?.dismissible,
+        pushedAt: stored?.detectedAt ?? Date.now(),
+      });
+    },
+
+    dismissModal: async (ctx: HandlerContext): Promise<APIResponse<DismissModalResponse>> => {
+      const detector = registry.getEnrichers().modalDetector;
+      if (!detector) {
+        return error<DismissModalResponse>(
+          'modal detector not registered',
+          'ENRICHER_UNAVAILABLE'
+        );
+      }
+
+      const { id } = ctx.params;
+      if (typeof id !== 'string' || id.length === 0) {
+        return error<DismissModalResponse>(
+          'dismissModal requires a modal id in the path',
+          'INVALID_REQUEST'
+        );
+      }
+
+      // The slot type allows `dismissModal` to return either `boolean` (the
+      // canonical ModalDetector class) or `void` (legacy/duck-typed impls).
+      // Probe via `getActive()` first so the result is consistent regardless
+      // of the implementation's return signal.
+      const wasPresent = detector.getActive().some((m) => m.id === id);
+      if (!wasPresent) {
+        return error<DismissModalResponse>(`modal not found: ${id}`, 'MODAL_NOT_FOUND');
+      }
+
+      detector.dismissModal(id);
+      return success<DismissModalResponse>({ dismissed: id });
     },
 
     // Design Review

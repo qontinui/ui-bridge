@@ -82,6 +82,13 @@ interface WsRoute {
    * a single pattern to serve GET+POST etc.
    */
   httpMethods?: readonly HttpVerb[];
+  /**
+   * When true, the route is only mounted (HTTP + WS + manifest) when the
+   * server config opts in via `testHooks`. Production builds default to
+   * `testHooks: false` so these endpoints simply don't exist in the route
+   * table — agents probing `/_routes` won't see them.
+   */
+  requiresTestHooks?: boolean;
 }
 
 const WS_ROUTES: readonly WsRoute[] = [
@@ -154,6 +161,22 @@ const WS_ROUTES: readonly WsRoute[] = [
 
   // AI helpers — mobile parity with the runner's `/ui-bridge/ai/*` family.
   { pattern: 'ai/fill-form', handler: 'fillForm', httpMethods: ['POST'] },
+
+  // Test hooks — gated behind `features.testHooks`. Let external runners
+  // drive the ModalDetector over HTTP so tests can flip `snapshot.modalStack`
+  // without mounting React components.
+  {
+    pattern: 'control/modal/push',
+    handler: 'pushModal',
+    httpMethods: ['POST'],
+    requiresTestHooks: true,
+  },
+  {
+    pattern: 'control/modal/dismiss/:id',
+    handler: 'dismissModal',
+    httpMethods: ['POST'],
+    requiresTestHooks: true,
+  },
 ];
 
 // ── _help payload ───────────────────────────────────────────────────────────
@@ -198,6 +221,10 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   getMethods: 'List every handler name (legacy introspection)',
   fillForm:
     'Fill multiple inputs in one call: body { fields: [{elementId, value}] } — each field dispatches `type` + `clear:true`',
+  pushModal:
+    'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
+  dismissModal:
+    'TEST HOOK — dismiss a modal by id from the snapshot.modalStack via the registry ModalDetector',
 };
 
 /** Static reference for common action names + their params. */
@@ -221,12 +248,13 @@ const ACTION_REFERENCE = [
 /**
  * Minimal `{method, path}` list matching the runner's `/_routes` shape so
  * the same URL works across platforms. Expanded multi-verb routes into one
- * entry per verb.
+ * entry per verb. `testHooks` enables the gated `control/modal/*` endpoints.
  */
-function buildRoutesPayload() {
+function buildRoutesPayload(testHooks: boolean) {
   const entries: Array<{ method: string; path: string }> = [];
   for (const r of WS_ROUTES) {
     if (!r.httpMethods) continue;
+    if (r.requiresTestHooks && !testHooks) continue;
     for (const m of r.httpMethods) {
       entries.push({ method: m, path: `/ui-bridge/${r.pattern}` });
     }
@@ -241,12 +269,14 @@ function buildRoutesPayload() {
 /**
  * Build the `/_help` payload: route index + action reference.
  * Cheap to compute; we don't cache since it's rarely called.
+ * Routes that require `testHooks` are filtered out when the flag is off so
+ * agents probing the manifest never see endpoints they can't call.
  */
-function buildHelpPayload() {
+function buildHelpPayload(testHooks: boolean) {
   return {
     version: 1,
     description: 'UI Bridge Native HTTP surface. Prefix every path with /ui-bridge/.',
-    routes: WS_ROUTES.map((r) => ({
+    routes: WS_ROUTES.filter((r) => !r.requiresTestHooks || testHooks).map((r) => ({
       pattern: r.pattern,
       httpMethods: r.httpMethods ?? [],
       wsOnly: !r.httpMethods,
@@ -353,7 +383,8 @@ export class NativeUIBridgeServer {
 
     // Set up method introspection from the route table
     this.handlers.getMethods = async () => {
-      const methods = WS_ROUTES.map((r) => ({
+      const testHooks = this.config.testHooks === true;
+      const methods = WS_ROUTES.filter((r) => !r.requiresTestHooks || testHooks).map((r) => ({
         method: r.pattern,
         httpMethods: r.httpMethods ? [...r.httpMethods] : undefined,
       }));
@@ -1198,9 +1229,13 @@ export class NativeUIBridgeServer {
     method: string,
     params: Record<string, unknown>
   ): Promise<APIResponse> {
+    const testHooks = this.config.testHooks === true;
     for (const route of WS_ROUTES) {
       const pathParams = parsePath(route.pattern, method);
       if (!pathParams) continue;
+
+      // Test-hook routes are invisible over WS too when the flag is off.
+      if (route.requiresTestHooks && !testHooks) continue;
 
       const ctx: HandlerContext = {
         params: pathParams,
@@ -1301,17 +1336,19 @@ export class NativeUIBridgeServer {
     //   - `_routes` (minimal) — runner-compatible shape for parity
     // Lets agents fetch a single URL on either runner or mobile to see what
     // they can do without reading docs.
+    const testHooks = this.config.testHooks === true;
+
     if (method === 'GET' && stripped === '_help') {
       return {
         success: true,
-        data: buildHelpPayload(),
+        data: buildHelpPayload(testHooks),
         timestamp: Date.now(),
       };
     }
     if (method === 'GET' && stripped === '_routes') {
       return {
         success: true,
-        data: buildRoutesPayload(),
+        data: buildRoutesPayload(testHooks),
         timestamp: Date.now(),
       };
     }
@@ -1325,6 +1362,11 @@ export class NativeUIBridgeServer {
       // Pattern matches — now filter on HTTP verb.
       if (!route.httpMethods) {
         // WS-only route; don't serve on HTTP.
+        continue;
+      }
+      // Route gated by `testHooks`: behave as if it isn't registered when
+      // the flag is off so production builds get a vanilla NOT_FOUND.
+      if (route.requiresTestHooks && !testHooks) {
         continue;
       }
       if (!route.httpMethods.includes(method as HttpVerb)) {
