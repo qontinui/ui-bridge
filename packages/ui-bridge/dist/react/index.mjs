@@ -1232,8 +1232,10 @@ var init_alias_generator = __esm({
 function serializeRegisteredElement(el, options = {}) {
   const componentBasePath = options.componentBasePath ?? "/control/component";
   const kind = el.category === "content" ? "content" : el.category === "interactive" ? "interactive" : void 0;
+  const uiBridgeId = typeof el.element?.getAttribute === "function" ? el.element.getAttribute("data-ui-bridge-id") ?? void 0 : void 0;
   return {
     id: el.id,
+    ...uiBridgeId !== void 0 ? { uiBridgeId } : {},
     type: el.type,
     tagName: el.element.tagName.toLowerCase(),
     label: el.label,
@@ -1278,6 +1280,14 @@ function serializeRegisteredElement(el, options = {}) {
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
     route: el.route
+  };
+}
+function captureDocumentVisibility() {
+  if (typeof document === "undefined") return void 0;
+  const rawState = document.visibilityState ?? "visible";
+  return {
+    hidden: document.hidden === true,
+    state: rawState
   };
 }
 function captureFormControlState(element, state) {
@@ -3002,11 +3012,13 @@ var init_registry = __esm({
       createSnapshot(options = {}) {
         const takenAt = Date.now();
         const activeTab = this.resolveActiveTab(options.getActiveTab);
+        const visibility = captureDocumentVisibility();
         const snapshot = {
           timestamp: takenAt,
           snapshotTakenAtMs: takenAt,
           route: this.currentRoute(),
           ...activeTab !== void 0 ? { activeTab } : {},
+          ...visibility !== void 0 ? { visibility } : {},
           registration: this.buildRegistrationMetadata(),
           elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
           components: this.getAllComponents().map((comp) => ({
@@ -3049,11 +3061,13 @@ var init_registry = __esm({
         }
         const takenAt = Date.now();
         const activeTab = this.resolveActiveTab(options.getActiveTab);
+        const visibility = captureDocumentVisibility();
         const snapshot = {
           timestamp: takenAt,
           snapshotTakenAtMs: takenAt,
           route: this.currentRoute(),
           ...activeTab !== void 0 ? { activeTab } : {},
+          ...visibility !== void 0 ? { visibility } : {},
           registration: this.buildRegistrationMetadata(),
           elements: elementSnapshots,
           components: this.getAllComponents().map((comp) => ({
@@ -28004,6 +28018,7 @@ async function executeCommand(action, payload, bridge) {
       if (typeof window !== "undefined" && window.location?.pathname) {
         route = window.location.pathname;
       }
+      const visibility = captureDocumentVisibility();
       const rawComponentBasePath = payload.componentBasePath;
       const componentBasePath = typeof rawComponentBasePath === "string" && rawComponentBasePath.length > 0 ? rawComponentBasePath : void 0;
       const now = Date.now();
@@ -28012,6 +28027,7 @@ async function executeCommand(action, payload, bridge) {
         timestamp: now,
         snapshotTakenAtMs: now,
         ...route !== void 0 ? { route } : {},
+        ...visibility !== void 0 ? { visibility } : {},
         registration,
         elements: elements.map((el) => serializeRegisteredElement(el, serializeOpts)),
         components: components.map((c) => ({

@@ -1154,9 +1154,30 @@ export interface BridgeSnapshot {
    * See {@link SnapshotRegistrationMetadata}.
    */
   registration: SnapshotRegistrationMetadata;
+  /**
+   * Document visibility at snapshot time. Mirrors `document.hidden` /
+   * `document.visibilityState`. Components that gate work on visibility
+   * (WS subscriptions, polling loops, idle observers) silently no-op when
+   * `hidden` is true; tests running in headless Chromium will see
+   * `hidden: true` by default and need to flip it before exercising
+   * those code paths. Undefined in non-DOM environments.
+   */
+  visibility?: {
+    hidden: boolean;
+    state: 'visible' | 'hidden' | 'prerender' | 'unloaded';
+  };
   /** All registered elements */
   elements: Array<{
     id: string;
+    /**
+     * Mirror of the developer-supplied `data-ui-bridge-id` attribute when
+     * present. For elements registered via `useUIElement` or stamped
+     * manually in markup the registry id IS the bridge id, so `id` and
+     * `uiBridgeId` are identical strings. For auto-instrumented elements
+     * that were never given a stamp this is undefined. Lets consumers
+     * filter by "developer-stamped only" without DOM round-trips.
+     */
+    uiBridgeId?: string;
     type: ElementType | string;
     tagName: string;
     label?: string;

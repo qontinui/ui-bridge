@@ -12,7 +12,11 @@ import type {
   ElementAssertionFailure,
   ElementAssertionResult,
 } from '../core/types';
-import { getGlobalRegistry, serializeRegisteredElement } from '../core/registry';
+import {
+  captureDocumentVisibility,
+  getGlobalRegistry,
+  serializeRegisteredElement,
+} from '../core/registry';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
@@ -685,6 +689,12 @@ export async function executeCommand(
       if (typeof window !== 'undefined' && window.location?.pathname) {
         route = window.location.pathname;
       }
+      // Document visibility at snapshot time. Components that gate work on
+      // `document.hidden` (WS subscriptions, polling loops, idle observers)
+      // silently no-op when `hidden=true`; surfacing this in the snapshot
+      // lets headless tests detect the gating without an extra evaluate
+      // round-trip.
+      const visibility = captureDocumentVisibility();
       // Phase 6: relay callers can pin the component-action base path so the
       // serialized `componentActionBasePath` matches the host's mount prefix
       // (e.g. the runner's `/ui-bridge/control/component`). Defaults to the
@@ -710,6 +720,7 @@ export async function executeCommand(
         timestamp: now,
         snapshotTakenAtMs: now,
         ...(route !== undefined ? { route } : {}),
+        ...(visibility !== undefined ? { visibility } : {}),
         registration,
         elements: elements.map((el) => serializeRegisteredElement(el, serializeOpts)),
         components: components.map((c) => ({

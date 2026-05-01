@@ -72,8 +72,19 @@ export function serializeRegisteredElement(
       : el.category === 'interactive'
         ? 'interactive'
         : undefined;
+  // Surface the developer-stamped `data-ui-bridge-id` attribute as a
+  // dedicated `uiBridgeId` field. For stamped elements the registry id
+  // already equals this value (see useAutoRegister.ts:819 — existingStamp
+  // wins). Echoing it as a named field saves consumers from having to
+  // know that `id` IS the bridge id, and lets them filter snapshots to
+  // "manually stamped" entries without DOM queries.
+  const uiBridgeId =
+    typeof el.element?.getAttribute === 'function'
+      ? el.element.getAttribute('data-ui-bridge-id') ?? undefined
+      : undefined;
   return {
     id: el.id,
+    ...(uiBridgeId !== undefined ? { uiBridgeId } : {}),
     type: el.type,
     tagName: el.element.tagName.toLowerCase(),
     label: el.label,
@@ -122,6 +133,28 @@ export function serializeRegisteredElement(
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
     route: el.route,
+  };
+}
+
+/**
+ * Capture `document.hidden` / `document.visibilityState` for the snapshot
+ * meta block. Components that gate work on visibility (WS subscriptions,
+ * polling loops, idle observers) silently no-op when hidden — surfacing
+ * this here lets headless test runners detect the gating without an
+ * extra round-trip. Returns undefined in non-DOM environments.
+ */
+export function captureDocumentVisibility():
+  | { hidden: boolean; state: 'visible' | 'hidden' | 'prerender' | 'unloaded' }
+  | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const rawState = (document.visibilityState ?? 'visible') as
+    | 'visible'
+    | 'hidden'
+    | 'prerender'
+    | 'unloaded';
+  return {
+    hidden: document.hidden === true,
+    state: rawState,
   };
 }
 
@@ -2407,11 +2440,13 @@ export class UIBridgeRegistry {
   ): BridgeSnapshot {
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
+    const visibility = captureDocumentVisibility();
     const snapshot: BridgeSnapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
       ...(activeTab !== undefined ? { activeTab } : {}),
+      ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
       components: this.getAllComponents().map((comp) => ({
@@ -2473,11 +2508,13 @@ export class UIBridgeRegistry {
     // is always authoritative.
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
+    const visibility = captureDocumentVisibility();
     const snapshot: BridgeSnapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
       ...(activeTab !== undefined ? { activeTab } : {}),
+      ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: elementSnapshots,
       components: this.getAllComponents().map((comp) => ({

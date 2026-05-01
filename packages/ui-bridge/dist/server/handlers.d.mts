@@ -1,17 +1,17 @@
-import { S as SpecStore } from '../store-C-Eavx7D.mjs';
-import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-CXCbCmRP.mjs';
-import { a as UIBridgeServerHandlers } from '../types-CokKlT7J.mjs';
+import { S as SpecStore } from '../store-BP0xE7HU.mjs';
+import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-DHAgZgSv.mjs';
+import { a as UIBridgeServerHandlers } from '../types-CBDaGbY1.mjs';
 import { C as CompositeIdleConfig } from '../types-CNyrSSSQ.mjs';
 import { N as NavigationAdapter } from '../navigation-adapter-D0eod-Ve.mjs';
 import { RenderLogEntry } from '../render-log/index.mjs';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-B0PMDmdH.mjs';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-cnGBHZLF.mjs';
 import { AnnotationStore } from '../annotations/index.mjs';
 import { N as NetworkTrackerConfig } from '../tracker-DpZSyunJ.mjs';
-import '../types-DWuzkgFd.mjs';
-import '../find-BCihRzEH.mjs';
-import '../style-types-noHX9-b8.mjs';
+import '../types-BT8zKDeE.mjs';
+import '../find-DUWiL8ES.mjs';
+import '../style-types-B81kmWSf.mjs';
 import '../types-C7D5seeQ.mjs';
-import '../error-snapshot-aOl1vyVv.mjs';
+import '../error-snapshot-CV--kPt-.mjs';
 
 /**
  * Registry interface - minimal contract for handler usage
