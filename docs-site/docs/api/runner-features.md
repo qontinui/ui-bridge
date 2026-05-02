@@ -843,6 +843,58 @@ Each component detail also includes `actionInvocationPath` templates
 and per-action `path` fields — the response itself tells you how to
 call it.
 
+### Driving a specific app (transport-agnostic)
+
+```http
+POST /ui-bridge/apps/:appId/dispatch
+```
+
+When multiple apps are registered with the runner — wrappers, source-
+integrated SDK apps, the runner itself — pick the target explicitly.
+Body shape: `{action, params}`. Routing is automatic: HTTP-transport
+apps go via `reqwest`, WebSocket-transport wrappers go via the
+command relay. Returns the dispatched call's result wrapped in
+`ApiResponse::success`.
+
+```bash
+curl -X POST $BASE/apps/example.com/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"action":"ping","params":{}}'
+```
+
+Two related per-app affordances on the existing component-action route:
+
+- `POST /sdk/control/component/:id/action/:actionId?app_id=<id>` —
+  the optional `?app_id` query param routes the call to that specific
+  registered app instead of relying on the active SDK connection.
+  Without it, the dispatcher falls back to whichever app
+  `state.sdk_connection` currently has installed (the WS-handshake
+  path mirrors WS wrappers into that slot automatically, but only one
+  at a time).
+- `GET /sdk/control/snapshot?app_id=<id>` — same query-param routing
+  for snapshot reads against a specific WS-transport app.
+
+### Wait for an app to (dis)appear
+
+```http
+POST /ui-bridge/control/wait-for-app
+```
+
+Polling primitive that mirrors the `wait-for-element` shape but checks
+the registry instead of the DOM. Body: `{appId, transport?, present?,
+timeoutMs?, pollMs?}`. Defaults: `present=true`, `timeoutMs=5000`,
+`pollMs=100`. Resolves with `{satisfied, elapsedMs, timedOut?}` —
+`200` either way; branch on `satisfied`. Useful in scripts that spawn
+a wrapper and need to know when it's actually visible to the runner.
+
+### Pinning an entry past the default TTL
+
+`POST /ui-bridge/apps/register` accepts an optional `keep_alive_secs`
+field. Default eviction TTL is 30s; entries that explicitly opt in
+stay alive longer without sending heartbeats — useful for tests,
+scripted injections, and synthetic UI fixtures. Server-side cap is
+24 hours; values over the cap return HTTP 400.
+
 ## Design audit
 
 ```http
