@@ -113,6 +113,12 @@ export {
   type ToastRecorderInput,
 } from './react/useUIBridgeToast';
 
+// Build-time IR markers — Fragment-rendering JSX wrappers consumed by the
+// ui-bridge-auto extractor. They render no native UI; their job is to give
+// the ts-morph extractor stable JSX tags to match for IR emission.
+export { State, type StateProps, type StateRequiredElement } from './react/State';
+export { TransitionTo, type TransitionToProps } from './react/TransitionTo';
+
 // Tracker classes (modal/toast/undo) — usually consumed via hooks but exported
 // so non-React contexts (e.g. unit tests, custom enrichers) can instantiate them.
 export { ModalDetector } from './modal/modal-detector';
