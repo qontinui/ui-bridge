@@ -370,9 +370,17 @@ export class NLActionExecutor {
       },
     };
 
-    // Add action-specific params
+    // Add action-specific params.
+    //
+    // `clear: true` for type — NL "type 'X' in element Y" semantically means
+    // *replace* the field with X, not append. The SDK's `performType` defaults
+    // to appending; without clearing first, any pre-filled value (a previously-
+    // selected project path, a stale draft, etc.) gets concatenated with the
+    // new text and downstream validation fails on the malformed combined value.
+    // Callers that need append behaviour should call executeAction directly
+    // with `{clear: false}` rather than route through NL.
     if (standardAction === 'type' && parsed.value) {
-      actionRequest.params = { text: parsed.value };
+      actionRequest.params = { text: parsed.value, clear: true };
     } else if (standardAction === 'select' && parsed.value) {
       actionRequest.params = { value: parsed.value };
     } else if (standardAction === 'scroll' && parsed.scrollDirection) {

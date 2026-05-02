@@ -7840,7 +7840,7 @@ var init_nl_action_executor = __esm({
           }
         };
         if (standardAction === "type" && parsed.value) {
-          actionRequest.params = { text: parsed.value };
+          actionRequest.params = { text: parsed.value, clear: true };
         } else if (standardAction === "select" && parsed.value) {
           actionRequest.params = { value: parsed.value };
         } else if (standardAction === "scroll" && parsed.scrollDirection) {
