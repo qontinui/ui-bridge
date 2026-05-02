@@ -326,6 +326,38 @@ reliable way to exercise the runner's shutdown path through UI Bridge.
 webviews, and Win32 `WM_CLOSE` messages don't consistently reach Tao's
 event pump.
 
+### Mobile transport paths — required reading before testing
+
+`MOBILE_BASE=http://localhost:8087/ui-bridge` only works *after* a
+transport has been established. The mobile app does NOT bind to
+`localhost:8087` on the host machine on its own — it binds on the
+device, and one of three transports has to bridge that to localhost
+before any UI Bridge endpoint becomes reachable. Skipping this step is
+the #1 cause of "the mobile app is running but I can't reach the
+bridge".
+
+| Transport | Setup | When to use |
+|-----------|-------|-------------|
+| **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
+| **LAN** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, proxy through the runner: `curl http://localhost:9876/ui-bridge/devices/<deviceId>/control/snapshot`. | Phone on the same Wi-Fi as the dev box; can't or don't want to plug in USB. |
+| **Cloud relay** | Mobile app paired via the in-app Connection Wizard. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transport: "cloud"`. Proxy through the runner same as LAN. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
+
+**One-shot detection** — which transport is active?
+
+```bash
+echo "USB:"
+adb forward --list | grep -q "tcp:8087" && echo "  forwarded — try localhost:8087" || echo "  not forwarded"
+echo "Runner-relayed (LAN or cloud):"
+curl -s http://localhost:9876/ui-bridge/devices | python -c "import sys,json; d=json.load(sys.stdin)['data']; print(f\"  {d['count']} device(s)\"); [print(f\"  - {x.get('id')} via {x.get('transport')}\") for x in d.get('devices',[])]"
+```
+
+If both show empty: the device isn't reachable from this machine. The
+mobile app may still be running and connected to qontinui-web's
+backend (via HTTPS, not the bridge) — that login channel doesn't
+expose UI Bridge state. Either set up one of the three transports
+above, or limit testing to server-side artifact verification (AAB
+manifest grep, `eas-cli channel:view`, backend logs).
+
 ### Mobile route navigation
 
 ```bash
