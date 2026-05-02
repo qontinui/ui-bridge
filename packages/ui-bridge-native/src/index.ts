@@ -113,6 +113,11 @@ export {
   type ToastRecorderInput,
 } from './react/useUIBridgeToast';
 
+// Section 4 — build-time markers for IR extraction. Render Fragment; no
+// native registry coupling. The extractor matches by JSX tag name.
+export { State, type StateProps, type StateRequiredElement } from './react/State';
+export { TransitionTo, type TransitionToProps } from './react/TransitionTo';
+
 // Tracker classes (modal/toast/undo) — usually consumed via hooks but exported
 // so non-React contexts (e.g. unit tests, custom enrichers) can instantiate them.
 export { ModalDetector } from './modal/modal-detector';
