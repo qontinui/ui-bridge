@@ -1,15 +1,28 @@
 name: Publish to npm
 
+# Tag-triggered publishing for ui-bridge workspace packages.
+#
+# Each publishable package has its own tag prefix; pushing a tag like
+# `ui-bridge-eslint-plugin-v0.1.0` will derive the package name
+# `ui-bridge-eslint-plugin` and publish `packages/ui-bridge-eslint-plugin`.
+#
+# Supported packages (must match a directory under `packages/`):
+#   - ui-bridge
+#   - ui-bridge-eslint-plugin
+#   - ui-bridge-wrapper
+#   - ui-bridge-headless
+#   - ui-bridge-native (already on npm; tags reuse the same flow)
+#
+# To release: bump the version in the package.json, commit, then
+#   git tag <package>-v<version> && git push origin <package>-v<version>
 on:
-  workflow_dispatch:
-    inputs:
-      package:
-        description: 'Package to publish'
-        required: true
-        default: 'ui-bridge'
-        type: choice
-        options:
-          - ui-bridge
+  push:
+    tags:
+      - 'ui-bridge-v*'
+      - 'ui-bridge-eslint-plugin-v*'
+      - 'ui-bridge-wrapper-v*'
+      - 'ui-bridge-headless-v*'
+      - 'ui-bridge-native-v*'
 
 jobs:
   publish:
@@ -22,13 +35,30 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Derive package name from tag
+        id: pkg
+        run: |
+          tag="${{ github.ref_name }}"
+          # Strip the `-v<version>` suffix to recover the package directory name.
+          name="${tag%-v*}"
+          if [ -z "$name" ] || [ "$name" = "$tag" ]; then
+            echo "::error::Could not derive package name from tag '$tag'"
+            exit 1
+          fi
+          if [ ! -f "packages/$name/package.json" ]; then
+            echo "::error::No package.json found at packages/$name (derived from tag '$tag')"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Derived package: $name"
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build
-        run: npm run build --workspace=packages/${{ inputs.package }}
+        run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
 
       - name: Publish
-        run: npm publish --access public --workspace=packages/${{ inputs.package }}
+        run: npm publish --access public --workspace=packages/${{ steps.pkg.outputs.name }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

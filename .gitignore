@@ -10,11 +10,6 @@ venv/
 # Build outputs
 dist/
 !packages/ui-bridge/dist/
-# ui-bridge-eslint-plugin's dist/ is checked in so consumers (qontinui-mobile,
-# qontinui-web, qontinui-supervisor frontend) can use the file:-protocol dep
-# in CI without a build step. Until the plugin is published to npm, this is
-# the simplest way to keep cross-repo `file:` deps resolvable.
-!packages/ui-bridge-eslint-plugin/dist/
 build/
 *.tsbuildinfo
 .next/
