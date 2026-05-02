@@ -120,6 +120,41 @@ describe('useAutoRegister — attribute stamping', () => {
     expect(btn.getAttribute('data-ui-bridge-id')).toBe('caller-assigned-id');
   });
 
+  it('registers author-tagged non-interactive containers via data-ui-bridge-id', async () => {
+    // Productivity-stack §10 regression: a <section role="region"> carrying
+    // data-ui-bridge-id should be discoverable via the SDK registry, not
+    // just via raw DOM querySelector. Without this the runner's spec
+    // assertions targeting container ids fail at verification time even
+    // though the markers are in the DOM.
+    const fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <section
+        role="region"
+        aria-labelledby="region-heading"
+        data-ui-bridge-id="productivity.coord-recommendations"
+      >
+        <h2 id="region-heading">Recommendations Queue</h2>
+        <button>Refresh</button>
+      </section>
+    `;
+    document.body.appendChild(fixture);
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 5));
+
+    // The section itself must be in the registry under the author-supplied id.
+    const elements = registry.getAllElements();
+    const tagged = elements.find((e) => e.id === 'productivity.coord-recommendations');
+    expect(tagged).toBeDefined();
+    expect(tagged?.origin).toBe('auto');
+    // No type clobbering — section falls through to 'generic' since
+    // role="region" isn't in the type roleMap.
+    expect(tagged?.type).toBe('generic');
+    // The interactive child is still picked up alongside.
+    const refresh = elements.find((e) => e.label === 'Refresh');
+    expect(refresh).toBeDefined();
+  });
+
   it('excludes hidden inputs from auto-registration', async () => {
     const fixture = document.createElement('div');
     fixture.innerHTML = `

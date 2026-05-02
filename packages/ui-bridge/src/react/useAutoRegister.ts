@@ -142,6 +142,13 @@ const INTERACTIVE_SELECTORS = [
   '[contenteditable="true"]',
   '[data-ui-element]', // Explicitly marked for registration
   '[data-testid]', // Testing library convention
+  '[data-ui-bridge-id]', // Author-tagged element — registers regardless of
+  // role/tag/interactivity. Lets containers like
+  // <section role="region" data-ui-bridge-id="..."> appear in snapshot
+  // and resolve via /control/element/:id, not just via raw DOM
+  // querySelector. The scanner already preserves the existing stamp
+  // verbatim (see registerElement: `existingStamp` branch), so the
+  // attribute value becomes the registry key as-is.
 ];
 
 /**
