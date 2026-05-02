@@ -1605,6 +1605,25 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     };
     window.addEventListener('ui-bridge-auth-complete', handleAuthComplete);
 
+    const handleRouteChange = () => {
+      if (bridge?.registry) {
+        bridge.registry.clear();
+      }
+      bboxUntrackersRef.current.forEach((untrack) => {
+        try {
+          untrack();
+        } catch {
+          void 0;
+        }
+      });
+      bboxUntrackersRef.current.clear();
+      registeredElementsRef.current = new Map();
+      registeredContentElementsRef.current = new Map();
+      registeredMediaElementsRef.current = new Map();
+      scanAndRegister(rootElement);
+    };
+    window.addEventListener('ui-bridge-route-change', handleRouteChange);
+
     // Expose diagnostic flags on window.__UI_BRIDGE__
     if (typeof window !== 'undefined') {
       const w = window as unknown as Record<string, unknown>;
@@ -1616,6 +1635,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
     return () => {
       observer.disconnect();
       window.removeEventListener('ui-bridge-auth-complete', handleAuthComplete);
+      window.removeEventListener('ui-bridge-route-change', handleRouteChange);
 
       // Clear diagnostic flags
       if (typeof window !== 'undefined') {

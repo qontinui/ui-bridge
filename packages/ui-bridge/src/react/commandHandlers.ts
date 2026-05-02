@@ -2401,11 +2401,25 @@ export async function executeCommand(
         } catch {
           // Relative URL — use as-is.
         }
-        window.history.pushState(null, '', pathname);
-        try {
-          window.dispatchEvent(new PopStateEvent('popstate'));
-        } catch {
-          window.dispatchEvent(new Event('popstate'));
+        const softBridge = getBridge();
+        if (softBridge.navigateHandler) {
+          try {
+            softBridge.navigateHandler(pathname);
+          } catch {
+            window.history.pushState(null, '', pathname);
+            try {
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            } catch {
+              window.dispatchEvent(new Event('popstate'));
+            }
+          }
+        } else {
+          window.history.pushState(null, '', pathname);
+          try {
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch {
+            window.dispatchEvent(new Event('popstate'));
+          }
         }
         window.dispatchEvent(
           new CustomEvent('ui-bridge:navigate', { detail: { url: pathname, mode: 'soft' } })
