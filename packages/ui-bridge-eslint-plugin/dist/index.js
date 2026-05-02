@@ -1,3 +1,7 @@
+'use strict';
+
+Object.defineProperty(exports, '__esModule', { value: true });
+
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -26,7 +30,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   // file that has been converted to a CommonJS file using a Babel-
   // compatible transform (i.e. "__esModule" has not been set), then set
   // "default" to the CommonJS "module.exports" for node compatibility.
-  __defProp(target, "default", { value: mod, enumerable: true }) ,
+  !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
 
@@ -12149,6 +12153,7 @@ var plugin = {
 };
 var src_default = plugin;
 
-export { src_default as default, requireStateAnnotationRule };
+exports.default = src_default;
+exports.requireStateAnnotationRule = requireStateAnnotationRule;
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map
