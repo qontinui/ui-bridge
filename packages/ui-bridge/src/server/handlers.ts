@@ -2362,6 +2362,13 @@ export function createHandlers(
       skipSettle?: boolean;
       /** Optional override for the settle wait timeout in ms (default 500). */
       settleTimeout?: number;
+      /**
+       * If true, populate `FindResultNotFound.alternatives` with the closest
+       * sub-threshold candidates so callers can diagnose why nothing
+       * matched. Behind a flag because the diagnostic requires a relaxed
+       * second search pass and inflates response size.
+       */
+      debug?: boolean;
     }): Promise<APIResponse<FindResult>> => {
       try {
         // Wait for the DOM to quiesce before refreshing elements so we read
@@ -2395,6 +2402,7 @@ export function createHandlers(
           context,
           confidenceThreshold: request.confidenceThreshold,
           pickFirst: true,
+          debug: request.debug === true,
         });
 
         return success(result);
@@ -6476,6 +6484,7 @@ export function createAIHandlers(
       query: string;
       context?: FindContext;
       confidenceThreshold?: number;
+      debug?: boolean;
     }): Promise<APIResponse<FindResult>> => {
       try {
         refreshElements();
@@ -6483,6 +6492,7 @@ export function createAIHandlers(
           context: request.context,
           confidenceThreshold: request.confidenceThreshold,
           pickFirst: true,
+          debug: request.debug === true,
         });
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {

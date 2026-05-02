@@ -1,5 +1,5 @@
-import { D as DOMChangeEvent, U as UIBridgeServerConfig, a as UIBridgeServerHandlers } from './types-D0yGFbBv.js';
-import { S as SSEManager } from './sse-handler-BtU4fIjT.js';
+import { D as DOMChangeEvent, U as UIBridgeServerConfig, a as UIBridgeServerHandlers } from './types-DESdbIVG.mjs';
+import { S as SSEManager } from './sse-handler-DuipnNr3.mjs';
 
 /**
  * CommandRelay — Server-side command relay for UI Bridge

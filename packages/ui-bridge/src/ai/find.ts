@@ -46,6 +46,14 @@ export interface FindOptions {
   confidenceThreshold?: number;
   /** Maximum results to return in ambiguous case (default: 5) */
   maxResults?: number;
+  /**
+   * If true, populate `FindResultNotFound.alternatives` with the closest
+   * sub-threshold candidates so callers can see which elements were
+   * considered but scored below the confidence gate. Behind a flag because
+   * generating the diagnostic requires an extra search pass with a relaxed
+   * threshold and inflates response size — production callers stay lean.
+   */
+  debug?: boolean;
 }
 
 /**
@@ -94,7 +102,9 @@ export interface FindResultNotFound {
   ambiguous: false;
   /** Why no match was found */
   reason: string;
-  /** Partial matches that were below threshold */
+  /** Partial matches that were below the find-API threshold but still
+   *  cleared the underlying engine's fuzzy gate. Always populated when any
+   *  element scored above the engine's internal floor. */
   partialMatches: FindCandidate[];
   /** How many elements were considered before filtering. Helps agents
    *  distinguish "searched 200 elements, none matched" from "searched
@@ -104,6 +114,15 @@ export interface FindResultNotFound {
   decomposed: DecomposedTarget;
   /** Search duration in ms */
   durationMs: number;
+  /**
+   * Top-3 closest candidates with sub-threshold scores. Populated only when
+   * the caller passed `debug: true` in `FindOptions`. Differs from
+   * `partialMatches` in that it relaxes the engine's internal fuzzy gate to
+   * surface candidates that scored *anything* > 0, so agents can see "we
+   * considered element X with placeholder Y but it scored 0.12 — far below
+   * the 0.5 threshold". Sorted by confidence descending.
+   */
+  alternatives?: FindCandidate[];
 }
 
 export type FindResult = FindResultMatch | FindResultAmbiguous | FindResultNotFound;
@@ -133,7 +152,19 @@ const DEFAULT_FIND_OPTIONS: Required<FindOptions> = {
   pickFirst: true,
   confidenceThreshold: 0.5,
   maxResults: 5,
+  debug: false,
 };
+
+/**
+ * Floor for the debug-only relaxed engine pass. Anything that scored even a
+ * little above zero is worth surfacing as a "we considered this element"
+ * diagnostic; we don't want to flood the response with elements the matcher
+ * never seriously evaluated, so we keep a tiny non-zero threshold.
+ */
+const DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+
+/** How many top sub-threshold candidates to surface when debug is on. */
+const DEBUG_ALTERNATIVES_LIMIT = 3;
 
 /** Confidence gap threshold — if top two results are within this gap, it's ambiguous */
 const AMBIGUITY_GAP = 0.1;
@@ -291,6 +322,39 @@ export function find(
 
   // No results
   if (viableResults.length === 0) {
+    // Debug pass: when the caller asked for diagnostics, run a second
+    // engine search with a near-zero fuzzy threshold so we can surface
+    // sub-threshold candidates the primary search dropped on the floor.
+    // Without this, callers see `{found: false, partialMatches: []}` and
+    // can't tell whether (a) the matcher considered element X at score
+    // 0.12 or (b) element X was never even scanned.
+    let alternatives: FindCandidate[] | undefined;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD,
+      });
+      // Re-apply the same context/state/ordinal filters so the debug list
+      // reflects the same view the primary search saw.
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
+      );
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
+      }
+      // Sort by confidence (applyContextScoring already sorts, but state /
+      // ordinal filters can disturb order) and take the top N.
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives = debugResults
+        .slice(0, DEBUG_ALTERNATIVES_LIMIT)
+        .map((r) => toCandidate(r));
+    }
+
     return {
       found: false,
       ambiguous: false,
@@ -305,6 +369,7 @@ export function find(
       consideredCount: searchResponse.results.length,
       decomposed,
       durationMs,
+      ...(alternatives !== undefined ? { alternatives } : {}),
     };
   }
 

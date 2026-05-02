@@ -1691,8 +1691,9 @@ export async function executeCommand(
         type?: string;
         context?: import('../ai/find').FindContext;
         confidenceThreshold?: number;
+        debug?: boolean;
       };
-      const { query, type, context: ctx, confidenceThreshold } = payloadObj;
+      const { query, type, context: ctx, confidenceThreshold, debug } = payloadObj;
       // Some legacy callers still send `{query, type}` as a structured
       // shorthand. Promote that to a SearchCriteria so `find()` can dispatch
       // through its structured-query path; otherwise treat the input as a
@@ -1708,6 +1709,7 @@ export async function executeCommand(
         context: ctx,
         confidenceThreshold,
         pickFirst: true,
+        debug: debug === true,
       });
       return result;
     }

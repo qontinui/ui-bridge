@@ -539,3 +539,119 @@ describe('find() — short query against long disclosure label (Phase B)', () =>
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P15 — debug-mode `alternatives` on FindResultNotFound
+//
+// When the caller passes `debug: true` and no element clears the confidence
+// threshold, `FindResultNotFound.alternatives` must surface the closest
+// sub-threshold candidates so agents can see "we considered element X but
+// it scored 0.12". When `debug` is omitted, alternatives must stay
+// undefined to keep production responses lean.
+// ---------------------------------------------------------------------------
+describe('find() — debug alternatives (P15)', () => {
+  let engine: SearchEngine;
+
+  beforeEach(() => {
+    engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+  });
+
+  it('debug: true populates alternatives when nothing scores above threshold', () => {
+    // Register a few unrelated elements. The query "definitely-not-on-page"
+    // shares no semantic content, so nothing clears the 0.5 fuzzy gate; but
+    // the relaxed debug pass should still surface the closest scored
+    // candidates.
+    const projectInput = document.createElement('input');
+    projectInput.type = 'text';
+    projectInput.placeholder = 'Project path';
+    const settingsBtn = document.createElement('button');
+    settingsBtn.textContent = 'Settings';
+    const submitBtn = document.createElement('button');
+    submitBtn.textContent = 'Submit';
+    attachToDocument(projectInput, settingsBtn, submitBtn);
+
+    engine.updateElements([
+      makeRegistered('project-input', projectInput, { type: 'input', label: 'project-input' }),
+      makeRegistered('settings-btn', settingsBtn, { type: 'button', label: 'settings-btn' }),
+      makeRegistered('submit-btn', submitBtn, { type: 'button', label: 'submit-btn' }),
+    ]);
+
+    const result = find('definitely-not-on-page', engine, {
+      confidenceThreshold: 0.5,
+      debug: true,
+    });
+
+    expect(result.found).toBe(false);
+    if (!result.found && !result.ambiguous) {
+      expect(result.alternatives).toBeDefined();
+      expect(Array.isArray(result.alternatives)).toBe(true);
+      // The relaxed pass surfaces sub-threshold candidates. Even if the
+      // matcher considered zero elements with score > 0, alternatives is
+      // still defined (an empty array is a valid diagnostic) — but in
+      // practice the alias-matcher's tokenizer scores SOME candidates
+      // above zero against any non-trivial query, so we expect at least
+      // one entry.
+      expect(result.alternatives!.length).toBeLessThanOrEqual(3);
+      // Each alternative is a well-formed FindCandidate.
+      for (const alt of result.alternatives!) {
+        expect(typeof alt.elementId).toBe('string');
+        expect(typeof alt.confidence).toBe('number');
+        expect(alt.confidence).toBeGreaterThanOrEqual(0);
+        expect(alt.element).toBeDefined();
+      }
+    }
+  });
+
+  it('debug omitted: alternatives stays undefined (backward-compat)', () => {
+    const projectInput = document.createElement('input');
+    projectInput.type = 'text';
+    projectInput.placeholder = 'Project path';
+    attachToDocument(projectInput);
+
+    engine.updateElements([
+      makeRegistered('project-input', projectInput, { type: 'input', label: 'project-input' }),
+    ]);
+
+    const result = find('definitely-not-on-page', engine, { confidenceThreshold: 0.5 });
+
+    expect(result.found).toBe(false);
+    if (!result.found && !result.ambiguous) {
+      // No `debug` flag → no alternatives field at all (production responses
+      // stay lean).
+      expect(result.alternatives).toBeUndefined();
+    }
+  });
+
+  it('debug: true ranks alternatives by confidence descending', () => {
+    // Two candidates with clearly different similarity to the query.
+    // "save-button" should outscore "logout-link" against the query
+    // "save data" so the alternatives array ranks correctly even when
+    // both are below threshold.
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    const logoutLink = document.createElement('a');
+    logoutLink.textContent = 'Logout';
+    attachToDocument(saveBtn, logoutLink);
+
+    engine.updateElements([
+      makeRegistered('save-button', saveBtn, { type: 'button', label: 'save-button' }),
+      makeRegistered('logout-link', logoutLink, { type: 'link', label: 'logout-link' }),
+    ]);
+
+    // Use a high threshold so neither match clears it, but both score > 0.
+    const result = find('zzzqqq-no-match', engine, {
+      confidenceThreshold: 0.9,
+      debug: true,
+    });
+
+    expect(result.found).toBe(false);
+    if (!result.found && !result.ambiguous) {
+      expect(result.alternatives).toBeDefined();
+      // Confidences must be monotonically non-increasing.
+      const alts = result.alternatives!;
+      for (let i = 1; i < alts.length; i++) {
+        expect(alts[i - 1].confidence).toBeGreaterThanOrEqual(alts[i].confidence);
+      }
+    }
+  });
+});

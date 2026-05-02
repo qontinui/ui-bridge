@@ -8217,6 +8217,26 @@ function find(query, engine, options) {
   }
   const durationMs = performance.now() - startTime;
   if (viableResults.length === 0) {
+    let alternatives2;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
+      });
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
+      );
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
+      }
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
+    }
     return {
       found: false,
       ambiguous: false,
@@ -8227,7 +8247,8 @@ function find(query, engine, options) {
       // "searched 10 elements (snapshot truncated?)".
       consideredCount: searchResponse.results.length,
       decomposed,
-      durationMs
+      durationMs,
+      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
     };
   }
   const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
@@ -8442,7 +8463,7 @@ function generateDisambiguationSuggestion(candidates, decomposed) {
   lines.push('Try adding spatial context: "... near X" or "... in the Y"');
   return lines.join("\n");
 }
-var DEFAULT_FIND_OPTIONS, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
+var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
 var init_find = __esm({
   "src/ai/find.ts"() {
     init_target_decomposer();
@@ -8450,8 +8471,11 @@ var init_find = __esm({
       context: {},
       pickFirst: true,
       confidenceThreshold: 0.5,
-      maxResults: 5
+      maxResults: 5,
+      debug: false
     };
+    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+    DEBUG_ALTERNATIVES_LIMIT = 3;
     AMBIGUITY_GAP = 0.1;
     MODAL_PENALTY = 0.3;
     RECENCY_BONUS = 0.05;
@@ -28875,7 +28899,7 @@ async function executeCommand(action, payload, bridge) {
       const engine = createSearchEngine2({ includeHidden: true });
       engine.updateElements(elements);
       const payloadObj = payload ?? {};
-      const { query, type, context: ctx, confidenceThreshold } = payloadObj;
+      const { query, type, context: ctx, confidenceThreshold, debug } = payloadObj;
       const findInput = typeof query === "string" && query.length > 0 ? type ? (
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { text: query, type, fuzzy: true }
@@ -28883,7 +28907,8 @@ async function executeCommand(action, payload, bridge) {
       const result = find2(findInput, engine, {
         context: ctx,
         confidenceThreshold,
-        pickFirst: true
+        pickFirst: true,
+        debug: debug === true
       });
       return result;
     }

@@ -1,4 +1,4 @@
-import { D as DOMChangeEvent } from './types-CBDaGbY1.mjs';
+import { D as DOMChangeEvent } from './types-DaPCam_L.js';
 
 /**
  * Push-Based Change Observer
