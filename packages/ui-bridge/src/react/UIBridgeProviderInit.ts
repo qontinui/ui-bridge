@@ -93,6 +93,25 @@ export function initializeUIBridge({
   const navigationTracker = new NavigationTracker();
   navigationTracker.install((data: NavigationEventData) => {
     registry.dispatchEvent('navigation:change', data);
+    if (
+      typeof window !== 'undefined' &&
+      data.from?.pathname !== data.to?.pathname &&
+      data.trigger !== 'initial'
+    ) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('ui-bridge-route-change', {
+            detail: {
+              from: data.from?.pathname,
+              to: data.to?.pathname,
+              trigger: data.trigger,
+            },
+          })
+        );
+      } catch {
+        void 0;
+      }
+    }
   });
 
   const shortcutTracker = new ShortcutTracker();

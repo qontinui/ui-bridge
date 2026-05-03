@@ -3,12 +3,6 @@ import { jsx, Fragment as Fragment$1, jsxs } from 'react/jsx-runtime';
 
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -7846,7 +7840,7 @@ var init_nl_action_executor = __esm({
           }
         };
         if (standardAction === "type" && parsed.value) {
-          actionRequest.params = { text: parsed.value };
+          actionRequest.params = { text: parsed.value, clear: true };
         } else if (standardAction === "select" && parsed.value) {
           actionRequest.params = { value: parsed.value };
         } else if (standardAction === "scroll" && parsed.scrollDirection) {
@@ -8251,6 +8245,26 @@ function find(query, engine, options) {
   }
   const durationMs = performance.now() - startTime;
   if (viableResults.length === 0) {
+    let alternatives2;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
+      });
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
+      );
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
+      }
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
+    }
     return {
       found: false,
       ambiguous: false,
@@ -8261,7 +8275,8 @@ function find(query, engine, options) {
       // "searched 10 elements (snapshot truncated?)".
       consideredCount: searchResponse.results.length,
       decomposed,
-      durationMs
+      durationMs,
+      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
     };
   }
   const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
@@ -8476,7 +8491,7 @@ function generateDisambiguationSuggestion(candidates, decomposed) {
   lines.push('Try adding spatial context: "... near X" or "... in the Y"');
   return lines.join("\n");
 }
-var DEFAULT_FIND_OPTIONS, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
+var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
 var init_find = __esm({
   "src/ai/find.ts"() {
     init_target_decomposer();
@@ -8484,8 +8499,11 @@ var init_find = __esm({
       context: {},
       pickFirst: true,
       confidenceThreshold: 0.5,
-      maxResults: 5
+      maxResults: 5,
+      debug: false
     };
+    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+    DEBUG_ALTERNATIVES_LIMIT = 3;
     AMBIGUITY_GAP = 0.1;
     MODAL_PENALTY = 0.3;
     RECENCY_BONUS = 0.05;
@@ -17162,12 +17180,27 @@ function createCtrEntry(logicalName, selectors, metadata) {
 var _canonicalPerformAction;
 function getCanonicalPerformAction() {
   if (_canonicalPerformAction !== void 0) return _canonicalPerformAction;
-  try {
-    const mod = __require("@qontinui/ui-bridge-auto");
-    _canonicalPerformAction = typeof mod.performAction === "function" ? mod.performAction : null;
-  } catch {
-    _canonicalPerformAction = null;
+  let mod;
+  if (typeof globalThis !== "undefined") {
+    const g2 = globalThis;
+    const direct = g2.__QONTINUI_UI_BRIDGE_AUTO__;
+    if (direct && typeof direct === "object") {
+      mod = direct;
+    } else {
+      const loader = g2.__QONTINUI_UI_BRIDGE_AUTO_LOADER__;
+      if (typeof loader === "function") {
+        try {
+          const loaded = loader();
+          if (loaded && typeof loaded === "object") {
+            mod = loaded;
+          }
+        } catch {
+          mod = void 0;
+        }
+      }
+    }
   }
+  _canonicalPerformAction = mod && typeof mod.performAction === "function" ? mod.performAction : null;
   return _canonicalPerformAction;
 }
 function hasNestedQuantifiers(pattern) {
@@ -24624,6 +24657,20 @@ function initializeUIBridge({
   const navigationTracker = new NavigationTracker();
   navigationTracker.install((data) => {
     registry2.dispatchEvent("navigation:change", data);
+    if (typeof window !== "undefined" && data.from?.pathname !== data.to?.pathname && data.trigger !== "initial") {
+      try {
+        window.dispatchEvent(
+          new CustomEvent("ui-bridge-route-change", {
+            detail: {
+              from: data.from?.pathname,
+              to: data.to?.pathname,
+              trigger: data.trigger
+            }
+          })
+        );
+      } catch {
+      }
+    }
   });
   const shortcutTracker = new ShortcutTracker();
   shortcutTracker.install();
@@ -25871,8 +25918,16 @@ var INTERACTIVE_SELECTORS2 = [
   '[contenteditable="true"]',
   "[data-ui-element]",
   // Explicitly marked for registration
-  "[data-testid]"
+  "[data-testid]",
   // Testing library convention
+  "[data-ui-bridge-id]"
+  // Author-tagged element — registers regardless of
+  // role/tag/interactivity. Lets containers like
+  // <section role="region" data-ui-bridge-id="..."> appear in snapshot
+  // and resolve via /control/element/:id, not just via raw DOM
+  // querySelector. The scanner already preserves the existing stamp
+  // verbatim (see registerElement: `existingStamp` branch), so the
+  // attribute value becomes the registry key as-is.
 ];
 var SEMANTIC_CONTENT_SELECTOR = "[data-ui-bridge-content]";
 var UI_BRIDGE_CONTENT_ATTR = "data-ui-bridge-content";
@@ -26773,6 +26828,23 @@ function useAutoRegister(options = {}) {
       scanAndRegister(rootElement);
     };
     window.addEventListener("ui-bridge-auth-complete", handleAuthComplete);
+    const handleRouteChange = () => {
+      if (bridge2?.registry) {
+        bridge2.registry.clear();
+      }
+      bboxUntrackersRef.current.forEach((untrack) => {
+        try {
+          untrack();
+        } catch {
+        }
+      });
+      bboxUntrackersRef.current.clear();
+      registeredElementsRef.current = /* @__PURE__ */ new Map();
+      registeredContentElementsRef.current = /* @__PURE__ */ new Map();
+      registeredMediaElementsRef.current = /* @__PURE__ */ new Map();
+      scanAndRegister(rootElement);
+    };
+    window.addEventListener("ui-bridge-route-change", handleRouteChange);
     if (typeof window !== "undefined") {
       const w = window;
       if (!w.__UI_BRIDGE__) w.__UI_BRIDGE__ = {};
@@ -26782,6 +26854,7 @@ function useAutoRegister(options = {}) {
     return () => {
       observer.disconnect();
       window.removeEventListener("ui-bridge-auth-complete", handleAuthComplete);
+      window.removeEventListener("ui-bridge-route-change", handleRouteChange);
       if (typeof window !== "undefined") {
         const w = window;
         if (w.__UI_BRIDGE__) {
@@ -29685,7 +29758,7 @@ async function executeCommand(action, payload, bridge) {
       const engine = createSearchEngine2({ includeHidden: true });
       engine.updateElements(elements);
       const payloadObj = payload ?? {};
-      const { query, type, context: ctx, confidenceThreshold } = payloadObj;
+      const { query, type, context: ctx, confidenceThreshold, debug } = payloadObj;
       const findInput = typeof query === "string" && query.length > 0 ? type ? (
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { text: query, type, fuzzy: true }
@@ -29693,7 +29766,8 @@ async function executeCommand(action, payload, bridge) {
       const result = find2(findInput, engine, {
         context: ctx,
         confidenceThreshold,
-        pickFirst: true
+        pickFirst: true,
+        debug: debug === true
       });
       return result;
     }
@@ -30262,11 +30336,25 @@ async function executeCommand(action, payload, bridge) {
           }
         } catch {
         }
-        window.history.pushState(null, "", pathname);
-        try {
-          window.dispatchEvent(new PopStateEvent("popstate"));
-        } catch {
-          window.dispatchEvent(new Event("popstate"));
+        const softBridge = getBridge();
+        if (softBridge.navigateHandler) {
+          try {
+            softBridge.navigateHandler(pathname);
+          } catch {
+            window.history.pushState(null, "", pathname);
+            try {
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            } catch {
+              window.dispatchEvent(new Event("popstate"));
+            }
+          }
+        } else {
+          window.history.pushState(null, "", pathname);
+          try {
+            window.dispatchEvent(new PopStateEvent("popstate"));
+          } catch {
+            window.dispatchEvent(new Event("popstate"));
+          }
         }
         window.dispatchEvent(
           new CustomEvent("ui-bridge:navigate", { detail: { url: pathname, mode: "soft" } })

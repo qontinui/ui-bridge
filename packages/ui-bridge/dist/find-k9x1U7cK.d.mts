@@ -1,4 +1,4 @@
-import { am as DiscoveredElement, as as RegisteredElement, at as ElementState, G as SearchCriteria, H as SearchResponse, au as SearchResult, av as FormState, an as AIDiscoveredElement } from './types-DHAgZgSv.js';
+import { am as DiscoveredElement, as as RegisteredElement, at as ElementState, G as SearchCriteria, H as SearchResponse, au as SearchResult, av as FormState, an as AIDiscoveredElement } from './types-DHAgZgSv.mjs';
 
 /**
  * Search Engine
@@ -370,6 +370,14 @@ interface FindOptions {
     confidenceThreshold?: number;
     /** Maximum results to return in ambiguous case (default: 5) */
     maxResults?: number;
+    /**
+     * If true, populate `FindResultNotFound.alternatives` with the closest
+     * sub-threshold candidates so callers can see which elements were
+     * considered but scored below the confidence gate. Behind a flag because
+     * generating the diagnostic requires an extra search pass with a relaxed
+     * threshold and inflates response size — production callers stay lean.
+     */
+    debug?: boolean;
 }
 /**
  * Successful find result
@@ -415,7 +423,9 @@ interface FindResultNotFound {
     ambiguous: false;
     /** Why no match was found */
     reason: string;
-    /** Partial matches that were below threshold */
+    /** Partial matches that were below the find-API threshold but still
+     *  cleared the underlying engine's fuzzy gate. Always populated when any
+     *  element scored above the engine's internal floor. */
     partialMatches: FindCandidate[];
     /** How many elements were considered before filtering. Helps agents
      *  distinguish "searched 200 elements, none matched" from "searched
@@ -425,6 +435,15 @@ interface FindResultNotFound {
     decomposed: DecomposedTarget;
     /** Search duration in ms */
     durationMs: number;
+    /**
+     * Top-3 closest candidates with sub-threshold scores. Populated only when
+     * the caller passed `debug: true` in `FindOptions`. Differs from
+     * `partialMatches` in that it relaxes the engine's internal fuzzy gate to
+     * surface candidates that scored *anything* > 0, so agents can see "we
+     * considered element X with placeholder Y but it scored 0.12 — far below
+     * the 0.5 threshold". Sorted by confidence descending.
+     */
+    alternatives?: FindCandidate[];
 }
 type FindResult = FindResultMatch | FindResultAmbiguous | FindResultNotFound;
 /**

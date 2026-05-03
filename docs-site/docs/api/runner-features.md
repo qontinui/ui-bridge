@@ -326,6 +326,38 @@ reliable way to exercise the runner's shutdown path through UI Bridge.
 webviews, and Win32 `WM_CLOSE` messages don't consistently reach Tao's
 event pump.
 
+### Mobile transport paths — required reading before testing
+
+`MOBILE_BASE=http://localhost:8087/ui-bridge` only works *after* a
+transport has been established. The mobile app does NOT bind to
+`localhost:8087` on the host machine on its own — it binds on the
+device, and one of three transports has to bridge that to localhost
+before any UI Bridge endpoint becomes reachable. Skipping this step is
+the #1 cause of "the mobile app is running but I can't reach the
+bridge".
+
+| Transport | Setup | When to use |
+|-----------|-------|-------------|
+| **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
+| **LAN** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, proxy through the runner: `curl http://localhost:9876/ui-bridge/devices/<deviceId>/control/snapshot`. | Phone on the same Wi-Fi as the dev box; can't or don't want to plug in USB. |
+| **Cloud relay** | Mobile app paired via the in-app Connection Wizard. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transport: "cloud"`. Proxy through the runner same as LAN. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
+
+**One-shot detection** — which transport is active?
+
+```bash
+echo "USB:"
+adb forward --list | grep -q "tcp:8087" && echo "  forwarded — try localhost:8087" || echo "  not forwarded"
+echo "Runner-relayed (LAN or cloud):"
+curl -s http://localhost:9876/ui-bridge/devices | python -c "import sys,json; d=json.load(sys.stdin)['data']; print(f\"  {d['count']} device(s)\"); [print(f\"  - {x.get('id')} via {x.get('transport')}\") for x in d.get('devices',[])]"
+```
+
+If both show empty: the device isn't reachable from this machine. The
+mobile app may still be running and connected to qontinui-web's
+backend (via HTTPS, not the bridge) — that login channel doesn't
+expose UI Bridge state. Either set up one of the three transports
+above, or limit testing to server-side artifact verification (AAB
+manifest grep, `eas-cli channel:view`, backend logs).
+
 ### Mobile route navigation
 
 ```bash
@@ -810,6 +842,73 @@ curl -X POST $BASE/control/component/zone-profile-picker/action/load-profile \
 Each component detail also includes `actionInvocationPath` templates
 and per-action `path` fields — the response itself tells you how to
 call it.
+
+### JSON field convention (camelCase)
+
+All `/ui-bridge/apps/*` and `/ui-bridge/control/*` endpoints use **camelCase**
+JSON field names. The Rust DTOs derive `#[serde(rename_all = "camelCase")]`
+so a typo like `keep_alive_secs` is silently dropped without `deny_unknown_fields`
+— and on the register endpoint, *with* `deny_unknown_fields` (since 2026-05-03)
+typos return HTTP 400 with the offending field name in the error envelope.
+Example: pass `keepAliveSecs`, not `keep_alive_secs`. `appId`, not `app_id`.
+`baseUrl`, not `base_url`. `pageUrl`, not `page_url`.
+
+### Driving a specific app (transport-agnostic)
+
+```http
+POST /ui-bridge/apps/:appId/dispatch
+```
+
+When multiple apps are registered with the runner — wrappers, source-
+integrated SDK apps, the runner itself — pick the target explicitly.
+Body shape: `{action, params}`. Routing is automatic: HTTP-transport
+apps go via `reqwest`, WebSocket-transport wrappers go via the
+command relay. Returns the dispatched call's result wrapped in
+`ApiResponse::success`.
+
+```bash
+curl -X POST $BASE/apps/example.com/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"action":"ping","params":{}}'
+```
+
+Two related per-app affordances on the existing component-action route:
+
+- `POST /sdk/control/component/:id/action/:actionId?app_id=<id>` —
+  the optional `?app_id` query param routes the call to that specific
+  registered app instead of relying on the active SDK connection.
+  Without it, the dispatcher falls back to whichever app
+  `state.sdk_connection` currently has installed (the WS-handshake
+  path mirrors WS wrappers into that slot automatically, but only one
+  at a time).
+- `GET /sdk/control/snapshot?app_id=<id>` — same query-param routing
+  for snapshot reads against a specific WS-transport app.
+
+### Wait for an app to (dis)appear
+
+```http
+POST /ui-bridge/control/wait-for-app
+```
+
+Polling primitive that mirrors the `wait-for-element` shape but checks
+the registry instead of the DOM. Body: `{appId, transport?, present?,
+timeoutMs?, pollMs?}`. Defaults: `present=true`, `timeoutMs=5000`,
+`pollMs=100`. Resolves with `{satisfied, elapsedMs, timedOut?, app?}` —
+`200` either way; branch on `satisfied`. When `satisfied:true && present:true`,
+the response also carries the matched `app` (a `RegisterAppResponse` with the
+flattened `DiscoveredApp` fields plus `transport`) so callers can act on
+its url/transport without a follow-up `/apps/registered` round-trip.
+Disappearance waits (`present:false`) omit `app` since there's no entry
+to surface. Useful in scripts that spawn a wrapper and need to know when
+it's actually visible to the runner.
+
+### Pinning an entry past the default TTL
+
+`POST /ui-bridge/apps/register` accepts an optional `keep_alive_secs`
+field. Default eviction TTL is 30s; entries that explicitly opt in
+stay alive longer without sending heartbeats — useful for tests,
+scripted injections, and synthetic UI fixtures. Server-side cap is
+24 hours; values over the cap return HTTP 400.
 
 ## Design audit
 

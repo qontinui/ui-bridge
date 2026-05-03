@@ -9,9 +9,6 @@
  * When ui-bridge-auto is not installed, falls back to inline implementations.
  */
 
-// When @qontinui/ui-bridge-auto is available (optional peer dep), DOM action
-// execution delegates to its canonical performAction function.
-// Lazy-resolved on first use to avoid top-level import issues.
 type PerformActionFn = (
   element: HTMLElement,
   action: string,
@@ -19,18 +16,34 @@ type PerformActionFn = (
 ) => Promise<void>;
 let _canonicalPerformAction: PerformActionFn | null | undefined;
 
+interface UIBridgeAutoModule {
+  performAction?: PerformActionFn;
+}
+
 function getCanonicalPerformAction(): PerformActionFn | null {
   if (_canonicalPerformAction !== undefined) return _canonicalPerformAction;
-  try {
-    // Dynamic require — ui-bridge-auto is marked external in tsup, so this
-    // resolves at runtime only when the peer dependency is installed.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('@qontinui/ui-bridge-auto') as Record<string, unknown>;
-    _canonicalPerformAction =
-      typeof mod.performAction === 'function' ? (mod.performAction as PerformActionFn) : null;
-  } catch {
-    _canonicalPerformAction = null;
+  let mod: UIBridgeAutoModule | undefined;
+  if (typeof globalThis !== 'undefined') {
+    const g = globalThis as Record<string, unknown>;
+    const direct = g.__QONTINUI_UI_BRIDGE_AUTO__;
+    if (direct && typeof direct === 'object') {
+      mod = direct as UIBridgeAutoModule;
+    } else {
+      const loader = g.__QONTINUI_UI_BRIDGE_AUTO_LOADER__;
+      if (typeof loader === 'function') {
+        try {
+          const loaded = (loader as () => unknown)();
+          if (loaded && typeof loaded === 'object') {
+            mod = loaded as UIBridgeAutoModule;
+          }
+        } catch {
+          mod = undefined;
+        }
+      }
+    }
   }
+  _canonicalPerformAction =
+    mod && typeof mod.performAction === 'function' ? mod.performAction : null;
   return _canonicalPerformAction;
 }
 

@@ -1717,8 +1717,11 @@ var DEFAULT_FIND_OPTIONS = {
   context: {},
   pickFirst: true,
   confidenceThreshold: 0.5,
-  maxResults: 5
+  maxResults: 5,
+  debug: false
 };
+var DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+var DEBUG_ALTERNATIVES_LIMIT = 3;
 var AMBIGUITY_GAP = 0.1;
 var MODAL_PENALTY = 0.3;
 var RECENCY_BONUS = 0.05;
@@ -1787,6 +1790,26 @@ function find(query, engine, options) {
   }
   const durationMs = performance.now() - startTime;
   if (viableResults.length === 0) {
+    let alternatives2;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
+      });
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
+      );
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
+      }
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
+    }
     return {
       found: false,
       ambiguous: false,
@@ -1797,7 +1820,8 @@ function find(query, engine, options) {
       // "searched 10 elements (snapshot truncated?)".
       consideredCount: searchResponse.results.length,
       decomposed,
-      durationMs
+      durationMs,
+      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
     };
   }
   const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
@@ -7935,7 +7959,7 @@ var NLActionExecutor = class {
       }
     };
     if (standardAction === "type" && parsed.value) {
-      actionRequest.params = { text: parsed.value };
+      actionRequest.params = { text: parsed.value, clear: true };
     } else if (standardAction === "select" && parsed.value) {
       actionRequest.params = { value: parsed.value };
     } else if (standardAction === "scroll" && parsed.scrollDirection) {
@@ -20081,7 +20105,8 @@ function createHandlers(registry, actionExecutor, config = {}) {
         const result = find(request.query, searchEngine, {
           context,
           confidenceThreshold: request.confidenceThreshold,
-          pickFirst: true
+          pickFirst: true,
+          debug: request.debug === true
         });
         return success(result);
       } catch (err) {

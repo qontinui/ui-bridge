@@ -348,6 +348,26 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       );
     });
 
+    it('should default `clear: true` on NL type actions to replace pre-filled values', async () => {
+      // Regression: "type 'X' in element Y" semantically replaces the field.
+      // Without clear, performType appends — manifested in the runner's home-
+      // prompt E2E as Step 3 succeeding but Step 4 (Analyze) failing on a
+      // malformed concatenated path. The runtime contract is: NL type ⇒ clear.
+      const request: NLActionRequest = {
+        instruction: 'type "fresh value" in the Email field',
+      };
+
+      await executor.execute(request);
+
+      expect(mockActionExecutor.executeAction).toHaveBeenCalledWith(
+        'email-input',
+        expect.objectContaining({
+          action: 'type',
+          params: expect.objectContaining({ text: 'fresh value', clear: true }),
+        })
+      );
+    });
+
     it('should return element state after successful action', async () => {
       const response = await executor.execute({
         instruction: 'click Submit',

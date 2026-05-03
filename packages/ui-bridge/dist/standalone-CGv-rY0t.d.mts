@@ -1,7 +1,7 @@
-import { C as ChangeObserver } from './change-observer-C5p9qK2d.js';
-import { ar as UIBridgeRegistry, e as BridgeEvent } from './types-DHAgZgSv.js';
-import { a as UIBridgeServerHandlers, U as UIBridgeServerConfig, W as WebSocketMessage } from './types-D0yGFbBv.js';
-import { S as SSEManager } from './sse-handler-BtU4fIjT.js';
+import { C as ChangeObserver } from './change-observer-DIlpGZY4.mjs';
+import { ar as UIBridgeRegistry, e as BridgeEvent } from './types-DHAgZgSv.mjs';
+import { a as UIBridgeServerHandlers, U as UIBridgeServerConfig, W as WebSocketMessage } from './types-DESdbIVG.mjs';
+import { S as SSEManager } from './sse-handler-DuipnNr3.mjs';
 
 /**
  * WebSocket-like interface for compatibility

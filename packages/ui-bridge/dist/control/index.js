@@ -2,12 +2,6 @@
 
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -1201,12 +1195,27 @@ function getGlobalCtr() {
 var _canonicalPerformAction;
 function getCanonicalPerformAction() {
   if (_canonicalPerformAction !== void 0) return _canonicalPerformAction;
-  try {
-    const mod = __require("@qontinui/ui-bridge-auto");
-    _canonicalPerformAction = typeof mod.performAction === "function" ? mod.performAction : null;
-  } catch {
-    _canonicalPerformAction = null;
+  let mod;
+  if (typeof globalThis !== "undefined") {
+    const g = globalThis;
+    const direct = g.__QONTINUI_UI_BRIDGE_AUTO__;
+    if (direct && typeof direct === "object") {
+      mod = direct;
+    } else {
+      const loader = g.__QONTINUI_UI_BRIDGE_AUTO_LOADER__;
+      if (typeof loader === "function") {
+        try {
+          const loaded = loader();
+          if (loaded && typeof loaded === "object") {
+            mod = loaded;
+          }
+        } catch {
+          mod = void 0;
+        }
+      }
+    }
   }
+  _canonicalPerformAction = mod && typeof mod.performAction === "function" ? mod.performAction : null;
   return _canonicalPerformAction;
 }
 function hasNestedQuantifiers(pattern) {
