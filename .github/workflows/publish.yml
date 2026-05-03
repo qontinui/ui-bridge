@@ -53,7 +53,11 @@ jobs:
           echo "Derived package: $name"
 
       - name: Install dependencies
-        run: npm ci
+        # --legacy-peer-deps because the root project pins eslint@^10 while
+        # eslint-plugin-react's published peers max out at ^9.7. The conflict
+        # is benign for the publish path (we don't run lint here) but blocks
+        # `npm ci` strict resolution.
+        run: npm ci --legacy-peer-deps
 
       - name: Build
         run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
