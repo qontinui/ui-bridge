@@ -13,3 +13,5 @@ export { useUIBridgeModal } from './useUIBridgeModal';
 export type { UseUIBridgeModalOptions } from './useUIBridgeModal';
 export { useUIBridgeToast, useToastRecorder } from './useUIBridgeToast';
 export type { UseUIBridgeToastOptions, ToastRecorderInput } from './useUIBridgeToast';
+export { State, TransitionTo } from './StateAnnotation';
+export type { StateProps, TransitionToProps, StateAnnotationRequiredElement } from './StateAnnotation';

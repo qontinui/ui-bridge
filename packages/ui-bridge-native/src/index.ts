@@ -113,6 +113,19 @@ export {
   type ToastRecorderInput,
 } from './react/useUIBridgeToast';
 
+// IR annotation wrappers — runtime-no-op render-children-only components.
+// Build-time IR extractor (in @qontinui/ui-bridge-auto) reads these JSX tags
+// to derive the page IR. Their props mirror the IR schema; the runtime
+// implementation just renders children, so wrapping any subtree in <State>
+// or <TransitionTo> never changes UI behavior.
+export {
+  State,
+  TransitionTo,
+  type StateProps,
+  type TransitionToProps,
+  type StateAnnotationRequiredElement,
+} from './react/StateAnnotation';
+
 // Tracker classes (modal/toast/undo) — usually consumed via hooks but exported
 // so non-React contexts (e.g. unit tests, custom enrichers) can instantiate them.
 export { ModalDetector } from './modal/modal-detector';
