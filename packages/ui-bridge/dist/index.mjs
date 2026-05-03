@@ -1303,7 +1303,10 @@ function serializeRegisteredElement(el, options = {}) {
     // Route captured at registration time. Mirrored on the snapshot element
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
-    route: el.route
+    route: el.route,
+    // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
+    // can answer "which control unhides element X" without grepping source.
+    reveals: el.reveals
   };
 }
 function captureDocumentVisibility() {
@@ -1705,6 +1708,11 @@ var init_registry = __esm({
         // without a route (non-DOM environment) are tracked under the empty-string
         // key `""` — snapshot serialization filters that bucket out.
         this.routeCounts = /* @__PURE__ */ new Map();
+        // Per-route element-id sets — paired with `routeCounts` so the snapshot
+        // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
+        // empty-string convention for undefined-route elements; same drop-on-empty
+        // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
+        this.routeIds = /* @__PURE__ */ new Map();
         // External store pattern for useSyncExternalStore
         this.storeVersion = 0;
         this.storeListeners = /* @__PURE__ */ new Set();
@@ -1868,6 +1876,7 @@ var init_registry = __esm({
         if (options.position !== void 0) existing.position = options.position;
         if (options.color !== void 0) existing.color = options.color;
         if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
+        if (options.reveals !== void 0) existing.reveals = options.reveals;
         return true;
       }
       /**
@@ -1993,7 +2002,10 @@ var init_registry = __esm({
           // Undefined for interactive elements and for content registered via
           // the heading/paragraph/table-cell content-discovery path.
           content: options.content,
-          role: options.role
+          role: options.role,
+          // Phase 3.2 — ids/globs this control reveals. Undefined for elements
+          // that don't gate any visibility (the common case).
+          reveals: options.reveals
         };
         Object.defineProperty(registered, "__stateOverridesRef", {
           value: stateOverridesRef,
@@ -2003,25 +2015,38 @@ var init_registry = __esm({
         });
         const prior = this.elements.get(actualId);
         if (prior) {
-          this.decrementRouteCount(prior.route);
+          this.decrementRouteCount(prior.route, actualId);
         }
         this.elements.set(actualId, registered);
         this.everHadRegistrationsFlag = true;
-        this.incrementRouteCount(route);
+        this.incrementRouteCount(route, actualId);
         this.emit("element:registered", { id: actualId, type, label: options.label });
         return registered;
       }
-      incrementRouteCount(route) {
+      incrementRouteCount(route, id) {
         const key = route ?? "";
         this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+        let ids = this.routeIds.get(key);
+        if (!ids) {
+          ids = /* @__PURE__ */ new Set();
+          this.routeIds.set(key, ids);
+        }
+        ids.add(id);
       }
-      decrementRouteCount(route) {
+      decrementRouteCount(route, id) {
         const key = route ?? "";
         const next = (this.routeCounts.get(key) ?? 0) - 1;
         if (next <= 0) {
           this.routeCounts.delete(key);
         } else {
           this.routeCounts.set(key, next);
+        }
+        const ids = this.routeIds.get(key);
+        if (ids) {
+          ids.delete(id);
+          if (ids.size === 0) {
+            this.routeIds.delete(key);
+          }
         }
       }
       /**
@@ -2103,7 +2128,7 @@ var init_registry = __esm({
           }
           registered.mounted = false;
           this.elements.delete(id);
-          this.decrementRouteCount(registered.route);
+          this.decrementRouteCount(registered.route, id);
           this.emit("element:unregistered", { id });
           this.options.elementEventLog?.removeElement(id);
           return true;
@@ -2389,6 +2414,7 @@ var init_registry = __esm({
         if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
         if (options.getState !== void 0) existing.getState = options.getState;
         if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
+        if (options.scope !== void 0) existing.scope = options.scope;
         return true;
       }
       /**
@@ -2410,7 +2436,8 @@ var init_registry = __esm({
           registeredAt: Date.now(),
           mounted: true,
           getState: options.getState,
-          getComputed: options.getComputed
+          getComputed: options.getComputed,
+          scope: options.scope
         };
         this.components.set(id, registered);
         this.emit("component:registered", { id, name: options.name });
@@ -2867,16 +2894,27 @@ var init_registry = __esm({
         return this.everHadRegistrationsFlag;
       }
       /**
-       * Per-route counts of currently-registered elements. Returns a plain
-       * object copy so callers can't mutate the internal map. Elements with
-       * an undefined route are omitted. Exposed primarily for tests; production
-       * code should read `BridgeSnapshot.registration.byRoute`.
+       * Per-route counts of currently-registered elements, plus the ids that
+       * make up each count. Returns a plain object copy so callers can't mutate
+       * internal state. Elements with an undefined route are omitted. Exposed
+       * primarily for tests; production code should read
+       * `BridgeSnapshot.registration.byRoute`.
+       *
+       * Each value is `{ count: number; ids: string[] }`. The `count` field
+       * mirrors the prior `Record<string, number>` shape (kept verbatim so
+       * existing readers like the cross-route 404 hint can detect coverage),
+       * and `ids` enumerates the element ids registered on that route at
+       * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
        */
       getCountsByRoute() {
         const out = {};
         for (const [route, count] of this.routeCounts) {
           if (route === "") continue;
-          if (count > 0) out[route] = count;
+          if (count > 0) {
+            const idSet = this.routeIds.get(route);
+            const ids = idSet ? Array.from(idSet) : [];
+            out[route] = { count, ids };
+          }
         }
         return out;
       }
@@ -3053,7 +3091,10 @@ var init_registry = __esm({
             // Tell the caller exactly how to invoke any action on this component
             // without having to grep docs or guess the route shape.
             actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-            elementIds: comp.elementIds
+            elementIds: comp.elementIds,
+            // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+            // is the documented default ("route").
+            scope: comp.scope
           })),
           workflows: this.getAllWorkflows().map((wf) => ({
             id: wf.id,
@@ -3102,7 +3143,10 @@ var init_registry = __esm({
             // Tell the caller exactly how to invoke any action on this component
             // without having to grep docs or guess the route shape.
             actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-            elementIds: comp.elementIds
+            elementIds: comp.elementIds,
+            // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+            // is the documented default ("route").
+            scope: comp.scope
           })),
           workflows: this.getAllWorkflows().map((wf) => ({
             id: wf.id,
@@ -3127,6 +3171,7 @@ var init_registry = __esm({
         this.transitions.clear();
         this.activeStates.clear();
         this.routeCounts.clear();
+        this.routeIds.clear();
         this.everHadRegistrationsFlag = false;
       }
       /**
@@ -3149,6 +3194,204 @@ var init_registry = __esm({
       }
     };
     REGISTRY_KEY = /* @__PURE__ */ Symbol.for("@qontinui/ui-bridge/globalRegistry");
+  }
+});
+
+// src/debug/shared-utils.ts
+function getEventStack(event) {
+  if ("stack" in event) return event.stack;
+  return void 0;
+}
+var init_shared_utils = __esm({
+  "src/debug/shared-utils.ts"() {
+  }
+});
+
+// src/debug/error-fingerprint.ts
+function normalizeMessage(message) {
+  return message.replace(UUID_RE, "<uuid>").replace(TIMESTAMP_RE, "<timestamp>").replace(HEX_RE, "<hex>").replace(UNIX_TS_RE, "<number>").replace(NUMBER_RE, "<n>");
+}
+function normalizeUrlPath(url) {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split("/").map((seg) => {
+      if (UUID_TEST_RE.test(seg)) {
+        return "<uuid>";
+      }
+      if (/^\d+$/.test(seg)) return "<id>";
+      return seg;
+    });
+    return `${parsed.origin}${segments.join("/")}`;
+  } catch {
+    return normalizeMessage(url);
+  }
+}
+function parseFrame(line) {
+  const trimmed = line.trim();
+  const v8 = trimmed.match(V8_FRAME_RE);
+  if (v8) {
+    return { functionName: v8[1], file: v8[2], line: v8[3], col: v8[4] };
+  }
+  const sm = trimmed.match(SPIDERMONKEY_FRAME_RE);
+  if (sm) {
+    return { functionName: sm[1], file: sm[2], line: sm[3], col: sm[4] };
+  }
+  const bare = trimmed.match(JSC_BARE_RE);
+  if (bare) {
+    return { functionName: void 0, file: bare[1], line: bare[2], col: bare[3] };
+  }
+  return null;
+}
+function isAppFrame(frame) {
+  return !SKIP_FRAME_PATTERNS.some((pat) => pat.test(frame.file));
+}
+function extractFilename(file) {
+  let clean = file.split("?")[0].split("#")[0];
+  clean = clean.replace(/^https?:\/\/[^/]+/, "");
+  clean = clean.replace(/^\/_next\/static\/[^/]+\//, "");
+  const parts = clean.split("/").filter(Boolean);
+  if (parts.length > 3) {
+    return parts.slice(-3).join("/");
+  }
+  return parts.join("/") || clean;
+}
+function extractSourceLocation(stack) {
+  if (!stack) return void 0;
+  const lines = stack.split("\n");
+  for (const line of lines) {
+    const frame = parseFrame(line);
+    if (frame && isAppFrame(frame)) {
+      const filename = extractFilename(frame.file);
+      return `${filename}:${frame.line}`;
+    }
+  }
+  for (const line of lines) {
+    const frame = parseFrame(line);
+    if (frame) {
+      const filename = extractFilename(frame.file);
+      return `${filename}:${frame.line}`;
+    }
+  }
+  return void 0;
+}
+function topFrameForFingerprint(stack) {
+  return extractSourceLocation(stack) ?? "";
+}
+function fingerprintConsole(event) {
+  const normalized = normalizeMessage(event.message);
+  const frame = topFrameForFingerprint(event.stack);
+  return `console:${event.level}|${normalized}|${frame}`;
+}
+function fingerprintNetwork(event) {
+  const path = normalizeUrlPath(event.requestUrl);
+  return `network:${event.method}|${path}|${event.status ?? event.kind}`;
+}
+function fingerprintReactError(event) {
+  const normalized = normalizeMessage(event.message);
+  const frame = topFrameForFingerprint(event.stack);
+  return `react-error|${normalized}|${frame}`;
+}
+function fingerprintResourceError(event) {
+  const path = normalizeUrlPath(event.resourceUrl);
+  return `resource-error:${event.tagName}|${path}`;
+}
+function fingerprintHmr(event) {
+  const normalized = normalizeMessage(event.message);
+  return `hmr:${event.level}|${normalized}|${event.moduleName ?? ""}`;
+}
+function fingerprintWsDisconnection(event) {
+  return `ws-disconnection:${event.previousState}->${event.newState}`;
+}
+function computeFingerprint(event) {
+  switch (event.type) {
+    case "console":
+      return fingerprintConsole(event);
+    case "network":
+      return fingerprintNetwork(event);
+    case "react-error":
+      return fingerprintReactError(event);
+    case "resource-error":
+      return fingerprintResourceError(event);
+    case "hmr":
+      return fingerprintHmr(event);
+    case "ws-disconnection":
+      return fingerprintWsDisconnection(event);
+    case "navigation":
+      return `navigation:${event.trigger}|${normalizeUrlPath(event.to)}`;
+    case "long-task":
+      return `long-task:${Math.round(event.durationMs / 50) * 50}ms`;
+    case "long-animation-frame": {
+      const scripts = event.scripts.map((s) => `${s.invoker}@${extractFilename(s.sourceURL)}`).join(",");
+      return `loaf:${Math.round(event.durationMs / 50) * 50}ms|${scripts}`;
+    }
+    case "web-vital":
+      return `web-vital:${event.metric}`;
+    case "memory":
+      return `memory:snapshot`;
+    case "freeze":
+      return `freeze:${Math.round(event.gapMs / 500) * 500}ms`;
+    case "dom-metrics":
+      return `dom-metrics:${Math.round(event.nodeCount / 1e3) * 1e3}`;
+    default: {
+      const _exhaustive = event;
+      return `unknown:${_exhaustive.type}`;
+    }
+  }
+}
+function deduplicateEvents(events) {
+  const groups2 = /* @__PURE__ */ new Map();
+  const insertionOrder = [];
+  for (const event of events) {
+    const fingerprint = computeFingerprint(event);
+    const existing = groups2.get(fingerprint);
+    if (existing) {
+      existing.count += 1;
+      existing.lastSeen = event.timestamp;
+    } else {
+      const sourceLocation = extractSourceLocation(getEventStack(event));
+      groups2.set(fingerprint, {
+        fingerprint,
+        event,
+        count: 1,
+        firstSeen: event.timestamp,
+        lastSeen: event.timestamp,
+        sourceLocation
+      });
+      insertionOrder.push(fingerprint);
+    }
+  }
+  return insertionOrder.map((fp) => groups2.get(fp));
+}
+var UUID_RE, UUID_TEST_RE, HEX_RE, TIMESTAMP_RE, UNIX_TS_RE, NUMBER_RE, SKIP_FRAME_PATTERNS, V8_FRAME_RE, SPIDERMONKEY_FRAME_RE, JSC_BARE_RE;
+var init_error_fingerprint = __esm({
+  "src/debug/error-fingerprint.ts"() {
+    init_shared_utils();
+    UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    UUID_TEST_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    HEX_RE = /\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b/gi;
+    TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*Z?/g;
+    UNIX_TS_RE = /\b\d{10,13}\b/g;
+    NUMBER_RE = /\b\d+\b/g;
+    SKIP_FRAME_PATTERNS = [
+      /node_modules/,
+      /react-dom/,
+      /react\.development/,
+      /react\.production/,
+      /scheduler\./,
+      /webpack-internal/,
+      /webpack:\/\//,
+      /turbopack-internal/,
+      /__webpack_/,
+      /^native code$/,
+      /^<anonymous>$/,
+      /\(native\)/,
+      /extensions::/,
+      /chrome-extension:\/\//,
+      /moz-extension:\/\//
+    ];
+    V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
+    SPIDERMONKEY_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)$/;
+    JSC_BARE_RE = /^(.+?):(\d+):(\d+)$/;
   }
 });
 
@@ -3710,1297 +3953,1166 @@ var init_bookmarks = __esm({
   }
 });
 
-// src/idle/network-idle.ts
-var NetworkIdleDetector;
-var init_network_idle = __esm({
-  "src/idle/network-idle.ts"() {
-    NetworkIdleDetector = class {
-      constructor(config = {}) {
-        this.name = "network";
-        this.pending = /* @__PURE__ */ new Map();
-        this.nextId = 0;
-        this.idleTimer = null;
-        this._isIdle = true;
-        this.listeners = [];
-        this.installed = false;
-        // Saved originals for cleanup (standalone mode only)
-        this.originalFetch = null;
-        this.originalXHROpen = null;
-        this.originalXHRSend = null;
-        // Tracker-driven mode
-        this.tracker = null;
-        this.trackerUnsubscribe = null;
-        this.weight = config.weight ?? 0.9;
-        this.debounceMs = config.debounceMs ?? 500;
-        this.ignorePatterns = (config.ignorePatterns ?? []).map((p) => new RegExp(p));
-        this.trackXHR = config.trackXHR ?? true;
-        this.tracker = config.tracker ?? null;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        if (this.tracker) {
-          this.installTrackerSubscription();
-        } else {
-          this.installFetchInterceptor();
-          if (this.trackXHR) {
-            this.installXHRInterceptor();
-          }
-        }
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        if (this.trackerUnsubscribe) {
-          this.trackerUnsubscribe();
-          this.trackerUnsubscribe = null;
-        } else {
-          if (this.originalFetch) {
-            globalThis.fetch = this.originalFetch;
-            this.originalFetch = null;
-          }
-          if (this.originalXHROpen) {
-            XMLHttpRequest.prototype.open = this.originalXHROpen;
-            this.originalXHROpen = null;
-          }
-          if (this.originalXHRSend) {
-            XMLHttpRequest.prototype.send = this.originalXHRSend;
-            this.originalXHRSend = null;
-          }
-        }
-        if (this.idleTimer) {
-          clearTimeout(this.idleTimer);
-          this.idleTimer = null;
-        }
-        this.pending.clear();
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isIdle;
-      }
-      getStatus() {
-        const now = Date.now();
-        const pendingRequests = [];
-        for (const tracked of this.pending.values()) {
-          pendingRequests.push({
-            url: tracked.url,
-            method: tracked.method,
-            startedAt: tracked.startedAt,
-            durationMs: now - tracked.startedAt
-          });
-        }
-        return {
-          idle: this._isIdle,
-          pendingCount: this.pending.size,
-          pendingRequests,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Network idle timeout after ${timeout}ms. ${this.pending.size} requests still pending.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      /**
-       * Subscribe to a NetworkRequestTracker's events instead of patching
-       * fetch/XHR directly. The idle detector only cares about request
-       * start/end — not the full request metadata.
-       */
-      installTrackerSubscription() {
-        this.trackerUnsubscribe = this.tracker.onEvent((event) => {
-          const url = event.entry.request.url;
-          const method = event.entry.request.method;
-          if (this.shouldIgnore(url)) return;
-          if (event.type === "request-start") {
-            this.trackRequest(url, method);
-          } else {
-            let matchedId = null;
-            for (const [id, tracked] of this.pending) {
-              if (tracked.url === url && tracked.method === method) {
-                matchedId = id;
-                break;
-              }
-            }
-            if (matchedId !== null) {
-              const statusCode = event.type === "request-error" ? event.entry.response?.statusCode ?? 0 : event.entry.response?.statusCode;
-              this.completeRequest(matchedId, statusCode);
-            }
-          }
-        });
-      }
-      shouldIgnore(url) {
-        return this.ignorePatterns.some((re) => re.test(url));
-      }
-      trackRequest(url, method) {
-        const id = this.nextId++;
-        this.pending.set(id, { url, method, startedAt: Date.now() });
-        if (this.idleTimer) {
-          clearTimeout(this.idleTimer);
-          this.idleTimer = null;
-        }
-        if (this._isIdle) {
-          this._isIdle = false;
-          this.notifyTransition();
-        }
-        this.onRequestStart?.({
-          url,
-          method,
-          pendingCount: this.pending.size
-        });
-        return id;
-      }
-      completeRequest(id, status) {
-        const tracked = this.pending.get(id);
-        if (!tracked) return;
-        this.pending.delete(id);
-        this.onRequestEnd?.({
-          url: tracked.url,
-          method: tracked.method,
-          status,
-          durationMs: Date.now() - tracked.startedAt,
-          pendingCount: this.pending.size
-        });
-        if (this.pending.size === 0) {
-          this.scheduleIdle();
-        }
-      }
-      scheduleIdle() {
-        if (this.idleTimer) clearTimeout(this.idleTimer);
-        this.idleTimer = setTimeout(() => {
-          this.idleTimer = null;
-          if (this.pending.size === 0 && !this._isIdle) {
-            this._isIdle = true;
-            this.notifyTransition();
-          }
-        }, this.debounceMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isIdle, status);
-          } catch {
-          }
-        }
-      }
-      installFetchInterceptor() {
-        this.originalFetch = globalThis.fetch;
-        const self = this;
-        const original = this.originalFetch;
-        globalThis.fetch = function(input, init) {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-          const method = init?.method?.toUpperCase() || "GET";
-          if (self.shouldIgnore(url)) {
-            return original.call(globalThis, input, init);
-          }
-          const id = self.trackRequest(url, method);
-          return original.call(globalThis, input, init).then(
-            (response) => {
-              self.completeRequest(id, response.status);
-              return response;
-            },
-            (error) => {
-              self.completeRequest(id, 0);
-              throw error;
-            }
-          );
-        };
-      }
-      installXHRInterceptor() {
-        this.originalXHROpen = XMLHttpRequest.prototype.open;
-        this.originalXHRSend = XMLHttpRequest.prototype.send;
-        const self = this;
-        XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
-          this.__uiBridgeMethod = method;
-          this.__uiBridgeUrl = typeof url === "string" ? url : url.href;
-          return self.originalXHROpen.call(this, method, url, async ?? true, username, password);
-        };
-        XMLHttpRequest.prototype.send = function(body) {
-          const xhr = this;
-          const url = xhr.__uiBridgeUrl || "";
-          const method = (xhr.__uiBridgeMethod || "GET").toUpperCase();
-          if (self.shouldIgnore(url)) {
-            return self.originalXHRSend.call(this, body);
-          }
-          const id = self.trackRequest(url, method);
-          xhr.__uiBridgeTrackId = id;
-          xhr.addEventListener("loadend", () => {
-            self.completeRequest(id, xhr.status);
-          });
-          return self.originalXHRSend.call(this, body);
-        };
-      }
-    };
+// src/ai/target-decomposer.ts
+function compileSynonym(type, synonym, softHint) {
+  const tokens = synonym.trim().split(/\s+/);
+  const escaped = tokens.map((t) => escapeRegExp(t)).join("\\s+");
+  return {
+    pattern: new RegExp(`\\b${escaped}\\b`, "i"),
+    type,
+    softHint,
+    synonym,
+    wordCount: tokens.length
+  };
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function isSoftTypeHint(decomposed) {
+  return decomposed.__softTypeHint === true;
+}
+function decomposeTarget(description) {
+  let remaining = description.trim();
+  const result = { elementText: "" };
+  remaining = extractStateFilter(remaining, result);
+  remaining = extractSpatialRelation(remaining, result);
+  if (!result.spatial || result.spatial.relation !== "inside") {
+    remaining = extractContainer(remaining, result);
+  } else {
+    result.container = result.spatial.referenceDescription;
+    result.spatial = void 0;
   }
-});
-
-// src/idle/dom-settling.ts
-var DOMSettlingDetector;
-var init_dom_settling = __esm({
-  "src/idle/dom-settling.ts"() {
-    DOMSettlingDetector = class {
-      constructor(config = {}) {
-        this.name = "dom";
-        this.observer = null;
-        this.lastMutationAt = 0;
-        this.recentMutations = [];
-        // timestamps of recent mutations
-        this.settleTimer = null;
-        this._isSettled = true;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.8;
-        this.settleMs = config.settleMs ?? 300;
-        this.root = config.root;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        const root = this.root ?? document.body;
-        this.observer = new MutationObserver((mutations) => {
-          const now = Date.now();
-          this.lastMutationAt = now;
-          this.recentMutations.push(now);
-          const cutoff = now - 1e3;
-          this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
-          let meaningfulCount = 0;
-          for (const m of mutations) {
-            if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-              meaningfulCount++;
-            } else if (m.type === "attributes") {
-              meaningfulCount++;
-            }
-          }
-          if (meaningfulCount === 0) return;
-          if (this._isSettled) {
-            this._isSettled = false;
-            this.notifyTransition();
-          }
-          this.resetSettleTimer();
-        });
-        this.observer.observe(root, {
-          childList: true,
-          attributes: true,
-          characterData: true,
-          subtree: true
-        });
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        this.observer?.disconnect();
-        this.observer = null;
-        if (this.settleTimer) {
-          clearTimeout(this.settleTimer);
-          this.settleTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isSettled;
-      }
-      getStatus() {
-        const now = Date.now();
-        const cutoff = now - 1e3;
-        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
-        return {
-          idle: this._isSettled,
-          settled: this._isSettled,
-          lastMutationAt: this.lastMutationAt,
-          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
-          recentMutationCount: recentCount,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.settled) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `DOM settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      resetSettleTimer() {
-        if (this.settleTimer) clearTimeout(this.settleTimer);
-        this.settleTimer = setTimeout(() => {
-          this.settleTimer = null;
-          if (!this._isSettled) {
-            this._isSettled = true;
-            this.notifyTransition();
-          }
-        }, this.settleMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isSettled, status);
-          } catch {
-          }
-        }
-      }
-    };
+  remaining = extractOrdinal(remaining, result);
+  remaining = extractElementType(remaining, result);
+  result.elementText = cleanElementText(remaining);
+  if (result.elementText) {
+    result.label = result.elementText;
+    result.ariaLabel = result.elementText;
+    result.placeholder = result.elementText;
+    result.name = result.elementText;
   }
-});
-
-// src/idle/loading-indicators.ts
-var DEFAULT_LOADING_SELECTORS, LOADING_ANIMATION_KEYWORDS, LoadingIndicatorDetector;
-var init_loading_indicators = __esm({
-  "src/idle/loading-indicators.ts"() {
-    init_class_name();
-    DEFAULT_LOADING_SELECTORS = [
-      // ARIA
-      '[aria-busy="true"]',
-      '[role="progressbar"]',
-      // Common class conventions
-      ".loading",
-      ".spinner",
-      ".skeleton",
-      ".shimmer",
-      ".loader",
-      ".pending",
-      '[class*="loading"]',
-      '[class*="spinner"]',
-      '[class*="skeleton"]',
-      '[class*="shimmer"]',
-      // HTML elements
-      'progress:not([value="100"]):not([value="1"])',
-      // Framework-specific (popular libraries)
-      ".MuiCircularProgress-root",
-      ".MuiLinearProgress-root",
-      ".MuiSkeleton-root",
-      ".ant-spin",
-      ".ant-skeleton",
-      ".chakra-spinner",
-      // Data attributes
-      '[data-loading="true"]',
-      '[data-pending="true"]',
-      '[data-state="loading"]'
-    ];
-    LOADING_ANIMATION_KEYWORDS = [
-      "spin",
-      "rotate",
-      "pulse",
-      "shimmer",
-      "bounce",
-      "skeleton",
-      "loading",
-      "progress",
-      "indeterminate"
-    ];
-    LoadingIndicatorDetector = class {
-      constructor(config = {}) {
-        this.name = "loading-indicators";
-        this.observer = null;
-        this._indicators = [];
-        this._isIdle = true;
-        this.scanTimer = null;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.7;
-        this.selectors = [...DEFAULT_LOADING_SELECTORS, ...config.additionalSelectors ?? []];
-        this.checkAnimations = config.checkAnimations ?? true;
-        this.checkCursor = config.checkCursor ?? true;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        this.scan();
-        this.observer = new MutationObserver(() => {
-          if (this.scanTimer) clearTimeout(this.scanTimer);
-          this.scanTimer = setTimeout(() => {
-            this.scanTimer = null;
-            this.scan();
-          }, 100);
-        });
-        this.observer.observe(document.body, {
-          childList: true,
-          attributes: true,
-          subtree: true,
-          attributeFilter: ["class", "aria-busy", "data-loading", "data-pending", "data-state"]
-        });
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        this.observer?.disconnect();
-        this.observer = null;
-        if (this.scanTimer) {
-          clearTimeout(this.scanTimer);
-          this.scanTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isIdle;
-      }
-      getStatus() {
-        return {
-          idle: this._isIdle,
-          loading: !this._isIdle,
-          indicators: [...this._indicators],
-          timestamp: Date.now()
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            this.scan();
-            const status = this.getStatus();
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Loading indicator timeout after ${timeout}ms. ${this._indicators.length} indicators still active.`
-                )
-              );
-            }
-            setTimeout(check, 100);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      /**
-       * Wait for a specific CSS selector to disappear from the loading indicators.
-       */
-      async waitForIndicatorCleared(selector, timeout = 3e4) {
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          const check = () => {
-            this.scan();
-            const matchingSelector = this.selectors.includes(selector) ? selector : void 0;
-            const hasMatch = matchingSelector ? document.querySelector(selector) !== null && this.isElementVisible(document.querySelector(selector)) : false;
-            if (!hasMatch) {
-              return resolve(this.getStatus());
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(new Error(`Indicator "${selector}" still present after ${timeout}ms.`));
-            }
-            setTimeout(check, 100);
-          };
-          check();
-        });
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      scan() {
-        const indicators = [];
-        for (const selector of this.selectors) {
-          try {
-            const elements2 = document.querySelectorAll(selector);
-            for (const el of elements2) {
-              if (this.isElementVisible(el)) {
-                indicators.push({
-                  type: selector.startsWith("[aria-busy") ? "aria-busy" : "selector",
-                  selector,
-                  element: this.getElementId(el)
-                });
-              }
-            }
-          } catch {
-          }
-        }
-        if (this.checkAnimations && typeof document.getAnimations === "function") {
-          try {
-            const animations = document.getAnimations();
-            for (const anim of animations) {
-              const cssAnim = anim;
-              const name = cssAnim.animationName || "";
-              if (name && LOADING_ANIMATION_KEYWORDS.some((k) => name.toLowerCase().includes(k))) {
-                const target = anim.effect?.target;
-                if (target && this.isElementVisible(target)) {
-                  indicators.push({
-                    type: "animation",
-                    element: this.getElementId(target),
-                    details: name
-                  });
-                }
-              }
-            }
-          } catch {
-          }
-        }
-        if (this.checkCursor) {
-          try {
-            const bodyStyle = getComputedStyle(document.body);
-            if (bodyStyle.cursor === "wait" || bodyStyle.cursor === "progress") {
-              indicators.push({
-                type: "cursor",
-                details: bodyStyle.cursor
-              });
-            }
-          } catch {
-          }
-        }
-        const seen = /* @__PURE__ */ new Set();
-        const deduped = indicators.filter((ind) => {
-          const key = `${ind.type}:${ind.element || ""}:${ind.selector || ""}:${ind.details || ""}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-        const wasIdle = this._isIdle;
-        this._indicators = deduped;
-        this._isIdle = deduped.length === 0;
-        if (wasIdle !== this._isIdle) {
-          this.notifyTransition();
-        }
-      }
-      isElementVisible(el) {
-        if (!el) return false;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return false;
-        const style = getComputedStyle(el);
-        if (style.display === "none") return false;
-        if (style.visibility === "hidden") return false;
-        if (parseFloat(style.opacity) === 0) return false;
-        return true;
-      }
-      getElementId(el) {
-        return el.getAttribute("data-testid") || el.getAttribute("data-ui-bridge-id") || el.id || `${el.tagName.toLowerCase()}.${classList(el)[0] || "unknown"}`;
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isIdle, status);
-          } catch {
-          }
-        }
-      }
-    };
-  }
-});
-
-// src/idle/form-mutation.ts
-var FormMutationDetector;
-var init_form_mutation = __esm({
-  "src/idle/form-mutation.ts"() {
-    FormMutationDetector = class {
-      constructor(config = {}) {
-        this.name = "form-mutation";
-        this.lastMutationAt = 0;
-        this.recentMutations = [];
-        this.settleTimer = null;
-        this._isSettled = true;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.5;
-        this.settleMs = config.settleMs ?? 800;
-        this.handleInput = this.onFormEvent.bind(this);
-        this.handleChange = this.onFormEvent.bind(this);
-        this.handleFocusIn = this.onFocusIn.bind(this);
-        this.handleFocusOut = this.onFocusOut.bind(this);
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        document.addEventListener("input", this.handleInput, true);
-        document.addEventListener("change", this.handleChange, true);
-        document.addEventListener("focusin", this.handleFocusIn, true);
-        document.addEventListener("focusout", this.handleFocusOut, true);
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        document.removeEventListener("input", this.handleInput, true);
-        document.removeEventListener("change", this.handleChange, true);
-        document.removeEventListener("focusin", this.handleFocusIn, true);
-        document.removeEventListener("focusout", this.handleFocusOut, true);
-        if (this.settleTimer) {
-          clearTimeout(this.settleTimer);
-          this.settleTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isSettled;
-      }
-      getStatus() {
-        const now = Date.now();
-        const cutoff = now - 1e3;
-        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
-        return {
-          idle: this._isSettled,
-          settled: this._isSettled,
-          lastMutationAt: this.lastMutationAt,
-          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
-          recentMutationCount: recentCount,
-          activeFieldId: this.activeFieldId,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.settled) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Form mutation settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      isFormElement(target) {
-        if (!target || !(target instanceof HTMLElement)) return false;
-        return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-      }
-      onFormEvent(e) {
-        if (!this.isFormElement(e.target)) return;
-        const now = Date.now();
-        this.lastMutationAt = now;
-        this.recentMutations.push(now);
-        const cutoff = now - 1e3;
-        this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
-        if (this._isSettled) {
-          this._isSettled = false;
-          this.notifyTransition();
-        }
-        this.resetSettleTimer();
-      }
-      onFocusIn(e) {
-        if (!this.isFormElement(e.target)) return;
-        const el = e.target;
-        this.activeFieldId = el.id || el.getAttribute("name") || void 0;
-      }
-      onFocusOut(e) {
-        if (!this.isFormElement(e.target)) return;
-        this.activeFieldId = void 0;
-      }
-      resetSettleTimer() {
-        if (this.settleTimer) clearTimeout(this.settleTimer);
-        this.settleTimer = setTimeout(() => {
-          this.settleTimer = null;
-          if (!this._isSettled) {
-            this._isSettled = true;
-            this.notifyTransition();
-          }
-        }, this.settleMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isSettled, status);
-          } catch {
-          }
-        }
-      }
-    };
-  }
-});
-
-// src/idle/composite-idle.ts
-var CompositeIdleDetector;
-var init_composite_idle = __esm({
-  "src/idle/composite-idle.ts"() {
-    init_network_idle();
-    init_dom_settling();
-    init_loading_indicators();
-    init_form_mutation();
-    CompositeIdleDetector = class _CompositeIdleDetector {
-      constructor(config) {
-        this.signals = /* @__PURE__ */ new Map();
-        this.listeners = [];
-        this.lastIdle = null;
-        this.minIdleScore = config?.minIdleScore ?? 0.7;
-      }
-      /**
-       * Create a composite detector with default signals from config.
-       */
-      static create(config = {}) {
-        const detector = new _CompositeIdleDetector({ minIdleScore: config.minIdleScore });
-        if (config.network?.enabled !== false) {
-          detector.addSignal(
-            new NetworkIdleDetector({
-              weight: config.network?.weight ?? 0.9,
-              debounceMs: config.network?.debounceMs,
-              ignorePatterns: config.network?.ignorePatterns,
-              trackXHR: config.network?.trackXHR,
-              tracker: config.network?.tracker
-            })
-          );
-        }
-        if (config.dom?.enabled !== false) {
-          detector.addSignal(
-            new DOMSettlingDetector({
-              weight: config.dom?.weight ?? 0.8,
-              settleMs: config.dom?.settleMs,
-              root: config.dom?.root
-            })
-          );
-        }
-        if (config.loadingIndicators?.enabled !== false) {
-          detector.addSignal(
-            new LoadingIndicatorDetector({
-              weight: config.loadingIndicators?.weight ?? 0.7,
-              additionalSelectors: config.loadingIndicators?.additionalSelectors,
-              checkAnimations: config.loadingIndicators?.checkAnimations,
-              checkCursor: config.loadingIndicators?.checkCursor
-            })
-          );
-        }
-        if (config.formMutation?.enabled !== false) {
-          detector.addSignal(
-            new FormMutationDetector({
-              weight: config.formMutation?.weight ?? 0.5,
-              settleMs: config.formMutation?.settleMs
-            })
-          );
-        }
-        return detector;
-      }
-      /**
-       * Add a signal to the composite. Installs it and subscribes to transitions.
-       */
-      addSignal(signal) {
-        this.signals.set(signal.name, signal);
-        signal.install();
-        signal.onTransition(() => this.evaluate());
-      }
-      /**
-       * Remove a signal by name. Destroys it.
-       */
-      removeSignal(name) {
-        const signal = this.signals.get(name);
-        if (!signal) return false;
-        signal.destroy();
-        this.signals.delete(name);
-        return true;
-      }
-      /**
-       * Get an individual signal by name for direct access.
-       */
-      getSignal(name) {
-        return this.signals.get(name);
-      }
-      /**
-       * List all registered signal names.
-       */
-      getSignalNames() {
-        return Array.from(this.signals.keys());
-      }
-      /**
-       * Whether the composite considers the app idle.
-       */
-      isIdle() {
-        return this.getStatus().idle;
-      }
-      /**
-       * Get full composite status including per-signal breakdown.
-       */
-      getStatus(exclude) {
-        const signalEntries = {};
-        const excludeSet = new Set(exclude ?? []);
-        let totalWeight = 0;
-        let idleWeight = 0;
-        let allCriticalIdle = true;
-        for (const [name, signal] of this.signals) {
-          if (excludeSet.has(name)) continue;
-          const idle = signal.isIdle();
-          const status = signal.getStatus();
-          signalEntries[name] = {
-            name,
-            idle,
-            weight: signal.weight,
-            status
-          };
-          totalWeight += signal.weight;
-          if (idle) idleWeight += signal.weight;
-          if (signal.weight >= 0.8 && !idle) {
-            allCriticalIdle = false;
-          }
-        }
-        const idleScore = totalWeight > 0 ? idleWeight / totalWeight : 1;
-        return {
-          idle: allCriticalIdle && idleScore >= this.minIdleScore,
-          idleScore,
-          signals: signalEntries,
-          timestamp: Date.now()
-        };
-      }
-      /**
-       * Get the status of a single signal by name.
-       */
-      getSignalStatus(name) {
-        return this.signals.get(name)?.getStatus();
-      }
-      /**
-       * Wait for the composite to become idle.
-       */
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 500;
-        const exclude = options?.exclude;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus(exclude);
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              const busySignals = Object.values(status.signals).filter((s) => !s.idle).map((s) => s.name);
-              return reject(
-                new Error(
-                  `Idle timeout after ${timeout}ms. Busy signals: ${busySignals.join(", ") || "none"}. Score: ${status.idleScore.toFixed(2)}`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      /**
-       * Wait for a specific subset of signals to become idle.
-       * Targets can be signal names or { indicator: '.selector' } for specific loading indicators.
-       */
-      async waitFor(targets, options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            let allIdle = true;
-            const results = {};
-            for (const target of targets) {
-              if (typeof target === "string") {
-                const signal = this.signals.get(target);
-                if (signal) {
-                  const status = signal.getStatus();
-                  results[target] = status;
-                  if (!status.idle) allIdle = false;
-                }
-              } else {
-                const el = document.querySelector(target.indicator);
-                const present = el !== null && this.isElementVisible(el);
-                const key = `indicator:${target.indicator}`;
-                results[key] = { idle: !present, timestamp: Date.now() };
-                if (present) allIdle = false;
-              }
-            }
-            if (allIdle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(results);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              const busy = Object.entries(results).filter(([, s]) => !s.idle).map(([k]) => k);
-              return reject(
-                new Error(`Selective wait timeout after ${timeout}ms. Still busy: ${busy.join(", ")}`)
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      /**
-       * Wait for a single signal by name.
-       */
-      async waitForSignal(name, options) {
-        const signal = this.signals.get(name);
-        if (!signal) {
-          throw new Error(`Signal not found: ${name}. Available: ${this.getSignalNames().join(", ")}`);
-        }
-        return signal.waitForIdle(options);
-      }
-      /**
-       * Subscribe to composite idle/busy transitions.
-       */
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      /**
-       * Install all signals. Called automatically by addSignal, but can be
-       * called explicitly if signals were added without install.
-       */
-      installAll() {
-        for (const signal of this.signals.values()) {
-          signal.install();
-        }
-      }
-      /**
-       * Clean up all signals.
-       */
-      destroy() {
-        for (const signal of this.signals.values()) {
-          signal.destroy();
-        }
-        this.signals.clear();
-        this.listeners = [];
-        this.lastIdle = null;
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      evaluate() {
-        const status = this.getStatus();
-        if (this.lastIdle !== status.idle) {
-          this.lastIdle = status.idle;
-          for (const listener of this.listeners) {
-            try {
-              listener(status);
-            } catch {
-            }
-          }
-        }
-      }
-      isElementVisible(el) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return false;
-        const style = getComputedStyle(el);
-        return style.display !== "none" && style.visibility !== "hidden";
-      }
-    };
-  }
-});
-
-// src/idle/element-settling.ts
-function waitForElementStable(element, options) {
-  const quietMs = options?.quietMs ?? 500;
-  const timeout = options?.timeout ?? 5e3;
-  const observeAttributes = options?.observeAttributes ?? true;
-  const observeSubtree = options?.observeSubtree ?? false;
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-    let lastActivityAt = Date.now();
-    let rafId = null;
-    let timeoutId = null;
-    let quietCheckId = null;
-    let prevRect = null;
-    let cleaned = false;
-    function cleanup() {
-      if (cleaned) return;
-      cleaned = true;
-      observer.disconnect();
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      if (timeoutId !== null) clearTimeout(timeoutId);
-      if (quietCheckId !== null) clearTimeout(quietCheckId);
+  return result;
+}
+function extractStateFilter(text, result) {
+  for (const state of STATE_FILTERS) {
+    const regex = new RegExp(`\\b${state}\\b`, "i");
+    if (regex.test(text)) {
+      result.stateFilter = state;
+      return text.replace(regex, " ").trim();
     }
-    function recordActivity() {
-      lastActivityAt = Date.now();
-      scheduleQuietCheck();
+  }
+  return text;
+}
+function extractSpatialRelation(text, result) {
+  for (const { pattern, relation } of SPATIAL_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.spatial = {
+        relation,
+        referenceDescription: cleanReferenceDescription(match[1])
+      };
+      return text.slice(0, match.index).trim();
     }
-    function scheduleQuietCheck() {
-      if (quietCheckId !== null) clearTimeout(quietCheckId);
-      quietCheckId = setTimeout(
-        () => {
-          const elapsed = Date.now() - lastActivityAt;
-          if (elapsed >= quietMs) {
-            cleanup();
-            resolve({ stable: true, elapsed: Date.now() - startTime });
-          } else {
-            scheduleQuietCheck();
-          }
-        },
-        quietMs - (Date.now() - lastActivityAt) + 1
+  }
+  return text;
+}
+function extractContainer(text, result) {
+  for (const pattern of CONTAINER_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const container = cleanReferenceDescription(match[1]);
+      if (container.length > 2 && !isPartOfCompoundWord(text, match.index)) {
+        result.container = container;
+        return text.slice(0, match.index).trim();
+      }
+    }
+  }
+  return text;
+}
+function isPartOfCompoundWord(text, matchIndex, _word) {
+  const before = text.slice(0, matchIndex).trim().toLowerCase();
+  const compoundPrefixes = ["sign", "log", "opt", "check", "plug", "fill", "zoom", "fade", "drop"];
+  return compoundPrefixes.some((prefix) => before.endsWith(prefix));
+}
+function extractOrdinal(text, result) {
+  for (const [word, value] of Object.entries(ORDINAL_MAP)) {
+    const regex = new RegExp(`\\b${word}\\b`, "i");
+    if (regex.test(text)) {
+      result.ordinal = value;
+      return text.replace(regex, " ").trim();
+    }
+  }
+  const numericMatch = text.match(/\b(\d+)(?:st|nd|rd|th)\b/i);
+  if (numericMatch) {
+    result.ordinal = parseInt(numericMatch[1], 10);
+    return text.replace(numericMatch[0], " ").trim();
+  }
+  return text;
+}
+function extractElementType(text, result) {
+  for (const entry of COMPILED_ELEMENT_TYPE_SYNONYMS) {
+    if (entry.pattern.test(text)) {
+      result.elementType = entry.type;
+      if (entry.softHint) {
+        result.__softTypeHint = true;
+      }
+      return text.replace(entry.pattern, " ").trim();
+    }
+  }
+  return text;
+}
+function cleanElementText(text) {
+  const words = text.split(/\s+/).filter((w) => !NOISE_WORDS.has(w.toLowerCase()));
+  return words.join(" ").replace(/\s+/g, " ").replace(/^[\s,]+|[\s,]+$/g, "").trim();
+}
+function cleanReferenceDescription(text) {
+  return text.replace(/^(?:the|a|an)\s+/i, "").replace(/\s+/g, " ").trim();
+}
+var NOISE_WORDS, ELEMENT_TYPE_SYNONYMS, COMPILED_ELEMENT_TYPE_SYNONYMS, SPATIAL_PATTERNS, CONTAINER_PATTERNS, ORDINAL_MAP, STATE_FILTERS;
+var init_target_decomposer = __esm({
+  "src/ai/target-decomposer.ts"() {
+    NOISE_WORDS = /* @__PURE__ */ new Set(["the", "a", "an", "that", "this", "those", "these", "its", "my"]);
+    ELEMENT_TYPE_SYNONYMS = [
+      // Inputs / form
+      { type: "textarea", synonyms: ["text area", "text field", "text box"] },
+      { type: "input", synonyms: ["input", "field", "textbox"] },
+      { type: "select", synonyms: ["drop down", "dropdown", "combo box", "combobox", "select"] },
+      { type: "checkbox", synonyms: ["check box", "checkbox"] },
+      { type: "radio", synonyms: ["radio button", "radio"] },
+      // Buttons / links
+      // 'icon' is a soft hint — "settings icon" is usually a button but could
+      // also be a passive image; let the label match decide if the type fails.
+      { type: "button", synonyms: ["button"] },
+      { type: "button", synonyms: ["icon"], softHint: true },
+      { type: "link", synonyms: ["link", "hyperlink", "anchor"] },
+      // Navigation
+      { type: "tab", synonyms: ["tab"] },
+      { type: "menuitem", synonyms: ["menu item", "menuitem"] },
+      { type: "menu", synonyms: ["menu"] },
+      // Disclosure / accordion family
+      // Multi-word phrases (e.g., "details toggle") sit above the bare "toggle"
+      // synonym below so they win precedence. The single-word "details" is
+      // softHint because it commonly appears as label text ("Job details"); a
+      // label match should still work when nothing else flags this as
+      // a disclosure.
+      {
+        type: "disclosure",
+        synonyms: [
+          "details toggle",
+          "details panel",
+          "disclosure",
+          "accordion",
+          "collapsible",
+          "expander",
+          "expandable"
+        ]
+      },
+      {
+        type: "disclosure",
+        synonyms: ["expand", "collapse", "details"],
+        softHint: true
+      },
+      // Switch / toggle
+      // Plain "toggle" is a soft hint — "details toggle" already routed above to
+      // disclosure; in other contexts the matcher should fall back to a
+      // label-only retry rather than hard-pinning the type.
+      { type: "switch", synonyms: ["switch"] },
+      { type: "switch", synonyms: ["toggle"], softHint: true },
+      // Misc
+      { type: "slider", synonyms: ["slider"] },
+      { type: "label", synonyms: ["label"] },
+      { type: "heading", synonyms: ["heading"] }
+    ];
+    COMPILED_ELEMENT_TYPE_SYNONYMS = (() => {
+      const compiled = [];
+      for (const entry of ELEMENT_TYPE_SYNONYMS) {
+        for (const syn of entry.synonyms) {
+          compiled.push(compileSynonym(entry.type, syn, entry.softHint === true));
+        }
+      }
+      compiled.sort((a, b) => {
+        if (b.wordCount !== a.wordCount) return b.wordCount - a.wordCount;
+        return b.synonym.length - a.synonym.length;
+      });
+      return compiled;
+    })();
+    SPATIAL_PATTERNS = [
+      { pattern: /\bnext\s+to\s+(.+)$/i, relation: "near" },
+      { pattern: /\bbeside\s+(.+)$/i, relation: "near" },
+      { pattern: /\bnear\s+(.+)$/i, relation: "near" },
+      { pattern: /\babove\s+(.+)$/i, relation: "above" },
+      { pattern: /\bbelow\s+(.+)$/i, relation: "below" },
+      { pattern: /\bunder(?:neath)?\s+(.+)$/i, relation: "below" },
+      { pattern: /\bleft\s+of\s+(.+)$/i, relation: "leftOf" },
+      { pattern: /\bright\s+of\s+(.+)$/i, relation: "rightOf" },
+      { pattern: /\binside\s+(.+)$/i, relation: "inside" }
+    ];
+    CONTAINER_PATTERNS = [
+      /\b(?:in|within|inside)\s+(?:the\s+)?(.+?)(?:\s+(?:near|above|below|left of|right of|next to|beside)|\s*$)/i
+    ];
+    ORDINAL_MAP = {
+      first: 1,
+      second: 2,
+      third: 3,
+      fourth: 4,
+      fifth: 5,
+      sixth: 6,
+      seventh: 7,
+      eighth: 8,
+      ninth: 9,
+      tenth: 10,
+      last: -1,
+      "1st": 1,
+      "2nd": 2,
+      "3rd": 3,
+      "4th": 4,
+      "5th": 5,
+      "6th": 6,
+      "7th": 7,
+      "8th": 8,
+      "9th": 9,
+      "10th": 10
+    };
+    STATE_FILTERS = /* @__PURE__ */ new Set([
+      "disabled",
+      "enabled",
+      "active",
+      "selected",
+      "checked",
+      "focused",
+      "hidden",
+      "visible"
+    ]);
+  }
+});
+
+// src/ai/find.ts
+function find(query, engine, options) {
+  const startTime = performance.now();
+  const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
+  if (typeof opts.confidenceThreshold !== "number" || Number.isNaN(opts.confidenceThreshold)) {
+    opts.confidenceThreshold = DEFAULT_FIND_OPTIONS.confidenceThreshold;
+  }
+  let criteria;
+  let decomposed;
+  if (typeof query === "string") {
+    decomposed = decomposeTarget(query);
+    criteria = resolveCriteria(decomposed, engine, opts);
+  } else {
+    criteria = query;
+    const elementText = query.text || query.textContent || query.accessibleName || "";
+    decomposed = {
+      elementText,
+      elementType: query.type,
+      label: elementText || void 0,
+      ariaLabel: query.accessibleName || elementText || void 0,
+      placeholder: query.placeholder || elementText || void 0,
+      name: elementText || void 0
+    };
+  }
+  let searchResponse = engine.search(criteria);
+  let results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+  if (decomposed.stateFilter) {
+    results = applyStateFilter(results, decomposed.stateFilter);
+  }
+  if (decomposed.ordinal) {
+    results = applyOrdinalFilter(results, decomposed.ordinal);
+  }
+  let viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  if (viableResults.length === 0 && typeof query === "string" && isSoftTypeHint(decomposed) && criteria.type) {
+    const relaxed = { ...criteria };
+    delete relaxed.type;
+    searchResponse = engine.search(relaxed);
+    results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+    if (decomposed.stateFilter) {
+      results = applyStateFilter(results, decomposed.stateFilter);
+    }
+    if (decomposed.ordinal) {
+      results = applyOrdinalFilter(results, decomposed.ordinal);
+    }
+    viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  }
+  if (viableResults.length === 0 && typeof query === "string" && criteria.type && decomposed.elementType) {
+    const cachedTypeLower = String(criteria.type).toLowerCase();
+    const cachedSummaries = engine.getCachedElementSummaries();
+    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
+    if (!typeIsPresent) {
+      const relaxed = { ...criteria };
+      delete relaxed.type;
+      searchResponse = engine.search(relaxed);
+      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+      if (decomposed.stateFilter) {
+        results = applyStateFilter(results, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        results = applyOrdinalFilter(results, decomposed.ordinal);
+      }
+      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+    }
+  }
+  const durationMs = performance.now() - startTime;
+  if (viableResults.length === 0) {
+    let alternatives2;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
+      });
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
       );
-    }
-    const observer = new MutationObserver((mutations) => {
-      let meaningful = false;
-      for (const m of mutations) {
-        if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-          meaningful = true;
-          break;
-        }
-        if (m.type === "attributes" || m.type === "characterData") {
-          meaningful = true;
-          break;
-        }
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
       }
-      if (meaningful) recordActivity();
-    });
-    observer.observe(element, {
-      childList: true,
-      attributes: observeAttributes,
-      characterData: true,
-      subtree: observeSubtree
-    });
-    function pollBBox() {
-      if (cleaned) return;
-      const rect = element.getBoundingClientRect();
-      if (prevRect !== null && !rectsEqual(prevRect, rect)) {
-        recordActivity();
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
       }
-      prevRect = rect;
-      rafId = requestAnimationFrame(pollBBox);
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
     }
-    rafId = requestAnimationFrame(pollBBox);
-    timeoutId = setTimeout(() => {
-      cleanup();
-      resolve({ stable: false, elapsed: Date.now() - startTime });
-    }, timeout);
-    scheduleQuietCheck();
+    return {
+      found: false,
+      ambiguous: false,
+      reason: results.length > 0 ? `Best match confidence (${(results[0].confidence * 100).toFixed(0)}%) below threshold (${(opts.confidenceThreshold * 100).toFixed(0)}%)` : `No elements matching "${decomposed.elementText}" found`,
+      partialMatches: results.slice(0, opts.maxResults).map((r) => toCandidate(r)),
+      // Diagnostic: how many elements were considered before filtering.
+      // Helps agents distinguish "searched 200 elements, none matched" from
+      // "searched 10 elements (snapshot truncated?)".
+      consideredCount: searchResponse.results.length,
+      decomposed,
+      durationMs,
+      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
+    };
+  }
+  const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
+  if (isAmbiguous && !opts.pickFirst) {
+    const candidates = viableResults.slice(0, opts.maxResults).map((r) => toCandidate(r));
+    return {
+      found: true,
+      ambiguous: true,
+      candidates,
+      suggestion: generateDisambiguationSuggestion(candidates, decomposed),
+      decomposed,
+      durationMs
+    };
+  }
+  const best = viableResults[0];
+  const alternatives = viableResults.slice(1, opts.maxResults).map((r) => toCandidate(r));
+  return {
+    found: true,
+    ambiguous: false,
+    element: best.element,
+    elementId: best.element.id,
+    confidence: best.confidence,
+    matchReasons: best.matchReasons,
+    alternatives,
+    decomposed,
+    durationMs
+  };
+}
+function resolveCriteria(decomposed, engine, opts) {
+  const criteria = {
+    fuzzy: true,
+    fuzzyThreshold: opts.confidenceThreshold
+  };
+  if (decomposed.elementText) {
+    criteria.text = decomposed.elementText;
+  }
+  if (decomposed.elementType) {
+    criteria.type = decomposed.elementType;
+  }
+  if (decomposed.label && decomposed.label !== decomposed.elementText) {
+    criteria.accessibleName = decomposed.label;
+  } else if (decomposed.ariaLabel && decomposed.ariaLabel !== decomposed.elementText && !criteria.accessibleName) {
+    criteria.accessibleName = decomposed.ariaLabel;
+  }
+  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
+    criteria.placeholder = decomposed.placeholder;
+  }
+  if (decomposed.spatial) {
+    const refResult = engine.findBest({
+      text: decomposed.spatial.referenceDescription,
+      fuzzy: true,
+      fuzzyThreshold: 0.5
+    });
+    if (refResult && refResult.confidence >= 0.5) {
+      criteria.near = refResult.element.id;
+    }
+  }
+  if (decomposed.container) {
+    const containerResult = engine.findBest({
+      text: decomposed.container,
+      fuzzy: true,
+      fuzzyThreshold: 0.4
+    });
+    if (containerResult && containerResult.confidence >= 0.4) {
+      criteria.within = containerResult.element.id;
+    }
+  }
+  return criteria;
+}
+function applyContextScoring(results, context, engine) {
+  if (!context.activeModalId && !context.lastInteractedElement) {
+    return results;
+  }
+  return results.map((result) => {
+    let adjustedConfidence = result.confidence;
+    const extraReasons = [...result.matchReasons];
+    if (context.activeModalId) {
+      const inModal = isElementInContainer(result.element, context.activeModalId, engine);
+      if (!inModal) {
+        adjustedConfidence *= MODAL_PENALTY;
+        extraReasons.push("penalty: outside active modal");
+      } else {
+        extraReasons.push("boost: inside active modal");
+      }
+    }
+    if (context.lastInteractedElement) {
+      const nearLastInteracted = isNearElement(
+        result.element,
+        context.lastInteractedElement,
+        engine,
+        300
+      );
+      if (nearLastInteracted) {
+        adjustedConfidence = Math.min(1, adjustedConfidence + RECENCY_BONUS);
+        extraReasons.push("boost: near last interacted");
+      }
+    }
+    return {
+      ...result,
+      confidence: adjustedConfidence,
+      matchReasons: extraReasons
+    };
+  }).sort((a, b) => b.confidence - a.confidence);
+}
+function isElementInContainer(element, containerId, engine) {
+  if (element.parentContext && element.parentContext.includes(containerId)) {
+    return true;
+  }
+  const containerResults = engine.findByText(containerId, false);
+  if (containerResults.length === 0) return false;
+  const containerRect = containerResults[0].element.state.rect;
+  const elementRect = element.state.rect;
+  return elementRect.x >= containerRect.x && elementRect.y >= containerRect.y && elementRect.x + elementRect.width <= containerRect.x + containerRect.width && elementRect.y + elementRect.height <= containerRect.y + containerRect.height;
+}
+function isNearElement(element, referenceId, engine, maxDistance) {
+  const refResults = engine.findByText(referenceId, false);
+  if (refResults.length === 0) return false;
+  const refRect = refResults[0].element.state.rect;
+  const elRect = element.state.rect;
+  const dx = elRect.x + elRect.width / 2 - (refRect.x + refRect.width / 2);
+  const dy = elRect.y + elRect.height / 2 - (refRect.y + refRect.height / 2);
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  return distance <= maxDistance;
+}
+function applyStateFilter(results, stateFilter) {
+  return results.filter((r) => {
+    const state = r.element.state;
+    switch (stateFilter) {
+      case "disabled":
+        return !state.enabled;
+      case "enabled":
+        return state.enabled;
+      case "focused":
+        return state.focused;
+      case "visible":
+        return state.visible;
+      case "hidden":
+        return !state.visible;
+      case "checked":
+        return state.checked === true;
+      case "selected":
+        return state.ariaSelected === true;
+      case "active":
+        return state.focused || state.ariaSelected === true;
+      default:
+        return true;
+    }
   });
 }
-function rectsEqual(a, b, epsilon = 0.5) {
-  return Math.abs(a.x - b.x) < epsilon && Math.abs(a.y - b.y) < epsilon && Math.abs(a.width - b.width) < epsilon && Math.abs(a.height - b.height) < epsilon;
+function applyOrdinalFilter(results, ordinal) {
+  if (results.length === 0) return results;
+  const sorted = [...results].sort((a, b) => {
+    const aRect = a.element.state.rect;
+    const bRect = b.element.state.rect;
+    const yDiff = aRect.y - bRect.y;
+    if (Math.abs(yDiff) > 10) return yDiff;
+    return aRect.x - bRect.x;
+  });
+  if (ordinal === -1) {
+    return [sorted[sorted.length - 1]];
+  }
+  const index = ordinal - 1;
+  if (index >= 0 && index < sorted.length) {
+    return [sorted[index]];
+  }
+  return results;
 }
-var init_element_settling = __esm({
-  "src/idle/element-settling.ts"() {
+function toCandidate(result) {
+  return {
+    element: result.element,
+    elementId: result.element.id,
+    confidence: result.confidence,
+    matchReasons: result.matchReasons,
+    differentiator: generateDifferentiator(result.element)
+  };
+}
+function generateDifferentiator(element) {
+  const parts = [];
+  if (element.parentContext) {
+    parts.push(`in ${element.parentContext}`);
+  }
+  const rect = element.state.rect;
+  if (rect.y < 80) {
+    parts.push("at the top of the page");
+  } else if (rect.y > 800) {
+    parts.push("near the bottom of the page");
+  }
+  if (rect.x < 250) {
+    parts.push("in the left panel");
+  } else if (rect.x > 1e3) {
+    parts.push("in the right panel");
+  }
+  if (!element.state.enabled) {
+    parts.push("(disabled)");
+  }
+  if (element.state.focused) {
+    parts.push("(focused)");
+  }
+  if (element.semanticType && element.semanticType !== element.type) {
+    parts.push(`[${element.semanticType}]`);
+  }
+  return parts.length > 0 ? parts.join(", ") : `ID: ${element.id}`;
+}
+function generateDisambiguationSuggestion(candidates, decomposed) {
+  const lines = [`Found ${candidates.length} matching "${decomposed.elementText}" elements:`];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const desc = c.element.description || c.element.label || c.elementId;
+    lines.push(`  ${i + 1}. "${desc}" \u2014 ${c.differentiator} (${(c.confidence * 100).toFixed(0)}%)`);
+  }
+  lines.push("");
+  lines.push('Try adding spatial context: "... near X" or "... in the Y"');
+  return lines.join("\n");
+}
+var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
+var init_find = __esm({
+  "src/ai/find.ts"() {
+    init_target_decomposer();
+    DEFAULT_FIND_OPTIONS = {
+      context: {},
+      pickFirst: true,
+      confidenceThreshold: 0.5,
+      maxResults: 5,
+      debug: false
+    };
+    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+    DEBUG_ALTERNATIVES_LIMIT = 3;
+    AMBIGUITY_GAP = 0.1;
+    MODAL_PENALTY = 0.3;
+    RECENCY_BONUS = 0.05;
   }
 });
 
-// src/idle/stuck-screen.ts
-var StuckScreenDetector;
-var init_stuck_screen = __esm({
-  "src/idle/stuck-screen.ts"() {
-    StuckScreenDetector = class {
-      constructor(detector, config = {}) {
-        this.detector = detector;
-        this.observationWindowMs = config.observationWindowMs ?? 3e3;
-        this.domMutationThreshold = config.domMutationThreshold ?? 3;
+// src/ai/form-diff.ts
+function captureFormSnapshot() {
+  if (typeof document === "undefined") {
+    return { forms: [], timestamp: Date.now() };
+  }
+  const forms = [];
+  const formElements = document.querySelectorAll("form");
+  const allInputs = document.querySelectorAll("input, textarea, select");
+  const inputsInForms = /* @__PURE__ */ new Set();
+  formElements.forEach((formEl) => {
+    const formInputs = [];
+    allInputs.forEach((input) => {
+      if (formEl.contains(input)) {
+        formInputs.push(input);
+        inputsInForms.add(input);
       }
-      /**
-       * Run a stuck-screen diagnosis.
-       *
-       * Takes two snapshots separated by the observation window and compares them
-       * to determine if the app is stuck, loading normally, idle, or in an
-       * ambiguous state.
-       */
-      async diagnose() {
-        const snap1 = this.captureSnapshot();
-        await new Promise((resolve) => setTimeout(resolve, this.observationWindowMs));
-        const snap2 = this.captureSnapshot();
-        const actualWindowMs = snap2.timestamp - snap1.timestamp;
-        const peakMutations = Math.max(snap1.recentDOMMutations, snap2.recentDOMMutations);
-        const domChanged = peakMutations >= this.domMutationThreshold || !snap1.domSettled || !snap2.domSettled;
-        const evidence = {
-          loadingIndicators: snap2.loadingIndicators,
-          domChanged,
-          domMutationCount: peakMutations,
-          networkBusy: !snap2.networkIdle,
-          pendingNetworkRequests: snap2.pendingNetworkRequests,
-          idleScoreStart: snap1.idleScore,
-          idleScoreEnd: snap2.idleScore
-        };
-        const hasLoadingIndicators = snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
-        const hadLoadingIndicators = snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
-        let verdict;
-        let confidence;
-        let summary;
-        const suggestions = [];
-        if (!hadLoadingIndicators) {
-          verdict = "idle";
-          confidence = 0.9;
-          summary = "No loading indicators detected. The app appears to be in a normal resting state.";
-        } else if (hasLoadingIndicators && !domChanged && snap2.networkIdle) {
-          verdict = "stuck";
-          confidence = 0.95;
-          const indicatorDesc = this.describeIndicators(snap2.loadingIndicators);
-          summary = `The app appears stuck. Loading indicators (${indicatorDesc}) have been visible throughout the ${Math.round(actualWindowMs / 1e3)}s observation window with no meaningful DOM changes and no pending network requests.`;
-          suggestions.push("Try refreshing the page.");
-          suggestions.push("Check the browser console for JavaScript errors.");
-          suggestions.push("Check if a required backend service is running.");
-        } else if (hasLoadingIndicators && !domChanged && !snap2.networkIdle) {
-          verdict = "stuck";
-          confidence = 0.7;
-          summary = `The app appears stuck. Loading indicators are visible with no DOM changes, but ${snap2.pendingNetworkRequests} network request(s) are still in flight. A network request may be hanging.`;
-          suggestions.push("Check if a network request is hanging (e.g., unresponsive API server).");
-          suggestions.push("Check the network tab for requests that have been pending too long.");
-          suggestions.push("Verify the server or API endpoint is reachable.");
-        } else if (hadLoadingIndicators && domChanged) {
-          verdict = "loading";
-          confidence = 0.85;
-          summary = `The app is loading. Loading indicators are visible and the DOM is actively changing (${peakMutations} recent mutations), indicating content is being rendered.`;
-        } else if (!hasLoadingIndicators && hadLoadingIndicators) {
-          verdict = "idle";
-          confidence = 0.8;
-          summary = "Loading indicators were present at the start but cleared during observation. The app has finished loading.";
-        } else {
-          verdict = "unknown";
-          confidence = 0.4;
-          summary = "The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.";
-          suggestions.push("Try running the diagnosis again with a longer observation window.");
-        }
-        return {
-          verdict,
-          confidence,
-          summary,
-          evidence,
-          observationWindowMs: actualWindowMs,
-          suggestions,
-          timestamp: Date.now()
-        };
-      }
-      captureSnapshot() {
-        const compositeStatus = this.detector.getStatus();
-        const loadingSig = compositeStatus.signals["loading-indicators"];
-        const domSig = compositeStatus.signals["dom"];
-        const networkSig = compositeStatus.signals["network"];
-        const loadingStatus = loadingSig?.status;
-        const domStatus = domSig?.status;
-        const networkStatus = networkSig?.status;
-        return {
-          loadingIndicators: loadingStatus?.indicators ?? [],
-          domSettled: domSig?.idle ?? true,
-          recentDOMMutations: domStatus?.recentMutationCount ?? 0,
-          networkIdle: networkSig?.idle ?? true,
-          pendingNetworkRequests: networkStatus?.pendingCount ?? 0,
-          idleScore: compositeStatus.idleScore,
-          timestamp: Date.now()
-        };
-      }
-      describeIndicators(indicators) {
-        if (indicators.length === 0) return "none";
-        const descriptions = indicators.slice(0, 3).map((ind) => {
-          if (ind.type === "animation") return `animation "${ind.details}"`;
-          if (ind.type === "cursor") return `cursor: ${ind.details}`;
-          if (ind.selector) return ind.selector;
-          return ind.element ?? ind.type;
-        });
-        const suffix = indicators.length > 3 ? ` +${indicators.length - 3} more` : "";
-        return descriptions.join(", ") + suffix;
-      }
+    });
+    const fields = buildFieldStates(formInputs);
+    const submitButton = formEl.querySelector(
+      'button[type="submit"], input[type="submit"]'
+    );
+    forms.push({
+      id: formEl.id || `form-${forms.length}`,
+      name: formEl.getAttribute("name") || void 0,
+      purpose: inferPurposeFromFields(fields),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      submitButton: submitButton?.id || void 0,
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  });
+  const orphanInputs = [];
+  allInputs.forEach((input) => {
+    if (!inputsInForms.has(input)) {
+      orphanInputs.push(input);
+    }
+  });
+  if (orphanInputs.length > 0) {
+    const fields = buildFieldStates(orphanInputs);
+    forms.push({
+      id: "implicit-form",
+      purpose: inferPurposeFromFields(fields),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  }
+  return {
+    forms,
+    timestamp: Date.now()
+  };
+}
+function diffFormSnapshots(before, after) {
+  const beforeFormIds = new Set(before.forms.map((f) => f.id));
+  const afterFormIds = new Set(after.forms.map((f) => f.id));
+  const formsAdded = after.forms.filter((f) => !beforeFormIds.has(f.id)).map((f) => f.id);
+  const formsRemoved = before.forms.filter((f) => !afterFormIds.has(f.id)).map((f) => f.id);
+  const beforeFields = buildFieldMap(before.forms);
+  const afterFields = buildFieldMap(after.forms);
+  const beforeFieldIds = new Set(beforeFields.keys());
+  const afterFieldIds = new Set(afterFields.keys());
+  const addedFields = [];
+  afterFieldIds.forEach((id) => {
+    if (!beforeFieldIds.has(id)) {
+      addedFields.push(id);
+    }
+  });
+  const removedFields = [];
+  beforeFieldIds.forEach((id) => {
+    if (!afterFieldIds.has(id)) {
+      removedFields.push(id);
+    }
+  });
+  const changedFields = [];
+  beforeFieldIds.forEach((id) => {
+    if (!afterFieldIds.has(id)) return;
+    const beforeField = beforeFields.get(id);
+    const afterField = afterFields.get(id);
+    const diff = diffFields(beforeField, afterField);
+    if (diff) {
+      changedFields.push(diff);
+    }
+  });
+  const timeDeltaMs = after.timestamp - before.timestamp;
+  const hasChanges = changedFields.length > 0 || addedFields.length > 0 || removedFields.length > 0 || formsAdded.length > 0 || formsRemoved.length > 0;
+  const summary = summarizeFormDiff({
+    changedFields,
+    addedFields,
+    removedFields,
+    formsAdded,
+    formsRemoved,
+    hasChanges
+  });
+  return {
+    changedFields,
+    addedFields,
+    removedFields,
+    formsAdded,
+    formsRemoved,
+    summary,
+    timeDeltaMs,
+    hasChanges
+  };
+}
+function summarizeFormDiff(diff) {
+  if (!diff.hasChanges) {
+    return "No changes detected";
+  }
+  const parts = [];
+  if (diff.formsAdded.length > 0) {
+    parts.push(`Forms added: ${diff.formsAdded.join(", ")}`);
+  }
+  if (diff.formsRemoved.length > 0) {
+    parts.push(`Forms removed: ${diff.formsRemoved.join(", ")}`);
+  }
+  for (const field of diff.changedFields) {
+    const fieldLabel = field.fieldName || field.fieldId;
+    const changeParts = [];
+    if (field.changes.value) {
+      const before = field.changes.value.before || "(empty)";
+      const after = field.changes.value.after || "(empty)";
+      changeParts.push(`value: "${before}" -> "${after}"`);
+    }
+    if (field.changes.checked) {
+      changeParts.push(
+        `checked: ${field.changes.checked.before} -> ${field.changes.checked.after}`
+      );
+    }
+    if (field.changes.selectedOptions) {
+      const before = field.changes.selectedOptions.before.join(", ") || "(none)";
+      const after = field.changes.selectedOptions.after.join(", ") || "(none)";
+      changeParts.push(`selected: [${before}] -> [${after}]`);
+    }
+    if (field.changes.validationError) {
+      const before = field.changes.validationError.before || "(none)";
+      const after = field.changes.validationError.after || "(none)";
+      changeParts.push(`error: "${before}" -> "${after}"`);
+    }
+    if (field.changes.isValid) {
+      changeParts.push(`valid: ${field.changes.isValid.before} -> ${field.changes.isValid.after}`);
+    }
+    if (field.changes.isDirty) {
+      changeParts.push(`dirty: ${field.changes.isDirty.before} -> ${field.changes.isDirty.after}`);
+    }
+    if (changeParts.length > 0) {
+      parts.push(`${fieldLabel}: ${changeParts.join(", ")}`);
+    }
+  }
+  if (diff.addedFields.length > 0) {
+    parts.push(`Fields added: ${diff.addedFields.join(", ")}`);
+  }
+  if (diff.removedFields.length > 0) {
+    parts.push(`Fields removed: ${diff.removedFields.join(", ")}`);
+  }
+  return parts.join("; ");
+}
+function buildFieldMap(forms) {
+  const map = /* @__PURE__ */ new Map();
+  for (const form of forms) {
+    for (const field of form.fields) {
+      map.set(field.id, field);
+    }
+  }
+  return map;
+}
+function diffFields(before, after) {
+  const changes = {};
+  if (before.value !== after.value) {
+    changes.value = { before: before.value, after: after.value };
+  }
+  if (before.checked !== after.checked && (before.checked !== void 0 || after.checked !== void 0)) {
+    changes.checked = {
+      before: before.checked ?? false,
+      after: after.checked ?? false
     };
   }
+  if (!arraysEqual(before.selectedOptions, after.selectedOptions)) {
+    changes.selectedOptions = {
+      before: before.selectedOptions ?? [],
+      after: after.selectedOptions ?? []
+    };
+  }
+  if (before.error !== after.error) {
+    changes.validationError = {
+      before: before.error,
+      after: after.error
+    };
+  }
+  if (before.isDirty !== after.isDirty) {
+    changes.isDirty = {
+      before: before.isDirty ?? false,
+      after: after.isDirty ?? false
+    };
+  }
+  if (before.valid !== after.valid) {
+    changes.isValid = {
+      before: before.valid,
+      after: after.valid
+    };
+  }
+  if (Object.keys(changes).length === 0) {
+    return null;
+  }
+  return {
+    fieldId: after.id,
+    fieldName: after.label || before.label,
+    fieldType: after.type,
+    changes
+  };
+}
+function arraysEqual(a, b) {
+  if (a === b) return true;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+function buildFieldStates(inputs) {
+  return inputs.map((el) => {
+    const isInput = el instanceof HTMLInputElement;
+    const isTextarea = el instanceof HTMLTextAreaElement;
+    const isSelect = el instanceof HTMLSelectElement;
+    let value = "";
+    let checked;
+    let selectedOptions;
+    let inputType = "text";
+    if (isInput) {
+      inputType = el.type || "text";
+      if (inputType === "checkbox" || inputType === "radio") {
+        checked = el.checked;
+        value = el.value;
+      } else {
+        value = el.value;
+      }
+    } else if (isTextarea) {
+      inputType = "textarea";
+      value = el.value;
+    } else if (isSelect) {
+      inputType = "select";
+      value = el.value;
+      selectedOptions = Array.from(el.selectedOptions).map((o) => o.value);
+    }
+    const validity = el.validity;
+    const valid = validity ? validity.valid : true;
+    const validationMessage = el.validationMessage || void 0;
+    const label = el.getAttribute("aria-label") || getLabelTextForElement(el) || el.getAttribute("placeholder") || el.id || el.getAttribute("name") || "";
+    const defaultValue = el.getAttribute("value") ?? "";
+    const isDirty = value !== defaultValue;
+    return {
+      id: el.id || el.getAttribute("name") || `field-${Math.random().toString(36).slice(2, 8)}`,
+      label,
+      type: inputType,
+      value,
+      valid,
+      error: validationMessage,
+      required: el.hasAttribute("required"),
+      touched: (value?.length ?? 0) > 0,
+      placeholder: el.getAttribute("placeholder") || void 0,
+      isDirty,
+      checked,
+      selectedOptions
+    };
+  });
+}
+function getLabelTextForElement(element) {
+  if (typeof document === "undefined") return void 0;
+  const id = element.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (label?.textContent?.trim()) return label.textContent.trim();
+  }
+  const parentLabel = element.closest("label");
+  if (parentLabel) {
+    const clone = parentLabel.cloneNode(true);
+    const inputs = clone.querySelectorAll("input, textarea, select");
+    inputs.forEach((inp) => inp.remove());
+    const text = clone.textContent?.trim();
+    if (text) return text;
+  }
+  return void 0;
+}
+function inferPurposeFromFields(fields) {
+  const labels = fields.map((f) => f.label.toLowerCase()).join(" ");
+  if (labels.includes("email") && labels.includes("password")) {
+    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
+      return "Registration";
+    }
+    return "Login";
+  }
+  if (labels.includes("search")) return "Search";
+  if (labels.includes("address") || labels.includes("city")) return "Address";
+  if (labels.includes("card") || labels.includes("payment")) return "Payment";
+  if (labels.includes("contact") || labels.includes("message")) return "Contact";
+  return "Form";
+}
+var init_form_diff = __esm({
+  "src/ai/form-diff.ts"() {
+  }
 });
 
-// src/idle/index.ts
-var idle_exports = {};
-__export(idle_exports, {
-  CompositeIdleDetector: () => CompositeIdleDetector,
-  DOMSettlingDetector: () => DOMSettlingDetector,
-  FormMutationDetector: () => FormMutationDetector,
-  LoadingIndicatorDetector: () => LoadingIndicatorDetector,
-  NetworkIdleDetector: () => NetworkIdleDetector,
-  StuckScreenDetector: () => StuckScreenDetector,
-  waitForElementStable: () => waitForElementStable
+// src/ai/validation-scanner.ts
+function scanValidationErrors(elements2) {
+  const errors = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const { id, element } of elements2) {
+    if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLSelectElement)) {
+      continue;
+    }
+    const result = detectFieldError(id, element);
+    if (result && !seen.has(id)) {
+      errors.push(result);
+      seen.add(id);
+    }
+  }
+  return errors;
+}
+function detectFieldError(fieldId, element) {
+  if ("validity" in element && !element.validity.valid) {
+    return {
+      fieldId,
+      message: element.validationMessage || "Invalid value",
+      confidence: 1,
+      source: "html5"
+    };
+  }
+  if (element.getAttribute("aria-invalid") === "true") {
+    const errorMessage = getAriaErrorMessage(element);
+    return {
+      fieldId,
+      message: errorMessage || "",
+      confidence: 0.95,
+      source: "aria"
+    };
+  }
+  const adjacentError = findAdjacentError(element);
+  if (adjacentError) {
+    return {
+      fieldId,
+      message: adjacentError,
+      confidence: 0.8,
+      source: "adjacent-element"
+    };
+  }
+  if (hasErrorClass(element)) {
+    return {
+      fieldId,
+      message: "",
+      confidence: 0.6,
+      source: "css-class"
+    };
+  }
+  return null;
+}
+function getAriaErrorMessage(element) {
+  const errorMsgId = element.getAttribute("aria-errormessage");
+  if (errorMsgId) {
+    const errorEl = document.getElementById(errorMsgId);
+    if (errorEl?.textContent?.trim()) {
+      return errorEl.textContent.trim();
+    }
+  }
+  const describedById = element.getAttribute("aria-describedby");
+  if (describedById) {
+    const ids = describedById.split(/\s+/);
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el?.textContent?.trim()) {
+        const text = el.textContent.trim();
+        if (el.getAttribute("role") === "alert" || hasErrorClass(el) || text.length < 200) {
+          return text;
+        }
+      }
+    }
+  }
+  return null;
+}
+function findAdjacentError(element) {
+  const container = element.closest(
+    '.form-group, .form-field, .field, .form-item, [class*="field"], [class*="form-group"], [class*="FormControl"], .MuiFormControl-root, .ant-form-item, .chakra-form-control'
+  ) || element.parentElement;
+  if (!container) return null;
+  for (const selector of ERROR_CONTAINER_SELECTORS) {
+    try {
+      const errorEl = container.querySelector(selector);
+      if (errorEl && errorEl !== element) {
+        const text = errorEl.textContent?.trim();
+        if (text) return text;
+      }
+    } catch {
+    }
+  }
+  const next = element.nextElementSibling;
+  if (next && hasErrorClass(next)) {
+    const text = next.textContent?.trim();
+    if (text) return text;
+  }
+  return null;
+}
+function hasErrorClass(element) {
+  for (const cls of INPUT_ERROR_CLASSES) {
+    if (element.classList.contains(cls)) return true;
+  }
+  if (element.getAttribute("data-invalid") === "true" || element.getAttribute("data-error") !== null) {
+    return true;
+  }
+  return false;
+}
+var ERROR_CONTAINER_SELECTORS, INPUT_ERROR_CLASSES;
+var init_validation_scanner = __esm({
+  "src/ai/validation-scanner.ts"() {
+    ERROR_CONTAINER_SELECTORS = [
+      ".error",
+      ".field-error",
+      ".form-error",
+      ".invalid-feedback",
+      ".help-block.error",
+      ".error-message",
+      ".validation-error",
+      ".form-text.text-danger",
+      '[role="alert"]',
+      // Material UI
+      ".MuiFormHelperText-root.Mui-error",
+      // Ant Design
+      ".ant-form-item-explain-error",
+      // Chakra UI
+      ".chakra-form__error-message",
+      // Tailwind UI common patterns
+      ".text-red-500",
+      ".text-red-600",
+      ".text-destructive"
+    ];
+    INPUT_ERROR_CLASSES = [
+      "is-invalid",
+      "has-error",
+      "error",
+      "invalid",
+      "field-error",
+      "border-red-500",
+      "border-destructive",
+      "Mui-error",
+      "ant-input-status-error"
+    ];
+  }
 });
-var init_idle = __esm({
-  "src/idle/index.ts"() {
-    init_network_idle();
-    init_dom_settling();
-    init_loading_indicators();
-    init_form_mutation();
-    init_composite_idle();
-    init_element_settling();
-    init_stuck_screen();
+
+// src/ai/form-discovery.ts
+function discoverForms(elements2) {
+  const validationErrors = scanValidationErrors(
+    elements2.map((el) => ({ id: el.id, element: el.element }))
+  );
+  const errorsByField = new Map(validationErrors.map((e) => [e.fieldId, e]));
+  const formElements = elements2.filter((el) => el.type === "form");
+  const inputTypes = /* @__PURE__ */ new Set([
+    "input",
+    "textarea",
+    "select",
+    "checkbox",
+    "radio",
+    "textbox",
+    "combobox",
+    "switch",
+    "slider",
+    "listbox"
+  ]);
+  const allInputs = elements2.filter((el) => inputTypes.has(el.type));
+  const forms = [];
+  if (formElements.length > 0) {
+    for (const formEl of formElements) {
+      const formDom = formEl.element;
+      const formInputs = allInputs.filter((input) => formDom.contains(input.element));
+      const fields = buildFormFields(formInputs, errorsByField);
+      const submitButton = elements2.find(
+        (el) => el.type === "button" && formDom.contains(el.element) && (el.element.getAttribute("type") === "submit" || el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/))
+      );
+      forms.push({
+        id: formEl.id,
+        name: formEl.label || formDom.getAttribute("name") || void 0,
+        purpose: inferFormPurpose(formInputs),
+        fields,
+        isValid: fields.every((f) => f.valid),
+        submitButton: submitButton?.id,
+        isDirty: fields.some((f) => f.isDirty)
+      });
+    }
+  }
+  const inputsInForms = new Set(
+    formElements.flatMap(
+      (f) => allInputs.filter((i) => f.element.contains(i.element)).map((i) => i.id)
+    )
+  );
+  const orphanInputs = allInputs.filter((i) => !inputsInForms.has(i.id));
+  if (orphanInputs.length > 0) {
+    const fields = buildFormFields(orphanInputs, errorsByField);
+    const submitButton = elements2.find(
+      (el) => el.type === "button" && !formElements.some((f) => f.element.contains(el.element)) && el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/)
+    );
+    forms.push({
+      id: "implicit-form",
+      purpose: inferFormPurpose(orphanInputs),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      submitButton: submitButton?.id,
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  }
+  const totalFields = forms.reduce((sum, f) => sum + f.fields.length, 0);
+  const totalErrors = forms.reduce((sum, f) => sum + f.fields.filter((ff) => !ff.valid).length, 0);
+  const filledFields = forms.reduce(
+    (sum, f) => sum + f.fields.filter((ff) => ff.value !== "" || ff.checked).length,
+    0
+  );
+  const summaryParts = [`${forms.length} form(s), ${totalFields} field(s)`];
+  if (filledFields > 0) summaryParts.push(`${filledFields} filled`);
+  if (totalErrors > 0) summaryParts.push(`${totalErrors} error(s)`);
+  return {
+    forms,
+    summary: summaryParts.join(", "),
+    timestamp: Date.now()
+  };
+}
+function getLabelText(element) {
+  if (typeof document === "undefined") return void 0;
+  const id = element.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (label?.textContent?.trim()) return label.textContent.trim();
+  }
+  const parentLabel = element.closest("label");
+  if (parentLabel) {
+    const clone = parentLabel.cloneNode(true);
+    const inputs = clone.querySelectorAll("input, textarea, select");
+    inputs.forEach((inp) => inp.remove());
+    const text = clone.textContent?.trim();
+    if (text) return text;
+  }
+  return void 0;
+}
+function buildFormFields(inputs, errorsByField) {
+  return inputs.map((input) => {
+    const state = input.getState();
+    const el = input.element;
+    const detectedError = errorsByField.get(input.id);
+    let valid = true;
+    let errorMsg;
+    let errorSource;
+    if (state.validationState && !state.validationState.valid) {
+      valid = false;
+      errorMsg = state.validationState.validationMessage;
+      errorSource = "html5";
+    } else if (detectedError) {
+      valid = false;
+      errorMsg = detectedError.message || void 0;
+      errorSource = detectedError.source;
+    }
+    const defaultValue = el.getAttribute("value") ?? "";
+    const isDirty = state.value !== void 0 && state.value !== defaultValue;
+    return {
+      id: input.id,
+      label: el.getAttribute("aria-label") || input.label || getLabelText(el) || el.getAttribute("placeholder") || input.id,
+      type: el instanceof HTMLInputElement ? el.type : input.type,
+      value: state.value ?? "",
+      valid,
+      error: errorMsg,
+      errorSource,
+      required: state.required ?? false,
+      touched: state.focused || (state.value?.length ?? 0) > 0,
+      placeholder: el.getAttribute("placeholder") || void 0,
+      isDirty,
+      checked: state.checked,
+      selectedOptions: state.selectedOptions,
+      constraints: state.constraints
+    };
+  });
+}
+function inferFormPurpose(fields) {
+  const labels = fields.map(
+    (f) => (f.element.getAttribute("aria-label") || f.label || f.element.getAttribute("name") || "").toLowerCase()
+  ).join(" ");
+  if (labels.includes("email") && labels.includes("password")) {
+    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
+      return "Registration";
+    }
+    return "Login";
+  }
+  if (labels.includes("search")) return "Search";
+  if (labels.includes("address") || labels.includes("city")) return "Address";
+  if (labels.includes("card") || labels.includes("payment")) return "Payment";
+  if (labels.includes("contact") || labels.includes("message")) return "Contact";
+  return "Form";
+}
+var init_form_discovery = __esm({
+  "src/ai/form-discovery.ts"() {
+    init_validation_scanner();
   }
 });
 
@@ -6272,7 +6384,7 @@ function detectForms(elements2) {
   );
   const defaultForm = {
     id: "detected-form",
-    purpose: inferFormPurpose(formElements),
+    purpose: inferFormPurpose2(formElements),
     fields: formElements.map((el) => ({
       id: el.id,
       label: el.labelText || el.accessibleName || el.placeholder || el.id,
@@ -6292,7 +6404,7 @@ function detectForms(elements2) {
   }
   return forms;
 }
-function inferFormPurpose(fields) {
+function inferFormPurpose2(fields) {
   const labels = fields.map(
     (f) => (f.labelText || f.accessibleName || f.placeholder || "").toLowerCase()
   );
@@ -6406,302 +6518,6 @@ var init_summary_generator = __esm({
       includeFocused: true,
       verbosity: "normal"
     };
-  }
-});
-
-// src/ai/validation-scanner.ts
-function scanValidationErrors(elements2) {
-  const errors = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const { id, element } of elements2) {
-    if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLSelectElement)) {
-      continue;
-    }
-    const result = detectFieldError(id, element);
-    if (result && !seen.has(id)) {
-      errors.push(result);
-      seen.add(id);
-    }
-  }
-  return errors;
-}
-function detectFieldError(fieldId, element) {
-  if ("validity" in element && !element.validity.valid) {
-    return {
-      fieldId,
-      message: element.validationMessage || "Invalid value",
-      confidence: 1,
-      source: "html5"
-    };
-  }
-  if (element.getAttribute("aria-invalid") === "true") {
-    const errorMessage = getAriaErrorMessage(element);
-    return {
-      fieldId,
-      message: errorMessage || "",
-      confidence: 0.95,
-      source: "aria"
-    };
-  }
-  const adjacentError = findAdjacentError(element);
-  if (adjacentError) {
-    return {
-      fieldId,
-      message: adjacentError,
-      confidence: 0.8,
-      source: "adjacent-element"
-    };
-  }
-  if (hasErrorClass(element)) {
-    return {
-      fieldId,
-      message: "",
-      confidence: 0.6,
-      source: "css-class"
-    };
-  }
-  return null;
-}
-function getAriaErrorMessage(element) {
-  const errorMsgId = element.getAttribute("aria-errormessage");
-  if (errorMsgId) {
-    const errorEl = document.getElementById(errorMsgId);
-    if (errorEl?.textContent?.trim()) {
-      return errorEl.textContent.trim();
-    }
-  }
-  const describedById = element.getAttribute("aria-describedby");
-  if (describedById) {
-    const ids = describedById.split(/\s+/);
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el?.textContent?.trim()) {
-        const text = el.textContent.trim();
-        if (el.getAttribute("role") === "alert" || hasErrorClass(el) || text.length < 200) {
-          return text;
-        }
-      }
-    }
-  }
-  return null;
-}
-function findAdjacentError(element) {
-  const container = element.closest(
-    '.form-group, .form-field, .field, .form-item, [class*="field"], [class*="form-group"], [class*="FormControl"], .MuiFormControl-root, .ant-form-item, .chakra-form-control'
-  ) || element.parentElement;
-  if (!container) return null;
-  for (const selector of ERROR_CONTAINER_SELECTORS) {
-    try {
-      const errorEl = container.querySelector(selector);
-      if (errorEl && errorEl !== element) {
-        const text = errorEl.textContent?.trim();
-        if (text) return text;
-      }
-    } catch {
-    }
-  }
-  const next = element.nextElementSibling;
-  if (next && hasErrorClass(next)) {
-    const text = next.textContent?.trim();
-    if (text) return text;
-  }
-  return null;
-}
-function hasErrorClass(element) {
-  for (const cls of INPUT_ERROR_CLASSES) {
-    if (element.classList.contains(cls)) return true;
-  }
-  if (element.getAttribute("data-invalid") === "true" || element.getAttribute("data-error") !== null) {
-    return true;
-  }
-  return false;
-}
-var ERROR_CONTAINER_SELECTORS, INPUT_ERROR_CLASSES;
-var init_validation_scanner = __esm({
-  "src/ai/validation-scanner.ts"() {
-    ERROR_CONTAINER_SELECTORS = [
-      ".error",
-      ".field-error",
-      ".form-error",
-      ".invalid-feedback",
-      ".help-block.error",
-      ".error-message",
-      ".validation-error",
-      ".form-text.text-danger",
-      '[role="alert"]',
-      // Material UI
-      ".MuiFormHelperText-root.Mui-error",
-      // Ant Design
-      ".ant-form-item-explain-error",
-      // Chakra UI
-      ".chakra-form__error-message",
-      // Tailwind UI common patterns
-      ".text-red-500",
-      ".text-red-600",
-      ".text-destructive"
-    ];
-    INPUT_ERROR_CLASSES = [
-      "is-invalid",
-      "has-error",
-      "error",
-      "invalid",
-      "field-error",
-      "border-red-500",
-      "border-destructive",
-      "Mui-error",
-      "ant-input-status-error"
-    ];
-  }
-});
-
-// src/ai/form-discovery.ts
-function discoverForms(elements2) {
-  const validationErrors = scanValidationErrors(
-    elements2.map((el) => ({ id: el.id, element: el.element }))
-  );
-  const errorsByField = new Map(validationErrors.map((e) => [e.fieldId, e]));
-  const formElements = elements2.filter((el) => el.type === "form");
-  const inputTypes = /* @__PURE__ */ new Set([
-    "input",
-    "textarea",
-    "select",
-    "checkbox",
-    "radio",
-    "textbox",
-    "combobox",
-    "switch",
-    "slider",
-    "listbox"
-  ]);
-  const allInputs = elements2.filter((el) => inputTypes.has(el.type));
-  const forms = [];
-  if (formElements.length > 0) {
-    for (const formEl of formElements) {
-      const formDom = formEl.element;
-      const formInputs = allInputs.filter((input) => formDom.contains(input.element));
-      const fields = buildFormFields(formInputs, errorsByField);
-      const submitButton = elements2.find(
-        (el) => el.type === "button" && formDom.contains(el.element) && (el.element.getAttribute("type") === "submit" || el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/))
-      );
-      forms.push({
-        id: formEl.id,
-        name: formEl.label || formDom.getAttribute("name") || void 0,
-        purpose: inferFormPurpose2(formInputs),
-        fields,
-        isValid: fields.every((f) => f.valid),
-        submitButton: submitButton?.id,
-        isDirty: fields.some((f) => f.isDirty)
-      });
-    }
-  }
-  const inputsInForms = new Set(
-    formElements.flatMap(
-      (f) => allInputs.filter((i) => f.element.contains(i.element)).map((i) => i.id)
-    )
-  );
-  const orphanInputs = allInputs.filter((i) => !inputsInForms.has(i.id));
-  if (orphanInputs.length > 0) {
-    const fields = buildFormFields(orphanInputs, errorsByField);
-    const submitButton = elements2.find(
-      (el) => el.type === "button" && !formElements.some((f) => f.element.contains(el.element)) && el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/)
-    );
-    forms.push({
-      id: "implicit-form",
-      purpose: inferFormPurpose2(orphanInputs),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      submitButton: submitButton?.id,
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  }
-  const totalFields = forms.reduce((sum, f) => sum + f.fields.length, 0);
-  const totalErrors = forms.reduce((sum, f) => sum + f.fields.filter((ff) => !ff.valid).length, 0);
-  const filledFields = forms.reduce(
-    (sum, f) => sum + f.fields.filter((ff) => ff.value !== "" || ff.checked).length,
-    0
-  );
-  const summaryParts = [`${forms.length} form(s), ${totalFields} field(s)`];
-  if (filledFields > 0) summaryParts.push(`${filledFields} filled`);
-  if (totalErrors > 0) summaryParts.push(`${totalErrors} error(s)`);
-  return {
-    forms,
-    summary: summaryParts.join(", "),
-    timestamp: Date.now()
-  };
-}
-function getLabelText(element) {
-  if (typeof document === "undefined") return void 0;
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-  const parentLabel = element.closest("label");
-  if (parentLabel) {
-    const clone = parentLabel.cloneNode(true);
-    const inputs = clone.querySelectorAll("input, textarea, select");
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-  return void 0;
-}
-function buildFormFields(inputs, errorsByField) {
-  return inputs.map((input) => {
-    const state = input.getState();
-    const el = input.element;
-    const detectedError = errorsByField.get(input.id);
-    let valid = true;
-    let errorMsg;
-    let errorSource;
-    if (state.validationState && !state.validationState.valid) {
-      valid = false;
-      errorMsg = state.validationState.validationMessage;
-      errorSource = "html5";
-    } else if (detectedError) {
-      valid = false;
-      errorMsg = detectedError.message || void 0;
-      errorSource = detectedError.source;
-    }
-    const defaultValue = el.getAttribute("value") ?? "";
-    const isDirty = state.value !== void 0 && state.value !== defaultValue;
-    return {
-      id: input.id,
-      label: el.getAttribute("aria-label") || input.label || getLabelText(el) || el.getAttribute("placeholder") || input.id,
-      type: el instanceof HTMLInputElement ? el.type : input.type,
-      value: state.value ?? "",
-      valid,
-      error: errorMsg,
-      errorSource,
-      required: state.required ?? false,
-      touched: state.focused || (state.value?.length ?? 0) > 0,
-      placeholder: el.getAttribute("placeholder") || void 0,
-      isDirty,
-      checked: state.checked,
-      selectedOptions: state.selectedOptions,
-      constraints: state.constraints
-    };
-  });
-}
-function inferFormPurpose2(fields) {
-  const labels = fields.map(
-    (f) => (f.element.getAttribute("aria-label") || f.label || f.element.getAttribute("name") || "").toLowerCase()
-  ).join(" ");
-  if (labels.includes("email") && labels.includes("password")) {
-    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
-      return "Registration";
-    }
-    return "Login";
-  }
-  if (labels.includes("search")) return "Search";
-  if (labels.includes("address") || labels.includes("city")) return "Address";
-  if (labels.includes("card") || labels.includes("payment")) return "Payment";
-  if (labels.includes("contact") || labels.includes("message")) return "Contact";
-  return "Form";
-}
-var init_form_discovery = __esm({
-  "src/ai/form-discovery.ts"() {
-    init_validation_scanner();
   }
 });
 
@@ -7943,570 +7759,6 @@ var init_nl_action_executor = __esm({
         );
       }
     };
-  }
-});
-
-// src/ai/target-decomposer.ts
-function compileSynonym(type, synonym, softHint) {
-  const tokens = synonym.trim().split(/\s+/);
-  const escaped = tokens.map((t) => escapeRegExp(t)).join("\\s+");
-  return {
-    pattern: new RegExp(`\\b${escaped}\\b`, "i"),
-    type,
-    softHint,
-    synonym,
-    wordCount: tokens.length
-  };
-}
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function isSoftTypeHint(decomposed) {
-  return decomposed.__softTypeHint === true;
-}
-function decomposeTarget(description) {
-  let remaining = description.trim();
-  const result = { elementText: "" };
-  remaining = extractStateFilter(remaining, result);
-  remaining = extractSpatialRelation(remaining, result);
-  if (!result.spatial || result.spatial.relation !== "inside") {
-    remaining = extractContainer(remaining, result);
-  } else {
-    result.container = result.spatial.referenceDescription;
-    result.spatial = void 0;
-  }
-  remaining = extractOrdinal(remaining, result);
-  remaining = extractElementType(remaining, result);
-  result.elementText = cleanElementText(remaining);
-  if (result.elementText) {
-    result.label = result.elementText;
-    result.ariaLabel = result.elementText;
-    result.placeholder = result.elementText;
-    result.name = result.elementText;
-  }
-  return result;
-}
-function extractStateFilter(text, result) {
-  for (const state of STATE_FILTERS) {
-    const regex = new RegExp(`\\b${state}\\b`, "i");
-    if (regex.test(text)) {
-      result.stateFilter = state;
-      return text.replace(regex, " ").trim();
-    }
-  }
-  return text;
-}
-function extractSpatialRelation(text, result) {
-  for (const { pattern, relation } of SPATIAL_PATTERNS) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      result.spatial = {
-        relation,
-        referenceDescription: cleanReferenceDescription(match[1])
-      };
-      return text.slice(0, match.index).trim();
-    }
-  }
-  return text;
-}
-function extractContainer(text, result) {
-  for (const pattern of CONTAINER_PATTERNS) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      const container = cleanReferenceDescription(match[1]);
-      if (container.length > 2 && !isPartOfCompoundWord(text, match.index)) {
-        result.container = container;
-        return text.slice(0, match.index).trim();
-      }
-    }
-  }
-  return text;
-}
-function isPartOfCompoundWord(text, matchIndex, _word) {
-  const before = text.slice(0, matchIndex).trim().toLowerCase();
-  const compoundPrefixes = ["sign", "log", "opt", "check", "plug", "fill", "zoom", "fade", "drop"];
-  return compoundPrefixes.some((prefix) => before.endsWith(prefix));
-}
-function extractOrdinal(text, result) {
-  for (const [word, value] of Object.entries(ORDINAL_MAP)) {
-    const regex = new RegExp(`\\b${word}\\b`, "i");
-    if (regex.test(text)) {
-      result.ordinal = value;
-      return text.replace(regex, " ").trim();
-    }
-  }
-  const numericMatch = text.match(/\b(\d+)(?:st|nd|rd|th)\b/i);
-  if (numericMatch) {
-    result.ordinal = parseInt(numericMatch[1], 10);
-    return text.replace(numericMatch[0], " ").trim();
-  }
-  return text;
-}
-function extractElementType(text, result) {
-  for (const entry of COMPILED_ELEMENT_TYPE_SYNONYMS) {
-    if (entry.pattern.test(text)) {
-      result.elementType = entry.type;
-      if (entry.softHint) {
-        result.__softTypeHint = true;
-      }
-      return text.replace(entry.pattern, " ").trim();
-    }
-  }
-  return text;
-}
-function cleanElementText(text) {
-  const words = text.split(/\s+/).filter((w) => !NOISE_WORDS.has(w.toLowerCase()));
-  return words.join(" ").replace(/\s+/g, " ").replace(/^[\s,]+|[\s,]+$/g, "").trim();
-}
-function cleanReferenceDescription(text) {
-  return text.replace(/^(?:the|a|an)\s+/i, "").replace(/\s+/g, " ").trim();
-}
-var NOISE_WORDS, ELEMENT_TYPE_SYNONYMS, COMPILED_ELEMENT_TYPE_SYNONYMS, SPATIAL_PATTERNS, CONTAINER_PATTERNS, ORDINAL_MAP, STATE_FILTERS;
-var init_target_decomposer = __esm({
-  "src/ai/target-decomposer.ts"() {
-    NOISE_WORDS = /* @__PURE__ */ new Set(["the", "a", "an", "that", "this", "those", "these", "its", "my"]);
-    ELEMENT_TYPE_SYNONYMS = [
-      // Inputs / form
-      { type: "textarea", synonyms: ["text area", "text field", "text box"] },
-      { type: "input", synonyms: ["input", "field", "textbox"] },
-      { type: "select", synonyms: ["drop down", "dropdown", "combo box", "combobox", "select"] },
-      { type: "checkbox", synonyms: ["check box", "checkbox"] },
-      { type: "radio", synonyms: ["radio button", "radio"] },
-      // Buttons / links
-      // 'icon' is a soft hint — "settings icon" is usually a button but could
-      // also be a passive image; let the label match decide if the type fails.
-      { type: "button", synonyms: ["button"] },
-      { type: "button", synonyms: ["icon"], softHint: true },
-      { type: "link", synonyms: ["link", "hyperlink", "anchor"] },
-      // Navigation
-      { type: "tab", synonyms: ["tab"] },
-      { type: "menuitem", synonyms: ["menu item", "menuitem"] },
-      { type: "menu", synonyms: ["menu"] },
-      // Disclosure / accordion family
-      // Multi-word phrases (e.g., "details toggle") sit above the bare "toggle"
-      // synonym below so they win precedence. The single-word "details" is
-      // softHint because it commonly appears as label text ("Job details"); a
-      // label match should still work when nothing else flags this as
-      // a disclosure.
-      {
-        type: "disclosure",
-        synonyms: [
-          "details toggle",
-          "details panel",
-          "disclosure",
-          "accordion",
-          "collapsible",
-          "expander",
-          "expandable"
-        ]
-      },
-      {
-        type: "disclosure",
-        synonyms: ["expand", "collapse", "details"],
-        softHint: true
-      },
-      // Switch / toggle
-      // Plain "toggle" is a soft hint — "details toggle" already routed above to
-      // disclosure; in other contexts the matcher should fall back to a
-      // label-only retry rather than hard-pinning the type.
-      { type: "switch", synonyms: ["switch"] },
-      { type: "switch", synonyms: ["toggle"], softHint: true },
-      // Misc
-      { type: "slider", synonyms: ["slider"] },
-      { type: "label", synonyms: ["label"] },
-      { type: "heading", synonyms: ["heading"] }
-    ];
-    COMPILED_ELEMENT_TYPE_SYNONYMS = (() => {
-      const compiled = [];
-      for (const entry of ELEMENT_TYPE_SYNONYMS) {
-        for (const syn of entry.synonyms) {
-          compiled.push(compileSynonym(entry.type, syn, entry.softHint === true));
-        }
-      }
-      compiled.sort((a, b) => {
-        if (b.wordCount !== a.wordCount) return b.wordCount - a.wordCount;
-        return b.synonym.length - a.synonym.length;
-      });
-      return compiled;
-    })();
-    SPATIAL_PATTERNS = [
-      { pattern: /\bnext\s+to\s+(.+)$/i, relation: "near" },
-      { pattern: /\bbeside\s+(.+)$/i, relation: "near" },
-      { pattern: /\bnear\s+(.+)$/i, relation: "near" },
-      { pattern: /\babove\s+(.+)$/i, relation: "above" },
-      { pattern: /\bbelow\s+(.+)$/i, relation: "below" },
-      { pattern: /\bunder(?:neath)?\s+(.+)$/i, relation: "below" },
-      { pattern: /\bleft\s+of\s+(.+)$/i, relation: "leftOf" },
-      { pattern: /\bright\s+of\s+(.+)$/i, relation: "rightOf" },
-      { pattern: /\binside\s+(.+)$/i, relation: "inside" }
-    ];
-    CONTAINER_PATTERNS = [
-      /\b(?:in|within|inside)\s+(?:the\s+)?(.+?)(?:\s+(?:near|above|below|left of|right of|next to|beside)|\s*$)/i
-    ];
-    ORDINAL_MAP = {
-      first: 1,
-      second: 2,
-      third: 3,
-      fourth: 4,
-      fifth: 5,
-      sixth: 6,
-      seventh: 7,
-      eighth: 8,
-      ninth: 9,
-      tenth: 10,
-      last: -1,
-      "1st": 1,
-      "2nd": 2,
-      "3rd": 3,
-      "4th": 4,
-      "5th": 5,
-      "6th": 6,
-      "7th": 7,
-      "8th": 8,
-      "9th": 9,
-      "10th": 10
-    };
-    STATE_FILTERS = /* @__PURE__ */ new Set([
-      "disabled",
-      "enabled",
-      "active",
-      "selected",
-      "checked",
-      "focused",
-      "hidden",
-      "visible"
-    ]);
-  }
-});
-
-// src/ai/find.ts
-function find(query, engine, options) {
-  const startTime = performance.now();
-  const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
-  if (typeof opts.confidenceThreshold !== "number" || Number.isNaN(opts.confidenceThreshold)) {
-    opts.confidenceThreshold = DEFAULT_FIND_OPTIONS.confidenceThreshold;
-  }
-  let criteria;
-  let decomposed;
-  if (typeof query === "string") {
-    decomposed = decomposeTarget(query);
-    criteria = resolveCriteria(decomposed, engine, opts);
-  } else {
-    criteria = query;
-    const elementText = query.text || query.textContent || query.accessibleName || "";
-    decomposed = {
-      elementText,
-      elementType: query.type,
-      label: elementText || void 0,
-      ariaLabel: query.accessibleName || elementText || void 0,
-      placeholder: query.placeholder || elementText || void 0,
-      name: elementText || void 0
-    };
-  }
-  let searchResponse = engine.search(criteria);
-  let results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-  if (decomposed.stateFilter) {
-    results = applyStateFilter(results, decomposed.stateFilter);
-  }
-  if (decomposed.ordinal) {
-    results = applyOrdinalFilter(results, decomposed.ordinal);
-  }
-  let viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-  if (viableResults.length === 0 && typeof query === "string" && isSoftTypeHint(decomposed) && criteria.type) {
-    const relaxed = { ...criteria };
-    delete relaxed.type;
-    searchResponse = engine.search(relaxed);
-    results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-    if (decomposed.stateFilter) {
-      results = applyStateFilter(results, decomposed.stateFilter);
-    }
-    if (decomposed.ordinal) {
-      results = applyOrdinalFilter(results, decomposed.ordinal);
-    }
-    viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-  }
-  if (viableResults.length === 0 && typeof query === "string" && criteria.type && decomposed.elementType) {
-    const cachedTypeLower = String(criteria.type).toLowerCase();
-    const cachedSummaries = engine.getCachedElementSummaries();
-    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
-    if (!typeIsPresent) {
-      const relaxed = { ...criteria };
-      delete relaxed.type;
-      searchResponse = engine.search(relaxed);
-      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-      if (decomposed.stateFilter) {
-        results = applyStateFilter(results, decomposed.stateFilter);
-      }
-      if (decomposed.ordinal) {
-        results = applyOrdinalFilter(results, decomposed.ordinal);
-      }
-      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-    }
-  }
-  const durationMs = performance.now() - startTime;
-  if (viableResults.length === 0) {
-    let alternatives2;
-    if (opts.debug) {
-      const debugResponse = engine.search({
-        ...criteria,
-        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
-      });
-      let debugResults = applyContextScoring(
-        debugResponse.results,
-        opts.context || {},
-        engine
-      );
-      if (decomposed.stateFilter) {
-        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
-      }
-      if (decomposed.ordinal) {
-        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
-      }
-      debugResults.sort((a, b) => b.confidence - a.confidence);
-      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
-    }
-    return {
-      found: false,
-      ambiguous: false,
-      reason: results.length > 0 ? `Best match confidence (${(results[0].confidence * 100).toFixed(0)}%) below threshold (${(opts.confidenceThreshold * 100).toFixed(0)}%)` : `No elements matching "${decomposed.elementText}" found`,
-      partialMatches: results.slice(0, opts.maxResults).map((r) => toCandidate(r)),
-      // Diagnostic: how many elements were considered before filtering.
-      // Helps agents distinguish "searched 200 elements, none matched" from
-      // "searched 10 elements (snapshot truncated?)".
-      consideredCount: searchResponse.results.length,
-      decomposed,
-      durationMs,
-      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
-    };
-  }
-  const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
-  if (isAmbiguous && !opts.pickFirst) {
-    const candidates = viableResults.slice(0, opts.maxResults).map((r) => toCandidate(r));
-    return {
-      found: true,
-      ambiguous: true,
-      candidates,
-      suggestion: generateDisambiguationSuggestion(candidates, decomposed),
-      decomposed,
-      durationMs
-    };
-  }
-  const best = viableResults[0];
-  const alternatives = viableResults.slice(1, opts.maxResults).map((r) => toCandidate(r));
-  return {
-    found: true,
-    ambiguous: false,
-    element: best.element,
-    elementId: best.element.id,
-    confidence: best.confidence,
-    matchReasons: best.matchReasons,
-    alternatives,
-    decomposed,
-    durationMs
-  };
-}
-function resolveCriteria(decomposed, engine, opts) {
-  const criteria = {
-    fuzzy: true,
-    fuzzyThreshold: opts.confidenceThreshold
-  };
-  if (decomposed.elementText) {
-    criteria.text = decomposed.elementText;
-  }
-  if (decomposed.elementType) {
-    criteria.type = decomposed.elementType;
-  }
-  if (decomposed.label && decomposed.label !== decomposed.elementText) {
-    criteria.accessibleName = decomposed.label;
-  } else if (decomposed.ariaLabel && decomposed.ariaLabel !== decomposed.elementText && !criteria.accessibleName) {
-    criteria.accessibleName = decomposed.ariaLabel;
-  }
-  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
-    criteria.placeholder = decomposed.placeholder;
-  }
-  if (decomposed.spatial) {
-    const refResult = engine.findBest({
-      text: decomposed.spatial.referenceDescription,
-      fuzzy: true,
-      fuzzyThreshold: 0.5
-    });
-    if (refResult && refResult.confidence >= 0.5) {
-      criteria.near = refResult.element.id;
-    }
-  }
-  if (decomposed.container) {
-    const containerResult = engine.findBest({
-      text: decomposed.container,
-      fuzzy: true,
-      fuzzyThreshold: 0.4
-    });
-    if (containerResult && containerResult.confidence >= 0.4) {
-      criteria.within = containerResult.element.id;
-    }
-  }
-  return criteria;
-}
-function applyContextScoring(results, context, engine) {
-  if (!context.activeModalId && !context.lastInteractedElement) {
-    return results;
-  }
-  return results.map((result) => {
-    let adjustedConfidence = result.confidence;
-    const extraReasons = [...result.matchReasons];
-    if (context.activeModalId) {
-      const inModal = isElementInContainer(result.element, context.activeModalId, engine);
-      if (!inModal) {
-        adjustedConfidence *= MODAL_PENALTY;
-        extraReasons.push("penalty: outside active modal");
-      } else {
-        extraReasons.push("boost: inside active modal");
-      }
-    }
-    if (context.lastInteractedElement) {
-      const nearLastInteracted = isNearElement(
-        result.element,
-        context.lastInteractedElement,
-        engine,
-        300
-      );
-      if (nearLastInteracted) {
-        adjustedConfidence = Math.min(1, adjustedConfidence + RECENCY_BONUS);
-        extraReasons.push("boost: near last interacted");
-      }
-    }
-    return {
-      ...result,
-      confidence: adjustedConfidence,
-      matchReasons: extraReasons
-    };
-  }).sort((a, b) => b.confidence - a.confidence);
-}
-function isElementInContainer(element, containerId, engine) {
-  if (element.parentContext && element.parentContext.includes(containerId)) {
-    return true;
-  }
-  const containerResults = engine.findByText(containerId, false);
-  if (containerResults.length === 0) return false;
-  const containerRect = containerResults[0].element.state.rect;
-  const elementRect = element.state.rect;
-  return elementRect.x >= containerRect.x && elementRect.y >= containerRect.y && elementRect.x + elementRect.width <= containerRect.x + containerRect.width && elementRect.y + elementRect.height <= containerRect.y + containerRect.height;
-}
-function isNearElement(element, referenceId, engine, maxDistance) {
-  const refResults = engine.findByText(referenceId, false);
-  if (refResults.length === 0) return false;
-  const refRect = refResults[0].element.state.rect;
-  const elRect = element.state.rect;
-  const dx = elRect.x + elRect.width / 2 - (refRect.x + refRect.width / 2);
-  const dy = elRect.y + elRect.height / 2 - (refRect.y + refRect.height / 2);
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  return distance <= maxDistance;
-}
-function applyStateFilter(results, stateFilter) {
-  return results.filter((r) => {
-    const state = r.element.state;
-    switch (stateFilter) {
-      case "disabled":
-        return !state.enabled;
-      case "enabled":
-        return state.enabled;
-      case "focused":
-        return state.focused;
-      case "visible":
-        return state.visible;
-      case "hidden":
-        return !state.visible;
-      case "checked":
-        return state.checked === true;
-      case "selected":
-        return state.ariaSelected === true;
-      case "active":
-        return state.focused || state.ariaSelected === true;
-      default:
-        return true;
-    }
-  });
-}
-function applyOrdinalFilter(results, ordinal) {
-  if (results.length === 0) return results;
-  const sorted = [...results].sort((a, b) => {
-    const aRect = a.element.state.rect;
-    const bRect = b.element.state.rect;
-    const yDiff = aRect.y - bRect.y;
-    if (Math.abs(yDiff) > 10) return yDiff;
-    return aRect.x - bRect.x;
-  });
-  if (ordinal === -1) {
-    return [sorted[sorted.length - 1]];
-  }
-  const index = ordinal - 1;
-  if (index >= 0 && index < sorted.length) {
-    return [sorted[index]];
-  }
-  return results;
-}
-function toCandidate(result) {
-  return {
-    element: result.element,
-    elementId: result.element.id,
-    confidence: result.confidence,
-    matchReasons: result.matchReasons,
-    differentiator: generateDifferentiator(result.element)
-  };
-}
-function generateDifferentiator(element) {
-  const parts = [];
-  if (element.parentContext) {
-    parts.push(`in ${element.parentContext}`);
-  }
-  const rect = element.state.rect;
-  if (rect.y < 80) {
-    parts.push("at the top of the page");
-  } else if (rect.y > 800) {
-    parts.push("near the bottom of the page");
-  }
-  if (rect.x < 250) {
-    parts.push("in the left panel");
-  } else if (rect.x > 1e3) {
-    parts.push("in the right panel");
-  }
-  if (!element.state.enabled) {
-    parts.push("(disabled)");
-  }
-  if (element.state.focused) {
-    parts.push("(focused)");
-  }
-  if (element.semanticType && element.semanticType !== element.type) {
-    parts.push(`[${element.semanticType}]`);
-  }
-  return parts.length > 0 ? parts.join(", ") : `ID: ${element.id}`;
-}
-function generateDisambiguationSuggestion(candidates, decomposed) {
-  const lines = [`Found ${candidates.length} matching "${decomposed.elementText}" elements:`];
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i];
-    const desc = c.element.description || c.element.label || c.elementId;
-    lines.push(`  ${i + 1}. "${desc}" \u2014 ${c.differentiator} (${(c.confidence * 100).toFixed(0)}%)`);
-  }
-  lines.push("");
-  lines.push('Try adding spatial context: "... near X" or "... in the Y"');
-  return lines.join("\n");
-}
-var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
-var init_find = __esm({
-  "src/ai/find.ts"() {
-    init_target_decomposer();
-    DEFAULT_FIND_OPTIONS = {
-      context: {},
-      pickFirst: true,
-      confidenceThreshold: 0.5,
-      maxResults: 5,
-      debug: false
-    };
-    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
-    DEBUG_ALTERNATIVES_LIMIT = 3;
-    AMBIGUITY_GAP = 0.1;
-    MODAL_PENALTY = 0.3;
-    RECENCY_BONUS = 0.05;
   }
 });
 
@@ -13643,309 +12895,6 @@ var init_design_inspector = __esm({
   }
 });
 
-// src/ai/form-diff.ts
-function captureFormSnapshot() {
-  if (typeof document === "undefined") {
-    return { forms: [], timestamp: Date.now() };
-  }
-  const forms = [];
-  const formElements = document.querySelectorAll("form");
-  const allInputs = document.querySelectorAll("input, textarea, select");
-  const inputsInForms = /* @__PURE__ */ new Set();
-  formElements.forEach((formEl) => {
-    const formInputs = [];
-    allInputs.forEach((input) => {
-      if (formEl.contains(input)) {
-        formInputs.push(input);
-        inputsInForms.add(input);
-      }
-    });
-    const fields = buildFieldStates(formInputs);
-    const submitButton = formEl.querySelector(
-      'button[type="submit"], input[type="submit"]'
-    );
-    forms.push({
-      id: formEl.id || `form-${forms.length}`,
-      name: formEl.getAttribute("name") || void 0,
-      purpose: inferPurposeFromFields(fields),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      submitButton: submitButton?.id || void 0,
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  });
-  const orphanInputs = [];
-  allInputs.forEach((input) => {
-    if (!inputsInForms.has(input)) {
-      orphanInputs.push(input);
-    }
-  });
-  if (orphanInputs.length > 0) {
-    const fields = buildFieldStates(orphanInputs);
-    forms.push({
-      id: "implicit-form",
-      purpose: inferPurposeFromFields(fields),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  }
-  return {
-    forms,
-    timestamp: Date.now()
-  };
-}
-function diffFormSnapshots(before, after) {
-  const beforeFormIds = new Set(before.forms.map((f) => f.id));
-  const afterFormIds = new Set(after.forms.map((f) => f.id));
-  const formsAdded = after.forms.filter((f) => !beforeFormIds.has(f.id)).map((f) => f.id);
-  const formsRemoved = before.forms.filter((f) => !afterFormIds.has(f.id)).map((f) => f.id);
-  const beforeFields = buildFieldMap(before.forms);
-  const afterFields = buildFieldMap(after.forms);
-  const beforeFieldIds = new Set(beforeFields.keys());
-  const afterFieldIds = new Set(afterFields.keys());
-  const addedFields = [];
-  afterFieldIds.forEach((id) => {
-    if (!beforeFieldIds.has(id)) {
-      addedFields.push(id);
-    }
-  });
-  const removedFields = [];
-  beforeFieldIds.forEach((id) => {
-    if (!afterFieldIds.has(id)) {
-      removedFields.push(id);
-    }
-  });
-  const changedFields = [];
-  beforeFieldIds.forEach((id) => {
-    if (!afterFieldIds.has(id)) return;
-    const beforeField = beforeFields.get(id);
-    const afterField = afterFields.get(id);
-    const diff = diffFields(beforeField, afterField);
-    if (diff) {
-      changedFields.push(diff);
-    }
-  });
-  const timeDeltaMs = after.timestamp - before.timestamp;
-  const hasChanges = changedFields.length > 0 || addedFields.length > 0 || removedFields.length > 0 || formsAdded.length > 0 || formsRemoved.length > 0;
-  const summary = summarizeFormDiff({
-    changedFields,
-    addedFields,
-    removedFields,
-    formsAdded,
-    formsRemoved,
-    hasChanges
-  });
-  return {
-    changedFields,
-    addedFields,
-    removedFields,
-    formsAdded,
-    formsRemoved,
-    summary,
-    timeDeltaMs,
-    hasChanges
-  };
-}
-function summarizeFormDiff(diff) {
-  if (!diff.hasChanges) {
-    return "No changes detected";
-  }
-  const parts = [];
-  if (diff.formsAdded.length > 0) {
-    parts.push(`Forms added: ${diff.formsAdded.join(", ")}`);
-  }
-  if (diff.formsRemoved.length > 0) {
-    parts.push(`Forms removed: ${diff.formsRemoved.join(", ")}`);
-  }
-  for (const field of diff.changedFields) {
-    const fieldLabel = field.fieldName || field.fieldId;
-    const changeParts = [];
-    if (field.changes.value) {
-      const before = field.changes.value.before || "(empty)";
-      const after = field.changes.value.after || "(empty)";
-      changeParts.push(`value: "${before}" -> "${after}"`);
-    }
-    if (field.changes.checked) {
-      changeParts.push(
-        `checked: ${field.changes.checked.before} -> ${field.changes.checked.after}`
-      );
-    }
-    if (field.changes.selectedOptions) {
-      const before = field.changes.selectedOptions.before.join(", ") || "(none)";
-      const after = field.changes.selectedOptions.after.join(", ") || "(none)";
-      changeParts.push(`selected: [${before}] -> [${after}]`);
-    }
-    if (field.changes.validationError) {
-      const before = field.changes.validationError.before || "(none)";
-      const after = field.changes.validationError.after || "(none)";
-      changeParts.push(`error: "${before}" -> "${after}"`);
-    }
-    if (field.changes.isValid) {
-      changeParts.push(`valid: ${field.changes.isValid.before} -> ${field.changes.isValid.after}`);
-    }
-    if (field.changes.isDirty) {
-      changeParts.push(`dirty: ${field.changes.isDirty.before} -> ${field.changes.isDirty.after}`);
-    }
-    if (changeParts.length > 0) {
-      parts.push(`${fieldLabel}: ${changeParts.join(", ")}`);
-    }
-  }
-  if (diff.addedFields.length > 0) {
-    parts.push(`Fields added: ${diff.addedFields.join(", ")}`);
-  }
-  if (diff.removedFields.length > 0) {
-    parts.push(`Fields removed: ${diff.removedFields.join(", ")}`);
-  }
-  return parts.join("; ");
-}
-function buildFieldMap(forms) {
-  const map = /* @__PURE__ */ new Map();
-  for (const form of forms) {
-    for (const field of form.fields) {
-      map.set(field.id, field);
-    }
-  }
-  return map;
-}
-function diffFields(before, after) {
-  const changes = {};
-  if (before.value !== after.value) {
-    changes.value = { before: before.value, after: after.value };
-  }
-  if (before.checked !== after.checked && (before.checked !== void 0 || after.checked !== void 0)) {
-    changes.checked = {
-      before: before.checked ?? false,
-      after: after.checked ?? false
-    };
-  }
-  if (!arraysEqual(before.selectedOptions, after.selectedOptions)) {
-    changes.selectedOptions = {
-      before: before.selectedOptions ?? [],
-      after: after.selectedOptions ?? []
-    };
-  }
-  if (before.error !== after.error) {
-    changes.validationError = {
-      before: before.error,
-      after: after.error
-    };
-  }
-  if (before.isDirty !== after.isDirty) {
-    changes.isDirty = {
-      before: before.isDirty ?? false,
-      after: after.isDirty ?? false
-    };
-  }
-  if (before.valid !== after.valid) {
-    changes.isValid = {
-      before: before.valid,
-      after: after.valid
-    };
-  }
-  if (Object.keys(changes).length === 0) {
-    return null;
-  }
-  return {
-    fieldId: after.id,
-    fieldName: after.label || before.label,
-    fieldType: after.type,
-    changes
-  };
-}
-function arraysEqual(a, b) {
-  if (a === b) return true;
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-function buildFieldStates(inputs) {
-  return inputs.map((el) => {
-    const isInput = el instanceof HTMLInputElement;
-    const isTextarea = el instanceof HTMLTextAreaElement;
-    const isSelect = el instanceof HTMLSelectElement;
-    let value = "";
-    let checked;
-    let selectedOptions;
-    let inputType = "text";
-    if (isInput) {
-      inputType = el.type || "text";
-      if (inputType === "checkbox" || inputType === "radio") {
-        checked = el.checked;
-        value = el.value;
-      } else {
-        value = el.value;
-      }
-    } else if (isTextarea) {
-      inputType = "textarea";
-      value = el.value;
-    } else if (isSelect) {
-      inputType = "select";
-      value = el.value;
-      selectedOptions = Array.from(el.selectedOptions).map((o) => o.value);
-    }
-    const validity = el.validity;
-    const valid = validity ? validity.valid : true;
-    const validationMessage = el.validationMessage || void 0;
-    const label = el.getAttribute("aria-label") || getLabelTextForElement(el) || el.getAttribute("placeholder") || el.id || el.getAttribute("name") || "";
-    const defaultValue = el.getAttribute("value") ?? "";
-    const isDirty = value !== defaultValue;
-    return {
-      id: el.id || el.getAttribute("name") || `field-${Math.random().toString(36).slice(2, 8)}`,
-      label,
-      type: inputType,
-      value,
-      valid,
-      error: validationMessage,
-      required: el.hasAttribute("required"),
-      touched: (value?.length ?? 0) > 0,
-      placeholder: el.getAttribute("placeholder") || void 0,
-      isDirty,
-      checked,
-      selectedOptions
-    };
-  });
-}
-function getLabelTextForElement(element) {
-  if (typeof document === "undefined") return void 0;
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-  const parentLabel = element.closest("label");
-  if (parentLabel) {
-    const clone = parentLabel.cloneNode(true);
-    const inputs = clone.querySelectorAll("input, textarea, select");
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-  return void 0;
-}
-function inferPurposeFromFields(fields) {
-  const labels = fields.map((f) => f.label.toLowerCase()).join(" ");
-  if (labels.includes("email") && labels.includes("password")) {
-    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
-      return "Registration";
-    }
-    return "Login";
-  }
-  if (labels.includes("search")) return "Search";
-  if (labels.includes("address") || labels.includes("city")) return "Address";
-  if (labels.includes("card") || labels.includes("payment")) return "Payment";
-  if (labels.includes("contact") || labels.includes("message")) return "Contact";
-  return "Form";
-}
-var init_form_diff = __esm({
-  "src/ai/form-diff.ts"() {
-  }
-});
-
 // src/ai/media-queries.ts
 function createMediaFindRequest(overrides = {}) {
   return {
@@ -15095,6 +14044,1300 @@ var init_ai = __esm({
     init_wait_for();
     init_wait_for_element();
     init_network_probe();
+  }
+});
+
+// src/idle/network-idle.ts
+var NetworkIdleDetector;
+var init_network_idle = __esm({
+  "src/idle/network-idle.ts"() {
+    NetworkIdleDetector = class {
+      constructor(config = {}) {
+        this.name = "network";
+        this.pending = /* @__PURE__ */ new Map();
+        this.nextId = 0;
+        this.idleTimer = null;
+        this._isIdle = true;
+        this.listeners = [];
+        this.installed = false;
+        // Saved originals for cleanup (standalone mode only)
+        this.originalFetch = null;
+        this.originalXHROpen = null;
+        this.originalXHRSend = null;
+        // Tracker-driven mode
+        this.tracker = null;
+        this.trackerUnsubscribe = null;
+        this.weight = config.weight ?? 0.9;
+        this.debounceMs = config.debounceMs ?? 500;
+        this.ignorePatterns = (config.ignorePatterns ?? []).map((p) => new RegExp(p));
+        this.trackXHR = config.trackXHR ?? true;
+        this.tracker = config.tracker ?? null;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        if (this.tracker) {
+          this.installTrackerSubscription();
+        } else {
+          this.installFetchInterceptor();
+          if (this.trackXHR) {
+            this.installXHRInterceptor();
+          }
+        }
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        if (this.trackerUnsubscribe) {
+          this.trackerUnsubscribe();
+          this.trackerUnsubscribe = null;
+        } else {
+          if (this.originalFetch) {
+            globalThis.fetch = this.originalFetch;
+            this.originalFetch = null;
+          }
+          if (this.originalXHROpen) {
+            XMLHttpRequest.prototype.open = this.originalXHROpen;
+            this.originalXHROpen = null;
+          }
+          if (this.originalXHRSend) {
+            XMLHttpRequest.prototype.send = this.originalXHRSend;
+            this.originalXHRSend = null;
+          }
+        }
+        if (this.idleTimer) {
+          clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        this.pending.clear();
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isIdle;
+      }
+      getStatus() {
+        const now = Date.now();
+        const pendingRequests = [];
+        for (const tracked of this.pending.values()) {
+          pendingRequests.push({
+            url: tracked.url,
+            method: tracked.method,
+            startedAt: tracked.startedAt,
+            durationMs: now - tracked.startedAt
+          });
+        }
+        return {
+          idle: this._isIdle,
+          pendingCount: this.pending.size,
+          pendingRequests,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Network idle timeout after ${timeout}ms. ${this.pending.size} requests still pending.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      /**
+       * Subscribe to a NetworkRequestTracker's events instead of patching
+       * fetch/XHR directly. The idle detector only cares about request
+       * start/end — not the full request metadata.
+       */
+      installTrackerSubscription() {
+        this.trackerUnsubscribe = this.tracker.onEvent((event) => {
+          const url = event.entry.request.url;
+          const method = event.entry.request.method;
+          if (this.shouldIgnore(url)) return;
+          if (event.type === "request-start") {
+            this.trackRequest(url, method);
+          } else {
+            let matchedId = null;
+            for (const [id, tracked] of this.pending) {
+              if (tracked.url === url && tracked.method === method) {
+                matchedId = id;
+                break;
+              }
+            }
+            if (matchedId !== null) {
+              const statusCode = event.type === "request-error" ? event.entry.response?.statusCode ?? 0 : event.entry.response?.statusCode;
+              this.completeRequest(matchedId, statusCode);
+            }
+          }
+        });
+      }
+      shouldIgnore(url) {
+        return this.ignorePatterns.some((re) => re.test(url));
+      }
+      trackRequest(url, method) {
+        const id = this.nextId++;
+        this.pending.set(id, { url, method, startedAt: Date.now() });
+        if (this.idleTimer) {
+          clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        if (this._isIdle) {
+          this._isIdle = false;
+          this.notifyTransition();
+        }
+        this.onRequestStart?.({
+          url,
+          method,
+          pendingCount: this.pending.size
+        });
+        return id;
+      }
+      completeRequest(id, status) {
+        const tracked = this.pending.get(id);
+        if (!tracked) return;
+        this.pending.delete(id);
+        this.onRequestEnd?.({
+          url: tracked.url,
+          method: tracked.method,
+          status,
+          durationMs: Date.now() - tracked.startedAt,
+          pendingCount: this.pending.size
+        });
+        if (this.pending.size === 0) {
+          this.scheduleIdle();
+        }
+      }
+      scheduleIdle() {
+        if (this.idleTimer) clearTimeout(this.idleTimer);
+        this.idleTimer = setTimeout(() => {
+          this.idleTimer = null;
+          if (this.pending.size === 0 && !this._isIdle) {
+            this._isIdle = true;
+            this.notifyTransition();
+          }
+        }, this.debounceMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isIdle, status);
+          } catch {
+          }
+        }
+      }
+      installFetchInterceptor() {
+        this.originalFetch = globalThis.fetch;
+        const self = this;
+        const original = this.originalFetch;
+        globalThis.fetch = function(input, init) {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const method = init?.method?.toUpperCase() || "GET";
+          if (self.shouldIgnore(url)) {
+            return original.call(globalThis, input, init);
+          }
+          const id = self.trackRequest(url, method);
+          return original.call(globalThis, input, init).then(
+            (response) => {
+              self.completeRequest(id, response.status);
+              return response;
+            },
+            (error) => {
+              self.completeRequest(id, 0);
+              throw error;
+            }
+          );
+        };
+      }
+      installXHRInterceptor() {
+        this.originalXHROpen = XMLHttpRequest.prototype.open;
+        this.originalXHRSend = XMLHttpRequest.prototype.send;
+        const self = this;
+        XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
+          this.__uiBridgeMethod = method;
+          this.__uiBridgeUrl = typeof url === "string" ? url : url.href;
+          return self.originalXHROpen.call(this, method, url, async ?? true, username, password);
+        };
+        XMLHttpRequest.prototype.send = function(body) {
+          const xhr = this;
+          const url = xhr.__uiBridgeUrl || "";
+          const method = (xhr.__uiBridgeMethod || "GET").toUpperCase();
+          if (self.shouldIgnore(url)) {
+            return self.originalXHRSend.call(this, body);
+          }
+          const id = self.trackRequest(url, method);
+          xhr.__uiBridgeTrackId = id;
+          xhr.addEventListener("loadend", () => {
+            self.completeRequest(id, xhr.status);
+          });
+          return self.originalXHRSend.call(this, body);
+        };
+      }
+    };
+  }
+});
+
+// src/idle/dom-settling.ts
+var DOMSettlingDetector;
+var init_dom_settling = __esm({
+  "src/idle/dom-settling.ts"() {
+    DOMSettlingDetector = class {
+      constructor(config = {}) {
+        this.name = "dom";
+        this.observer = null;
+        this.lastMutationAt = 0;
+        this.recentMutations = [];
+        // timestamps of recent mutations
+        this.settleTimer = null;
+        this._isSettled = true;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.8;
+        this.settleMs = config.settleMs ?? 300;
+        this.root = config.root;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        const root = this.root ?? document.body;
+        this.observer = new MutationObserver((mutations) => {
+          const now = Date.now();
+          this.lastMutationAt = now;
+          this.recentMutations.push(now);
+          const cutoff = now - 1e3;
+          this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
+          let meaningfulCount = 0;
+          for (const m of mutations) {
+            if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+              meaningfulCount++;
+            } else if (m.type === "attributes") {
+              meaningfulCount++;
+            }
+          }
+          if (meaningfulCount === 0) return;
+          if (this._isSettled) {
+            this._isSettled = false;
+            this.notifyTransition();
+          }
+          this.resetSettleTimer();
+        });
+        this.observer.observe(root, {
+          childList: true,
+          attributes: true,
+          characterData: true,
+          subtree: true
+        });
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        this.observer?.disconnect();
+        this.observer = null;
+        if (this.settleTimer) {
+          clearTimeout(this.settleTimer);
+          this.settleTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isSettled;
+      }
+      getStatus() {
+        const now = Date.now();
+        const cutoff = now - 1e3;
+        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
+        return {
+          idle: this._isSettled,
+          settled: this._isSettled,
+          lastMutationAt: this.lastMutationAt,
+          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
+          recentMutationCount: recentCount,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.settled) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `DOM settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      resetSettleTimer() {
+        if (this.settleTimer) clearTimeout(this.settleTimer);
+        this.settleTimer = setTimeout(() => {
+          this.settleTimer = null;
+          if (!this._isSettled) {
+            this._isSettled = true;
+            this.notifyTransition();
+          }
+        }, this.settleMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isSettled, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/loading-indicators.ts
+var DEFAULT_LOADING_SELECTORS, LOADING_ANIMATION_KEYWORDS, LoadingIndicatorDetector;
+var init_loading_indicators = __esm({
+  "src/idle/loading-indicators.ts"() {
+    init_class_name();
+    DEFAULT_LOADING_SELECTORS = [
+      // ARIA
+      '[aria-busy="true"]',
+      '[role="progressbar"]',
+      // Common class conventions
+      ".loading",
+      ".spinner",
+      ".skeleton",
+      ".shimmer",
+      ".loader",
+      ".pending",
+      '[class*="loading"]',
+      '[class*="spinner"]',
+      '[class*="skeleton"]',
+      '[class*="shimmer"]',
+      // HTML elements
+      'progress:not([value="100"]):not([value="1"])',
+      // Framework-specific (popular libraries)
+      ".MuiCircularProgress-root",
+      ".MuiLinearProgress-root",
+      ".MuiSkeleton-root",
+      ".ant-spin",
+      ".ant-skeleton",
+      ".chakra-spinner",
+      // Data attributes
+      '[data-loading="true"]',
+      '[data-pending="true"]',
+      '[data-state="loading"]'
+    ];
+    LOADING_ANIMATION_KEYWORDS = [
+      "spin",
+      "rotate",
+      "pulse",
+      "shimmer",
+      "bounce",
+      "skeleton",
+      "loading",
+      "progress",
+      "indeterminate"
+    ];
+    LoadingIndicatorDetector = class {
+      constructor(config = {}) {
+        this.name = "loading-indicators";
+        this.observer = null;
+        this._indicators = [];
+        this._isIdle = true;
+        this.scanTimer = null;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.7;
+        this.selectors = [...DEFAULT_LOADING_SELECTORS, ...config.additionalSelectors ?? []];
+        this.checkAnimations = config.checkAnimations ?? true;
+        this.checkCursor = config.checkCursor ?? true;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        this.scan();
+        this.observer = new MutationObserver(() => {
+          if (this.scanTimer) clearTimeout(this.scanTimer);
+          this.scanTimer = setTimeout(() => {
+            this.scanTimer = null;
+            this.scan();
+          }, 100);
+        });
+        this.observer.observe(document.body, {
+          childList: true,
+          attributes: true,
+          subtree: true,
+          attributeFilter: ["class", "aria-busy", "data-loading", "data-pending", "data-state"]
+        });
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        this.observer?.disconnect();
+        this.observer = null;
+        if (this.scanTimer) {
+          clearTimeout(this.scanTimer);
+          this.scanTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isIdle;
+      }
+      getStatus() {
+        return {
+          idle: this._isIdle,
+          loading: !this._isIdle,
+          indicators: [...this._indicators],
+          timestamp: Date.now()
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            this.scan();
+            const status = this.getStatus();
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Loading indicator timeout after ${timeout}ms. ${this._indicators.length} indicators still active.`
+                )
+              );
+            }
+            setTimeout(check, 100);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      /**
+       * Wait for a specific CSS selector to disappear from the loading indicators.
+       */
+      async waitForIndicatorCleared(selector, timeout = 3e4) {
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          const check = () => {
+            this.scan();
+            const matchingSelector = this.selectors.includes(selector) ? selector : void 0;
+            const hasMatch = matchingSelector ? document.querySelector(selector) !== null && this.isElementVisible(document.querySelector(selector)) : false;
+            if (!hasMatch) {
+              return resolve(this.getStatus());
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(new Error(`Indicator "${selector}" still present after ${timeout}ms.`));
+            }
+            setTimeout(check, 100);
+          };
+          check();
+        });
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      scan() {
+        const indicators = [];
+        for (const selector of this.selectors) {
+          try {
+            const elements2 = document.querySelectorAll(selector);
+            for (const el of elements2) {
+              if (this.isElementVisible(el)) {
+                indicators.push({
+                  type: selector.startsWith("[aria-busy") ? "aria-busy" : "selector",
+                  selector,
+                  element: this.getElementId(el)
+                });
+              }
+            }
+          } catch {
+          }
+        }
+        if (this.checkAnimations && typeof document.getAnimations === "function") {
+          try {
+            const animations = document.getAnimations();
+            for (const anim of animations) {
+              const cssAnim = anim;
+              const name = cssAnim.animationName || "";
+              if (name && LOADING_ANIMATION_KEYWORDS.some((k) => name.toLowerCase().includes(k))) {
+                const target = anim.effect?.target;
+                if (target && this.isElementVisible(target)) {
+                  indicators.push({
+                    type: "animation",
+                    element: this.getElementId(target),
+                    details: name
+                  });
+                }
+              }
+            }
+          } catch {
+          }
+        }
+        if (this.checkCursor) {
+          try {
+            const bodyStyle = getComputedStyle(document.body);
+            if (bodyStyle.cursor === "wait" || bodyStyle.cursor === "progress") {
+              indicators.push({
+                type: "cursor",
+                details: bodyStyle.cursor
+              });
+            }
+          } catch {
+          }
+        }
+        const seen = /* @__PURE__ */ new Set();
+        const deduped = indicators.filter((ind) => {
+          const key = `${ind.type}:${ind.element || ""}:${ind.selector || ""}:${ind.details || ""}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const wasIdle = this._isIdle;
+        this._indicators = deduped;
+        this._isIdle = deduped.length === 0;
+        if (wasIdle !== this._isIdle) {
+          this.notifyTransition();
+        }
+      }
+      isElementVisible(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const style = getComputedStyle(el);
+        if (style.display === "none") return false;
+        if (style.visibility === "hidden") return false;
+        if (parseFloat(style.opacity) === 0) return false;
+        return true;
+      }
+      getElementId(el) {
+        return el.getAttribute("data-testid") || el.getAttribute("data-ui-bridge-id") || el.id || `${el.tagName.toLowerCase()}.${classList(el)[0] || "unknown"}`;
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isIdle, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/form-mutation.ts
+var FormMutationDetector;
+var init_form_mutation = __esm({
+  "src/idle/form-mutation.ts"() {
+    FormMutationDetector = class {
+      constructor(config = {}) {
+        this.name = "form-mutation";
+        this.lastMutationAt = 0;
+        this.recentMutations = [];
+        this.settleTimer = null;
+        this._isSettled = true;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.5;
+        this.settleMs = config.settleMs ?? 800;
+        this.handleInput = this.onFormEvent.bind(this);
+        this.handleChange = this.onFormEvent.bind(this);
+        this.handleFocusIn = this.onFocusIn.bind(this);
+        this.handleFocusOut = this.onFocusOut.bind(this);
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        document.addEventListener("input", this.handleInput, true);
+        document.addEventListener("change", this.handleChange, true);
+        document.addEventListener("focusin", this.handleFocusIn, true);
+        document.addEventListener("focusout", this.handleFocusOut, true);
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        document.removeEventListener("input", this.handleInput, true);
+        document.removeEventListener("change", this.handleChange, true);
+        document.removeEventListener("focusin", this.handleFocusIn, true);
+        document.removeEventListener("focusout", this.handleFocusOut, true);
+        if (this.settleTimer) {
+          clearTimeout(this.settleTimer);
+          this.settleTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isSettled;
+      }
+      getStatus() {
+        const now = Date.now();
+        const cutoff = now - 1e3;
+        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
+        return {
+          idle: this._isSettled,
+          settled: this._isSettled,
+          lastMutationAt: this.lastMutationAt,
+          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
+          recentMutationCount: recentCount,
+          activeFieldId: this.activeFieldId,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.settled) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Form mutation settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      isFormElement(target) {
+        if (!target || !(target instanceof HTMLElement)) return false;
+        return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+      }
+      onFormEvent(e) {
+        if (!this.isFormElement(e.target)) return;
+        const now = Date.now();
+        this.lastMutationAt = now;
+        this.recentMutations.push(now);
+        const cutoff = now - 1e3;
+        this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
+        if (this._isSettled) {
+          this._isSettled = false;
+          this.notifyTransition();
+        }
+        this.resetSettleTimer();
+      }
+      onFocusIn(e) {
+        if (!this.isFormElement(e.target)) return;
+        const el = e.target;
+        this.activeFieldId = el.id || el.getAttribute("name") || void 0;
+      }
+      onFocusOut(e) {
+        if (!this.isFormElement(e.target)) return;
+        this.activeFieldId = void 0;
+      }
+      resetSettleTimer() {
+        if (this.settleTimer) clearTimeout(this.settleTimer);
+        this.settleTimer = setTimeout(() => {
+          this.settleTimer = null;
+          if (!this._isSettled) {
+            this._isSettled = true;
+            this.notifyTransition();
+          }
+        }, this.settleMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isSettled, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/composite-idle.ts
+var CompositeIdleDetector;
+var init_composite_idle = __esm({
+  "src/idle/composite-idle.ts"() {
+    init_network_idle();
+    init_dom_settling();
+    init_loading_indicators();
+    init_form_mutation();
+    CompositeIdleDetector = class _CompositeIdleDetector {
+      constructor(config) {
+        this.signals = /* @__PURE__ */ new Map();
+        this.listeners = [];
+        this.lastIdle = null;
+        this.minIdleScore = config?.minIdleScore ?? 0.7;
+      }
+      /**
+       * Create a composite detector with default signals from config.
+       */
+      static create(config = {}) {
+        const detector = new _CompositeIdleDetector({ minIdleScore: config.minIdleScore });
+        if (config.network?.enabled !== false) {
+          detector.addSignal(
+            new NetworkIdleDetector({
+              weight: config.network?.weight ?? 0.9,
+              debounceMs: config.network?.debounceMs,
+              ignorePatterns: config.network?.ignorePatterns,
+              trackXHR: config.network?.trackXHR,
+              tracker: config.network?.tracker
+            })
+          );
+        }
+        if (config.dom?.enabled !== false) {
+          detector.addSignal(
+            new DOMSettlingDetector({
+              weight: config.dom?.weight ?? 0.8,
+              settleMs: config.dom?.settleMs,
+              root: config.dom?.root
+            })
+          );
+        }
+        if (config.loadingIndicators?.enabled !== false) {
+          detector.addSignal(
+            new LoadingIndicatorDetector({
+              weight: config.loadingIndicators?.weight ?? 0.7,
+              additionalSelectors: config.loadingIndicators?.additionalSelectors,
+              checkAnimations: config.loadingIndicators?.checkAnimations,
+              checkCursor: config.loadingIndicators?.checkCursor
+            })
+          );
+        }
+        if (config.formMutation?.enabled !== false) {
+          detector.addSignal(
+            new FormMutationDetector({
+              weight: config.formMutation?.weight ?? 0.5,
+              settleMs: config.formMutation?.settleMs
+            })
+          );
+        }
+        return detector;
+      }
+      /**
+       * Add a signal to the composite. Installs it and subscribes to transitions.
+       */
+      addSignal(signal) {
+        this.signals.set(signal.name, signal);
+        signal.install();
+        signal.onTransition(() => this.evaluate());
+      }
+      /**
+       * Remove a signal by name. Destroys it.
+       */
+      removeSignal(name) {
+        const signal = this.signals.get(name);
+        if (!signal) return false;
+        signal.destroy();
+        this.signals.delete(name);
+        return true;
+      }
+      /**
+       * Get an individual signal by name for direct access.
+       */
+      getSignal(name) {
+        return this.signals.get(name);
+      }
+      /**
+       * List all registered signal names.
+       */
+      getSignalNames() {
+        return Array.from(this.signals.keys());
+      }
+      /**
+       * Whether the composite considers the app idle.
+       */
+      isIdle() {
+        return this.getStatus().idle;
+      }
+      /**
+       * Get full composite status including per-signal breakdown.
+       */
+      getStatus(exclude) {
+        const signalEntries = {};
+        const excludeSet = new Set(exclude ?? []);
+        let totalWeight = 0;
+        let idleWeight = 0;
+        let allCriticalIdle = true;
+        for (const [name, signal] of this.signals) {
+          if (excludeSet.has(name)) continue;
+          const idle = signal.isIdle();
+          const status = signal.getStatus();
+          signalEntries[name] = {
+            name,
+            idle,
+            weight: signal.weight,
+            status
+          };
+          totalWeight += signal.weight;
+          if (idle) idleWeight += signal.weight;
+          if (signal.weight >= 0.8 && !idle) {
+            allCriticalIdle = false;
+          }
+        }
+        const idleScore = totalWeight > 0 ? idleWeight / totalWeight : 1;
+        return {
+          idle: allCriticalIdle && idleScore >= this.minIdleScore,
+          idleScore,
+          signals: signalEntries,
+          timestamp: Date.now()
+        };
+      }
+      /**
+       * Get the status of a single signal by name.
+       */
+      getSignalStatus(name) {
+        return this.signals.get(name)?.getStatus();
+      }
+      /**
+       * Wait for the composite to become idle.
+       */
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 500;
+        const exclude = options?.exclude;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus(exclude);
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              const busySignals = Object.values(status.signals).filter((s) => !s.idle).map((s) => s.name);
+              return reject(
+                new Error(
+                  `Idle timeout after ${timeout}ms. Busy signals: ${busySignals.join(", ") || "none"}. Score: ${status.idleScore.toFixed(2)}`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      /**
+       * Wait for a specific subset of signals to become idle.
+       * Targets can be signal names or { indicator: '.selector' } for specific loading indicators.
+       */
+      async waitFor(targets, options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            let allIdle = true;
+            const results = {};
+            for (const target of targets) {
+              if (typeof target === "string") {
+                const signal = this.signals.get(target);
+                if (signal) {
+                  const status = signal.getStatus();
+                  results[target] = status;
+                  if (!status.idle) allIdle = false;
+                }
+              } else {
+                const el = document.querySelector(target.indicator);
+                const present = el !== null && this.isElementVisible(el);
+                const key = `indicator:${target.indicator}`;
+                results[key] = { idle: !present, timestamp: Date.now() };
+                if (present) allIdle = false;
+              }
+            }
+            if (allIdle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(results);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              const busy = Object.entries(results).filter(([, s]) => !s.idle).map(([k]) => k);
+              return reject(
+                new Error(`Selective wait timeout after ${timeout}ms. Still busy: ${busy.join(", ")}`)
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      /**
+       * Wait for a single signal by name.
+       */
+      async waitForSignal(name, options) {
+        const signal = this.signals.get(name);
+        if (!signal) {
+          throw new Error(`Signal not found: ${name}. Available: ${this.getSignalNames().join(", ")}`);
+        }
+        return signal.waitForIdle(options);
+      }
+      /**
+       * Subscribe to composite idle/busy transitions.
+       */
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      /**
+       * Install all signals. Called automatically by addSignal, but can be
+       * called explicitly if signals were added without install.
+       */
+      installAll() {
+        for (const signal of this.signals.values()) {
+          signal.install();
+        }
+      }
+      /**
+       * Clean up all signals.
+       */
+      destroy() {
+        for (const signal of this.signals.values()) {
+          signal.destroy();
+        }
+        this.signals.clear();
+        this.listeners = [];
+        this.lastIdle = null;
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      evaluate() {
+        const status = this.getStatus();
+        if (this.lastIdle !== status.idle) {
+          this.lastIdle = status.idle;
+          for (const listener of this.listeners) {
+            try {
+              listener(status);
+            } catch {
+            }
+          }
+        }
+      }
+      isElementVisible(el) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const style = getComputedStyle(el);
+        return style.display !== "none" && style.visibility !== "hidden";
+      }
+    };
+  }
+});
+
+// src/idle/element-settling.ts
+function waitForElementStable(element, options) {
+  const quietMs = options?.quietMs ?? 500;
+  const timeout = options?.timeout ?? 5e3;
+  const observeAttributes = options?.observeAttributes ?? true;
+  const observeSubtree = options?.observeSubtree ?? false;
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let lastActivityAt = Date.now();
+    let rafId = null;
+    let timeoutId = null;
+    let quietCheckId = null;
+    let prevRect = null;
+    let cleaned = false;
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (quietCheckId !== null) clearTimeout(quietCheckId);
+    }
+    function recordActivity() {
+      lastActivityAt = Date.now();
+      scheduleQuietCheck();
+    }
+    function scheduleQuietCheck() {
+      if (quietCheckId !== null) clearTimeout(quietCheckId);
+      quietCheckId = setTimeout(
+        () => {
+          const elapsed = Date.now() - lastActivityAt;
+          if (elapsed >= quietMs) {
+            cleanup();
+            resolve({ stable: true, elapsed: Date.now() - startTime });
+          } else {
+            scheduleQuietCheck();
+          }
+        },
+        quietMs - (Date.now() - lastActivityAt) + 1
+      );
+    }
+    const observer = new MutationObserver((mutations) => {
+      let meaningful = false;
+      for (const m of mutations) {
+        if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+          meaningful = true;
+          break;
+        }
+        if (m.type === "attributes" || m.type === "characterData") {
+          meaningful = true;
+          break;
+        }
+      }
+      if (meaningful) recordActivity();
+    });
+    observer.observe(element, {
+      childList: true,
+      attributes: observeAttributes,
+      characterData: true,
+      subtree: observeSubtree
+    });
+    function pollBBox() {
+      if (cleaned) return;
+      const rect = element.getBoundingClientRect();
+      if (prevRect !== null && !rectsEqual(prevRect, rect)) {
+        recordActivity();
+      }
+      prevRect = rect;
+      rafId = requestAnimationFrame(pollBBox);
+    }
+    rafId = requestAnimationFrame(pollBBox);
+    timeoutId = setTimeout(() => {
+      cleanup();
+      resolve({ stable: false, elapsed: Date.now() - startTime });
+    }, timeout);
+    scheduleQuietCheck();
+  });
+}
+function rectsEqual(a, b, epsilon = 0.5) {
+  return Math.abs(a.x - b.x) < epsilon && Math.abs(a.y - b.y) < epsilon && Math.abs(a.width - b.width) < epsilon && Math.abs(a.height - b.height) < epsilon;
+}
+var init_element_settling = __esm({
+  "src/idle/element-settling.ts"() {
+  }
+});
+
+// src/idle/stuck-screen.ts
+var StuckScreenDetector;
+var init_stuck_screen = __esm({
+  "src/idle/stuck-screen.ts"() {
+    StuckScreenDetector = class {
+      constructor(detector, config = {}) {
+        this.detector = detector;
+        this.observationWindowMs = config.observationWindowMs ?? 3e3;
+        this.domMutationThreshold = config.domMutationThreshold ?? 3;
+      }
+      /**
+       * Run a stuck-screen diagnosis.
+       *
+       * Takes two snapshots separated by the observation window and compares them
+       * to determine if the app is stuck, loading normally, idle, or in an
+       * ambiguous state.
+       */
+      async diagnose() {
+        const snap1 = this.captureSnapshot();
+        await new Promise((resolve) => setTimeout(resolve, this.observationWindowMs));
+        const snap2 = this.captureSnapshot();
+        const actualWindowMs = snap2.timestamp - snap1.timestamp;
+        const peakMutations = Math.max(snap1.recentDOMMutations, snap2.recentDOMMutations);
+        const domChanged = peakMutations >= this.domMutationThreshold || !snap1.domSettled || !snap2.domSettled;
+        const evidence = {
+          loadingIndicators: snap2.loadingIndicators,
+          domChanged,
+          domMutationCount: peakMutations,
+          networkBusy: !snap2.networkIdle,
+          pendingNetworkRequests: snap2.pendingNetworkRequests,
+          idleScoreStart: snap1.idleScore,
+          idleScoreEnd: snap2.idleScore
+        };
+        const hasLoadingIndicators = snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
+        const hadLoadingIndicators = snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
+        let verdict;
+        let confidence;
+        let summary;
+        const suggestions = [];
+        if (!hadLoadingIndicators) {
+          verdict = "idle";
+          confidence = 0.9;
+          summary = "No loading indicators detected. The app appears to be in a normal resting state.";
+        } else if (hasLoadingIndicators && !domChanged && snap2.networkIdle) {
+          verdict = "stuck";
+          confidence = 0.95;
+          const indicatorDesc = this.describeIndicators(snap2.loadingIndicators);
+          summary = `The app appears stuck. Loading indicators (${indicatorDesc}) have been visible throughout the ${Math.round(actualWindowMs / 1e3)}s observation window with no meaningful DOM changes and no pending network requests.`;
+          suggestions.push("Try refreshing the page.");
+          suggestions.push("Check the browser console for JavaScript errors.");
+          suggestions.push("Check if a required backend service is running.");
+        } else if (hasLoadingIndicators && !domChanged && !snap2.networkIdle) {
+          verdict = "stuck";
+          confidence = 0.7;
+          summary = `The app appears stuck. Loading indicators are visible with no DOM changes, but ${snap2.pendingNetworkRequests} network request(s) are still in flight. A network request may be hanging.`;
+          suggestions.push("Check if a network request is hanging (e.g., unresponsive API server).");
+          suggestions.push("Check the network tab for requests that have been pending too long.");
+          suggestions.push("Verify the server or API endpoint is reachable.");
+        } else if (hadLoadingIndicators && domChanged) {
+          verdict = "loading";
+          confidence = 0.85;
+          summary = `The app is loading. Loading indicators are visible and the DOM is actively changing (${peakMutations} recent mutations), indicating content is being rendered.`;
+        } else if (!hasLoadingIndicators && hadLoadingIndicators) {
+          verdict = "idle";
+          confidence = 0.8;
+          summary = "Loading indicators were present at the start but cleared during observation. The app has finished loading.";
+        } else {
+          verdict = "unknown";
+          confidence = 0.4;
+          summary = "The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.";
+          suggestions.push("Try running the diagnosis again with a longer observation window.");
+        }
+        return {
+          verdict,
+          confidence,
+          summary,
+          evidence,
+          observationWindowMs: actualWindowMs,
+          suggestions,
+          timestamp: Date.now()
+        };
+      }
+      captureSnapshot() {
+        const compositeStatus = this.detector.getStatus();
+        const loadingSig = compositeStatus.signals["loading-indicators"];
+        const domSig = compositeStatus.signals["dom"];
+        const networkSig = compositeStatus.signals["network"];
+        const loadingStatus = loadingSig?.status;
+        const domStatus = domSig?.status;
+        const networkStatus = networkSig?.status;
+        return {
+          loadingIndicators: loadingStatus?.indicators ?? [],
+          domSettled: domSig?.idle ?? true,
+          recentDOMMutations: domStatus?.recentMutationCount ?? 0,
+          networkIdle: networkSig?.idle ?? true,
+          pendingNetworkRequests: networkStatus?.pendingCount ?? 0,
+          idleScore: compositeStatus.idleScore,
+          timestamp: Date.now()
+        };
+      }
+      describeIndicators(indicators) {
+        if (indicators.length === 0) return "none";
+        const descriptions = indicators.slice(0, 3).map((ind) => {
+          if (ind.type === "animation") return `animation "${ind.details}"`;
+          if (ind.type === "cursor") return `cursor: ${ind.details}`;
+          if (ind.selector) return ind.selector;
+          return ind.element ?? ind.type;
+        });
+        const suffix = indicators.length > 3 ? ` +${indicators.length - 3} more` : "";
+        return descriptions.join(", ") + suffix;
+      }
+    };
+  }
+});
+
+// src/idle/index.ts
+var idle_exports = {};
+__export(idle_exports, {
+  CompositeIdleDetector: () => CompositeIdleDetector,
+  DOMSettlingDetector: () => DOMSettlingDetector,
+  FormMutationDetector: () => FormMutationDetector,
+  LoadingIndicatorDetector: () => LoadingIndicatorDetector,
+  NetworkIdleDetector: () => NetworkIdleDetector,
+  StuckScreenDetector: () => StuckScreenDetector,
+  waitForElementStable: () => waitForElementStable
+});
+var init_idle = __esm({
+  "src/idle/index.ts"() {
+    init_network_idle();
+    init_dom_settling();
+    init_loading_indicators();
+    init_form_mutation();
+    init_composite_idle();
+    init_element_settling();
+    init_stuck_screen();
   }
 });
 
@@ -16344,193 +16587,8 @@ function filterBySeverity(events, minSeverity) {
   });
 }
 
-// src/debug/shared-utils.ts
-function getEventStack(event) {
-  if ("stack" in event) return event.stack;
-  return void 0;
-}
-
-// src/debug/error-fingerprint.ts
-var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-var UUID_TEST_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-var HEX_RE = /\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b/gi;
-var TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*Z?/g;
-var UNIX_TS_RE = /\b\d{10,13}\b/g;
-var NUMBER_RE = /\b\d+\b/g;
-function normalizeMessage(message) {
-  return message.replace(UUID_RE, "<uuid>").replace(TIMESTAMP_RE, "<timestamp>").replace(HEX_RE, "<hex>").replace(UNIX_TS_RE, "<number>").replace(NUMBER_RE, "<n>");
-}
-function normalizeUrlPath(url) {
-  try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split("/").map((seg) => {
-      if (UUID_TEST_RE.test(seg)) {
-        return "<uuid>";
-      }
-      if (/^\d+$/.test(seg)) return "<id>";
-      return seg;
-    });
-    return `${parsed.origin}${segments.join("/")}`;
-  } catch {
-    return normalizeMessage(url);
-  }
-}
-var SKIP_FRAME_PATTERNS = [
-  /node_modules/,
-  /react-dom/,
-  /react\.development/,
-  /react\.production/,
-  /scheduler\./,
-  /webpack-internal/,
-  /webpack:\/\//,
-  /turbopack-internal/,
-  /__webpack_/,
-  /^native code$/,
-  /^<anonymous>$/,
-  /\(native\)/,
-  /extensions::/,
-  /chrome-extension:\/\//,
-  /moz-extension:\/\//
-];
-var V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
-var SPIDERMONKEY_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)$/;
-var JSC_BARE_RE = /^(.+?):(\d+):(\d+)$/;
-function parseFrame(line) {
-  const trimmed = line.trim();
-  const v8 = trimmed.match(V8_FRAME_RE);
-  if (v8) {
-    return { functionName: v8[1], file: v8[2], line: v8[3], col: v8[4] };
-  }
-  const sm = trimmed.match(SPIDERMONKEY_FRAME_RE);
-  if (sm) {
-    return { functionName: sm[1], file: sm[2], line: sm[3], col: sm[4] };
-  }
-  const bare = trimmed.match(JSC_BARE_RE);
-  if (bare) {
-    return { functionName: void 0, file: bare[1], line: bare[2], col: bare[3] };
-  }
-  return null;
-}
-function isAppFrame(frame) {
-  return !SKIP_FRAME_PATTERNS.some((pat) => pat.test(frame.file));
-}
-function extractFilename(file) {
-  let clean = file.split("?")[0].split("#")[0];
-  clean = clean.replace(/^https?:\/\/[^/]+/, "");
-  clean = clean.replace(/^\/_next\/static\/[^/]+\//, "");
-  const parts = clean.split("/").filter(Boolean);
-  if (parts.length > 3) {
-    return parts.slice(-3).join("/");
-  }
-  return parts.join("/") || clean;
-}
-function extractSourceLocation(stack) {
-  if (!stack) return void 0;
-  const lines = stack.split("\n");
-  for (const line of lines) {
-    const frame = parseFrame(line);
-    if (frame && isAppFrame(frame)) {
-      const filename = extractFilename(frame.file);
-      return `${filename}:${frame.line}`;
-    }
-  }
-  for (const line of lines) {
-    const frame = parseFrame(line);
-    if (frame) {
-      const filename = extractFilename(frame.file);
-      return `${filename}:${frame.line}`;
-    }
-  }
-  return void 0;
-}
-function topFrameForFingerprint(stack) {
-  return extractSourceLocation(stack) ?? "";
-}
-function fingerprintConsole(event) {
-  const normalized = normalizeMessage(event.message);
-  const frame = topFrameForFingerprint(event.stack);
-  return `console:${event.level}|${normalized}|${frame}`;
-}
-function fingerprintNetwork(event) {
-  const path = normalizeUrlPath(event.requestUrl);
-  return `network:${event.method}|${path}|${event.status ?? event.kind}`;
-}
-function fingerprintReactError(event) {
-  const normalized = normalizeMessage(event.message);
-  const frame = topFrameForFingerprint(event.stack);
-  return `react-error|${normalized}|${frame}`;
-}
-function fingerprintResourceError(event) {
-  const path = normalizeUrlPath(event.resourceUrl);
-  return `resource-error:${event.tagName}|${path}`;
-}
-function fingerprintHmr(event) {
-  const normalized = normalizeMessage(event.message);
-  return `hmr:${event.level}|${normalized}|${event.moduleName ?? ""}`;
-}
-function fingerprintWsDisconnection(event) {
-  return `ws-disconnection:${event.previousState}->${event.newState}`;
-}
-function computeFingerprint(event) {
-  switch (event.type) {
-    case "console":
-      return fingerprintConsole(event);
-    case "network":
-      return fingerprintNetwork(event);
-    case "react-error":
-      return fingerprintReactError(event);
-    case "resource-error":
-      return fingerprintResourceError(event);
-    case "hmr":
-      return fingerprintHmr(event);
-    case "ws-disconnection":
-      return fingerprintWsDisconnection(event);
-    case "navigation":
-      return `navigation:${event.trigger}|${normalizeUrlPath(event.to)}`;
-    case "long-task":
-      return `long-task:${Math.round(event.durationMs / 50) * 50}ms`;
-    case "long-animation-frame": {
-      const scripts = event.scripts.map((s) => `${s.invoker}@${extractFilename(s.sourceURL)}`).join(",");
-      return `loaf:${Math.round(event.durationMs / 50) * 50}ms|${scripts}`;
-    }
-    case "web-vital":
-      return `web-vital:${event.metric}`;
-    case "memory":
-      return `memory:snapshot`;
-    case "freeze":
-      return `freeze:${Math.round(event.gapMs / 500) * 500}ms`;
-    case "dom-metrics":
-      return `dom-metrics:${Math.round(event.nodeCount / 1e3) * 1e3}`;
-    default: {
-      const _exhaustive = event;
-      return `unknown:${_exhaustive.type}`;
-    }
-  }
-}
-function deduplicateEvents(events) {
-  const groups2 = /* @__PURE__ */ new Map();
-  const insertionOrder = [];
-  for (const event of events) {
-    const fingerprint = computeFingerprint(event);
-    const existing = groups2.get(fingerprint);
-    if (existing) {
-      existing.count += 1;
-      existing.lastSeen = event.timestamp;
-    } else {
-      const sourceLocation = extractSourceLocation(getEventStack(event));
-      groups2.set(fingerprint, {
-        fingerprint,
-        event,
-        count: 1,
-        firstSeen: event.timestamp,
-        lastSeen: event.timestamp,
-        sourceLocation
-      });
-      insertionOrder.push(fingerprint);
-    }
-  }
-  return insertionOrder.map((fp) => groups2.get(fp));
-}
+// src/control/action-executor.ts
+init_error_fingerprint();
 
 // src/control/fill-form.ts
 init_element_identifier();
@@ -16634,6 +16692,7 @@ function fillSingleField(element, value, clearFirst) {
 }
 
 // src/debug/error-impact.ts
+init_error_fingerprint();
 var DEFAULT_NAVIGATION_CHANGE_THRESHOLD_MS = 500;
 var DEFAULT_RENDER_BLOCKED_THRESHOLD = 0.2;
 function extractMessage(event) {
@@ -26912,7 +26971,8 @@ function useUIElement(options) {
     position,
     color,
     contextPath,
-    persistWhileMounted
+    persistWhileMounted,
+    reveals
   } = options;
   const registeredElementIdRef = useRef(null);
   const untrackBboxRef = useRef(null);
@@ -26948,7 +27008,8 @@ function useUIElement(options) {
       variant,
       position,
       color,
-      contextPath
+      contextPath,
+      reveals
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -26969,6 +27030,7 @@ function useUIElement(options) {
     position,
     color,
     contextPath,
+    reveals,
     startBboxTracking
   ]);
   const unregister = useCallback(() => {
@@ -27040,7 +27102,10 @@ function useUIElement(options) {
     variant: variant ?? null,
     position: position ?? null,
     color: color ?? null,
-    contextPath: contextPath ?? null
+    contextPath: contextPath ?? null,
+    // Reveals is a plain string array — include it so mid-lifecycle
+    // updates (e.g. dynamic reveal targets) propagate into the registry.
+    reveals: reveals ?? null
   }) : null;
   useEffect(() => {
     if (!bridge2 || !registeredRef.current || !elementRef.current || elementKey === null) return;
@@ -27059,7 +27124,8 @@ function useUIElement(options) {
         variant,
         position,
         color,
-        contextPath
+        contextPath,
+        reveals
       });
       if (logLevel) bridge2.registry.setElementLogLevel(id, logLevel);
       startBboxTracking(elementRef.current);
@@ -27073,7 +27139,8 @@ function useUIElement(options) {
       variant,
       position,
       color,
-      contextPath
+      contextPath,
+      reveals
     });
     if (logLevel) bridge2.registry.setElementLogLevel(id, logLevel);
   }, [bridge2, elementKey]);
@@ -27155,7 +27222,7 @@ function useUIComponent(options) {
   const elementIdsRef = useRef(options.elementIds || []);
   const stateRef = useRef(options.state);
   const computedRef = useRef(options.computed);
-  const { id, name, description, autoRegister = true } = options;
+  const { id, name, description, autoRegister = true, scope } = options;
   useEffect(() => {
     actionsRef.current = options.actions || [];
     elementIdsRef.current = options.elementIds || [];
@@ -27202,11 +27269,12 @@ function useUIComponent(options) {
       }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
-      getComputed: createGetComputed()
+      getComputed: createGetComputed(),
+      scope
     });
     registeredRef.current = true;
     registeredComponentIdRef.current = id;
-  }, [bridge2, id, name, description, createGetComputed]);
+  }, [bridge2, id, name, description, scope, createGetComputed]);
   const unregister = useCallback(() => {
     if (!bridge2 || !registeredRef.current) return;
     bridge2.registry.unregisterComponent(registeredComponentIdRef.current ?? id);
@@ -27268,7 +27336,8 @@ function useUIComponent(options) {
     id,
     name,
     description: description ?? null,
-    elementIds: options.elementIds ?? null
+    elementIds: options.elementIds ?? null,
+    scope: scope ?? null
   }) : null;
   useEffect(() => {
     if (!bridge2 || !registeredRef.current || componentKey === null) return;
@@ -27290,7 +27359,8 @@ function useUIComponent(options) {
       }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
-      getComputed: createGetComputed()
+      getComputed: createGetComputed(),
+      scope
     };
     const registeredComponentId = registeredComponentIdRef.current;
     if (registeredComponentId === null) return;
@@ -28592,7 +28662,4003 @@ function installStubFetchInterceptor() {
 
 // src/react/commandHandlers.ts
 init_bookmarks();
+init_error_fingerprint();
+init_shared_utils();
 init_stable_ref();
+
+// src/server/handlers.ts
+init_nl_assertion_parser();
+init_find();
+init_form_diff();
+init_form_discovery();
+init_ai();
+
+// src/specs/style-validator.ts
+function resolveTokenValue(tokenPath, tokens) {
+  const parts = tokenPath.split(".");
+  let current = tokens;
+  for (const part of parts) {
+    if (current === null || current === void 0 || typeof current !== "object") {
+      return null;
+    }
+    current = current[part];
+  }
+  if (typeof current === "string") {
+    return current;
+  }
+  if (typeof current === "number") {
+    return String(current);
+  }
+  return null;
+}
+function evaluateConstraint(constraint, styles, tokens, customProperties) {
+  const isCustomProp = constraint.property.startsWith("--");
+  const actualValue = isCustomProp ? customProperties?.[constraint.property] ?? "" : styles[constraint.property] || "";
+  switch (constraint.type) {
+    case "exact": {
+      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(constraint.value);
+      return {
+        passed,
+        constraint,
+        actualValue,
+        expectedValue: constraint.value,
+        message: passed ? void 0 : `Expected ${constraint.property} to be "${constraint.value}", got "${actualValue}"`
+      };
+    }
+    case "oneOf": {
+      const normalizedActual = normalizeStyleValue(actualValue);
+      const passed = constraint.values.some((v) => normalizeStyleValue(v) === normalizedActual);
+      return {
+        passed,
+        constraint,
+        actualValue,
+        expectedValue: `one of [${constraint.values.join(", ")}]`,
+        message: passed ? void 0 : `Expected ${constraint.property} to be one of [${constraint.values.join(", ")}], got "${actualValue}"`
+      };
+    }
+    case "tokenRef": {
+      const tokenValue = resolveTokenValue(constraint.tokenPath, tokens);
+      if (tokenValue === null) {
+        return {
+          passed: false,
+          constraint,
+          actualValue,
+          expectedValue: `token(${constraint.tokenPath})`,
+          message: `Token "${constraint.tokenPath}" not found in design tokens`
+        };
+      }
+      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(tokenValue);
+      return {
+        passed,
+        constraint,
+        actualValue,
+        expectedValue: `${tokenValue} (token: ${constraint.tokenPath})`,
+        message: passed ? void 0 : `Expected ${constraint.property} to match token "${constraint.tokenPath}" (${tokenValue}), got "${actualValue}"`
+      };
+    }
+    case "range": {
+      const numericValue = parseFloat(actualValue);
+      if (isNaN(numericValue)) {
+        return {
+          passed: false,
+          constraint,
+          actualValue,
+          expectedValue: `${constraint.min ?? "\u221E"} - ${constraint.max ?? "\u221E"}${constraint.unit || ""}`,
+          message: `Cannot parse "${actualValue}" as a number for range check on ${constraint.property}`
+        };
+      }
+      const aboveMin = constraint.min === void 0 || numericValue >= constraint.min;
+      const belowMax = constraint.max === void 0 || numericValue <= constraint.max;
+      const passed = aboveMin && belowMax;
+      return {
+        passed,
+        constraint,
+        actualValue,
+        expectedValue: `${constraint.min ?? "\u221E"} - ${constraint.max ?? "\u221E"}${constraint.unit || ""}`,
+        message: passed ? void 0 : `Expected ${constraint.property} to be in range [${constraint.min ?? "\u221E"}, ${constraint.max ?? "\u221E"}], got ${numericValue}`
+      };
+    }
+    case "responsive": {
+      const firstBreakpoint = Object.keys(constraint.breakpoints)[0];
+      const expectedVal = constraint.breakpoints[firstBreakpoint];
+      if (typeof expectedVal === "string") {
+        const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(expectedVal);
+        return {
+          passed,
+          constraint,
+          actualValue,
+          expectedValue: `${expectedVal} (at ${firstBreakpoint})`,
+          message: passed ? void 0 : `Expected ${constraint.property} to be "${expectedVal}" at ${firstBreakpoint}, got "${actualValue}"`
+        };
+      }
+      return evaluateConstraint(expectedVal, styles, tokens, customProperties);
+    }
+  }
+}
+function ruleMatchesElement(rule, elementData) {
+  if (rule.elementType && elementData.type !== rule.elementType) {
+    return false;
+  }
+  if (rule.selector) {
+    const id = elementData.elementId.toLowerCase();
+    const sel = rule.selector.toLowerCase();
+    if (sel.startsWith(".")) {
+      const targetClass = sel.slice(1);
+      if (elementData.classes) {
+        return elementData.classes.some((c) => c.toLowerCase() === targetClass);
+      }
+      return id.includes(targetClass);
+    }
+    if (sel.startsWith("#") && id !== sel.slice(1)) {
+      return false;
+    }
+    if (!sel.startsWith(".") && !sel.startsWith("#") && elementData.type !== sel) {
+      return false;
+    }
+  }
+  return true;
+}
+function validateElement(data, rules, tokens) {
+  const results = [];
+  for (const rule of rules) {
+    if (!ruleMatchesElement(rule, data)) continue;
+    const constraintResults = [];
+    let allPassed = true;
+    for (const constraint of rule.constraints) {
+      const result = evaluateConstraint(constraint, data.styles, tokens, data.customProperties);
+      constraintResults.push(result);
+      if (!result.passed) allPassed = false;
+    }
+    results.push({
+      elementId: data.elementId,
+      ruleId: rule.id,
+      passed: allPassed,
+      constraintResults,
+      severity: rule.severity || "warning"
+    });
+  }
+  return results;
+}
+function runStyleAudit(elements2, guide) {
+  const startTime = Date.now();
+  const allResults = [];
+  for (const element of elements2) {
+    const results = validateElement(element, guide.rules, guide.tokens);
+    allResults.push(...results);
+  }
+  const passedCount = allResults.filter((r) => r.passed).length;
+  const failedCount = allResults.filter((r) => !r.passed).length;
+  return {
+    guideName: guide.name,
+    totalElements: elements2.length,
+    totalRules: guide.rules.length,
+    passedCount,
+    failedCount,
+    results: allResults,
+    summary: {
+      errors: allResults.filter((r) => !r.passed && r.severity === "error"),
+      warnings: allResults.filter((r) => !r.passed && r.severity === "warning"),
+      info: allResults.filter((r) => !r.passed && r.severity === "info")
+    },
+    timestamp: Date.now(),
+    durationMs: Date.now() - startTime
+  };
+}
+function normalizeStyleValue(value) {
+  return value.trim().toLowerCase();
+}
+
+// src/specs/color-utils.ts
+var NAMED_COLORS = {
+  black: "#000000",
+  white: "#ffffff",
+  red: "#ff0000",
+  green: "#008000",
+  blue: "#0000ff",
+  yellow: "#ffff00",
+  cyan: "#00ffff",
+  magenta: "#ff00ff",
+  gray: "#808080",
+  grey: "#808080",
+  silver: "#c0c0c0",
+  maroon: "#800000",
+  olive: "#808000",
+  lime: "#00ff00",
+  aqua: "#00ffff",
+  teal: "#008080",
+  navy: "#000080",
+  fuchsia: "#ff00ff",
+  purple: "#800080",
+  orange: "#ffa500",
+  transparent: "#00000000"
+};
+function parseColor2(str) {
+  if (!str || typeof str !== "string") return null;
+  const trimmed = str.trim().toLowerCase();
+  if (!trimmed || trimmed === "none" || trimmed === "initial" || trimmed === "inherit") return null;
+  if (NAMED_COLORS[trimmed]) {
+    return parseColor2(NAMED_COLORS[trimmed]);
+  }
+  if (trimmed.startsWith("#")) {
+    return parseHex(trimmed);
+  }
+  if (trimmed.startsWith("rgb")) {
+    return parseRgbFunction(trimmed);
+  }
+  return null;
+}
+function parseHex(hex) {
+  const h = hex.slice(1);
+  if (h.length === 3) {
+    return {
+      r: parseInt(h[0] + h[0], 16),
+      g: parseInt(h[1] + h[1], 16),
+      b: parseInt(h[2] + h[2], 16),
+      a: 1
+    };
+  }
+  if (h.length === 4) {
+    return {
+      r: parseInt(h[0] + h[0], 16),
+      g: parseInt(h[1] + h[1], 16),
+      b: parseInt(h[2] + h[2], 16),
+      a: parseInt(h[3] + h[3], 16) / 255
+    };
+  }
+  if (h.length === 6) {
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: 1
+    };
+  }
+  if (h.length === 8) {
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: parseInt(h.slice(6, 8), 16) / 255
+    };
+  }
+  return null;
+}
+function parseRgbFunction(str) {
+  const match = str.match(
+    /rgba?\(\s*(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)(?:[,/\s]+(\d+(?:\.\d+)?%?))?\s*\)/
+  );
+  if (!match) return null;
+  const r = Math.min(255, Math.max(0, Math.round(parseFloat(match[1]))));
+  const g2 = Math.min(255, Math.max(0, Math.round(parseFloat(match[2]))));
+  const b = Math.min(255, Math.max(0, Math.round(parseFloat(match[3]))));
+  let a = 1;
+  if (match[4] !== void 0) {
+    const aStr = match[4];
+    a = aStr.endsWith("%") ? parseFloat(aStr) / 100 : parseFloat(aStr);
+    a = Math.min(1, Math.max(0, a));
+  }
+  return { r, g: g2, b, a };
+}
+function rgbToHsl(color) {
+  const r = color.r / 255;
+  const g2 = color.g / 255;
+  const b = color.b / 255;
+  const max = Math.max(r, g2, b);
+  const min = Math.min(r, g2, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) {
+    return { h: 0, s: 0, l: l * 100 };
+  }
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) {
+    h = ((g2 - b) / d + (g2 < b ? 6 : 0)) / 6;
+  } else if (max === g2) {
+    h = ((b - r) / d + 2) / 6;
+  } else {
+    h = ((r - g2) / d + 4) / 6;
+  }
+  return { h: h * 360, s: s * 100, l: l * 100 };
+}
+function linearize(channel) {
+  const c = channel / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function relativeLuminance(color) {
+  return 0.2126 * linearize(color.r) + 0.7152 * linearize(color.g) + 0.0722 * linearize(color.b);
+}
+function contrastRatio(fg, bg) {
+  const l1 = relativeLuminance(fg);
+  const l2 = relativeLuminance(bg);
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+function colorDistance(c1, c2) {
+  const dr = c1.r - c2.r;
+  const dg = c1.g - c2.g;
+  const db = c1.b - c2.b;
+  return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db);
+}
+function clusterColors(colors, threshold = 25) {
+  if (colors.length === 0) return [];
+  const parent = colors.map((_, i) => i);
+  function find2(i) {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  }
+  function union(a, b) {
+    const ra = find2(a);
+    const rb = find2(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  for (let i = 0; i < colors.length; i++) {
+    for (let j = i + 1; j < colors.length; j++) {
+      if (colorDistance(colors[i], colors[j]) < threshold) {
+        union(i, j);
+      }
+    }
+  }
+  const clusters = /* @__PURE__ */ new Map();
+  for (let i = 0; i < colors.length; i++) {
+    const root = find2(i);
+    if (!clusters.has(root)) clusters.set(root, []);
+    clusters.get(root).push(colors[i]);
+  }
+  return Array.from(clusters.values());
+}
+function isGrayscale(color, threshold = 5) {
+  const hsl = rgbToHsl(color);
+  return hsl.s < threshold;
+}
+function hueDistance(h1, h2) {
+  const d = Math.abs(h1 - h2);
+  return Math.min(d, 360 - d);
+}
+
+// src/specs/quality-metrics.ts
+function parsePx(value) {
+  const n = parseFloat(value);
+  return isNaN(n) ? 0 : n;
+}
+function coefficientOfVariation(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((s, v) => s + v, 0) / values.length;
+  if (mean === 0) return 0;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance) / Math.abs(mean);
+}
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+function elementArea(el) {
+  return el.rect.width * el.rect.height;
+}
+function isInteractive2(el) {
+  const t = el.type.toLowerCase();
+  return t === "button" || t === "input" || t === "select" || t === "textarea" || t === "link" || t === "a" || t === "checkbox" || t === "radio" || t === "switch" || t === "pressable" || t === "touchable";
+}
+function makeResult(metricId, label, category, score, findings, rawData) {
+  return {
+    metricId,
+    score: Math.round(clamp(score, 0, 100)),
+    label,
+    category,
+    enabled: true,
+    weight: 0,
+    // set by evaluator from context
+    findings,
+    rawData
+  };
+}
+var CONTENT_BEARING_TYPES = /* @__PURE__ */ new Set([
+  "heading",
+  "paragraph",
+  "label",
+  "metric-value",
+  "badge",
+  "input",
+  "textarea",
+  "select",
+  "list-item",
+  "table-cell",
+  "table-header",
+  "caption",
+  "description-text",
+  "status-message",
+  "code-block",
+  "blockquote",
+  "nav-text"
+]);
+function isContentBearing(el) {
+  return CONTENT_BEARING_TYPES.has(el.type.toLowerCase());
+}
+function isContainerElement(el) {
+  const hasBg = parseColor2(el.styles.backgroundColor) !== null;
+  const hasRadius = parsePx(el.styles.borderRadius) > 0;
+  const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
+  const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
+  return hasBg && (hasRadius || hasPadding) && largeEnough;
+}
+function rectContains(outer, inner, tolerance = 2) {
+  return inner.x >= outer.x - tolerance && inner.y >= outer.y - tolerance && inner.x + inner.width <= outer.x + outer.width + tolerance && inner.y + inner.height <= outer.y + outer.height + tolerance;
+}
+var contentOverflow = (elements2, viewport) => {
+  if (elements2.length === 0)
+    return makeResult("contentOverflow", "Content Overflow", "ux", 100, []);
+  const maxBottom = Math.max(...elements2.map((el) => el.rect.y + el.rect.height));
+  const overflowPx = maxBottom - viewport.height;
+  if (overflowPx <= 0) return makeResult("contentOverflow", "Content Overflow", "ux", 100, []);
+  const overflowRatio = overflowPx / viewport.height;
+  const score = Math.max(0, 100 - overflowRatio * 100);
+  const findings = [
+    {
+      severity: overflowRatio > 0.5 ? "error" : "warning",
+      message: `Content extends ${Math.round(overflowPx)}px (${(overflowRatio * 100).toFixed(0)}%) below the viewport.`,
+      recommendation: "Reduce content height, use more compact layouts, or prioritize above-fold content."
+    }
+  ];
+  return makeResult("contentOverflow", "Content Overflow", "ux", score, findings, {
+    overflowPx,
+    overflowRatio,
+    maxBottom,
+    viewportHeight: viewport.height
+  });
+};
+var aboveFoldRatio = (elements2, viewport) => {
+  const contentElements = elements2.filter(isContentBearing);
+  if (contentElements.length === 0)
+    return makeResult("aboveFoldRatio", "Above Fold Ratio", "ux", 100, []);
+  const visibleCount = contentElements.filter(
+    (el) => el.rect.y + el.rect.height <= viewport.height
+  ).length;
+  const score = visibleCount / contentElements.length * 100;
+  const findings = [];
+  if (score < 70) {
+    const belowCount = contentElements.length - visibleCount;
+    findings.push({
+      severity: score < 40 ? "error" : "warning",
+      message: `Only ${visibleCount} of ${contentElements.length} content elements are above the fold (${belowCount} require scrolling).`,
+      recommendation: "Move critical content above the fold or reduce vertical space usage."
+    });
+  }
+  return makeResult("aboveFoldRatio", "Above Fold Ratio", "ux", score, findings, {
+    visibleCount,
+    totalCount: contentElements.length
+  });
+};
+var informationDensity = (elements2, _viewport) => {
+  const contentElements = elements2.filter(isContentBearing);
+  if (contentElements.length === 0 || elements2.length === 0)
+    return makeResult("informationDensity", "Information Density", "ux", 100, []);
+  const contentArea = contentElements.reduce((sum, el) => sum + elementArea(el), 0);
+  const totalArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
+  if (totalArea === 0)
+    return makeResult("informationDensity", "Information Density", "ux", 100, []);
+  const ratio = contentArea / totalArea;
+  const findings = [];
+  let score;
+  if (ratio >= 0.3) {
+    score = 100;
+  } else {
+    score = ratio / 0.3 * 100;
+    findings.push({
+      severity: ratio < 0.15 ? "error" : "warning",
+      message: `Only ${(ratio * 100).toFixed(0)}% of element area contains content. Too much chrome/decoration.`,
+      recommendation: "Reduce container padding, decorative elements, or oversized headers."
+    });
+  }
+  return makeResult("informationDensity", "Information Density", "ux", score, findings, {
+    contentArea,
+    totalArea,
+    ratio,
+    contentElementCount: contentElements.length
+  });
+};
+var containerEfficiency = (elements2, _viewport) => {
+  const containers = elements2.filter(isContainerElement);
+  if (containers.length === 0)
+    return makeResult("containerEfficiency", "Container Efficiency", "ux", 100, []);
+  const efficiencies = [];
+  const inefficientContainers = [];
+  for (const container of containers) {
+    const children = elements2.filter(
+      (el) => el.elementId !== container.elementId && rectContains(container.rect, el.rect)
+    );
+    if (children.length === 0) continue;
+    const childArea = children.reduce((sum, el) => sum + elementArea(el), 0);
+    const containerArea = elementArea(container);
+    if (containerArea === 0) continue;
+    const efficiency = Math.min(1, childArea / containerArea);
+    efficiencies.push(efficiency);
+    if (efficiency < 0.2) {
+      inefficientContainers.push(container.elementId);
+    }
+  }
+  if (efficiencies.length === 0)
+    return makeResult("containerEfficiency", "Container Efficiency", "ux", 100, []);
+  const avgEfficiency = efficiencies.reduce((s, v) => s + v, 0) / efficiencies.length;
+  const score = avgEfficiency >= 0.3 ? 100 : avgEfficiency / 0.3 * 100;
+  const findings = [];
+  if (inefficientContainers.length > 0) {
+    findings.push({
+      severity: avgEfficiency < 0.15 ? "error" : "warning",
+      message: `${inefficientContainers.length} container(s) are oversized for their content (avg efficiency: ${(avgEfficiency * 100).toFixed(0)}%).`,
+      recommendation: "Reduce container dimensions to better fit their child content.",
+      elementIds: inefficientContainers.slice(0, 10)
+    });
+  }
+  return makeResult("containerEfficiency", "Container Efficiency", "ux", score, findings, {
+    avgEfficiency,
+    containerCount: efficiencies.length,
+    inefficientCount: inefficientContainers.length
+  });
+};
+var viewportUtilization = (elements2, viewport) => {
+  if (elements2.length === 0)
+    return makeResult("viewportUtilization", "Viewport Utilization", "ux", 100, []);
+  const minX = Math.max(0, Math.min(...elements2.map((el) => el.rect.x)));
+  const minY = Math.max(0, Math.min(...elements2.map((el) => el.rect.y)));
+  const maxX = Math.min(
+    viewport.width,
+    Math.max(...elements2.map((el) => el.rect.x + el.rect.width))
+  );
+  const maxY = Math.min(
+    viewport.height,
+    Math.max(...elements2.map((el) => el.rect.y + el.rect.height))
+  );
+  const usedWidth = maxX - minX;
+  const usedHeight = maxY - minY;
+  const widthRatio = viewport.width > 0 ? usedWidth / viewport.width : 1;
+  const heightRatio = viewport.height > 0 ? usedHeight / viewport.height : 1;
+  const utilization = (widthRatio + heightRatio) / 2;
+  const score = utilization >= 0.7 ? 100 : utilization / 0.7 * 100;
+  const findings = [];
+  if (score < 70) {
+    const issues = [];
+    if (widthRatio < 0.6) issues.push(`width (${(widthRatio * 100).toFixed(0)}% used)`);
+    if (heightRatio < 0.6) issues.push(`height (${(heightRatio * 100).toFixed(0)}% used)`);
+    findings.push({
+      severity: "warning",
+      message: `Low viewport utilization: ${issues.join(", ")}. Content occupies only ${(utilization * 100).toFixed(0)}% of available space.`,
+      recommendation: "Expand content to use more of the available viewport, or center content meaningfully."
+    });
+  }
+  return makeResult("viewportUtilization", "Viewport Utilization", "ux", score, findings, {
+    widthRatio,
+    heightRatio,
+    utilization,
+    boundingBox: { minX, minY, maxX, maxY }
+  });
+};
+var elementDensity = (elements2, viewport) => {
+  const viewportArea = viewport.width * viewport.height;
+  if (viewportArea === 0)
+    return makeResult("elementDensity", "Element Density", "density", 100, []);
+  const totalElementArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
+  const coverage = totalElementArea / viewportArea;
+  const findings = [];
+  let score;
+  if (coverage >= 0.3 && coverage <= 0.7) {
+    score = 100;
+  } else if (coverage < 0.3) {
+    score = coverage / 0.3 * 100;
+    findings.push({
+      severity: "warning",
+      message: `Low element density (${(coverage * 100).toFixed(1)}%). Page may feel empty.`,
+      recommendation: "Consider adding content or reducing whitespace."
+    });
+  } else {
+    score = Math.max(0, 100 - (coverage - 0.7) / 0.3 * 100);
+    findings.push({
+      severity: "warning",
+      message: `High element density (${(coverage * 100).toFixed(1)}%). Page may feel cluttered.`,
+      recommendation: "Consider reducing content density or increasing spacing."
+    });
+  }
+  return makeResult("elementDensity", "Element Density", "density", score, findings, { coverage });
+};
+var whitespaceRatio = (elements2, viewport) => {
+  const viewportArea = viewport.width * viewport.height;
+  if (viewportArea === 0)
+    return makeResult("whitespaceRatio", "Whitespace Ratio", "density", 100, []);
+  const totalElementArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
+  const ratio = 1 - Math.min(1, totalElementArea / viewportArea);
+  const findings = [];
+  let score;
+  if (ratio >= 0.25 && ratio <= 0.75) {
+    score = 100;
+  } else if (ratio < 0.25) {
+    score = ratio / 0.25 * 100;
+    findings.push({
+      severity: "warning",
+      message: `Very low whitespace (${(ratio * 100).toFixed(1)}%). UI feels cramped.`,
+      recommendation: "Increase padding and margins between elements."
+    });
+  } else {
+    score = Math.max(0, 100 - (ratio - 0.75) / 0.25 * 100);
+    findings.push({
+      severity: "info",
+      message: `Very high whitespace (${(ratio * 100).toFixed(1)}%). Page may feel sparse.`,
+      recommendation: "Consider whether the empty space serves a purpose."
+    });
+  }
+  return makeResult("whitespaceRatio", "Whitespace Ratio", "density", score, findings, { ratio });
+};
+var localDensityBalance = (elements2, viewport) => {
+  if (elements2.length < 4)
+    return makeResult("localDensityBalance", "Local Density Balance", "density", 100, []);
+  const gridCols = 4;
+  const gridRows = 4;
+  const cellW = viewport.width / gridCols;
+  const cellH = viewport.height / gridRows;
+  const densities = [];
+  for (let row = 0; row < gridRows; row++) {
+    for (let col = 0; col < gridCols; col++) {
+      const cellX = col * cellW;
+      const cellY = row * cellH;
+      let cellArea = 0;
+      for (const el of elements2) {
+        const overlapX = Math.max(
+          0,
+          Math.min(el.rect.x + el.rect.width, cellX + cellW) - Math.max(el.rect.x, cellX)
+        );
+        const overlapY = Math.max(
+          0,
+          Math.min(el.rect.y + el.rect.height, cellY + cellH) - Math.max(el.rect.y, cellY)
+        );
+        cellArea += overlapX * overlapY;
+      }
+      densities.push(cellArea / (cellW * cellH));
+    }
+  }
+  const cv = coefficientOfVariation(densities);
+  const findings = [];
+  let score;
+  if (cv <= 0.3) {
+    score = 100;
+  } else if (cv >= 1) {
+    score = 0;
+    findings.push({
+      severity: "error",
+      message: `Highly unbalanced density distribution (CV=${cv.toFixed(2)}). Some regions are much denser than others.`,
+      recommendation: "Redistribute content more evenly across the page."
+    });
+  } else {
+    score = 100 - (cv - 0.3) / 0.7 * 100;
+    if (score < 60) {
+      findings.push({
+        severity: "warning",
+        message: `Uneven density distribution (CV=${cv.toFixed(2)}).`,
+        recommendation: "Balance content distribution across page regions."
+      });
+    }
+  }
+  return makeResult("localDensityBalance", "Local Density Balance", "density", score, findings, {
+    cv,
+    gridDensities: densities
+  });
+};
+var horizontalBalance = (elements2, viewport) => {
+  if (elements2.length === 0)
+    return makeResult("horizontalBalance", "Horizontal Balance", "density", 100, []);
+  const midX = viewport.width / 2;
+  let leftArea = 0;
+  let rightArea = 0;
+  for (const el of elements2) {
+    const elMidX = el.rect.x + el.rect.width / 2;
+    const area = elementArea(el);
+    if (elMidX < midX) leftArea += area;
+    else rightArea += area;
+  }
+  const total = leftArea + rightArea;
+  if (total === 0) return makeResult("horizontalBalance", "Horizontal Balance", "density", 100, []);
+  const ratio = Math.min(leftArea, rightArea) / Math.max(leftArea, rightArea);
+  const findings = [];
+  let score;
+  if (ratio >= 0.8) {
+    score = 100;
+  } else {
+    score = ratio / 0.8 * 100;
+    const heavier = leftArea > rightArea ? "left" : "right";
+    findings.push({
+      severity: ratio < 0.5 ? "warning" : "info",
+      message: `Horizontal imbalance: ${heavier} side is heavier (ratio=${ratio.toFixed(2)}).`,
+      recommendation: `Consider redistributing visual weight toward the ${heavier === "left" ? "right" : "left"} side.`
+    });
+  }
+  return makeResult("horizontalBalance", "Horizontal Balance", "density", score, findings, {
+    ratio,
+    leftArea,
+    rightArea
+  });
+};
+var verticalBalance = (elements2, viewport) => {
+  if (elements2.length === 0)
+    return makeResult("verticalBalance", "Vertical Balance", "density", 100, []);
+  const midY = viewport.height / 2;
+  let topArea = 0;
+  let bottomArea = 0;
+  for (const el of elements2) {
+    const elMidY = el.rect.y + el.rect.height / 2;
+    const area = elementArea(el);
+    if (elMidY < midY) topArea += area;
+    else bottomArea += area;
+  }
+  const total = topArea + bottomArea;
+  if (total === 0) return makeResult("verticalBalance", "Vertical Balance", "density", 100, []);
+  const ratio = Math.min(topArea, bottomArea) / Math.max(topArea, bottomArea);
+  const findings = [];
+  let score;
+  if (ratio >= 0.8) {
+    score = 100;
+  } else {
+    score = ratio / 0.8 * 100;
+    const heavier = topArea > bottomArea ? "top" : "bottom";
+    findings.push({
+      severity: ratio < 0.5 ? "warning" : "info",
+      message: `Vertical imbalance: ${heavier} half is heavier (ratio=${ratio.toFixed(2)}).`,
+      recommendation: `Consider redistributing visual weight toward the ${heavier === "top" ? "bottom" : "top"}.`
+    });
+  }
+  return makeResult("verticalBalance", "Vertical Balance", "density", score, findings, {
+    ratio,
+    topArea,
+    bottomArea
+  });
+};
+var alignmentConsistency = (elements2, _viewport) => {
+  if (elements2.length < 3)
+    return makeResult("alignmentConsistency", "Alignment Consistency", "density", 100, []);
+  const tolerance = 2;
+  const xEdges = elements2.map((el) => el.rect.x);
+  const yEdges = elements2.map((el) => el.rect.y);
+  function countOnLines(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    let onLine = 0;
+    let i = 0;
+    while (i < sorted.length) {
+      let j = i + 1;
+      while (j < sorted.length && sorted[j] - sorted[i] <= tolerance) j++;
+      if (j - i >= 2) onLine += j - i;
+      i = j;
+    }
+    return onLine;
+  }
+  const xOnLine = countOnLines(xEdges);
+  const yOnLine = countOnLines(yEdges);
+  const totalChecks = elements2.length * 2;
+  const aligned = xOnLine + yOnLine;
+  const ratio = totalChecks > 0 ? aligned / totalChecks : 1;
+  const score = ratio * 100;
+  const findings = [];
+  if (score < 60) {
+    findings.push({
+      severity: "warning",
+      message: `Only ${(ratio * 100).toFixed(0)}% of elements align to shared grid lines.`,
+      recommendation: "Use a consistent grid system to align element edges."
+    });
+  }
+  return makeResult("alignmentConsistency", "Alignment Consistency", "density", score, findings, {
+    ratio,
+    xOnLine,
+    yOnLine
+  });
+};
+var spacingScaleAdherence = (elements2) => {
+  const spacingValues = [];
+  for (const el of elements2) {
+    for (const prop of [
+      "marginTop",
+      "marginRight",
+      "marginBottom",
+      "marginLeft",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft"
+    ]) {
+      const v = parsePx(el.styles[prop]);
+      if (v > 0) spacingValues.push(v);
+    }
+  }
+  if (spacingValues.length === 0)
+    return makeResult("spacingScaleAdherence", "Spacing Scale Adherence", "spacing", 100, []);
+  const onGrid = spacingValues.filter((v) => v % 4 === 0).length;
+  const ratio = onGrid / spacingValues.length;
+  const score = ratio * 100;
+  const findings = [];
+  if (score < 70) {
+    const offGrid = spacingValues.filter((v) => v % 4 !== 0);
+    const uniqueOffGrid = [...new Set(offGrid)].sort((a, b) => a - b).slice(0, 5);
+    findings.push({
+      severity: "warning",
+      message: `${((1 - ratio) * 100).toFixed(0)}% of spacing values are not multiples of 4px.`,
+      recommendation: `Off-grid values: ${uniqueOffGrid.map((v) => v + "px").join(", ")}. Snap to 4px grid.`
+    });
+  }
+  return makeResult(
+    "spacingScaleAdherence",
+    "Spacing Scale Adherence",
+    "spacing",
+    score,
+    findings,
+    { ratio, total: spacingValues.length }
+  );
+};
+var spacingConsistency = (elements2) => {
+  if (elements2.length < 3)
+    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
+  const yTolerance = 5;
+  const sorted = [...elements2].sort((a, b) => a.rect.y - b.rect.y);
+  const rows = [];
+  let currentRow = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    if (Math.abs(sorted[i].rect.y - sorted[i - 1].rect.y) <= yTolerance) {
+      currentRow.push(sorted[i]);
+    } else {
+      if (currentRow.length >= 2) rows.push(currentRow);
+      currentRow = [sorted[i]];
+    }
+  }
+  if (currentRow.length >= 2) rows.push(currentRow);
+  if (rows.length === 0)
+    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
+  const allGaps = [];
+  for (const row of rows) {
+    const byX = [...row].sort((a, b) => a.rect.x - b.rect.x);
+    for (let i = 1; i < byX.length; i++) {
+      const gap = byX[i].rect.x - (byX[i - 1].rect.x + byX[i - 1].rect.width);
+      if (gap > 0) allGaps.push(gap);
+    }
+  }
+  if (allGaps.length < 2)
+    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
+  const cv = coefficientOfVariation(allGaps);
+  const score = Math.max(0, 100 - cv * 100);
+  const findings = [];
+  if (score < 60) {
+    findings.push({
+      severity: "warning",
+      message: `Inconsistent horizontal spacing between sibling elements (CV=${cv.toFixed(2)}).`,
+      recommendation: "Use uniform gap values for elements in the same row."
+    });
+  }
+  return makeResult("spacingConsistency", "Spacing Consistency", "spacing", score, findings, {
+    cv,
+    gapCount: allGaps.length
+  });
+};
+var lineHeightRatio = (elements2) => {
+  const ratios = [];
+  const badElements = [];
+  for (const el of elements2) {
+    const fontSize = parsePx(el.styles.fontSize);
+    const lh = parsePx(el.styles.lineHeight);
+    if (fontSize > 0 && lh > 0) {
+      const r = lh / fontSize;
+      ratios.push(r);
+      if (r < 1.2 || r > 1.8) badElements.push(el.elementId);
+    }
+  }
+  if (ratios.length === 0)
+    return makeResult("lineHeightRatio", "Line Height Ratio", "spacing", 100, []);
+  const inRange = ratios.filter((r) => r >= 1.2 && r <= 1.8).length;
+  const score = inRange / ratios.length * 100;
+  const findings = [];
+  if (score < 80) {
+    findings.push({
+      severity: "warning",
+      message: `${ratios.length - inRange} text elements have line-height outside the 1.2-1.8x range.`,
+      recommendation: "Aim for line-height between 1.4-1.6x font-size for body text.",
+      elementIds: badElements.slice(0, 10)
+    });
+  }
+  return makeResult("lineHeightRatio", "Line Height Ratio", "spacing", score, findings, {
+    total: ratios.length,
+    inRange
+  });
+};
+var interGroupSpacingRatio = (elements2) => {
+  if (elements2.length < 4)
+    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
+  const distances = [];
+  for (let i = 0; i < elements2.length; i++) {
+    for (let j = i + 1; j < elements2.length; j++) {
+      const dx = elements2[i].rect.x + elements2[i].rect.width / 2 - (elements2[j].rect.x + elements2[j].rect.width / 2);
+      const dy = elements2[i].rect.y + elements2[i].rect.height / 2 - (elements2[j].rect.y + elements2[j].rect.height / 2);
+      distances.push(Math.sqrt(dx * dx + dy * dy));
+    }
+  }
+  if (distances.length === 0)
+    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
+  distances.sort((a, b) => a - b);
+  const median = distances[Math.floor(distances.length / 2)];
+  const threshold = median * 1.5;
+  const intraGroup = distances.filter((d) => d <= threshold);
+  const interGroup = distances.filter((d) => d > threshold);
+  if (intraGroup.length === 0 || interGroup.length === 0)
+    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
+  const avgIntra = intraGroup.reduce((s, d) => s + d, 0) / intraGroup.length;
+  const avgInter = interGroup.reduce((s, d) => s + d, 0) / interGroup.length;
+  const ratio = avgIntra > 0 ? avgInter / avgIntra : 1;
+  const score = ratio >= 2.5 ? 100 : ratio / 2.5 * 100;
+  const findings = [];
+  if (score < 60) {
+    findings.push({
+      severity: "warning",
+      message: `Weak visual grouping: inter-group spacing is only ${ratio.toFixed(1)}x intra-group spacing.`,
+      recommendation: "Increase spacing between groups to at least 2.5x the spacing within groups."
+    });
+  }
+  return makeResult(
+    "interGroupSpacingRatio",
+    "Inter-Group Spacing Ratio",
+    "spacing",
+    score,
+    findings,
+    { ratio }
+  );
+};
+var uniqueColorCount = (elements2) => {
+  const colors = [];
+  for (const el of elements2) {
+    for (const prop of ["color", "backgroundColor"]) {
+      const parsed = parseColor2(el.styles[prop]);
+      if (parsed && parsed.a > 0.1) colors.push(parsed);
+    }
+  }
+  if (colors.length === 0)
+    return makeResult("uniqueColorCount", "Unique Color Count", "color", 100, []);
+  const clusters = clusterColors(colors, 25);
+  const count = clusters.length;
+  const findings = [];
+  let score;
+  if (count >= 3 && count <= 8) {
+    score = 100;
+  } else if (count < 3) {
+    score = 60 + count / 3 * 40;
+    findings.push({
+      severity: "info",
+      message: `Only ${count} distinct color(s). Palette may be too limited.`,
+      recommendation: "Consider adding accent colors for visual hierarchy."
+    });
+  } else {
+    score = Math.max(0, 100 - (count - 8) * 8);
+    findings.push({
+      severity: "warning",
+      message: `${count} distinct colors used. Palette may be too varied.`,
+      recommendation: "Consolidate similar colors and limit palette to 5-8 colors."
+    });
+  }
+  return makeResult("uniqueColorCount", "Unique Color Count", "color", score, findings, {
+    count,
+    totalSampled: colors.length
+  });
+};
+var wcagContrastCompliance = (elements2) => {
+  let passing = 0;
+  let total = 0;
+  const failingElements = [];
+  for (const el of elements2) {
+    const fg = parseColor2(el.styles.color);
+    let bg = parseColor2(el.styles.backgroundColor);
+    if (!fg) continue;
+    if (!bg || bg.a < 0.1) bg = { r: 255, g: 255, b: 255, a: 1 };
+    total++;
+    const ratio = contrastRatio(fg, bg);
+    if (ratio >= 4.5) {
+      passing++;
+    } else {
+      failingElements.push(el.elementId);
+    }
+  }
+  if (total === 0)
+    return makeResult("wcagContrastCompliance", "WCAG Contrast Compliance", "color", 100, []);
+  const score = passing / total * 100;
+  const findings = [];
+  if (failingElements.length > 0) {
+    findings.push({
+      severity: "error",
+      message: `${failingElements.length} of ${total} text elements fail WCAG AA contrast (4.5:1 minimum).`,
+      recommendation: "Increase contrast between text color and background color.",
+      elementIds: failingElements.slice(0, 10)
+    });
+  }
+  return makeResult(
+    "wcagContrastCompliance",
+    "WCAG Contrast Compliance",
+    "color",
+    score,
+    findings,
+    { passing, total }
+  );
+};
+var colorHarmony = (elements2) => {
+  const hues = [];
+  for (const el of elements2) {
+    for (const prop of ["color", "backgroundColor"]) {
+      const parsed = parseColor2(el.styles[prop]);
+      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
+        const hsl = rgbToHsl(parsed);
+        hues.push(hsl.h);
+      }
+    }
+  }
+  if (hues.length < 2) return makeResult("colorHarmony", "Color Harmony", "color", 100, []);
+  const uniqueHues = [...new Set(hues.map((h) => Math.round(h / 10) * 10))];
+  if (uniqueHues.length < 2) return makeResult("colorHarmony", "Color Harmony", "color", 100, []);
+  const patterns = [
+    { name: "monochromatic", test: () => checkMonochromatic(uniqueHues) },
+    { name: "complementary", test: () => checkComplementary(uniqueHues) },
+    { name: "analogous", test: () => checkAnalogous(uniqueHues) },
+    { name: "triadic", test: () => checkTriadic(uniqueHues) }
+  ];
+  let bestScore = 0;
+  let bestPattern = "none";
+  for (const p of patterns) {
+    const s = p.test();
+    if (s > bestScore) {
+      bestScore = s;
+      bestPattern = p.name;
+    }
+  }
+  const findings = [];
+  if (bestScore < 50) {
+    findings.push({
+      severity: "warning",
+      message: `Color palette does not follow a clear harmony pattern.`,
+      recommendation: "Use complementary (opposite hues), analogous (adjacent hues), or triadic (evenly spaced hues) color schemes."
+    });
+  }
+  return makeResult("colorHarmony", "Color Harmony", "color", bestScore, findings, {
+    bestPattern,
+    distinctHues: uniqueHues.length
+  });
+};
+function checkMonochromatic(hues) {
+  if (hues.length <= 1) return 100;
+  const base = hues[0];
+  const maxDist = Math.max(...hues.map((h) => hueDistance(h, base)));
+  return maxDist <= 15 ? 100 : maxDist <= 30 ? 70 : 30;
+}
+function checkComplementary(hues) {
+  let bestFit = 0;
+  for (let i = 0; i < hues.length; i++) {
+    for (let j = i + 1; j < hues.length; j++) {
+      const dist = hueDistance(hues[i], hues[j]);
+      const fit = dist >= 165 && dist <= 195 ? 100 : Math.max(0, 100 - Math.abs(dist - 180) * 2);
+      if (fit > bestFit) bestFit = fit;
+    }
+  }
+  return hues.length <= 3 ? bestFit : bestFit * 0.7;
+}
+function checkAnalogous(hues) {
+  const sorted = [...hues].sort((a, b) => a - b);
+  let maxGap = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    maxGap = Math.max(maxGap, sorted[i] - sorted[i - 1]);
+  }
+  if (sorted.length > 1) {
+    maxGap = Math.max(maxGap, 360 - sorted[sorted.length - 1] + sorted[0]);
+  }
+  const span = 360 - maxGap;
+  return span <= 60 ? 100 : span <= 90 ? 70 : span <= 120 ? 40 : 20;
+}
+function checkTriadic(hues) {
+  if (hues.length < 3) return 0;
+  const sorted = [...hues].sort((a, b) => a - b);
+  let bestScore = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      for (let k = j + 1; k < sorted.length; k++) {
+        const d1 = hueDistance(sorted[i], sorted[j]);
+        const d2 = hueDistance(sorted[j], sorted[k]);
+        const d3 = hueDistance(sorted[i], sorted[k]);
+        const avgDeviation = (Math.abs(d1 - 120) + Math.abs(d2 - 120) + Math.abs(d3 - 120)) / 3;
+        const s = Math.max(0, 100 - avgDeviation * 2);
+        if (s > bestScore) bestScore = s;
+      }
+    }
+  }
+  return bestScore;
+}
+var saturationConsistency = (elements2) => {
+  const saturations = [];
+  for (const el of elements2) {
+    for (const prop of ["color", "backgroundColor"]) {
+      const parsed = parseColor2(el.styles[prop]);
+      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
+        const hsl = rgbToHsl(parsed);
+        saturations.push(hsl.s);
+      }
+    }
+  }
+  if (saturations.length < 2)
+    return makeResult("saturationConsistency", "Saturation Consistency", "color", 100, []);
+  const cv = coefficientOfVariation(saturations);
+  const score = Math.max(0, 100 - cv * 100);
+  const findings = [];
+  if (score < 60) {
+    findings.push({
+      severity: "info",
+      message: `Inconsistent color saturation levels (CV=${cv.toFixed(2)}).`,
+      recommendation: "Use a consistent saturation level across your color palette."
+    });
+  }
+  return makeResult("saturationConsistency", "Saturation Consistency", "color", score, findings, {
+    cv,
+    count: saturations.length
+  });
+};
+var typeScaleAdherence = (elements2) => {
+  const fontSizes = /* @__PURE__ */ new Set();
+  for (const el of elements2) {
+    const size = parsePx(el.styles.fontSize);
+    if (size > 0) fontSizes.add(Math.round(size * 10) / 10);
+  }
+  const sizes = [...fontSizes].sort((a, b) => a - b);
+  if (sizes.length < 2)
+    return makeResult("typeScaleAdherence", "Type Scale Adherence", "typography", 100, []);
+  const scales = [
+    { name: "minor-second", ratio: 1.067 },
+    { name: "major-second", ratio: 1.125 },
+    { name: "minor-third", ratio: 1.2 },
+    { name: "major-third", ratio: 1.25 },
+    { name: "perfect-fourth", ratio: 1.333 },
+    { name: "augmented-fourth", ratio: 1.414 },
+    { name: "perfect-fifth", ratio: 1.5 }
+  ];
+  let bestScore = 0;
+  let bestScale = "none";
+  for (const scale of scales) {
+    for (const base of sizes) {
+      let onScale = 0;
+      for (const size of sizes) {
+        if (size <= 0 || base <= 0) continue;
+        const n = Math.log(size / base) / Math.log(scale.ratio);
+        if (Math.abs(n - Math.round(n)) < 0.15) onScale++;
+      }
+      const fit = onScale / sizes.length * 100;
+      if (fit > bestScore) {
+        bestScore = fit;
+        bestScale = scale.name;
+      }
+    }
+  }
+  const findings = [];
+  if (bestScore < 60) {
+    findings.push({
+      severity: "warning",
+      message: `Font sizes (${sizes.join(", ")}px) don't follow a consistent type scale.`,
+      recommendation: "Adopt a standard type scale (e.g., Major Third 1.25x or Perfect Fourth 1.333x)."
+    });
+  }
+  return makeResult(
+    "typeScaleAdherence",
+    "Type Scale Adherence",
+    "typography",
+    bestScore,
+    findings,
+    {
+      bestScale,
+      distinctSizes: sizes.length,
+      sizes
+    }
+  );
+};
+var fontWeightConsistency = (elements2) => {
+  const weights = /* @__PURE__ */ new Set();
+  for (const el of elements2) {
+    if (el.styles.fontWeight) weights.add(el.styles.fontWeight);
+  }
+  const count = weights.size;
+  const findings = [];
+  let score;
+  if (count >= 2 && count <= 3) {
+    score = 100;
+  } else if (count === 1) {
+    score = 70;
+    findings.push({
+      severity: "info",
+      message: "Only one font weight used. Consider adding a bold weight for hierarchy.",
+      recommendation: "Use 2-3 font weights (e.g., 400 regular, 600 semi-bold, 700 bold)."
+    });
+  } else if (count === 4) {
+    score = 80;
+  } else {
+    score = Math.max(0, 100 - (count - 3) * 20);
+    findings.push({
+      severity: "warning",
+      message: `${count} different font weights used. Too many weights reduce visual consistency.`,
+      recommendation: "Limit to 2-3 font weights for a cleaner hierarchy."
+    });
+  }
+  return makeResult(
+    "fontWeightConsistency",
+    "Font Weight Consistency",
+    "typography",
+    score,
+    findings,
+    {
+      count,
+      weights: [...weights]
+    }
+  );
+};
+var headingHierarchy = (elements2) => {
+  const headings = [];
+  for (const el of elements2) {
+    const type = el.type.toLowerCase();
+    let level = 0;
+    if (type === "heading" || type.startsWith("h")) {
+      const match = type.match(/h(\d)/);
+      if (match) level = parseInt(match[1], 10);
+    }
+    if (level === 0 && el.elementId) {
+      const match = el.elementId.match(/h(\d)/i);
+      if (match) level = parseInt(match[1], 10);
+    }
+    if (level >= 1 && level <= 6) {
+      headings.push({ level, fontSize: parsePx(el.styles.fontSize), elementId: el.elementId });
+    }
+  }
+  if (headings.length < 2)
+    return makeResult("headingHierarchy", "Heading Hierarchy", "typography", 100, []);
+  const sorted = [...headings].sort((a, b) => a.level - b.level);
+  let checks = 0;
+  let passing = 0;
+  const issues = [];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].level > sorted[i - 1].level) {
+      checks++;
+      if (sorted[i].fontSize < sorted[i - 1].fontSize) {
+        passing++;
+      } else {
+        issues.push(
+          `h${sorted[i].level} (${sorted[i].fontSize}px) is not smaller than h${sorted[i - 1].level} (${sorted[i - 1].fontSize}px)`
+        );
+      }
+    }
+  }
+  const levels = [...new Set(headings.map((h) => h.level))].sort();
+  for (let i = 1; i < levels.length; i++) {
+    checks++;
+    if (levels[i] - levels[i - 1] === 1) {
+      passing++;
+    } else {
+      issues.push(`Skipped heading level: h${levels[i - 1]} to h${levels[i]}`);
+    }
+  }
+  const score = checks > 0 ? passing / checks * 100 : 100;
+  const findings = [];
+  if (issues.length > 0) {
+    findings.push({
+      severity: "warning",
+      message: `Heading hierarchy issues: ${issues.join("; ")}.`,
+      recommendation: "Ensure heading sizes decrease with level and no levels are skipped."
+    });
+  }
+  return makeResult("headingHierarchy", "Heading Hierarchy", "typography", score, findings, {
+    headingCount: headings.length,
+    levels
+  });
+};
+var fontFamilyCount = (elements2) => {
+  const families = /* @__PURE__ */ new Set();
+  for (const el of elements2) {
+    if (el.styles.fontFamily) {
+      const first = el.styles.fontFamily.split(",")[0].trim().replace(/["']/g, "").toLowerCase();
+      if (first) families.add(first);
+    }
+  }
+  const count = families.size;
+  const findings = [];
+  let score;
+  if (count >= 1 && count <= 2) {
+    score = 100;
+  } else if (count === 3) {
+    score = 75;
+    findings.push({
+      severity: "info",
+      message: `3 font families used (${[...families].join(", ")}). Consider reducing to 2.`,
+      recommendation: "Use one font for body text and optionally one for headings."
+    });
+  } else if (count === 0) {
+    score = 80;
+  } else {
+    score = Math.max(0, 100 - (count - 2) * 25);
+    findings.push({
+      severity: "warning",
+      message: `${count} font families used. Too many fonts reduce visual coherence.`,
+      recommendation: "Limit to 1-2 font families."
+    });
+  }
+  return makeResult("fontFamilyCount", "Font Family Count", "typography", score, findings, {
+    count,
+    families: [...families]
+  });
+};
+function computeConsistencyScore(elements2, getValues) {
+  if (elements2.length < 2) return { score: 100, cv: 0 };
+  const allValues = elements2.map(getValues);
+  const numProps = allValues[0]?.length ?? 0;
+  if (numProps === 0) return { score: 100, cv: 0 };
+  const cvs = [];
+  for (let p = 0; p < numProps; p++) {
+    const vals = allValues.map((v) => v[p]).filter((v) => v > 0);
+    if (vals.length >= 2) cvs.push(coefficientOfVariation(vals));
+  }
+  if (cvs.length === 0) return { score: 100, cv: 0 };
+  const avgCv = cvs.reduce((s, v) => s + v, 0) / cvs.length;
+  return { score: Math.max(0, 100 - avgCv * 200), cv: avgCv };
+}
+var buttonConsistency = (elements2) => {
+  const buttons = elements2.filter((el) => {
+    const t = el.type.toLowerCase();
+    return t === "button" || t === "pressable";
+  });
+  if (buttons.length < 2)
+    return makeResult("buttonConsistency", "Button Consistency", "consistency", 100, []);
+  const { score, cv } = computeConsistencyScore(buttons, (el) => [
+    parsePx(el.styles.height),
+    parsePx(el.styles.paddingTop) + parsePx(el.styles.paddingBottom),
+    parsePx(el.styles.paddingLeft) + parsePx(el.styles.paddingRight),
+    parsePx(el.styles.borderRadius),
+    parsePx(el.styles.fontSize)
+  ]);
+  const findings = [];
+  if (score < 70) {
+    findings.push({
+      severity: "warning",
+      message: `Buttons have inconsistent styling (CV=${cv.toFixed(2)}).`,
+      recommendation: "Standardize button height, padding, border-radius, and font-size.",
+      elementIds: buttons.map((el) => el.elementId).slice(0, 10)
+    });
+  }
+  return makeResult("buttonConsistency", "Button Consistency", "consistency", score, findings, {
+    buttonCount: buttons.length,
+    cv
+  });
+};
+var cardConsistency = (elements2) => {
+  const cards = elements2.filter((el) => {
+    const hasBg = parseColor2(el.styles.backgroundColor) !== null;
+    const hasRadius = parsePx(el.styles.borderRadius) > 0;
+    const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
+    const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
+    return hasBg && hasRadius && hasPadding && largeEnough;
+  });
+  if (cards.length < 2)
+    return makeResult("cardConsistency", "Card Consistency", "consistency", 100, []);
+  const { score, cv } = computeConsistencyScore(cards, (el) => [
+    parsePx(el.styles.borderRadius),
+    parsePx(el.styles.paddingTop),
+    parsePx(el.styles.paddingLeft),
+    el.rect.width
+  ]);
+  const findings = [];
+  if (score < 70) {
+    findings.push({
+      severity: "warning",
+      message: `Card-like elements have inconsistent styling (CV=${cv.toFixed(2)}).`,
+      recommendation: "Standardize border-radius, padding, and width for card components.",
+      elementIds: cards.map((el) => el.elementId).slice(0, 10)
+    });
+  }
+  return makeResult("cardConsistency", "Card Consistency", "consistency", score, findings, {
+    cardCount: cards.length,
+    cv
+  });
+};
+var inputConsistency = (elements2) => {
+  const inputs = elements2.filter((el) => {
+    const t = el.type.toLowerCase();
+    return t === "input" || t === "textarea" || t === "select";
+  });
+  if (inputs.length < 2)
+    return makeResult("inputConsistency", "Input Consistency", "consistency", 100, []);
+  const { score, cv } = computeConsistencyScore(inputs, (el) => [
+    parsePx(el.styles.height),
+    parsePx(el.styles.paddingTop) + parsePx(el.styles.paddingBottom),
+    parsePx(el.styles.paddingLeft) + parsePx(el.styles.paddingRight),
+    parsePx(el.styles.borderRadius),
+    parsePx(el.styles.fontSize)
+  ]);
+  const findings = [];
+  if (score < 70) {
+    findings.push({
+      severity: "warning",
+      message: `Input fields have inconsistent styling (CV=${cv.toFixed(2)}).`,
+      recommendation: "Standardize input height, padding, border-radius, and font-size.",
+      elementIds: inputs.map((el) => el.elementId).slice(0, 10)
+    });
+  }
+  return makeResult("inputConsistency", "Input Consistency", "consistency", score, findings, {
+    inputCount: inputs.length,
+    cv
+  });
+};
+var touchTargetCompliance = (elements2) => {
+  const interactive = elements2.filter(isInteractive2);
+  if (interactive.length === 0)
+    return makeResult("touchTargetCompliance", "Touch Target Compliance", "consistency", 100, []);
+  const minSize = 44;
+  let compliant = 0;
+  const failingElements = [];
+  for (const el of interactive) {
+    if (el.rect.width >= minSize && el.rect.height >= minSize) {
+      compliant++;
+    } else {
+      failingElements.push(el.elementId);
+    }
+  }
+  const score = compliant / interactive.length * 100;
+  const findings = [];
+  if (failingElements.length > 0) {
+    findings.push({
+      severity: "error",
+      message: `${failingElements.length} interactive elements are smaller than ${minSize}x${minSize}px.`,
+      recommendation: `Ensure all interactive elements are at least ${minSize}x${minSize}px for accessibility.`,
+      elementIds: failingElements.slice(0, 10)
+    });
+  }
+  return makeResult(
+    "touchTargetCompliance",
+    "Touch Target Compliance",
+    "consistency",
+    score,
+    findings,
+    {
+      total: interactive.length,
+      compliant
+    }
+  );
+};
+var COLOR_PROPERTIES = ["color", "backgroundColor", "borderColor", "outlineColor"];
+var customPropertyConsistency = (elements2) => {
+  const findings = [];
+  const elementsWithVars = elements2.filter(
+    (el) => el.customProperties && Object.keys(el.customProperties).length > 0
+  );
+  const adoptionRate = elements2.length > 0 ? elementsWithVars.length / elements2.length : 0;
+  const adoptionScore = Math.min(adoptionRate * 200, 100);
+  if (adoptionRate < 0.1 && elements2.length > 5) {
+    findings.push({
+      severity: "info",
+      message: `Only ${(adoptionRate * 100).toFixed(0)}% of elements use CSS custom properties`,
+      recommendation: "Consider using CSS variables for consistent theming"
+    });
+  }
+  const varValues = /* @__PURE__ */ new Map();
+  for (const el of elementsWithVars) {
+    for (const [prop, val] of Object.entries(el.customProperties)) {
+      if (!varValues.has(prop)) varValues.set(prop, /* @__PURE__ */ new Set());
+      varValues.get(prop).add(val);
+    }
+  }
+  const totalVars = varValues.size;
+  const inconsistentVars = [...varValues.entries()].filter(([, vals]) => vals.size > 1);
+  const consistencyRate = totalVars > 0 ? 1 - inconsistentVars.length / totalVars : 1;
+  const consistencyScore = consistencyRate * 100;
+  if (inconsistentVars.length > 0) {
+    const varNames = inconsistentVars.slice(0, 3).map(([name]) => name);
+    findings.push({
+      severity: "warning",
+      message: `${inconsistentVars.length} CSS variable(s) resolve to different values: ${varNames.join(", ")}`,
+      recommendation: "Ensure CSS variables resolve consistently across components"
+    });
+  }
+  let totalColorProps = 0;
+  let hardcodedColors = 0;
+  for (const el of elements2) {
+    const customProps = el.customProperties ?? {};
+    const customVals = new Set(Object.values(customProps));
+    for (const prop of COLOR_PROPERTIES) {
+      const val = el.styles[prop];
+      if (val && val !== "transparent" && val !== "inherit" && val !== "initial") {
+        totalColorProps++;
+        if (!customVals.has(val)) {
+          hardcodedColors++;
+        }
+      }
+    }
+  }
+  const avoidanceRate = totalColorProps > 0 ? 1 - hardcodedColors / totalColorProps : 1;
+  const avoidanceScore = avoidanceRate * 100;
+  if (hardcodedColors > 5) {
+    findings.push({
+      severity: "info",
+      message: `${hardcodedColors} color properties appear hardcoded without CSS variable backing`,
+      recommendation: "Use CSS custom properties for color values to support theming"
+    });
+  }
+  const score = adoptionScore * 0.5 + consistencyScore * 0.3 + avoidanceScore * 0.2;
+  return makeResult(
+    "customPropertyConsistency",
+    "Custom Property Consistency",
+    "consistency",
+    score,
+    findings,
+    {
+      totalElements: elements2.length,
+      elementsWithVars: elementsWithVars.length,
+      adoptionRate: Math.round(adoptionRate * 100),
+      totalVars,
+      inconsistentVars: inconsistentVars.length,
+      hardcodedColors
+    }
+  );
+};
+var METRIC_FUNCTIONS = {
+  // UX
+  contentOverflow,
+  aboveFoldRatio,
+  informationDensity,
+  containerEfficiency,
+  viewportUtilization,
+  // Density
+  elementDensity,
+  whitespaceRatio,
+  localDensityBalance,
+  horizontalBalance,
+  verticalBalance,
+  alignmentConsistency,
+  // Spacing
+  spacingScaleAdherence,
+  spacingConsistency,
+  lineHeightRatio,
+  interGroupSpacingRatio,
+  // Color
+  uniqueColorCount,
+  wcagContrastCompliance,
+  colorHarmony,
+  saturationConsistency,
+  // Typography
+  typeScaleAdherence,
+  fontWeightConsistency,
+  headingHierarchy,
+  fontFamilyCount,
+  // Consistency
+  buttonConsistency,
+  cardConsistency,
+  inputConsistency,
+  touchTargetCompliance,
+  customPropertyConsistency
+};
+
+// src/specs/quality-contexts.ts
+var DEFAULT_CONFIG5 = {
+  enabled: true,
+  weight: 0.045,
+  // ~1/22
+  thresholds: { good: 80, warning: 50 }
+};
+function defineContext(name, description, overrides) {
+  const metrics = {};
+  for (const [id, partial] of Object.entries(overrides)) {
+    metrics[id] = { ...DEFAULT_CONFIG5, ...partial };
+  }
+  return { name, description, metrics };
+}
+var general = defineContext(
+  "general",
+  "Balanced evaluation suitable for most web applications.",
+  {
+    // UX (5) — total ~0.20
+    contentOverflow: { weight: 0.05 },
+    aboveFoldRatio: { weight: 0.04 },
+    informationDensity: { weight: 0.04 },
+    containerEfficiency: { weight: 0.04 },
+    viewportUtilization: { weight: 0.03 },
+    // Density (6) — total ~0.16
+    elementDensity: { weight: 0.03 },
+    whitespaceRatio: { weight: 0.03 },
+    localDensityBalance: { weight: 0.025 },
+    horizontalBalance: { weight: 0.025 },
+    verticalBalance: { weight: 0.025 },
+    alignmentConsistency: { weight: 0.025 },
+    // Spacing (4) — total ~0.16
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.04 },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color (4) — total ~0.16
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.04 },
+    saturationConsistency: { weight: 0.04 },
+    // Typography (4) — total ~0.16
+    typeScaleAdherence: { weight: 0.04 },
+    fontWeightConsistency: { weight: 0.04 },
+    headingHierarchy: { weight: 0.04 },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency (5) — total ~0.19
+    buttonConsistency: { weight: 0.04 },
+    cardConsistency: { weight: 0.04 },
+    inputConsistency: { weight: 0.04 },
+    touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.03 }
+  }
+);
+var minimal = defineContext(
+  "minimal",
+  "Emphasizes whitespace, simplicity, and restrained use of color. Ideal for landing pages and editorial layouts.",
+  {
+    // UX (5) — total ~0.12 (minimalist pages use space intentionally)
+    contentOverflow: { weight: 0.03 },
+    aboveFoldRatio: { weight: 0.025 },
+    informationDensity: { weight: 0.02 },
+    containerEfficiency: { weight: 0.02 },
+    viewportUtilization: { weight: 0.025 },
+    // Density & Layout
+    elementDensity: { weight: 0.025, thresholds: { good: 85, warning: 60 } },
+    whitespaceRatio: { weight: 0.09, thresholds: { good: 85, warning: 60 } },
+    localDensityBalance: { weight: 0.035 },
+    horizontalBalance: { weight: 0.035 },
+    verticalBalance: { weight: 0.035 },
+    alignmentConsistency: { weight: 0.04 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.05 },
+    spacingConsistency: { weight: 0.05 },
+    lineHeightRatio: { weight: 0.045 },
+    interGroupSpacingRatio: { weight: 0.05 },
+    // Color
+    uniqueColorCount: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
+    wcagContrastCompliance: { weight: 0.045 },
+    colorHarmony: { weight: 0.05 },
+    saturationConsistency: { weight: 0.04 },
+    // Typography
+    typeScaleAdherence: { weight: 0.05 },
+    fontWeightConsistency: { weight: 0.035 },
+    headingHierarchy: { weight: 0.035 },
+    fontFamilyCount: { weight: 0.035 },
+    // Consistency
+    buttonConsistency: { weight: 0.025 },
+    cardConsistency: { weight: 0.015 },
+    inputConsistency: { weight: 0.025 },
+    touchTargetCompliance: { weight: 0.035 },
+    customPropertyConsistency: { weight: 0.035 }
+  }
+);
+var dataDense = defineContext(
+  "data-dense",
+  "Optimized for dashboards and data-heavy UIs. Lenient on density, strict on alignment and consistency.",
+  {
+    // UX (5) — total ~0.25 (dashboards are where these problems appear most)
+    contentOverflow: { weight: 0.06 },
+    aboveFoldRatio: { weight: 0.05 },
+    informationDensity: { weight: 0.05 },
+    containerEfficiency: { weight: 0.05, thresholds: { good: 75, warning: 45 } },
+    viewportUtilization: { weight: 0.04 },
+    // Density & Layout
+    elementDensity: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
+    whitespaceRatio: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
+    localDensityBalance: { weight: 0.03 },
+    horizontalBalance: { weight: 0.02 },
+    verticalBalance: { weight: 0.02 },
+    alignmentConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.05 },
+    spacingConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
+    lineHeightRatio: { weight: 0.03 },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.02 },
+    saturationConsistency: { weight: 0.02 },
+    // Typography
+    typeScaleAdherence: { weight: 0.03 },
+    fontWeightConsistency: { weight: 0.03 },
+    headingHierarchy: { weight: 0.02 },
+    fontFamilyCount: { weight: 0.03 },
+    // Consistency
+    buttonConsistency: { weight: 0.045 },
+    cardConsistency: { weight: 0.045 },
+    inputConsistency: { weight: 0.045 },
+    touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.04 }
+  }
+);
+var mobile = defineContext(
+  "mobile",
+  "Optimized for mobile devices. Prioritizes touch targets, readability, and simple hierarchy.",
+  {
+    // UX (5) — total ~0.22 (viewport constraints make overflow critical)
+    contentOverflow: { weight: 0.06, thresholds: { good: 85, warning: 50 } },
+    aboveFoldRatio: { weight: 0.05 },
+    informationDensity: { weight: 0.04 },
+    containerEfficiency: { weight: 0.04 },
+    viewportUtilization: { weight: 0.03 },
+    // Density & Layout
+    elementDensity: { weight: 0.03 },
+    whitespaceRatio: { weight: 0.04 },
+    localDensityBalance: { weight: 0.02 },
+    horizontalBalance: { weight: 0.03 },
+    verticalBalance: { weight: 0.02 },
+    alignmentConsistency: { weight: 0.03 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.03 },
+    saturationConsistency: { weight: 0.02 },
+    // Typography
+    typeScaleAdherence: { weight: 0.03 },
+    fontWeightConsistency: { weight: 0.03 },
+    headingHierarchy: { weight: 0.03 },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency
+    buttonConsistency: { weight: 0.04 },
+    cardConsistency: { weight: 0.03 },
+    inputConsistency: { weight: 0.04 },
+    touchTargetCompliance: { weight: 0.07, thresholds: { good: 90, warning: 70 } },
+    customPropertyConsistency: { weight: 0.03 }
+  }
+);
+var accessibility = defineContext(
+  "accessibility",
+  "Focused on WCAG compliance and assistive technology support. Visual-only metrics are disabled.",
+  {
+    // UX (5) — total ~0.15 (content reachability matters for assistive tech)
+    contentOverflow: { weight: 0.04 },
+    aboveFoldRatio: { weight: 0.03 },
+    informationDensity: { weight: 0.03 },
+    containerEfficiency: { weight: 0.02 },
+    viewportUtilization: { weight: 0.03 },
+    // Density — mostly disabled for accessibility
+    elementDensity: { enabled: false, weight: 0 },
+    whitespaceRatio: { enabled: false, weight: 0 },
+    localDensityBalance: { enabled: false, weight: 0 },
+    horizontalBalance: { enabled: false, weight: 0 },
+    verticalBalance: { enabled: false, weight: 0 },
+    alignmentConsistency: { weight: 0.03 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.07, thresholds: { good: 90, warning: 65 } },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { enabled: false, weight: 0 },
+    wcagContrastCompliance: { weight: 0.22, thresholds: { good: 95, warning: 80 } },
+    colorHarmony: { enabled: false, weight: 0 },
+    saturationConsistency: { enabled: false, weight: 0 },
+    // Typography
+    typeScaleAdherence: { weight: 0.04 },
+    fontWeightConsistency: { weight: 0.035 },
+    headingHierarchy: { weight: 0.13, thresholds: { good: 90, warning: 70 } },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency
+    buttonConsistency: { weight: 0.015 },
+    cardConsistency: { weight: 0.015 },
+    inputConsistency: { weight: 0.015 },
+    touchTargetCompliance: { weight: 0.12, thresholds: { good: 95, warning: 80 } },
+    customPropertyConsistency: { enabled: false, weight: 0 }
+  }
+);
+var BUILT_IN_CONTEXTS = {
+  general,
+  minimal,
+  "data-dense": dataDense,
+  mobile,
+  accessibility
+};
+function getContext(name) {
+  return BUILT_IN_CONTEXTS[name];
+}
+function listContexts() {
+  return Object.values(BUILT_IN_CONTEXTS).map((c) => ({
+    name: c.name,
+    description: c.description
+  }));
+}
+function mergeContext(base, overrides) {
+  const merged = {
+    name: overrides.name ?? base.name,
+    description: overrides.description ?? base.description,
+    metrics: { ...base.metrics }
+  };
+  if (overrides.metrics) {
+    for (const [id, config] of Object.entries(overrides.metrics)) {
+      const existing = merged.metrics[id];
+      merged.metrics[id] = existing ? { ...existing, ...config } : { ...DEFAULT_CONFIG5, ...config };
+    }
+  }
+  return merged;
+}
+
+// src/specs/quality-evaluator.ts
+function assignGrade(score) {
+  if (score >= 90) return "A";
+  if (score >= 75) return "B";
+  if (score >= 60) return "C";
+  if (score >= 40) return "D";
+  return "F";
+}
+function resolveContext(context) {
+  if (!context) return BUILT_IN_CONTEXTS["general"];
+  if (typeof context === "string") {
+    const found = getContext(context);
+    if (!found)
+      throw new Error(
+        `Unknown quality context: "${context}". Available: ${Object.keys(BUILT_IN_CONTEXTS).join(", ")}`
+      );
+    return found;
+  }
+  return context;
+}
+function evaluateQuality(elements2, viewport, context) {
+  const startTime = Date.now();
+  const ctx = resolveContext(context);
+  const metricResults = [];
+  let weightedSum = 0;
+  let totalWeight = 0;
+  const metricIds = Object.keys(METRIC_FUNCTIONS);
+  for (const metricId of metricIds) {
+    const config = ctx.metrics[metricId];
+    const enabled = config?.enabled ?? true;
+    const weight = config?.weight ?? 0.045;
+    if (!enabled) {
+      metricResults.push({
+        metricId,
+        score: 0,
+        label: metricId,
+        category: getCategoryForMetric(metricId),
+        enabled: false,
+        weight: 0,
+        findings: []
+      });
+      continue;
+    }
+    const fn = METRIC_FUNCTIONS[metricId];
+    const result = fn(elements2, viewport);
+    result.weight = weight;
+    result.enabled = true;
+    if (config?.thresholds) {
+      for (const finding of result.findings) {
+        if (result.score < config.thresholds.warning) {
+          finding.severity = "error";
+        } else if (result.score < config.thresholds.good) {
+          finding.severity = finding.severity === "error" ? "error" : "warning";
+        }
+      }
+    }
+    metricResults.push(result);
+    weightedSum += result.score * weight;
+    totalWeight += weight;
+  }
+  const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 100;
+  const uxMetrics = metricResults.filter(
+    (r) => r.enabled && getCategoryForMetric(r.metricId) === "ux"
+  );
+  let uxWeightedSum = 0;
+  let uxTotalWeight = 0;
+  for (const r of uxMetrics) {
+    uxWeightedSum += r.score * r.weight;
+    uxTotalWeight += r.weight;
+  }
+  const uxScore = uxTotalWeight > 0 ? Math.round(uxWeightedSum / uxTotalWeight) : 100;
+  const allFindings = [];
+  for (const result of metricResults) {
+    if (!result.enabled) continue;
+    for (const finding of result.findings) {
+      allFindings.push({ ...finding, _weight: result.weight });
+    }
+  }
+  allFindings.sort((a, b) => {
+    const severityOrder = { error: 0, warning: 1, info: 2 };
+    const sDiff = severityOrder[a.severity] - severityOrder[b.severity];
+    if (sDiff !== 0) return sDiff;
+    return b._weight - a._weight;
+  });
+  const topIssues = allFindings.slice(0, 10).map(({ _weight, ...finding }) => finding);
+  return {
+    overallScore,
+    grade: assignGrade(overallScore),
+    uxScore,
+    uxGrade: assignGrade(uxScore),
+    contextName: ctx.name,
+    metrics: metricResults,
+    topIssues,
+    totalElements: elements2.length,
+    viewport,
+    timestamp: Date.now(),
+    durationMs: Date.now() - startTime
+  };
+}
+var METRIC_CATEGORIES = {
+  contentOverflow: "ux",
+  aboveFoldRatio: "ux",
+  informationDensity: "ux",
+  containerEfficiency: "ux",
+  viewportUtilization: "ux",
+  elementDensity: "density",
+  whitespaceRatio: "density",
+  localDensityBalance: "density",
+  horizontalBalance: "density",
+  verticalBalance: "density",
+  alignmentConsistency: "density",
+  spacingScaleAdherence: "spacing",
+  spacingConsistency: "spacing",
+  lineHeightRatio: "spacing",
+  interGroupSpacingRatio: "spacing",
+  uniqueColorCount: "color",
+  wcagContrastCompliance: "color",
+  colorHarmony: "color",
+  saturationConsistency: "color",
+  typeScaleAdherence: "typography",
+  fontWeightConsistency: "typography",
+  headingHierarchy: "typography",
+  fontFamilyCount: "typography",
+  buttonConsistency: "consistency",
+  cardConsistency: "consistency",
+  inputConsistency: "consistency",
+  touchTargetCompliance: "consistency",
+  customPropertyConsistency: "consistency"
+};
+function getCategoryForMetric(metricId) {
+  return METRIC_CATEGORIES[metricId] ?? "density";
+}
+
+// src/specs/quality-diff.ts
+function createBaseline(elements2, viewport, label) {
+  return {
+    elements: structuredClone(elements2),
+    viewport: { ...viewport },
+    timestamp: Date.now(),
+    label
+  };
+}
+var STYLE_PROPERTIES = [
+  "display",
+  "position",
+  "width",
+  "height",
+  "margin",
+  "marginTop",
+  "marginRight",
+  "marginBottom",
+  "marginLeft",
+  "padding",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "lineHeight",
+  "letterSpacing",
+  "textAlign",
+  "textTransform",
+  "textDecoration",
+  "color",
+  "backgroundColor",
+  "border",
+  "borderRadius",
+  "boxShadow",
+  "opacity",
+  "gap",
+  "flexDirection",
+  "justifyContent",
+  "alignItems"
+];
+function diffSnapshots(baseline, current, options) {
+  const layoutThreshold = options?.layoutThreshold ?? 2;
+  const clsThreshold = options?.clsThreshold ?? 0.1;
+  const baseMap = /* @__PURE__ */ new Map();
+  for (const el of baseline.elements) {
+    baseMap.set(el.elementId, el);
+  }
+  const currentMap = /* @__PURE__ */ new Map();
+  for (const el of current) {
+    currentMap.set(el.elementId, el);
+  }
+  const added = [];
+  const removed = [];
+  const modified = [];
+  let totalLayoutShift = 0;
+  const viewportArea = baseline.viewport.width * baseline.viewport.height || 1;
+  for (const el of current) {
+    if (!baseMap.has(el.elementId)) {
+      added.push({ elementId: el.elementId, changeType: "added" });
+    }
+  }
+  for (const el of baseline.elements) {
+    if (!currentMap.has(el.elementId)) {
+      removed.push({ elementId: el.elementId, changeType: "removed" });
+    }
+  }
+  for (const el of current) {
+    const baseEl = baseMap.get(el.elementId);
+    if (!baseEl) continue;
+    const styleChanges = diffStyles(
+      baseEl.styles,
+      el.styles,
+      baseEl.customProperties,
+      el.customProperties
+    );
+    const layoutShift = diffLayout(baseEl, el, layoutThreshold);
+    if (styleChanges.length > 0 || layoutShift) {
+      modified.push({
+        elementId: el.elementId,
+        changeType: "modified",
+        styleChanges: styleChanges.length > 0 ? styleChanges : void 0,
+        layoutShift: layoutShift ?? void 0
+      });
+      if (layoutShift) {
+        const area = el.rect.width * el.rect.height;
+        const distance = Math.sqrt(layoutShift.dx ** 2 + layoutShift.dy ** 2);
+        const impactFraction = area / viewportArea;
+        const distanceFraction = distance / Math.max(baseline.viewport.width, baseline.viewport.height);
+        totalLayoutShift += impactFraction * distanceFraction;
+      }
+    }
+  }
+  const hasSignificantChanges2 = added.length > 0 || removed.length > 0 || totalLayoutShift > clsThreshold || modified.some((m) => (m.styleChanges?.length ?? 0) > 3);
+  return {
+    added,
+    removed,
+    modified,
+    cumulativeLayoutShift: Math.round(totalLayoutShift * 1e4) / 1e4,
+    hasSignificantChanges: hasSignificantChanges2
+  };
+}
+function diffStyles(oldStyles, newStyles, oldCustomProps, newCustomProps) {
+  const changes = [];
+  for (const prop of STYLE_PROPERTIES) {
+    const oldVal = oldStyles[prop] ?? "";
+    const newVal = newStyles[prop] ?? "";
+    if (oldVal !== newVal) {
+      changes.push({ property: prop, oldValue: oldVal, newValue: newVal });
+    }
+  }
+  const allCustomKeys = /* @__PURE__ */ new Set([
+    ...Object.keys(oldCustomProps ?? {}),
+    ...Object.keys(newCustomProps ?? {})
+  ]);
+  for (const key of allCustomKeys) {
+    const oldVal = oldCustomProps?.[key] ?? "";
+    const newVal = newCustomProps?.[key] ?? "";
+    if (oldVal !== newVal) {
+      changes.push({ property: key, oldValue: oldVal, newValue: newVal });
+    }
+  }
+  return changes;
+}
+function diffLayout(oldEl, newEl, threshold) {
+  const dx = newEl.rect.x - oldEl.rect.x;
+  const dy = newEl.rect.y - oldEl.rect.y;
+  const dWidth = newEl.rect.width - oldEl.rect.width;
+  const dHeight = newEl.rect.height - oldEl.rect.height;
+  if (Math.abs(dx) > threshold || Math.abs(dy) > threshold || Math.abs(dWidth) > threshold || Math.abs(dHeight) > threshold) {
+    return { dx, dy, dWidth, dHeight };
+  }
+  return null;
+}
+
+// src/server/handlers.ts
+init_annotations();
+init_error_fingerprint();
+
+// src/debug/error-timeline.ts
+init_error_fingerprint();
+init_shared_utils();
+var TimelineBuffer = class _TimelineBuffer {
+  constructor(maxEntries = 500) {
+    this.actions = [];
+    this.maxEntries = maxEntries;
+  }
+  // -----------------------------------------------------------------------
+  // Recording
+  // -----------------------------------------------------------------------
+  /**
+   * Record an action with its related browser events.
+   * The `type` discriminator is added automatically.
+   */
+  recordAction(entry) {
+    this.actions.push({ type: "action", ...entry });
+    this.trimActions();
+  }
+  // -----------------------------------------------------------------------
+  // Timeline query
+  // -----------------------------------------------------------------------
+  /**
+   * Build a merged timeline from recorded actions and live browser events.
+   *
+   * Browser events are fetched from the provided capture instance, classified,
+   * and interleaved chronologically with action entries.
+   *
+   * @param capture - A BrowserEventCapture (or compatible) instance to read events from
+   * @param options - Optional filtering (since, limit, minSeverity)
+   */
+  getTimeline(capture, options) {
+    const { since, limit, minSeverity } = options ?? {};
+    const minRank = minSeverity ? SEVERITY_RANK[minSeverity] : SEVERITY_RANK.noise;
+    const rawEvents = since !== void 0 ? capture.getSince(since) : capture.getRecent();
+    const browserEntries = [];
+    for (const event of rawEvents) {
+      const { severity, reason } = classifyEvent(event);
+      if (SEVERITY_RANK[severity] > minRank) continue;
+      browserEntries.push({
+        type: "browser-event",
+        timestamp: event.timestamp,
+        event,
+        severity,
+        reason,
+        fingerprint: computeFingerprint(event),
+        sourceLocation: extractSourceLocation(getEventStack(event))
+      });
+    }
+    const filteredActions = since !== void 0 ? this.actions.filter((a) => a.timestamp >= since) : [...this.actions];
+    const merged = [...filteredActions, ...browserEntries];
+    merged.sort((a, b) => a.timestamp - b.timestamp);
+    if (limit !== void 0 && limit > 0 && merged.length > limit) {
+      return merged.slice(-limit);
+    }
+    return merged;
+  }
+  // -----------------------------------------------------------------------
+  // Static utilities
+  // -----------------------------------------------------------------------
+  /**
+   * Compute the error diff between two snapshots of browser events,
+   * taken before and after an action.
+   *
+   * Uses fingerprints to determine which errors are new, resolved, or persisting.
+   * `errorDelta` counts only crash and error severity events (not warnings/noise).
+   */
+  static computeErrorDiff(action2, targetId, eventsBefore, eventsAfter) {
+    const classifiedBefore = _TimelineBuffer.classifyAndEnrich(eventsBefore);
+    const classifiedAfter = _TimelineBuffer.classifyAndEnrich(eventsAfter);
+    const beforeByFp = /* @__PURE__ */ new Map();
+    for (const c of classifiedBefore) {
+      if (!beforeByFp.has(c.fingerprint)) {
+        beforeByFp.set(c.fingerprint, c);
+      }
+    }
+    const afterByFp = /* @__PURE__ */ new Map();
+    for (const c of classifiedAfter) {
+      if (!afterByFp.has(c.fingerprint)) {
+        afterByFp.set(c.fingerprint, c);
+      }
+    }
+    const newEvents = [];
+    const resolvedEvents = [];
+    const persistingEvents = [];
+    for (const [fp, classified] of afterByFp) {
+      if (!beforeByFp.has(fp)) {
+        newEvents.push(classified);
+      } else {
+        persistingEvents.push(classified);
+      }
+    }
+    for (const [fp, classified] of beforeByFp) {
+      if (!afterByFp.has(fp)) {
+        resolvedEvents.push(classified);
+      }
+    }
+    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
+    const newSignificant = newEvents.filter(isSignificant).length;
+    const resolvedSignificant = resolvedEvents.filter(isSignificant).length;
+    const errorDelta = newSignificant - resolvedSignificant;
+    return {
+      action: action2,
+      targetId,
+      newEvents,
+      resolvedEvents,
+      persistingEvents,
+      errorDelta
+    };
+  }
+  /**
+   * Classify and enrich a batch of raw browser events.
+   *
+   * For each event: computes severity, reason, fingerprint, and source location.
+   */
+  static classifyAndEnrich(events) {
+    return events.map((event) => {
+      const { severity, reason } = classifyEvent(event);
+      return {
+        event,
+        severity,
+        reason,
+        fingerprint: computeFingerprint(event),
+        sourceLocation: extractSourceLocation(getEventStack(event))
+      };
+    });
+  }
+  // -----------------------------------------------------------------------
+  // Buffer management
+  // -----------------------------------------------------------------------
+  /**
+   * Clear all recorded actions.
+   */
+  clear() {
+    this.actions = [];
+  }
+  /**
+   * Current number of recorded actions.
+   */
+  get actionCount() {
+    return this.actions.length;
+  }
+  // -----------------------------------------------------------------------
+  // Internal
+  // -----------------------------------------------------------------------
+  trimActions() {
+    if (this.actions.length > this.maxEntries) {
+      this.actions = this.actions.slice(-this.maxEntries);
+    }
+  }
+};
+
+// src/debug/health-score.ts
+var DEFAULT_WINDOW_MS = 6e4;
+var DEFAULT_CRASH_IS_BROKEN = true;
+var DEFAULT_DEGRADED_THRESHOLD = 3;
+var DEFAULT_BROKEN_THRESHOLD = 8;
+function extractMessage3(event) {
+  switch (event.type) {
+    case "console":
+      return event.message;
+    case "network":
+      return event.errorMessage ?? `${event.method} ${event.requestUrl} \u2192 ${event.status ?? "no response"}`;
+    case "react-error":
+      return event.message;
+    case "resource-error":
+      return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
+    case "hmr":
+      return event.message;
+    case "ws-disconnection":
+      return `WebSocket ${event.previousState} \u2192 ${event.newState}`;
+    case "long-task":
+      return `Long task: ${Math.round(event.durationMs)}ms`;
+    case "long-animation-frame":
+      return `Long animation frame: ${Math.round(event.durationMs)}ms (blocking: ${Math.round(event.blockingDurationMs)}ms)`;
+    case "navigation":
+      return `Navigation: ${event.from} \u2192 ${event.to}`;
+    case "web-vital":
+      return `${event.metric}: ${event.value}`;
+    case "memory":
+      return `Memory: ${Math.round(event.usedJSHeapSize / 1024 / 1024)}MB used`;
+    case "freeze":
+      return `UI freeze: ${Math.round(event.gapMs)}ms`;
+    case "dom-metrics":
+      return `DOM nodes: ${event.nodeCount}`;
+    default: {
+      const _exhaustive = event;
+      return `Unknown event: ${_exhaustive.type}`;
+    }
+  }
+}
+function formatWindow(ms) {
+  if (ms < 1e3) return `${ms}ms`;
+  const seconds = Math.round(ms / 1e3);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+function computeHealthReport(capture, config) {
+  const windowMs = config?.windowMs ?? DEFAULT_WINDOW_MS;
+  const crashIsBroken = config?.crashIsBroken ?? DEFAULT_CRASH_IS_BROKEN;
+  const degradedThreshold = config?.degradedThreshold ?? DEFAULT_DEGRADED_THRESHOLD;
+  const brokenThreshold = config?.brokenThreshold ?? DEFAULT_BROKEN_THRESHOLD;
+  const now = Date.now();
+  const since = now - windowMs;
+  const events = capture.getSince(since);
+  let crashes = 0;
+  let errors = 0;
+  let warnings = 0;
+  let topIssue;
+  let topIssueRank = SEVERITY_RANK.noise + 1;
+  for (const event of events) {
+    const { severity } = classifyEvent(event);
+    switch (severity) {
+      case "crash":
+        crashes++;
+        break;
+      case "error":
+        errors++;
+        break;
+      case "warning":
+        warnings++;
+        break;
+      case "noise":
+        continue;
+    }
+    const rank = SEVERITY_RANK[severity];
+    if (rank < topIssueRank || rank === topIssueRank && topIssue && event.timestamp >= topIssue.timestamp) {
+      topIssueRank = rank;
+      topIssue = {
+        message: extractMessage3(event),
+        severity,
+        timestamp: event.timestamp
+      };
+    }
+  }
+  let score = 100;
+  score -= crashes * 40;
+  score -= errors * 10;
+  score -= warnings * 2;
+  score = Math.max(0, score);
+  let status;
+  if (crashIsBroken && crashes > 0) {
+    status = "broken";
+  } else if (errors >= brokenThreshold) {
+    status = "broken";
+  } else if (errors >= degradedThreshold) {
+    status = "degraded";
+  } else {
+    status = "healthy";
+  }
+  const windowMinutes = windowMs / 6e4;
+  const errorRate = windowMinutes > 0 ? Math.round((crashes + errors) / windowMinutes * 100) / 100 : 0;
+  const windowLabel = formatWindow(windowMs);
+  let summary;
+  if (status === "healthy") {
+    if (warnings > 0) {
+      summary = `Healthy: ${warnings} warning${warnings !== 1 ? "s" : ""} in the last ${windowLabel}`;
+    } else {
+      summary = `Healthy: no errors in the last ${windowLabel}`;
+    }
+  } else {
+    const parts = [];
+    if (crashes > 0) parts.push(`${crashes} crash${crashes !== 1 ? "es" : ""}`);
+    if (errors > 0) parts.push(`${errors} error${errors !== 1 ? "s" : ""}`);
+    if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? "s" : ""}`);
+    const statusLabel = status === "broken" ? "Broken" : "Degraded";
+    summary = `${statusLabel}: ${parts.join(" and ")} in the last ${windowLabel}`;
+  }
+  return {
+    status,
+    score,
+    summary,
+    breakdown: { crashes, errors, warnings },
+    errorRate,
+    ...topIssue !== void 0 ? { topIssue } : {},
+    windowMs,
+    timestamp: now
+  };
+}
+function computeHealthScore(capture, config) {
+  return computeHealthReport(capture, config).score;
+}
+function computeHealthStatus(capture, config) {
+  return computeHealthReport(capture, config).status;
+}
+
+// src/debug/error-session.ts
+init_error_fingerprint();
+init_shared_utils();
+function classifyAndEnrichEvent(event) {
+  const { severity, reason } = classifyEvent(event);
+  return {
+    event,
+    severity,
+    reason,
+    fingerprint: computeFingerprint(event),
+    sourceLocation: extractSourceLocation(getEventStack(event))
+  };
+}
+var ErrorSession = class {
+  constructor(label) {
+    this.events = [];
+    this.fingerprints = /* @__PURE__ */ new Set();
+    /** Map from fingerprint to first classified event (for getUniqueEvents) */
+    this.uniqueByFingerprint = /* @__PURE__ */ new Map();
+    this.id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.label = label;
+    this.startedAt = Date.now();
+  }
+  /** Record an event into this session */
+  recordEvent(event) {
+    if (this.endedAt !== void 0) return;
+    const classified = classifyAndEnrichEvent(event);
+    this.events.push(classified);
+    if (!this.fingerprints.has(classified.fingerprint)) {
+      this.fingerprints.add(classified.fingerprint);
+      this.uniqueByFingerprint.set(classified.fingerprint, classified);
+    }
+  }
+  /** Record a batch of events */
+  recordEvents(events) {
+    for (const event of events) {
+      this.recordEvent(event);
+    }
+  }
+  /** End the session */
+  end() {
+    if (this.endedAt === void 0) {
+      this.endedAt = Date.now();
+    }
+  }
+  /** Get all unique events (one per fingerprint, first occurrence) */
+  getUniqueEvents() {
+    return Array.from(this.uniqueByFingerprint.values());
+  }
+  /** Get all events */
+  getAllEvents() {
+    return [...this.events];
+  }
+  /** Get the fingerprint set */
+  getFingerprints() {
+    return new Set(this.fingerprints);
+  }
+  /** Get session summary */
+  getSummary() {
+    const bySeverity = {
+      crash: 0,
+      error: 0,
+      warning: 0,
+      noise: 0
+    };
+    let hasCrashes = false;
+    for (const classified of this.events) {
+      bySeverity[classified.severity]++;
+      if (classified.severity === "crash") {
+        hasCrashes = true;
+      }
+    }
+    return {
+      id: this.id,
+      label: this.label,
+      startedAt: this.startedAt,
+      endedAt: this.endedAt,
+      uniqueErrorCount: this.fingerprints.size,
+      totalEventCount: this.events.length,
+      bySeverity,
+      hasCrashes
+    };
+  }
+  /** Compare this session against a baseline */
+  compareToBaseline(baseline) {
+    const newErrors = [];
+    const knownErrors = [];
+    for (const [fp, classified] of this.uniqueByFingerprint) {
+      if (baseline.fingerprints.has(fp)) {
+        knownErrors.push(classified);
+      } else {
+        newErrors.push(classified);
+      }
+    }
+    const fixedErrors = [];
+    const baselineByFp = /* @__PURE__ */ new Map();
+    for (const classified of baseline.events) {
+      if (!baselineByFp.has(classified.fingerprint)) {
+        baselineByFp.set(classified.fingerprint, classified);
+      }
+    }
+    for (const [fp, classified] of baselineByFp) {
+      if (!this.fingerprints.has(fp)) {
+        fixedErrors.push(classified);
+      }
+    }
+    const isRegression = newErrors.some((e) => e.severity === "crash" || e.severity === "error");
+    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
+    const newSignificant = newErrors.filter(isSignificant).length;
+    const fixedSignificant = fixedErrors.filter(isSignificant).length;
+    const delta = newSignificant - fixedSignificant;
+    return {
+      newErrors,
+      fixedErrors,
+      knownErrors,
+      isRegression,
+      delta
+    };
+  }
+  /** Whether the session is still active (not ended) */
+  get isActive() {
+    return this.endedAt === void 0;
+  }
+};
+var ErrorSessionManager = class {
+  constructor(maxSessions = 50) {
+    this.sessions = [];
+    this.activeSession = null;
+    this.baselines = /* @__PURE__ */ new Map();
+    this.maxSessions = maxSessions;
+  }
+  /** Start a new session. Ends the previous active session if any. */
+  startSession(label) {
+    if (this.activeSession !== null) {
+      this.activeSession.end();
+    }
+    const session = new ErrorSession(label);
+    this.activeSession = session;
+    this.sessions.push(session);
+    if (this.sessions.length > this.maxSessions) {
+      this.sessions = this.sessions.slice(-this.maxSessions);
+    }
+    return session;
+  }
+  /** End the active session */
+  endSession() {
+    if (this.activeSession === null) return null;
+    this.activeSession.end();
+    const summary = this.activeSession.getSummary();
+    this.activeSession = null;
+    return summary;
+  }
+  /** Get the active session */
+  getActive() {
+    return this.activeSession;
+  }
+  /** Record an event into the active session (no-op if no active session) */
+  recordEvent(event) {
+    if (this.activeSession !== null) {
+      this.activeSession.recordEvent(event);
+    }
+  }
+  /** Get all session summaries */
+  getSessions() {
+    return this.sessions.map((s) => s.getSummary());
+  }
+  /** Get a specific session by ID */
+  getSession(id) {
+    return this.sessions.find((s) => s.id === id) ?? null;
+  }
+  /**
+   * Capture a baseline from the current state.
+   * Takes a BrowserEventCaptureLike to read recent events.
+   */
+  captureBaseline(label, capture) {
+    const rawEvents = capture.getRecent();
+    const classified = rawEvents.map(classifyAndEnrichEvent);
+    const fingerprints = /* @__PURE__ */ new Set();
+    const uniqueEvents = [];
+    for (const c of classified) {
+      if (!fingerprints.has(c.fingerprint)) {
+        fingerprints.add(c.fingerprint);
+        uniqueEvents.push(c);
+      }
+    }
+    const baseline = {
+      label,
+      capturedAt: Date.now(),
+      fingerprints,
+      events: uniqueEvents
+    };
+    this.baselines.set(label, baseline);
+    return baseline;
+  }
+  /** Get a baseline by label */
+  getBaseline(label) {
+    return this.baselines.get(label) ?? null;
+  }
+  /** List all baselines */
+  getBaselines() {
+    const result = [];
+    for (const [, baseline] of this.baselines) {
+      result.push({
+        label: baseline.label,
+        capturedAt: baseline.capturedAt,
+        fingerprintCount: baseline.fingerprints.size
+      });
+    }
+    return result;
+  }
+  /** Delete a baseline */
+  deleteBaseline(label) {
+    return this.baselines.delete(label);
+  }
+  /**
+   * Compare the active session (or recent events) against a named baseline.
+   *
+   * If there is an active session, compares its accumulated events.
+   * Otherwise, if a capture instance is provided, compares recent events from it.
+   * Returns null if the baseline does not exist or there is nothing to compare.
+   */
+  compareToBaseline(baselineLabel, capture) {
+    const baseline = this.baselines.get(baselineLabel);
+    if (!baseline) return null;
+    if (this.activeSession !== null) {
+      return this.activeSession.compareToBaseline(baseline);
+    }
+    if (!capture) return null;
+    const rawEvents = capture.getRecent();
+    const classified = rawEvents.map(classifyAndEnrichEvent);
+    const currentByFp = /* @__PURE__ */ new Map();
+    for (const c of classified) {
+      if (!currentByFp.has(c.fingerprint)) {
+        currentByFp.set(c.fingerprint, c);
+      }
+    }
+    const newErrors = [];
+    const knownErrors = [];
+    for (const [fp, c] of currentByFp) {
+      if (baseline.fingerprints.has(fp)) {
+        knownErrors.push(c);
+      } else {
+        newErrors.push(c);
+      }
+    }
+    const baselineByFp = /* @__PURE__ */ new Map();
+    for (const c of baseline.events) {
+      if (!baselineByFp.has(c.fingerprint)) {
+        baselineByFp.set(c.fingerprint, c);
+      }
+    }
+    const fixedErrors = [];
+    for (const [fp, c] of baselineByFp) {
+      if (!currentByFp.has(fp)) {
+        fixedErrors.push(c);
+      }
+    }
+    const isRegression = newErrors.some((e) => e.severity === "crash" || e.severity === "error");
+    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
+    const newSignificant = newErrors.filter(isSignificant).length;
+    const fixedSignificant = fixedErrors.filter(isSignificant).length;
+    const delta = newSignificant - fixedSignificant;
+    return {
+      newErrors,
+      fixedErrors,
+      knownErrors,
+      isRegression,
+      delta
+    };
+  }
+};
+
+// src/debug/network-chain.ts
+var REQUEST_ID_HEADERS = [
+  "x-request-id",
+  "x-correlation-id",
+  "x-trace-id",
+  "traceparent",
+  "x-amzn-requestid",
+  "x-amzn-trace-id"
+];
+var DEFAULT_CONFIG6 = {
+  maxBodyPreview: 500,
+  errorBodiesOnly: true,
+  correlationWindowMs: 200,
+  ignorePatterns: [
+    "/api/ui-bridge/",
+    "/__ui-bridge/",
+    "/api/dev-debug/",
+    "localhost:9876",
+    "chrome-extension://"
+  ],
+  maxChains: 200,
+  captureHeaders: false
+};
+var xhrMetaMap = /* @__PURE__ */ new WeakMap();
+var NetworkChainTracker = class {
+  constructor(config) {
+    this.chains = [];
+    this.installed = false;
+    this.cleanup = null;
+    // Tracker-driven mode
+    this.tracker = null;
+    this.trackerUnsubscribe = null;
+    const { tracker, ...rest } = config ?? {};
+    this.config = { ...DEFAULT_CONFIG6, ...rest };
+    this.tracker = tracker ?? null;
+  }
+  // -------------------------------------------------------------------------
+  // Install / Uninstall
+  // -------------------------------------------------------------------------
+  /**
+   * Install the fetch and XHR interceptors (standalone mode), or subscribe
+   * to a NetworkRequestTracker (tracker-driven mode).
+   * No-ops in non-browser environments (SSR / Node).
+   */
+  install() {
+    if (this.installed) return;
+    if (this.tracker) {
+      this.installTrackerSubscription();
+      this.installed = true;
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.fetch !== "function") {
+      return;
+    }
+    const cleanups = [];
+    const originalFetch = window.fetch;
+    const self = this;
+    window.fetch = async function(input, init) {
+      const url = getUrl(input);
+      if (self.shouldIgnore(url)) {
+        return originalFetch.call(this, input, init);
+      }
+      const method = getMethod(input, init);
+      const request = {
+        id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        method,
+        url,
+        startTime: Date.now()
+      };
+      if (init?.body && typeof init.body === "string") {
+        request.bodyPreview = self.truncateBody(init.body);
+      }
+      if (self.config.captureHeaders && init?.headers) {
+        request.headers = self.extractSelectedHeaders(new Headers(init.headers));
+      }
+      try {
+        const response = await originalFetch.call(this, input, init);
+        const durationMs = Date.now() - request.startTime;
+        const isError = response.status >= 400;
+        const chain = {
+          request,
+          response: {
+            status: response.status,
+            statusText: response.statusText,
+            durationMs
+          },
+          requestId: self.extractRequestId(response.headers),
+          correlatedErrors: [],
+          isFailure: isError,
+          timestamp: request.startTime
+        };
+        if (isError || !self.config.errorBodiesOnly) {
+          try {
+            const cloned = response.clone();
+            const text = await cloned.text();
+            chain.response.bodyPreview = self.truncateBody(text);
+          } catch {
+          }
+        }
+        if (self.config.captureHeaders) {
+          chain.response.headers = self.extractSelectedHeaders(response.headers);
+        }
+        self.chains.push(chain);
+        self.trim();
+        return response;
+      } catch (err) {
+        const chain = {
+          request,
+          error: err instanceof Error ? err.message : String(err),
+          correlatedErrors: [],
+          isFailure: true,
+          timestamp: request.startTime
+        };
+        self.chains.push(chain);
+        self.trim();
+        throw err;
+      }
+    };
+    cleanups.push(() => {
+      window.fetch = originalFetch;
+    });
+    if (typeof XMLHttpRequest !== "undefined") {
+      const originalOpen = XMLHttpRequest.prototype.open;
+      const originalSend = XMLHttpRequest.prototype.send;
+      const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        const meta = {
+          method: method.toUpperCase(),
+          url: typeof url === "object" && url instanceof URL ? url.href : String(url),
+          requestHeaders: {}
+        };
+        xhrMetaMap.set(this, meta);
+        return originalOpen.apply(this, [method, url, ...rest]);
+      };
+      XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+        const meta = xhrMetaMap.get(this);
+        if (meta) {
+          meta.requestHeaders[name.toLowerCase()] = value;
+        }
+        return originalSetRequestHeader.call(this, name, value);
+      };
+      XMLHttpRequest.prototype.send = function(body) {
+        const meta = xhrMetaMap.get(this);
+        if (!meta || self.shouldIgnore(meta.url)) {
+          return originalSend.call(this, body);
+        }
+        const request = {
+          id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          method: meta.method,
+          url: meta.url,
+          startTime: Date.now()
+        };
+        if (body && typeof body === "string") {
+          request.bodyPreview = self.truncateBody(body);
+        }
+        if (self.config.captureHeaders && Object.keys(meta.requestHeaders).length > 0) {
+          request.headers = self.extractSelectedHeadersFromRecord(meta.requestHeaders);
+        }
+        const pushChain = (chain) => {
+          self.chains.push(chain);
+          self.trim();
+        };
+        this.addEventListener("load", function() {
+          const durationMs = Date.now() - request.startTime;
+          const isError = this.status >= 400;
+          const chain = {
+            request,
+            response: {
+              status: this.status,
+              statusText: this.statusText,
+              durationMs
+            },
+            correlatedErrors: [],
+            isFailure: isError,
+            timestamp: request.startTime
+          };
+          chain.requestId = self.extractRequestIdFromXHR(this);
+          if (isError || !self.config.errorBodiesOnly) {
+            try {
+              const text = typeof this.responseText === "string" ? this.responseText : "";
+              if (text) {
+                chain.response.bodyPreview = self.truncateBody(text);
+              }
+            } catch {
+            }
+          }
+          if (self.config.captureHeaders) {
+            chain.response.headers = self.extractSelectedHeadersFromXHR(this);
+          }
+          pushChain(chain);
+        });
+        this.addEventListener("error", function() {
+          pushChain({
+            request,
+            error: "Network error",
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime
+          });
+        });
+        this.addEventListener("timeout", function() {
+          pushChain({
+            request,
+            error: `Timeout after ${this.timeout}ms`,
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime
+          });
+        });
+        this.addEventListener("abort", function() {
+          pushChain({
+            request,
+            error: "Request aborted",
+            correlatedErrors: [],
+            isFailure: true,
+            timestamp: request.startTime
+          });
+        });
+        return originalSend.call(this, body);
+      };
+      cleanups.push(() => {
+        XMLHttpRequest.prototype.open = originalOpen;
+        XMLHttpRequest.prototype.send = originalSend;
+        XMLHttpRequest.prototype.setRequestHeader = originalSetRequestHeader;
+      });
+    }
+    this.cleanup = () => {
+      for (const fn of cleanups) fn();
+    };
+    this.installed = true;
+  }
+  /** Uninstall the fetch and XHR interceptors, restoring originals. */
+  uninstall() {
+    if (!this.installed) return;
+    if (this.trackerUnsubscribe) {
+      this.trackerUnsubscribe();
+      this.trackerUnsubscribe = null;
+    } else {
+      this.cleanup?.();
+      this.cleanup = null;
+    }
+    this.installed = false;
+  }
+  // -------------------------------------------------------------------------
+  // Query methods
+  // -------------------------------------------------------------------------
+  /** Get all chains (oldest first). */
+  getAll() {
+    return [...this.chains];
+  }
+  /** Get chains with a timestamp >= `ts`. */
+  getSince(ts) {
+    return this.chains.filter((c) => c.timestamp >= ts);
+  }
+  /** Get the most recent `n` chains (default: 50). */
+  getRecent(n = 50) {
+    return this.chains.slice(-n);
+  }
+  /** Get only failure chains (4xx/5xx/network errors). */
+  getFailures() {
+    return this.chains.filter((c) => c.isFailure);
+  }
+  /** Get chains whose request URL contains `pattern`. */
+  getByUrl(pattern) {
+    return this.chains.filter((c) => c.request.url.includes(pattern));
+  }
+  /** Find the first chain matching a request ID (from response headers). */
+  findByRequestId(requestId) {
+    return this.chains.find((c) => c.requestId === requestId);
+  }
+  // -------------------------------------------------------------------------
+  // Correlation
+  // -------------------------------------------------------------------------
+  /**
+   * Correlate console errors with network chains.
+   *
+   * Call this after collecting console errors to link them with recent
+   * network events. Each console error is checked against all chains using
+   * three correlation strategies:
+   *
+   * 1. **URL mention** - the error message contains the request URL (or a
+   *    recognizable suffix of it).
+   * 2. **Timing** - the error occurred within `correlationWindowMs` of the
+   *    network response.
+   * 3. **Request ID** - the error message contains the chain's `requestId`.
+   *
+   * Correlations are pushed to each matching chain's `correlatedErrors` array.
+   */
+  correlateErrors(events) {
+    const consoleErrors = events.filter((e) => e.type === "console");
+    if (consoleErrors.length === 0) return;
+    for (const chain of this.chains) {
+      const responseTime = chain.response ? chain.request.startTime + chain.response.durationMs : chain.request.startTime;
+      const urlSuffix = extractUrlPath(chain.request.url);
+      for (const error of consoleErrors) {
+        if (chain.correlatedErrors.some(
+          (ce) => ce.message === error.message && ce.timestamp === error.timestamp
+        )) {
+          continue;
+        }
+        if (urlSuffix && error.message.includes(urlSuffix)) {
+          chain.correlatedErrors.push({
+            message: error.message,
+            timestamp: error.timestamp,
+            correlationType: "url-mention"
+          });
+          continue;
+        }
+        if (error.message.includes(chain.request.url)) {
+          chain.correlatedErrors.push({
+            message: error.message,
+            timestamp: error.timestamp,
+            correlationType: "url-mention"
+          });
+          continue;
+        }
+        if (chain.requestId && error.message.includes(chain.requestId)) {
+          chain.correlatedErrors.push({
+            message: error.message,
+            timestamp: error.timestamp,
+            correlationType: "request-id"
+          });
+          continue;
+        }
+        if (chain.isFailure && Math.abs(error.timestamp - responseTime) <= this.config.correlationWindowMs) {
+          chain.correlatedErrors.push({
+            message: error.message,
+            timestamp: error.timestamp,
+            correlationType: "timing"
+          });
+        }
+      }
+    }
+  }
+  // -------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------
+  /** Clear all buffered chains. */
+  clear() {
+    this.chains = [];
+  }
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+  /**
+   * Subscribe to a NetworkRequestTracker's events instead of patching
+   * fetch/XHR directly. Converts each completed/errored event entry into
+   * a NetworkChain and pushes it to the buffer.
+   */
+  installTrackerSubscription() {
+    this.trackerUnsubscribe = this.tracker.onEvent((event) => {
+      if (event.type === "request-start") return;
+      const url = event.entry.request.url;
+      if (this.shouldIgnore(url)) return;
+      const chain = this.entryToChain(event.entry);
+      this.chains.push(chain);
+      this.trim();
+    });
+  }
+  /**
+   * Convert a NetworkRequestEntry (from the tracker) to a NetworkChain.
+   */
+  entryToChain(entry) {
+    const request = {
+      id: entry.request.id,
+      method: entry.request.method,
+      url: entry.request.url,
+      startTime: entry.request.startedAt,
+      bodyPreview: entry.request.bodyPreview
+    };
+    if (this.config.captureHeaders && entry.request.headers) {
+      request.headers = this.extractSelectedHeadersFromRecord(entry.request.headers);
+    }
+    const chain = {
+      request,
+      correlatedErrors: [],
+      isFailure: entry.isFailure,
+      timestamp: entry.request.startedAt
+    };
+    if (entry.error) {
+      chain.error = entry.error;
+    }
+    if (entry.response) {
+      chain.response = {
+        status: entry.response.statusCode,
+        statusText: entry.response.statusText,
+        durationMs: entry.response.durationMs
+      };
+      if (entry.response.bodyPreview && (entry.isFailure || !this.config.errorBodiesOnly)) {
+        chain.response.bodyPreview = this.truncateBody(entry.response.bodyPreview);
+      }
+      if (this.config.captureHeaders && entry.response.headers) {
+        chain.response.headers = this.extractSelectedHeadersFromRecord(entry.response.headers);
+      }
+    }
+    if (entry.requestId) {
+      chain.requestId = entry.requestId;
+    }
+    return chain;
+  }
+  shouldIgnore(url) {
+    return this.config.ignorePatterns.some((p) => url.includes(p));
+  }
+  /**
+   * Extract a request ID from response headers.
+   * Checks `REQUEST_ID_HEADERS` in priority order and returns the first match.
+   */
+  extractRequestId(headers) {
+    for (const name of REQUEST_ID_HEADERS) {
+      const value = headers.get(name);
+      if (value) return value;
+    }
+    return void 0;
+  }
+  /**
+   * Extract selected headers (request ID headers + content-type).
+   */
+  extractSelectedHeaders(headers) {
+    const selected = {};
+    for (const name of REQUEST_ID_HEADERS) {
+      const value = headers.get(name);
+      if (value) selected[name] = value;
+    }
+    const ct = headers.get("content-type");
+    if (ct) selected["content-type"] = ct;
+    return selected;
+  }
+  /**
+   * Extract selected headers from a plain record (used by XHR interceptor for
+   * request headers captured via setRequestHeader).
+   */
+  extractSelectedHeadersFromRecord(headers) {
+    const selected = {};
+    for (const name of REQUEST_ID_HEADERS) {
+      const value = headers[name];
+      if (value) selected[name] = value;
+    }
+    const ct = headers["content-type"];
+    if (ct) selected["content-type"] = ct;
+    return selected;
+  }
+  /**
+   * Extract a request ID from XHR response headers.
+   * Uses `getResponseHeader` to check `REQUEST_ID_HEADERS` in priority order.
+   */
+  extractRequestIdFromXHR(xhr) {
+    for (const name of REQUEST_ID_HEADERS) {
+      try {
+        const value = xhr.getResponseHeader(name);
+        if (value) return value;
+      } catch {
+      }
+    }
+    return void 0;
+  }
+  /**
+   * Extract selected response headers from an XHR instance.
+   */
+  extractSelectedHeadersFromXHR(xhr) {
+    const selected = {};
+    for (const name of REQUEST_ID_HEADERS) {
+      try {
+        const value = xhr.getResponseHeader(name);
+        if (value) selected[name] = value;
+      } catch {
+      }
+    }
+    try {
+      const ct = xhr.getResponseHeader("content-type");
+      if (ct) selected["content-type"] = ct;
+    } catch {
+    }
+    return selected;
+  }
+  truncateBody(body) {
+    if (body.length <= this.config.maxBodyPreview) return body;
+    return body.slice(0, this.config.maxBodyPreview) + "\u2026";
+  }
+  /** Trim the buffer to `maxChains`, dropping the oldest entries. */
+  trim() {
+    if (this.chains.length > this.config.maxChains) {
+      this.chains = this.chains.slice(this.chains.length - this.config.maxChains);
+    }
+  }
+};
+function getMethod(input, init) {
+  if (init?.method) return init.method.toUpperCase();
+  if (input instanceof Request) return input.method.toUpperCase();
+  return "GET";
+}
+function getUrl(input) {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  if (input instanceof Request) return input.url;
+  return String(input);
+}
+function extractUrlPath(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname;
+  } catch {
+    return void 0;
+  }
+}
+
+// src/debug/error-snapshot.ts
+init_error_fingerprint();
+init_shared_utils();
+var DEFAULT_MAX_SNAPSHOTS = 20;
+var DEFAULT_TRIGGER_SEVERITIES = ["crash", "error"];
+var DEFAULT_DEDUPLICATE = true;
+var EMPTY_PAGE_STATE = {
+  url: "",
+  title: "",
+  elementCount: 0,
+  visibleErrors: []
+};
+function extractMessage4(event) {
+  switch (event.type) {
+    case "console":
+      return event.message;
+    case "network":
+      return event.errorMessage ?? `${event.method} ${event.requestUrl} \u2192 ${event.status ?? "no response"}`;
+    case "react-error":
+      return event.message;
+    case "resource-error":
+      return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
+    case "hmr":
+      return event.message;
+    case "ws-disconnection":
+      return `WebSocket ${event.previousState} \u2192 ${event.newState}`;
+    case "long-task":
+      return `Long task: ${Math.round(event.durationMs)}ms`;
+    case "long-animation-frame":
+      return `Long animation frame: ${Math.round(event.durationMs)}ms (blocking: ${Math.round(event.blockingDurationMs)}ms)`;
+    case "navigation":
+      return `Navigation: ${event.from} \u2192 ${event.to}`;
+    case "web-vital":
+      return `${event.metric}: ${event.value}`;
+    case "memory":
+      return `Memory: ${Math.round(event.usedJSHeapSize / 1024 / 1024)}MB used`;
+    case "freeze":
+      return `UI freeze: ${Math.round(event.gapMs)}ms`;
+    case "dom-metrics":
+      return `DOM nodes: ${event.nodeCount}`;
+    default: {
+      const _exhaustive = event;
+      return `Unknown event: ${_exhaustive.type}`;
+    }
+  }
+}
+var ErrorSnapshotBuffer = class {
+  constructor(config) {
+    this.snapshots = [];
+    this.seenFingerprints = /* @__PURE__ */ new Set();
+    this.maxSnapshots = config?.maxSnapshots ?? DEFAULT_MAX_SNAPSHOTS;
+    this.triggerSeverities = new Set(config?.triggerSeverities ?? DEFAULT_TRIGGER_SEVERITIES);
+    this.deduplicate = config?.deduplicateByFingerprint ?? DEFAULT_DEDUPLICATE;
+    this.capturePageState = config?.capturePageState;
+    this.getRecentActions = config?.getRecentActions;
+  }
+  /**
+   * Process a single event. If it's significant (matches trigger severities),
+   * capture a snapshot and return it. Returns null if the event is not
+   * significant or is a duplicate fingerprint.
+   */
+  processEvent(event) {
+    const { severity } = classifyEvent(event);
+    if (!this.triggerSeverities.has(severity)) {
+      return null;
+    }
+    const fingerprint = computeFingerprint(event);
+    if (this.deduplicate && this.seenFingerprints.has(fingerprint)) {
+      return null;
+    }
+    const stack = getEventStack(event);
+    const snapshot = {
+      id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      error: {
+        message: extractMessage4(event),
+        severity,
+        fingerprint,
+        sourceLocation: extractSourceLocation(stack),
+        stack,
+        timestamp: event.timestamp
+      },
+      pageState: this.capturePageState?.() ?? EMPTY_PAGE_STATE,
+      recentActions: this.getRecentActions?.() ?? [],
+      capturedAt: Date.now()
+    };
+    this.snapshots.push(snapshot);
+    this.seenFingerprints.add(fingerprint);
+    this.trimBuffer();
+    return snapshot;
+  }
+  /**
+   * Process a batch of events. Returns all snapshots that were captured.
+   */
+  processEvents(events) {
+    const results = [];
+    for (const event of events) {
+      const snapshot = this.processEvent(event);
+      if (snapshot !== null) {
+        results.push(snapshot);
+      }
+    }
+    return results;
+  }
+  /** Get all captured snapshots */
+  getAll() {
+    return [...this.snapshots];
+  }
+  /** Get the most recent N snapshots (default: 10) */
+  getRecent(n = 10) {
+    return this.snapshots.slice(-n);
+  }
+  /** Get a snapshot by its error fingerprint */
+  getByFingerprint(fingerprint) {
+    return this.snapshots.find((s) => s.error.fingerprint === fingerprint);
+  }
+  /** Clear all snapshots and the dedup set */
+  clear() {
+    this.snapshots = [];
+    this.seenFingerprints.clear();
+  }
+  // -------------------------------------------------------------------------
+  // Private
+  // -------------------------------------------------------------------------
+  /**
+   * Trim the buffer to maxSnapshots, removing the oldest entries.
+   * Also prunes the fingerprint set to match remaining snapshots.
+   */
+  trimBuffer() {
+    if (this.snapshots.length <= this.maxSnapshots) return;
+    this.snapshots.splice(0, this.snapshots.length - this.maxSnapshots);
+    this.seenFingerprints.clear();
+    for (const snapshot of this.snapshots) {
+      this.seenFingerprints.add(snapshot.error.fingerprint);
+    }
+  }
+};
+
+// src/debug/ws-streaming.ts
+init_error_fingerprint();
+init_shared_utils();
+function extractSourceLocationFromStack(stack) {
+  if (!stack) return void 0;
+  const V8_FRAME_RE2 = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
+  const SPIDERMONKEY_FRAME_RE2 = /^(.+?)@(.+?):(\d+):(\d+)$/;
+  const SKIP_PATTERNS = [
+    /node_modules/,
+    /react-dom/,
+    /react\.development/,
+    /react\.production/,
+    /webpack-internal/,
+    /chrome-extension:\/\//,
+    /moz-extension:\/\//
+  ];
+  const lines = stack.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const v8 = trimmed.match(V8_FRAME_RE2);
+    const frame = v8 ? { file: v8[2], line: v8[3] } : (() => {
+      const sm = trimmed.match(SPIDERMONKEY_FRAME_RE2);
+      return sm ? { file: sm[2], line: sm[3] } : null;
+    })();
+    if (frame && !SKIP_PATTERNS.some((p) => p.test(frame.file))) {
+      let clean = frame.file.split("?")[0].split("#")[0];
+      clean = clean.replace(/^https?:\/\/[^/]+/, "");
+      const parts = clean.split("/").filter(Boolean);
+      const filename = parts.length > 3 ? parts.slice(-3).join("/") : parts.join("/");
+      return `${filename}:${frame.line}`;
+    }
+  }
+  return void 0;
+}
+var DEFAULT_MAX_SUBSCRIPTIONS = 10;
+var DEFAULT_MAX_RECENT_FINGERPRINTS = 200;
+var LruFingerprintSet = class {
+  constructor(maxSize) {
+    this.set = /* @__PURE__ */ new Set();
+    this.order = [];
+    this.maxSize = maxSize;
+  }
+  /** Returns true if the fingerprint was already in the set. */
+  has(fingerprint) {
+    return this.set.has(fingerprint);
+  }
+  /** Add a fingerprint. Returns true if it was new (not already present). */
+  add(fingerprint) {
+    if (this.set.has(fingerprint)) {
+      return false;
+    }
+    if (this.order.length >= this.maxSize) {
+      const oldest = this.order.shift();
+      this.set.delete(oldest);
+    }
+    this.set.add(fingerprint);
+    this.order.push(fingerprint);
+    return true;
+  }
+  /** Clear all entries. */
+  clear() {
+    this.set.clear();
+    this.order = [];
+  }
+};
+var BrowserEventStream = class {
+  constructor(config) {
+    this.subscriptions = /* @__PURE__ */ new Map();
+    this.dedupSets = /* @__PURE__ */ new Map();
+    this.maxSubscriptions = config?.maxSubscriptions ?? DEFAULT_MAX_SUBSCRIPTIONS;
+    this.maxRecentFingerprints = config?.maxRecentFingerprints ?? DEFAULT_MAX_RECENT_FINGERPRINTS;
+  }
+  // -----------------------------------------------------------------------
+  // Subscription management
+  // -----------------------------------------------------------------------
+  /**
+   * Create a new subscription with optional filters.
+   *
+   * Returns the full subscription object with an auto-generated `id`.
+   * Throws if the maximum number of subscriptions has been reached.
+   */
+  subscribe(options) {
+    if (this.subscriptions.size >= this.maxSubscriptions) {
+      throw new Error(
+        `Maximum subscriptions reached (${this.maxSubscriptions}). Unsubscribe from an existing subscription first.`
+      );
+    }
+    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const subscription = {
+      id,
+      ...options
+    };
+    this.subscriptions.set(id, subscription);
+    if (subscription.deduplicate) {
+      this.dedupSets.set(id, new LruFingerprintSet(this.maxRecentFingerprints));
+    }
+    return subscription;
+  }
+  /**
+   * Remove a subscription by ID.
+   *
+   * Returns true if the subscription existed and was removed.
+   */
+  unsubscribe(id) {
+    const existed = this.subscriptions.delete(id);
+    this.dedupSets.delete(id);
+    return existed;
+  }
+  /**
+   * Get all active subscriptions.
+   */
+  getSubscriptions() {
+    return Array.from(this.subscriptions.values());
+  }
+  // -----------------------------------------------------------------------
+  // Event processing
+  // -----------------------------------------------------------------------
+  /**
+   * Process a single browser event through all subscriptions.
+   *
+   * Classifies the event, computes its fingerprint, and checks each
+   * subscription's filters. Returns a map of subscription-id to message
+   * for only those subscriptions that should receive this event.
+   *
+   * The caller is responsible for sending the messages over WebSocket.
+   */
+  processEvent(event) {
+    const { severity, reason } = classifyEvent(event);
+    const fingerprint = computeFingerprint(event);
+    const sourceLocation = extractSourceLocationFromStack(getEventStack(event));
+    const message = {
+      event,
+      severity,
+      reason,
+      fingerprint,
+      ...sourceLocation !== void 0 ? { sourceLocation } : {}
+    };
+    const results = /* @__PURE__ */ new Map();
+    for (const [id, subscription] of this.subscriptions) {
+      if (!this.shouldDeliver(subscription, event, severity, fingerprint)) {
+        continue;
+      }
+      results.set(id, message);
+    }
+    return results;
+  }
+  /**
+   * Process a batch of browser events through all subscriptions.
+   *
+   * Returns a map of subscription-id to an array of messages. Only
+   * subscriptions that receive at least one event appear in the map.
+   */
+  processEvents(events) {
+    const results = /* @__PURE__ */ new Map();
+    for (const event of events) {
+      const perEvent = this.processEvent(event);
+      for (const [subId, message] of perEvent) {
+        let messages = results.get(subId);
+        if (!messages) {
+          messages = [];
+          results.set(subId, messages);
+        }
+        messages.push(message);
+      }
+    }
+    return results;
+  }
+  // -----------------------------------------------------------------------
+  // Private helpers
+  // -----------------------------------------------------------------------
+  /**
+   * Check whether a subscription should receive a specific event.
+   *
+   * Evaluates in order:
+   * 1. Severity filter (minSeverity)
+   * 2. Event type filter (eventTypes)
+   * 3. Deduplication (fingerprint LRU)
+   */
+  shouldDeliver(subscription, event, severity, fingerprint) {
+    if (subscription.minSeverity) {
+      if (!this.meetsMinSeverity(severity, subscription.minSeverity)) {
+        return false;
+      }
+    }
+    if (subscription.eventTypes && subscription.eventTypes.length > 0) {
+      if (!subscription.eventTypes.includes(event.type)) {
+        return false;
+      }
+    }
+    if (subscription.deduplicate) {
+      const dedupSet = this.dedupSets.get(subscription.id);
+      if (dedupSet) {
+        const isNew = dedupSet.add(fingerprint);
+        if (!isNew) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  /**
+   * Check if an event's severity meets the minimum severity threshold.
+   *
+   * A lower rank number means more severe. "minSeverity: 'warning'"
+   * means crash (0), error (1), and warning (2) pass, but noise (3) does not.
+   */
+  meetsMinSeverity(eventSeverity, minSeverity) {
+    return SEVERITY_RANK[eventSeverity] <= SEVERITY_RANK[minSeverity];
+  }
+};
+
+// src/server/handlers.ts
+init_idle();
+
+// src/network/tracker.ts
+var REQUEST_ID_HEADERS2 = [
+  "x-request-id",
+  "x-amzn-requestid",
+  "x-amz-request-id",
+  "cf-ray",
+  "x-trace-id",
+  "traceparent"
+];
+var NetworkRequestTracker = class {
+  constructor(config) {
+    this.inFlight = /* @__PURE__ */ new Map();
+    this.completed = [];
+    this.listeners = [];
+    this.installed = false;
+    this.requestCounter = 0;
+    // Saved originals for restore
+    this.originalFetch = null;
+    this.originalXHROpen = null;
+    this.originalXHRSend = null;
+    this.config = {
+      ignorePatterns: config?.ignorePatterns ?? [],
+      maxEntries: config?.maxEntries ?? 200,
+      trackXHR: config?.trackXHR ?? true,
+      maxBodyPreview: config?.maxBodyPreview ?? 500,
+      errorBodiesOnly: config?.errorBodiesOnly ?? true,
+      captureHeaders: config?.captureHeaders ?? true
+    };
+  }
+  // =========================================================================
+  // Install / Destroy
+  // =========================================================================
+  /** Patch fetch and optionally XHR to begin tracking requests. */
+  install() {
+    if (this.installed) return;
+    this.installed = true;
+    this.installFetchInterceptor();
+    if (this.config.trackXHR) {
+      this.installXHRInterceptor();
+    }
+  }
+  /** Restore original fetch/XHR and clear all state. */
+  destroy() {
+    if (!this.installed) return;
+    this.installed = false;
+    if (this.originalFetch) {
+      globalThis.fetch = this.originalFetch;
+      this.originalFetch = null;
+    }
+    if (this.originalXHROpen) {
+      XMLHttpRequest.prototype.open = this.originalXHROpen;
+      this.originalXHROpen = null;
+    }
+    if (this.originalXHRSend) {
+      XMLHttpRequest.prototype.send = this.originalXHRSend;
+      this.originalXHRSend = null;
+    }
+    this.inFlight.clear();
+    this.completed = [];
+    this.listeners = [];
+    this.requestCounter = 0;
+  }
+  // =========================================================================
+  // Query Methods
+  // =========================================================================
+  /** Return all currently in-flight request entries. */
+  getInFlight() {
+    return [...this.inFlight.values()];
+  }
+  /** Return completed request entries, optionally filtered. */
+  getCompleted(filter) {
+    if (!filter) return [...this.completed];
+    return this.applyFilter([...this.completed], filter);
+  }
+  /** Return all entries (in-flight + completed), optionally filtered. */
+  getAll(filter) {
+    const all = [...this.inFlight.values(), ...this.completed];
+    if (!filter) return all;
+    return this.applyFilter(all, filter);
+  }
+  /** Look up a single entry by its unique ID. */
+  getById(id) {
+    return this.inFlight.get(id) ?? this.completed.find((e) => e.request.id === id);
+  }
+  // =========================================================================
+  // Wait
+  // =========================================================================
+  /**
+   * Wait for a matching network request to complete.
+   *
+   * Modes:
+   * - `existing` — only check currently in-flight requests.
+   * - `next` — ignore existing, wait for the next matching request.
+   * - `any` (default) — check in-flight first, then recently completed, then wait.
+   */
+  async waitForRequest(options) {
+    const timeout = options?.timeout ?? 3e4;
+    const mode2 = options?.mode ?? "any";
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      if (mode2 !== "next") {
+        for (const entry of this.inFlight.values()) {
+          if (this.matchesWaitOptions(entry, options ?? {})) {
+            const unsub2 = this.onEvent((event) => {
+              if (event.entry.request.id === entry.request.id && event.type !== "request-start") {
+                unsub2();
+                clearTimeout(timer2);
+                resolve({ entry: event.entry, timedOut: false });
+              }
+            });
+            const timer2 = setTimeout(() => {
+              unsub2();
+              resolve({ entry, timedOut: true });
+            }, timeout);
+            return;
+          }
+        }
+      }
+      if (mode2 === "any") {
+        const match = [...this.completed].reverse().find(
+          (e) => this.matchesWaitOptions(e, options ?? {}) && e.completedAt != null && e.completedAt >= startTime - 1e3
+        );
+        if (match) {
+          resolve({ entry: match, timedOut: false });
+          return;
+        }
+      }
+      const unsub = this.onEvent((event) => {
+        if (event.type !== "request-start" && this.matchesWaitOptions(event.entry, options ?? {})) {
+          unsub();
+          clearTimeout(timer);
+          resolve({ entry: event.entry, timedOut: false });
+        }
+      });
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error(`waitForRequest timed out after ${timeout}ms`));
+      }, timeout);
+    });
+  }
+  // =========================================================================
+  // Event Subscription
+  // =========================================================================
+  /** Subscribe to network events. Returns an unsubscribe function. */
+  onEvent(callback) {
+    this.listeners.push(callback);
+    return () => {
+      const idx = this.listeners.indexOf(callback);
+      if (idx >= 0) this.listeners.splice(idx, 1);
+    };
+  }
+  /** Clear the completed entries buffer (in-flight entries are preserved). */
+  clear() {
+    this.completed = [];
+  }
+  // =========================================================================
+  // Private — Interceptors
+  // =========================================================================
+  installFetchInterceptor() {
+    const origFetch = globalThis.fetch;
+    this.originalFetch = origFetch;
+    const tracker = this;
+    globalThis.fetch = async function(input, init) {
+      const url = getUrl2(input);
+      if (tracker.shouldIgnore(url)) {
+        return origFetch.call(globalThis, input, init);
+      }
+      const method = getMethod2(input, init);
+      const id = tracker.generateId();
+      const entry = {
+        request: {
+          id,
+          method,
+          url,
+          pathname: tryParsePathname(url),
+          headers: tracker.extractHeaders(init?.headers, tracker.config.captureHeaders),
+          bodyPreview: await tracker.captureBodyPreview(init?.body),
+          startedAt: Date.now(),
+          status: "in-flight"
+        },
+        isFailure: false
+      };
+      tracker.inFlight.set(id, entry);
+      tracker.emitEvent({
+        type: "request-start",
+        entry,
+        pendingCount: tracker.inFlight.size,
+        timestamp: Date.now()
+      });
+      try {
+        const response = await origFetch.call(globalThis, input, init);
+        const durationMs = Date.now() - entry.request.startedAt;
+        const isError = response.status >= 400;
+        entry.request.status = isError ? "failed" : "completed";
+        entry.response = {
+          statusCode: response.status,
+          statusText: response.statusText,
+          headers: tracker.extractHeaders(response.headers, tracker.config.captureHeaders),
+          durationMs
+        };
+        entry.isFailure = isError;
+        entry.completedAt = Date.now();
+        entry.requestId = tracker.extractRequestId(response.headers);
+        entry.response.bodyPreview = await tracker.captureResponsePreview(
+          response.clone(),
+          isError
+        );
+        tracker.inFlight.delete(id);
+        tracker.completed.push(entry);
+        tracker.trimCompleted();
+        tracker.emitEvent({
+          type: isError ? "request-error" : "request-complete",
+          entry,
+          pendingCount: tracker.inFlight.size,
+          timestamp: Date.now()
+        });
+        return response;
+      } catch (err) {
+        entry.request.status = "failed";
+        entry.error = err instanceof Error ? err.message : String(err);
+        entry.isFailure = true;
+        entry.completedAt = Date.now();
+        tracker.inFlight.delete(id);
+        tracker.completed.push(entry);
+        tracker.trimCompleted();
+        tracker.emitEvent({
+          type: "request-error",
+          entry,
+          pendingCount: tracker.inFlight.size,
+          timestamp: Date.now()
+        });
+        throw err;
+      }
+    };
+  }
+  installXHRInterceptor() {
+    this.originalXHROpen = XMLHttpRequest.prototype.open;
+    this.originalXHRSend = XMLHttpRequest.prototype.send;
+    const tracker = this;
+    XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
+      const xhr = this;
+      xhr.__netTrackerMethod = method;
+      xhr.__netTrackerUrl = typeof url === "string" ? url : url.href;
+      return tracker.originalXHROpen.call(this, method, url, async ?? true, username, password);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+      const xhr = this;
+      const url = xhr.__netTrackerUrl || "";
+      const method = (xhr.__netTrackerMethod || "GET").toUpperCase();
+      if (tracker.shouldIgnore(url)) {
+        return tracker.originalXHRSend.call(this, body);
+      }
+      const id = tracker.generateId();
+      xhr.__netTrackerId = id;
+      const entry = {
+        request: {
+          id,
+          method,
+          url,
+          pathname: tryParsePathname(url),
+          bodyPreview: typeof body === "string" ? truncate4(body, tracker.config.maxBodyPreview) : void 0,
+          startedAt: Date.now(),
+          status: "in-flight"
+        },
+        isFailure: false
+      };
+      tracker.inFlight.set(id, entry);
+      tracker.emitEvent({
+        type: "request-start",
+        entry,
+        pendingCount: tracker.inFlight.size,
+        timestamp: Date.now()
+      });
+      xhr.addEventListener("loadend", () => {
+        const durationMs = Date.now() - entry.request.startedAt;
+        const isError = xhr.status === 0 || xhr.status >= 400;
+        entry.request.status = isError ? "failed" : "completed";
+        entry.response = {
+          statusCode: xhr.status,
+          statusText: xhr.statusText,
+          durationMs
+        };
+        entry.isFailure = isError;
+        entry.completedAt = Date.now();
+        if (isError || !tracker.config.errorBodiesOnly) {
+          try {
+            const responseText = xhr.responseType === "" || xhr.responseType === "text" ? xhr.responseText : void 0;
+            if (responseText) {
+              entry.response.bodyPreview = truncate4(responseText, tracker.config.maxBodyPreview);
+            }
+          } catch {
+          }
+        }
+        entry.requestId = tracker.extractRequestIdFromXHR(xhr);
+        if (tracker.config.captureHeaders) {
+          entry.response.headers = tracker.parseXHRResponseHeaders(xhr);
+        }
+        tracker.inFlight.delete(id);
+        tracker.completed.push(entry);
+        tracker.trimCompleted();
+        tracker.emitEvent({
+          type: isError ? "request-error" : "request-complete",
+          entry,
+          pendingCount: tracker.inFlight.size,
+          timestamp: Date.now()
+        });
+      });
+      xhr.addEventListener("error", () => {
+        entry.error = "Network error";
+      });
+      xhr.addEventListener("abort", () => {
+        entry.request.status = "cancelled";
+        entry.error = "Request aborted";
+      });
+      return tracker.originalXHRSend.call(this, body);
+    };
+  }
+  // =========================================================================
+  // Private — Helpers
+  // =========================================================================
+  shouldIgnore(url) {
+    return this.config.ignorePatterns.some((p) => url.includes(p));
+  }
+  generateId() {
+    return `net-${++this.requestCounter}`;
+  }
+  extractHeaders(headers, capture) {
+    if (!capture || !headers) return void 0;
+    const result = {};
+    if (headers instanceof Headers) {
+      headers.forEach((value, key) => {
+        result[key] = value;
+      });
+    } else if (Array.isArray(headers)) {
+      for (const [key, value] of headers) {
+        result[key] = value;
+      }
+    } else {
+      for (const [key, value] of Object.entries(headers)) {
+        result[key] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : void 0;
+  }
+  async captureBodyPreview(body) {
+    if (!body) return void 0;
+    if (typeof body === "string") {
+      return truncate4(body, this.config.maxBodyPreview);
+    }
+    return void 0;
+  }
+  async captureResponsePreview(response, isError) {
+    if (!isError && this.config.errorBodiesOnly) return void 0;
+    try {
+      const text = await response.text();
+      return truncate4(text, this.config.maxBodyPreview);
+    } catch {
+      return void 0;
+    }
+  }
+  extractRequestId(headers) {
+    for (const name of REQUEST_ID_HEADERS2) {
+      const value = headers.get(name);
+      if (value) return value;
+    }
+    return void 0;
+  }
+  extractRequestIdFromXHR(xhr) {
+    for (const name of REQUEST_ID_HEADERS2) {
+      const value = xhr.getResponseHeader(name);
+      if (value) return value;
+    }
+    return void 0;
+  }
+  parseXHRResponseHeaders(xhr) {
+    const raw = xhr.getAllResponseHeaders();
+    if (!raw) return void 0;
+    const result = {};
+    const lines = raw.trim().split(/[\r\n]+/);
+    for (const line of lines) {
+      const idx = line.indexOf(":");
+      if (idx > 0) {
+        const key = line.slice(0, idx).trim().toLowerCase();
+        const value = line.slice(idx + 1).trim();
+        result[key] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : void 0;
+  }
+  trimCompleted() {
+    if (this.completed.length > this.config.maxEntries) {
+      this.completed = this.completed.slice(this.completed.length - this.config.maxEntries);
+    }
+  }
+  emitEvent(event) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+      }
+    }
+  }
+  matchesFilter(entry, filter) {
+    if (filter.status) {
+      const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
+      if (!statuses.includes(entry.request.status)) return false;
+    }
+    if (filter.method) {
+      const methods = Array.isArray(filter.method) ? filter.method : [filter.method];
+      const upperMethods = methods.map((m) => m.toUpperCase());
+      if (!upperMethods.includes(entry.request.method)) return false;
+    }
+    if (filter.urlPattern) {
+      if (!entry.request.url.includes(filter.urlPattern)) return false;
+    }
+    if (filter.urlRegex) {
+      const re = new RegExp(filter.urlRegex);
+      if (!re.test(entry.request.url)) return false;
+    }
+    if (filter.failuresOnly && !entry.isFailure) return false;
+    if (filter.since != null && entry.request.startedAt < filter.since) return false;
+    if (filter.minStatus != null && entry.response) {
+      if (entry.response.statusCode < filter.minStatus) return false;
+    }
+    if (filter.maxStatus != null && entry.response) {
+      if (entry.response.statusCode > filter.maxStatus) return false;
+    }
+    return true;
+  }
+  applyFilter(entries, filter) {
+    let result = entries.filter((e) => this.matchesFilter(e, filter));
+    if (filter.limit != null && filter.limit > 0) {
+      result = result.slice(-filter.limit);
+    }
+    return result;
+  }
+  matchesWaitOptions(entry, options) {
+    if (options.method && entry.request.method !== options.method.toUpperCase()) {
+      return false;
+    }
+    if (options.urlPattern && !entry.request.url.includes(options.urlPattern)) {
+      return false;
+    }
+    if (options.urlRegex) {
+      const re = new RegExp(options.urlRegex);
+      if (!re.test(entry.request.url)) return false;
+    }
+    return true;
+  }
+};
+function getUrl2(input) {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  if (input instanceof Request) return input.url;
+  return String(input);
+}
+function getMethod2(input, init) {
+  if (init?.method) return init.method.toUpperCase();
+  if (input instanceof Request) return input.method.toUpperCase();
+  return "GET";
+}
+function tryParsePathname(url) {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : void 0);
+    return parsed.pathname;
+  } catch {
+    return void 0;
+  }
+}
+function truncate4(text, maxLength) {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
+}
+
+// src/server/handlers.ts
+init_class_name();
+init_wait_for_element();
+function buildComponentNotFoundError(id, available, byRoute, currentRoute) {
+  let otherRouteHint = "";
+  if (byRoute) {
+    for (const [route, entry] of Object.entries(byRoute)) {
+      if (route === currentRoute) continue;
+      if (entry?.ids?.includes(id)) {
+        const cur = typeof currentRoute === "string" && currentRoute.length > 0 ? currentRoute : "(unknown)";
+        otherRouteHint = ` (registered on route '${route}', current route is '${cur}')`;
+        break;
+      }
+    }
+  }
+  return `Component "${id}" not found${otherRouteHint}. Available components: [${available.join(", ")}]. Components are only available when their page is active \u2014 navigate to the page that contains this component and try again.`;
+}
+
+// src/react/commandHandlers.ts
+init_wait_for_element();
 function getIntentStore() {
   const g2 = globalThis;
   if (!g2.__UI_BRIDGE_INTENTS__) g2.__UI_BRIDGE_INTENTS__ = /* @__PURE__ */ new Map();
@@ -28697,6 +32763,25 @@ function resolveElementWithFallback(id) {
 function elementToSnapshot(e) {
   const state = e.getState();
   return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+}
+function inProcessComponentNotFoundMessage(id) {
+  let available = [];
+  let byRoute;
+  let currentRoute;
+  try {
+    const reg = getGlobalRegistry();
+    available = reg.getAllComponents().map((c) => c.id);
+    try {
+      byRoute = reg.getCountsByRoute();
+    } catch {
+      byRoute = void 0;
+    }
+  } catch {
+  }
+  if (typeof window !== "undefined" && window.location?.pathname) {
+    currentRoute = window.location.pathname;
+  }
+  return buildComponentNotFoundError(id, available, byRoute, currentRoute);
 }
 function elementToFindResult(e) {
   const state = e.getState();
@@ -28975,7 +33060,9 @@ async function executeCommand(action, payload, bridge) {
           // action on this component without grepping docs. Honours the
           // caller-provided `componentBasePath` when present so relay
           // consumers behind a mount prefix (the runner) get usable paths.
-          actionInvocationPath: `${componentBasePath ?? "/control/component"}/${c.id}/action/{actionId}`
+          actionInvocationPath: `${componentBasePath ?? "/control/component"}/${c.id}/action/{actionId}`,
+          // Phase 3.1: pass scope through verbatim. Undefined ≡ "route".
+          scope: c.scope
         })),
         // Relay handler keeps the legacy `steps` array (not `stepCount`)
         // alongside `activeRuns: []` because existing relay-driven callers
@@ -29454,6 +33541,56 @@ async function executeCommand(action, payload, bridge) {
         timestamp: Date.now()
       };
     }
+    // Phase 2.1 (plan 2026-05-03) — POST /control/element/:id/expect served
+    // by the in-browser SDK runtime. Reuses `pollWaitForElement` so the
+    // predicate semantics stay aligned with `/ai/wait-for-element`. The
+    // 422 status is stamped by the relay handler upstream — this command
+    // returns the data body unchanged.
+    case "expectElement": {
+      const { id, request } = payload;
+      const requestedState = request?.state;
+      if (typeof requestedState !== "string") {
+        return {
+          success: false,
+          error: "expectElement: 'state' is required",
+          timestamp: Date.now()
+        };
+      }
+      if (!WAIT_FOR_ELEMENT_STATES.includes(requestedState)) {
+        return {
+          success: false,
+          error: `expectElement: invalid state '${requestedState}', expected one of ${WAIT_FOR_ELEMENT_STATES.join("|")}`,
+          timestamp: Date.now()
+        };
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeout === "number" ? request.timeout : 5e3, 0),
+        3e4
+      );
+      const pollMs = Math.max(typeof request?.pollMs === "number" ? request.pollMs : 100, 10);
+      const takeSnapshot = () => {
+        try {
+          return snapshotFromRegisteredElement(getElement(id));
+        } catch {
+          return { registered: false, state: null };
+        }
+      };
+      const outcome = await pollWaitForElement({
+        takeSnapshot,
+        predicate: requestedState,
+        timeoutMs,
+        pollMs
+      });
+      const observedState = outcome.observed ? {
+        registered: outcome.observed.registered,
+        state: outcome.observed.state ?? null
+      } : null;
+      return {
+        passed: outcome.found,
+        observedState,
+        durationMs: outcome.durationMs
+      };
+    }
     case "highlightElement": {
       const dom = getElement(payload.id)?.element ?? null;
       if (dom) {
@@ -29582,7 +33719,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -29608,7 +33745,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -29633,7 +33770,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -29651,7 +33788,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${id}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(id),
           timestamp: Date.now()
         };
       }
@@ -32792,1411 +36929,9 @@ function Inspector({ getRegisteredElement, initialActive }) {
   ] });
 }
 
-// src/debug/error-timeline.ts
-var TimelineBuffer = class _TimelineBuffer {
-  constructor(maxEntries = 500) {
-    this.actions = [];
-    this.maxEntries = maxEntries;
-  }
-  // -----------------------------------------------------------------------
-  // Recording
-  // -----------------------------------------------------------------------
-  /**
-   * Record an action with its related browser events.
-   * The `type` discriminator is added automatically.
-   */
-  recordAction(entry) {
-    this.actions.push({ type: "action", ...entry });
-    this.trimActions();
-  }
-  // -----------------------------------------------------------------------
-  // Timeline query
-  // -----------------------------------------------------------------------
-  /**
-   * Build a merged timeline from recorded actions and live browser events.
-   *
-   * Browser events are fetched from the provided capture instance, classified,
-   * and interleaved chronologically with action entries.
-   *
-   * @param capture - A BrowserEventCapture (or compatible) instance to read events from
-   * @param options - Optional filtering (since, limit, minSeverity)
-   */
-  getTimeline(capture, options) {
-    const { since, limit, minSeverity } = options ?? {};
-    const minRank = minSeverity ? SEVERITY_RANK[minSeverity] : SEVERITY_RANK.noise;
-    const rawEvents = since !== void 0 ? capture.getSince(since) : capture.getRecent();
-    const browserEntries = [];
-    for (const event of rawEvents) {
-      const { severity, reason } = classifyEvent(event);
-      if (SEVERITY_RANK[severity] > minRank) continue;
-      browserEntries.push({
-        type: "browser-event",
-        timestamp: event.timestamp,
-        event,
-        severity,
-        reason,
-        fingerprint: computeFingerprint(event),
-        sourceLocation: extractSourceLocation(getEventStack(event))
-      });
-    }
-    const filteredActions = since !== void 0 ? this.actions.filter((a) => a.timestamp >= since) : [...this.actions];
-    const merged = [...filteredActions, ...browserEntries];
-    merged.sort((a, b) => a.timestamp - b.timestamp);
-    if (limit !== void 0 && limit > 0 && merged.length > limit) {
-      return merged.slice(-limit);
-    }
-    return merged;
-  }
-  // -----------------------------------------------------------------------
-  // Static utilities
-  // -----------------------------------------------------------------------
-  /**
-   * Compute the error diff between two snapshots of browser events,
-   * taken before and after an action.
-   *
-   * Uses fingerprints to determine which errors are new, resolved, or persisting.
-   * `errorDelta` counts only crash and error severity events (not warnings/noise).
-   */
-  static computeErrorDiff(action2, targetId, eventsBefore, eventsAfter) {
-    const classifiedBefore = _TimelineBuffer.classifyAndEnrich(eventsBefore);
-    const classifiedAfter = _TimelineBuffer.classifyAndEnrich(eventsAfter);
-    const beforeByFp = /* @__PURE__ */ new Map();
-    for (const c of classifiedBefore) {
-      if (!beforeByFp.has(c.fingerprint)) {
-        beforeByFp.set(c.fingerprint, c);
-      }
-    }
-    const afterByFp = /* @__PURE__ */ new Map();
-    for (const c of classifiedAfter) {
-      if (!afterByFp.has(c.fingerprint)) {
-        afterByFp.set(c.fingerprint, c);
-      }
-    }
-    const newEvents = [];
-    const resolvedEvents = [];
-    const persistingEvents = [];
-    for (const [fp, classified] of afterByFp) {
-      if (!beforeByFp.has(fp)) {
-        newEvents.push(classified);
-      } else {
-        persistingEvents.push(classified);
-      }
-    }
-    for (const [fp, classified] of beforeByFp) {
-      if (!afterByFp.has(fp)) {
-        resolvedEvents.push(classified);
-      }
-    }
-    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
-    const newSignificant = newEvents.filter(isSignificant).length;
-    const resolvedSignificant = resolvedEvents.filter(isSignificant).length;
-    const errorDelta = newSignificant - resolvedSignificant;
-    return {
-      action: action2,
-      targetId,
-      newEvents,
-      resolvedEvents,
-      persistingEvents,
-      errorDelta
-    };
-  }
-  /**
-   * Classify and enrich a batch of raw browser events.
-   *
-   * For each event: computes severity, reason, fingerprint, and source location.
-   */
-  static classifyAndEnrich(events) {
-    return events.map((event) => {
-      const { severity, reason } = classifyEvent(event);
-      return {
-        event,
-        severity,
-        reason,
-        fingerprint: computeFingerprint(event),
-        sourceLocation: extractSourceLocation(getEventStack(event))
-      };
-    });
-  }
-  // -----------------------------------------------------------------------
-  // Buffer management
-  // -----------------------------------------------------------------------
-  /**
-   * Clear all recorded actions.
-   */
-  clear() {
-    this.actions = [];
-  }
-  /**
-   * Current number of recorded actions.
-   */
-  get actionCount() {
-    return this.actions.length;
-  }
-  // -----------------------------------------------------------------------
-  // Internal
-  // -----------------------------------------------------------------------
-  trimActions() {
-    if (this.actions.length > this.maxEntries) {
-      this.actions = this.actions.slice(-this.maxEntries);
-    }
-  }
-};
-
-// src/debug/error-session.ts
-function classifyAndEnrichEvent(event) {
-  const { severity, reason } = classifyEvent(event);
-  return {
-    event,
-    severity,
-    reason,
-    fingerprint: computeFingerprint(event),
-    sourceLocation: extractSourceLocation(getEventStack(event))
-  };
-}
-var ErrorSession = class {
-  constructor(label) {
-    this.events = [];
-    this.fingerprints = /* @__PURE__ */ new Set();
-    /** Map from fingerprint to first classified event (for getUniqueEvents) */
-    this.uniqueByFingerprint = /* @__PURE__ */ new Map();
-    this.id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.label = label;
-    this.startedAt = Date.now();
-  }
-  /** Record an event into this session */
-  recordEvent(event) {
-    if (this.endedAt !== void 0) return;
-    const classified = classifyAndEnrichEvent(event);
-    this.events.push(classified);
-    if (!this.fingerprints.has(classified.fingerprint)) {
-      this.fingerprints.add(classified.fingerprint);
-      this.uniqueByFingerprint.set(classified.fingerprint, classified);
-    }
-  }
-  /** Record a batch of events */
-  recordEvents(events) {
-    for (const event of events) {
-      this.recordEvent(event);
-    }
-  }
-  /** End the session */
-  end() {
-    if (this.endedAt === void 0) {
-      this.endedAt = Date.now();
-    }
-  }
-  /** Get all unique events (one per fingerprint, first occurrence) */
-  getUniqueEvents() {
-    return Array.from(this.uniqueByFingerprint.values());
-  }
-  /** Get all events */
-  getAllEvents() {
-    return [...this.events];
-  }
-  /** Get the fingerprint set */
-  getFingerprints() {
-    return new Set(this.fingerprints);
-  }
-  /** Get session summary */
-  getSummary() {
-    const bySeverity = {
-      crash: 0,
-      error: 0,
-      warning: 0,
-      noise: 0
-    };
-    let hasCrashes = false;
-    for (const classified of this.events) {
-      bySeverity[classified.severity]++;
-      if (classified.severity === "crash") {
-        hasCrashes = true;
-      }
-    }
-    return {
-      id: this.id,
-      label: this.label,
-      startedAt: this.startedAt,
-      endedAt: this.endedAt,
-      uniqueErrorCount: this.fingerprints.size,
-      totalEventCount: this.events.length,
-      bySeverity,
-      hasCrashes
-    };
-  }
-  /** Compare this session against a baseline */
-  compareToBaseline(baseline) {
-    const newErrors = [];
-    const knownErrors = [];
-    for (const [fp, classified] of this.uniqueByFingerprint) {
-      if (baseline.fingerprints.has(fp)) {
-        knownErrors.push(classified);
-      } else {
-        newErrors.push(classified);
-      }
-    }
-    const fixedErrors = [];
-    const baselineByFp = /* @__PURE__ */ new Map();
-    for (const classified of baseline.events) {
-      if (!baselineByFp.has(classified.fingerprint)) {
-        baselineByFp.set(classified.fingerprint, classified);
-      }
-    }
-    for (const [fp, classified] of baselineByFp) {
-      if (!this.fingerprints.has(fp)) {
-        fixedErrors.push(classified);
-      }
-    }
-    const isRegression = newErrors.some((e) => e.severity === "crash" || e.severity === "error");
-    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
-    const newSignificant = newErrors.filter(isSignificant).length;
-    const fixedSignificant = fixedErrors.filter(isSignificant).length;
-    const delta = newSignificant - fixedSignificant;
-    return {
-      newErrors,
-      fixedErrors,
-      knownErrors,
-      isRegression,
-      delta
-    };
-  }
-  /** Whether the session is still active (not ended) */
-  get isActive() {
-    return this.endedAt === void 0;
-  }
-};
-var ErrorSessionManager = class {
-  constructor(maxSessions = 50) {
-    this.sessions = [];
-    this.activeSession = null;
-    this.baselines = /* @__PURE__ */ new Map();
-    this.maxSessions = maxSessions;
-  }
-  /** Start a new session. Ends the previous active session if any. */
-  startSession(label) {
-    if (this.activeSession !== null) {
-      this.activeSession.end();
-    }
-    const session = new ErrorSession(label);
-    this.activeSession = session;
-    this.sessions.push(session);
-    if (this.sessions.length > this.maxSessions) {
-      this.sessions = this.sessions.slice(-this.maxSessions);
-    }
-    return session;
-  }
-  /** End the active session */
-  endSession() {
-    if (this.activeSession === null) return null;
-    this.activeSession.end();
-    const summary = this.activeSession.getSummary();
-    this.activeSession = null;
-    return summary;
-  }
-  /** Get the active session */
-  getActive() {
-    return this.activeSession;
-  }
-  /** Record an event into the active session (no-op if no active session) */
-  recordEvent(event) {
-    if (this.activeSession !== null) {
-      this.activeSession.recordEvent(event);
-    }
-  }
-  /** Get all session summaries */
-  getSessions() {
-    return this.sessions.map((s) => s.getSummary());
-  }
-  /** Get a specific session by ID */
-  getSession(id) {
-    return this.sessions.find((s) => s.id === id) ?? null;
-  }
-  /**
-   * Capture a baseline from the current state.
-   * Takes a BrowserEventCaptureLike to read recent events.
-   */
-  captureBaseline(label, capture) {
-    const rawEvents = capture.getRecent();
-    const classified = rawEvents.map(classifyAndEnrichEvent);
-    const fingerprints = /* @__PURE__ */ new Set();
-    const uniqueEvents = [];
-    for (const c of classified) {
-      if (!fingerprints.has(c.fingerprint)) {
-        fingerprints.add(c.fingerprint);
-        uniqueEvents.push(c);
-      }
-    }
-    const baseline = {
-      label,
-      capturedAt: Date.now(),
-      fingerprints,
-      events: uniqueEvents
-    };
-    this.baselines.set(label, baseline);
-    return baseline;
-  }
-  /** Get a baseline by label */
-  getBaseline(label) {
-    return this.baselines.get(label) ?? null;
-  }
-  /** List all baselines */
-  getBaselines() {
-    const result = [];
-    for (const [, baseline] of this.baselines) {
-      result.push({
-        label: baseline.label,
-        capturedAt: baseline.capturedAt,
-        fingerprintCount: baseline.fingerprints.size
-      });
-    }
-    return result;
-  }
-  /** Delete a baseline */
-  deleteBaseline(label) {
-    return this.baselines.delete(label);
-  }
-  /**
-   * Compare the active session (or recent events) against a named baseline.
-   *
-   * If there is an active session, compares its accumulated events.
-   * Otherwise, if a capture instance is provided, compares recent events from it.
-   * Returns null if the baseline does not exist or there is nothing to compare.
-   */
-  compareToBaseline(baselineLabel, capture) {
-    const baseline = this.baselines.get(baselineLabel);
-    if (!baseline) return null;
-    if (this.activeSession !== null) {
-      return this.activeSession.compareToBaseline(baseline);
-    }
-    if (!capture) return null;
-    const rawEvents = capture.getRecent();
-    const classified = rawEvents.map(classifyAndEnrichEvent);
-    const currentByFp = /* @__PURE__ */ new Map();
-    for (const c of classified) {
-      if (!currentByFp.has(c.fingerprint)) {
-        currentByFp.set(c.fingerprint, c);
-      }
-    }
-    const newErrors = [];
-    const knownErrors = [];
-    for (const [fp, c] of currentByFp) {
-      if (baseline.fingerprints.has(fp)) {
-        knownErrors.push(c);
-      } else {
-        newErrors.push(c);
-      }
-    }
-    const baselineByFp = /* @__PURE__ */ new Map();
-    for (const c of baseline.events) {
-      if (!baselineByFp.has(c.fingerprint)) {
-        baselineByFp.set(c.fingerprint, c);
-      }
-    }
-    const fixedErrors = [];
-    for (const [fp, c] of baselineByFp) {
-      if (!currentByFp.has(fp)) {
-        fixedErrors.push(c);
-      }
-    }
-    const isRegression = newErrors.some((e) => e.severity === "crash" || e.severity === "error");
-    const isSignificant = (c) => c.severity === "crash" || c.severity === "error";
-    const newSignificant = newErrors.filter(isSignificant).length;
-    const fixedSignificant = fixedErrors.filter(isSignificant).length;
-    const delta = newSignificant - fixedSignificant;
-    return {
-      newErrors,
-      fixedErrors,
-      knownErrors,
-      isRegression,
-      delta
-    };
-  }
-};
-
-// src/debug/health-score.ts
-var DEFAULT_WINDOW_MS = 6e4;
-var DEFAULT_CRASH_IS_BROKEN = true;
-var DEFAULT_DEGRADED_THRESHOLD = 3;
-var DEFAULT_BROKEN_THRESHOLD = 8;
-function extractMessage3(event) {
-  switch (event.type) {
-    case "console":
-      return event.message;
-    case "network":
-      return event.errorMessage ?? `${event.method} ${event.requestUrl} \u2192 ${event.status ?? "no response"}`;
-    case "react-error":
-      return event.message;
-    case "resource-error":
-      return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
-    case "hmr":
-      return event.message;
-    case "ws-disconnection":
-      return `WebSocket ${event.previousState} \u2192 ${event.newState}`;
-    case "long-task":
-      return `Long task: ${Math.round(event.durationMs)}ms`;
-    case "long-animation-frame":
-      return `Long animation frame: ${Math.round(event.durationMs)}ms (blocking: ${Math.round(event.blockingDurationMs)}ms)`;
-    case "navigation":
-      return `Navigation: ${event.from} \u2192 ${event.to}`;
-    case "web-vital":
-      return `${event.metric}: ${event.value}`;
-    case "memory":
-      return `Memory: ${Math.round(event.usedJSHeapSize / 1024 / 1024)}MB used`;
-    case "freeze":
-      return `UI freeze: ${Math.round(event.gapMs)}ms`;
-    case "dom-metrics":
-      return `DOM nodes: ${event.nodeCount}`;
-    default: {
-      const _exhaustive = event;
-      return `Unknown event: ${_exhaustive.type}`;
-    }
-  }
-}
-function formatWindow(ms) {
-  if (ms < 1e3) return `${ms}ms`;
-  const seconds = Math.round(ms / 1e3);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  return `${minutes}m`;
-}
-function computeHealthReport(capture, config) {
-  const windowMs = config?.windowMs ?? DEFAULT_WINDOW_MS;
-  const crashIsBroken = config?.crashIsBroken ?? DEFAULT_CRASH_IS_BROKEN;
-  const degradedThreshold = config?.degradedThreshold ?? DEFAULT_DEGRADED_THRESHOLD;
-  const brokenThreshold = config?.brokenThreshold ?? DEFAULT_BROKEN_THRESHOLD;
-  const now = Date.now();
-  const since = now - windowMs;
-  const events = capture.getSince(since);
-  let crashes = 0;
-  let errors = 0;
-  let warnings = 0;
-  let topIssue;
-  let topIssueRank = SEVERITY_RANK.noise + 1;
-  for (const event of events) {
-    const { severity } = classifyEvent(event);
-    switch (severity) {
-      case "crash":
-        crashes++;
-        break;
-      case "error":
-        errors++;
-        break;
-      case "warning":
-        warnings++;
-        break;
-      case "noise":
-        continue;
-    }
-    const rank = SEVERITY_RANK[severity];
-    if (rank < topIssueRank || rank === topIssueRank && topIssue && event.timestamp >= topIssue.timestamp) {
-      topIssueRank = rank;
-      topIssue = {
-        message: extractMessage3(event),
-        severity,
-        timestamp: event.timestamp
-      };
-    }
-  }
-  let score = 100;
-  score -= crashes * 40;
-  score -= errors * 10;
-  score -= warnings * 2;
-  score = Math.max(0, score);
-  let status;
-  if (crashIsBroken && crashes > 0) {
-    status = "broken";
-  } else if (errors >= brokenThreshold) {
-    status = "broken";
-  } else if (errors >= degradedThreshold) {
-    status = "degraded";
-  } else {
-    status = "healthy";
-  }
-  const windowMinutes = windowMs / 6e4;
-  const errorRate = windowMinutes > 0 ? Math.round((crashes + errors) / windowMinutes * 100) / 100 : 0;
-  const windowLabel = formatWindow(windowMs);
-  let summary;
-  if (status === "healthy") {
-    if (warnings > 0) {
-      summary = `Healthy: ${warnings} warning${warnings !== 1 ? "s" : ""} in the last ${windowLabel}`;
-    } else {
-      summary = `Healthy: no errors in the last ${windowLabel}`;
-    }
-  } else {
-    const parts = [];
-    if (crashes > 0) parts.push(`${crashes} crash${crashes !== 1 ? "es" : ""}`);
-    if (errors > 0) parts.push(`${errors} error${errors !== 1 ? "s" : ""}`);
-    if (warnings > 0) parts.push(`${warnings} warning${warnings !== 1 ? "s" : ""}`);
-    const statusLabel = status === "broken" ? "Broken" : "Degraded";
-    summary = `${statusLabel}: ${parts.join(" and ")} in the last ${windowLabel}`;
-  }
-  return {
-    status,
-    score,
-    summary,
-    breakdown: { crashes, errors, warnings },
-    errorRate,
-    ...topIssue !== void 0 ? { topIssue } : {},
-    windowMs,
-    timestamp: now
-  };
-}
-function computeHealthScore(capture, config) {
-  return computeHealthReport(capture, config).score;
-}
-function computeHealthStatus(capture, config) {
-  return computeHealthReport(capture, config).status;
-}
-
-// src/debug/network-chain.ts
-var REQUEST_ID_HEADERS = [
-  "x-request-id",
-  "x-correlation-id",
-  "x-trace-id",
-  "traceparent",
-  "x-amzn-requestid",
-  "x-amzn-trace-id"
-];
-var DEFAULT_CONFIG5 = {
-  maxBodyPreview: 500,
-  errorBodiesOnly: true,
-  correlationWindowMs: 200,
-  ignorePatterns: [
-    "/api/ui-bridge/",
-    "/__ui-bridge/",
-    "/api/dev-debug/",
-    "localhost:9876",
-    "chrome-extension://"
-  ],
-  maxChains: 200,
-  captureHeaders: false
-};
-var xhrMetaMap = /* @__PURE__ */ new WeakMap();
-var NetworkChainTracker = class {
-  constructor(config) {
-    this.chains = [];
-    this.installed = false;
-    this.cleanup = null;
-    // Tracker-driven mode
-    this.tracker = null;
-    this.trackerUnsubscribe = null;
-    const { tracker, ...rest } = config ?? {};
-    this.config = { ...DEFAULT_CONFIG5, ...rest };
-    this.tracker = tracker ?? null;
-  }
-  // -------------------------------------------------------------------------
-  // Install / Uninstall
-  // -------------------------------------------------------------------------
-  /**
-   * Install the fetch and XHR interceptors (standalone mode), or subscribe
-   * to a NetworkRequestTracker (tracker-driven mode).
-   * No-ops in non-browser environments (SSR / Node).
-   */
-  install() {
-    if (this.installed) return;
-    if (this.tracker) {
-      this.installTrackerSubscription();
-      this.installed = true;
-      return;
-    }
-    if (typeof window === "undefined" || typeof window.fetch !== "function") {
-      return;
-    }
-    const cleanups = [];
-    const originalFetch = window.fetch;
-    const self = this;
-    window.fetch = async function(input, init) {
-      const url = getUrl(input);
-      if (self.shouldIgnore(url)) {
-        return originalFetch.call(this, input, init);
-      }
-      const method = getMethod(input, init);
-      const request = {
-        id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        method,
-        url,
-        startTime: Date.now()
-      };
-      if (init?.body && typeof init.body === "string") {
-        request.bodyPreview = self.truncateBody(init.body);
-      }
-      if (self.config.captureHeaders && init?.headers) {
-        request.headers = self.extractSelectedHeaders(new Headers(init.headers));
-      }
-      try {
-        const response = await originalFetch.call(this, input, init);
-        const durationMs = Date.now() - request.startTime;
-        const isError = response.status >= 400;
-        const chain = {
-          request,
-          response: {
-            status: response.status,
-            statusText: response.statusText,
-            durationMs
-          },
-          requestId: self.extractRequestId(response.headers),
-          correlatedErrors: [],
-          isFailure: isError,
-          timestamp: request.startTime
-        };
-        if (isError || !self.config.errorBodiesOnly) {
-          try {
-            const cloned = response.clone();
-            const text = await cloned.text();
-            chain.response.bodyPreview = self.truncateBody(text);
-          } catch {
-          }
-        }
-        if (self.config.captureHeaders) {
-          chain.response.headers = self.extractSelectedHeaders(response.headers);
-        }
-        self.chains.push(chain);
-        self.trim();
-        return response;
-      } catch (err) {
-        const chain = {
-          request,
-          error: err instanceof Error ? err.message : String(err),
-          correlatedErrors: [],
-          isFailure: true,
-          timestamp: request.startTime
-        };
-        self.chains.push(chain);
-        self.trim();
-        throw err;
-      }
-    };
-    cleanups.push(() => {
-      window.fetch = originalFetch;
-    });
-    if (typeof XMLHttpRequest !== "undefined") {
-      const originalOpen = XMLHttpRequest.prototype.open;
-      const originalSend = XMLHttpRequest.prototype.send;
-      const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        const meta = {
-          method: method.toUpperCase(),
-          url: typeof url === "object" && url instanceof URL ? url.href : String(url),
-          requestHeaders: {}
-        };
-        xhrMetaMap.set(this, meta);
-        return originalOpen.apply(this, [method, url, ...rest]);
-      };
-      XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-        const meta = xhrMetaMap.get(this);
-        if (meta) {
-          meta.requestHeaders[name.toLowerCase()] = value;
-        }
-        return originalSetRequestHeader.call(this, name, value);
-      };
-      XMLHttpRequest.prototype.send = function(body) {
-        const meta = xhrMetaMap.get(this);
-        if (!meta || self.shouldIgnore(meta.url)) {
-          return originalSend.call(this, body);
-        }
-        const request = {
-          id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          method: meta.method,
-          url: meta.url,
-          startTime: Date.now()
-        };
-        if (body && typeof body === "string") {
-          request.bodyPreview = self.truncateBody(body);
-        }
-        if (self.config.captureHeaders && Object.keys(meta.requestHeaders).length > 0) {
-          request.headers = self.extractSelectedHeadersFromRecord(meta.requestHeaders);
-        }
-        const pushChain = (chain) => {
-          self.chains.push(chain);
-          self.trim();
-        };
-        this.addEventListener("load", function() {
-          const durationMs = Date.now() - request.startTime;
-          const isError = this.status >= 400;
-          const chain = {
-            request,
-            response: {
-              status: this.status,
-              statusText: this.statusText,
-              durationMs
-            },
-            correlatedErrors: [],
-            isFailure: isError,
-            timestamp: request.startTime
-          };
-          chain.requestId = self.extractRequestIdFromXHR(this);
-          if (isError || !self.config.errorBodiesOnly) {
-            try {
-              const text = typeof this.responseText === "string" ? this.responseText : "";
-              if (text) {
-                chain.response.bodyPreview = self.truncateBody(text);
-              }
-            } catch {
-            }
-          }
-          if (self.config.captureHeaders) {
-            chain.response.headers = self.extractSelectedHeadersFromXHR(this);
-          }
-          pushChain(chain);
-        });
-        this.addEventListener("error", function() {
-          pushChain({
-            request,
-            error: "Network error",
-            correlatedErrors: [],
-            isFailure: true,
-            timestamp: request.startTime
-          });
-        });
-        this.addEventListener("timeout", function() {
-          pushChain({
-            request,
-            error: `Timeout after ${this.timeout}ms`,
-            correlatedErrors: [],
-            isFailure: true,
-            timestamp: request.startTime
-          });
-        });
-        this.addEventListener("abort", function() {
-          pushChain({
-            request,
-            error: "Request aborted",
-            correlatedErrors: [],
-            isFailure: true,
-            timestamp: request.startTime
-          });
-        });
-        return originalSend.call(this, body);
-      };
-      cleanups.push(() => {
-        XMLHttpRequest.prototype.open = originalOpen;
-        XMLHttpRequest.prototype.send = originalSend;
-        XMLHttpRequest.prototype.setRequestHeader = originalSetRequestHeader;
-      });
-    }
-    this.cleanup = () => {
-      for (const fn of cleanups) fn();
-    };
-    this.installed = true;
-  }
-  /** Uninstall the fetch and XHR interceptors, restoring originals. */
-  uninstall() {
-    if (!this.installed) return;
-    if (this.trackerUnsubscribe) {
-      this.trackerUnsubscribe();
-      this.trackerUnsubscribe = null;
-    } else {
-      this.cleanup?.();
-      this.cleanup = null;
-    }
-    this.installed = false;
-  }
-  // -------------------------------------------------------------------------
-  // Query methods
-  // -------------------------------------------------------------------------
-  /** Get all chains (oldest first). */
-  getAll() {
-    return [...this.chains];
-  }
-  /** Get chains with a timestamp >= `ts`. */
-  getSince(ts) {
-    return this.chains.filter((c) => c.timestamp >= ts);
-  }
-  /** Get the most recent `n` chains (default: 50). */
-  getRecent(n = 50) {
-    return this.chains.slice(-n);
-  }
-  /** Get only failure chains (4xx/5xx/network errors). */
-  getFailures() {
-    return this.chains.filter((c) => c.isFailure);
-  }
-  /** Get chains whose request URL contains `pattern`. */
-  getByUrl(pattern) {
-    return this.chains.filter((c) => c.request.url.includes(pattern));
-  }
-  /** Find the first chain matching a request ID (from response headers). */
-  findByRequestId(requestId) {
-    return this.chains.find((c) => c.requestId === requestId);
-  }
-  // -------------------------------------------------------------------------
-  // Correlation
-  // -------------------------------------------------------------------------
-  /**
-   * Correlate console errors with network chains.
-   *
-   * Call this after collecting console errors to link them with recent
-   * network events. Each console error is checked against all chains using
-   * three correlation strategies:
-   *
-   * 1. **URL mention** - the error message contains the request URL (or a
-   *    recognizable suffix of it).
-   * 2. **Timing** - the error occurred within `correlationWindowMs` of the
-   *    network response.
-   * 3. **Request ID** - the error message contains the chain's `requestId`.
-   *
-   * Correlations are pushed to each matching chain's `correlatedErrors` array.
-   */
-  correlateErrors(events) {
-    const consoleErrors = events.filter((e) => e.type === "console");
-    if (consoleErrors.length === 0) return;
-    for (const chain of this.chains) {
-      const responseTime = chain.response ? chain.request.startTime + chain.response.durationMs : chain.request.startTime;
-      const urlSuffix = extractUrlPath(chain.request.url);
-      for (const error of consoleErrors) {
-        if (chain.correlatedErrors.some(
-          (ce) => ce.message === error.message && ce.timestamp === error.timestamp
-        )) {
-          continue;
-        }
-        if (urlSuffix && error.message.includes(urlSuffix)) {
-          chain.correlatedErrors.push({
-            message: error.message,
-            timestamp: error.timestamp,
-            correlationType: "url-mention"
-          });
-          continue;
-        }
-        if (error.message.includes(chain.request.url)) {
-          chain.correlatedErrors.push({
-            message: error.message,
-            timestamp: error.timestamp,
-            correlationType: "url-mention"
-          });
-          continue;
-        }
-        if (chain.requestId && error.message.includes(chain.requestId)) {
-          chain.correlatedErrors.push({
-            message: error.message,
-            timestamp: error.timestamp,
-            correlationType: "request-id"
-          });
-          continue;
-        }
-        if (chain.isFailure && Math.abs(error.timestamp - responseTime) <= this.config.correlationWindowMs) {
-          chain.correlatedErrors.push({
-            message: error.message,
-            timestamp: error.timestamp,
-            correlationType: "timing"
-          });
-        }
-      }
-    }
-  }
-  // -------------------------------------------------------------------------
-  // Lifecycle
-  // -------------------------------------------------------------------------
-  /** Clear all buffered chains. */
-  clear() {
-    this.chains = [];
-  }
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
-  /**
-   * Subscribe to a NetworkRequestTracker's events instead of patching
-   * fetch/XHR directly. Converts each completed/errored event entry into
-   * a NetworkChain and pushes it to the buffer.
-   */
-  installTrackerSubscription() {
-    this.trackerUnsubscribe = this.tracker.onEvent((event) => {
-      if (event.type === "request-start") return;
-      const url = event.entry.request.url;
-      if (this.shouldIgnore(url)) return;
-      const chain = this.entryToChain(event.entry);
-      this.chains.push(chain);
-      this.trim();
-    });
-  }
-  /**
-   * Convert a NetworkRequestEntry (from the tracker) to a NetworkChain.
-   */
-  entryToChain(entry) {
-    const request = {
-      id: entry.request.id,
-      method: entry.request.method,
-      url: entry.request.url,
-      startTime: entry.request.startedAt,
-      bodyPreview: entry.request.bodyPreview
-    };
-    if (this.config.captureHeaders && entry.request.headers) {
-      request.headers = this.extractSelectedHeadersFromRecord(entry.request.headers);
-    }
-    const chain = {
-      request,
-      correlatedErrors: [],
-      isFailure: entry.isFailure,
-      timestamp: entry.request.startedAt
-    };
-    if (entry.error) {
-      chain.error = entry.error;
-    }
-    if (entry.response) {
-      chain.response = {
-        status: entry.response.statusCode,
-        statusText: entry.response.statusText,
-        durationMs: entry.response.durationMs
-      };
-      if (entry.response.bodyPreview && (entry.isFailure || !this.config.errorBodiesOnly)) {
-        chain.response.bodyPreview = this.truncateBody(entry.response.bodyPreview);
-      }
-      if (this.config.captureHeaders && entry.response.headers) {
-        chain.response.headers = this.extractSelectedHeadersFromRecord(entry.response.headers);
-      }
-    }
-    if (entry.requestId) {
-      chain.requestId = entry.requestId;
-    }
-    return chain;
-  }
-  shouldIgnore(url) {
-    return this.config.ignorePatterns.some((p) => url.includes(p));
-  }
-  /**
-   * Extract a request ID from response headers.
-   * Checks `REQUEST_ID_HEADERS` in priority order and returns the first match.
-   */
-  extractRequestId(headers) {
-    for (const name of REQUEST_ID_HEADERS) {
-      const value = headers.get(name);
-      if (value) return value;
-    }
-    return void 0;
-  }
-  /**
-   * Extract selected headers (request ID headers + content-type).
-   */
-  extractSelectedHeaders(headers) {
-    const selected = {};
-    for (const name of REQUEST_ID_HEADERS) {
-      const value = headers.get(name);
-      if (value) selected[name] = value;
-    }
-    const ct = headers.get("content-type");
-    if (ct) selected["content-type"] = ct;
-    return selected;
-  }
-  /**
-   * Extract selected headers from a plain record (used by XHR interceptor for
-   * request headers captured via setRequestHeader).
-   */
-  extractSelectedHeadersFromRecord(headers) {
-    const selected = {};
-    for (const name of REQUEST_ID_HEADERS) {
-      const value = headers[name];
-      if (value) selected[name] = value;
-    }
-    const ct = headers["content-type"];
-    if (ct) selected["content-type"] = ct;
-    return selected;
-  }
-  /**
-   * Extract a request ID from XHR response headers.
-   * Uses `getResponseHeader` to check `REQUEST_ID_HEADERS` in priority order.
-   */
-  extractRequestIdFromXHR(xhr) {
-    for (const name of REQUEST_ID_HEADERS) {
-      try {
-        const value = xhr.getResponseHeader(name);
-        if (value) return value;
-      } catch {
-      }
-    }
-    return void 0;
-  }
-  /**
-   * Extract selected response headers from an XHR instance.
-   */
-  extractSelectedHeadersFromXHR(xhr) {
-    const selected = {};
-    for (const name of REQUEST_ID_HEADERS) {
-      try {
-        const value = xhr.getResponseHeader(name);
-        if (value) selected[name] = value;
-      } catch {
-      }
-    }
-    try {
-      const ct = xhr.getResponseHeader("content-type");
-      if (ct) selected["content-type"] = ct;
-    } catch {
-    }
-    return selected;
-  }
-  truncateBody(body) {
-    if (body.length <= this.config.maxBodyPreview) return body;
-    return body.slice(0, this.config.maxBodyPreview) + "\u2026";
-  }
-  /** Trim the buffer to `maxChains`, dropping the oldest entries. */
-  trim() {
-    if (this.chains.length > this.config.maxChains) {
-      this.chains = this.chains.slice(this.chains.length - this.config.maxChains);
-    }
-  }
-};
-function getMethod(input, init) {
-  if (init?.method) return init.method.toUpperCase();
-  if (input instanceof Request) return input.method.toUpperCase();
-  return "GET";
-}
-function getUrl(input) {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.href;
-  if (input instanceof Request) return input.url;
-  return String(input);
-}
-function extractUrlPath(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.pathname;
-  } catch {
-    return void 0;
-  }
-}
-
-// src/debug/error-snapshot.ts
-var DEFAULT_MAX_SNAPSHOTS = 20;
-var DEFAULT_TRIGGER_SEVERITIES = ["crash", "error"];
-var DEFAULT_DEDUPLICATE = true;
-var EMPTY_PAGE_STATE = {
-  url: "",
-  title: "",
-  elementCount: 0,
-  visibleErrors: []
-};
-function extractMessage4(event) {
-  switch (event.type) {
-    case "console":
-      return event.message;
-    case "network":
-      return event.errorMessage ?? `${event.method} ${event.requestUrl} \u2192 ${event.status ?? "no response"}`;
-    case "react-error":
-      return event.message;
-    case "resource-error":
-      return `Failed to load ${event.tagName}: ${event.resourceUrl}`;
-    case "hmr":
-      return event.message;
-    case "ws-disconnection":
-      return `WebSocket ${event.previousState} \u2192 ${event.newState}`;
-    case "long-task":
-      return `Long task: ${Math.round(event.durationMs)}ms`;
-    case "long-animation-frame":
-      return `Long animation frame: ${Math.round(event.durationMs)}ms (blocking: ${Math.round(event.blockingDurationMs)}ms)`;
-    case "navigation":
-      return `Navigation: ${event.from} \u2192 ${event.to}`;
-    case "web-vital":
-      return `${event.metric}: ${event.value}`;
-    case "memory":
-      return `Memory: ${Math.round(event.usedJSHeapSize / 1024 / 1024)}MB used`;
-    case "freeze":
-      return `UI freeze: ${Math.round(event.gapMs)}ms`;
-    case "dom-metrics":
-      return `DOM nodes: ${event.nodeCount}`;
-    default: {
-      const _exhaustive = event;
-      return `Unknown event: ${_exhaustive.type}`;
-    }
-  }
-}
-var ErrorSnapshotBuffer = class {
-  constructor(config) {
-    this.snapshots = [];
-    this.seenFingerprints = /* @__PURE__ */ new Set();
-    this.maxSnapshots = config?.maxSnapshots ?? DEFAULT_MAX_SNAPSHOTS;
-    this.triggerSeverities = new Set(config?.triggerSeverities ?? DEFAULT_TRIGGER_SEVERITIES);
-    this.deduplicate = config?.deduplicateByFingerprint ?? DEFAULT_DEDUPLICATE;
-    this.capturePageState = config?.capturePageState;
-    this.getRecentActions = config?.getRecentActions;
-  }
-  /**
-   * Process a single event. If it's significant (matches trigger severities),
-   * capture a snapshot and return it. Returns null if the event is not
-   * significant or is a duplicate fingerprint.
-   */
-  processEvent(event) {
-    const { severity } = classifyEvent(event);
-    if (!this.triggerSeverities.has(severity)) {
-      return null;
-    }
-    const fingerprint = computeFingerprint(event);
-    if (this.deduplicate && this.seenFingerprints.has(fingerprint)) {
-      return null;
-    }
-    const stack = getEventStack(event);
-    const snapshot = {
-      id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      error: {
-        message: extractMessage4(event),
-        severity,
-        fingerprint,
-        sourceLocation: extractSourceLocation(stack),
-        stack,
-        timestamp: event.timestamp
-      },
-      pageState: this.capturePageState?.() ?? EMPTY_PAGE_STATE,
-      recentActions: this.getRecentActions?.() ?? [],
-      capturedAt: Date.now()
-    };
-    this.snapshots.push(snapshot);
-    this.seenFingerprints.add(fingerprint);
-    this.trimBuffer();
-    return snapshot;
-  }
-  /**
-   * Process a batch of events. Returns all snapshots that were captured.
-   */
-  processEvents(events) {
-    const results = [];
-    for (const event of events) {
-      const snapshot = this.processEvent(event);
-      if (snapshot !== null) {
-        results.push(snapshot);
-      }
-    }
-    return results;
-  }
-  /** Get all captured snapshots */
-  getAll() {
-    return [...this.snapshots];
-  }
-  /** Get the most recent N snapshots (default: 10) */
-  getRecent(n = 10) {
-    return this.snapshots.slice(-n);
-  }
-  /** Get a snapshot by its error fingerprint */
-  getByFingerprint(fingerprint) {
-    return this.snapshots.find((s) => s.error.fingerprint === fingerprint);
-  }
-  /** Clear all snapshots and the dedup set */
-  clear() {
-    this.snapshots = [];
-    this.seenFingerprints.clear();
-  }
-  // -------------------------------------------------------------------------
-  // Private
-  // -------------------------------------------------------------------------
-  /**
-   * Trim the buffer to maxSnapshots, removing the oldest entries.
-   * Also prunes the fingerprint set to match remaining snapshots.
-   */
-  trimBuffer() {
-    if (this.snapshots.length <= this.maxSnapshots) return;
-    this.snapshots.splice(0, this.snapshots.length - this.maxSnapshots);
-    this.seenFingerprints.clear();
-    for (const snapshot of this.snapshots) {
-      this.seenFingerprints.add(snapshot.error.fingerprint);
-    }
-  }
-};
-
-// src/debug/ws-streaming.ts
-function extractSourceLocationFromStack(stack) {
-  if (!stack) return void 0;
-  const V8_FRAME_RE2 = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
-  const SPIDERMONKEY_FRAME_RE2 = /^(.+?)@(.+?):(\d+):(\d+)$/;
-  const SKIP_PATTERNS = [
-    /node_modules/,
-    /react-dom/,
-    /react\.development/,
-    /react\.production/,
-    /webpack-internal/,
-    /chrome-extension:\/\//,
-    /moz-extension:\/\//
-  ];
-  const lines = stack.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const v8 = trimmed.match(V8_FRAME_RE2);
-    const frame = v8 ? { file: v8[2], line: v8[3] } : (() => {
-      const sm = trimmed.match(SPIDERMONKEY_FRAME_RE2);
-      return sm ? { file: sm[2], line: sm[3] } : null;
-    })();
-    if (frame && !SKIP_PATTERNS.some((p) => p.test(frame.file))) {
-      let clean = frame.file.split("?")[0].split("#")[0];
-      clean = clean.replace(/^https?:\/\/[^/]+/, "");
-      const parts = clean.split("/").filter(Boolean);
-      const filename = parts.length > 3 ? parts.slice(-3).join("/") : parts.join("/");
-      return `${filename}:${frame.line}`;
-    }
-  }
-  return void 0;
-}
-var DEFAULT_MAX_SUBSCRIPTIONS = 10;
-var DEFAULT_MAX_RECENT_FINGERPRINTS = 200;
-var LruFingerprintSet = class {
-  constructor(maxSize) {
-    this.set = /* @__PURE__ */ new Set();
-    this.order = [];
-    this.maxSize = maxSize;
-  }
-  /** Returns true if the fingerprint was already in the set. */
-  has(fingerprint) {
-    return this.set.has(fingerprint);
-  }
-  /** Add a fingerprint. Returns true if it was new (not already present). */
-  add(fingerprint) {
-    if (this.set.has(fingerprint)) {
-      return false;
-    }
-    if (this.order.length >= this.maxSize) {
-      const oldest = this.order.shift();
-      this.set.delete(oldest);
-    }
-    this.set.add(fingerprint);
-    this.order.push(fingerprint);
-    return true;
-  }
-  /** Clear all entries. */
-  clear() {
-    this.set.clear();
-    this.order = [];
-  }
-};
-var BrowserEventStream = class {
-  constructor(config) {
-    this.subscriptions = /* @__PURE__ */ new Map();
-    this.dedupSets = /* @__PURE__ */ new Map();
-    this.maxSubscriptions = config?.maxSubscriptions ?? DEFAULT_MAX_SUBSCRIPTIONS;
-    this.maxRecentFingerprints = config?.maxRecentFingerprints ?? DEFAULT_MAX_RECENT_FINGERPRINTS;
-  }
-  // -----------------------------------------------------------------------
-  // Subscription management
-  // -----------------------------------------------------------------------
-  /**
-   * Create a new subscription with optional filters.
-   *
-   * Returns the full subscription object with an auto-generated `id`.
-   * Throws if the maximum number of subscriptions has been reached.
-   */
-  subscribe(options) {
-    if (this.subscriptions.size >= this.maxSubscriptions) {
-      throw new Error(
-        `Maximum subscriptions reached (${this.maxSubscriptions}). Unsubscribe from an existing subscription first.`
-      );
-    }
-    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const subscription = {
-      id,
-      ...options
-    };
-    this.subscriptions.set(id, subscription);
-    if (subscription.deduplicate) {
-      this.dedupSets.set(id, new LruFingerprintSet(this.maxRecentFingerprints));
-    }
-    return subscription;
-  }
-  /**
-   * Remove a subscription by ID.
-   *
-   * Returns true if the subscription existed and was removed.
-   */
-  unsubscribe(id) {
-    const existed = this.subscriptions.delete(id);
-    this.dedupSets.delete(id);
-    return existed;
-  }
-  /**
-   * Get all active subscriptions.
-   */
-  getSubscriptions() {
-    return Array.from(this.subscriptions.values());
-  }
-  // -----------------------------------------------------------------------
-  // Event processing
-  // -----------------------------------------------------------------------
-  /**
-   * Process a single browser event through all subscriptions.
-   *
-   * Classifies the event, computes its fingerprint, and checks each
-   * subscription's filters. Returns a map of subscription-id to message
-   * for only those subscriptions that should receive this event.
-   *
-   * The caller is responsible for sending the messages over WebSocket.
-   */
-  processEvent(event) {
-    const { severity, reason } = classifyEvent(event);
-    const fingerprint = computeFingerprint(event);
-    const sourceLocation = extractSourceLocationFromStack(getEventStack(event));
-    const message = {
-      event,
-      severity,
-      reason,
-      fingerprint,
-      ...sourceLocation !== void 0 ? { sourceLocation } : {}
-    };
-    const results = /* @__PURE__ */ new Map();
-    for (const [id, subscription] of this.subscriptions) {
-      if (!this.shouldDeliver(subscription, event, severity, fingerprint)) {
-        continue;
-      }
-      results.set(id, message);
-    }
-    return results;
-  }
-  /**
-   * Process a batch of browser events through all subscriptions.
-   *
-   * Returns a map of subscription-id to an array of messages. Only
-   * subscriptions that receive at least one event appear in the map.
-   */
-  processEvents(events) {
-    const results = /* @__PURE__ */ new Map();
-    for (const event of events) {
-      const perEvent = this.processEvent(event);
-      for (const [subId, message] of perEvent) {
-        let messages = results.get(subId);
-        if (!messages) {
-          messages = [];
-          results.set(subId, messages);
-        }
-        messages.push(message);
-      }
-    }
-    return results;
-  }
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
-  /**
-   * Check whether a subscription should receive a specific event.
-   *
-   * Evaluates in order:
-   * 1. Severity filter (minSeverity)
-   * 2. Event type filter (eventTypes)
-   * 3. Deduplication (fingerprint LRU)
-   */
-  shouldDeliver(subscription, event, severity, fingerprint) {
-    if (subscription.minSeverity) {
-      if (!this.meetsMinSeverity(severity, subscription.minSeverity)) {
-        return false;
-      }
-    }
-    if (subscription.eventTypes && subscription.eventTypes.length > 0) {
-      if (!subscription.eventTypes.includes(event.type)) {
-        return false;
-      }
-    }
-    if (subscription.deduplicate) {
-      const dedupSet = this.dedupSets.get(subscription.id);
-      if (dedupSet) {
-        const isNew = dedupSet.add(fingerprint);
-        if (!isNew) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-  /**
-   * Check if an event's severity meets the minimum severity threshold.
-   *
-   * A lower rank number means more severe. "minSeverity: 'warning'"
-   * means crash (0), error (1), and warning (2) pass, but noise (3) does not.
-   */
-  meetsMinSeverity(eventSeverity, minSeverity) {
-    return SEVERITY_RANK[eventSeverity] <= SEVERITY_RANK[minSeverity];
-  }
-};
-
 // src/debug/index.ts
+init_error_fingerprint();
+init_shared_utils();
 init_click_highlight();
 
 // src/index.ts
@@ -34636,2079 +37371,6 @@ function shouldSkip(assertion, options) {
 // src/specs/style-types.ts
 var STYLE_GUIDE_FILE_EXTENSION = ".styleguide.uibridge.json";
 var STYLE_GUIDE_VERSION = "1.0.0";
-
-// src/specs/style-validator.ts
-function resolveTokenValue(tokenPath, tokens) {
-  const parts = tokenPath.split(".");
-  let current = tokens;
-  for (const part of parts) {
-    if (current === null || current === void 0 || typeof current !== "object") {
-      return null;
-    }
-    current = current[part];
-  }
-  if (typeof current === "string") {
-    return current;
-  }
-  if (typeof current === "number") {
-    return String(current);
-  }
-  return null;
-}
-function evaluateConstraint(constraint, styles, tokens, customProperties) {
-  const isCustomProp = constraint.property.startsWith("--");
-  const actualValue = isCustomProp ? customProperties?.[constraint.property] ?? "" : styles[constraint.property] || "";
-  switch (constraint.type) {
-    case "exact": {
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(constraint.value);
-      return {
-        passed,
-        constraint,
-        actualValue,
-        expectedValue: constraint.value,
-        message: passed ? void 0 : `Expected ${constraint.property} to be "${constraint.value}", got "${actualValue}"`
-      };
-    }
-    case "oneOf": {
-      const normalizedActual = normalizeStyleValue(actualValue);
-      const passed = constraint.values.some((v) => normalizeStyleValue(v) === normalizedActual);
-      return {
-        passed,
-        constraint,
-        actualValue,
-        expectedValue: `one of [${constraint.values.join(", ")}]`,
-        message: passed ? void 0 : `Expected ${constraint.property} to be one of [${constraint.values.join(", ")}], got "${actualValue}"`
-      };
-    }
-    case "tokenRef": {
-      const tokenValue = resolveTokenValue(constraint.tokenPath, tokens);
-      if (tokenValue === null) {
-        return {
-          passed: false,
-          constraint,
-          actualValue,
-          expectedValue: `token(${constraint.tokenPath})`,
-          message: `Token "${constraint.tokenPath}" not found in design tokens`
-        };
-      }
-      const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(tokenValue);
-      return {
-        passed,
-        constraint,
-        actualValue,
-        expectedValue: `${tokenValue} (token: ${constraint.tokenPath})`,
-        message: passed ? void 0 : `Expected ${constraint.property} to match token "${constraint.tokenPath}" (${tokenValue}), got "${actualValue}"`
-      };
-    }
-    case "range": {
-      const numericValue = parseFloat(actualValue);
-      if (isNaN(numericValue)) {
-        return {
-          passed: false,
-          constraint,
-          actualValue,
-          expectedValue: `${constraint.min ?? "\u221E"} - ${constraint.max ?? "\u221E"}${constraint.unit || ""}`,
-          message: `Cannot parse "${actualValue}" as a number for range check on ${constraint.property}`
-        };
-      }
-      const aboveMin = constraint.min === void 0 || numericValue >= constraint.min;
-      const belowMax = constraint.max === void 0 || numericValue <= constraint.max;
-      const passed = aboveMin && belowMax;
-      return {
-        passed,
-        constraint,
-        actualValue,
-        expectedValue: `${constraint.min ?? "\u221E"} - ${constraint.max ?? "\u221E"}${constraint.unit || ""}`,
-        message: passed ? void 0 : `Expected ${constraint.property} to be in range [${constraint.min ?? "\u221E"}, ${constraint.max ?? "\u221E"}], got ${numericValue}`
-      };
-    }
-    case "responsive": {
-      const firstBreakpoint = Object.keys(constraint.breakpoints)[0];
-      const expectedVal = constraint.breakpoints[firstBreakpoint];
-      if (typeof expectedVal === "string") {
-        const passed = normalizeStyleValue(actualValue) === normalizeStyleValue(expectedVal);
-        return {
-          passed,
-          constraint,
-          actualValue,
-          expectedValue: `${expectedVal} (at ${firstBreakpoint})`,
-          message: passed ? void 0 : `Expected ${constraint.property} to be "${expectedVal}" at ${firstBreakpoint}, got "${actualValue}"`
-        };
-      }
-      return evaluateConstraint(expectedVal, styles, tokens, customProperties);
-    }
-  }
-}
-function ruleMatchesElement(rule, elementData) {
-  if (rule.elementType && elementData.type !== rule.elementType) {
-    return false;
-  }
-  if (rule.selector) {
-    const id = elementData.elementId.toLowerCase();
-    const sel = rule.selector.toLowerCase();
-    if (sel.startsWith(".")) {
-      const targetClass = sel.slice(1);
-      if (elementData.classes) {
-        return elementData.classes.some((c) => c.toLowerCase() === targetClass);
-      }
-      return id.includes(targetClass);
-    }
-    if (sel.startsWith("#") && id !== sel.slice(1)) {
-      return false;
-    }
-    if (!sel.startsWith(".") && !sel.startsWith("#") && elementData.type !== sel) {
-      return false;
-    }
-  }
-  return true;
-}
-function validateElement(data, rules, tokens) {
-  const results = [];
-  for (const rule of rules) {
-    if (!ruleMatchesElement(rule, data)) continue;
-    const constraintResults = [];
-    let allPassed = true;
-    for (const constraint of rule.constraints) {
-      const result = evaluateConstraint(constraint, data.styles, tokens, data.customProperties);
-      constraintResults.push(result);
-      if (!result.passed) allPassed = false;
-    }
-    results.push({
-      elementId: data.elementId,
-      ruleId: rule.id,
-      passed: allPassed,
-      constraintResults,
-      severity: rule.severity || "warning"
-    });
-  }
-  return results;
-}
-function runStyleAudit(elements2, guide) {
-  const startTime = Date.now();
-  const allResults = [];
-  for (const element of elements2) {
-    const results = validateElement(element, guide.rules, guide.tokens);
-    allResults.push(...results);
-  }
-  const passedCount = allResults.filter((r) => r.passed).length;
-  const failedCount = allResults.filter((r) => !r.passed).length;
-  return {
-    guideName: guide.name,
-    totalElements: elements2.length,
-    totalRules: guide.rules.length,
-    passedCount,
-    failedCount,
-    results: allResults,
-    summary: {
-      errors: allResults.filter((r) => !r.passed && r.severity === "error"),
-      warnings: allResults.filter((r) => !r.passed && r.severity === "warning"),
-      info: allResults.filter((r) => !r.passed && r.severity === "info")
-    },
-    timestamp: Date.now(),
-    durationMs: Date.now() - startTime
-  };
-}
-function normalizeStyleValue(value) {
-  return value.trim().toLowerCase();
-}
-
-// src/specs/color-utils.ts
-var NAMED_COLORS = {
-  black: "#000000",
-  white: "#ffffff",
-  red: "#ff0000",
-  green: "#008000",
-  blue: "#0000ff",
-  yellow: "#ffff00",
-  cyan: "#00ffff",
-  magenta: "#ff00ff",
-  gray: "#808080",
-  grey: "#808080",
-  silver: "#c0c0c0",
-  maroon: "#800000",
-  olive: "#808000",
-  lime: "#00ff00",
-  aqua: "#00ffff",
-  teal: "#008080",
-  navy: "#000080",
-  fuchsia: "#ff00ff",
-  purple: "#800080",
-  orange: "#ffa500",
-  transparent: "#00000000"
-};
-function parseColor2(str) {
-  if (!str || typeof str !== "string") return null;
-  const trimmed = str.trim().toLowerCase();
-  if (!trimmed || trimmed === "none" || trimmed === "initial" || trimmed === "inherit") return null;
-  if (NAMED_COLORS[trimmed]) {
-    return parseColor2(NAMED_COLORS[trimmed]);
-  }
-  if (trimmed.startsWith("#")) {
-    return parseHex(trimmed);
-  }
-  if (trimmed.startsWith("rgb")) {
-    return parseRgbFunction(trimmed);
-  }
-  return null;
-}
-function parseHex(hex) {
-  const h = hex.slice(1);
-  if (h.length === 3) {
-    return {
-      r: parseInt(h[0] + h[0], 16),
-      g: parseInt(h[1] + h[1], 16),
-      b: parseInt(h[2] + h[2], 16),
-      a: 1
-    };
-  }
-  if (h.length === 4) {
-    return {
-      r: parseInt(h[0] + h[0], 16),
-      g: parseInt(h[1] + h[1], 16),
-      b: parseInt(h[2] + h[2], 16),
-      a: parseInt(h[3] + h[3], 16) / 255
-    };
-  }
-  if (h.length === 6) {
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-      a: 1
-    };
-  }
-  if (h.length === 8) {
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-      a: parseInt(h.slice(6, 8), 16) / 255
-    };
-  }
-  return null;
-}
-function parseRgbFunction(str) {
-  const match = str.match(
-    /rgba?\(\s*(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)[,%\s]+(\d+(?:\.\d+)?)(?:[,/\s]+(\d+(?:\.\d+)?%?))?\s*\)/
-  );
-  if (!match) return null;
-  const r = Math.min(255, Math.max(0, Math.round(parseFloat(match[1]))));
-  const g2 = Math.min(255, Math.max(0, Math.round(parseFloat(match[2]))));
-  const b = Math.min(255, Math.max(0, Math.round(parseFloat(match[3]))));
-  let a = 1;
-  if (match[4] !== void 0) {
-    const aStr = match[4];
-    a = aStr.endsWith("%") ? parseFloat(aStr) / 100 : parseFloat(aStr);
-    a = Math.min(1, Math.max(0, a));
-  }
-  return { r, g: g2, b, a };
-}
-function rgbToHsl(color) {
-  const r = color.r / 255;
-  const g2 = color.g / 255;
-  const b = color.b / 255;
-  const max = Math.max(r, g2, b);
-  const min = Math.min(r, g2, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  if (d === 0) {
-    return { h: 0, s: 0, l: l * 100 };
-  }
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h;
-  if (max === r) {
-    h = ((g2 - b) / d + (g2 < b ? 6 : 0)) / 6;
-  } else if (max === g2) {
-    h = ((b - r) / d + 2) / 6;
-  } else {
-    h = ((r - g2) / d + 4) / 6;
-  }
-  return { h: h * 360, s: s * 100, l: l * 100 };
-}
-function linearize(channel) {
-  const c = channel / 255;
-  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-function relativeLuminance(color) {
-  return 0.2126 * linearize(color.r) + 0.7152 * linearize(color.g) + 0.0722 * linearize(color.b);
-}
-function contrastRatio(fg, bg) {
-  const l1 = relativeLuminance(fg);
-  const l2 = relativeLuminance(bg);
-  const lighter = Math.max(l1, l2);
-  const darker = Math.min(l1, l2);
-  return (lighter + 0.05) / (darker + 0.05);
-}
-function colorDistance(c1, c2) {
-  const dr = c1.r - c2.r;
-  const dg = c1.g - c2.g;
-  const db = c1.b - c2.b;
-  return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db);
-}
-function clusterColors(colors, threshold = 25) {
-  if (colors.length === 0) return [];
-  const parent = colors.map((_, i) => i);
-  function find2(i) {
-    while (parent[i] !== i) {
-      parent[i] = parent[parent[i]];
-      i = parent[i];
-    }
-    return i;
-  }
-  function union(a, b) {
-    const ra = find2(a);
-    const rb = find2(b);
-    if (ra !== rb) parent[ra] = rb;
-  }
-  for (let i = 0; i < colors.length; i++) {
-    for (let j = i + 1; j < colors.length; j++) {
-      if (colorDistance(colors[i], colors[j]) < threshold) {
-        union(i, j);
-      }
-    }
-  }
-  const clusters = /* @__PURE__ */ new Map();
-  for (let i = 0; i < colors.length; i++) {
-    const root = find2(i);
-    if (!clusters.has(root)) clusters.set(root, []);
-    clusters.get(root).push(colors[i]);
-  }
-  return Array.from(clusters.values());
-}
-function isGrayscale(color, threshold = 5) {
-  const hsl = rgbToHsl(color);
-  return hsl.s < threshold;
-}
-function hueDistance(h1, h2) {
-  const d = Math.abs(h1 - h2);
-  return Math.min(d, 360 - d);
-}
-
-// src/specs/quality-metrics.ts
-function parsePx(value) {
-  const n = parseFloat(value);
-  return isNaN(n) ? 0 : n;
-}
-function coefficientOfVariation(values) {
-  if (values.length < 2) return 0;
-  const mean = values.reduce((s, v) => s + v, 0) / values.length;
-  if (mean === 0) return 0;
-  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
-  return Math.sqrt(variance) / Math.abs(mean);
-}
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-function elementArea(el) {
-  return el.rect.width * el.rect.height;
-}
-function isInteractive2(el) {
-  const t = el.type.toLowerCase();
-  return t === "button" || t === "input" || t === "select" || t === "textarea" || t === "link" || t === "a" || t === "checkbox" || t === "radio" || t === "switch" || t === "pressable" || t === "touchable";
-}
-function makeResult(metricId, label, category, score, findings, rawData) {
-  return {
-    metricId,
-    score: Math.round(clamp(score, 0, 100)),
-    label,
-    category,
-    enabled: true,
-    weight: 0,
-    // set by evaluator from context
-    findings,
-    rawData
-  };
-}
-var CONTENT_BEARING_TYPES = /* @__PURE__ */ new Set([
-  "heading",
-  "paragraph",
-  "label",
-  "metric-value",
-  "badge",
-  "input",
-  "textarea",
-  "select",
-  "list-item",
-  "table-cell",
-  "table-header",
-  "caption",
-  "description-text",
-  "status-message",
-  "code-block",
-  "blockquote",
-  "nav-text"
-]);
-function isContentBearing(el) {
-  return CONTENT_BEARING_TYPES.has(el.type.toLowerCase());
-}
-function isContainerElement(el) {
-  const hasBg = parseColor2(el.styles.backgroundColor) !== null;
-  const hasRadius = parsePx(el.styles.borderRadius) > 0;
-  const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
-  const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
-  return hasBg && (hasRadius || hasPadding) && largeEnough;
-}
-function rectContains(outer, inner, tolerance = 2) {
-  return inner.x >= outer.x - tolerance && inner.y >= outer.y - tolerance && inner.x + inner.width <= outer.x + outer.width + tolerance && inner.y + inner.height <= outer.y + outer.height + tolerance;
-}
-var contentOverflow = (elements2, viewport) => {
-  if (elements2.length === 0)
-    return makeResult("contentOverflow", "Content Overflow", "ux", 100, []);
-  const maxBottom = Math.max(...elements2.map((el) => el.rect.y + el.rect.height));
-  const overflowPx = maxBottom - viewport.height;
-  if (overflowPx <= 0) return makeResult("contentOverflow", "Content Overflow", "ux", 100, []);
-  const overflowRatio = overflowPx / viewport.height;
-  const score = Math.max(0, 100 - overflowRatio * 100);
-  const findings = [
-    {
-      severity: overflowRatio > 0.5 ? "error" : "warning",
-      message: `Content extends ${Math.round(overflowPx)}px (${(overflowRatio * 100).toFixed(0)}%) below the viewport.`,
-      recommendation: "Reduce content height, use more compact layouts, or prioritize above-fold content."
-    }
-  ];
-  return makeResult("contentOverflow", "Content Overflow", "ux", score, findings, {
-    overflowPx,
-    overflowRatio,
-    maxBottom,
-    viewportHeight: viewport.height
-  });
-};
-var aboveFoldRatio = (elements2, viewport) => {
-  const contentElements = elements2.filter(isContentBearing);
-  if (contentElements.length === 0)
-    return makeResult("aboveFoldRatio", "Above Fold Ratio", "ux", 100, []);
-  const visibleCount = contentElements.filter(
-    (el) => el.rect.y + el.rect.height <= viewport.height
-  ).length;
-  const score = visibleCount / contentElements.length * 100;
-  const findings = [];
-  if (score < 70) {
-    const belowCount = contentElements.length - visibleCount;
-    findings.push({
-      severity: score < 40 ? "error" : "warning",
-      message: `Only ${visibleCount} of ${contentElements.length} content elements are above the fold (${belowCount} require scrolling).`,
-      recommendation: "Move critical content above the fold or reduce vertical space usage."
-    });
-  }
-  return makeResult("aboveFoldRatio", "Above Fold Ratio", "ux", score, findings, {
-    visibleCount,
-    totalCount: contentElements.length
-  });
-};
-var informationDensity = (elements2, _viewport) => {
-  const contentElements = elements2.filter(isContentBearing);
-  if (contentElements.length === 0 || elements2.length === 0)
-    return makeResult("informationDensity", "Information Density", "ux", 100, []);
-  const contentArea = contentElements.reduce((sum, el) => sum + elementArea(el), 0);
-  const totalArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
-  if (totalArea === 0)
-    return makeResult("informationDensity", "Information Density", "ux", 100, []);
-  const ratio = contentArea / totalArea;
-  const findings = [];
-  let score;
-  if (ratio >= 0.3) {
-    score = 100;
-  } else {
-    score = ratio / 0.3 * 100;
-    findings.push({
-      severity: ratio < 0.15 ? "error" : "warning",
-      message: `Only ${(ratio * 100).toFixed(0)}% of element area contains content. Too much chrome/decoration.`,
-      recommendation: "Reduce container padding, decorative elements, or oversized headers."
-    });
-  }
-  return makeResult("informationDensity", "Information Density", "ux", score, findings, {
-    contentArea,
-    totalArea,
-    ratio,
-    contentElementCount: contentElements.length
-  });
-};
-var containerEfficiency = (elements2, _viewport) => {
-  const containers = elements2.filter(isContainerElement);
-  if (containers.length === 0)
-    return makeResult("containerEfficiency", "Container Efficiency", "ux", 100, []);
-  const efficiencies = [];
-  const inefficientContainers = [];
-  for (const container of containers) {
-    const children = elements2.filter(
-      (el) => el.elementId !== container.elementId && rectContains(container.rect, el.rect)
-    );
-    if (children.length === 0) continue;
-    const childArea = children.reduce((sum, el) => sum + elementArea(el), 0);
-    const containerArea = elementArea(container);
-    if (containerArea === 0) continue;
-    const efficiency = Math.min(1, childArea / containerArea);
-    efficiencies.push(efficiency);
-    if (efficiency < 0.2) {
-      inefficientContainers.push(container.elementId);
-    }
-  }
-  if (efficiencies.length === 0)
-    return makeResult("containerEfficiency", "Container Efficiency", "ux", 100, []);
-  const avgEfficiency = efficiencies.reduce((s, v) => s + v, 0) / efficiencies.length;
-  const score = avgEfficiency >= 0.3 ? 100 : avgEfficiency / 0.3 * 100;
-  const findings = [];
-  if (inefficientContainers.length > 0) {
-    findings.push({
-      severity: avgEfficiency < 0.15 ? "error" : "warning",
-      message: `${inefficientContainers.length} container(s) are oversized for their content (avg efficiency: ${(avgEfficiency * 100).toFixed(0)}%).`,
-      recommendation: "Reduce container dimensions to better fit their child content.",
-      elementIds: inefficientContainers.slice(0, 10)
-    });
-  }
-  return makeResult("containerEfficiency", "Container Efficiency", "ux", score, findings, {
-    avgEfficiency,
-    containerCount: efficiencies.length,
-    inefficientCount: inefficientContainers.length
-  });
-};
-var viewportUtilization = (elements2, viewport) => {
-  if (elements2.length === 0)
-    return makeResult("viewportUtilization", "Viewport Utilization", "ux", 100, []);
-  const minX = Math.max(0, Math.min(...elements2.map((el) => el.rect.x)));
-  const minY = Math.max(0, Math.min(...elements2.map((el) => el.rect.y)));
-  const maxX = Math.min(
-    viewport.width,
-    Math.max(...elements2.map((el) => el.rect.x + el.rect.width))
-  );
-  const maxY = Math.min(
-    viewport.height,
-    Math.max(...elements2.map((el) => el.rect.y + el.rect.height))
-  );
-  const usedWidth = maxX - minX;
-  const usedHeight = maxY - minY;
-  const widthRatio = viewport.width > 0 ? usedWidth / viewport.width : 1;
-  const heightRatio = viewport.height > 0 ? usedHeight / viewport.height : 1;
-  const utilization = (widthRatio + heightRatio) / 2;
-  const score = utilization >= 0.7 ? 100 : utilization / 0.7 * 100;
-  const findings = [];
-  if (score < 70) {
-    const issues = [];
-    if (widthRatio < 0.6) issues.push(`width (${(widthRatio * 100).toFixed(0)}% used)`);
-    if (heightRatio < 0.6) issues.push(`height (${(heightRatio * 100).toFixed(0)}% used)`);
-    findings.push({
-      severity: "warning",
-      message: `Low viewport utilization: ${issues.join(", ")}. Content occupies only ${(utilization * 100).toFixed(0)}% of available space.`,
-      recommendation: "Expand content to use more of the available viewport, or center content meaningfully."
-    });
-  }
-  return makeResult("viewportUtilization", "Viewport Utilization", "ux", score, findings, {
-    widthRatio,
-    heightRatio,
-    utilization,
-    boundingBox: { minX, minY, maxX, maxY }
-  });
-};
-var elementDensity = (elements2, viewport) => {
-  const viewportArea = viewport.width * viewport.height;
-  if (viewportArea === 0)
-    return makeResult("elementDensity", "Element Density", "density", 100, []);
-  const totalElementArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
-  const coverage = totalElementArea / viewportArea;
-  const findings = [];
-  let score;
-  if (coverage >= 0.3 && coverage <= 0.7) {
-    score = 100;
-  } else if (coverage < 0.3) {
-    score = coverage / 0.3 * 100;
-    findings.push({
-      severity: "warning",
-      message: `Low element density (${(coverage * 100).toFixed(1)}%). Page may feel empty.`,
-      recommendation: "Consider adding content or reducing whitespace."
-    });
-  } else {
-    score = Math.max(0, 100 - (coverage - 0.7) / 0.3 * 100);
-    findings.push({
-      severity: "warning",
-      message: `High element density (${(coverage * 100).toFixed(1)}%). Page may feel cluttered.`,
-      recommendation: "Consider reducing content density or increasing spacing."
-    });
-  }
-  return makeResult("elementDensity", "Element Density", "density", score, findings, { coverage });
-};
-var whitespaceRatio = (elements2, viewport) => {
-  const viewportArea = viewport.width * viewport.height;
-  if (viewportArea === 0)
-    return makeResult("whitespaceRatio", "Whitespace Ratio", "density", 100, []);
-  const totalElementArea = elements2.reduce((sum, el) => sum + elementArea(el), 0);
-  const ratio = 1 - Math.min(1, totalElementArea / viewportArea);
-  const findings = [];
-  let score;
-  if (ratio >= 0.25 && ratio <= 0.75) {
-    score = 100;
-  } else if (ratio < 0.25) {
-    score = ratio / 0.25 * 100;
-    findings.push({
-      severity: "warning",
-      message: `Very low whitespace (${(ratio * 100).toFixed(1)}%). UI feels cramped.`,
-      recommendation: "Increase padding and margins between elements."
-    });
-  } else {
-    score = Math.max(0, 100 - (ratio - 0.75) / 0.25 * 100);
-    findings.push({
-      severity: "info",
-      message: `Very high whitespace (${(ratio * 100).toFixed(1)}%). Page may feel sparse.`,
-      recommendation: "Consider whether the empty space serves a purpose."
-    });
-  }
-  return makeResult("whitespaceRatio", "Whitespace Ratio", "density", score, findings, { ratio });
-};
-var localDensityBalance = (elements2, viewport) => {
-  if (elements2.length < 4)
-    return makeResult("localDensityBalance", "Local Density Balance", "density", 100, []);
-  const gridCols = 4;
-  const gridRows = 4;
-  const cellW = viewport.width / gridCols;
-  const cellH = viewport.height / gridRows;
-  const densities = [];
-  for (let row = 0; row < gridRows; row++) {
-    for (let col = 0; col < gridCols; col++) {
-      const cellX = col * cellW;
-      const cellY = row * cellH;
-      let cellArea = 0;
-      for (const el of elements2) {
-        const overlapX = Math.max(
-          0,
-          Math.min(el.rect.x + el.rect.width, cellX + cellW) - Math.max(el.rect.x, cellX)
-        );
-        const overlapY = Math.max(
-          0,
-          Math.min(el.rect.y + el.rect.height, cellY + cellH) - Math.max(el.rect.y, cellY)
-        );
-        cellArea += overlapX * overlapY;
-      }
-      densities.push(cellArea / (cellW * cellH));
-    }
-  }
-  const cv = coefficientOfVariation(densities);
-  const findings = [];
-  let score;
-  if (cv <= 0.3) {
-    score = 100;
-  } else if (cv >= 1) {
-    score = 0;
-    findings.push({
-      severity: "error",
-      message: `Highly unbalanced density distribution (CV=${cv.toFixed(2)}). Some regions are much denser than others.`,
-      recommendation: "Redistribute content more evenly across the page."
-    });
-  } else {
-    score = 100 - (cv - 0.3) / 0.7 * 100;
-    if (score < 60) {
-      findings.push({
-        severity: "warning",
-        message: `Uneven density distribution (CV=${cv.toFixed(2)}).`,
-        recommendation: "Balance content distribution across page regions."
-      });
-    }
-  }
-  return makeResult("localDensityBalance", "Local Density Balance", "density", score, findings, {
-    cv,
-    gridDensities: densities
-  });
-};
-var horizontalBalance = (elements2, viewport) => {
-  if (elements2.length === 0)
-    return makeResult("horizontalBalance", "Horizontal Balance", "density", 100, []);
-  const midX = viewport.width / 2;
-  let leftArea = 0;
-  let rightArea = 0;
-  for (const el of elements2) {
-    const elMidX = el.rect.x + el.rect.width / 2;
-    const area = elementArea(el);
-    if (elMidX < midX) leftArea += area;
-    else rightArea += area;
-  }
-  const total = leftArea + rightArea;
-  if (total === 0) return makeResult("horizontalBalance", "Horizontal Balance", "density", 100, []);
-  const ratio = Math.min(leftArea, rightArea) / Math.max(leftArea, rightArea);
-  const findings = [];
-  let score;
-  if (ratio >= 0.8) {
-    score = 100;
-  } else {
-    score = ratio / 0.8 * 100;
-    const heavier = leftArea > rightArea ? "left" : "right";
-    findings.push({
-      severity: ratio < 0.5 ? "warning" : "info",
-      message: `Horizontal imbalance: ${heavier} side is heavier (ratio=${ratio.toFixed(2)}).`,
-      recommendation: `Consider redistributing visual weight toward the ${heavier === "left" ? "right" : "left"} side.`
-    });
-  }
-  return makeResult("horizontalBalance", "Horizontal Balance", "density", score, findings, {
-    ratio,
-    leftArea,
-    rightArea
-  });
-};
-var verticalBalance = (elements2, viewport) => {
-  if (elements2.length === 0)
-    return makeResult("verticalBalance", "Vertical Balance", "density", 100, []);
-  const midY = viewport.height / 2;
-  let topArea = 0;
-  let bottomArea = 0;
-  for (const el of elements2) {
-    const elMidY = el.rect.y + el.rect.height / 2;
-    const area = elementArea(el);
-    if (elMidY < midY) topArea += area;
-    else bottomArea += area;
-  }
-  const total = topArea + bottomArea;
-  if (total === 0) return makeResult("verticalBalance", "Vertical Balance", "density", 100, []);
-  const ratio = Math.min(topArea, bottomArea) / Math.max(topArea, bottomArea);
-  const findings = [];
-  let score;
-  if (ratio >= 0.8) {
-    score = 100;
-  } else {
-    score = ratio / 0.8 * 100;
-    const heavier = topArea > bottomArea ? "top" : "bottom";
-    findings.push({
-      severity: ratio < 0.5 ? "warning" : "info",
-      message: `Vertical imbalance: ${heavier} half is heavier (ratio=${ratio.toFixed(2)}).`,
-      recommendation: `Consider redistributing visual weight toward the ${heavier === "top" ? "bottom" : "top"}.`
-    });
-  }
-  return makeResult("verticalBalance", "Vertical Balance", "density", score, findings, {
-    ratio,
-    topArea,
-    bottomArea
-  });
-};
-var alignmentConsistency = (elements2, _viewport) => {
-  if (elements2.length < 3)
-    return makeResult("alignmentConsistency", "Alignment Consistency", "density", 100, []);
-  const tolerance = 2;
-  const xEdges = elements2.map((el) => el.rect.x);
-  const yEdges = elements2.map((el) => el.rect.y);
-  function countOnLines(values) {
-    const sorted = [...values].sort((a, b) => a - b);
-    let onLine = 0;
-    let i = 0;
-    while (i < sorted.length) {
-      let j = i + 1;
-      while (j < sorted.length && sorted[j] - sorted[i] <= tolerance) j++;
-      if (j - i >= 2) onLine += j - i;
-      i = j;
-    }
-    return onLine;
-  }
-  const xOnLine = countOnLines(xEdges);
-  const yOnLine = countOnLines(yEdges);
-  const totalChecks = elements2.length * 2;
-  const aligned = xOnLine + yOnLine;
-  const ratio = totalChecks > 0 ? aligned / totalChecks : 1;
-  const score = ratio * 100;
-  const findings = [];
-  if (score < 60) {
-    findings.push({
-      severity: "warning",
-      message: `Only ${(ratio * 100).toFixed(0)}% of elements align to shared grid lines.`,
-      recommendation: "Use a consistent grid system to align element edges."
-    });
-  }
-  return makeResult("alignmentConsistency", "Alignment Consistency", "density", score, findings, {
-    ratio,
-    xOnLine,
-    yOnLine
-  });
-};
-var spacingScaleAdherence = (elements2) => {
-  const spacingValues = [];
-  for (const el of elements2) {
-    for (const prop of [
-      "marginTop",
-      "marginRight",
-      "marginBottom",
-      "marginLeft",
-      "paddingTop",
-      "paddingRight",
-      "paddingBottom",
-      "paddingLeft"
-    ]) {
-      const v = parsePx(el.styles[prop]);
-      if (v > 0) spacingValues.push(v);
-    }
-  }
-  if (spacingValues.length === 0)
-    return makeResult("spacingScaleAdherence", "Spacing Scale Adherence", "spacing", 100, []);
-  const onGrid = spacingValues.filter((v) => v % 4 === 0).length;
-  const ratio = onGrid / spacingValues.length;
-  const score = ratio * 100;
-  const findings = [];
-  if (score < 70) {
-    const offGrid = spacingValues.filter((v) => v % 4 !== 0);
-    const uniqueOffGrid = [...new Set(offGrid)].sort((a, b) => a - b).slice(0, 5);
-    findings.push({
-      severity: "warning",
-      message: `${((1 - ratio) * 100).toFixed(0)}% of spacing values are not multiples of 4px.`,
-      recommendation: `Off-grid values: ${uniqueOffGrid.map((v) => v + "px").join(", ")}. Snap to 4px grid.`
-    });
-  }
-  return makeResult(
-    "spacingScaleAdherence",
-    "Spacing Scale Adherence",
-    "spacing",
-    score,
-    findings,
-    { ratio, total: spacingValues.length }
-  );
-};
-var spacingConsistency = (elements2) => {
-  if (elements2.length < 3)
-    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
-  const yTolerance = 5;
-  const sorted = [...elements2].sort((a, b) => a.rect.y - b.rect.y);
-  const rows = [];
-  let currentRow = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    if (Math.abs(sorted[i].rect.y - sorted[i - 1].rect.y) <= yTolerance) {
-      currentRow.push(sorted[i]);
-    } else {
-      if (currentRow.length >= 2) rows.push(currentRow);
-      currentRow = [sorted[i]];
-    }
-  }
-  if (currentRow.length >= 2) rows.push(currentRow);
-  if (rows.length === 0)
-    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
-  const allGaps = [];
-  for (const row of rows) {
-    const byX = [...row].sort((a, b) => a.rect.x - b.rect.x);
-    for (let i = 1; i < byX.length; i++) {
-      const gap = byX[i].rect.x - (byX[i - 1].rect.x + byX[i - 1].rect.width);
-      if (gap > 0) allGaps.push(gap);
-    }
-  }
-  if (allGaps.length < 2)
-    return makeResult("spacingConsistency", "Spacing Consistency", "spacing", 100, []);
-  const cv = coefficientOfVariation(allGaps);
-  const score = Math.max(0, 100 - cv * 100);
-  const findings = [];
-  if (score < 60) {
-    findings.push({
-      severity: "warning",
-      message: `Inconsistent horizontal spacing between sibling elements (CV=${cv.toFixed(2)}).`,
-      recommendation: "Use uniform gap values for elements in the same row."
-    });
-  }
-  return makeResult("spacingConsistency", "Spacing Consistency", "spacing", score, findings, {
-    cv,
-    gapCount: allGaps.length
-  });
-};
-var lineHeightRatio = (elements2) => {
-  const ratios = [];
-  const badElements = [];
-  for (const el of elements2) {
-    const fontSize = parsePx(el.styles.fontSize);
-    const lh = parsePx(el.styles.lineHeight);
-    if (fontSize > 0 && lh > 0) {
-      const r = lh / fontSize;
-      ratios.push(r);
-      if (r < 1.2 || r > 1.8) badElements.push(el.elementId);
-    }
-  }
-  if (ratios.length === 0)
-    return makeResult("lineHeightRatio", "Line Height Ratio", "spacing", 100, []);
-  const inRange = ratios.filter((r) => r >= 1.2 && r <= 1.8).length;
-  const score = inRange / ratios.length * 100;
-  const findings = [];
-  if (score < 80) {
-    findings.push({
-      severity: "warning",
-      message: `${ratios.length - inRange} text elements have line-height outside the 1.2-1.8x range.`,
-      recommendation: "Aim for line-height between 1.4-1.6x font-size for body text.",
-      elementIds: badElements.slice(0, 10)
-    });
-  }
-  return makeResult("lineHeightRatio", "Line Height Ratio", "spacing", score, findings, {
-    total: ratios.length,
-    inRange
-  });
-};
-var interGroupSpacingRatio = (elements2) => {
-  if (elements2.length < 4)
-    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
-  const distances = [];
-  for (let i = 0; i < elements2.length; i++) {
-    for (let j = i + 1; j < elements2.length; j++) {
-      const dx = elements2[i].rect.x + elements2[i].rect.width / 2 - (elements2[j].rect.x + elements2[j].rect.width / 2);
-      const dy = elements2[i].rect.y + elements2[i].rect.height / 2 - (elements2[j].rect.y + elements2[j].rect.height / 2);
-      distances.push(Math.sqrt(dx * dx + dy * dy));
-    }
-  }
-  if (distances.length === 0)
-    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
-  distances.sort((a, b) => a - b);
-  const median = distances[Math.floor(distances.length / 2)];
-  const threshold = median * 1.5;
-  const intraGroup = distances.filter((d) => d <= threshold);
-  const interGroup = distances.filter((d) => d > threshold);
-  if (intraGroup.length === 0 || interGroup.length === 0)
-    return makeResult("interGroupSpacingRatio", "Inter-Group Spacing Ratio", "spacing", 100, []);
-  const avgIntra = intraGroup.reduce((s, d) => s + d, 0) / intraGroup.length;
-  const avgInter = interGroup.reduce((s, d) => s + d, 0) / interGroup.length;
-  const ratio = avgIntra > 0 ? avgInter / avgIntra : 1;
-  const score = ratio >= 2.5 ? 100 : ratio / 2.5 * 100;
-  const findings = [];
-  if (score < 60) {
-    findings.push({
-      severity: "warning",
-      message: `Weak visual grouping: inter-group spacing is only ${ratio.toFixed(1)}x intra-group spacing.`,
-      recommendation: "Increase spacing between groups to at least 2.5x the spacing within groups."
-    });
-  }
-  return makeResult(
-    "interGroupSpacingRatio",
-    "Inter-Group Spacing Ratio",
-    "spacing",
-    score,
-    findings,
-    { ratio }
-  );
-};
-var uniqueColorCount = (elements2) => {
-  const colors = [];
-  for (const el of elements2) {
-    for (const prop of ["color", "backgroundColor"]) {
-      const parsed = parseColor2(el.styles[prop]);
-      if (parsed && parsed.a > 0.1) colors.push(parsed);
-    }
-  }
-  if (colors.length === 0)
-    return makeResult("uniqueColorCount", "Unique Color Count", "color", 100, []);
-  const clusters = clusterColors(colors, 25);
-  const count = clusters.length;
-  const findings = [];
-  let score;
-  if (count >= 3 && count <= 8) {
-    score = 100;
-  } else if (count < 3) {
-    score = 60 + count / 3 * 40;
-    findings.push({
-      severity: "info",
-      message: `Only ${count} distinct color(s). Palette may be too limited.`,
-      recommendation: "Consider adding accent colors for visual hierarchy."
-    });
-  } else {
-    score = Math.max(0, 100 - (count - 8) * 8);
-    findings.push({
-      severity: "warning",
-      message: `${count} distinct colors used. Palette may be too varied.`,
-      recommendation: "Consolidate similar colors and limit palette to 5-8 colors."
-    });
-  }
-  return makeResult("uniqueColorCount", "Unique Color Count", "color", score, findings, {
-    count,
-    totalSampled: colors.length
-  });
-};
-var wcagContrastCompliance = (elements2) => {
-  let passing = 0;
-  let total = 0;
-  const failingElements = [];
-  for (const el of elements2) {
-    const fg = parseColor2(el.styles.color);
-    let bg = parseColor2(el.styles.backgroundColor);
-    if (!fg) continue;
-    if (!bg || bg.a < 0.1) bg = { r: 255, g: 255, b: 255, a: 1 };
-    total++;
-    const ratio = contrastRatio(fg, bg);
-    if (ratio >= 4.5) {
-      passing++;
-    } else {
-      failingElements.push(el.elementId);
-    }
-  }
-  if (total === 0)
-    return makeResult("wcagContrastCompliance", "WCAG Contrast Compliance", "color", 100, []);
-  const score = passing / total * 100;
-  const findings = [];
-  if (failingElements.length > 0) {
-    findings.push({
-      severity: "error",
-      message: `${failingElements.length} of ${total} text elements fail WCAG AA contrast (4.5:1 minimum).`,
-      recommendation: "Increase contrast between text color and background color.",
-      elementIds: failingElements.slice(0, 10)
-    });
-  }
-  return makeResult(
-    "wcagContrastCompliance",
-    "WCAG Contrast Compliance",
-    "color",
-    score,
-    findings,
-    { passing, total }
-  );
-};
-var colorHarmony = (elements2) => {
-  const hues = [];
-  for (const el of elements2) {
-    for (const prop of ["color", "backgroundColor"]) {
-      const parsed = parseColor2(el.styles[prop]);
-      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
-        const hsl = rgbToHsl(parsed);
-        hues.push(hsl.h);
-      }
-    }
-  }
-  if (hues.length < 2) return makeResult("colorHarmony", "Color Harmony", "color", 100, []);
-  const uniqueHues = [...new Set(hues.map((h) => Math.round(h / 10) * 10))];
-  if (uniqueHues.length < 2) return makeResult("colorHarmony", "Color Harmony", "color", 100, []);
-  const patterns = [
-    { name: "monochromatic", test: () => checkMonochromatic(uniqueHues) },
-    { name: "complementary", test: () => checkComplementary(uniqueHues) },
-    { name: "analogous", test: () => checkAnalogous(uniqueHues) },
-    { name: "triadic", test: () => checkTriadic(uniqueHues) }
-  ];
-  let bestScore = 0;
-  let bestPattern = "none";
-  for (const p of patterns) {
-    const s = p.test();
-    if (s > bestScore) {
-      bestScore = s;
-      bestPattern = p.name;
-    }
-  }
-  const findings = [];
-  if (bestScore < 50) {
-    findings.push({
-      severity: "warning",
-      message: `Color palette does not follow a clear harmony pattern.`,
-      recommendation: "Use complementary (opposite hues), analogous (adjacent hues), or triadic (evenly spaced hues) color schemes."
-    });
-  }
-  return makeResult("colorHarmony", "Color Harmony", "color", bestScore, findings, {
-    bestPattern,
-    distinctHues: uniqueHues.length
-  });
-};
-function checkMonochromatic(hues) {
-  if (hues.length <= 1) return 100;
-  const base = hues[0];
-  const maxDist = Math.max(...hues.map((h) => hueDistance(h, base)));
-  return maxDist <= 15 ? 100 : maxDist <= 30 ? 70 : 30;
-}
-function checkComplementary(hues) {
-  let bestFit = 0;
-  for (let i = 0; i < hues.length; i++) {
-    for (let j = i + 1; j < hues.length; j++) {
-      const dist = hueDistance(hues[i], hues[j]);
-      const fit = dist >= 165 && dist <= 195 ? 100 : Math.max(0, 100 - Math.abs(dist - 180) * 2);
-      if (fit > bestFit) bestFit = fit;
-    }
-  }
-  return hues.length <= 3 ? bestFit : bestFit * 0.7;
-}
-function checkAnalogous(hues) {
-  const sorted = [...hues].sort((a, b) => a - b);
-  let maxGap = 0;
-  for (let i = 1; i < sorted.length; i++) {
-    maxGap = Math.max(maxGap, sorted[i] - sorted[i - 1]);
-  }
-  if (sorted.length > 1) {
-    maxGap = Math.max(maxGap, 360 - sorted[sorted.length - 1] + sorted[0]);
-  }
-  const span = 360 - maxGap;
-  return span <= 60 ? 100 : span <= 90 ? 70 : span <= 120 ? 40 : 20;
-}
-function checkTriadic(hues) {
-  if (hues.length < 3) return 0;
-  const sorted = [...hues].sort((a, b) => a - b);
-  let bestScore = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < sorted.length; j++) {
-      for (let k = j + 1; k < sorted.length; k++) {
-        const d1 = hueDistance(sorted[i], sorted[j]);
-        const d2 = hueDistance(sorted[j], sorted[k]);
-        const d3 = hueDistance(sorted[i], sorted[k]);
-        const avgDeviation = (Math.abs(d1 - 120) + Math.abs(d2 - 120) + Math.abs(d3 - 120)) / 3;
-        const s = Math.max(0, 100 - avgDeviation * 2);
-        if (s > bestScore) bestScore = s;
-      }
-    }
-  }
-  return bestScore;
-}
-var saturationConsistency = (elements2) => {
-  const saturations = [];
-  for (const el of elements2) {
-    for (const prop of ["color", "backgroundColor"]) {
-      const parsed = parseColor2(el.styles[prop]);
-      if (parsed && parsed.a > 0.1 && !isGrayscale(parsed)) {
-        const hsl = rgbToHsl(parsed);
-        saturations.push(hsl.s);
-      }
-    }
-  }
-  if (saturations.length < 2)
-    return makeResult("saturationConsistency", "Saturation Consistency", "color", 100, []);
-  const cv = coefficientOfVariation(saturations);
-  const score = Math.max(0, 100 - cv * 100);
-  const findings = [];
-  if (score < 60) {
-    findings.push({
-      severity: "info",
-      message: `Inconsistent color saturation levels (CV=${cv.toFixed(2)}).`,
-      recommendation: "Use a consistent saturation level across your color palette."
-    });
-  }
-  return makeResult("saturationConsistency", "Saturation Consistency", "color", score, findings, {
-    cv,
-    count: saturations.length
-  });
-};
-var typeScaleAdherence = (elements2) => {
-  const fontSizes = /* @__PURE__ */ new Set();
-  for (const el of elements2) {
-    const size = parsePx(el.styles.fontSize);
-    if (size > 0) fontSizes.add(Math.round(size * 10) / 10);
-  }
-  const sizes = [...fontSizes].sort((a, b) => a - b);
-  if (sizes.length < 2)
-    return makeResult("typeScaleAdherence", "Type Scale Adherence", "typography", 100, []);
-  const scales = [
-    { name: "minor-second", ratio: 1.067 },
-    { name: "major-second", ratio: 1.125 },
-    { name: "minor-third", ratio: 1.2 },
-    { name: "major-third", ratio: 1.25 },
-    { name: "perfect-fourth", ratio: 1.333 },
-    { name: "augmented-fourth", ratio: 1.414 },
-    { name: "perfect-fifth", ratio: 1.5 }
-  ];
-  let bestScore = 0;
-  let bestScale = "none";
-  for (const scale of scales) {
-    for (const base of sizes) {
-      let onScale = 0;
-      for (const size of sizes) {
-        if (size <= 0 || base <= 0) continue;
-        const n = Math.log(size / base) / Math.log(scale.ratio);
-        if (Math.abs(n - Math.round(n)) < 0.15) onScale++;
-      }
-      const fit = onScale / sizes.length * 100;
-      if (fit > bestScore) {
-        bestScore = fit;
-        bestScale = scale.name;
-      }
-    }
-  }
-  const findings = [];
-  if (bestScore < 60) {
-    findings.push({
-      severity: "warning",
-      message: `Font sizes (${sizes.join(", ")}px) don't follow a consistent type scale.`,
-      recommendation: "Adopt a standard type scale (e.g., Major Third 1.25x or Perfect Fourth 1.333x)."
-    });
-  }
-  return makeResult(
-    "typeScaleAdherence",
-    "Type Scale Adherence",
-    "typography",
-    bestScore,
-    findings,
-    {
-      bestScale,
-      distinctSizes: sizes.length,
-      sizes
-    }
-  );
-};
-var fontWeightConsistency = (elements2) => {
-  const weights = /* @__PURE__ */ new Set();
-  for (const el of elements2) {
-    if (el.styles.fontWeight) weights.add(el.styles.fontWeight);
-  }
-  const count = weights.size;
-  const findings = [];
-  let score;
-  if (count >= 2 && count <= 3) {
-    score = 100;
-  } else if (count === 1) {
-    score = 70;
-    findings.push({
-      severity: "info",
-      message: "Only one font weight used. Consider adding a bold weight for hierarchy.",
-      recommendation: "Use 2-3 font weights (e.g., 400 regular, 600 semi-bold, 700 bold)."
-    });
-  } else if (count === 4) {
-    score = 80;
-  } else {
-    score = Math.max(0, 100 - (count - 3) * 20);
-    findings.push({
-      severity: "warning",
-      message: `${count} different font weights used. Too many weights reduce visual consistency.`,
-      recommendation: "Limit to 2-3 font weights for a cleaner hierarchy."
-    });
-  }
-  return makeResult(
-    "fontWeightConsistency",
-    "Font Weight Consistency",
-    "typography",
-    score,
-    findings,
-    {
-      count,
-      weights: [...weights]
-    }
-  );
-};
-var headingHierarchy = (elements2) => {
-  const headings = [];
-  for (const el of elements2) {
-    const type = el.type.toLowerCase();
-    let level = 0;
-    if (type === "heading" || type.startsWith("h")) {
-      const match = type.match(/h(\d)/);
-      if (match) level = parseInt(match[1], 10);
-    }
-    if (level === 0 && el.elementId) {
-      const match = el.elementId.match(/h(\d)/i);
-      if (match) level = parseInt(match[1], 10);
-    }
-    if (level >= 1 && level <= 6) {
-      headings.push({ level, fontSize: parsePx(el.styles.fontSize), elementId: el.elementId });
-    }
-  }
-  if (headings.length < 2)
-    return makeResult("headingHierarchy", "Heading Hierarchy", "typography", 100, []);
-  const sorted = [...headings].sort((a, b) => a.level - b.level);
-  let checks = 0;
-  let passing = 0;
-  const issues = [];
-  for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i].level > sorted[i - 1].level) {
-      checks++;
-      if (sorted[i].fontSize < sorted[i - 1].fontSize) {
-        passing++;
-      } else {
-        issues.push(
-          `h${sorted[i].level} (${sorted[i].fontSize}px) is not smaller than h${sorted[i - 1].level} (${sorted[i - 1].fontSize}px)`
-        );
-      }
-    }
-  }
-  const levels = [...new Set(headings.map((h) => h.level))].sort();
-  for (let i = 1; i < levels.length; i++) {
-    checks++;
-    if (levels[i] - levels[i - 1] === 1) {
-      passing++;
-    } else {
-      issues.push(`Skipped heading level: h${levels[i - 1]} to h${levels[i]}`);
-    }
-  }
-  const score = checks > 0 ? passing / checks * 100 : 100;
-  const findings = [];
-  if (issues.length > 0) {
-    findings.push({
-      severity: "warning",
-      message: `Heading hierarchy issues: ${issues.join("; ")}.`,
-      recommendation: "Ensure heading sizes decrease with level and no levels are skipped."
-    });
-  }
-  return makeResult("headingHierarchy", "Heading Hierarchy", "typography", score, findings, {
-    headingCount: headings.length,
-    levels
-  });
-};
-var fontFamilyCount = (elements2) => {
-  const families = /* @__PURE__ */ new Set();
-  for (const el of elements2) {
-    if (el.styles.fontFamily) {
-      const first = el.styles.fontFamily.split(",")[0].trim().replace(/["']/g, "").toLowerCase();
-      if (first) families.add(first);
-    }
-  }
-  const count = families.size;
-  const findings = [];
-  let score;
-  if (count >= 1 && count <= 2) {
-    score = 100;
-  } else if (count === 3) {
-    score = 75;
-    findings.push({
-      severity: "info",
-      message: `3 font families used (${[...families].join(", ")}). Consider reducing to 2.`,
-      recommendation: "Use one font for body text and optionally one for headings."
-    });
-  } else if (count === 0) {
-    score = 80;
-  } else {
-    score = Math.max(0, 100 - (count - 2) * 25);
-    findings.push({
-      severity: "warning",
-      message: `${count} font families used. Too many fonts reduce visual coherence.`,
-      recommendation: "Limit to 1-2 font families."
-    });
-  }
-  return makeResult("fontFamilyCount", "Font Family Count", "typography", score, findings, {
-    count,
-    families: [...families]
-  });
-};
-function computeConsistencyScore(elements2, getValues) {
-  if (elements2.length < 2) return { score: 100, cv: 0 };
-  const allValues = elements2.map(getValues);
-  const numProps = allValues[0]?.length ?? 0;
-  if (numProps === 0) return { score: 100, cv: 0 };
-  const cvs = [];
-  for (let p = 0; p < numProps; p++) {
-    const vals = allValues.map((v) => v[p]).filter((v) => v > 0);
-    if (vals.length >= 2) cvs.push(coefficientOfVariation(vals));
-  }
-  if (cvs.length === 0) return { score: 100, cv: 0 };
-  const avgCv = cvs.reduce((s, v) => s + v, 0) / cvs.length;
-  return { score: Math.max(0, 100 - avgCv * 200), cv: avgCv };
-}
-var buttonConsistency = (elements2) => {
-  const buttons = elements2.filter((el) => {
-    const t = el.type.toLowerCase();
-    return t === "button" || t === "pressable";
-  });
-  if (buttons.length < 2)
-    return makeResult("buttonConsistency", "Button Consistency", "consistency", 100, []);
-  const { score, cv } = computeConsistencyScore(buttons, (el) => [
-    parsePx(el.styles.height),
-    parsePx(el.styles.paddingTop) + parsePx(el.styles.paddingBottom),
-    parsePx(el.styles.paddingLeft) + parsePx(el.styles.paddingRight),
-    parsePx(el.styles.borderRadius),
-    parsePx(el.styles.fontSize)
-  ]);
-  const findings = [];
-  if (score < 70) {
-    findings.push({
-      severity: "warning",
-      message: `Buttons have inconsistent styling (CV=${cv.toFixed(2)}).`,
-      recommendation: "Standardize button height, padding, border-radius, and font-size.",
-      elementIds: buttons.map((el) => el.elementId).slice(0, 10)
-    });
-  }
-  return makeResult("buttonConsistency", "Button Consistency", "consistency", score, findings, {
-    buttonCount: buttons.length,
-    cv
-  });
-};
-var cardConsistency = (elements2) => {
-  const cards = elements2.filter((el) => {
-    const hasBg = parseColor2(el.styles.backgroundColor) !== null;
-    const hasRadius = parsePx(el.styles.borderRadius) > 0;
-    const hasPadding = parsePx(el.styles.paddingTop) > 0 || parsePx(el.styles.paddingLeft) > 0;
-    const largeEnough = el.rect.width >= 100 && el.rect.height >= 80;
-    return hasBg && hasRadius && hasPadding && largeEnough;
-  });
-  if (cards.length < 2)
-    return makeResult("cardConsistency", "Card Consistency", "consistency", 100, []);
-  const { score, cv } = computeConsistencyScore(cards, (el) => [
-    parsePx(el.styles.borderRadius),
-    parsePx(el.styles.paddingTop),
-    parsePx(el.styles.paddingLeft),
-    el.rect.width
-  ]);
-  const findings = [];
-  if (score < 70) {
-    findings.push({
-      severity: "warning",
-      message: `Card-like elements have inconsistent styling (CV=${cv.toFixed(2)}).`,
-      recommendation: "Standardize border-radius, padding, and width for card components.",
-      elementIds: cards.map((el) => el.elementId).slice(0, 10)
-    });
-  }
-  return makeResult("cardConsistency", "Card Consistency", "consistency", score, findings, {
-    cardCount: cards.length,
-    cv
-  });
-};
-var inputConsistency = (elements2) => {
-  const inputs = elements2.filter((el) => {
-    const t = el.type.toLowerCase();
-    return t === "input" || t === "textarea" || t === "select";
-  });
-  if (inputs.length < 2)
-    return makeResult("inputConsistency", "Input Consistency", "consistency", 100, []);
-  const { score, cv } = computeConsistencyScore(inputs, (el) => [
-    parsePx(el.styles.height),
-    parsePx(el.styles.paddingTop) + parsePx(el.styles.paddingBottom),
-    parsePx(el.styles.paddingLeft) + parsePx(el.styles.paddingRight),
-    parsePx(el.styles.borderRadius),
-    parsePx(el.styles.fontSize)
-  ]);
-  const findings = [];
-  if (score < 70) {
-    findings.push({
-      severity: "warning",
-      message: `Input fields have inconsistent styling (CV=${cv.toFixed(2)}).`,
-      recommendation: "Standardize input height, padding, border-radius, and font-size.",
-      elementIds: inputs.map((el) => el.elementId).slice(0, 10)
-    });
-  }
-  return makeResult("inputConsistency", "Input Consistency", "consistency", score, findings, {
-    inputCount: inputs.length,
-    cv
-  });
-};
-var touchTargetCompliance = (elements2) => {
-  const interactive = elements2.filter(isInteractive2);
-  if (interactive.length === 0)
-    return makeResult("touchTargetCompliance", "Touch Target Compliance", "consistency", 100, []);
-  const minSize = 44;
-  let compliant = 0;
-  const failingElements = [];
-  for (const el of interactive) {
-    if (el.rect.width >= minSize && el.rect.height >= minSize) {
-      compliant++;
-    } else {
-      failingElements.push(el.elementId);
-    }
-  }
-  const score = compliant / interactive.length * 100;
-  const findings = [];
-  if (failingElements.length > 0) {
-    findings.push({
-      severity: "error",
-      message: `${failingElements.length} interactive elements are smaller than ${minSize}x${minSize}px.`,
-      recommendation: `Ensure all interactive elements are at least ${minSize}x${minSize}px for accessibility.`,
-      elementIds: failingElements.slice(0, 10)
-    });
-  }
-  return makeResult(
-    "touchTargetCompliance",
-    "Touch Target Compliance",
-    "consistency",
-    score,
-    findings,
-    {
-      total: interactive.length,
-      compliant
-    }
-  );
-};
-var COLOR_PROPERTIES = ["color", "backgroundColor", "borderColor", "outlineColor"];
-var customPropertyConsistency = (elements2) => {
-  const findings = [];
-  const elementsWithVars = elements2.filter(
-    (el) => el.customProperties && Object.keys(el.customProperties).length > 0
-  );
-  const adoptionRate = elements2.length > 0 ? elementsWithVars.length / elements2.length : 0;
-  const adoptionScore = Math.min(adoptionRate * 200, 100);
-  if (adoptionRate < 0.1 && elements2.length > 5) {
-    findings.push({
-      severity: "info",
-      message: `Only ${(adoptionRate * 100).toFixed(0)}% of elements use CSS custom properties`,
-      recommendation: "Consider using CSS variables for consistent theming"
-    });
-  }
-  const varValues = /* @__PURE__ */ new Map();
-  for (const el of elementsWithVars) {
-    for (const [prop, val] of Object.entries(el.customProperties)) {
-      if (!varValues.has(prop)) varValues.set(prop, /* @__PURE__ */ new Set());
-      varValues.get(prop).add(val);
-    }
-  }
-  const totalVars = varValues.size;
-  const inconsistentVars = [...varValues.entries()].filter(([, vals]) => vals.size > 1);
-  const consistencyRate = totalVars > 0 ? 1 - inconsistentVars.length / totalVars : 1;
-  const consistencyScore = consistencyRate * 100;
-  if (inconsistentVars.length > 0) {
-    const varNames = inconsistentVars.slice(0, 3).map(([name]) => name);
-    findings.push({
-      severity: "warning",
-      message: `${inconsistentVars.length} CSS variable(s) resolve to different values: ${varNames.join(", ")}`,
-      recommendation: "Ensure CSS variables resolve consistently across components"
-    });
-  }
-  let totalColorProps = 0;
-  let hardcodedColors = 0;
-  for (const el of elements2) {
-    const customProps = el.customProperties ?? {};
-    const customVals = new Set(Object.values(customProps));
-    for (const prop of COLOR_PROPERTIES) {
-      const val = el.styles[prop];
-      if (val && val !== "transparent" && val !== "inherit" && val !== "initial") {
-        totalColorProps++;
-        if (!customVals.has(val)) {
-          hardcodedColors++;
-        }
-      }
-    }
-  }
-  const avoidanceRate = totalColorProps > 0 ? 1 - hardcodedColors / totalColorProps : 1;
-  const avoidanceScore = avoidanceRate * 100;
-  if (hardcodedColors > 5) {
-    findings.push({
-      severity: "info",
-      message: `${hardcodedColors} color properties appear hardcoded without CSS variable backing`,
-      recommendation: "Use CSS custom properties for color values to support theming"
-    });
-  }
-  const score = adoptionScore * 0.5 + consistencyScore * 0.3 + avoidanceScore * 0.2;
-  return makeResult(
-    "customPropertyConsistency",
-    "Custom Property Consistency",
-    "consistency",
-    score,
-    findings,
-    {
-      totalElements: elements2.length,
-      elementsWithVars: elementsWithVars.length,
-      adoptionRate: Math.round(adoptionRate * 100),
-      totalVars,
-      inconsistentVars: inconsistentVars.length,
-      hardcodedColors
-    }
-  );
-};
-var METRIC_FUNCTIONS = {
-  // UX
-  contentOverflow,
-  aboveFoldRatio,
-  informationDensity,
-  containerEfficiency,
-  viewportUtilization,
-  // Density
-  elementDensity,
-  whitespaceRatio,
-  localDensityBalance,
-  horizontalBalance,
-  verticalBalance,
-  alignmentConsistency,
-  // Spacing
-  spacingScaleAdherence,
-  spacingConsistency,
-  lineHeightRatio,
-  interGroupSpacingRatio,
-  // Color
-  uniqueColorCount,
-  wcagContrastCompliance,
-  colorHarmony,
-  saturationConsistency,
-  // Typography
-  typeScaleAdherence,
-  fontWeightConsistency,
-  headingHierarchy,
-  fontFamilyCount,
-  // Consistency
-  buttonConsistency,
-  cardConsistency,
-  inputConsistency,
-  touchTargetCompliance,
-  customPropertyConsistency
-};
-
-// src/specs/quality-contexts.ts
-var DEFAULT_CONFIG6 = {
-  enabled: true,
-  weight: 0.045,
-  // ~1/22
-  thresholds: { good: 80, warning: 50 }
-};
-function defineContext(name, description, overrides) {
-  const metrics = {};
-  for (const [id, partial] of Object.entries(overrides)) {
-    metrics[id] = { ...DEFAULT_CONFIG6, ...partial };
-  }
-  return { name, description, metrics };
-}
-var general = defineContext(
-  "general",
-  "Balanced evaluation suitable for most web applications.",
-  {
-    // UX (5) — total ~0.20
-    contentOverflow: { weight: 0.05 },
-    aboveFoldRatio: { weight: 0.04 },
-    informationDensity: { weight: 0.04 },
-    containerEfficiency: { weight: 0.04 },
-    viewportUtilization: { weight: 0.03 },
-    // Density (6) — total ~0.16
-    elementDensity: { weight: 0.03 },
-    whitespaceRatio: { weight: 0.03 },
-    localDensityBalance: { weight: 0.025 },
-    horizontalBalance: { weight: 0.025 },
-    verticalBalance: { weight: 0.025 },
-    alignmentConsistency: { weight: 0.025 },
-    // Spacing (4) — total ~0.16
-    spacingScaleAdherence: { weight: 0.04 },
-    spacingConsistency: { weight: 0.04 },
-    lineHeightRatio: { weight: 0.04 },
-    interGroupSpacingRatio: { weight: 0.04 },
-    // Color (4) — total ~0.16
-    uniqueColorCount: { weight: 0.03 },
-    wcagContrastCompliance: { weight: 0.05 },
-    colorHarmony: { weight: 0.04 },
-    saturationConsistency: { weight: 0.04 },
-    // Typography (4) — total ~0.16
-    typeScaleAdherence: { weight: 0.04 },
-    fontWeightConsistency: { weight: 0.04 },
-    headingHierarchy: { weight: 0.04 },
-    fontFamilyCount: { weight: 0.04 },
-    // Consistency (5) — total ~0.19
-    buttonConsistency: { weight: 0.04 },
-    cardConsistency: { weight: 0.04 },
-    inputConsistency: { weight: 0.04 },
-    touchTargetCompliance: { weight: 0.04 },
-    customPropertyConsistency: { weight: 0.03 }
-  }
-);
-var minimal = defineContext(
-  "minimal",
-  "Emphasizes whitespace, simplicity, and restrained use of color. Ideal for landing pages and editorial layouts.",
-  {
-    // UX (5) — total ~0.12 (minimalist pages use space intentionally)
-    contentOverflow: { weight: 0.03 },
-    aboveFoldRatio: { weight: 0.025 },
-    informationDensity: { weight: 0.02 },
-    containerEfficiency: { weight: 0.02 },
-    viewportUtilization: { weight: 0.025 },
-    // Density & Layout
-    elementDensity: { weight: 0.025, thresholds: { good: 85, warning: 60 } },
-    whitespaceRatio: { weight: 0.09, thresholds: { good: 85, warning: 60 } },
-    localDensityBalance: { weight: 0.035 },
-    horizontalBalance: { weight: 0.035 },
-    verticalBalance: { weight: 0.035 },
-    alignmentConsistency: { weight: 0.04 },
-    // Spacing
-    spacingScaleAdherence: { weight: 0.05 },
-    spacingConsistency: { weight: 0.05 },
-    lineHeightRatio: { weight: 0.045 },
-    interGroupSpacingRatio: { weight: 0.05 },
-    // Color
-    uniqueColorCount: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
-    wcagContrastCompliance: { weight: 0.045 },
-    colorHarmony: { weight: 0.05 },
-    saturationConsistency: { weight: 0.04 },
-    // Typography
-    typeScaleAdherence: { weight: 0.05 },
-    fontWeightConsistency: { weight: 0.035 },
-    headingHierarchy: { weight: 0.035 },
-    fontFamilyCount: { weight: 0.035 },
-    // Consistency
-    buttonConsistency: { weight: 0.025 },
-    cardConsistency: { weight: 0.015 },
-    inputConsistency: { weight: 0.025 },
-    touchTargetCompliance: { weight: 0.035 },
-    customPropertyConsistency: { weight: 0.035 }
-  }
-);
-var dataDense = defineContext(
-  "data-dense",
-  "Optimized for dashboards and data-heavy UIs. Lenient on density, strict on alignment and consistency.",
-  {
-    // UX (5) — total ~0.25 (dashboards are where these problems appear most)
-    contentOverflow: { weight: 0.06 },
-    aboveFoldRatio: { weight: 0.05 },
-    informationDensity: { weight: 0.05 },
-    containerEfficiency: { weight: 0.05, thresholds: { good: 75, warning: 45 } },
-    viewportUtilization: { weight: 0.04 },
-    // Density & Layout
-    elementDensity: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
-    whitespaceRatio: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
-    localDensityBalance: { weight: 0.03 },
-    horizontalBalance: { weight: 0.02 },
-    verticalBalance: { weight: 0.02 },
-    alignmentConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
-    // Spacing
-    spacingScaleAdherence: { weight: 0.05 },
-    spacingConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
-    lineHeightRatio: { weight: 0.03 },
-    interGroupSpacingRatio: { weight: 0.04 },
-    // Color
-    uniqueColorCount: { weight: 0.03 },
-    wcagContrastCompliance: { weight: 0.05 },
-    colorHarmony: { weight: 0.02 },
-    saturationConsistency: { weight: 0.02 },
-    // Typography
-    typeScaleAdherence: { weight: 0.03 },
-    fontWeightConsistency: { weight: 0.03 },
-    headingHierarchy: { weight: 0.02 },
-    fontFamilyCount: { weight: 0.03 },
-    // Consistency
-    buttonConsistency: { weight: 0.045 },
-    cardConsistency: { weight: 0.045 },
-    inputConsistency: { weight: 0.045 },
-    touchTargetCompliance: { weight: 0.04 },
-    customPropertyConsistency: { weight: 0.04 }
-  }
-);
-var mobile = defineContext(
-  "mobile",
-  "Optimized for mobile devices. Prioritizes touch targets, readability, and simple hierarchy.",
-  {
-    // UX (5) — total ~0.22 (viewport constraints make overflow critical)
-    contentOverflow: { weight: 0.06, thresholds: { good: 85, warning: 50 } },
-    aboveFoldRatio: { weight: 0.05 },
-    informationDensity: { weight: 0.04 },
-    containerEfficiency: { weight: 0.04 },
-    viewportUtilization: { weight: 0.03 },
-    // Density & Layout
-    elementDensity: { weight: 0.03 },
-    whitespaceRatio: { weight: 0.04 },
-    localDensityBalance: { weight: 0.02 },
-    horizontalBalance: { weight: 0.03 },
-    verticalBalance: { weight: 0.02 },
-    alignmentConsistency: { weight: 0.03 },
-    // Spacing
-    spacingScaleAdherence: { weight: 0.04 },
-    spacingConsistency: { weight: 0.04 },
-    lineHeightRatio: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
-    interGroupSpacingRatio: { weight: 0.04 },
-    // Color
-    uniqueColorCount: { weight: 0.03 },
-    wcagContrastCompliance: { weight: 0.05 },
-    colorHarmony: { weight: 0.03 },
-    saturationConsistency: { weight: 0.02 },
-    // Typography
-    typeScaleAdherence: { weight: 0.03 },
-    fontWeightConsistency: { weight: 0.03 },
-    headingHierarchy: { weight: 0.03 },
-    fontFamilyCount: { weight: 0.04 },
-    // Consistency
-    buttonConsistency: { weight: 0.04 },
-    cardConsistency: { weight: 0.03 },
-    inputConsistency: { weight: 0.04 },
-    touchTargetCompliance: { weight: 0.07, thresholds: { good: 90, warning: 70 } },
-    customPropertyConsistency: { weight: 0.03 }
-  }
-);
-var accessibility = defineContext(
-  "accessibility",
-  "Focused on WCAG compliance and assistive technology support. Visual-only metrics are disabled.",
-  {
-    // UX (5) — total ~0.15 (content reachability matters for assistive tech)
-    contentOverflow: { weight: 0.04 },
-    aboveFoldRatio: { weight: 0.03 },
-    informationDensity: { weight: 0.03 },
-    containerEfficiency: { weight: 0.02 },
-    viewportUtilization: { weight: 0.03 },
-    // Density — mostly disabled for accessibility
-    elementDensity: { enabled: false, weight: 0 },
-    whitespaceRatio: { enabled: false, weight: 0 },
-    localDensityBalance: { enabled: false, weight: 0 },
-    horizontalBalance: { enabled: false, weight: 0 },
-    verticalBalance: { enabled: false, weight: 0 },
-    alignmentConsistency: { weight: 0.03 },
-    // Spacing
-    spacingScaleAdherence: { weight: 0.04 },
-    spacingConsistency: { weight: 0.04 },
-    lineHeightRatio: { weight: 0.07, thresholds: { good: 90, warning: 65 } },
-    interGroupSpacingRatio: { weight: 0.04 },
-    // Color
-    uniqueColorCount: { enabled: false, weight: 0 },
-    wcagContrastCompliance: { weight: 0.22, thresholds: { good: 95, warning: 80 } },
-    colorHarmony: { enabled: false, weight: 0 },
-    saturationConsistency: { enabled: false, weight: 0 },
-    // Typography
-    typeScaleAdherence: { weight: 0.04 },
-    fontWeightConsistency: { weight: 0.035 },
-    headingHierarchy: { weight: 0.13, thresholds: { good: 90, warning: 70 } },
-    fontFamilyCount: { weight: 0.04 },
-    // Consistency
-    buttonConsistency: { weight: 0.015 },
-    cardConsistency: { weight: 0.015 },
-    inputConsistency: { weight: 0.015 },
-    touchTargetCompliance: { weight: 0.12, thresholds: { good: 95, warning: 80 } },
-    customPropertyConsistency: { enabled: false, weight: 0 }
-  }
-);
-var BUILT_IN_CONTEXTS = {
-  general,
-  minimal,
-  "data-dense": dataDense,
-  mobile,
-  accessibility
-};
-function getContext(name) {
-  return BUILT_IN_CONTEXTS[name];
-}
-function listContexts() {
-  return Object.values(BUILT_IN_CONTEXTS).map((c) => ({
-    name: c.name,
-    description: c.description
-  }));
-}
-function mergeContext(base, overrides) {
-  const merged = {
-    name: overrides.name ?? base.name,
-    description: overrides.description ?? base.description,
-    metrics: { ...base.metrics }
-  };
-  if (overrides.metrics) {
-    for (const [id, config] of Object.entries(overrides.metrics)) {
-      const existing = merged.metrics[id];
-      merged.metrics[id] = existing ? { ...existing, ...config } : { ...DEFAULT_CONFIG6, ...config };
-    }
-  }
-  return merged;
-}
-
-// src/specs/quality-evaluator.ts
-function assignGrade(score) {
-  if (score >= 90) return "A";
-  if (score >= 75) return "B";
-  if (score >= 60) return "C";
-  if (score >= 40) return "D";
-  return "F";
-}
-function resolveContext(context) {
-  if (!context) return BUILT_IN_CONTEXTS["general"];
-  if (typeof context === "string") {
-    const found = getContext(context);
-    if (!found)
-      throw new Error(
-        `Unknown quality context: "${context}". Available: ${Object.keys(BUILT_IN_CONTEXTS).join(", ")}`
-      );
-    return found;
-  }
-  return context;
-}
-function evaluateQuality(elements2, viewport, context) {
-  const startTime = Date.now();
-  const ctx = resolveContext(context);
-  const metricResults = [];
-  let weightedSum = 0;
-  let totalWeight = 0;
-  const metricIds = Object.keys(METRIC_FUNCTIONS);
-  for (const metricId of metricIds) {
-    const config = ctx.metrics[metricId];
-    const enabled = config?.enabled ?? true;
-    const weight = config?.weight ?? 0.045;
-    if (!enabled) {
-      metricResults.push({
-        metricId,
-        score: 0,
-        label: metricId,
-        category: getCategoryForMetric(metricId),
-        enabled: false,
-        weight: 0,
-        findings: []
-      });
-      continue;
-    }
-    const fn = METRIC_FUNCTIONS[metricId];
-    const result = fn(elements2, viewport);
-    result.weight = weight;
-    result.enabled = true;
-    if (config?.thresholds) {
-      for (const finding of result.findings) {
-        if (result.score < config.thresholds.warning) {
-          finding.severity = "error";
-        } else if (result.score < config.thresholds.good) {
-          finding.severity = finding.severity === "error" ? "error" : "warning";
-        }
-      }
-    }
-    metricResults.push(result);
-    weightedSum += result.score * weight;
-    totalWeight += weight;
-  }
-  const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 100;
-  const uxMetrics = metricResults.filter(
-    (r) => r.enabled && getCategoryForMetric(r.metricId) === "ux"
-  );
-  let uxWeightedSum = 0;
-  let uxTotalWeight = 0;
-  for (const r of uxMetrics) {
-    uxWeightedSum += r.score * r.weight;
-    uxTotalWeight += r.weight;
-  }
-  const uxScore = uxTotalWeight > 0 ? Math.round(uxWeightedSum / uxTotalWeight) : 100;
-  const allFindings = [];
-  for (const result of metricResults) {
-    if (!result.enabled) continue;
-    for (const finding of result.findings) {
-      allFindings.push({ ...finding, _weight: result.weight });
-    }
-  }
-  allFindings.sort((a, b) => {
-    const severityOrder = { error: 0, warning: 1, info: 2 };
-    const sDiff = severityOrder[a.severity] - severityOrder[b.severity];
-    if (sDiff !== 0) return sDiff;
-    return b._weight - a._weight;
-  });
-  const topIssues = allFindings.slice(0, 10).map(({ _weight, ...finding }) => finding);
-  return {
-    overallScore,
-    grade: assignGrade(overallScore),
-    uxScore,
-    uxGrade: assignGrade(uxScore),
-    contextName: ctx.name,
-    metrics: metricResults,
-    topIssues,
-    totalElements: elements2.length,
-    viewport,
-    timestamp: Date.now(),
-    durationMs: Date.now() - startTime
-  };
-}
-var METRIC_CATEGORIES = {
-  contentOverflow: "ux",
-  aboveFoldRatio: "ux",
-  informationDensity: "ux",
-  containerEfficiency: "ux",
-  viewportUtilization: "ux",
-  elementDensity: "density",
-  whitespaceRatio: "density",
-  localDensityBalance: "density",
-  horizontalBalance: "density",
-  verticalBalance: "density",
-  alignmentConsistency: "density",
-  spacingScaleAdherence: "spacing",
-  spacingConsistency: "spacing",
-  lineHeightRatio: "spacing",
-  interGroupSpacingRatio: "spacing",
-  uniqueColorCount: "color",
-  wcagContrastCompliance: "color",
-  colorHarmony: "color",
-  saturationConsistency: "color",
-  typeScaleAdherence: "typography",
-  fontWeightConsistency: "typography",
-  headingHierarchy: "typography",
-  fontFamilyCount: "typography",
-  buttonConsistency: "consistency",
-  cardConsistency: "consistency",
-  inputConsistency: "consistency",
-  touchTargetCompliance: "consistency",
-  customPropertyConsistency: "consistency"
-};
-function getCategoryForMetric(metricId) {
-  return METRIC_CATEGORIES[metricId] ?? "density";
-}
-
-// src/specs/quality-diff.ts
-function createBaseline(elements2, viewport, label) {
-  return {
-    elements: structuredClone(elements2),
-    viewport: { ...viewport },
-    timestamp: Date.now(),
-    label
-  };
-}
-var STYLE_PROPERTIES = [
-  "display",
-  "position",
-  "width",
-  "height",
-  "margin",
-  "marginTop",
-  "marginRight",
-  "marginBottom",
-  "marginLeft",
-  "padding",
-  "paddingTop",
-  "paddingRight",
-  "paddingBottom",
-  "paddingLeft",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "lineHeight",
-  "letterSpacing",
-  "textAlign",
-  "textTransform",
-  "textDecoration",
-  "color",
-  "backgroundColor",
-  "border",
-  "borderRadius",
-  "boxShadow",
-  "opacity",
-  "gap",
-  "flexDirection",
-  "justifyContent",
-  "alignItems"
-];
-function diffSnapshots(baseline, current, options) {
-  const layoutThreshold = options?.layoutThreshold ?? 2;
-  const clsThreshold = options?.clsThreshold ?? 0.1;
-  const baseMap = /* @__PURE__ */ new Map();
-  for (const el of baseline.elements) {
-    baseMap.set(el.elementId, el);
-  }
-  const currentMap = /* @__PURE__ */ new Map();
-  for (const el of current) {
-    currentMap.set(el.elementId, el);
-  }
-  const added = [];
-  const removed = [];
-  const modified = [];
-  let totalLayoutShift = 0;
-  const viewportArea = baseline.viewport.width * baseline.viewport.height || 1;
-  for (const el of current) {
-    if (!baseMap.has(el.elementId)) {
-      added.push({ elementId: el.elementId, changeType: "added" });
-    }
-  }
-  for (const el of baseline.elements) {
-    if (!currentMap.has(el.elementId)) {
-      removed.push({ elementId: el.elementId, changeType: "removed" });
-    }
-  }
-  for (const el of current) {
-    const baseEl = baseMap.get(el.elementId);
-    if (!baseEl) continue;
-    const styleChanges = diffStyles(
-      baseEl.styles,
-      el.styles,
-      baseEl.customProperties,
-      el.customProperties
-    );
-    const layoutShift = diffLayout(baseEl, el, layoutThreshold);
-    if (styleChanges.length > 0 || layoutShift) {
-      modified.push({
-        elementId: el.elementId,
-        changeType: "modified",
-        styleChanges: styleChanges.length > 0 ? styleChanges : void 0,
-        layoutShift: layoutShift ?? void 0
-      });
-      if (layoutShift) {
-        const area = el.rect.width * el.rect.height;
-        const distance = Math.sqrt(layoutShift.dx ** 2 + layoutShift.dy ** 2);
-        const impactFraction = area / viewportArea;
-        const distanceFraction = distance / Math.max(baseline.viewport.width, baseline.viewport.height);
-        totalLayoutShift += impactFraction * distanceFraction;
-      }
-    }
-  }
-  const hasSignificantChanges2 = added.length > 0 || removed.length > 0 || totalLayoutShift > clsThreshold || modified.some((m) => (m.styleChanges?.length ?? 0) > 3);
-  return {
-    added,
-    removed,
-    modified,
-    cumulativeLayoutShift: Math.round(totalLayoutShift * 1e4) / 1e4,
-    hasSignificantChanges: hasSignificantChanges2
-  };
-}
-function diffStyles(oldStyles, newStyles, oldCustomProps, newCustomProps) {
-  const changes = [];
-  for (const prop of STYLE_PROPERTIES) {
-    const oldVal = oldStyles[prop] ?? "";
-    const newVal = newStyles[prop] ?? "";
-    if (oldVal !== newVal) {
-      changes.push({ property: prop, oldValue: oldVal, newValue: newVal });
-    }
-  }
-  const allCustomKeys = /* @__PURE__ */ new Set([
-    ...Object.keys(oldCustomProps ?? {}),
-    ...Object.keys(newCustomProps ?? {})
-  ]);
-  for (const key of allCustomKeys) {
-    const oldVal = oldCustomProps?.[key] ?? "";
-    const newVal = newCustomProps?.[key] ?? "";
-    if (oldVal !== newVal) {
-      changes.push({ property: key, oldValue: oldVal, newValue: newVal });
-    }
-  }
-  return changes;
-}
-function diffLayout(oldEl, newEl, threshold) {
-  const dx = newEl.rect.x - oldEl.rect.x;
-  const dy = newEl.rect.y - oldEl.rect.y;
-  const dWidth = newEl.rect.width - oldEl.rect.width;
-  const dHeight = newEl.rect.height - oldEl.rect.height;
-  if (Math.abs(dx) > threshold || Math.abs(dy) > threshold || Math.abs(dWidth) > threshold || Math.abs(dHeight) > threshold) {
-    return { dx, dy, dWidth, dHeight };
-  }
-  return null;
-}
 
 // src/specs/architecture-types.ts
 var ARCHITECTURE_FILE_EXTENSION = ".architecture.uibridge.json";
@@ -37304,480 +37966,6 @@ var FormikAdapter = class {
     }
   }
 };
-
-// src/network/tracker.ts
-var REQUEST_ID_HEADERS2 = [
-  "x-request-id",
-  "x-amzn-requestid",
-  "x-amz-request-id",
-  "cf-ray",
-  "x-trace-id",
-  "traceparent"
-];
-var NetworkRequestTracker = class {
-  constructor(config) {
-    this.inFlight = /* @__PURE__ */ new Map();
-    this.completed = [];
-    this.listeners = [];
-    this.installed = false;
-    this.requestCounter = 0;
-    // Saved originals for restore
-    this.originalFetch = null;
-    this.originalXHROpen = null;
-    this.originalXHRSend = null;
-    this.config = {
-      ignorePatterns: config?.ignorePatterns ?? [],
-      maxEntries: config?.maxEntries ?? 200,
-      trackXHR: config?.trackXHR ?? true,
-      maxBodyPreview: config?.maxBodyPreview ?? 500,
-      errorBodiesOnly: config?.errorBodiesOnly ?? true,
-      captureHeaders: config?.captureHeaders ?? true
-    };
-  }
-  // =========================================================================
-  // Install / Destroy
-  // =========================================================================
-  /** Patch fetch and optionally XHR to begin tracking requests. */
-  install() {
-    if (this.installed) return;
-    this.installed = true;
-    this.installFetchInterceptor();
-    if (this.config.trackXHR) {
-      this.installXHRInterceptor();
-    }
-  }
-  /** Restore original fetch/XHR and clear all state. */
-  destroy() {
-    if (!this.installed) return;
-    this.installed = false;
-    if (this.originalFetch) {
-      globalThis.fetch = this.originalFetch;
-      this.originalFetch = null;
-    }
-    if (this.originalXHROpen) {
-      XMLHttpRequest.prototype.open = this.originalXHROpen;
-      this.originalXHROpen = null;
-    }
-    if (this.originalXHRSend) {
-      XMLHttpRequest.prototype.send = this.originalXHRSend;
-      this.originalXHRSend = null;
-    }
-    this.inFlight.clear();
-    this.completed = [];
-    this.listeners = [];
-    this.requestCounter = 0;
-  }
-  // =========================================================================
-  // Query Methods
-  // =========================================================================
-  /** Return all currently in-flight request entries. */
-  getInFlight() {
-    return [...this.inFlight.values()];
-  }
-  /** Return completed request entries, optionally filtered. */
-  getCompleted(filter) {
-    if (!filter) return [...this.completed];
-    return this.applyFilter([...this.completed], filter);
-  }
-  /** Return all entries (in-flight + completed), optionally filtered. */
-  getAll(filter) {
-    const all = [...this.inFlight.values(), ...this.completed];
-    if (!filter) return all;
-    return this.applyFilter(all, filter);
-  }
-  /** Look up a single entry by its unique ID. */
-  getById(id) {
-    return this.inFlight.get(id) ?? this.completed.find((e) => e.request.id === id);
-  }
-  // =========================================================================
-  // Wait
-  // =========================================================================
-  /**
-   * Wait for a matching network request to complete.
-   *
-   * Modes:
-   * - `existing` — only check currently in-flight requests.
-   * - `next` — ignore existing, wait for the next matching request.
-   * - `any` (default) — check in-flight first, then recently completed, then wait.
-   */
-  async waitForRequest(options) {
-    const timeout = options?.timeout ?? 3e4;
-    const mode2 = options?.mode ?? "any";
-    return new Promise((resolve, reject) => {
-      const startTime = Date.now();
-      if (mode2 !== "next") {
-        for (const entry of this.inFlight.values()) {
-          if (this.matchesWaitOptions(entry, options ?? {})) {
-            const unsub2 = this.onEvent((event) => {
-              if (event.entry.request.id === entry.request.id && event.type !== "request-start") {
-                unsub2();
-                clearTimeout(timer2);
-                resolve({ entry: event.entry, timedOut: false });
-              }
-            });
-            const timer2 = setTimeout(() => {
-              unsub2();
-              resolve({ entry, timedOut: true });
-            }, timeout);
-            return;
-          }
-        }
-      }
-      if (mode2 === "any") {
-        const match = [...this.completed].reverse().find(
-          (e) => this.matchesWaitOptions(e, options ?? {}) && e.completedAt != null && e.completedAt >= startTime - 1e3
-        );
-        if (match) {
-          resolve({ entry: match, timedOut: false });
-          return;
-        }
-      }
-      const unsub = this.onEvent((event) => {
-        if (event.type !== "request-start" && this.matchesWaitOptions(event.entry, options ?? {})) {
-          unsub();
-          clearTimeout(timer);
-          resolve({ entry: event.entry, timedOut: false });
-        }
-      });
-      const timer = setTimeout(() => {
-        unsub();
-        reject(new Error(`waitForRequest timed out after ${timeout}ms`));
-      }, timeout);
-    });
-  }
-  // =========================================================================
-  // Event Subscription
-  // =========================================================================
-  /** Subscribe to network events. Returns an unsubscribe function. */
-  onEvent(callback) {
-    this.listeners.push(callback);
-    return () => {
-      const idx = this.listeners.indexOf(callback);
-      if (idx >= 0) this.listeners.splice(idx, 1);
-    };
-  }
-  /** Clear the completed entries buffer (in-flight entries are preserved). */
-  clear() {
-    this.completed = [];
-  }
-  // =========================================================================
-  // Private — Interceptors
-  // =========================================================================
-  installFetchInterceptor() {
-    const origFetch = globalThis.fetch;
-    this.originalFetch = origFetch;
-    const tracker = this;
-    globalThis.fetch = async function(input, init) {
-      const url = getUrl2(input);
-      if (tracker.shouldIgnore(url)) {
-        return origFetch.call(globalThis, input, init);
-      }
-      const method = getMethod2(input, init);
-      const id = tracker.generateId();
-      const entry = {
-        request: {
-          id,
-          method,
-          url,
-          pathname: tryParsePathname(url),
-          headers: tracker.extractHeaders(init?.headers, tracker.config.captureHeaders),
-          bodyPreview: await tracker.captureBodyPreview(init?.body),
-          startedAt: Date.now(),
-          status: "in-flight"
-        },
-        isFailure: false
-      };
-      tracker.inFlight.set(id, entry);
-      tracker.emitEvent({
-        type: "request-start",
-        entry,
-        pendingCount: tracker.inFlight.size,
-        timestamp: Date.now()
-      });
-      try {
-        const response = await origFetch.call(globalThis, input, init);
-        const durationMs = Date.now() - entry.request.startedAt;
-        const isError = response.status >= 400;
-        entry.request.status = isError ? "failed" : "completed";
-        entry.response = {
-          statusCode: response.status,
-          statusText: response.statusText,
-          headers: tracker.extractHeaders(response.headers, tracker.config.captureHeaders),
-          durationMs
-        };
-        entry.isFailure = isError;
-        entry.completedAt = Date.now();
-        entry.requestId = tracker.extractRequestId(response.headers);
-        entry.response.bodyPreview = await tracker.captureResponsePreview(
-          response.clone(),
-          isError
-        );
-        tracker.inFlight.delete(id);
-        tracker.completed.push(entry);
-        tracker.trimCompleted();
-        tracker.emitEvent({
-          type: isError ? "request-error" : "request-complete",
-          entry,
-          pendingCount: tracker.inFlight.size,
-          timestamp: Date.now()
-        });
-        return response;
-      } catch (err) {
-        entry.request.status = "failed";
-        entry.error = err instanceof Error ? err.message : String(err);
-        entry.isFailure = true;
-        entry.completedAt = Date.now();
-        tracker.inFlight.delete(id);
-        tracker.completed.push(entry);
-        tracker.trimCompleted();
-        tracker.emitEvent({
-          type: "request-error",
-          entry,
-          pendingCount: tracker.inFlight.size,
-          timestamp: Date.now()
-        });
-        throw err;
-      }
-    };
-  }
-  installXHRInterceptor() {
-    this.originalXHROpen = XMLHttpRequest.prototype.open;
-    this.originalXHRSend = XMLHttpRequest.prototype.send;
-    const tracker = this;
-    XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
-      const xhr = this;
-      xhr.__netTrackerMethod = method;
-      xhr.__netTrackerUrl = typeof url === "string" ? url : url.href;
-      return tracker.originalXHROpen.call(this, method, url, async ?? true, username, password);
-    };
-    XMLHttpRequest.prototype.send = function(body) {
-      const xhr = this;
-      const url = xhr.__netTrackerUrl || "";
-      const method = (xhr.__netTrackerMethod || "GET").toUpperCase();
-      if (tracker.shouldIgnore(url)) {
-        return tracker.originalXHRSend.call(this, body);
-      }
-      const id = tracker.generateId();
-      xhr.__netTrackerId = id;
-      const entry = {
-        request: {
-          id,
-          method,
-          url,
-          pathname: tryParsePathname(url),
-          bodyPreview: typeof body === "string" ? truncate4(body, tracker.config.maxBodyPreview) : void 0,
-          startedAt: Date.now(),
-          status: "in-flight"
-        },
-        isFailure: false
-      };
-      tracker.inFlight.set(id, entry);
-      tracker.emitEvent({
-        type: "request-start",
-        entry,
-        pendingCount: tracker.inFlight.size,
-        timestamp: Date.now()
-      });
-      xhr.addEventListener("loadend", () => {
-        const durationMs = Date.now() - entry.request.startedAt;
-        const isError = xhr.status === 0 || xhr.status >= 400;
-        entry.request.status = isError ? "failed" : "completed";
-        entry.response = {
-          statusCode: xhr.status,
-          statusText: xhr.statusText,
-          durationMs
-        };
-        entry.isFailure = isError;
-        entry.completedAt = Date.now();
-        if (isError || !tracker.config.errorBodiesOnly) {
-          try {
-            const responseText = xhr.responseType === "" || xhr.responseType === "text" ? xhr.responseText : void 0;
-            if (responseText) {
-              entry.response.bodyPreview = truncate4(responseText, tracker.config.maxBodyPreview);
-            }
-          } catch {
-          }
-        }
-        entry.requestId = tracker.extractRequestIdFromXHR(xhr);
-        if (tracker.config.captureHeaders) {
-          entry.response.headers = tracker.parseXHRResponseHeaders(xhr);
-        }
-        tracker.inFlight.delete(id);
-        tracker.completed.push(entry);
-        tracker.trimCompleted();
-        tracker.emitEvent({
-          type: isError ? "request-error" : "request-complete",
-          entry,
-          pendingCount: tracker.inFlight.size,
-          timestamp: Date.now()
-        });
-      });
-      xhr.addEventListener("error", () => {
-        entry.error = "Network error";
-      });
-      xhr.addEventListener("abort", () => {
-        entry.request.status = "cancelled";
-        entry.error = "Request aborted";
-      });
-      return tracker.originalXHRSend.call(this, body);
-    };
-  }
-  // =========================================================================
-  // Private — Helpers
-  // =========================================================================
-  shouldIgnore(url) {
-    return this.config.ignorePatterns.some((p) => url.includes(p));
-  }
-  generateId() {
-    return `net-${++this.requestCounter}`;
-  }
-  extractHeaders(headers, capture) {
-    if (!capture || !headers) return void 0;
-    const result = {};
-    if (headers instanceof Headers) {
-      headers.forEach((value, key) => {
-        result[key] = value;
-      });
-    } else if (Array.isArray(headers)) {
-      for (const [key, value] of headers) {
-        result[key] = value;
-      }
-    } else {
-      for (const [key, value] of Object.entries(headers)) {
-        result[key] = value;
-      }
-    }
-    return Object.keys(result).length > 0 ? result : void 0;
-  }
-  async captureBodyPreview(body) {
-    if (!body) return void 0;
-    if (typeof body === "string") {
-      return truncate4(body, this.config.maxBodyPreview);
-    }
-    return void 0;
-  }
-  async captureResponsePreview(response, isError) {
-    if (!isError && this.config.errorBodiesOnly) return void 0;
-    try {
-      const text = await response.text();
-      return truncate4(text, this.config.maxBodyPreview);
-    } catch {
-      return void 0;
-    }
-  }
-  extractRequestId(headers) {
-    for (const name of REQUEST_ID_HEADERS2) {
-      const value = headers.get(name);
-      if (value) return value;
-    }
-    return void 0;
-  }
-  extractRequestIdFromXHR(xhr) {
-    for (const name of REQUEST_ID_HEADERS2) {
-      const value = xhr.getResponseHeader(name);
-      if (value) return value;
-    }
-    return void 0;
-  }
-  parseXHRResponseHeaders(xhr) {
-    const raw = xhr.getAllResponseHeaders();
-    if (!raw) return void 0;
-    const result = {};
-    const lines = raw.trim().split(/[\r\n]+/);
-    for (const line of lines) {
-      const idx = line.indexOf(":");
-      if (idx > 0) {
-        const key = line.slice(0, idx).trim().toLowerCase();
-        const value = line.slice(idx + 1).trim();
-        result[key] = value;
-      }
-    }
-    return Object.keys(result).length > 0 ? result : void 0;
-  }
-  trimCompleted() {
-    if (this.completed.length > this.config.maxEntries) {
-      this.completed = this.completed.slice(this.completed.length - this.config.maxEntries);
-    }
-  }
-  emitEvent(event) {
-    for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch {
-      }
-    }
-  }
-  matchesFilter(entry, filter) {
-    if (filter.status) {
-      const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
-      if (!statuses.includes(entry.request.status)) return false;
-    }
-    if (filter.method) {
-      const methods = Array.isArray(filter.method) ? filter.method : [filter.method];
-      const upperMethods = methods.map((m) => m.toUpperCase());
-      if (!upperMethods.includes(entry.request.method)) return false;
-    }
-    if (filter.urlPattern) {
-      if (!entry.request.url.includes(filter.urlPattern)) return false;
-    }
-    if (filter.urlRegex) {
-      const re = new RegExp(filter.urlRegex);
-      if (!re.test(entry.request.url)) return false;
-    }
-    if (filter.failuresOnly && !entry.isFailure) return false;
-    if (filter.since != null && entry.request.startedAt < filter.since) return false;
-    if (filter.minStatus != null && entry.response) {
-      if (entry.response.statusCode < filter.minStatus) return false;
-    }
-    if (filter.maxStatus != null && entry.response) {
-      if (entry.response.statusCode > filter.maxStatus) return false;
-    }
-    return true;
-  }
-  applyFilter(entries, filter) {
-    let result = entries.filter((e) => this.matchesFilter(e, filter));
-    if (filter.limit != null && filter.limit > 0) {
-      result = result.slice(-filter.limit);
-    }
-    return result;
-  }
-  matchesWaitOptions(entry, options) {
-    if (options.method && entry.request.method !== options.method.toUpperCase()) {
-      return false;
-    }
-    if (options.urlPattern && !entry.request.url.includes(options.urlPattern)) {
-      return false;
-    }
-    if (options.urlRegex) {
-      const re = new RegExp(options.urlRegex);
-      if (!re.test(entry.request.url)) return false;
-    }
-    return true;
-  }
-};
-function getUrl2(input) {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.href;
-  if (input instanceof Request) return input.url;
-  return String(input);
-}
-function getMethod2(input, init) {
-  if (init?.method) return init.method.toUpperCase();
-  if (input instanceof Request) return input.method.toUpperCase();
-  return "GET";
-}
-function tryParsePathname(url) {
-  try {
-    const parsed = new URL(url, typeof location !== "undefined" ? location.href : void 0);
-    return parsed.pathname;
-  } catch {
-    return void 0;
-  }
-}
-function truncate4(text, maxLength) {
-  if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength) + "...";
-}
 
 // src/contracts/types.ts
 var CONTRACT_CONFIG_VERSION = "1.0.0";

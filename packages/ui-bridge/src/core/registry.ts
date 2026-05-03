@@ -133,6 +133,9 @@ export function serializeRegisteredElement(
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
     route: el.route,
+    // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
+    // can answer "which control unhides element X" without grepping source.
+    reveals: el.reveals,
   };
 }
 
@@ -700,6 +703,12 @@ export class UIBridgeRegistry {
   // key `""` — snapshot serialization filters that bucket out.
   private routeCounts = new Map<string, number>();
 
+  // Per-route element-id sets — paired with `routeCounts` so the snapshot
+  // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
+  // empty-string convention for undefined-route elements; same drop-on-empty
+  // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
+  private routeIds = new Map<string, Set<string>>();
+
   // External store pattern for useSyncExternalStore
   private storeVersion = 0;
   private storeListeners = new Set<() => void>();
@@ -902,6 +911,8 @@ export class UIBridgeRegistry {
       color?: string;
       /** Disambiguation hint — hierarchical semantic path. See RegisteredElement.contextPath. */
       contextPath?: string;
+      /** Phase 3.2: ids/globs this control reveals. See RegisteredElement.reveals. */
+      reveals?: string[];
     }
   ): boolean {
     const existing = this.elements.get(id);
@@ -918,6 +929,7 @@ export class UIBridgeRegistry {
     if (options.position !== undefined) existing.position = options.position;
     if (options.color !== undefined) existing.color = options.color;
     if (options.contextPath !== undefined) existing.contextPath = options.contextPath;
+    if (options.reveals !== undefined) existing.reveals = options.reveals;
     return true;
   }
 
@@ -1038,6 +1050,12 @@ export class UIBridgeRegistry {
        * the DOM `role` attribute.
        */
       role?: string;
+      /**
+       * Phase 3.2 (plan 2026-05-03) — ids or `*`-globs this control unhides.
+       * Used by `GET /control/elements?revealsAny=<id-or-glob>`. See
+       * `RegisteredElement.reveals`.
+       */
+      reveals?: string[];
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
@@ -1139,6 +1157,9 @@ export class UIBridgeRegistry {
       // the heading/paragraph/table-cell content-discovery path.
       content: options.content,
       role: options.role,
+      // Phase 3.2 — ids/globs this control reveals. Undefined for elements
+      // that don't gate any visibility (the common case).
+      reveals: options.reveals,
     };
     // Hidden non-enumerable hook so `refreshElement` can mutate the same
     // closure-captured ref. Stored on the entry rather than via a side map
@@ -1155,32 +1176,45 @@ export class UIBridgeRegistry {
     // route bookkeeping so we don't double-count an overwrite.
     const prior = this.elements.get(actualId);
     if (prior) {
-      this.decrementRouteCount(prior.route);
+      this.decrementRouteCount(prior.route, actualId);
     }
     this.elements.set(actualId, registered);
     // F3: sticky latch + per-route tally
     this.everHadRegistrationsFlag = true;
-    this.incrementRouteCount(route);
+    this.incrementRouteCount(route, actualId);
     this.emit('element:registered', { id: actualId, type, label: options.label });
 
     return registered;
   }
 
-  private incrementRouteCount(route: string | undefined): void {
+  private incrementRouteCount(route: string | undefined, id: string): void {
     // Use `""` as the key for undefined-route elements so the map stays
     // typed as `Map<string, number>`; snapshot serialization filters this
     // bucket out.
     const key = route ?? '';
     this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+    let ids = this.routeIds.get(key);
+    if (!ids) {
+      ids = new Set();
+      this.routeIds.set(key, ids);
+    }
+    ids.add(id);
   }
 
-  private decrementRouteCount(route: string | undefined): void {
+  private decrementRouteCount(route: string | undefined, id: string): void {
     const key = route ?? '';
     const next = (this.routeCounts.get(key) ?? 0) - 1;
     if (next <= 0) {
       this.routeCounts.delete(key);
     } else {
       this.routeCounts.set(key, next);
+    }
+    const ids = this.routeIds.get(key);
+    if (ids) {
+      ids.delete(id);
+      if (ids.size === 0) {
+        this.routeIds.delete(key);
+      }
     }
   }
 
@@ -1298,7 +1332,7 @@ export class UIBridgeRegistry {
       // clear `everHadRegistrationsFlag` — it's a one-way latch that stays
       // true for the rest of the registry's lifetime so callers can tell
       // "had coverage, all unmounted" from "never had coverage".
-      this.decrementRouteCount(registered.route);
+      this.decrementRouteCount(registered.route, id);
       this.emit('element:unregistered', { id });
       this.options.elementEventLog?.removeElement(id);
       return true;
@@ -1632,6 +1666,8 @@ export class UIBridgeRegistry {
       elementIds?: string[];
       getState?: StateGetter<Record<string, unknown>>;
       getComputed?: () => Record<string, unknown>;
+      /** Phase 3.1: discoverability scope. See RegisteredComponent.scope. */
+      scope?: 'global' | 'route';
     }
   ): boolean {
     const existing = this.components.get(id);
@@ -1650,6 +1686,7 @@ export class UIBridgeRegistry {
     if (options.elementIds !== undefined) existing.elementIds = options.elementIds;
     if (options.getState !== undefined) existing.getState = options.getState;
     if (options.getComputed !== undefined) existing.getComputed = options.getComputed;
+    if (options.scope !== undefined) existing.scope = options.scope;
     return true;
   }
 
@@ -1671,6 +1708,13 @@ export class UIBridgeRegistry {
       elementIds?: string[];
       getState?: StateGetter<Record<string, unknown>>;
       getComputed?: () => Record<string, unknown>;
+      /**
+       * Phase 3.1 discoverability scope (plan 2026-05-03). Default behavior
+       * is `'route'` (treated as undefined here — component shows up only
+       * while its mounting page is active). Pass `'global'` to advertise
+       * intended cross-route availability.
+       */
+      scope?: 'global' | 'route';
     }
   ): RegisteredComponent {
     const registered: RegisteredComponent = {
@@ -1690,6 +1734,7 @@ export class UIBridgeRegistry {
       mounted: true,
       getState: options.getState,
       getComputed: options.getComputed,
+      scope: options.scope,
     };
 
     this.components.set(id, registered);
@@ -2233,18 +2278,29 @@ export class UIBridgeRegistry {
   }
 
   /**
-   * Per-route counts of currently-registered elements. Returns a plain
-   * object copy so callers can't mutate the internal map. Elements with
-   * an undefined route are omitted. Exposed primarily for tests; production
-   * code should read `BridgeSnapshot.registration.byRoute`.
+   * Per-route counts of currently-registered elements, plus the ids that
+   * make up each count. Returns a plain object copy so callers can't mutate
+   * internal state. Elements with an undefined route are omitted. Exposed
+   * primarily for tests; production code should read
+   * `BridgeSnapshot.registration.byRoute`.
+   *
+   * Each value is `{ count: number; ids: string[] }`. The `count` field
+   * mirrors the prior `Record<string, number>` shape (kept verbatim so
+   * existing readers like the cross-route 404 hint can detect coverage),
+   * and `ids` enumerates the element ids registered on that route at
+   * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
    */
-  getCountsByRoute(): Record<string, number> {
-    const out: Record<string, number> = {};
+  getCountsByRoute(): Record<string, { count: number; ids: string[] }> {
+    const out: Record<string, { count: number; ids: string[] }> = {};
     for (const [route, count] of this.routeCounts) {
       // Empty-string key = undefined-route bucket — exclude from the
-      // user-visible map so it never shows up as `"": N`.
+      // user-visible map so it never shows up as `"": { ... }`.
       if (route === '') continue;
-      if (count > 0) out[route] = count;
+      if (count > 0) {
+        const idSet = this.routeIds.get(route);
+        const ids = idSet ? Array.from(idSet) : [];
+        out[route] = { count, ids };
+      }
     }
     return out;
   }
@@ -2257,7 +2313,7 @@ export class UIBridgeRegistry {
   private buildRegistrationMetadata(): {
     totalRegistered: number;
     everHadRegistrations: boolean;
-    byRoute: Record<string, number>;
+    byRoute: Record<string, { count: number; ids: string[] }>;
   } {
     return {
       totalRegistered: this.elements.size,
@@ -2458,6 +2514,9 @@ export class UIBridgeRegistry {
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
         elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope,
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -2526,6 +2585,9 @@ export class UIBridgeRegistry {
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
         elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope,
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -2554,6 +2616,7 @@ export class UIBridgeRegistry {
     // unregister it resets the route tally AND the sticky latch, matching
     // the lifetime semantics expected after `resetGlobalRegistry()`.
     this.routeCounts.clear();
+    this.routeIds.clear();
     this.everHadRegistrationsFlag = false;
   }
 

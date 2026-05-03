@@ -10,11 +10,13 @@
  */
 
 import type { CommandRelay } from './command-relay';
+import { buildComponentNotFoundError } from './handlers';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
   CapabilitiesResponse,
   DOMChangeEvent,
+  StateSummary,
 } from './types';
 import type { RenderLogEntry } from '../render-log';
 import type {
@@ -446,12 +448,20 @@ export function createRelayHandlers(
       // Apply substring filters via the shared matcher. The relay works
       // against the cached snapshot (no live DOM), so the matcher's
       // accessible-name fallback chain (label → id) is what actually fires here.
-      if (options?.title || options?.aria_label || options?.text) {
+      // Phase 3.2 adds the `revealsAny` filter which acts on each element's
+      // `reveals` array — passed through verbatim by `serializeRegisteredElement`.
+      if (
+        options?.title ||
+        options?.aria_label ||
+        options?.text ||
+        (options as { revealsAny?: string } | undefined)?.revealsAny
+      ) {
         elements = elements.filter((el) =>
           matchesElementSelector(el as unknown as MatchableElement, {
             title: options?.title as string | undefined,
             aria_label: options?.aria_label as string | undefined,
             text: options?.text as string | undefined,
+            revealsAny: (options as { revealsAny?: string } | undefined)?.revealsAny,
           })
         );
       }
@@ -557,15 +567,24 @@ export function createRelayHandlers(
       }
       if (!component) {
         const available = latestControlSnapshot.components.map((c) => c.id);
-        return error(
-          `Component "${id}" not found. Available components: [${available.join(', ')}]. Components are only available when their page is active — navigate to the page that contains this component and try again.`,
-          'NOT_FOUND',
-          [
-            'Use getControlSnapshot() to see all available components',
-            'Navigate to the page containing this component first',
-            'Components mount/unmount with page navigation — ensure the correct page is active',
-          ]
+        // The cached snapshot may carry Phase-1.2 registration metadata
+        // (`byRoute` with per-route ids) and a top-level `route`; use both
+        // to inject the cross-route hint when the missing id lives elsewhere.
+        const enriched = latestControlSnapshot as ControlSnapshot & {
+          registration?: { byRoute?: Record<string, { count: number; ids: string[] }> };
+          route?: string;
+        };
+        const message = buildComponentNotFoundError(
+          id,
+          available,
+          enriched.registration?.byRoute,
+          enriched.route
         );
+        return error(message, 'NOT_FOUND', [
+          'Use getControlSnapshot() to see all available components',
+          'Navigate to the page containing this component first',
+          'Components mount/unmount with page navigation — ensure the correct page is active',
+        ]);
       }
       return success(component);
     },
@@ -1332,6 +1351,68 @@ export function createRelayHandlers(
     },
 
     // ========================================================================
+    // State Summary (Phase 1.3, plan 2026-05-03)
+    // ========================================================================
+
+    async getStateSummary(): Promise<APIResponse<StateSummary>> {
+      // Reuse the cached snapshot — `latestControlSnapshot` is the same data
+      // a fresh `/control/snapshot` call would synthesize, just without the
+      // round-trip cost. The whole point of state-summary is to skip the
+      // five separate calls a caller would otherwise make.
+      const snapshot = latestControlSnapshot as ControlSnapshot & {
+        route?: string;
+        activeTab?: string;
+      };
+      const visibleElementCount = snapshot.elements.reduce((acc, el) => {
+        const state = el.state as { rect?: { width: number; height: number }; visible?: boolean } | undefined;
+        const rect = state?.rect;
+        const hasLayout = !!rect && (rect.width > 0 || rect.height > 0);
+        const isVisible = state?.visible !== false;
+        return acc + (hasLayout && isVisible ? 1 : 0);
+      }, 0);
+      const modalOpen = (snapshot.modalStack?.count ?? 0) > 0;
+
+      // hasErrors: best-effort from the relay's console-errors cache. We do
+      // NOT trigger a fresh round-trip here — state-summary's contract is
+      // "synthesize from what we already have", not "make extra calls".
+      let hasErrors = false;
+      const cache = lastConsoleErrorsCache as
+        | APIResponse<{ count?: number; errors?: unknown[] }>
+        | null;
+      if (cache?.success && cache.data) {
+        const count = cache.data.count;
+        if (typeof count === 'number') {
+          hasErrors = count > 0;
+        } else if (Array.isArray(cache.data.errors)) {
+          hasErrors = cache.data.errors.length > 0;
+        }
+      }
+
+      // idleSignals: the relay doesn't cache idle status, but a single
+      // round-trip is still cheaper than four. Fall back to null on error
+      // so callers can detect "idle detection unavailable" without 500ing.
+      let idleSignals: StateSummary['idleSignals'] = null;
+      try {
+        const idleResp = await relayCommand<NonNullable<StateSummary['idleSignals']>>(
+          'getIdleStatus'
+        );
+        if (idleResp.success && idleResp.data) idleSignals = idleResp.data;
+      } catch {
+        idleSignals = null;
+      }
+
+      return success({
+        visibleElementCount,
+        modalOpen,
+        hasErrors,
+        idleSignals,
+        registeredComponents: snapshot.components.length,
+        route: snapshot.route ?? null,
+        activeTab: snapshot.activeTab ?? null,
+      });
+    },
+
+    // ========================================================================
     // Idle Detection
     // ========================================================================
 
@@ -1553,6 +1634,45 @@ export function createRelayHandlers(
     },
     async waitForElementRegistered(request) {
       return relayCommand('waitForElementRegistered', request);
+    },
+
+    // Phase 2.1 (plan 2026-05-03) — relay element-predicate assertion to
+    // the browser. The runtime dispatcher evaluates the predicate against
+    // the live registry; we forward the verdict and re-stamp the 422
+    // semantics so external consumers see the same status code regardless
+    // of whether the in-process or relay path serves the request.
+    async expectElement(id, request) {
+      const relayed = await relayCommand<{
+        passed: boolean;
+        observedState: { registered: boolean; state: Record<string, unknown> | null } | null;
+        durationMs: number;
+      }>('expectElement', { id, request });
+      if (!relayed.success || !relayed.data) return relayed;
+      if (relayed.data.passed === false) {
+        return {
+          ...relayed,
+          httpStatus: 422,
+        };
+      }
+      return relayed;
+    },
+
+    // Phase 4.1 (plan 2026-05-03) — spawn-headless is a server-side-only
+    // feature. The relay routes traffic between an external HTTP client
+    // and a browser-resident SDK, so it has no business launching a
+    // separate Chromium process. Return 501 so the route shows up in
+    // capability advertisements without pretending to fulfill the contract.
+    async spawnHeadless() {
+      return {
+        success: false,
+        error:
+          'spawn-headless is not supported on the relay transport. ' +
+          'Call /control/sdk/spawn-headless against the in-process server ' +
+          '(createHandlers) instead.',
+        code: 'HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY',
+        timestamp: Date.now(),
+        httpStatus: 501,
+      };
     },
 
     // Tier 3.2 — relay batch to browser context

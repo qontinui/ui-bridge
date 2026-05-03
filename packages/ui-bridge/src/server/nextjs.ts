@@ -208,6 +208,14 @@ export function createNextRouteHandlers(
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
         ...args
       );
+      // Honor APIResponse.httpStatus for endpoints that need 4xx semantics
+      // on logical failure (Phase 2.1 `/control/element/:id/expect` → 422).
+      const httpStatus =
+        typeof result.httpStatus === 'number' ? result.httpStatus : undefined;
+      if (httpStatus !== undefined) {
+        const { httpStatus: _omit, ...body } = result;
+        return jsonResponse(body, httpStatus);
+      }
       return jsonResponse(result);
     } catch (error) {
       console.error('UI Bridge error:', error);
@@ -289,8 +297,24 @@ export function createRenderLogHandlers(handlers: UIBridgeServerHandlers) {
 export function createControlHandlers(handlers: UIBridgeServerHandlers) {
   return {
     elements: {
-      async GET(): Promise<Response> {
-        const result = await handlers.getElements();
+      async GET(request: NextRequest): Promise<Response> {
+        // Phase 3.2: forward filter query params (`title`, `aria_label`,
+        // `text`, `revealsAny`) so the handler-level matcher can apply them.
+        // Empty strings are dropped so callers can omit fields without
+        // tripping the "selector has at least one field" check.
+        const sp = request.nextUrl.searchParams;
+        const pick = (key: string): string | undefined => {
+          const raw = sp.get(key);
+          if (raw === null) return undefined;
+          return raw.length === 0 ? undefined : raw;
+        };
+        const result = await handlers.getElements({
+          recency: pick('recency'),
+          title: pick('title'),
+          aria_label: pick('aria_label'),
+          text: pick('text'),
+          revealsAny: pick('revealsAny'),
+        });
         return jsonResponse(result);
       },
     },

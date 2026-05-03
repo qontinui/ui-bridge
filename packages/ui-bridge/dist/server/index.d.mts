@@ -1,28 +1,28 @@
-import { a as UIBridgeServerHandlers } from '../types-DESdbIVG.mjs';
-export { A as APIResponse, B as BrowserEventsResponse, C as CORSOptions, b as CapabilitiesResponse, c as ControlBatchRequest, d as ControlBatchResponse, e as ControlBatchStep, f as ControlBatchStepResult, D as DOMChangeEvent, E as ElementConditionSelector, g as EndpointCategory, h as EndpointInfo, R as RateLimitOptions, i as RenderLogQuery, j as RouteDefinition, U as UIBridgeServerConfig, k as UI_BRIDGE_ROUTES, l as WaitForElementByConditionRequest, m as WaitForElementByConditionResponse, n as WaitForElementPredicate, o as WaitForElementRequest, p as WaitForElementSuccessResponse, q as WaitForRouteChangeRequest, r as WaitForRouteChangeResponse, W as WebSocketMessage, s as WebSocketMessageType } from '../types-DESdbIVG.mjs';
-export { ActionExecutorLike, CreateHandlersConfig, RegistryLike, createAIHandlers, createHandlers } from './handlers.mjs';
+import { a as UIBridgeServerHandlers } from '../types-VtnJDSGD.mjs';
+export { A as APIResponse, B as BrowserEventsResponse, C as CORSOptions, b as CapabilitiesResponse, c as ControlBatchRequest, d as ControlBatchResponse, e as ControlBatchStep, f as ControlBatchStepResult, D as DOMChangeEvent, E as ElementConditionSelector, g as ElementExpectRequest, h as ElementExpectResponse, i as EndpointCategory, j as EndpointInfo, R as RateLimitOptions, k as RenderLogQuery, l as RouteDefinition, S as SpawnHeadlessRequest, m as SpawnHeadlessResponse, n as StateSummary, U as UIBridgeServerConfig, o as UI_BRIDGE_ROUTES, p as WaitForElementByConditionRequest, q as WaitForElementByConditionResponse, r as WaitForElementPredicate, s as WaitForElementRequest, t as WaitForElementSuccessResponse, u as WaitForRouteChangeRequest, v as WaitForRouteChangeResponse, W as WebSocketMessage, w as WebSocketMessageType } from '../types-VtnJDSGD.mjs';
+export { ActionExecutorLike, CreateHandlersConfig, RegistryLike, closeAllSpawnedHeadlessTabs, createAIHandlers, createHandlers } from './handlers.mjs';
 export { ExpressAdapterConfig, createExpressApp, createExpressRouter, uiBridgeMiddleware } from './express.mjs';
-import { C as CommandRelay } from '../nextjs-18OWf8RS.mjs';
-export { a as CommandListener, b as CommandRelayOptions, N as NextJSAdapterConfig, c as NextRouteHandler, P as PendingCommand, Q as QueuedCommand, T as TabInfo, d as TabListener, e as TransportDiagnostics, W as WebSocketClient, f as createControlHandlers, g as createDebugHandlers, h as createNextRouteHandlers, i as createRenderLogHandlers, j as createUIBridgeHandler } from '../nextjs-18OWf8RS.mjs';
-import { U as UIBridgeWSHandler } from '../standalone-CGv-rY0t.mjs';
-export { S as StandaloneServer, a as StandaloneServerConfig, W as WebSocketLike, c as createStandaloneServer, s as startCLI } from '../standalone-CGv-rY0t.mjs';
-import { e as BridgeEvent, i as AnyCapturedEvent } from '../types-DHAgZgSv.mjs';
-import { B as BrowserEventStream, S as StreamSubscription } from '../ws-streaming-CcXuOUX3.mjs';
-export { S as SSEManager } from '../sse-handler-DuipnNr3.mjs';
+import { C as CommandRelay } from '../nextjs-CXHdTOGs.mjs';
+export { a as CommandListener, b as CommandRelayOptions, N as NextJSAdapterConfig, c as NextRouteHandler, P as PendingCommand, Q as QueuedCommand, T as TabInfo, d as TabListener, e as TransportDiagnostics, W as WebSocketClient, f as createControlHandlers, g as createDebugHandlers, h as createNextRouteHandlers, i as createRenderLogHandlers, j as createUIBridgeHandler } from '../nextjs-CXHdTOGs.mjs';
+import { U as UIBridgeWSHandler } from '../standalone-jLwvv4I3.mjs';
+export { S as StandaloneServer, a as StandaloneServerConfig, W as WebSocketLike, c as createStandaloneServer, s as startCLI } from '../standalone-jLwvv4I3.mjs';
+import { e as BridgeEvent, i as AnyCapturedEvent } from '../types-gR41i0Eb.mjs';
+import { B as BrowserEventStream, S as StreamSubscription } from '../ws-streaming-l_SbQr8O.mjs';
+export { S as SSEManager } from '../sse-handler-BB8lvLTH.mjs';
 import '../types-CNyrSSSQ.mjs';
 import '../tracker-DpZSyunJ.mjs';
 import '../render-log/index.mjs';
-import '../find-k9x1U7cK.mjs';
-import '../style-types-B81kmWSf.mjs';
+import '../find-BGz9ewti.mjs';
+import '../style-types-CAMWbmV6.mjs';
 import '../types-C7D5seeQ.mjs';
-import '../error-snapshot-CV--kPt-.mjs';
-import '../store-BP0xE7HU.mjs';
-import '../types-BT8zKDeE.mjs';
+import '../error-snapshot-BGG0zdGn.mjs';
+import '../store-YDeTApd3.mjs';
+import '../types-BAi5RZ1S.mjs';
 import '../navigation-adapter-D0eod-Ve.mjs';
-import '../drag-drop-detector-cnGBHZLF.mjs';
+import '../drag-drop-detector-BHqiNVzI.mjs';
 import '../annotations/index.mjs';
 import 'express';
-import '../change-observer-DIlpGZY4.mjs';
+import '../change-observer-BAS-rQ14.mjs';
 
 interface WSStreamAdapterConfig {
     /** Minimum severity to forward (default: 'warning') */
@@ -264,6 +264,8 @@ interface MatchableElement {
     ariaLabel?: string;
     /** Live DOM `title` attribute, populated by materializeElements. Absent in relay. */
     title?: string;
+    /** Phase 3.2: ids/globs this control unhides. See RegisteredElement.reveals. */
+    reveals?: string[];
     [key: string]: unknown;
 }
 interface ElementSelector {
@@ -277,6 +279,18 @@ interface ElementSelector {
     text?: string;
     /** Exact-match on element type (e.g. "button", "input"). */
     type?: string;
+    /**
+     * Phase 3.2 (plan 2026-05-03) — match elements whose `reveals` array
+     * intersects this query value.
+     *
+     * Match semantics (bi-directional glob):
+     *  - exact: query equals an entry exactly
+     *  - query-as-glob: query contains `*`, regex-matches any entry
+     *  - entry-as-glob: an entry contains `*`, regex-matches the query
+     *
+     * Glob support: `*` matches `.*`. Other regex metachars are escaped.
+     */
+    revealsAny?: string;
 }
 /**
  * Return true if `el` matches every non-empty field of `selector`.

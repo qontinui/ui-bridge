@@ -59,6 +59,15 @@ export interface UseUIComponentOptions {
   state?: () => Record<string, unknown>;
   /** Computed properties exposed by the component */
   computed?: Record<string, ComputedPropertyDef | (() => unknown)>;
+  /**
+   * Discoverability scope (Phase 3.1, plan 2026-05-03). Defaults to
+   * `'route'` (the historical behavior — components show up only while the
+   * mounting page is active). Set to `'global'` to advertise the component
+   * as intended for cross-route availability (e.g. a permanent overlay or
+   * app-shell control). The field is plumbed through to listings/snapshots
+   * for clients to consume; it does not currently change mount semantics.
+   */
+  scope?: 'global' | 'route';
 }
 
 /**
@@ -140,7 +149,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   const stateRef = useRef(options.state);
   const computedRef = useRef(options.computed);
 
-  const { id, name, description, autoRegister = true } = options;
+  const { id, name, description, autoRegister = true, scope } = options;
 
   // Update refs when options change
   useEffect(() => {
@@ -199,10 +208,11 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
       getComputed: createGetComputed(),
+      scope,
     });
     registeredRef.current = true;
     registeredComponentIdRef.current = id;
-  }, [bridge, id, name, description, createGetComputed]);
+  }, [bridge, id, name, description, scope, createGetComputed]);
 
   // Unregister the component
   const unregister = useCallback(() => {
@@ -304,6 +314,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           name,
           description: description ?? null,
           elementIds: options.elementIds ?? null,
+          scope: scope ?? null,
         })
       : null;
   useEffect(() => {
@@ -327,6 +338,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
       getComputed: createGetComputed(),
+      scope,
     };
     const registeredComponentId = registeredComponentIdRef.current;
     if (registeredComponentId === null) return;

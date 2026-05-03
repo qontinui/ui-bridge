@@ -161,6 +161,15 @@ export interface APIResponse<T = unknown> {
   };
   /** Recovery suggestions for error responses */
   suggestions?: string[];
+  /**
+   * Optional HTTP status code hint. When set, the framework adapter
+   * (Express / Next.js) will use this code instead of the default 200.
+   * Used by endpoints that need 4xx semantics on logical failure (e.g.
+   * Phase 2.1 `/control/element/:id/expect` returns 422 when the asserted
+   * predicate doesn't hold). Stripped from the JSON body before send so
+   * external consumers see the same envelope shape.
+   */
+  httpStatus?: number;
 }
 
 /**
@@ -192,6 +201,124 @@ export interface BrowserEventsResponse {
 }
 
 /**
+ * Phase 2.1 (plan 2026-05-03) — body for POST /control/element/:id/expect.
+ * Reuses the closed `WaitForElementState` enum from the SDK runtime so the
+ * predicate evaluator is shared with `/ai/wait-for-element`. The critical
+ * semantic difference: this endpoint **fails the request** with HTTP 422
+ * when the predicate doesn't hold within `timeout`, instead of returning
+ * 200 + `found:false`.
+ */
+export interface ElementExpectRequest {
+  /** Predicate to assert. Closed enum mirroring WaitForElementState. */
+  state:
+    | 'present'
+    | 'visible'
+    | 'enabled'
+    | 'disabled'
+    | 'value-not-empty'
+    | 'value-empty'
+    | 'checked'
+    | 'unchecked'
+    | 'absent';
+  /** Timeout in ms. Default 5000, capped at 30000. */
+  timeout?: number;
+  /** Poll interval in ms. Default 100, minimum 10. */
+  pollMs?: number;
+}
+
+/**
+ * Response from POST /control/element/:id/expect. `passed:true` rides on
+ * HTTP 200; `passed:false` rides on HTTP 422 (set via `APIResponse.httpStatus`).
+ */
+export interface ElementExpectResponse {
+  /** Whether the predicate held within the timeout window. */
+  passed: boolean;
+  /**
+   * Element snapshot at the moment the predicate flipped true (on pass) or
+   * the most recent registered snapshot before timeout (on fail). `null`
+   * when the element was never registered during the wait.
+   */
+  observedState: {
+    registered: boolean;
+    state: Record<string, unknown> | null;
+  } | null;
+  /** Wall-clock duration of the wait in ms. */
+  durationMs: number;
+}
+
+/**
+ * Phase 1.3 (plan 2026-05-03) — flat machine-readable digest of "is the
+ * page in a sensible state right now?". Synthesized from the live snapshot,
+ * console-errors buffer, and idle detector so the caller spends one round-
+ * trip instead of four. Distinct from the NL `/ai/page-summary` digest.
+ */
+export interface StateSummary {
+  /** Count of snapshot elements that are both layout-positioned and visible. */
+  visibleElementCount: number;
+  /** True when the snapshot's `modalStack` has at least one entry. */
+  modalOpen: boolean;
+  /** True when the console-errors buffer has at least one entry. */
+  hasErrors: boolean;
+  /**
+   * Pass-through of the idle detector's composite status, or `null` when
+   * idle detection is disabled. Lets callers gate work on idle without
+   * issuing a separate `/control/idle-status` round-trip.
+   */
+  idleSignals: CompositeIdleStatus | null;
+  /** Number of components currently registered. */
+  registeredComponents: number;
+  /** Current page route, or `null` when undeterminable. */
+  route: string | null;
+  /** Currently active tab id (for tab-based apps), or `null` when not provided. */
+  activeTab: string | null;
+}
+
+/**
+ * Phase 4.1 (plan 2026-05-03) — body for POST /control/sdk/spawn-headless.
+ *
+ * Wraps the already-shipped `@qontinui/ui-bridge-headless` package's
+ * `launchHeadlessTab` so callers can spin up a real Chromium tab for testing
+ * without manually opening a browser. The endpoint is gated behind the
+ * `enableHeadlessSpawn` config flag (or `ENABLE_HEADLESS_SPAWN=1`); disabled
+ * by default because it pulls in Playwright + Chromium at runtime.
+ */
+export interface SpawnHeadlessRequest {
+  /** Target URL the headless tab should navigate to. Must start with http:// or https://. */
+  url: string;
+  /**
+   * Max time (ms) to wait for the headless client to register a tab over UI Bridge.
+   * Default 30000, capped at 60000.
+   */
+  timeoutMs?: number;
+  /**
+   * Auto-close timer (seconds). Tracked spawned tabs are also closed on
+   * server shutdown. Default 300.
+   */
+  keepAliveSecs?: number;
+  /**
+   * Run Chromium without a visible window. Default `true` — the whole point
+   * of this endpoint is "no manual browser".
+   */
+  headless?: boolean;
+  /** Viewport size override. Default 1280x720. */
+  viewport?: { width: number; height: number };
+}
+
+/**
+ * Phase 4.1 — response from POST /control/sdk/spawn-headless.
+ */
+export interface SpawnHeadlessResponse {
+  /** True when the tab was launched (regardless of UI Bridge registration). */
+  spawned: boolean;
+  /** Tab id assigned by the relay when registration succeeded; `null` otherwise. */
+  tabId: string | null;
+  /** True when the relay reported the tab as connected before timeout. */
+  uiBridgeRegistered: boolean;
+  /** URL the page actually ended up at after navigation. */
+  finalUrl: string;
+}
+
+/**
  * Server handler interface
  *
  * Implementations provide these handlers for different frameworks.
@@ -212,6 +339,13 @@ export interface UIBridgeServerHandlers {
     aria_label?: string;
     /** Case-insensitive substring filter on the element's visible text / label */
     text?: string;
+    /**
+     * Phase 3.2 (plan 2026-05-03) — return only elements whose `reveals`
+     * array contains an entry that matches this query. Bi-directional glob
+     * match: query may be a concrete id matching a `*`-glob entry, or a
+     * `*`-glob matching concrete entries.
+     */
+    revealsAny?: string;
   }) => Promise<APIResponse<ControlSnapshot['elements']>>;
   getElement: (
     id: string,
@@ -624,6 +758,31 @@ export interface UIBridgeServerHandlers {
   getUndoState: () => Promise<APIResponse<UndoRedoState>>;
   executeUndo: () => Promise<APIResponse<{ executed: boolean }>>;
   executeRedo: () => Promise<APIResponse<{ executed: boolean }>>;
+
+  // Phase 1.3 (plan 2026-05-03) — flat machine-readable digest of "is the
+  // page in a sensible state right now?" so callers don't have to fan out
+  // five round-trips (snapshot + console-errors + idle-status + …) just to
+  // pre-flight an interaction. Distinct from `/ai/page-summary` which
+  // returns NL prose for human consumption.
+  getStateSummary: () => Promise<APIResponse<StateSummary>>;
+
+  // Phase 2.1 (plan 2026-05-03) — assert an element predicate.
+  // Returns 200 + passed:true on success, 422 + passed:false on timeout
+  // (set via APIResponse.httpStatus). Shares predicate evaluation with
+  // `/ai/wait-for-element` so semantics stay aligned.
+  expectElement: (
+    id: string,
+    request: ElementExpectRequest
+  ) => Promise<APIResponse<ElementExpectResponse>>;
+
+  // Phase 4.1 (plan 2026-05-03) — spawn a real Chromium tab via
+  // `@qontinui/ui-bridge-headless` so callers can drive the web bridge
+  // without manually opening a browser. Gated behind `enableHeadlessSpawn`
+  // (off by default); returns 503 when disabled or when the optional peer
+  // dependency isn't installed; 400 on bad input.
+  spawnHeadless: (
+    request: SpawnHeadlessRequest
+  ) => Promise<APIResponse<SpawnHeadlessResponse>>;
 
   // API discovery
   getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
@@ -1045,6 +1204,25 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     params: ['id'],
     bodyRequired: true,
   },
+  // Phase 2.1 (plan 2026-05-03) — assert an element predicate. Returns
+  // 200 + passed:true on success, 422 + passed:false on timeout.
+  {
+    method: 'POST',
+    path: '/control/element/:id/expect',
+    handler: 'expectElement',
+    params: ['id'],
+    bodyRequired: true,
+  },
+  // Phase 4.1 (plan 2026-05-03) — spawn a real Chromium tab via
+  // `@qontinui/ui-bridge-headless`. Gated behind `enableHeadlessSpawn`
+  // / `ENABLE_HEADLESS_SPAWN=1`; returns 503 when disabled or the
+  // optional peer dependency is absent.
+  {
+    method: 'POST',
+    path: '/control/sdk/spawn-headless',
+    handler: 'spawnHeadless',
+    bodyRequired: true,
+  },
   {
     method: 'POST',
     path: '/control/actions/batch',
@@ -1079,6 +1257,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/find', handler: 'find' },
   { method: 'POST', path: '/control/discover', handler: 'discover' }, // @deprecated Use /control/find
   { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
+  // Phase 1.3 (plan 2026-05-03) — flat digest synthesized from snapshot +
+  // console-errors + idle-status. One call instead of five.
+  { method: 'GET', path: '/control/state-summary', handler: 'getStateSummary' },
   { method: 'POST', path: '/control/get-element-images', handler: 'getElementImages' },
 
   // Workflows

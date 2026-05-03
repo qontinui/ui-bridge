@@ -93,6 +93,19 @@ export interface UseUIElementOptions {
    * Default: false.
    */
   persistWhileMounted?: boolean;
+
+  /**
+   * Phase 3.2 (plan 2026-05-03) — element ids (or simple `*`-glob patterns)
+   * that this control unhides / reveals when activated. Lets clients answer
+   * "which control unhides element X" via
+   * `GET /control/elements?revealsAny=<id-or-glob>` without grepping source.
+   *
+   * Example: a sidebar toggle that exposes session cards might declare
+   * `reveals: ["session-card-*", "promote-to-worktree-*"]`. The query side
+   * matches in either direction — the query value can be a concrete id
+   * matched against a glob entry, or a glob matched against concrete entries.
+   */
+  reveals?: string[];
 }
 
 /**
@@ -165,6 +178,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     color,
     contextPath,
     persistWhileMounted,
+    reveals,
   } = options;
 
   // See useUIState for rationale on capturing id at register time.
@@ -223,6 +237,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       position,
       color,
       contextPath,
+      reveals,
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -247,6 +262,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     position,
     color,
     contextPath,
+    reveals,
     startBboxTracking,
   ]);
 
@@ -376,6 +392,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
           position: position ?? null,
           color: color ?? null,
           contextPath: contextPath ?? null,
+          // Reveals is a plain string array — include it so mid-lifecycle
+          // updates (e.g. dynamic reveal targets) propagate into the registry.
+          reveals: reveals ?? null,
         })
       : null;
   useEffect(() => {
@@ -398,6 +417,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         position,
         color,
         contextPath,
+        reveals,
       });
       if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
       startBboxTracking(elementRef.current);
@@ -412,6 +432,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       position,
       color,
       contextPath,
+      reveals,
     });
     if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
     // customActions excluded from key — see comment above.

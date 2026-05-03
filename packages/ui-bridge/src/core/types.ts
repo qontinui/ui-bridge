@@ -535,6 +535,22 @@ export interface RegisteredElement {
   contextPath?: string;
 
   /**
+   * Element ids (or simple `*` glob patterns) that this control unhides /
+   * reveals when activated (Phase 3.2, plan 2026-05-03).
+   *
+   * Example: a "Browse sessions" sidebar toggle might declare
+   * `reveals: ["session-card-*", "promote-to-worktree-*"]` so callers can
+   * answer "which control unhides element X" via
+   * `GET /control/elements?revealsAny=<id-or-glob>` without grepping source.
+   *
+   * Each entry is matched literally or as a `*`-wildcard glob. The
+   * `revealsAny` query supports both directions — the query value can be a
+   * concrete id matched against a glob entry, or a glob matched against
+   * concrete entries.
+   */
+  reveals?: string[];
+
+  /**
    * The page route this element was registered under.
    *
    * Captured at `registerElement` time from `window.location.pathname` when
@@ -609,6 +625,20 @@ export interface RegisteredComponent {
   getState?: StateGetter<Record<string, unknown>>;
   /** Computed properties getter function */
   getComputed?: () => Record<string, unknown>;
+  /**
+   * Discoverability scope (Phase 3.1, plan 2026-05-03).
+   *
+   * - `'route'` (or undefined — the default): the component only shows up in
+   *   listings while the page that mounted it is active. Mirrors today's
+   *   behavior: components mount/unmount with route changes.
+   * - `'global'`: the component is intended to be available regardless of the
+   *   current route (e.g. a permanent search overlay or app-shell control).
+   *
+   * This field is currently a discoverability annotation only — listings echo
+   * it through to clients so they can distinguish intent without driving the
+   * runtime mount lifecycle. Future work may use it to alter mount semantics.
+   */
+  scope?: 'global' | 'route';
 }
 
 // ============================================================================
@@ -1107,14 +1137,20 @@ export interface SnapshotRegistrationMetadata {
    */
   everHadRegistrations: boolean;
   /**
-   * Per-route counts of currently-registered elements, keyed by the route
-   * string captured when the element was registered (same semantics as the
-   * snapshot's top-level `route` field). Elements drop out of the map when
-   * they unmount; a route with zero live elements is omitted entirely
-   * rather than kept as `route: 0`. Useful for confirming a tab switch
-   * actually re-registered the target page's elements.
+   * Per-route counts and element ids of currently-registered elements,
+   * keyed by the route string captured when the element was registered
+   * (same semantics as the snapshot's top-level `route` field). Elements
+   * drop out of the map when they unmount; a route with zero live elements
+   * is omitted entirely rather than kept as `route: { count: 0, ids: [] }`.
+   * Useful for confirming a tab switch actually re-registered the target
+   * page's elements.
+   *
+   * Each entry is `{ count, ids }` — `count` mirrors the pre-Phase-1.2
+   * scalar shape so existing consumers keep working unchanged, and `ids`
+   * enumerates the element ids on that route so cross-route 404 messages
+   * can suggest where to navigate.
    */
-  byRoute: Record<string, number>;
+  byRoute: Record<string, { count: number; ids: string[] }>;
   /**
    * Mirror of the snapshot's top-level `activeTab`. The runner's
    * `/ui-bridge/control/snapshot` handler copies this in so callers reading
@@ -1277,6 +1313,12 @@ export interface BridgeSnapshot {
      * environments.
      */
     route?: string;
+    /**
+     * Phase 3.2: element ids (or `*`-glob patterns) this control unhides.
+     * Echoed verbatim from `useUIElement({ reveals: [...] })`. Powers
+     * `GET /control/elements?revealsAny=<id-or-glob>` queries.
+     */
+    reveals?: string[];
   }>;
   /** All registered components */
   components: Array<{
@@ -1285,6 +1327,14 @@ export interface BridgeSnapshot {
     description?: string;
     actions: string[];
     elementIds?: string[];
+    /**
+     * Phase 3.1 discoverability scope (plan 2026-05-03). Echoed verbatim from
+     * the registration. Undefined ≡ `'route'` (the historical default —
+     * components mount/unmount with route changes). Clients use this to tell
+     * whether a component is intended for cross-route availability without
+     * having to grep the source.
+     */
+    scope?: 'global' | 'route';
   }>;
   /** Available workflows */
   workflows: Array<{

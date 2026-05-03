@@ -24,6 +24,8 @@ export interface MatchableElement {
   ariaLabel?: string;
   /** Live DOM `title` attribute, populated by materializeElements. Absent in relay. */
   title?: string;
+  /** Phase 3.2: ids/globs this control unhides. See RegisteredElement.reveals. */
+  reveals?: string[];
   [key: string]: unknown;
 }
 
@@ -38,6 +40,49 @@ export interface ElementSelector {
   text?: string;
   /** Exact-match on element type (e.g. "button", "input"). */
   type?: string;
+  /**
+   * Phase 3.2 (plan 2026-05-03) — match elements whose `reveals` array
+   * intersects this query value.
+   *
+   * Match semantics (bi-directional glob):
+   *  - exact: query equals an entry exactly
+   *  - query-as-glob: query contains `*`, regex-matches any entry
+   *  - entry-as-glob: an entry contains `*`, regex-matches the query
+   *
+   * Glob support: `*` matches `.*`. Other regex metachars are escaped.
+   */
+  revealsAny?: string;
+}
+
+/**
+ * Convert a simple `*`-wildcard glob into a regular expression. Escapes
+ * regex metachars in the rest of the string so callers can pass values
+ * containing `.` or `+` without surprise. If the pattern contains no `*`
+ * the returned regex is `^<escaped>$` (anchored exact match), so callers
+ * can blindly use this helper without first checking for the wildcard.
+ */
+function globToRegExp(pattern: string): RegExp {
+  // Escape regex special chars except `*`, then turn `*` into `.*`. The
+  // anchors (^…$) make the match strict so `session-card` does not match
+  // `term-session-card-1`.
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Bi-directional glob match between a query value and a single `reveals`
+ * entry. Supports both directions: query-as-glob vs entry, and entry-as-
+ * glob vs query. Exact equality short-circuits both regex paths.
+ */
+export function revealsEntryMatches(query: string, entry: string): boolean {
+  if (query === entry) return true;
+  if (query.includes('*')) {
+    if (globToRegExp(query).test(entry)) return true;
+  }
+  if (entry.includes('*')) {
+    if (globToRegExp(entry).test(query)) return true;
+  }
+  return false;
 }
 
 /**
@@ -75,6 +120,21 @@ export function matchesElementSelector(el: MatchableElement, selector: ElementSe
     const l = (el.label ?? '').toLowerCase();
     const i = el.id.toLowerCase();
     if (!l.includes(needle) && !i.includes(needle)) return false;
+  }
+
+  if (selector.revealsAny) {
+    const reveals = el.reveals;
+    if (!Array.isArray(reveals) || reveals.length === 0) return false;
+    const query = selector.revealsAny;
+    let any = false;
+    for (const entry of reveals) {
+      if (typeof entry !== 'string') continue;
+      if (revealsEntryMatches(query, entry)) {
+        any = true;
+        break;
+      }
+    }
+    if (!any) return false;
   }
 
   return true;

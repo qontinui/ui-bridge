@@ -250,6 +250,25 @@ var UI_BRIDGE_ROUTES = [
     params: ["id"],
     bodyRequired: true
   },
+  // Phase 2.1 (plan 2026-05-03) — assert an element predicate. Returns
+  // 200 + passed:true on success, 422 + passed:false on timeout.
+  {
+    method: "POST",
+    path: "/control/element/:id/expect",
+    handler: "expectElement",
+    params: ["id"],
+    bodyRequired: true
+  },
+  // Phase 4.1 (plan 2026-05-03) — spawn a real Chromium tab via
+  // `@qontinui/ui-bridge-headless`. Gated behind `enableHeadlessSpawn`
+  // / `ENABLE_HEADLESS_SPAWN=1`; returns 503 when disabled or the
+  // optional peer dependency is absent.
+  {
+    method: "POST",
+    path: "/control/sdk/spawn-headless",
+    handler: "spawnHeadless",
+    bodyRequired: true
+  },
   {
     method: "POST",
     path: "/control/actions/batch",
@@ -283,6 +302,9 @@ var UI_BRIDGE_ROUTES = [
   { method: "POST", path: "/control/discover", handler: "discover" },
   // @deprecated Use /control/find
   { method: "GET", path: "/control/snapshot", handler: "getControlSnapshot" },
+  // Phase 1.3 (plan 2026-05-03) — flat digest synthesized from snapshot +
+  // console-errors + idle-status. One call instead of five.
+  { method: "GET", path: "/control/state-summary", handler: "getStateSummary" },
   { method: "POST", path: "/control/get-element-images", handler: "getElementImages" },
   // Workflows
   { method: "GET", path: "/control/workflows", handler: "getWorkflows" },
@@ -991,6 +1013,20 @@ function findElementByLabel(labelText, root) {
 }
 
 // src/server/selector-match.ts
+function globToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+function revealsEntryMatches(query, entry) {
+  if (query === entry) return true;
+  if (query.includes("*")) {
+    if (globToRegExp(query).test(entry)) return true;
+  }
+  if (entry.includes("*")) {
+    if (globToRegExp(entry).test(query)) return true;
+  }
+  return false;
+}
 function matchesElementSelector(el, selector) {
   if (selector.id && el.id !== selector.id) return false;
   if (selector.type && el.type !== selector.type) return false;
@@ -1012,6 +1048,20 @@ function matchesElementSelector(el, selector) {
     const l = (el.label ?? "").toLowerCase();
     const i = el.id.toLowerCase();
     if (!l.includes(needle) && !i.includes(needle)) return false;
+  }
+  if (selector.revealsAny) {
+    const reveals = el.reveals;
+    if (!Array.isArray(reveals) || reveals.length === 0) return false;
+    const query = selector.revealsAny;
+    let any = false;
+    for (const entry of reveals) {
+      if (typeof entry !== "string") continue;
+      if (revealsEntryMatches(query, entry)) {
+        any = true;
+        break;
+      }
+    }
+    if (!any) return false;
   }
   return true;
 }
@@ -3857,7 +3907,10 @@ function serializeRegisteredElement(el, options = {}) {
     // Route captured at registration time. Mirrored on the snapshot element
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
-    route: el.route
+    route: el.route,
+    // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
+    // can answer "which control unhides element X" without grepping source.
+    reveals: el.reveals
   };
 }
 function captureDocumentVisibility() {
@@ -4235,6 +4288,11 @@ var UIBridgeRegistry = class {
     // without a route (non-DOM environment) are tracked under the empty-string
     // key `""` — snapshot serialization filters that bucket out.
     this.routeCounts = /* @__PURE__ */ new Map();
+    // Per-route element-id sets — paired with `routeCounts` so the snapshot
+    // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
+    // empty-string convention for undefined-route elements; same drop-on-empty
+    // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
+    this.routeIds = /* @__PURE__ */ new Map();
     // External store pattern for useSyncExternalStore
     this.storeVersion = 0;
     this.storeListeners = /* @__PURE__ */ new Set();
@@ -4398,6 +4456,7 @@ var UIBridgeRegistry = class {
     if (options.position !== void 0) existing.position = options.position;
     if (options.color !== void 0) existing.color = options.color;
     if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
+    if (options.reveals !== void 0) existing.reveals = options.reveals;
     return true;
   }
   /**
@@ -4523,7 +4582,10 @@ var UIBridgeRegistry = class {
       // Undefined for interactive elements and for content registered via
       // the heading/paragraph/table-cell content-discovery path.
       content: options.content,
-      role: options.role
+      role: options.role,
+      // Phase 3.2 — ids/globs this control reveals. Undefined for elements
+      // that don't gate any visibility (the common case).
+      reveals: options.reveals
     };
     Object.defineProperty(registered, "__stateOverridesRef", {
       value: stateOverridesRef,
@@ -4533,25 +4595,38 @@ var UIBridgeRegistry = class {
     });
     const prior = this.elements.get(actualId);
     if (prior) {
-      this.decrementRouteCount(prior.route);
+      this.decrementRouteCount(prior.route, actualId);
     }
     this.elements.set(actualId, registered);
     this.everHadRegistrationsFlag = true;
-    this.incrementRouteCount(route);
+    this.incrementRouteCount(route, actualId);
     this.emit("element:registered", { id: actualId, type, label: options.label });
     return registered;
   }
-  incrementRouteCount(route) {
+  incrementRouteCount(route, id) {
     const key = route ?? "";
     this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+    let ids = this.routeIds.get(key);
+    if (!ids) {
+      ids = /* @__PURE__ */ new Set();
+      this.routeIds.set(key, ids);
+    }
+    ids.add(id);
   }
-  decrementRouteCount(route) {
+  decrementRouteCount(route, id) {
     const key = route ?? "";
     const next = (this.routeCounts.get(key) ?? 0) - 1;
     if (next <= 0) {
       this.routeCounts.delete(key);
     } else {
       this.routeCounts.set(key, next);
+    }
+    const ids = this.routeIds.get(key);
+    if (ids) {
+      ids.delete(id);
+      if (ids.size === 0) {
+        this.routeIds.delete(key);
+      }
     }
   }
   /**
@@ -4633,7 +4708,7 @@ var UIBridgeRegistry = class {
       }
       registered.mounted = false;
       this.elements.delete(id);
-      this.decrementRouteCount(registered.route);
+      this.decrementRouteCount(registered.route, id);
       this.emit("element:unregistered", { id });
       this.options.elementEventLog?.removeElement(id);
       return true;
@@ -4919,6 +4994,7 @@ var UIBridgeRegistry = class {
     if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
     if (options.getState !== void 0) existing.getState = options.getState;
     if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
+    if (options.scope !== void 0) existing.scope = options.scope;
     return true;
   }
   /**
@@ -4940,7 +5016,8 @@ var UIBridgeRegistry = class {
       registeredAt: Date.now(),
       mounted: true,
       getState: options.getState,
-      getComputed: options.getComputed
+      getComputed: options.getComputed,
+      scope: options.scope
     };
     this.components.set(id, registered);
     this.emit("component:registered", { id, name: options.name });
@@ -5397,16 +5474,27 @@ var UIBridgeRegistry = class {
     return this.everHadRegistrationsFlag;
   }
   /**
-   * Per-route counts of currently-registered elements. Returns a plain
-   * object copy so callers can't mutate the internal map. Elements with
-   * an undefined route are omitted. Exposed primarily for tests; production
-   * code should read `BridgeSnapshot.registration.byRoute`.
+   * Per-route counts of currently-registered elements, plus the ids that
+   * make up each count. Returns a plain object copy so callers can't mutate
+   * internal state. Elements with an undefined route are omitted. Exposed
+   * primarily for tests; production code should read
+   * `BridgeSnapshot.registration.byRoute`.
+   *
+   * Each value is `{ count: number; ids: string[] }`. The `count` field
+   * mirrors the prior `Record<string, number>` shape (kept verbatim so
+   * existing readers like the cross-route 404 hint can detect coverage),
+   * and `ids` enumerates the element ids registered on that route at
+   * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
    */
   getCountsByRoute() {
     const out = {};
     for (const [route, count] of this.routeCounts) {
       if (route === "") continue;
-      if (count > 0) out[route] = count;
+      if (count > 0) {
+        const idSet = this.routeIds.get(route);
+        const ids = idSet ? Array.from(idSet) : [];
+        out[route] = { count, ids };
+      }
     }
     return out;
   }
@@ -5583,7 +5671,10 @@ var UIBridgeRegistry = class {
         // Tell the caller exactly how to invoke any action on this component
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
+        elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -5632,7 +5723,10 @@ var UIBridgeRegistry = class {
         // Tell the caller exactly how to invoke any action on this component
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
+        elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -5657,6 +5751,7 @@ var UIBridgeRegistry = class {
     this.transitions.clear();
     this.activeStates.clear();
     this.routeCounts.clear();
+    this.routeIds.clear();
     this.everHadRegistrationsFlag = false;
   }
   /**
@@ -13108,6 +13203,125 @@ function waitFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+// src/ai/wait-for-element.ts
+var WAIT_FOR_ELEMENT_STATES = [
+  "present",
+  "visible",
+  "enabled",
+  "disabled",
+  "value-not-empty",
+  "value-empty",
+  "checked",
+  "unchecked",
+  "absent"
+];
+function evaluateElementPredicate(snapshot, predicate) {
+  const { registered, state } = snapshot;
+  switch (predicate) {
+    case "absent": {
+      if (!registered) return true;
+      if (state && state.visible === false) return true;
+      return false;
+    }
+    case "present": {
+      if (!registered) return false;
+      return Boolean(state?.rect);
+    }
+    case "visible": {
+      if (!registered || !state) return false;
+      if (state.visible !== true) return false;
+      const w = state.rect?.width ?? 0;
+      const h = state.rect?.height ?? 0;
+      return w > 0 && h > 0;
+    }
+    case "enabled": {
+      if (!registered || !state) return false;
+      return state.enabled !== false;
+    }
+    case "disabled": {
+      if (!registered || !state) return false;
+      return state.enabled === false;
+    }
+    case "value-not-empty": {
+      if (!registered || !state) return false;
+      if (typeof state.value === "string" && state.value.length > 0) return true;
+      if (state.checked === true) return true;
+      return false;
+    }
+    case "value-empty": {
+      if (!registered || !state) return false;
+      if (typeof state.value === "string" && state.value.length > 0) return false;
+      return true;
+    }
+    case "checked": {
+      if (!registered || !state) return false;
+      return state.checked === true;
+    }
+    case "unchecked": {
+      if (!registered || !state) return false;
+      return state.checked !== true;
+    }
+    default: {
+      return false;
+    }
+  }
+}
+function pollWaitForElement(options) {
+  const {
+    takeSnapshot,
+    predicate,
+    timeoutMs,
+    pollMs,
+    now = () => Date.now(),
+    schedule = (cb, ms) => {
+      setTimeout(cb, ms);
+    }
+  } = options;
+  return new Promise((resolve) => {
+    const started = now();
+    let lastObserved = null;
+    let done = false;
+    const tick = () => {
+      if (done) return;
+      const snapshot = takeSnapshot();
+      if (snapshot.registered || snapshot.state) {
+        lastObserved = snapshot;
+      }
+      if (evaluateElementPredicate(snapshot, predicate)) {
+        done = true;
+        resolve({
+          found: true,
+          durationMs: now() - started,
+          observed: snapshot
+        });
+        return;
+      }
+      const elapsed = now() - started;
+      if (elapsed >= timeoutMs) {
+        done = true;
+        resolve({
+          found: false,
+          durationMs: elapsed,
+          observed: lastObserved
+        });
+        return;
+      }
+      schedule(tick, pollMs);
+    };
+    tick();
+  });
+}
+function snapshotFromRegisteredElement(el) {
+  if (!el) return { registered: false, state: null };
+  let state;
+  try {
+    state = el.getState() ?? null;
+  } catch {
+    state = null;
+  }
+  return { registered: true, state };
+}
+
 // src/specs/style-validator.ts
 function resolveTokenValue(tokenPath, tokens) {
   const parts = tokenPath.split(".");
@@ -18844,6 +19058,20 @@ function error(message, code) {
     timestamp: Date.now()
   };
 }
+function buildComponentNotFoundError(id, available, byRoute, currentRoute) {
+  let otherRouteHint = "";
+  if (byRoute) {
+    for (const [route, entry] of Object.entries(byRoute)) {
+      if (route === currentRoute) continue;
+      if (entry?.ids?.includes(id)) {
+        const cur = typeof currentRoute === "string" && currentRoute.length > 0 ? currentRoute : "(unknown)";
+        otherRouteHint = ` (registered on route '${route}', current route is '${cur}')`;
+        break;
+      }
+    }
+  }
+  return `Component "${id}" not found${otherRouteHint}. Available components: [${available.join(", ")}]. Components are only available when their page is active \u2014 navigate to the page that contains this component and try again.`;
+}
 function getRecoverySuggestions(errorCode) {
   switch (errorCode) {
     case "ELEMENT_NOT_FOUND":
@@ -18988,6 +19216,32 @@ function createFailureDetails(errorCode, message, options = {}) {
     durationMs: options.durationMs,
     timeoutMs: options.timeoutMs
   };
+}
+var _headlessTabSets = /* @__PURE__ */ new Set();
+var _headlessExitHookInstalled = false;
+function isHeadlessSpawnEnvEnabled() {
+  if (typeof process === "undefined" || !process?.env) return false;
+  const raw = process.env.ENABLE_HEADLESS_SPAWN;
+  if (raw === void 0) return false;
+  const v = raw.toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+function registerSpawnedHeadlessTabSet(set) {
+  _headlessTabSets.add(set);
+  if (_headlessExitHookInstalled) return;
+  if (typeof process === "undefined" || typeof process.on !== "function") return;
+  _headlessExitHookInstalled = true;
+  process.on("beforeExit", () => {
+    void closeAllSpawnedHeadlessTabs();
+  });
+}
+async function closeAllSpawnedHeadlessTabs() {
+  const allTabs = [];
+  for (const set of _headlessTabSets) {
+    for (const t of set) allTabs.push(t);
+    set.clear();
+  }
+  await Promise.allSettled(allTabs.map((t) => t.close()));
 }
 function createHandlers(registry, actionExecutor, config = {}) {
   const searchEngine = new SearchEngine();
@@ -19305,6 +19559,29 @@ function createHandlers(registry, actionExecutor, config = {}) {
       return true;
     });
   }
+  function componentNotFoundMessage(id) {
+    let available;
+    let byRoute;
+    let currentRoute;
+    try {
+      const snapshot = registry.createSnapshot();
+      available = snapshot.components.map((c) => c.id);
+      byRoute = snapshot.registration?.byRoute;
+      currentRoute = snapshot.route;
+    } catch {
+      try {
+        available = registry.getAllComponents().map(
+          (c) => c.id
+        );
+      } catch {
+        available = [];
+      }
+    }
+    return buildComponentNotFoundError(id, available, byRoute, currentRoute);
+  }
+  const headlessSpawnEnabled = config.enableHeadlessSpawn === true || isHeadlessSpawnEnvEnabled();
+  const spawnedHeadlessTabs = /* @__PURE__ */ new Set();
+  registerSpawnedHeadlessTabSet(spawnedHeadlessTabs);
   return {
     // =========================================================================
     // Render Log Handlers
@@ -19356,12 +19633,13 @@ function createHandlers(registry, actionExecutor, config = {}) {
       try {
         const elements = registry.getAllElements();
         let materialized = materializeElements(elements);
-        if (options?.title || options?.aria_label || options?.text) {
+        if (options?.title || options?.aria_label || options?.text || options?.revealsAny) {
           materialized = materialized.filter(
             (el) => matchesElementSelector(el, {
               title: options?.title,
               aria_label: options?.aria_label,
-              text: options?.text
+              text: options?.text,
+              revealsAny: options?.revealsAny
             })
           );
         }
@@ -19577,6 +19855,66 @@ function createHandlers(registry, actionExecutor, config = {}) {
         };
       }
     },
+    // Phase 2.1 (plan 2026-05-03) — POST /control/element/:id/expect.
+    // Asserts an element predicate. Reuses `evaluateElementPredicate` +
+    // `pollWaitForElement` so the predicate semantics stay aligned with
+    // `/ai/wait-for-element`. The critical difference: this endpoint
+    // returns HTTP 422 + `passed:false` on timeout (instead of 200 +
+    // `found:false`) so callers can fail-fast on assertion violations
+    // without inspecting the body.
+    expectElement: async (id, request) => {
+      const requestedState = request?.state;
+      if (typeof requestedState !== "string") {
+        return error("expectElement: 'state' is required", "VALIDATION_ERROR");
+      }
+      if (!WAIT_FOR_ELEMENT_STATES.includes(requestedState)) {
+        return error(
+          `expectElement: invalid state '${requestedState}', expected one of ${WAIT_FOR_ELEMENT_STATES.join("|")}`,
+          "VALIDATION_ERROR"
+        );
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeout === "number" ? request.timeout : 5e3, 0),
+        3e4
+      );
+      const pollMs = Math.max(typeof request?.pollMs === "number" ? request.pollMs : 100, 10);
+      const takeSnapshot = () => {
+        try {
+          const el = registry.getElement(id);
+          return snapshotFromRegisteredElement(el);
+        } catch {
+          return { registered: false, state: null };
+        }
+      };
+      const outcome = await pollWaitForElement({
+        takeSnapshot,
+        predicate: requestedState,
+        timeoutMs,
+        pollMs
+      });
+      const observedState = outcome.observed ? {
+        registered: outcome.observed.registered,
+        state: outcome.observed.state ?? null
+      } : null;
+      if (outcome.found) {
+        return success({
+          passed: true,
+          observedState,
+          durationMs: outcome.durationMs
+        });
+      }
+      const failureBody = {
+        success: true,
+        data: {
+          passed: false,
+          observedState,
+          durationMs: outcome.durationMs
+        },
+        timestamp: Date.now(),
+        httpStatus: 422
+      };
+      return failureBody;
+    },
     executeBatchAction: async (request) => {
       try {
         if (!request?.steps || !Array.isArray(request.steps) || request.steps.length === 0) {
@@ -19646,7 +19984,7 @@ function createHandlers(registry, actionExecutor, config = {}) {
       try {
         const component = registry.getComponent(id);
         if (!component) {
-          return error(`Component not found: ${id}`, "NOT_FOUND");
+          return error(componentNotFoundMessage(id), "NOT_FOUND");
         }
         return success(
           annotateComponentWithInvocationPaths(component)
@@ -19659,12 +19997,12 @@ function createHandlers(registry, actionExecutor, config = {}) {
       try {
         const component = registry.getComponent(id);
         if (!component) {
-          return error(`Component not found: ${id}`, "NOT_FOUND");
+          return error(componentNotFoundMessage(id), "NOT_FOUND");
         }
         if (registry.getComponentState) {
           const stateResponse = registry.getComponentState(id);
           if (!stateResponse) {
-            return error(`Component not found or not mounted: ${id}`, "NOT_FOUND");
+            return error(componentNotFoundMessage(id), "NOT_FOUND");
           }
           return success(stateResponse);
         }
@@ -22055,6 +22393,43 @@ function createHandlers(registry, actionExecutor, config = {}) {
       }
     },
     // =========================================================================
+    // State Summary (Phase 1.3, plan 2026-05-03)
+    // =========================================================================
+    getStateSummary: async () => {
+      try {
+        const snapshot = registry.createSnapshot();
+        const visibleElementCount = snapshot.elements.reduce((acc, el) => {
+          const state = el.state;
+          const rect = state?.rect;
+          const hasLayout = !!rect && (rect.width > 0 || rect.height > 0);
+          const isVisible2 = state?.visible !== false;
+          return acc + (hasLayout && isVisible2 ? 1 : 0);
+        }, 0);
+        const modalOpen = (snapshot.modalStack?.count ?? 0) > 0;
+        let hasErrors = false;
+        if (consoleCapture) {
+          try {
+            const recent = consoleCapture.getConsoleRecent(1);
+            hasErrors = Array.isArray(recent) && recent.length > 0;
+          } catch {
+            hasErrors = false;
+          }
+        }
+        const idleSignals = idleDetector ? idleDetector.getStatus() : null;
+        return success({
+          visibleElementCount,
+          modalOpen,
+          hasErrors,
+          idleSignals,
+          registeredComponents: snapshot.components.length,
+          route: snapshot.route ?? null,
+          activeTab: snapshot.activeTab ?? null
+        });
+      } catch (err) {
+        return error(err.message, "STATE_SUMMARY_ERROR");
+      }
+    },
+    // =========================================================================
     // API Discovery
     // =========================================================================
     getCapabilities: async () => {
@@ -23330,6 +23705,105 @@ function createHandlers(registry, actionExecutor, config = {}) {
       });
     },
     // =========================================================================
+    // Phase 4.1 (plan 2026-05-03) — POST /control/sdk/spawn-headless.
+    //
+    // Wraps `@qontinui/ui-bridge-headless`'s in-process `launchHeadlessTab`
+    // so callers can spin up a real Chromium tab without a manual browser.
+    // Gated behind `enableHeadlessSpawn` (off by default) and dynamic-imports
+    // the optional peer so non-headless consumers pay zero cost.
+    //
+    // HTTP semantics:
+    //   - 503 (gate disabled or optional peer absent)
+    //   - 400 (validation: missing/non-string url, bad scheme)
+    //   - 200 (tab launched; `uiBridgeRegistered` may still be false)
+    // =========================================================================
+    spawnHeadless: async (request) => {
+      if (!headlessSpawnEnabled) {
+        return {
+          success: false,
+          error: "Headless spawn is not enabled. Set ENABLE_HEADLESS_SPAWN=1 (or pass enableHeadlessSpawn: true to createHandlers / createUIBridgeServer) to enable.",
+          code: "HEADLESS_SPAWN_DISABLED",
+          timestamp: Date.now(),
+          httpStatus: 503
+        };
+      }
+      const url = typeof request?.url === "string" ? request.url.trim() : "";
+      if (!url) {
+        return {
+          success: false,
+          error: "url is required",
+          code: "VALIDATION_ERROR",
+          timestamp: Date.now(),
+          httpStatus: 400
+        };
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        return {
+          success: false,
+          error: "url must start with http:// or https://",
+          code: "VALIDATION_ERROR",
+          timestamp: Date.now(),
+          httpStatus: 400
+        };
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeoutMs === "number" ? request.timeoutMs : 3e4, 0),
+        6e4
+      );
+      const keepAliveSecs = Math.max(
+        typeof request?.keepAliveSecs === "number" ? request.keepAliveSecs : 300,
+        0
+      );
+      const headless = request?.headless !== false;
+      const viewportWidth = typeof request?.viewport?.width === "number" && request.viewport.width > 0 ? request.viewport.width : 1280;
+      const viewportHeight = typeof request?.viewport?.height === "number" && request.viewport.height > 0 ? request.viewport.height : 720;
+      let launcher;
+      try {
+        launcher = await import('@qontinui/ui-bridge-headless');
+      } catch (importErr) {
+        return {
+          success: false,
+          error: `@qontinui/ui-bridge-headless is not installed. Install it as a peer dependency to enable headless spawn. (import error: ${importErr.message})`,
+          code: "HEADLESS_PEER_MISSING",
+          timestamp: Date.now(),
+          httpStatus: 503
+        };
+      }
+      try {
+        const tab = await launcher.launchHeadlessTab({
+          url,
+          headless,
+          waitForUiBridgeMs: timeoutMs,
+          viewportWidth,
+          viewportHeight
+        });
+        const entry = { close: tab.close };
+        spawnedHeadlessTabs.add(entry);
+        if (keepAliveSecs > 0) {
+          const timer = setTimeout(() => {
+            void tab.close().catch(() => {
+            });
+            spawnedHeadlessTabs.delete(entry);
+          }, keepAliveSecs * 1e3);
+          if (typeof timer.unref === "function") timer.unref();
+        }
+        return success({
+          spawned: true,
+          tabId: tab.tabId,
+          uiBridgeRegistered: tab.uiBridgeRegistered,
+          finalUrl: tab.finalUrl
+        });
+      } catch (launchErr) {
+        return {
+          success: false,
+          error: launchErr.message ?? "Headless launch failed",
+          code: "HEADLESS_LAUNCH_FAILED",
+          timestamp: Date.now(),
+          httpStatus: 500
+        };
+      }
+    },
+    // =========================================================================
     // Tier 3.2 — Mixed action/wait/snapshot batch execution
     // =========================================================================
     controlBatch: async (request) => {
@@ -23701,7 +24175,15 @@ function createRouteHandler(route, handler) {
         args.push(req.query);
       }
       const result = await handler(...args);
-      res.json(result);
+      const httpStatus = typeof result.httpStatus === "number" ? result.httpStatus : void 0;
+      let body = result;
+      if (httpStatus !== void 0) {
+        const { httpStatus: _omit, ...rest } = result;
+        body = rest;
+        res.status(httpStatus).json(body);
+      } else {
+        res.json(body);
+      }
     } catch (error3) {
       res.status(500).json(wrapError(error3, "INTERNAL_ERROR"));
     }
@@ -23922,6 +24404,11 @@ function createNextRouteHandlers(handlers, config = {}) {
       const result = await handler(
         ...args
       );
+      const httpStatus = typeof result.httpStatus === "number" ? result.httpStatus : void 0;
+      if (httpStatus !== void 0) {
+        const { httpStatus: _omit, ...body } = result;
+        return jsonResponse(body, httpStatus);
+      }
       return jsonResponse(result);
     } catch (error3) {
       console.error("UI Bridge error:", error3);
@@ -23982,8 +24469,20 @@ function createRenderLogHandlers(handlers) {
 function createControlHandlers(handlers) {
   return {
     elements: {
-      async GET() {
-        const result = await handlers.getElements();
+      async GET(request) {
+        const sp = request.nextUrl.searchParams;
+        const pick = (key) => {
+          const raw = sp.get(key);
+          if (raw === null) return void 0;
+          return raw.length === 0 ? void 0 : raw;
+        };
+        const result = await handlers.getElements({
+          recency: pick("recency"),
+          title: pick("title"),
+          aria_label: pick("aria_label"),
+          text: pick("text"),
+          revealsAny: pick("revealsAny")
+        });
         return jsonResponse(result);
       }
     },
@@ -27277,12 +27776,13 @@ function createRelayHandlers(relay, options) {
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const _meta = staleMeta();
       let elements = latestControlSnapshot.elements;
-      if (options2?.title || options2?.aria_label || options2?.text) {
+      if (options2?.title || options2?.aria_label || options2?.text || options2?.revealsAny) {
         elements = elements.filter(
           (el) => matchesElementSelector(el, {
             title: options2?.title,
             aria_label: options2?.aria_label,
-            text: options2?.text
+            text: options2?.text,
+            revealsAny: options2?.revealsAny
           })
         );
       }
@@ -27368,15 +27868,18 @@ function createRelayHandlers(relay, options) {
       }
       if (!component) {
         const available = latestControlSnapshot.components.map((c) => c.id);
-        return error2(
-          `Component "${id}" not found. Available components: [${available.join(", ")}]. Components are only available when their page is active \u2014 navigate to the page that contains this component and try again.`,
-          "NOT_FOUND",
-          [
-            "Use getControlSnapshot() to see all available components",
-            "Navigate to the page containing this component first",
-            "Components mount/unmount with page navigation \u2014 ensure the correct page is active"
-          ]
+        const enriched = latestControlSnapshot;
+        const message = buildComponentNotFoundError(
+          id,
+          available,
+          enriched.registration?.byRoute,
+          enriched.route
         );
+        return error2(message, "NOT_FOUND", [
+          "Use getControlSnapshot() to see all available components",
+          "Navigate to the page containing this component first",
+          "Components mount/unmount with page navigation \u2014 ensure the correct page is active"
+        ]);
       }
       return success2(component);
     },
@@ -27964,6 +28467,48 @@ function createRelayHandlers(relay, options) {
       return relayCommand("getNetworkRequest", { id });
     },
     // ========================================================================
+    // State Summary (Phase 1.3, plan 2026-05-03)
+    // ========================================================================
+    async getStateSummary() {
+      const snapshot = latestControlSnapshot;
+      const visibleElementCount = snapshot.elements.reduce((acc, el) => {
+        const state = el.state;
+        const rect = state?.rect;
+        const hasLayout = !!rect && (rect.width > 0 || rect.height > 0);
+        const isVisible2 = state?.visible !== false;
+        return acc + (hasLayout && isVisible2 ? 1 : 0);
+      }, 0);
+      const modalOpen = (snapshot.modalStack?.count ?? 0) > 0;
+      let hasErrors = false;
+      const cache = lastConsoleErrorsCache;
+      if (cache?.success && cache.data) {
+        const count = cache.data.count;
+        if (typeof count === "number") {
+          hasErrors = count > 0;
+        } else if (Array.isArray(cache.data.errors)) {
+          hasErrors = cache.data.errors.length > 0;
+        }
+      }
+      let idleSignals = null;
+      try {
+        const idleResp = await relayCommand(
+          "getIdleStatus"
+        );
+        if (idleResp.success && idleResp.data) idleSignals = idleResp.data;
+      } catch {
+        idleSignals = null;
+      }
+      return success2({
+        visibleElementCount,
+        modalOpen,
+        hasErrors,
+        idleSignals,
+        registeredComponents: snapshot.components.length,
+        route: snapshot.route ?? null,
+        activeTab: snapshot.activeTab ?? null
+      });
+    },
+    // ========================================================================
     // Idle Detection
     // ========================================================================
     async getIdleStatus() {
@@ -28153,6 +28698,36 @@ function createRelayHandlers(relay, options) {
     async waitForElementRegistered(request) {
       return relayCommand("waitForElementRegistered", request);
     },
+    // Phase 2.1 (plan 2026-05-03) — relay element-predicate assertion to
+    // the browser. The runtime dispatcher evaluates the predicate against
+    // the live registry; we forward the verdict and re-stamp the 422
+    // semantics so external consumers see the same status code regardless
+    // of whether the in-process or relay path serves the request.
+    async expectElement(id, request) {
+      const relayed = await relayCommand("expectElement", { id, request });
+      if (!relayed.success || !relayed.data) return relayed;
+      if (relayed.data.passed === false) {
+        return {
+          ...relayed,
+          httpStatus: 422
+        };
+      }
+      return relayed;
+    },
+    // Phase 4.1 (plan 2026-05-03) — spawn-headless is a server-side-only
+    // feature. The relay routes traffic between an external HTTP client
+    // and a browser-resident SDK, so it has no business launching a
+    // separate Chromium process. Return 501 so the route shows up in
+    // capability advertisements without pretending to fulfill the contract.
+    async spawnHeadless() {
+      return {
+        success: false,
+        error: "spawn-headless is not supported on the relay transport. Call /control/sdk/spawn-headless against the in-process server (createHandlers) instead.",
+        code: "HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY",
+        timestamp: Date.now(),
+        httpStatus: 501
+      };
+    },
     // Tier 3.2 — relay batch to browser context
     async controlBatch(request) {
       return relayCommand("controlBatch", request);
@@ -28212,6 +28787,7 @@ exports.StandaloneServer = StandaloneServer;
 exports.UIBridgeWSHandler = UIBridgeWSHandler;
 exports.UI_BRIDGE_ROUTES = UI_BRIDGE_ROUTES;
 exports.WSStreamAdapter = WSStreamAdapter;
+exports.closeAllSpawnedHeadlessTabs = closeAllSpawnedHeadlessTabs;
 exports.createAIHandlers = createAIHandlers;
 exports.createControlHandlers = createControlHandlers;
 exports.createDebugHandlers = createDebugHandlers;

@@ -1275,7 +1275,10 @@ function serializeRegisteredElement(el, options = {}) {
     // Route captured at registration time. Mirrored on the snapshot element
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
-    route: el.route
+    route: el.route,
+    // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
+    // can answer "which control unhides element X" without grepping source.
+    reveals: el.reveals
   };
 }
 function captureDocumentVisibility() {
@@ -1677,6 +1680,11 @@ var init_registry = __esm({
         // without a route (non-DOM environment) are tracked under the empty-string
         // key `""` — snapshot serialization filters that bucket out.
         this.routeCounts = /* @__PURE__ */ new Map();
+        // Per-route element-id sets — paired with `routeCounts` so the snapshot
+        // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
+        // empty-string convention for undefined-route elements; same drop-on-empty
+        // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
+        this.routeIds = /* @__PURE__ */ new Map();
         // External store pattern for useSyncExternalStore
         this.storeVersion = 0;
         this.storeListeners = /* @__PURE__ */ new Set();
@@ -1840,6 +1848,7 @@ var init_registry = __esm({
         if (options.position !== void 0) existing.position = options.position;
         if (options.color !== void 0) existing.color = options.color;
         if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
+        if (options.reveals !== void 0) existing.reveals = options.reveals;
         return true;
       }
       /**
@@ -1965,7 +1974,10 @@ var init_registry = __esm({
           // Undefined for interactive elements and for content registered via
           // the heading/paragraph/table-cell content-discovery path.
           content: options.content,
-          role: options.role
+          role: options.role,
+          // Phase 3.2 — ids/globs this control reveals. Undefined for elements
+          // that don't gate any visibility (the common case).
+          reveals: options.reveals
         };
         Object.defineProperty(registered, "__stateOverridesRef", {
           value: stateOverridesRef,
@@ -1975,25 +1987,38 @@ var init_registry = __esm({
         });
         const prior = this.elements.get(actualId);
         if (prior) {
-          this.decrementRouteCount(prior.route);
+          this.decrementRouteCount(prior.route, actualId);
         }
         this.elements.set(actualId, registered);
         this.everHadRegistrationsFlag = true;
-        this.incrementRouteCount(route);
+        this.incrementRouteCount(route, actualId);
         this.emit("element:registered", { id: actualId, type, label: options.label });
         return registered;
       }
-      incrementRouteCount(route) {
+      incrementRouteCount(route, id) {
         const key = route ?? "";
         this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+        let ids = this.routeIds.get(key);
+        if (!ids) {
+          ids = /* @__PURE__ */ new Set();
+          this.routeIds.set(key, ids);
+        }
+        ids.add(id);
       }
-      decrementRouteCount(route) {
+      decrementRouteCount(route, id) {
         const key = route ?? "";
         const next = (this.routeCounts.get(key) ?? 0) - 1;
         if (next <= 0) {
           this.routeCounts.delete(key);
         } else {
           this.routeCounts.set(key, next);
+        }
+        const ids = this.routeIds.get(key);
+        if (ids) {
+          ids.delete(id);
+          if (ids.size === 0) {
+            this.routeIds.delete(key);
+          }
         }
       }
       /**
@@ -2075,7 +2100,7 @@ var init_registry = __esm({
           }
           registered.mounted = false;
           this.elements.delete(id);
-          this.decrementRouteCount(registered.route);
+          this.decrementRouteCount(registered.route, id);
           this.emit("element:unregistered", { id });
           this.options.elementEventLog?.removeElement(id);
           return true;
@@ -2361,6 +2386,7 @@ var init_registry = __esm({
         if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
         if (options.getState !== void 0) existing.getState = options.getState;
         if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
+        if (options.scope !== void 0) existing.scope = options.scope;
         return true;
       }
       /**
@@ -2382,7 +2408,8 @@ var init_registry = __esm({
           registeredAt: Date.now(),
           mounted: true,
           getState: options.getState,
-          getComputed: options.getComputed
+          getComputed: options.getComputed,
+          scope: options.scope
         };
         this.components.set(id, registered);
         this.emit("component:registered", { id, name: options.name });
@@ -2839,16 +2866,27 @@ var init_registry = __esm({
         return this.everHadRegistrationsFlag;
       }
       /**
-       * Per-route counts of currently-registered elements. Returns a plain
-       * object copy so callers can't mutate the internal map. Elements with
-       * an undefined route are omitted. Exposed primarily for tests; production
-       * code should read `BridgeSnapshot.registration.byRoute`.
+       * Per-route counts of currently-registered elements, plus the ids that
+       * make up each count. Returns a plain object copy so callers can't mutate
+       * internal state. Elements with an undefined route are omitted. Exposed
+       * primarily for tests; production code should read
+       * `BridgeSnapshot.registration.byRoute`.
+       *
+       * Each value is `{ count: number; ids: string[] }`. The `count` field
+       * mirrors the prior `Record<string, number>` shape (kept verbatim so
+       * existing readers like the cross-route 404 hint can detect coverage),
+       * and `ids` enumerates the element ids registered on that route at
+       * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
        */
       getCountsByRoute() {
         const out = {};
         for (const [route, count] of this.routeCounts) {
           if (route === "") continue;
-          if (count > 0) out[route] = count;
+          if (count > 0) {
+            const idSet = this.routeIds.get(route);
+            const ids = idSet ? Array.from(idSet) : [];
+            out[route] = { count, ids };
+          }
         }
         return out;
       }
@@ -3025,7 +3063,10 @@ var init_registry = __esm({
             // Tell the caller exactly how to invoke any action on this component
             // without having to grep docs or guess the route shape.
             actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-            elementIds: comp.elementIds
+            elementIds: comp.elementIds,
+            // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+            // is the documented default ("route").
+            scope: comp.scope
           })),
           workflows: this.getAllWorkflows().map((wf) => ({
             id: wf.id,
@@ -3074,7 +3115,10 @@ var init_registry = __esm({
             // Tell the caller exactly how to invoke any action on this component
             // without having to grep docs or guess the route shape.
             actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-            elementIds: comp.elementIds
+            elementIds: comp.elementIds,
+            // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+            // is the documented default ("route").
+            scope: comp.scope
           })),
           workflows: this.getAllWorkflows().map((wf) => ({
             id: wf.id,
@@ -3099,6 +3143,7 @@ var init_registry = __esm({
         this.transitions.clear();
         this.activeStates.clear();
         this.routeCounts.clear();
+        this.routeIds.clear();
         this.everHadRegistrationsFlag = false;
       }
       /**
@@ -3121,6 +3166,180 @@ var init_registry = __esm({
       }
     };
     REGISTRY_KEY = /* @__PURE__ */ Symbol.for("@qontinui/ui-bridge/globalRegistry");
+  }
+});
+
+// src/debug/shared-utils.ts
+function getEventStack(event) {
+  if ("stack" in event) return event.stack;
+  return void 0;
+}
+var init_shared_utils = __esm({
+  "src/debug/shared-utils.ts"() {
+  }
+});
+
+// src/debug/error-fingerprint.ts
+function normalizeMessage(message) {
+  return message.replace(UUID_RE, "<uuid>").replace(TIMESTAMP_RE, "<timestamp>").replace(HEX_RE, "<hex>").replace(UNIX_TS_RE, "<number>").replace(NUMBER_RE, "<n>");
+}
+function normalizeUrlPath(url) {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split("/").map((seg) => {
+      if (UUID_TEST_RE.test(seg)) {
+        return "<uuid>";
+      }
+      if (/^\d+$/.test(seg)) return "<id>";
+      return seg;
+    });
+    return `${parsed.origin}${segments.join("/")}`;
+  } catch {
+    return normalizeMessage(url);
+  }
+}
+function parseFrame(line) {
+  const trimmed = line.trim();
+  const v8 = trimmed.match(V8_FRAME_RE);
+  if (v8) {
+    return { functionName: v8[1], file: v8[2], line: v8[3], col: v8[4] };
+  }
+  const sm = trimmed.match(SPIDERMONKEY_FRAME_RE);
+  if (sm) {
+    return { functionName: sm[1], file: sm[2], line: sm[3], col: sm[4] };
+  }
+  const bare = trimmed.match(JSC_BARE_RE);
+  if (bare) {
+    return { functionName: void 0, file: bare[1], line: bare[2], col: bare[3] };
+  }
+  return null;
+}
+function isAppFrame(frame) {
+  return !SKIP_FRAME_PATTERNS.some((pat) => pat.test(frame.file));
+}
+function extractFilename(file) {
+  let clean = file.split("?")[0].split("#")[0];
+  clean = clean.replace(/^https?:\/\/[^/]+/, "");
+  clean = clean.replace(/^\/_next\/static\/[^/]+\//, "");
+  const parts = clean.split("/").filter(Boolean);
+  if (parts.length > 3) {
+    return parts.slice(-3).join("/");
+  }
+  return parts.join("/") || clean;
+}
+function extractSourceLocation(stack) {
+  if (!stack) return void 0;
+  const lines = stack.split("\n");
+  for (const line of lines) {
+    const frame = parseFrame(line);
+    if (frame && isAppFrame(frame)) {
+      const filename = extractFilename(frame.file);
+      return `${filename}:${frame.line}`;
+    }
+  }
+  for (const line of lines) {
+    const frame = parseFrame(line);
+    if (frame) {
+      const filename = extractFilename(frame.file);
+      return `${filename}:${frame.line}`;
+    }
+  }
+  return void 0;
+}
+function topFrameForFingerprint(stack) {
+  return extractSourceLocation(stack) ?? "";
+}
+function fingerprintConsole(event) {
+  const normalized = normalizeMessage(event.message);
+  const frame = topFrameForFingerprint(event.stack);
+  return `console:${event.level}|${normalized}|${frame}`;
+}
+function fingerprintNetwork(event) {
+  const path = normalizeUrlPath(event.requestUrl);
+  return `network:${event.method}|${path}|${event.status ?? event.kind}`;
+}
+function fingerprintReactError(event) {
+  const normalized = normalizeMessage(event.message);
+  const frame = topFrameForFingerprint(event.stack);
+  return `react-error|${normalized}|${frame}`;
+}
+function fingerprintResourceError(event) {
+  const path = normalizeUrlPath(event.resourceUrl);
+  return `resource-error:${event.tagName}|${path}`;
+}
+function fingerprintHmr(event) {
+  const normalized = normalizeMessage(event.message);
+  return `hmr:${event.level}|${normalized}|${event.moduleName ?? ""}`;
+}
+function fingerprintWsDisconnection(event) {
+  return `ws-disconnection:${event.previousState}->${event.newState}`;
+}
+function computeFingerprint(event) {
+  switch (event.type) {
+    case "console":
+      return fingerprintConsole(event);
+    case "network":
+      return fingerprintNetwork(event);
+    case "react-error":
+      return fingerprintReactError(event);
+    case "resource-error":
+      return fingerprintResourceError(event);
+    case "hmr":
+      return fingerprintHmr(event);
+    case "ws-disconnection":
+      return fingerprintWsDisconnection(event);
+    case "navigation":
+      return `navigation:${event.trigger}|${normalizeUrlPath(event.to)}`;
+    case "long-task":
+      return `long-task:${Math.round(event.durationMs / 50) * 50}ms`;
+    case "long-animation-frame": {
+      const scripts = event.scripts.map((s) => `${s.invoker}@${extractFilename(s.sourceURL)}`).join(",");
+      return `loaf:${Math.round(event.durationMs / 50) * 50}ms|${scripts}`;
+    }
+    case "web-vital":
+      return `web-vital:${event.metric}`;
+    case "memory":
+      return `memory:snapshot`;
+    case "freeze":
+      return `freeze:${Math.round(event.gapMs / 500) * 500}ms`;
+    case "dom-metrics":
+      return `dom-metrics:${Math.round(event.nodeCount / 1e3) * 1e3}`;
+    default: {
+      const _exhaustive = event;
+      return `unknown:${_exhaustive.type}`;
+    }
+  }
+}
+var UUID_RE, UUID_TEST_RE, HEX_RE, TIMESTAMP_RE, UNIX_TS_RE, NUMBER_RE, SKIP_FRAME_PATTERNS, V8_FRAME_RE, SPIDERMONKEY_FRAME_RE, JSC_BARE_RE;
+var init_error_fingerprint = __esm({
+  "src/debug/error-fingerprint.ts"() {
+    init_shared_utils();
+    UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    UUID_TEST_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    HEX_RE = /\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b/gi;
+    TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*Z?/g;
+    UNIX_TS_RE = /\b\d{10,13}\b/g;
+    NUMBER_RE = /\b\d+\b/g;
+    SKIP_FRAME_PATTERNS = [
+      /node_modules/,
+      /react-dom/,
+      /react\.development/,
+      /react\.production/,
+      /scheduler\./,
+      /webpack-internal/,
+      /webpack:\/\//,
+      /turbopack-internal/,
+      /__webpack_/,
+      /^native code$/,
+      /^<anonymous>$/,
+      /\(native\)/,
+      /extensions::/,
+      /chrome-extension:\/\//,
+      /moz-extension:\/\//
+    ];
+    V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
+    SPIDERMONKEY_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)$/;
+    JSC_BARE_RE = /^(.+?):(\d+):(\d+)$/;
   }
 });
 
@@ -3682,1297 +3901,1166 @@ var init_bookmarks = __esm({
   }
 });
 
-// src/idle/network-idle.ts
-var NetworkIdleDetector;
-var init_network_idle = __esm({
-  "src/idle/network-idle.ts"() {
-    NetworkIdleDetector = class {
-      constructor(config = {}) {
-        this.name = "network";
-        this.pending = /* @__PURE__ */ new Map();
-        this.nextId = 0;
-        this.idleTimer = null;
-        this._isIdle = true;
-        this.listeners = [];
-        this.installed = false;
-        // Saved originals for cleanup (standalone mode only)
-        this.originalFetch = null;
-        this.originalXHROpen = null;
-        this.originalXHRSend = null;
-        // Tracker-driven mode
-        this.tracker = null;
-        this.trackerUnsubscribe = null;
-        this.weight = config.weight ?? 0.9;
-        this.debounceMs = config.debounceMs ?? 500;
-        this.ignorePatterns = (config.ignorePatterns ?? []).map((p) => new RegExp(p));
-        this.trackXHR = config.trackXHR ?? true;
-        this.tracker = config.tracker ?? null;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        if (this.tracker) {
-          this.installTrackerSubscription();
-        } else {
-          this.installFetchInterceptor();
-          if (this.trackXHR) {
-            this.installXHRInterceptor();
-          }
-        }
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        if (this.trackerUnsubscribe) {
-          this.trackerUnsubscribe();
-          this.trackerUnsubscribe = null;
-        } else {
-          if (this.originalFetch) {
-            globalThis.fetch = this.originalFetch;
-            this.originalFetch = null;
-          }
-          if (this.originalXHROpen) {
-            XMLHttpRequest.prototype.open = this.originalXHROpen;
-            this.originalXHROpen = null;
-          }
-          if (this.originalXHRSend) {
-            XMLHttpRequest.prototype.send = this.originalXHRSend;
-            this.originalXHRSend = null;
-          }
-        }
-        if (this.idleTimer) {
-          clearTimeout(this.idleTimer);
-          this.idleTimer = null;
-        }
-        this.pending.clear();
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isIdle;
-      }
-      getStatus() {
-        const now = Date.now();
-        const pendingRequests = [];
-        for (const tracked of this.pending.values()) {
-          pendingRequests.push({
-            url: tracked.url,
-            method: tracked.method,
-            startedAt: tracked.startedAt,
-            durationMs: now - tracked.startedAt
-          });
-        }
-        return {
-          idle: this._isIdle,
-          pendingCount: this.pending.size,
-          pendingRequests,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Network idle timeout after ${timeout}ms. ${this.pending.size} requests still pending.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      /**
-       * Subscribe to a NetworkRequestTracker's events instead of patching
-       * fetch/XHR directly. The idle detector only cares about request
-       * start/end — not the full request metadata.
-       */
-      installTrackerSubscription() {
-        this.trackerUnsubscribe = this.tracker.onEvent((event) => {
-          const url = event.entry.request.url;
-          const method = event.entry.request.method;
-          if (this.shouldIgnore(url)) return;
-          if (event.type === "request-start") {
-            this.trackRequest(url, method);
-          } else {
-            let matchedId = null;
-            for (const [id, tracked] of this.pending) {
-              if (tracked.url === url && tracked.method === method) {
-                matchedId = id;
-                break;
-              }
-            }
-            if (matchedId !== null) {
-              const statusCode = event.type === "request-error" ? event.entry.response?.statusCode ?? 0 : event.entry.response?.statusCode;
-              this.completeRequest(matchedId, statusCode);
-            }
-          }
-        });
-      }
-      shouldIgnore(url) {
-        return this.ignorePatterns.some((re) => re.test(url));
-      }
-      trackRequest(url, method) {
-        const id = this.nextId++;
-        this.pending.set(id, { url, method, startedAt: Date.now() });
-        if (this.idleTimer) {
-          clearTimeout(this.idleTimer);
-          this.idleTimer = null;
-        }
-        if (this._isIdle) {
-          this._isIdle = false;
-          this.notifyTransition();
-        }
-        this.onRequestStart?.({
-          url,
-          method,
-          pendingCount: this.pending.size
-        });
-        return id;
-      }
-      completeRequest(id, status) {
-        const tracked = this.pending.get(id);
-        if (!tracked) return;
-        this.pending.delete(id);
-        this.onRequestEnd?.({
-          url: tracked.url,
-          method: tracked.method,
-          status,
-          durationMs: Date.now() - tracked.startedAt,
-          pendingCount: this.pending.size
-        });
-        if (this.pending.size === 0) {
-          this.scheduleIdle();
-        }
-      }
-      scheduleIdle() {
-        if (this.idleTimer) clearTimeout(this.idleTimer);
-        this.idleTimer = setTimeout(() => {
-          this.idleTimer = null;
-          if (this.pending.size === 0 && !this._isIdle) {
-            this._isIdle = true;
-            this.notifyTransition();
-          }
-        }, this.debounceMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isIdle, status);
-          } catch {
-          }
-        }
-      }
-      installFetchInterceptor() {
-        this.originalFetch = globalThis.fetch;
-        const self = this;
-        const original = this.originalFetch;
-        globalThis.fetch = function(input, init) {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-          const method = init?.method?.toUpperCase() || "GET";
-          if (self.shouldIgnore(url)) {
-            return original.call(globalThis, input, init);
-          }
-          const id = self.trackRequest(url, method);
-          return original.call(globalThis, input, init).then(
-            (response) => {
-              self.completeRequest(id, response.status);
-              return response;
-            },
-            (error) => {
-              self.completeRequest(id, 0);
-              throw error;
-            }
-          );
-        };
-      }
-      installXHRInterceptor() {
-        this.originalXHROpen = XMLHttpRequest.prototype.open;
-        this.originalXHRSend = XMLHttpRequest.prototype.send;
-        const self = this;
-        XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
-          this.__uiBridgeMethod = method;
-          this.__uiBridgeUrl = typeof url === "string" ? url : url.href;
-          return self.originalXHROpen.call(this, method, url, async ?? true, username, password);
-        };
-        XMLHttpRequest.prototype.send = function(body) {
-          const xhr = this;
-          const url = xhr.__uiBridgeUrl || "";
-          const method = (xhr.__uiBridgeMethod || "GET").toUpperCase();
-          if (self.shouldIgnore(url)) {
-            return self.originalXHRSend.call(this, body);
-          }
-          const id = self.trackRequest(url, method);
-          xhr.__uiBridgeTrackId = id;
-          xhr.addEventListener("loadend", () => {
-            self.completeRequest(id, xhr.status);
-          });
-          return self.originalXHRSend.call(this, body);
-        };
-      }
-    };
+// src/ai/target-decomposer.ts
+function compileSynonym(type, synonym, softHint) {
+  const tokens = synonym.trim().split(/\s+/);
+  const escaped = tokens.map((t) => escapeRegExp(t)).join("\\s+");
+  return {
+    pattern: new RegExp(`\\b${escaped}\\b`, "i"),
+    type,
+    softHint,
+    synonym,
+    wordCount: tokens.length
+  };
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function isSoftTypeHint(decomposed) {
+  return decomposed.__softTypeHint === true;
+}
+function decomposeTarget(description) {
+  let remaining = description.trim();
+  const result = { elementText: "" };
+  remaining = extractStateFilter(remaining, result);
+  remaining = extractSpatialRelation(remaining, result);
+  if (!result.spatial || result.spatial.relation !== "inside") {
+    remaining = extractContainer(remaining, result);
+  } else {
+    result.container = result.spatial.referenceDescription;
+    result.spatial = void 0;
   }
-});
-
-// src/idle/dom-settling.ts
-var DOMSettlingDetector;
-var init_dom_settling = __esm({
-  "src/idle/dom-settling.ts"() {
-    DOMSettlingDetector = class {
-      constructor(config = {}) {
-        this.name = "dom";
-        this.observer = null;
-        this.lastMutationAt = 0;
-        this.recentMutations = [];
-        // timestamps of recent mutations
-        this.settleTimer = null;
-        this._isSettled = true;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.8;
-        this.settleMs = config.settleMs ?? 300;
-        this.root = config.root;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        const root = this.root ?? document.body;
-        this.observer = new MutationObserver((mutations) => {
-          const now = Date.now();
-          this.lastMutationAt = now;
-          this.recentMutations.push(now);
-          const cutoff = now - 1e3;
-          this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
-          let meaningfulCount = 0;
-          for (const m of mutations) {
-            if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-              meaningfulCount++;
-            } else if (m.type === "attributes") {
-              meaningfulCount++;
-            }
-          }
-          if (meaningfulCount === 0) return;
-          if (this._isSettled) {
-            this._isSettled = false;
-            this.notifyTransition();
-          }
-          this.resetSettleTimer();
-        });
-        this.observer.observe(root, {
-          childList: true,
-          attributes: true,
-          characterData: true,
-          subtree: true
-        });
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        this.observer?.disconnect();
-        this.observer = null;
-        if (this.settleTimer) {
-          clearTimeout(this.settleTimer);
-          this.settleTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isSettled;
-      }
-      getStatus() {
-        const now = Date.now();
-        const cutoff = now - 1e3;
-        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
-        return {
-          idle: this._isSettled,
-          settled: this._isSettled,
-          lastMutationAt: this.lastMutationAt,
-          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
-          recentMutationCount: recentCount,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.settled) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `DOM settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      resetSettleTimer() {
-        if (this.settleTimer) clearTimeout(this.settleTimer);
-        this.settleTimer = setTimeout(() => {
-          this.settleTimer = null;
-          if (!this._isSettled) {
-            this._isSettled = true;
-            this.notifyTransition();
-          }
-        }, this.settleMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isSettled, status);
-          } catch {
-          }
-        }
-      }
-    };
+  remaining = extractOrdinal(remaining, result);
+  remaining = extractElementType(remaining, result);
+  result.elementText = cleanElementText(remaining);
+  if (result.elementText) {
+    result.label = result.elementText;
+    result.ariaLabel = result.elementText;
+    result.placeholder = result.elementText;
+    result.name = result.elementText;
   }
-});
-
-// src/idle/loading-indicators.ts
-var DEFAULT_LOADING_SELECTORS, LOADING_ANIMATION_KEYWORDS, LoadingIndicatorDetector;
-var init_loading_indicators = __esm({
-  "src/idle/loading-indicators.ts"() {
-    init_class_name();
-    DEFAULT_LOADING_SELECTORS = [
-      // ARIA
-      '[aria-busy="true"]',
-      '[role="progressbar"]',
-      // Common class conventions
-      ".loading",
-      ".spinner",
-      ".skeleton",
-      ".shimmer",
-      ".loader",
-      ".pending",
-      '[class*="loading"]',
-      '[class*="spinner"]',
-      '[class*="skeleton"]',
-      '[class*="shimmer"]',
-      // HTML elements
-      'progress:not([value="100"]):not([value="1"])',
-      // Framework-specific (popular libraries)
-      ".MuiCircularProgress-root",
-      ".MuiLinearProgress-root",
-      ".MuiSkeleton-root",
-      ".ant-spin",
-      ".ant-skeleton",
-      ".chakra-spinner",
-      // Data attributes
-      '[data-loading="true"]',
-      '[data-pending="true"]',
-      '[data-state="loading"]'
-    ];
-    LOADING_ANIMATION_KEYWORDS = [
-      "spin",
-      "rotate",
-      "pulse",
-      "shimmer",
-      "bounce",
-      "skeleton",
-      "loading",
-      "progress",
-      "indeterminate"
-    ];
-    LoadingIndicatorDetector = class {
-      constructor(config = {}) {
-        this.name = "loading-indicators";
-        this.observer = null;
-        this._indicators = [];
-        this._isIdle = true;
-        this.scanTimer = null;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.7;
-        this.selectors = [...DEFAULT_LOADING_SELECTORS, ...config.additionalSelectors ?? []];
-        this.checkAnimations = config.checkAnimations ?? true;
-        this.checkCursor = config.checkCursor ?? true;
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        this.scan();
-        this.observer = new MutationObserver(() => {
-          if (this.scanTimer) clearTimeout(this.scanTimer);
-          this.scanTimer = setTimeout(() => {
-            this.scanTimer = null;
-            this.scan();
-          }, 100);
-        });
-        this.observer.observe(document.body, {
-          childList: true,
-          attributes: true,
-          subtree: true,
-          attributeFilter: ["class", "aria-busy", "data-loading", "data-pending", "data-state"]
-        });
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        this.observer?.disconnect();
-        this.observer = null;
-        if (this.scanTimer) {
-          clearTimeout(this.scanTimer);
-          this.scanTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isIdle;
-      }
-      getStatus() {
-        return {
-          idle: this._isIdle,
-          loading: !this._isIdle,
-          indicators: [...this._indicators],
-          timestamp: Date.now()
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            this.scan();
-            const status = this.getStatus();
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Loading indicator timeout after ${timeout}ms. ${this._indicators.length} indicators still active.`
-                )
-              );
-            }
-            setTimeout(check, 100);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      /**
-       * Wait for a specific CSS selector to disappear from the loading indicators.
-       */
-      async waitForIndicatorCleared(selector, timeout = 3e4) {
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          const check = () => {
-            this.scan();
-            const matchingSelector = this.selectors.includes(selector) ? selector : void 0;
-            const hasMatch = matchingSelector ? document.querySelector(selector) !== null && this.isElementVisible(document.querySelector(selector)) : false;
-            if (!hasMatch) {
-              return resolve(this.getStatus());
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(new Error(`Indicator "${selector}" still present after ${timeout}ms.`));
-            }
-            setTimeout(check, 100);
-          };
-          check();
-        });
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      scan() {
-        const indicators = [];
-        for (const selector of this.selectors) {
-          try {
-            const elements2 = document.querySelectorAll(selector);
-            for (const el of elements2) {
-              if (this.isElementVisible(el)) {
-                indicators.push({
-                  type: selector.startsWith("[aria-busy") ? "aria-busy" : "selector",
-                  selector,
-                  element: this.getElementId(el)
-                });
-              }
-            }
-          } catch {
-          }
-        }
-        if (this.checkAnimations && typeof document.getAnimations === "function") {
-          try {
-            const animations = document.getAnimations();
-            for (const anim of animations) {
-              const cssAnim = anim;
-              const name = cssAnim.animationName || "";
-              if (name && LOADING_ANIMATION_KEYWORDS.some((k) => name.toLowerCase().includes(k))) {
-                const target = anim.effect?.target;
-                if (target && this.isElementVisible(target)) {
-                  indicators.push({
-                    type: "animation",
-                    element: this.getElementId(target),
-                    details: name
-                  });
-                }
-              }
-            }
-          } catch {
-          }
-        }
-        if (this.checkCursor) {
-          try {
-            const bodyStyle = getComputedStyle(document.body);
-            if (bodyStyle.cursor === "wait" || bodyStyle.cursor === "progress") {
-              indicators.push({
-                type: "cursor",
-                details: bodyStyle.cursor
-              });
-            }
-          } catch {
-          }
-        }
-        const seen = /* @__PURE__ */ new Set();
-        const deduped = indicators.filter((ind) => {
-          const key = `${ind.type}:${ind.element || ""}:${ind.selector || ""}:${ind.details || ""}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-        const wasIdle = this._isIdle;
-        this._indicators = deduped;
-        this._isIdle = deduped.length === 0;
-        if (wasIdle !== this._isIdle) {
-          this.notifyTransition();
-        }
-      }
-      isElementVisible(el) {
-        if (!el) return false;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return false;
-        const style = getComputedStyle(el);
-        if (style.display === "none") return false;
-        if (style.visibility === "hidden") return false;
-        if (parseFloat(style.opacity) === 0) return false;
-        return true;
-      }
-      getElementId(el) {
-        return el.getAttribute("data-testid") || el.getAttribute("data-ui-bridge-id") || el.id || `${el.tagName.toLowerCase()}.${classList(el)[0] || "unknown"}`;
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isIdle, status);
-          } catch {
-          }
-        }
-      }
-    };
-  }
-});
-
-// src/idle/form-mutation.ts
-var FormMutationDetector;
-var init_form_mutation = __esm({
-  "src/idle/form-mutation.ts"() {
-    FormMutationDetector = class {
-      constructor(config = {}) {
-        this.name = "form-mutation";
-        this.lastMutationAt = 0;
-        this.recentMutations = [];
-        this.settleTimer = null;
-        this._isSettled = true;
-        this.listeners = [];
-        this.installed = false;
-        this.weight = config.weight ?? 0.5;
-        this.settleMs = config.settleMs ?? 800;
-        this.handleInput = this.onFormEvent.bind(this);
-        this.handleChange = this.onFormEvent.bind(this);
-        this.handleFocusIn = this.onFocusIn.bind(this);
-        this.handleFocusOut = this.onFocusOut.bind(this);
-      }
-      install() {
-        if (this.installed) return;
-        this.installed = true;
-        document.addEventListener("input", this.handleInput, true);
-        document.addEventListener("change", this.handleChange, true);
-        document.addEventListener("focusin", this.handleFocusIn, true);
-        document.addEventListener("focusout", this.handleFocusOut, true);
-      }
-      destroy() {
-        if (!this.installed) return;
-        this.installed = false;
-        document.removeEventListener("input", this.handleInput, true);
-        document.removeEventListener("change", this.handleChange, true);
-        document.removeEventListener("focusin", this.handleFocusIn, true);
-        document.removeEventListener("focusout", this.handleFocusOut, true);
-        if (this.settleTimer) {
-          clearTimeout(this.settleTimer);
-          this.settleTimer = null;
-        }
-        this.listeners = [];
-      }
-      isIdle() {
-        return this._isSettled;
-      }
-      getStatus() {
-        const now = Date.now();
-        const cutoff = now - 1e3;
-        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
-        return {
-          idle: this._isSettled,
-          settled: this._isSettled,
-          lastMutationAt: this.lastMutationAt,
-          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
-          recentMutationCount: recentCount,
-          activeFieldId: this.activeFieldId,
-          timestamp: now
-        };
-      }
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus();
-            if (status.settled) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              return reject(
-                new Error(
-                  `Form mutation settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      isFormElement(target) {
-        if (!target || !(target instanceof HTMLElement)) return false;
-        return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-      }
-      onFormEvent(e) {
-        if (!this.isFormElement(e.target)) return;
-        const now = Date.now();
-        this.lastMutationAt = now;
-        this.recentMutations.push(now);
-        const cutoff = now - 1e3;
-        this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
-        if (this._isSettled) {
-          this._isSettled = false;
-          this.notifyTransition();
-        }
-        this.resetSettleTimer();
-      }
-      onFocusIn(e) {
-        if (!this.isFormElement(e.target)) return;
-        const el = e.target;
-        this.activeFieldId = el.id || el.getAttribute("name") || void 0;
-      }
-      onFocusOut(e) {
-        if (!this.isFormElement(e.target)) return;
-        this.activeFieldId = void 0;
-      }
-      resetSettleTimer() {
-        if (this.settleTimer) clearTimeout(this.settleTimer);
-        this.settleTimer = setTimeout(() => {
-          this.settleTimer = null;
-          if (!this._isSettled) {
-            this._isSettled = true;
-            this.notifyTransition();
-          }
-        }, this.settleMs);
-      }
-      notifyTransition() {
-        const status = this.getStatus();
-        for (const listener of this.listeners) {
-          try {
-            listener(this._isSettled, status);
-          } catch {
-          }
-        }
-      }
-    };
-  }
-});
-
-// src/idle/composite-idle.ts
-var CompositeIdleDetector;
-var init_composite_idle = __esm({
-  "src/idle/composite-idle.ts"() {
-    init_network_idle();
-    init_dom_settling();
-    init_loading_indicators();
-    init_form_mutation();
-    CompositeIdleDetector = class _CompositeIdleDetector {
-      constructor(config) {
-        this.signals = /* @__PURE__ */ new Map();
-        this.listeners = [];
-        this.lastIdle = null;
-        this.minIdleScore = config?.minIdleScore ?? 0.7;
-      }
-      /**
-       * Create a composite detector with default signals from config.
-       */
-      static create(config = {}) {
-        const detector = new _CompositeIdleDetector({ minIdleScore: config.minIdleScore });
-        if (config.network?.enabled !== false) {
-          detector.addSignal(
-            new NetworkIdleDetector({
-              weight: config.network?.weight ?? 0.9,
-              debounceMs: config.network?.debounceMs,
-              ignorePatterns: config.network?.ignorePatterns,
-              trackXHR: config.network?.trackXHR,
-              tracker: config.network?.tracker
-            })
-          );
-        }
-        if (config.dom?.enabled !== false) {
-          detector.addSignal(
-            new DOMSettlingDetector({
-              weight: config.dom?.weight ?? 0.8,
-              settleMs: config.dom?.settleMs,
-              root: config.dom?.root
-            })
-          );
-        }
-        if (config.loadingIndicators?.enabled !== false) {
-          detector.addSignal(
-            new LoadingIndicatorDetector({
-              weight: config.loadingIndicators?.weight ?? 0.7,
-              additionalSelectors: config.loadingIndicators?.additionalSelectors,
-              checkAnimations: config.loadingIndicators?.checkAnimations,
-              checkCursor: config.loadingIndicators?.checkCursor
-            })
-          );
-        }
-        if (config.formMutation?.enabled !== false) {
-          detector.addSignal(
-            new FormMutationDetector({
-              weight: config.formMutation?.weight ?? 0.5,
-              settleMs: config.formMutation?.settleMs
-            })
-          );
-        }
-        return detector;
-      }
-      /**
-       * Add a signal to the composite. Installs it and subscribes to transitions.
-       */
-      addSignal(signal) {
-        this.signals.set(signal.name, signal);
-        signal.install();
-        signal.onTransition(() => this.evaluate());
-      }
-      /**
-       * Remove a signal by name. Destroys it.
-       */
-      removeSignal(name) {
-        const signal = this.signals.get(name);
-        if (!signal) return false;
-        signal.destroy();
-        this.signals.delete(name);
-        return true;
-      }
-      /**
-       * Get an individual signal by name for direct access.
-       */
-      getSignal(name) {
-        return this.signals.get(name);
-      }
-      /**
-       * List all registered signal names.
-       */
-      getSignalNames() {
-        return Array.from(this.signals.keys());
-      }
-      /**
-       * Whether the composite considers the app idle.
-       */
-      isIdle() {
-        return this.getStatus().idle;
-      }
-      /**
-       * Get full composite status including per-signal breakdown.
-       */
-      getStatus(exclude) {
-        const signalEntries = {};
-        const excludeSet = new Set(exclude ?? []);
-        let totalWeight = 0;
-        let idleWeight = 0;
-        let allCriticalIdle = true;
-        for (const [name, signal] of this.signals) {
-          if (excludeSet.has(name)) continue;
-          const idle = signal.isIdle();
-          const status = signal.getStatus();
-          signalEntries[name] = {
-            name,
-            idle,
-            weight: signal.weight,
-            status
-          };
-          totalWeight += signal.weight;
-          if (idle) idleWeight += signal.weight;
-          if (signal.weight >= 0.8 && !idle) {
-            allCriticalIdle = false;
-          }
-        }
-        const idleScore = totalWeight > 0 ? idleWeight / totalWeight : 1;
-        return {
-          idle: allCriticalIdle && idleScore >= this.minIdleScore,
-          idleScore,
-          signals: signalEntries,
-          timestamp: Date.now()
-        };
-      }
-      /**
-       * Get the status of a single signal by name.
-       */
-      getSignalStatus(name) {
-        return this.signals.get(name)?.getStatus();
-      }
-      /**
-       * Wait for the composite to become idle.
-       */
-      async waitForIdle(options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 500;
-        const exclude = options?.exclude;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            const status = this.getStatus(exclude);
-            if (status.idle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(status);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              const busySignals = Object.values(status.signals).filter((s) => !s.idle).map((s) => s.name);
-              return reject(
-                new Error(
-                  `Idle timeout after ${timeout}ms. Busy signals: ${busySignals.join(", ") || "none"}. Score: ${status.idleScore.toFixed(2)}`
-                )
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      /**
-       * Wait for a specific subset of signals to become idle.
-       * Targets can be signal names or { indicator: '.selector' } for specific loading indicators.
-       */
-      async waitFor(targets, options) {
-        const timeout = options?.timeout ?? 3e4;
-        const minStable = options?.minStableMs ?? 0;
-        return new Promise((resolve, reject) => {
-          const startTime = Date.now();
-          let stableSince = null;
-          const check = () => {
-            let allIdle = true;
-            const results = {};
-            for (const target of targets) {
-              if (typeof target === "string") {
-                const signal = this.signals.get(target);
-                if (signal) {
-                  const status = signal.getStatus();
-                  results[target] = status;
-                  if (!status.idle) allIdle = false;
-                }
-              } else {
-                const el = document.querySelector(target.indicator);
-                const present = el !== null && this.isElementVisible(el);
-                const key = `indicator:${target.indicator}`;
-                results[key] = { idle: !present, timestamp: Date.now() };
-                if (present) allIdle = false;
-              }
-            }
-            if (allIdle) {
-              if (!stableSince) stableSince = Date.now();
-              if (Date.now() - stableSince >= minStable) {
-                return resolve(results);
-              }
-            } else {
-              stableSince = null;
-            }
-            if (Date.now() - startTime > timeout) {
-              const busy = Object.entries(results).filter(([, s]) => !s.idle).map(([k]) => k);
-              return reject(
-                new Error(`Selective wait timeout after ${timeout}ms. Still busy: ${busy.join(", ")}`)
-              );
-            }
-            setTimeout(check, 50);
-          };
-          check();
-        });
-      }
-      /**
-       * Wait for a single signal by name.
-       */
-      async waitForSignal(name, options) {
-        const signal = this.signals.get(name);
-        if (!signal) {
-          throw new Error(`Signal not found: ${name}. Available: ${this.getSignalNames().join(", ")}`);
-        }
-        return signal.waitForIdle(options);
-      }
-      /**
-       * Subscribe to composite idle/busy transitions.
-       */
-      onTransition(callback) {
-        this.listeners.push(callback);
-        return () => {
-          const idx = this.listeners.indexOf(callback);
-          if (idx >= 0) this.listeners.splice(idx, 1);
-        };
-      }
-      /**
-       * Install all signals. Called automatically by addSignal, but can be
-       * called explicitly if signals were added without install.
-       */
-      installAll() {
-        for (const signal of this.signals.values()) {
-          signal.install();
-        }
-      }
-      /**
-       * Clean up all signals.
-       */
-      destroy() {
-        for (const signal of this.signals.values()) {
-          signal.destroy();
-        }
-        this.signals.clear();
-        this.listeners = [];
-        this.lastIdle = null;
-      }
-      // ==========================================================================
-      // Private
-      // ==========================================================================
-      evaluate() {
-        const status = this.getStatus();
-        if (this.lastIdle !== status.idle) {
-          this.lastIdle = status.idle;
-          for (const listener of this.listeners) {
-            try {
-              listener(status);
-            } catch {
-            }
-          }
-        }
-      }
-      isElementVisible(el) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return false;
-        const style = getComputedStyle(el);
-        return style.display !== "none" && style.visibility !== "hidden";
-      }
-    };
-  }
-});
-
-// src/idle/element-settling.ts
-function waitForElementStable(element, options) {
-  const quietMs = options?.quietMs ?? 500;
-  const timeout = options?.timeout ?? 5e3;
-  const observeAttributes = options?.observeAttributes ?? true;
-  const observeSubtree = options?.observeSubtree ?? false;
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-    let lastActivityAt = Date.now();
-    let rafId = null;
-    let timeoutId = null;
-    let quietCheckId = null;
-    let prevRect = null;
-    let cleaned = false;
-    function cleanup() {
-      if (cleaned) return;
-      cleaned = true;
-      observer.disconnect();
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      if (timeoutId !== null) clearTimeout(timeoutId);
-      if (quietCheckId !== null) clearTimeout(quietCheckId);
+  return result;
+}
+function extractStateFilter(text, result) {
+  for (const state of STATE_FILTERS) {
+    const regex = new RegExp(`\\b${state}\\b`, "i");
+    if (regex.test(text)) {
+      result.stateFilter = state;
+      return text.replace(regex, " ").trim();
     }
-    function recordActivity() {
-      lastActivityAt = Date.now();
-      scheduleQuietCheck();
+  }
+  return text;
+}
+function extractSpatialRelation(text, result) {
+  for (const { pattern, relation } of SPATIAL_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      result.spatial = {
+        relation,
+        referenceDescription: cleanReferenceDescription(match[1])
+      };
+      return text.slice(0, match.index).trim();
     }
-    function scheduleQuietCheck() {
-      if (quietCheckId !== null) clearTimeout(quietCheckId);
-      quietCheckId = setTimeout(
-        () => {
-          const elapsed = Date.now() - lastActivityAt;
-          if (elapsed >= quietMs) {
-            cleanup();
-            resolve({ stable: true, elapsed: Date.now() - startTime });
-          } else {
-            scheduleQuietCheck();
-          }
-        },
-        quietMs - (Date.now() - lastActivityAt) + 1
+  }
+  return text;
+}
+function extractContainer(text, result) {
+  for (const pattern of CONTAINER_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const container = cleanReferenceDescription(match[1]);
+      if (container.length > 2 && !isPartOfCompoundWord(text, match.index)) {
+        result.container = container;
+        return text.slice(0, match.index).trim();
+      }
+    }
+  }
+  return text;
+}
+function isPartOfCompoundWord(text, matchIndex, _word) {
+  const before = text.slice(0, matchIndex).trim().toLowerCase();
+  const compoundPrefixes = ["sign", "log", "opt", "check", "plug", "fill", "zoom", "fade", "drop"];
+  return compoundPrefixes.some((prefix) => before.endsWith(prefix));
+}
+function extractOrdinal(text, result) {
+  for (const [word, value] of Object.entries(ORDINAL_MAP)) {
+    const regex = new RegExp(`\\b${word}\\b`, "i");
+    if (regex.test(text)) {
+      result.ordinal = value;
+      return text.replace(regex, " ").trim();
+    }
+  }
+  const numericMatch = text.match(/\b(\d+)(?:st|nd|rd|th)\b/i);
+  if (numericMatch) {
+    result.ordinal = parseInt(numericMatch[1], 10);
+    return text.replace(numericMatch[0], " ").trim();
+  }
+  return text;
+}
+function extractElementType(text, result) {
+  for (const entry of COMPILED_ELEMENT_TYPE_SYNONYMS) {
+    if (entry.pattern.test(text)) {
+      result.elementType = entry.type;
+      if (entry.softHint) {
+        result.__softTypeHint = true;
+      }
+      return text.replace(entry.pattern, " ").trim();
+    }
+  }
+  return text;
+}
+function cleanElementText(text) {
+  const words = text.split(/\s+/).filter((w) => !NOISE_WORDS.has(w.toLowerCase()));
+  return words.join(" ").replace(/\s+/g, " ").replace(/^[\s,]+|[\s,]+$/g, "").trim();
+}
+function cleanReferenceDescription(text) {
+  return text.replace(/^(?:the|a|an)\s+/i, "").replace(/\s+/g, " ").trim();
+}
+var NOISE_WORDS, ELEMENT_TYPE_SYNONYMS, COMPILED_ELEMENT_TYPE_SYNONYMS, SPATIAL_PATTERNS, CONTAINER_PATTERNS, ORDINAL_MAP, STATE_FILTERS;
+var init_target_decomposer = __esm({
+  "src/ai/target-decomposer.ts"() {
+    NOISE_WORDS = /* @__PURE__ */ new Set(["the", "a", "an", "that", "this", "those", "these", "its", "my"]);
+    ELEMENT_TYPE_SYNONYMS = [
+      // Inputs / form
+      { type: "textarea", synonyms: ["text area", "text field", "text box"] },
+      { type: "input", synonyms: ["input", "field", "textbox"] },
+      { type: "select", synonyms: ["drop down", "dropdown", "combo box", "combobox", "select"] },
+      { type: "checkbox", synonyms: ["check box", "checkbox"] },
+      { type: "radio", synonyms: ["radio button", "radio"] },
+      // Buttons / links
+      // 'icon' is a soft hint — "settings icon" is usually a button but could
+      // also be a passive image; let the label match decide if the type fails.
+      { type: "button", synonyms: ["button"] },
+      { type: "button", synonyms: ["icon"], softHint: true },
+      { type: "link", synonyms: ["link", "hyperlink", "anchor"] },
+      // Navigation
+      { type: "tab", synonyms: ["tab"] },
+      { type: "menuitem", synonyms: ["menu item", "menuitem"] },
+      { type: "menu", synonyms: ["menu"] },
+      // Disclosure / accordion family
+      // Multi-word phrases (e.g., "details toggle") sit above the bare "toggle"
+      // synonym below so they win precedence. The single-word "details" is
+      // softHint because it commonly appears as label text ("Job details"); a
+      // label match should still work when nothing else flags this as
+      // a disclosure.
+      {
+        type: "disclosure",
+        synonyms: [
+          "details toggle",
+          "details panel",
+          "disclosure",
+          "accordion",
+          "collapsible",
+          "expander",
+          "expandable"
+        ]
+      },
+      {
+        type: "disclosure",
+        synonyms: ["expand", "collapse", "details"],
+        softHint: true
+      },
+      // Switch / toggle
+      // Plain "toggle" is a soft hint — "details toggle" already routed above to
+      // disclosure; in other contexts the matcher should fall back to a
+      // label-only retry rather than hard-pinning the type.
+      { type: "switch", synonyms: ["switch"] },
+      { type: "switch", synonyms: ["toggle"], softHint: true },
+      // Misc
+      { type: "slider", synonyms: ["slider"] },
+      { type: "label", synonyms: ["label"] },
+      { type: "heading", synonyms: ["heading"] }
+    ];
+    COMPILED_ELEMENT_TYPE_SYNONYMS = (() => {
+      const compiled = [];
+      for (const entry of ELEMENT_TYPE_SYNONYMS) {
+        for (const syn of entry.synonyms) {
+          compiled.push(compileSynonym(entry.type, syn, entry.softHint === true));
+        }
+      }
+      compiled.sort((a, b) => {
+        if (b.wordCount !== a.wordCount) return b.wordCount - a.wordCount;
+        return b.synonym.length - a.synonym.length;
+      });
+      return compiled;
+    })();
+    SPATIAL_PATTERNS = [
+      { pattern: /\bnext\s+to\s+(.+)$/i, relation: "near" },
+      { pattern: /\bbeside\s+(.+)$/i, relation: "near" },
+      { pattern: /\bnear\s+(.+)$/i, relation: "near" },
+      { pattern: /\babove\s+(.+)$/i, relation: "above" },
+      { pattern: /\bbelow\s+(.+)$/i, relation: "below" },
+      { pattern: /\bunder(?:neath)?\s+(.+)$/i, relation: "below" },
+      { pattern: /\bleft\s+of\s+(.+)$/i, relation: "leftOf" },
+      { pattern: /\bright\s+of\s+(.+)$/i, relation: "rightOf" },
+      { pattern: /\binside\s+(.+)$/i, relation: "inside" }
+    ];
+    CONTAINER_PATTERNS = [
+      /\b(?:in|within|inside)\s+(?:the\s+)?(.+?)(?:\s+(?:near|above|below|left of|right of|next to|beside)|\s*$)/i
+    ];
+    ORDINAL_MAP = {
+      first: 1,
+      second: 2,
+      third: 3,
+      fourth: 4,
+      fifth: 5,
+      sixth: 6,
+      seventh: 7,
+      eighth: 8,
+      ninth: 9,
+      tenth: 10,
+      last: -1,
+      "1st": 1,
+      "2nd": 2,
+      "3rd": 3,
+      "4th": 4,
+      "5th": 5,
+      "6th": 6,
+      "7th": 7,
+      "8th": 8,
+      "9th": 9,
+      "10th": 10
+    };
+    STATE_FILTERS = /* @__PURE__ */ new Set([
+      "disabled",
+      "enabled",
+      "active",
+      "selected",
+      "checked",
+      "focused",
+      "hidden",
+      "visible"
+    ]);
+  }
+});
+
+// src/ai/find.ts
+function find(query, engine, options) {
+  const startTime = performance.now();
+  const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
+  if (typeof opts.confidenceThreshold !== "number" || Number.isNaN(opts.confidenceThreshold)) {
+    opts.confidenceThreshold = DEFAULT_FIND_OPTIONS.confidenceThreshold;
+  }
+  let criteria;
+  let decomposed;
+  if (typeof query === "string") {
+    decomposed = decomposeTarget(query);
+    criteria = resolveCriteria(decomposed, engine, opts);
+  } else {
+    criteria = query;
+    const elementText = query.text || query.textContent || query.accessibleName || "";
+    decomposed = {
+      elementText,
+      elementType: query.type,
+      label: elementText || void 0,
+      ariaLabel: query.accessibleName || elementText || void 0,
+      placeholder: query.placeholder || elementText || void 0,
+      name: elementText || void 0
+    };
+  }
+  let searchResponse = engine.search(criteria);
+  let results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+  if (decomposed.stateFilter) {
+    results = applyStateFilter(results, decomposed.stateFilter);
+  }
+  if (decomposed.ordinal) {
+    results = applyOrdinalFilter(results, decomposed.ordinal);
+  }
+  let viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  if (viableResults.length === 0 && typeof query === "string" && isSoftTypeHint(decomposed) && criteria.type) {
+    const relaxed = { ...criteria };
+    delete relaxed.type;
+    searchResponse = engine.search(relaxed);
+    results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+    if (decomposed.stateFilter) {
+      results = applyStateFilter(results, decomposed.stateFilter);
+    }
+    if (decomposed.ordinal) {
+      results = applyOrdinalFilter(results, decomposed.ordinal);
+    }
+    viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+  }
+  if (viableResults.length === 0 && typeof query === "string" && criteria.type && decomposed.elementType) {
+    const cachedTypeLower = String(criteria.type).toLowerCase();
+    const cachedSummaries = engine.getCachedElementSummaries();
+    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
+    if (!typeIsPresent) {
+      const relaxed = { ...criteria };
+      delete relaxed.type;
+      searchResponse = engine.search(relaxed);
+      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
+      if (decomposed.stateFilter) {
+        results = applyStateFilter(results, decomposed.stateFilter);
+      }
+      if (decomposed.ordinal) {
+        results = applyOrdinalFilter(results, decomposed.ordinal);
+      }
+      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
+    }
+  }
+  const durationMs = performance.now() - startTime;
+  if (viableResults.length === 0) {
+    let alternatives2;
+    if (opts.debug) {
+      const debugResponse = engine.search({
+        ...criteria,
+        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
+      });
+      let debugResults = applyContextScoring(
+        debugResponse.results,
+        opts.context || {},
+        engine
       );
-    }
-    const observer = new MutationObserver((mutations) => {
-      let meaningful = false;
-      for (const m of mutations) {
-        if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-          meaningful = true;
-          break;
-        }
-        if (m.type === "attributes" || m.type === "characterData") {
-          meaningful = true;
-          break;
-        }
+      if (decomposed.stateFilter) {
+        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
       }
-      if (meaningful) recordActivity();
-    });
-    observer.observe(element, {
-      childList: true,
-      attributes: observeAttributes,
-      characterData: true,
-      subtree: observeSubtree
-    });
-    function pollBBox() {
-      if (cleaned) return;
-      const rect = element.getBoundingClientRect();
-      if (prevRect !== null && !rectsEqual(prevRect, rect)) {
-        recordActivity();
+      if (decomposed.ordinal) {
+        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
       }
-      prevRect = rect;
-      rafId = requestAnimationFrame(pollBBox);
+      debugResults.sort((a, b) => b.confidence - a.confidence);
+      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
     }
-    rafId = requestAnimationFrame(pollBBox);
-    timeoutId = setTimeout(() => {
-      cleanup();
-      resolve({ stable: false, elapsed: Date.now() - startTime });
-    }, timeout);
-    scheduleQuietCheck();
+    return {
+      found: false,
+      ambiguous: false,
+      reason: results.length > 0 ? `Best match confidence (${(results[0].confidence * 100).toFixed(0)}%) below threshold (${(opts.confidenceThreshold * 100).toFixed(0)}%)` : `No elements matching "${decomposed.elementText}" found`,
+      partialMatches: results.slice(0, opts.maxResults).map((r) => toCandidate(r)),
+      // Diagnostic: how many elements were considered before filtering.
+      // Helps agents distinguish "searched 200 elements, none matched" from
+      // "searched 10 elements (snapshot truncated?)".
+      consideredCount: searchResponse.results.length,
+      decomposed,
+      durationMs,
+      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
+    };
+  }
+  const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
+  if (isAmbiguous && !opts.pickFirst) {
+    const candidates = viableResults.slice(0, opts.maxResults).map((r) => toCandidate(r));
+    return {
+      found: true,
+      ambiguous: true,
+      candidates,
+      suggestion: generateDisambiguationSuggestion(candidates, decomposed),
+      decomposed,
+      durationMs
+    };
+  }
+  const best = viableResults[0];
+  const alternatives = viableResults.slice(1, opts.maxResults).map((r) => toCandidate(r));
+  return {
+    found: true,
+    ambiguous: false,
+    element: best.element,
+    elementId: best.element.id,
+    confidence: best.confidence,
+    matchReasons: best.matchReasons,
+    alternatives,
+    decomposed,
+    durationMs
+  };
+}
+function resolveCriteria(decomposed, engine, opts) {
+  const criteria = {
+    fuzzy: true,
+    fuzzyThreshold: opts.confidenceThreshold
+  };
+  if (decomposed.elementText) {
+    criteria.text = decomposed.elementText;
+  }
+  if (decomposed.elementType) {
+    criteria.type = decomposed.elementType;
+  }
+  if (decomposed.label && decomposed.label !== decomposed.elementText) {
+    criteria.accessibleName = decomposed.label;
+  } else if (decomposed.ariaLabel && decomposed.ariaLabel !== decomposed.elementText && !criteria.accessibleName) {
+    criteria.accessibleName = decomposed.ariaLabel;
+  }
+  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
+    criteria.placeholder = decomposed.placeholder;
+  }
+  if (decomposed.spatial) {
+    const refResult = engine.findBest({
+      text: decomposed.spatial.referenceDescription,
+      fuzzy: true,
+      fuzzyThreshold: 0.5
+    });
+    if (refResult && refResult.confidence >= 0.5) {
+      criteria.near = refResult.element.id;
+    }
+  }
+  if (decomposed.container) {
+    const containerResult = engine.findBest({
+      text: decomposed.container,
+      fuzzy: true,
+      fuzzyThreshold: 0.4
+    });
+    if (containerResult && containerResult.confidence >= 0.4) {
+      criteria.within = containerResult.element.id;
+    }
+  }
+  return criteria;
+}
+function applyContextScoring(results, context, engine) {
+  if (!context.activeModalId && !context.lastInteractedElement) {
+    return results;
+  }
+  return results.map((result) => {
+    let adjustedConfidence = result.confidence;
+    const extraReasons = [...result.matchReasons];
+    if (context.activeModalId) {
+      const inModal = isElementInContainer(result.element, context.activeModalId, engine);
+      if (!inModal) {
+        adjustedConfidence *= MODAL_PENALTY;
+        extraReasons.push("penalty: outside active modal");
+      } else {
+        extraReasons.push("boost: inside active modal");
+      }
+    }
+    if (context.lastInteractedElement) {
+      const nearLastInteracted = isNearElement(
+        result.element,
+        context.lastInteractedElement,
+        engine,
+        300
+      );
+      if (nearLastInteracted) {
+        adjustedConfidence = Math.min(1, adjustedConfidence + RECENCY_BONUS);
+        extraReasons.push("boost: near last interacted");
+      }
+    }
+    return {
+      ...result,
+      confidence: adjustedConfidence,
+      matchReasons: extraReasons
+    };
+  }).sort((a, b) => b.confidence - a.confidence);
+}
+function isElementInContainer(element, containerId, engine) {
+  if (element.parentContext && element.parentContext.includes(containerId)) {
+    return true;
+  }
+  const containerResults = engine.findByText(containerId, false);
+  if (containerResults.length === 0) return false;
+  const containerRect = containerResults[0].element.state.rect;
+  const elementRect = element.state.rect;
+  return elementRect.x >= containerRect.x && elementRect.y >= containerRect.y && elementRect.x + elementRect.width <= containerRect.x + containerRect.width && elementRect.y + elementRect.height <= containerRect.y + containerRect.height;
+}
+function isNearElement(element, referenceId, engine, maxDistance) {
+  const refResults = engine.findByText(referenceId, false);
+  if (refResults.length === 0) return false;
+  const refRect = refResults[0].element.state.rect;
+  const elRect = element.state.rect;
+  const dx = elRect.x + elRect.width / 2 - (refRect.x + refRect.width / 2);
+  const dy = elRect.y + elRect.height / 2 - (refRect.y + refRect.height / 2);
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  return distance <= maxDistance;
+}
+function applyStateFilter(results, stateFilter) {
+  return results.filter((r) => {
+    const state = r.element.state;
+    switch (stateFilter) {
+      case "disabled":
+        return !state.enabled;
+      case "enabled":
+        return state.enabled;
+      case "focused":
+        return state.focused;
+      case "visible":
+        return state.visible;
+      case "hidden":
+        return !state.visible;
+      case "checked":
+        return state.checked === true;
+      case "selected":
+        return state.ariaSelected === true;
+      case "active":
+        return state.focused || state.ariaSelected === true;
+      default:
+        return true;
+    }
   });
 }
-function rectsEqual(a, b, epsilon = 0.5) {
-  return Math.abs(a.x - b.x) < epsilon && Math.abs(a.y - b.y) < epsilon && Math.abs(a.width - b.width) < epsilon && Math.abs(a.height - b.height) < epsilon;
+function applyOrdinalFilter(results, ordinal) {
+  if (results.length === 0) return results;
+  const sorted = [...results].sort((a, b) => {
+    const aRect = a.element.state.rect;
+    const bRect = b.element.state.rect;
+    const yDiff = aRect.y - bRect.y;
+    if (Math.abs(yDiff) > 10) return yDiff;
+    return aRect.x - bRect.x;
+  });
+  if (ordinal === -1) {
+    return [sorted[sorted.length - 1]];
+  }
+  const index = ordinal - 1;
+  if (index >= 0 && index < sorted.length) {
+    return [sorted[index]];
+  }
+  return results;
 }
-var init_element_settling = __esm({
-  "src/idle/element-settling.ts"() {
+function toCandidate(result) {
+  return {
+    element: result.element,
+    elementId: result.element.id,
+    confidence: result.confidence,
+    matchReasons: result.matchReasons,
+    differentiator: generateDifferentiator(result.element)
+  };
+}
+function generateDifferentiator(element) {
+  const parts = [];
+  if (element.parentContext) {
+    parts.push(`in ${element.parentContext}`);
+  }
+  const rect = element.state.rect;
+  if (rect.y < 80) {
+    parts.push("at the top of the page");
+  } else if (rect.y > 800) {
+    parts.push("near the bottom of the page");
+  }
+  if (rect.x < 250) {
+    parts.push("in the left panel");
+  } else if (rect.x > 1e3) {
+    parts.push("in the right panel");
+  }
+  if (!element.state.enabled) {
+    parts.push("(disabled)");
+  }
+  if (element.state.focused) {
+    parts.push("(focused)");
+  }
+  if (element.semanticType && element.semanticType !== element.type) {
+    parts.push(`[${element.semanticType}]`);
+  }
+  return parts.length > 0 ? parts.join(", ") : `ID: ${element.id}`;
+}
+function generateDisambiguationSuggestion(candidates, decomposed) {
+  const lines = [`Found ${candidates.length} matching "${decomposed.elementText}" elements:`];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const desc = c.element.description || c.element.label || c.elementId;
+    lines.push(`  ${i + 1}. "${desc}" \u2014 ${c.differentiator} (${(c.confidence * 100).toFixed(0)}%)`);
+  }
+  lines.push("");
+  lines.push('Try adding spatial context: "... near X" or "... in the Y"');
+  return lines.join("\n");
+}
+var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
+var init_find = __esm({
+  "src/ai/find.ts"() {
+    init_target_decomposer();
+    DEFAULT_FIND_OPTIONS = {
+      context: {},
+      pickFirst: true,
+      confidenceThreshold: 0.5,
+      maxResults: 5,
+      debug: false
+    };
+    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
+    DEBUG_ALTERNATIVES_LIMIT = 3;
+    AMBIGUITY_GAP = 0.1;
+    MODAL_PENALTY = 0.3;
+    RECENCY_BONUS = 0.05;
   }
 });
 
-// src/idle/stuck-screen.ts
-var StuckScreenDetector;
-var init_stuck_screen = __esm({
-  "src/idle/stuck-screen.ts"() {
-    StuckScreenDetector = class {
-      constructor(detector, config = {}) {
-        this.detector = detector;
-        this.observationWindowMs = config.observationWindowMs ?? 3e3;
-        this.domMutationThreshold = config.domMutationThreshold ?? 3;
+// src/ai/form-diff.ts
+function captureFormSnapshot() {
+  if (typeof document === "undefined") {
+    return { forms: [], timestamp: Date.now() };
+  }
+  const forms = [];
+  const formElements = document.querySelectorAll("form");
+  const allInputs = document.querySelectorAll("input, textarea, select");
+  const inputsInForms = /* @__PURE__ */ new Set();
+  formElements.forEach((formEl) => {
+    const formInputs = [];
+    allInputs.forEach((input) => {
+      if (formEl.contains(input)) {
+        formInputs.push(input);
+        inputsInForms.add(input);
       }
-      /**
-       * Run a stuck-screen diagnosis.
-       *
-       * Takes two snapshots separated by the observation window and compares them
-       * to determine if the app is stuck, loading normally, idle, or in an
-       * ambiguous state.
-       */
-      async diagnose() {
-        const snap1 = this.captureSnapshot();
-        await new Promise((resolve) => setTimeout(resolve, this.observationWindowMs));
-        const snap2 = this.captureSnapshot();
-        const actualWindowMs = snap2.timestamp - snap1.timestamp;
-        const peakMutations = Math.max(snap1.recentDOMMutations, snap2.recentDOMMutations);
-        const domChanged = peakMutations >= this.domMutationThreshold || !snap1.domSettled || !snap2.domSettled;
-        const evidence = {
-          loadingIndicators: snap2.loadingIndicators,
-          domChanged,
-          domMutationCount: peakMutations,
-          networkBusy: !snap2.networkIdle,
-          pendingNetworkRequests: snap2.pendingNetworkRequests,
-          idleScoreStart: snap1.idleScore,
-          idleScoreEnd: snap2.idleScore
-        };
-        const hasLoadingIndicators = snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
-        const hadLoadingIndicators = snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
-        let verdict;
-        let confidence;
-        let summary;
-        const suggestions = [];
-        if (!hadLoadingIndicators) {
-          verdict = "idle";
-          confidence = 0.9;
-          summary = "No loading indicators detected. The app appears to be in a normal resting state.";
-        } else if (hasLoadingIndicators && !domChanged && snap2.networkIdle) {
-          verdict = "stuck";
-          confidence = 0.95;
-          const indicatorDesc = this.describeIndicators(snap2.loadingIndicators);
-          summary = `The app appears stuck. Loading indicators (${indicatorDesc}) have been visible throughout the ${Math.round(actualWindowMs / 1e3)}s observation window with no meaningful DOM changes and no pending network requests.`;
-          suggestions.push("Try refreshing the page.");
-          suggestions.push("Check the browser console for JavaScript errors.");
-          suggestions.push("Check if a required backend service is running.");
-        } else if (hasLoadingIndicators && !domChanged && !snap2.networkIdle) {
-          verdict = "stuck";
-          confidence = 0.7;
-          summary = `The app appears stuck. Loading indicators are visible with no DOM changes, but ${snap2.pendingNetworkRequests} network request(s) are still in flight. A network request may be hanging.`;
-          suggestions.push("Check if a network request is hanging (e.g., unresponsive API server).");
-          suggestions.push("Check the network tab for requests that have been pending too long.");
-          suggestions.push("Verify the server or API endpoint is reachable.");
-        } else if (hadLoadingIndicators && domChanged) {
-          verdict = "loading";
-          confidence = 0.85;
-          summary = `The app is loading. Loading indicators are visible and the DOM is actively changing (${peakMutations} recent mutations), indicating content is being rendered.`;
-        } else if (!hasLoadingIndicators && hadLoadingIndicators) {
-          verdict = "idle";
-          confidence = 0.8;
-          summary = "Loading indicators were present at the start but cleared during observation. The app has finished loading.";
-        } else {
-          verdict = "unknown";
-          confidence = 0.4;
-          summary = "The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.";
-          suggestions.push("Try running the diagnosis again with a longer observation window.");
-        }
-        return {
-          verdict,
-          confidence,
-          summary,
-          evidence,
-          observationWindowMs: actualWindowMs,
-          suggestions,
-          timestamp: Date.now()
-        };
-      }
-      captureSnapshot() {
-        const compositeStatus = this.detector.getStatus();
-        const loadingSig = compositeStatus.signals["loading-indicators"];
-        const domSig = compositeStatus.signals["dom"];
-        const networkSig = compositeStatus.signals["network"];
-        const loadingStatus = loadingSig?.status;
-        const domStatus = domSig?.status;
-        const networkStatus = networkSig?.status;
-        return {
-          loadingIndicators: loadingStatus?.indicators ?? [],
-          domSettled: domSig?.idle ?? true,
-          recentDOMMutations: domStatus?.recentMutationCount ?? 0,
-          networkIdle: networkSig?.idle ?? true,
-          pendingNetworkRequests: networkStatus?.pendingCount ?? 0,
-          idleScore: compositeStatus.idleScore,
-          timestamp: Date.now()
-        };
-      }
-      describeIndicators(indicators) {
-        if (indicators.length === 0) return "none";
-        const descriptions = indicators.slice(0, 3).map((ind) => {
-          if (ind.type === "animation") return `animation "${ind.details}"`;
-          if (ind.type === "cursor") return `cursor: ${ind.details}`;
-          if (ind.selector) return ind.selector;
-          return ind.element ?? ind.type;
-        });
-        const suffix = indicators.length > 3 ? ` +${indicators.length - 3} more` : "";
-        return descriptions.join(", ") + suffix;
-      }
+    });
+    const fields = buildFieldStates(formInputs);
+    const submitButton = formEl.querySelector(
+      'button[type="submit"], input[type="submit"]'
+    );
+    forms.push({
+      id: formEl.id || `form-${forms.length}`,
+      name: formEl.getAttribute("name") || void 0,
+      purpose: inferPurposeFromFields(fields),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      submitButton: submitButton?.id || void 0,
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  });
+  const orphanInputs = [];
+  allInputs.forEach((input) => {
+    if (!inputsInForms.has(input)) {
+      orphanInputs.push(input);
+    }
+  });
+  if (orphanInputs.length > 0) {
+    const fields = buildFieldStates(orphanInputs);
+    forms.push({
+      id: "implicit-form",
+      purpose: inferPurposeFromFields(fields),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  }
+  return {
+    forms,
+    timestamp: Date.now()
+  };
+}
+function diffFormSnapshots(before, after) {
+  const beforeFormIds = new Set(before.forms.map((f) => f.id));
+  const afterFormIds = new Set(after.forms.map((f) => f.id));
+  const formsAdded = after.forms.filter((f) => !beforeFormIds.has(f.id)).map((f) => f.id);
+  const formsRemoved = before.forms.filter((f) => !afterFormIds.has(f.id)).map((f) => f.id);
+  const beforeFields = buildFieldMap(before.forms);
+  const afterFields = buildFieldMap(after.forms);
+  const beforeFieldIds = new Set(beforeFields.keys());
+  const afterFieldIds = new Set(afterFields.keys());
+  const addedFields = [];
+  afterFieldIds.forEach((id) => {
+    if (!beforeFieldIds.has(id)) {
+      addedFields.push(id);
+    }
+  });
+  const removedFields = [];
+  beforeFieldIds.forEach((id) => {
+    if (!afterFieldIds.has(id)) {
+      removedFields.push(id);
+    }
+  });
+  const changedFields = [];
+  beforeFieldIds.forEach((id) => {
+    if (!afterFieldIds.has(id)) return;
+    const beforeField = beforeFields.get(id);
+    const afterField = afterFields.get(id);
+    const diff = diffFields(beforeField, afterField);
+    if (diff) {
+      changedFields.push(diff);
+    }
+  });
+  const timeDeltaMs = after.timestamp - before.timestamp;
+  const hasChanges = changedFields.length > 0 || addedFields.length > 0 || removedFields.length > 0 || formsAdded.length > 0 || formsRemoved.length > 0;
+  const summary = summarizeFormDiff({
+    changedFields,
+    addedFields,
+    removedFields,
+    formsAdded,
+    formsRemoved,
+    hasChanges
+  });
+  return {
+    changedFields,
+    addedFields,
+    removedFields,
+    formsAdded,
+    formsRemoved,
+    summary,
+    timeDeltaMs,
+    hasChanges
+  };
+}
+function summarizeFormDiff(diff) {
+  if (!diff.hasChanges) {
+    return "No changes detected";
+  }
+  const parts = [];
+  if (diff.formsAdded.length > 0) {
+    parts.push(`Forms added: ${diff.formsAdded.join(", ")}`);
+  }
+  if (diff.formsRemoved.length > 0) {
+    parts.push(`Forms removed: ${diff.formsRemoved.join(", ")}`);
+  }
+  for (const field of diff.changedFields) {
+    const fieldLabel = field.fieldName || field.fieldId;
+    const changeParts = [];
+    if (field.changes.value) {
+      const before = field.changes.value.before || "(empty)";
+      const after = field.changes.value.after || "(empty)";
+      changeParts.push(`value: "${before}" -> "${after}"`);
+    }
+    if (field.changes.checked) {
+      changeParts.push(
+        `checked: ${field.changes.checked.before} -> ${field.changes.checked.after}`
+      );
+    }
+    if (field.changes.selectedOptions) {
+      const before = field.changes.selectedOptions.before.join(", ") || "(none)";
+      const after = field.changes.selectedOptions.after.join(", ") || "(none)";
+      changeParts.push(`selected: [${before}] -> [${after}]`);
+    }
+    if (field.changes.validationError) {
+      const before = field.changes.validationError.before || "(none)";
+      const after = field.changes.validationError.after || "(none)";
+      changeParts.push(`error: "${before}" -> "${after}"`);
+    }
+    if (field.changes.isValid) {
+      changeParts.push(`valid: ${field.changes.isValid.before} -> ${field.changes.isValid.after}`);
+    }
+    if (field.changes.isDirty) {
+      changeParts.push(`dirty: ${field.changes.isDirty.before} -> ${field.changes.isDirty.after}`);
+    }
+    if (changeParts.length > 0) {
+      parts.push(`${fieldLabel}: ${changeParts.join(", ")}`);
+    }
+  }
+  if (diff.addedFields.length > 0) {
+    parts.push(`Fields added: ${diff.addedFields.join(", ")}`);
+  }
+  if (diff.removedFields.length > 0) {
+    parts.push(`Fields removed: ${diff.removedFields.join(", ")}`);
+  }
+  return parts.join("; ");
+}
+function buildFieldMap(forms) {
+  const map = /* @__PURE__ */ new Map();
+  for (const form of forms) {
+    for (const field of form.fields) {
+      map.set(field.id, field);
+    }
+  }
+  return map;
+}
+function diffFields(before, after) {
+  const changes = {};
+  if (before.value !== after.value) {
+    changes.value = { before: before.value, after: after.value };
+  }
+  if (before.checked !== after.checked && (before.checked !== void 0 || after.checked !== void 0)) {
+    changes.checked = {
+      before: before.checked ?? false,
+      after: after.checked ?? false
     };
   }
+  if (!arraysEqual(before.selectedOptions, after.selectedOptions)) {
+    changes.selectedOptions = {
+      before: before.selectedOptions ?? [],
+      after: after.selectedOptions ?? []
+    };
+  }
+  if (before.error !== after.error) {
+    changes.validationError = {
+      before: before.error,
+      after: after.error
+    };
+  }
+  if (before.isDirty !== after.isDirty) {
+    changes.isDirty = {
+      before: before.isDirty ?? false,
+      after: after.isDirty ?? false
+    };
+  }
+  if (before.valid !== after.valid) {
+    changes.isValid = {
+      before: before.valid,
+      after: after.valid
+    };
+  }
+  if (Object.keys(changes).length === 0) {
+    return null;
+  }
+  return {
+    fieldId: after.id,
+    fieldName: after.label || before.label,
+    fieldType: after.type,
+    changes
+  };
+}
+function arraysEqual(a, b) {
+  if (a === b) return true;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+function buildFieldStates(inputs) {
+  return inputs.map((el) => {
+    const isInput = el instanceof HTMLInputElement;
+    const isTextarea = el instanceof HTMLTextAreaElement;
+    const isSelect = el instanceof HTMLSelectElement;
+    let value = "";
+    let checked;
+    let selectedOptions;
+    let inputType = "text";
+    if (isInput) {
+      inputType = el.type || "text";
+      if (inputType === "checkbox" || inputType === "radio") {
+        checked = el.checked;
+        value = el.value;
+      } else {
+        value = el.value;
+      }
+    } else if (isTextarea) {
+      inputType = "textarea";
+      value = el.value;
+    } else if (isSelect) {
+      inputType = "select";
+      value = el.value;
+      selectedOptions = Array.from(el.selectedOptions).map((o) => o.value);
+    }
+    const validity = el.validity;
+    const valid = validity ? validity.valid : true;
+    const validationMessage = el.validationMessage || void 0;
+    const label = el.getAttribute("aria-label") || getLabelTextForElement(el) || el.getAttribute("placeholder") || el.id || el.getAttribute("name") || "";
+    const defaultValue = el.getAttribute("value") ?? "";
+    const isDirty = value !== defaultValue;
+    return {
+      id: el.id || el.getAttribute("name") || `field-${Math.random().toString(36).slice(2, 8)}`,
+      label,
+      type: inputType,
+      value,
+      valid,
+      error: validationMessage,
+      required: el.hasAttribute("required"),
+      touched: (value?.length ?? 0) > 0,
+      placeholder: el.getAttribute("placeholder") || void 0,
+      isDirty,
+      checked,
+      selectedOptions
+    };
+  });
+}
+function getLabelTextForElement(element) {
+  if (typeof document === "undefined") return void 0;
+  const id = element.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (label?.textContent?.trim()) return label.textContent.trim();
+  }
+  const parentLabel = element.closest("label");
+  if (parentLabel) {
+    const clone = parentLabel.cloneNode(true);
+    const inputs = clone.querySelectorAll("input, textarea, select");
+    inputs.forEach((inp) => inp.remove());
+    const text = clone.textContent?.trim();
+    if (text) return text;
+  }
+  return void 0;
+}
+function inferPurposeFromFields(fields) {
+  const labels = fields.map((f) => f.label.toLowerCase()).join(" ");
+  if (labels.includes("email") && labels.includes("password")) {
+    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
+      return "Registration";
+    }
+    return "Login";
+  }
+  if (labels.includes("search")) return "Search";
+  if (labels.includes("address") || labels.includes("city")) return "Address";
+  if (labels.includes("card") || labels.includes("payment")) return "Payment";
+  if (labels.includes("contact") || labels.includes("message")) return "Contact";
+  return "Form";
+}
+var init_form_diff = __esm({
+  "src/ai/form-diff.ts"() {
+  }
 });
 
-// src/idle/index.ts
-var idle_exports = {};
-__export(idle_exports, {
-  CompositeIdleDetector: () => CompositeIdleDetector,
-  DOMSettlingDetector: () => DOMSettlingDetector,
-  FormMutationDetector: () => FormMutationDetector,
-  LoadingIndicatorDetector: () => LoadingIndicatorDetector,
-  NetworkIdleDetector: () => NetworkIdleDetector,
-  StuckScreenDetector: () => StuckScreenDetector,
-  waitForElementStable: () => waitForElementStable
+// src/ai/validation-scanner.ts
+function scanValidationErrors(elements2) {
+  const errors = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const { id, element } of elements2) {
+    if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLSelectElement)) {
+      continue;
+    }
+    const result = detectFieldError(id, element);
+    if (result && !seen.has(id)) {
+      errors.push(result);
+      seen.add(id);
+    }
+  }
+  return errors;
+}
+function detectFieldError(fieldId, element) {
+  if ("validity" in element && !element.validity.valid) {
+    return {
+      fieldId,
+      message: element.validationMessage || "Invalid value",
+      confidence: 1,
+      source: "html5"
+    };
+  }
+  if (element.getAttribute("aria-invalid") === "true") {
+    const errorMessage = getAriaErrorMessage(element);
+    return {
+      fieldId,
+      message: errorMessage || "",
+      confidence: 0.95,
+      source: "aria"
+    };
+  }
+  const adjacentError = findAdjacentError(element);
+  if (adjacentError) {
+    return {
+      fieldId,
+      message: adjacentError,
+      confidence: 0.8,
+      source: "adjacent-element"
+    };
+  }
+  if (hasErrorClass(element)) {
+    return {
+      fieldId,
+      message: "",
+      confidence: 0.6,
+      source: "css-class"
+    };
+  }
+  return null;
+}
+function getAriaErrorMessage(element) {
+  const errorMsgId = element.getAttribute("aria-errormessage");
+  if (errorMsgId) {
+    const errorEl = document.getElementById(errorMsgId);
+    if (errorEl?.textContent?.trim()) {
+      return errorEl.textContent.trim();
+    }
+  }
+  const describedById = element.getAttribute("aria-describedby");
+  if (describedById) {
+    const ids = describedById.split(/\s+/);
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el?.textContent?.trim()) {
+        const text = el.textContent.trim();
+        if (el.getAttribute("role") === "alert" || hasErrorClass(el) || text.length < 200) {
+          return text;
+        }
+      }
+    }
+  }
+  return null;
+}
+function findAdjacentError(element) {
+  const container = element.closest(
+    '.form-group, .form-field, .field, .form-item, [class*="field"], [class*="form-group"], [class*="FormControl"], .MuiFormControl-root, .ant-form-item, .chakra-form-control'
+  ) || element.parentElement;
+  if (!container) return null;
+  for (const selector of ERROR_CONTAINER_SELECTORS) {
+    try {
+      const errorEl = container.querySelector(selector);
+      if (errorEl && errorEl !== element) {
+        const text = errorEl.textContent?.trim();
+        if (text) return text;
+      }
+    } catch {
+    }
+  }
+  const next = element.nextElementSibling;
+  if (next && hasErrorClass(next)) {
+    const text = next.textContent?.trim();
+    if (text) return text;
+  }
+  return null;
+}
+function hasErrorClass(element) {
+  for (const cls of INPUT_ERROR_CLASSES) {
+    if (element.classList.contains(cls)) return true;
+  }
+  if (element.getAttribute("data-invalid") === "true" || element.getAttribute("data-error") !== null) {
+    return true;
+  }
+  return false;
+}
+var ERROR_CONTAINER_SELECTORS, INPUT_ERROR_CLASSES;
+var init_validation_scanner = __esm({
+  "src/ai/validation-scanner.ts"() {
+    ERROR_CONTAINER_SELECTORS = [
+      ".error",
+      ".field-error",
+      ".form-error",
+      ".invalid-feedback",
+      ".help-block.error",
+      ".error-message",
+      ".validation-error",
+      ".form-text.text-danger",
+      '[role="alert"]',
+      // Material UI
+      ".MuiFormHelperText-root.Mui-error",
+      // Ant Design
+      ".ant-form-item-explain-error",
+      // Chakra UI
+      ".chakra-form__error-message",
+      // Tailwind UI common patterns
+      ".text-red-500",
+      ".text-red-600",
+      ".text-destructive"
+    ];
+    INPUT_ERROR_CLASSES = [
+      "is-invalid",
+      "has-error",
+      "error",
+      "invalid",
+      "field-error",
+      "border-red-500",
+      "border-destructive",
+      "Mui-error",
+      "ant-input-status-error"
+    ];
+  }
 });
-var init_idle = __esm({
-  "src/idle/index.ts"() {
-    init_network_idle();
-    init_dom_settling();
-    init_loading_indicators();
-    init_form_mutation();
-    init_composite_idle();
-    init_element_settling();
-    init_stuck_screen();
+
+// src/ai/form-discovery.ts
+function discoverForms(elements2) {
+  const validationErrors = scanValidationErrors(
+    elements2.map((el) => ({ id: el.id, element: el.element }))
+  );
+  const errorsByField = new Map(validationErrors.map((e) => [e.fieldId, e]));
+  const formElements = elements2.filter((el) => el.type === "form");
+  const inputTypes = /* @__PURE__ */ new Set([
+    "input",
+    "textarea",
+    "select",
+    "checkbox",
+    "radio",
+    "textbox",
+    "combobox",
+    "switch",
+    "slider",
+    "listbox"
+  ]);
+  const allInputs = elements2.filter((el) => inputTypes.has(el.type));
+  const forms = [];
+  if (formElements.length > 0) {
+    for (const formEl of formElements) {
+      const formDom = formEl.element;
+      const formInputs = allInputs.filter((input) => formDom.contains(input.element));
+      const fields = buildFormFields(formInputs, errorsByField);
+      const submitButton = elements2.find(
+        (el) => el.type === "button" && formDom.contains(el.element) && (el.element.getAttribute("type") === "submit" || el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/))
+      );
+      forms.push({
+        id: formEl.id,
+        name: formEl.label || formDom.getAttribute("name") || void 0,
+        purpose: inferFormPurpose(formInputs),
+        fields,
+        isValid: fields.every((f) => f.valid),
+        submitButton: submitButton?.id,
+        isDirty: fields.some((f) => f.isDirty)
+      });
+    }
+  }
+  const inputsInForms = new Set(
+    formElements.flatMap(
+      (f) => allInputs.filter((i) => f.element.contains(i.element)).map((i) => i.id)
+    )
+  );
+  const orphanInputs = allInputs.filter((i) => !inputsInForms.has(i.id));
+  if (orphanInputs.length > 0) {
+    const fields = buildFormFields(orphanInputs, errorsByField);
+    const submitButton = elements2.find(
+      (el) => el.type === "button" && !formElements.some((f) => f.element.contains(el.element)) && el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/)
+    );
+    forms.push({
+      id: "implicit-form",
+      purpose: inferFormPurpose(orphanInputs),
+      fields,
+      isValid: fields.every((f) => f.valid),
+      submitButton: submitButton?.id,
+      isDirty: fields.some((f) => f.isDirty)
+    });
+  }
+  const totalFields = forms.reduce((sum, f) => sum + f.fields.length, 0);
+  const totalErrors = forms.reduce((sum, f) => sum + f.fields.filter((ff) => !ff.valid).length, 0);
+  const filledFields = forms.reduce(
+    (sum, f) => sum + f.fields.filter((ff) => ff.value !== "" || ff.checked).length,
+    0
+  );
+  const summaryParts = [`${forms.length} form(s), ${totalFields} field(s)`];
+  if (filledFields > 0) summaryParts.push(`${filledFields} filled`);
+  if (totalErrors > 0) summaryParts.push(`${totalErrors} error(s)`);
+  return {
+    forms,
+    summary: summaryParts.join(", "),
+    timestamp: Date.now()
+  };
+}
+function getLabelText(element) {
+  if (typeof document === "undefined") return void 0;
+  const id = element.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (label?.textContent?.trim()) return label.textContent.trim();
+  }
+  const parentLabel = element.closest("label");
+  if (parentLabel) {
+    const clone = parentLabel.cloneNode(true);
+    const inputs = clone.querySelectorAll("input, textarea, select");
+    inputs.forEach((inp) => inp.remove());
+    const text = clone.textContent?.trim();
+    if (text) return text;
+  }
+  return void 0;
+}
+function buildFormFields(inputs, errorsByField) {
+  return inputs.map((input) => {
+    const state = input.getState();
+    const el = input.element;
+    const detectedError = errorsByField.get(input.id);
+    let valid = true;
+    let errorMsg;
+    let errorSource;
+    if (state.validationState && !state.validationState.valid) {
+      valid = false;
+      errorMsg = state.validationState.validationMessage;
+      errorSource = "html5";
+    } else if (detectedError) {
+      valid = false;
+      errorMsg = detectedError.message || void 0;
+      errorSource = detectedError.source;
+    }
+    const defaultValue = el.getAttribute("value") ?? "";
+    const isDirty = state.value !== void 0 && state.value !== defaultValue;
+    return {
+      id: input.id,
+      label: el.getAttribute("aria-label") || input.label || getLabelText(el) || el.getAttribute("placeholder") || input.id,
+      type: el instanceof HTMLInputElement ? el.type : input.type,
+      value: state.value ?? "",
+      valid,
+      error: errorMsg,
+      errorSource,
+      required: state.required ?? false,
+      touched: state.focused || (state.value?.length ?? 0) > 0,
+      placeholder: el.getAttribute("placeholder") || void 0,
+      isDirty,
+      checked: state.checked,
+      selectedOptions: state.selectedOptions,
+      constraints: state.constraints
+    };
+  });
+}
+function inferFormPurpose(fields) {
+  const labels = fields.map(
+    (f) => (f.element.getAttribute("aria-label") || f.label || f.element.getAttribute("name") || "").toLowerCase()
+  ).join(" ");
+  if (labels.includes("email") && labels.includes("password")) {
+    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
+      return "Registration";
+    }
+    return "Login";
+  }
+  if (labels.includes("search")) return "Search";
+  if (labels.includes("address") || labels.includes("city")) return "Address";
+  if (labels.includes("card") || labels.includes("payment")) return "Payment";
+  if (labels.includes("contact") || labels.includes("message")) return "Contact";
+  return "Form";
+}
+var init_form_discovery = __esm({
+  "src/ai/form-discovery.ts"() {
+    init_validation_scanner();
   }
 });
 
@@ -6244,7 +6332,7 @@ function detectForms(elements2) {
   );
   const defaultForm = {
     id: "detected-form",
-    purpose: inferFormPurpose(formElements),
+    purpose: inferFormPurpose2(formElements),
     fields: formElements.map((el) => ({
       id: el.id,
       label: el.labelText || el.accessibleName || el.placeholder || el.id,
@@ -6264,7 +6352,7 @@ function detectForms(elements2) {
   }
   return forms;
 }
-function inferFormPurpose(fields) {
+function inferFormPurpose2(fields) {
   const labels = fields.map(
     (f) => (f.labelText || f.accessibleName || f.placeholder || "").toLowerCase()
   );
@@ -6378,302 +6466,6 @@ var init_summary_generator = __esm({
       includeFocused: true,
       verbosity: "normal"
     };
-  }
-});
-
-// src/ai/validation-scanner.ts
-function scanValidationErrors(elements2) {
-  const errors = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const { id, element } of elements2) {
-    if (!(element instanceof HTMLInputElement) && !(element instanceof HTMLTextAreaElement) && !(element instanceof HTMLSelectElement)) {
-      continue;
-    }
-    const result = detectFieldError(id, element);
-    if (result && !seen.has(id)) {
-      errors.push(result);
-      seen.add(id);
-    }
-  }
-  return errors;
-}
-function detectFieldError(fieldId, element) {
-  if ("validity" in element && !element.validity.valid) {
-    return {
-      fieldId,
-      message: element.validationMessage || "Invalid value",
-      confidence: 1,
-      source: "html5"
-    };
-  }
-  if (element.getAttribute("aria-invalid") === "true") {
-    const errorMessage = getAriaErrorMessage(element);
-    return {
-      fieldId,
-      message: errorMessage || "",
-      confidence: 0.95,
-      source: "aria"
-    };
-  }
-  const adjacentError = findAdjacentError(element);
-  if (adjacentError) {
-    return {
-      fieldId,
-      message: adjacentError,
-      confidence: 0.8,
-      source: "adjacent-element"
-    };
-  }
-  if (hasErrorClass(element)) {
-    return {
-      fieldId,
-      message: "",
-      confidence: 0.6,
-      source: "css-class"
-    };
-  }
-  return null;
-}
-function getAriaErrorMessage(element) {
-  const errorMsgId = element.getAttribute("aria-errormessage");
-  if (errorMsgId) {
-    const errorEl = document.getElementById(errorMsgId);
-    if (errorEl?.textContent?.trim()) {
-      return errorEl.textContent.trim();
-    }
-  }
-  const describedById = element.getAttribute("aria-describedby");
-  if (describedById) {
-    const ids = describedById.split(/\s+/);
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el?.textContent?.trim()) {
-        const text = el.textContent.trim();
-        if (el.getAttribute("role") === "alert" || hasErrorClass(el) || text.length < 200) {
-          return text;
-        }
-      }
-    }
-  }
-  return null;
-}
-function findAdjacentError(element) {
-  const container = element.closest(
-    '.form-group, .form-field, .field, .form-item, [class*="field"], [class*="form-group"], [class*="FormControl"], .MuiFormControl-root, .ant-form-item, .chakra-form-control'
-  ) || element.parentElement;
-  if (!container) return null;
-  for (const selector of ERROR_CONTAINER_SELECTORS) {
-    try {
-      const errorEl = container.querySelector(selector);
-      if (errorEl && errorEl !== element) {
-        const text = errorEl.textContent?.trim();
-        if (text) return text;
-      }
-    } catch {
-    }
-  }
-  const next = element.nextElementSibling;
-  if (next && hasErrorClass(next)) {
-    const text = next.textContent?.trim();
-    if (text) return text;
-  }
-  return null;
-}
-function hasErrorClass(element) {
-  for (const cls of INPUT_ERROR_CLASSES) {
-    if (element.classList.contains(cls)) return true;
-  }
-  if (element.getAttribute("data-invalid") === "true" || element.getAttribute("data-error") !== null) {
-    return true;
-  }
-  return false;
-}
-var ERROR_CONTAINER_SELECTORS, INPUT_ERROR_CLASSES;
-var init_validation_scanner = __esm({
-  "src/ai/validation-scanner.ts"() {
-    ERROR_CONTAINER_SELECTORS = [
-      ".error",
-      ".field-error",
-      ".form-error",
-      ".invalid-feedback",
-      ".help-block.error",
-      ".error-message",
-      ".validation-error",
-      ".form-text.text-danger",
-      '[role="alert"]',
-      // Material UI
-      ".MuiFormHelperText-root.Mui-error",
-      // Ant Design
-      ".ant-form-item-explain-error",
-      // Chakra UI
-      ".chakra-form__error-message",
-      // Tailwind UI common patterns
-      ".text-red-500",
-      ".text-red-600",
-      ".text-destructive"
-    ];
-    INPUT_ERROR_CLASSES = [
-      "is-invalid",
-      "has-error",
-      "error",
-      "invalid",
-      "field-error",
-      "border-red-500",
-      "border-destructive",
-      "Mui-error",
-      "ant-input-status-error"
-    ];
-  }
-});
-
-// src/ai/form-discovery.ts
-function discoverForms(elements2) {
-  const validationErrors = scanValidationErrors(
-    elements2.map((el) => ({ id: el.id, element: el.element }))
-  );
-  const errorsByField = new Map(validationErrors.map((e) => [e.fieldId, e]));
-  const formElements = elements2.filter((el) => el.type === "form");
-  const inputTypes = /* @__PURE__ */ new Set([
-    "input",
-    "textarea",
-    "select",
-    "checkbox",
-    "radio",
-    "textbox",
-    "combobox",
-    "switch",
-    "slider",
-    "listbox"
-  ]);
-  const allInputs = elements2.filter((el) => inputTypes.has(el.type));
-  const forms = [];
-  if (formElements.length > 0) {
-    for (const formEl of formElements) {
-      const formDom = formEl.element;
-      const formInputs = allInputs.filter((input) => formDom.contains(input.element));
-      const fields = buildFormFields(formInputs, errorsByField);
-      const submitButton = elements2.find(
-        (el) => el.type === "button" && formDom.contains(el.element) && (el.element.getAttribute("type") === "submit" || el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/))
-      );
-      forms.push({
-        id: formEl.id,
-        name: formEl.label || formDom.getAttribute("name") || void 0,
-        purpose: inferFormPurpose2(formInputs),
-        fields,
-        isValid: fields.every((f) => f.valid),
-        submitButton: submitButton?.id,
-        isDirty: fields.some((f) => f.isDirty)
-      });
-    }
-  }
-  const inputsInForms = new Set(
-    formElements.flatMap(
-      (f) => allInputs.filter((i) => f.element.contains(i.element)).map((i) => i.id)
-    )
-  );
-  const orphanInputs = allInputs.filter((i) => !inputsInForms.has(i.id));
-  if (orphanInputs.length > 0) {
-    const fields = buildFormFields(orphanInputs, errorsByField);
-    const submitButton = elements2.find(
-      (el) => el.type === "button" && !formElements.some((f) => f.element.contains(el.element)) && el.element.textContent?.toLowerCase().match(/submit|save|send|continue|sign in|log in/)
-    );
-    forms.push({
-      id: "implicit-form",
-      purpose: inferFormPurpose2(orphanInputs),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      submitButton: submitButton?.id,
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  }
-  const totalFields = forms.reduce((sum, f) => sum + f.fields.length, 0);
-  const totalErrors = forms.reduce((sum, f) => sum + f.fields.filter((ff) => !ff.valid).length, 0);
-  const filledFields = forms.reduce(
-    (sum, f) => sum + f.fields.filter((ff) => ff.value !== "" || ff.checked).length,
-    0
-  );
-  const summaryParts = [`${forms.length} form(s), ${totalFields} field(s)`];
-  if (filledFields > 0) summaryParts.push(`${filledFields} filled`);
-  if (totalErrors > 0) summaryParts.push(`${totalErrors} error(s)`);
-  return {
-    forms,
-    summary: summaryParts.join(", "),
-    timestamp: Date.now()
-  };
-}
-function getLabelText(element) {
-  if (typeof document === "undefined") return void 0;
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-  const parentLabel = element.closest("label");
-  if (parentLabel) {
-    const clone = parentLabel.cloneNode(true);
-    const inputs = clone.querySelectorAll("input, textarea, select");
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-  return void 0;
-}
-function buildFormFields(inputs, errorsByField) {
-  return inputs.map((input) => {
-    const state = input.getState();
-    const el = input.element;
-    const detectedError = errorsByField.get(input.id);
-    let valid = true;
-    let errorMsg;
-    let errorSource;
-    if (state.validationState && !state.validationState.valid) {
-      valid = false;
-      errorMsg = state.validationState.validationMessage;
-      errorSource = "html5";
-    } else if (detectedError) {
-      valid = false;
-      errorMsg = detectedError.message || void 0;
-      errorSource = detectedError.source;
-    }
-    const defaultValue = el.getAttribute("value") ?? "";
-    const isDirty = state.value !== void 0 && state.value !== defaultValue;
-    return {
-      id: input.id,
-      label: el.getAttribute("aria-label") || input.label || getLabelText(el) || el.getAttribute("placeholder") || input.id,
-      type: el instanceof HTMLInputElement ? el.type : input.type,
-      value: state.value ?? "",
-      valid,
-      error: errorMsg,
-      errorSource,
-      required: state.required ?? false,
-      touched: state.focused || (state.value?.length ?? 0) > 0,
-      placeholder: el.getAttribute("placeholder") || void 0,
-      isDirty,
-      checked: state.checked,
-      selectedOptions: state.selectedOptions,
-      constraints: state.constraints
-    };
-  });
-}
-function inferFormPurpose2(fields) {
-  const labels = fields.map(
-    (f) => (f.element.getAttribute("aria-label") || f.label || f.element.getAttribute("name") || "").toLowerCase()
-  ).join(" ");
-  if (labels.includes("email") && labels.includes("password")) {
-    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
-      return "Registration";
-    }
-    return "Login";
-  }
-  if (labels.includes("search")) return "Search";
-  if (labels.includes("address") || labels.includes("city")) return "Address";
-  if (labels.includes("card") || labels.includes("payment")) return "Payment";
-  if (labels.includes("contact") || labels.includes("message")) return "Contact";
-  return "Form";
-}
-var init_form_discovery = __esm({
-  "src/ai/form-discovery.ts"() {
-    init_validation_scanner();
   }
 });
 
@@ -7915,570 +7707,6 @@ var init_nl_action_executor = __esm({
         );
       }
     };
-  }
-});
-
-// src/ai/target-decomposer.ts
-function compileSynonym(type, synonym, softHint) {
-  const tokens = synonym.trim().split(/\s+/);
-  const escaped = tokens.map((t) => escapeRegExp(t)).join("\\s+");
-  return {
-    pattern: new RegExp(`\\b${escaped}\\b`, "i"),
-    type,
-    softHint,
-    synonym,
-    wordCount: tokens.length
-  };
-}
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function isSoftTypeHint(decomposed) {
-  return decomposed.__softTypeHint === true;
-}
-function decomposeTarget(description) {
-  let remaining = description.trim();
-  const result = { elementText: "" };
-  remaining = extractStateFilter(remaining, result);
-  remaining = extractSpatialRelation(remaining, result);
-  if (!result.spatial || result.spatial.relation !== "inside") {
-    remaining = extractContainer(remaining, result);
-  } else {
-    result.container = result.spatial.referenceDescription;
-    result.spatial = void 0;
-  }
-  remaining = extractOrdinal(remaining, result);
-  remaining = extractElementType(remaining, result);
-  result.elementText = cleanElementText(remaining);
-  if (result.elementText) {
-    result.label = result.elementText;
-    result.ariaLabel = result.elementText;
-    result.placeholder = result.elementText;
-    result.name = result.elementText;
-  }
-  return result;
-}
-function extractStateFilter(text, result) {
-  for (const state of STATE_FILTERS) {
-    const regex = new RegExp(`\\b${state}\\b`, "i");
-    if (regex.test(text)) {
-      result.stateFilter = state;
-      return text.replace(regex, " ").trim();
-    }
-  }
-  return text;
-}
-function extractSpatialRelation(text, result) {
-  for (const { pattern, relation } of SPATIAL_PATTERNS) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      result.spatial = {
-        relation,
-        referenceDescription: cleanReferenceDescription(match[1])
-      };
-      return text.slice(0, match.index).trim();
-    }
-  }
-  return text;
-}
-function extractContainer(text, result) {
-  for (const pattern of CONTAINER_PATTERNS) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      const container = cleanReferenceDescription(match[1]);
-      if (container.length > 2 && !isPartOfCompoundWord(text, match.index)) {
-        result.container = container;
-        return text.slice(0, match.index).trim();
-      }
-    }
-  }
-  return text;
-}
-function isPartOfCompoundWord(text, matchIndex, _word) {
-  const before = text.slice(0, matchIndex).trim().toLowerCase();
-  const compoundPrefixes = ["sign", "log", "opt", "check", "plug", "fill", "zoom", "fade", "drop"];
-  return compoundPrefixes.some((prefix) => before.endsWith(prefix));
-}
-function extractOrdinal(text, result) {
-  for (const [word, value] of Object.entries(ORDINAL_MAP)) {
-    const regex = new RegExp(`\\b${word}\\b`, "i");
-    if (regex.test(text)) {
-      result.ordinal = value;
-      return text.replace(regex, " ").trim();
-    }
-  }
-  const numericMatch = text.match(/\b(\d+)(?:st|nd|rd|th)\b/i);
-  if (numericMatch) {
-    result.ordinal = parseInt(numericMatch[1], 10);
-    return text.replace(numericMatch[0], " ").trim();
-  }
-  return text;
-}
-function extractElementType(text, result) {
-  for (const entry of COMPILED_ELEMENT_TYPE_SYNONYMS) {
-    if (entry.pattern.test(text)) {
-      result.elementType = entry.type;
-      if (entry.softHint) {
-        result.__softTypeHint = true;
-      }
-      return text.replace(entry.pattern, " ").trim();
-    }
-  }
-  return text;
-}
-function cleanElementText(text) {
-  const words = text.split(/\s+/).filter((w) => !NOISE_WORDS.has(w.toLowerCase()));
-  return words.join(" ").replace(/\s+/g, " ").replace(/^[\s,]+|[\s,]+$/g, "").trim();
-}
-function cleanReferenceDescription(text) {
-  return text.replace(/^(?:the|a|an)\s+/i, "").replace(/\s+/g, " ").trim();
-}
-var NOISE_WORDS, ELEMENT_TYPE_SYNONYMS, COMPILED_ELEMENT_TYPE_SYNONYMS, SPATIAL_PATTERNS, CONTAINER_PATTERNS, ORDINAL_MAP, STATE_FILTERS;
-var init_target_decomposer = __esm({
-  "src/ai/target-decomposer.ts"() {
-    NOISE_WORDS = /* @__PURE__ */ new Set(["the", "a", "an", "that", "this", "those", "these", "its", "my"]);
-    ELEMENT_TYPE_SYNONYMS = [
-      // Inputs / form
-      { type: "textarea", synonyms: ["text area", "text field", "text box"] },
-      { type: "input", synonyms: ["input", "field", "textbox"] },
-      { type: "select", synonyms: ["drop down", "dropdown", "combo box", "combobox", "select"] },
-      { type: "checkbox", synonyms: ["check box", "checkbox"] },
-      { type: "radio", synonyms: ["radio button", "radio"] },
-      // Buttons / links
-      // 'icon' is a soft hint — "settings icon" is usually a button but could
-      // also be a passive image; let the label match decide if the type fails.
-      { type: "button", synonyms: ["button"] },
-      { type: "button", synonyms: ["icon"], softHint: true },
-      { type: "link", synonyms: ["link", "hyperlink", "anchor"] },
-      // Navigation
-      { type: "tab", synonyms: ["tab"] },
-      { type: "menuitem", synonyms: ["menu item", "menuitem"] },
-      { type: "menu", synonyms: ["menu"] },
-      // Disclosure / accordion family
-      // Multi-word phrases (e.g., "details toggle") sit above the bare "toggle"
-      // synonym below so they win precedence. The single-word "details" is
-      // softHint because it commonly appears as label text ("Job details"); a
-      // label match should still work when nothing else flags this as
-      // a disclosure.
-      {
-        type: "disclosure",
-        synonyms: [
-          "details toggle",
-          "details panel",
-          "disclosure",
-          "accordion",
-          "collapsible",
-          "expander",
-          "expandable"
-        ]
-      },
-      {
-        type: "disclosure",
-        synonyms: ["expand", "collapse", "details"],
-        softHint: true
-      },
-      // Switch / toggle
-      // Plain "toggle" is a soft hint — "details toggle" already routed above to
-      // disclosure; in other contexts the matcher should fall back to a
-      // label-only retry rather than hard-pinning the type.
-      { type: "switch", synonyms: ["switch"] },
-      { type: "switch", synonyms: ["toggle"], softHint: true },
-      // Misc
-      { type: "slider", synonyms: ["slider"] },
-      { type: "label", synonyms: ["label"] },
-      { type: "heading", synonyms: ["heading"] }
-    ];
-    COMPILED_ELEMENT_TYPE_SYNONYMS = (() => {
-      const compiled = [];
-      for (const entry of ELEMENT_TYPE_SYNONYMS) {
-        for (const syn of entry.synonyms) {
-          compiled.push(compileSynonym(entry.type, syn, entry.softHint === true));
-        }
-      }
-      compiled.sort((a, b) => {
-        if (b.wordCount !== a.wordCount) return b.wordCount - a.wordCount;
-        return b.synonym.length - a.synonym.length;
-      });
-      return compiled;
-    })();
-    SPATIAL_PATTERNS = [
-      { pattern: /\bnext\s+to\s+(.+)$/i, relation: "near" },
-      { pattern: /\bbeside\s+(.+)$/i, relation: "near" },
-      { pattern: /\bnear\s+(.+)$/i, relation: "near" },
-      { pattern: /\babove\s+(.+)$/i, relation: "above" },
-      { pattern: /\bbelow\s+(.+)$/i, relation: "below" },
-      { pattern: /\bunder(?:neath)?\s+(.+)$/i, relation: "below" },
-      { pattern: /\bleft\s+of\s+(.+)$/i, relation: "leftOf" },
-      { pattern: /\bright\s+of\s+(.+)$/i, relation: "rightOf" },
-      { pattern: /\binside\s+(.+)$/i, relation: "inside" }
-    ];
-    CONTAINER_PATTERNS = [
-      /\b(?:in|within|inside)\s+(?:the\s+)?(.+?)(?:\s+(?:near|above|below|left of|right of|next to|beside)|\s*$)/i
-    ];
-    ORDINAL_MAP = {
-      first: 1,
-      second: 2,
-      third: 3,
-      fourth: 4,
-      fifth: 5,
-      sixth: 6,
-      seventh: 7,
-      eighth: 8,
-      ninth: 9,
-      tenth: 10,
-      last: -1,
-      "1st": 1,
-      "2nd": 2,
-      "3rd": 3,
-      "4th": 4,
-      "5th": 5,
-      "6th": 6,
-      "7th": 7,
-      "8th": 8,
-      "9th": 9,
-      "10th": 10
-    };
-    STATE_FILTERS = /* @__PURE__ */ new Set([
-      "disabled",
-      "enabled",
-      "active",
-      "selected",
-      "checked",
-      "focused",
-      "hidden",
-      "visible"
-    ]);
-  }
-});
-
-// src/ai/find.ts
-function find(query, engine, options) {
-  const startTime = performance.now();
-  const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
-  if (typeof opts.confidenceThreshold !== "number" || Number.isNaN(opts.confidenceThreshold)) {
-    opts.confidenceThreshold = DEFAULT_FIND_OPTIONS.confidenceThreshold;
-  }
-  let criteria;
-  let decomposed;
-  if (typeof query === "string") {
-    decomposed = decomposeTarget(query);
-    criteria = resolveCriteria(decomposed, engine, opts);
-  } else {
-    criteria = query;
-    const elementText = query.text || query.textContent || query.accessibleName || "";
-    decomposed = {
-      elementText,
-      elementType: query.type,
-      label: elementText || void 0,
-      ariaLabel: query.accessibleName || elementText || void 0,
-      placeholder: query.placeholder || elementText || void 0,
-      name: elementText || void 0
-    };
-  }
-  let searchResponse = engine.search(criteria);
-  let results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-  if (decomposed.stateFilter) {
-    results = applyStateFilter(results, decomposed.stateFilter);
-  }
-  if (decomposed.ordinal) {
-    results = applyOrdinalFilter(results, decomposed.ordinal);
-  }
-  let viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-  if (viableResults.length === 0 && typeof query === "string" && isSoftTypeHint(decomposed) && criteria.type) {
-    const relaxed = { ...criteria };
-    delete relaxed.type;
-    searchResponse = engine.search(relaxed);
-    results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-    if (decomposed.stateFilter) {
-      results = applyStateFilter(results, decomposed.stateFilter);
-    }
-    if (decomposed.ordinal) {
-      results = applyOrdinalFilter(results, decomposed.ordinal);
-    }
-    viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-  }
-  if (viableResults.length === 0 && typeof query === "string" && criteria.type && decomposed.elementType) {
-    const cachedTypeLower = String(criteria.type).toLowerCase();
-    const cachedSummaries = engine.getCachedElementSummaries();
-    const typeIsPresent = cachedSummaries.some((el) => el.type.toLowerCase() === cachedTypeLower);
-    if (!typeIsPresent) {
-      const relaxed = { ...criteria };
-      delete relaxed.type;
-      searchResponse = engine.search(relaxed);
-      results = applyContextScoring(searchResponse.results, opts.context || {}, engine);
-      if (decomposed.stateFilter) {
-        results = applyStateFilter(results, decomposed.stateFilter);
-      }
-      if (decomposed.ordinal) {
-        results = applyOrdinalFilter(results, decomposed.ordinal);
-      }
-      viableResults = results.filter((r) => r.confidence >= opts.confidenceThreshold);
-    }
-  }
-  const durationMs = performance.now() - startTime;
-  if (viableResults.length === 0) {
-    let alternatives2;
-    if (opts.debug) {
-      const debugResponse = engine.search({
-        ...criteria,
-        fuzzyThreshold: DEBUG_ALTERNATIVES_THRESHOLD
-      });
-      let debugResults = applyContextScoring(
-        debugResponse.results,
-        opts.context || {},
-        engine
-      );
-      if (decomposed.stateFilter) {
-        debugResults = applyStateFilter(debugResults, decomposed.stateFilter);
-      }
-      if (decomposed.ordinal) {
-        debugResults = applyOrdinalFilter(debugResults, decomposed.ordinal);
-      }
-      debugResults.sort((a, b) => b.confidence - a.confidence);
-      alternatives2 = debugResults.slice(0, DEBUG_ALTERNATIVES_LIMIT).map((r) => toCandidate(r));
-    }
-    return {
-      found: false,
-      ambiguous: false,
-      reason: results.length > 0 ? `Best match confidence (${(results[0].confidence * 100).toFixed(0)}%) below threshold (${(opts.confidenceThreshold * 100).toFixed(0)}%)` : `No elements matching "${decomposed.elementText}" found`,
-      partialMatches: results.slice(0, opts.maxResults).map((r) => toCandidate(r)),
-      // Diagnostic: how many elements were considered before filtering.
-      // Helps agents distinguish "searched 200 elements, none matched" from
-      // "searched 10 elements (snapshot truncated?)".
-      consideredCount: searchResponse.results.length,
-      decomposed,
-      durationMs,
-      ...alternatives2 !== void 0 ? { alternatives: alternatives2 } : {}
-    };
-  }
-  const isAmbiguous = viableResults.length >= 2 && viableResults[0].confidence - viableResults[1].confidence < AMBIGUITY_GAP;
-  if (isAmbiguous && !opts.pickFirst) {
-    const candidates = viableResults.slice(0, opts.maxResults).map((r) => toCandidate(r));
-    return {
-      found: true,
-      ambiguous: true,
-      candidates,
-      suggestion: generateDisambiguationSuggestion(candidates, decomposed),
-      decomposed,
-      durationMs
-    };
-  }
-  const best = viableResults[0];
-  const alternatives = viableResults.slice(1, opts.maxResults).map((r) => toCandidate(r));
-  return {
-    found: true,
-    ambiguous: false,
-    element: best.element,
-    elementId: best.element.id,
-    confidence: best.confidence,
-    matchReasons: best.matchReasons,
-    alternatives,
-    decomposed,
-    durationMs
-  };
-}
-function resolveCriteria(decomposed, engine, opts) {
-  const criteria = {
-    fuzzy: true,
-    fuzzyThreshold: opts.confidenceThreshold
-  };
-  if (decomposed.elementText) {
-    criteria.text = decomposed.elementText;
-  }
-  if (decomposed.elementType) {
-    criteria.type = decomposed.elementType;
-  }
-  if (decomposed.label && decomposed.label !== decomposed.elementText) {
-    criteria.accessibleName = decomposed.label;
-  } else if (decomposed.ariaLabel && decomposed.ariaLabel !== decomposed.elementText && !criteria.accessibleName) {
-    criteria.accessibleName = decomposed.ariaLabel;
-  }
-  if (decomposed.placeholder && decomposed.placeholder !== decomposed.elementText) {
-    criteria.placeholder = decomposed.placeholder;
-  }
-  if (decomposed.spatial) {
-    const refResult = engine.findBest({
-      text: decomposed.spatial.referenceDescription,
-      fuzzy: true,
-      fuzzyThreshold: 0.5
-    });
-    if (refResult && refResult.confidence >= 0.5) {
-      criteria.near = refResult.element.id;
-    }
-  }
-  if (decomposed.container) {
-    const containerResult = engine.findBest({
-      text: decomposed.container,
-      fuzzy: true,
-      fuzzyThreshold: 0.4
-    });
-    if (containerResult && containerResult.confidence >= 0.4) {
-      criteria.within = containerResult.element.id;
-    }
-  }
-  return criteria;
-}
-function applyContextScoring(results, context, engine) {
-  if (!context.activeModalId && !context.lastInteractedElement) {
-    return results;
-  }
-  return results.map((result) => {
-    let adjustedConfidence = result.confidence;
-    const extraReasons = [...result.matchReasons];
-    if (context.activeModalId) {
-      const inModal = isElementInContainer(result.element, context.activeModalId, engine);
-      if (!inModal) {
-        adjustedConfidence *= MODAL_PENALTY;
-        extraReasons.push("penalty: outside active modal");
-      } else {
-        extraReasons.push("boost: inside active modal");
-      }
-    }
-    if (context.lastInteractedElement) {
-      const nearLastInteracted = isNearElement(
-        result.element,
-        context.lastInteractedElement,
-        engine,
-        300
-      );
-      if (nearLastInteracted) {
-        adjustedConfidence = Math.min(1, adjustedConfidence + RECENCY_BONUS);
-        extraReasons.push("boost: near last interacted");
-      }
-    }
-    return {
-      ...result,
-      confidence: adjustedConfidence,
-      matchReasons: extraReasons
-    };
-  }).sort((a, b) => b.confidence - a.confidence);
-}
-function isElementInContainer(element, containerId, engine) {
-  if (element.parentContext && element.parentContext.includes(containerId)) {
-    return true;
-  }
-  const containerResults = engine.findByText(containerId, false);
-  if (containerResults.length === 0) return false;
-  const containerRect = containerResults[0].element.state.rect;
-  const elementRect = element.state.rect;
-  return elementRect.x >= containerRect.x && elementRect.y >= containerRect.y && elementRect.x + elementRect.width <= containerRect.x + containerRect.width && elementRect.y + elementRect.height <= containerRect.y + containerRect.height;
-}
-function isNearElement(element, referenceId, engine, maxDistance) {
-  const refResults = engine.findByText(referenceId, false);
-  if (refResults.length === 0) return false;
-  const refRect = refResults[0].element.state.rect;
-  const elRect = element.state.rect;
-  const dx = elRect.x + elRect.width / 2 - (refRect.x + refRect.width / 2);
-  const dy = elRect.y + elRect.height / 2 - (refRect.y + refRect.height / 2);
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  return distance <= maxDistance;
-}
-function applyStateFilter(results, stateFilter) {
-  return results.filter((r) => {
-    const state = r.element.state;
-    switch (stateFilter) {
-      case "disabled":
-        return !state.enabled;
-      case "enabled":
-        return state.enabled;
-      case "focused":
-        return state.focused;
-      case "visible":
-        return state.visible;
-      case "hidden":
-        return !state.visible;
-      case "checked":
-        return state.checked === true;
-      case "selected":
-        return state.ariaSelected === true;
-      case "active":
-        return state.focused || state.ariaSelected === true;
-      default:
-        return true;
-    }
-  });
-}
-function applyOrdinalFilter(results, ordinal) {
-  if (results.length === 0) return results;
-  const sorted = [...results].sort((a, b) => {
-    const aRect = a.element.state.rect;
-    const bRect = b.element.state.rect;
-    const yDiff = aRect.y - bRect.y;
-    if (Math.abs(yDiff) > 10) return yDiff;
-    return aRect.x - bRect.x;
-  });
-  if (ordinal === -1) {
-    return [sorted[sorted.length - 1]];
-  }
-  const index = ordinal - 1;
-  if (index >= 0 && index < sorted.length) {
-    return [sorted[index]];
-  }
-  return results;
-}
-function toCandidate(result) {
-  return {
-    element: result.element,
-    elementId: result.element.id,
-    confidence: result.confidence,
-    matchReasons: result.matchReasons,
-    differentiator: generateDifferentiator(result.element)
-  };
-}
-function generateDifferentiator(element) {
-  const parts = [];
-  if (element.parentContext) {
-    parts.push(`in ${element.parentContext}`);
-  }
-  const rect = element.state.rect;
-  if (rect.y < 80) {
-    parts.push("at the top of the page");
-  } else if (rect.y > 800) {
-    parts.push("near the bottom of the page");
-  }
-  if (rect.x < 250) {
-    parts.push("in the left panel");
-  } else if (rect.x > 1e3) {
-    parts.push("in the right panel");
-  }
-  if (!element.state.enabled) {
-    parts.push("(disabled)");
-  }
-  if (element.state.focused) {
-    parts.push("(focused)");
-  }
-  if (element.semanticType && element.semanticType !== element.type) {
-    parts.push(`[${element.semanticType}]`);
-  }
-  return parts.length > 0 ? parts.join(", ") : `ID: ${element.id}`;
-}
-function generateDisambiguationSuggestion(candidates, decomposed) {
-  const lines = [`Found ${candidates.length} matching "${decomposed.elementText}" elements:`];
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i];
-    const desc = c.element.description || c.element.label || c.elementId;
-    lines.push(`  ${i + 1}. "${desc}" \u2014 ${c.differentiator} (${(c.confidence * 100).toFixed(0)}%)`);
-  }
-  lines.push("");
-  lines.push('Try adding spatial context: "... near X" or "... in the Y"');
-  return lines.join("\n");
-}
-var DEFAULT_FIND_OPTIONS, DEBUG_ALTERNATIVES_THRESHOLD, DEBUG_ALTERNATIVES_LIMIT, AMBIGUITY_GAP, MODAL_PENALTY, RECENCY_BONUS;
-var init_find = __esm({
-  "src/ai/find.ts"() {
-    init_target_decomposer();
-    DEFAULT_FIND_OPTIONS = {
-      context: {},
-      pickFirst: true,
-      confidenceThreshold: 0.5,
-      maxResults: 5,
-      debug: false
-    };
-    DEBUG_ALTERNATIVES_THRESHOLD = 0.01;
-    DEBUG_ALTERNATIVES_LIMIT = 3;
-    AMBIGUITY_GAP = 0.1;
-    MODAL_PENALTY = 0.3;
-    RECENCY_BONUS = 0.05;
   }
 });
 
@@ -13615,309 +12843,6 @@ var init_design_inspector = __esm({
   }
 });
 
-// src/ai/form-diff.ts
-function captureFormSnapshot() {
-  if (typeof document === "undefined") {
-    return { forms: [], timestamp: Date.now() };
-  }
-  const forms = [];
-  const formElements = document.querySelectorAll("form");
-  const allInputs = document.querySelectorAll("input, textarea, select");
-  const inputsInForms = /* @__PURE__ */ new Set();
-  formElements.forEach((formEl) => {
-    const formInputs = [];
-    allInputs.forEach((input) => {
-      if (formEl.contains(input)) {
-        formInputs.push(input);
-        inputsInForms.add(input);
-      }
-    });
-    const fields = buildFieldStates(formInputs);
-    const submitButton = formEl.querySelector(
-      'button[type="submit"], input[type="submit"]'
-    );
-    forms.push({
-      id: formEl.id || `form-${forms.length}`,
-      name: formEl.getAttribute("name") || void 0,
-      purpose: inferPurposeFromFields(fields),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      submitButton: submitButton?.id || void 0,
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  });
-  const orphanInputs = [];
-  allInputs.forEach((input) => {
-    if (!inputsInForms.has(input)) {
-      orphanInputs.push(input);
-    }
-  });
-  if (orphanInputs.length > 0) {
-    const fields = buildFieldStates(orphanInputs);
-    forms.push({
-      id: "implicit-form",
-      purpose: inferPurposeFromFields(fields),
-      fields,
-      isValid: fields.every((f) => f.valid),
-      isDirty: fields.some((f) => f.isDirty)
-    });
-  }
-  return {
-    forms,
-    timestamp: Date.now()
-  };
-}
-function diffFormSnapshots(before, after) {
-  const beforeFormIds = new Set(before.forms.map((f) => f.id));
-  const afterFormIds = new Set(after.forms.map((f) => f.id));
-  const formsAdded = after.forms.filter((f) => !beforeFormIds.has(f.id)).map((f) => f.id);
-  const formsRemoved = before.forms.filter((f) => !afterFormIds.has(f.id)).map((f) => f.id);
-  const beforeFields = buildFieldMap(before.forms);
-  const afterFields = buildFieldMap(after.forms);
-  const beforeFieldIds = new Set(beforeFields.keys());
-  const afterFieldIds = new Set(afterFields.keys());
-  const addedFields = [];
-  afterFieldIds.forEach((id) => {
-    if (!beforeFieldIds.has(id)) {
-      addedFields.push(id);
-    }
-  });
-  const removedFields = [];
-  beforeFieldIds.forEach((id) => {
-    if (!afterFieldIds.has(id)) {
-      removedFields.push(id);
-    }
-  });
-  const changedFields = [];
-  beforeFieldIds.forEach((id) => {
-    if (!afterFieldIds.has(id)) return;
-    const beforeField = beforeFields.get(id);
-    const afterField = afterFields.get(id);
-    const diff = diffFields(beforeField, afterField);
-    if (diff) {
-      changedFields.push(diff);
-    }
-  });
-  const timeDeltaMs = after.timestamp - before.timestamp;
-  const hasChanges = changedFields.length > 0 || addedFields.length > 0 || removedFields.length > 0 || formsAdded.length > 0 || formsRemoved.length > 0;
-  const summary = summarizeFormDiff({
-    changedFields,
-    addedFields,
-    removedFields,
-    formsAdded,
-    formsRemoved,
-    hasChanges
-  });
-  return {
-    changedFields,
-    addedFields,
-    removedFields,
-    formsAdded,
-    formsRemoved,
-    summary,
-    timeDeltaMs,
-    hasChanges
-  };
-}
-function summarizeFormDiff(diff) {
-  if (!diff.hasChanges) {
-    return "No changes detected";
-  }
-  const parts = [];
-  if (diff.formsAdded.length > 0) {
-    parts.push(`Forms added: ${diff.formsAdded.join(", ")}`);
-  }
-  if (diff.formsRemoved.length > 0) {
-    parts.push(`Forms removed: ${diff.formsRemoved.join(", ")}`);
-  }
-  for (const field of diff.changedFields) {
-    const fieldLabel = field.fieldName || field.fieldId;
-    const changeParts = [];
-    if (field.changes.value) {
-      const before = field.changes.value.before || "(empty)";
-      const after = field.changes.value.after || "(empty)";
-      changeParts.push(`value: "${before}" -> "${after}"`);
-    }
-    if (field.changes.checked) {
-      changeParts.push(
-        `checked: ${field.changes.checked.before} -> ${field.changes.checked.after}`
-      );
-    }
-    if (field.changes.selectedOptions) {
-      const before = field.changes.selectedOptions.before.join(", ") || "(none)";
-      const after = field.changes.selectedOptions.after.join(", ") || "(none)";
-      changeParts.push(`selected: [${before}] -> [${after}]`);
-    }
-    if (field.changes.validationError) {
-      const before = field.changes.validationError.before || "(none)";
-      const after = field.changes.validationError.after || "(none)";
-      changeParts.push(`error: "${before}" -> "${after}"`);
-    }
-    if (field.changes.isValid) {
-      changeParts.push(`valid: ${field.changes.isValid.before} -> ${field.changes.isValid.after}`);
-    }
-    if (field.changes.isDirty) {
-      changeParts.push(`dirty: ${field.changes.isDirty.before} -> ${field.changes.isDirty.after}`);
-    }
-    if (changeParts.length > 0) {
-      parts.push(`${fieldLabel}: ${changeParts.join(", ")}`);
-    }
-  }
-  if (diff.addedFields.length > 0) {
-    parts.push(`Fields added: ${diff.addedFields.join(", ")}`);
-  }
-  if (diff.removedFields.length > 0) {
-    parts.push(`Fields removed: ${diff.removedFields.join(", ")}`);
-  }
-  return parts.join("; ");
-}
-function buildFieldMap(forms) {
-  const map = /* @__PURE__ */ new Map();
-  for (const form of forms) {
-    for (const field of form.fields) {
-      map.set(field.id, field);
-    }
-  }
-  return map;
-}
-function diffFields(before, after) {
-  const changes = {};
-  if (before.value !== after.value) {
-    changes.value = { before: before.value, after: after.value };
-  }
-  if (before.checked !== after.checked && (before.checked !== void 0 || after.checked !== void 0)) {
-    changes.checked = {
-      before: before.checked ?? false,
-      after: after.checked ?? false
-    };
-  }
-  if (!arraysEqual(before.selectedOptions, after.selectedOptions)) {
-    changes.selectedOptions = {
-      before: before.selectedOptions ?? [],
-      after: after.selectedOptions ?? []
-    };
-  }
-  if (before.error !== after.error) {
-    changes.validationError = {
-      before: before.error,
-      after: after.error
-    };
-  }
-  if (before.isDirty !== after.isDirty) {
-    changes.isDirty = {
-      before: before.isDirty ?? false,
-      after: after.isDirty ?? false
-    };
-  }
-  if (before.valid !== after.valid) {
-    changes.isValid = {
-      before: before.valid,
-      after: after.valid
-    };
-  }
-  if (Object.keys(changes).length === 0) {
-    return null;
-  }
-  return {
-    fieldId: after.id,
-    fieldName: after.label || before.label,
-    fieldType: after.type,
-    changes
-  };
-}
-function arraysEqual(a, b) {
-  if (a === b) return true;
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-function buildFieldStates(inputs) {
-  return inputs.map((el) => {
-    const isInput = el instanceof HTMLInputElement;
-    const isTextarea = el instanceof HTMLTextAreaElement;
-    const isSelect = el instanceof HTMLSelectElement;
-    let value = "";
-    let checked;
-    let selectedOptions;
-    let inputType = "text";
-    if (isInput) {
-      inputType = el.type || "text";
-      if (inputType === "checkbox" || inputType === "radio") {
-        checked = el.checked;
-        value = el.value;
-      } else {
-        value = el.value;
-      }
-    } else if (isTextarea) {
-      inputType = "textarea";
-      value = el.value;
-    } else if (isSelect) {
-      inputType = "select";
-      value = el.value;
-      selectedOptions = Array.from(el.selectedOptions).map((o) => o.value);
-    }
-    const validity = el.validity;
-    const valid = validity ? validity.valid : true;
-    const validationMessage = el.validationMessage || void 0;
-    const label = el.getAttribute("aria-label") || getLabelTextForElement(el) || el.getAttribute("placeholder") || el.id || el.getAttribute("name") || "";
-    const defaultValue = el.getAttribute("value") ?? "";
-    const isDirty = value !== defaultValue;
-    return {
-      id: el.id || el.getAttribute("name") || `field-${Math.random().toString(36).slice(2, 8)}`,
-      label,
-      type: inputType,
-      value,
-      valid,
-      error: validationMessage,
-      required: el.hasAttribute("required"),
-      touched: (value?.length ?? 0) > 0,
-      placeholder: el.getAttribute("placeholder") || void 0,
-      isDirty,
-      checked,
-      selectedOptions
-    };
-  });
-}
-function getLabelTextForElement(element) {
-  if (typeof document === "undefined") return void 0;
-  const id = element.id;
-  if (id) {
-    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
-  }
-  const parentLabel = element.closest("label");
-  if (parentLabel) {
-    const clone = parentLabel.cloneNode(true);
-    const inputs = clone.querySelectorAll("input, textarea, select");
-    inputs.forEach((inp) => inp.remove());
-    const text = clone.textContent?.trim();
-    if (text) return text;
-  }
-  return void 0;
-}
-function inferPurposeFromFields(fields) {
-  const labels = fields.map((f) => f.label.toLowerCase()).join(" ");
-  if (labels.includes("email") && labels.includes("password")) {
-    if (labels.includes("confirm") || labels.includes("name") || labels.includes("register")) {
-      return "Registration";
-    }
-    return "Login";
-  }
-  if (labels.includes("search")) return "Search";
-  if (labels.includes("address") || labels.includes("city")) return "Address";
-  if (labels.includes("card") || labels.includes("payment")) return "Payment";
-  if (labels.includes("contact") || labels.includes("message")) return "Contact";
-  return "Form";
-}
-var init_form_diff = __esm({
-  "src/ai/form-diff.ts"() {
-  }
-});
-
 // src/ai/media-queries.ts
 function createMediaFindRequest(overrides = {}) {
   return {
@@ -15070,6 +13995,1300 @@ var init_ai = __esm({
   }
 });
 
+// src/idle/network-idle.ts
+var NetworkIdleDetector;
+var init_network_idle = __esm({
+  "src/idle/network-idle.ts"() {
+    NetworkIdleDetector = class {
+      constructor(config = {}) {
+        this.name = "network";
+        this.pending = /* @__PURE__ */ new Map();
+        this.nextId = 0;
+        this.idleTimer = null;
+        this._isIdle = true;
+        this.listeners = [];
+        this.installed = false;
+        // Saved originals for cleanup (standalone mode only)
+        this.originalFetch = null;
+        this.originalXHROpen = null;
+        this.originalXHRSend = null;
+        // Tracker-driven mode
+        this.tracker = null;
+        this.trackerUnsubscribe = null;
+        this.weight = config.weight ?? 0.9;
+        this.debounceMs = config.debounceMs ?? 500;
+        this.ignorePatterns = (config.ignorePatterns ?? []).map((p) => new RegExp(p));
+        this.trackXHR = config.trackXHR ?? true;
+        this.tracker = config.tracker ?? null;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        if (this.tracker) {
+          this.installTrackerSubscription();
+        } else {
+          this.installFetchInterceptor();
+          if (this.trackXHR) {
+            this.installXHRInterceptor();
+          }
+        }
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        if (this.trackerUnsubscribe) {
+          this.trackerUnsubscribe();
+          this.trackerUnsubscribe = null;
+        } else {
+          if (this.originalFetch) {
+            globalThis.fetch = this.originalFetch;
+            this.originalFetch = null;
+          }
+          if (this.originalXHROpen) {
+            XMLHttpRequest.prototype.open = this.originalXHROpen;
+            this.originalXHROpen = null;
+          }
+          if (this.originalXHRSend) {
+            XMLHttpRequest.prototype.send = this.originalXHRSend;
+            this.originalXHRSend = null;
+          }
+        }
+        if (this.idleTimer) {
+          clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        this.pending.clear();
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isIdle;
+      }
+      getStatus() {
+        const now = Date.now();
+        const pendingRequests = [];
+        for (const tracked of this.pending.values()) {
+          pendingRequests.push({
+            url: tracked.url,
+            method: tracked.method,
+            startedAt: tracked.startedAt,
+            durationMs: now - tracked.startedAt
+          });
+        }
+        return {
+          idle: this._isIdle,
+          pendingCount: this.pending.size,
+          pendingRequests,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Network idle timeout after ${timeout}ms. ${this.pending.size} requests still pending.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      /**
+       * Subscribe to a NetworkRequestTracker's events instead of patching
+       * fetch/XHR directly. The idle detector only cares about request
+       * start/end — not the full request metadata.
+       */
+      installTrackerSubscription() {
+        this.trackerUnsubscribe = this.tracker.onEvent((event) => {
+          const url = event.entry.request.url;
+          const method = event.entry.request.method;
+          if (this.shouldIgnore(url)) return;
+          if (event.type === "request-start") {
+            this.trackRequest(url, method);
+          } else {
+            let matchedId = null;
+            for (const [id, tracked] of this.pending) {
+              if (tracked.url === url && tracked.method === method) {
+                matchedId = id;
+                break;
+              }
+            }
+            if (matchedId !== null) {
+              const statusCode = event.type === "request-error" ? event.entry.response?.statusCode ?? 0 : event.entry.response?.statusCode;
+              this.completeRequest(matchedId, statusCode);
+            }
+          }
+        });
+      }
+      shouldIgnore(url) {
+        return this.ignorePatterns.some((re) => re.test(url));
+      }
+      trackRequest(url, method) {
+        const id = this.nextId++;
+        this.pending.set(id, { url, method, startedAt: Date.now() });
+        if (this.idleTimer) {
+          clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        if (this._isIdle) {
+          this._isIdle = false;
+          this.notifyTransition();
+        }
+        this.onRequestStart?.({
+          url,
+          method,
+          pendingCount: this.pending.size
+        });
+        return id;
+      }
+      completeRequest(id, status) {
+        const tracked = this.pending.get(id);
+        if (!tracked) return;
+        this.pending.delete(id);
+        this.onRequestEnd?.({
+          url: tracked.url,
+          method: tracked.method,
+          status,
+          durationMs: Date.now() - tracked.startedAt,
+          pendingCount: this.pending.size
+        });
+        if (this.pending.size === 0) {
+          this.scheduleIdle();
+        }
+      }
+      scheduleIdle() {
+        if (this.idleTimer) clearTimeout(this.idleTimer);
+        this.idleTimer = setTimeout(() => {
+          this.idleTimer = null;
+          if (this.pending.size === 0 && !this._isIdle) {
+            this._isIdle = true;
+            this.notifyTransition();
+          }
+        }, this.debounceMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isIdle, status);
+          } catch {
+          }
+        }
+      }
+      installFetchInterceptor() {
+        this.originalFetch = globalThis.fetch;
+        const self = this;
+        const original = this.originalFetch;
+        globalThis.fetch = function(input, init) {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const method = init?.method?.toUpperCase() || "GET";
+          if (self.shouldIgnore(url)) {
+            return original.call(globalThis, input, init);
+          }
+          const id = self.trackRequest(url, method);
+          return original.call(globalThis, input, init).then(
+            (response) => {
+              self.completeRequest(id, response.status);
+              return response;
+            },
+            (error) => {
+              self.completeRequest(id, 0);
+              throw error;
+            }
+          );
+        };
+      }
+      installXHRInterceptor() {
+        this.originalXHROpen = XMLHttpRequest.prototype.open;
+        this.originalXHRSend = XMLHttpRequest.prototype.send;
+        const self = this;
+        XMLHttpRequest.prototype.open = function(method, url, async, username, password) {
+          this.__uiBridgeMethod = method;
+          this.__uiBridgeUrl = typeof url === "string" ? url : url.href;
+          return self.originalXHROpen.call(this, method, url, async ?? true, username, password);
+        };
+        XMLHttpRequest.prototype.send = function(body) {
+          const xhr = this;
+          const url = xhr.__uiBridgeUrl || "";
+          const method = (xhr.__uiBridgeMethod || "GET").toUpperCase();
+          if (self.shouldIgnore(url)) {
+            return self.originalXHRSend.call(this, body);
+          }
+          const id = self.trackRequest(url, method);
+          xhr.__uiBridgeTrackId = id;
+          xhr.addEventListener("loadend", () => {
+            self.completeRequest(id, xhr.status);
+          });
+          return self.originalXHRSend.call(this, body);
+        };
+      }
+    };
+  }
+});
+
+// src/idle/dom-settling.ts
+var DOMSettlingDetector;
+var init_dom_settling = __esm({
+  "src/idle/dom-settling.ts"() {
+    DOMSettlingDetector = class {
+      constructor(config = {}) {
+        this.name = "dom";
+        this.observer = null;
+        this.lastMutationAt = 0;
+        this.recentMutations = [];
+        // timestamps of recent mutations
+        this.settleTimer = null;
+        this._isSettled = true;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.8;
+        this.settleMs = config.settleMs ?? 300;
+        this.root = config.root;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        const root = this.root ?? document.body;
+        this.observer = new MutationObserver((mutations) => {
+          const now = Date.now();
+          this.lastMutationAt = now;
+          this.recentMutations.push(now);
+          const cutoff = now - 1e3;
+          this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
+          let meaningfulCount = 0;
+          for (const m of mutations) {
+            if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+              meaningfulCount++;
+            } else if (m.type === "attributes") {
+              meaningfulCount++;
+            }
+          }
+          if (meaningfulCount === 0) return;
+          if (this._isSettled) {
+            this._isSettled = false;
+            this.notifyTransition();
+          }
+          this.resetSettleTimer();
+        });
+        this.observer.observe(root, {
+          childList: true,
+          attributes: true,
+          characterData: true,
+          subtree: true
+        });
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        this.observer?.disconnect();
+        this.observer = null;
+        if (this.settleTimer) {
+          clearTimeout(this.settleTimer);
+          this.settleTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isSettled;
+      }
+      getStatus() {
+        const now = Date.now();
+        const cutoff = now - 1e3;
+        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
+        return {
+          idle: this._isSettled,
+          settled: this._isSettled,
+          lastMutationAt: this.lastMutationAt,
+          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
+          recentMutationCount: recentCount,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.settled) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `DOM settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      resetSettleTimer() {
+        if (this.settleTimer) clearTimeout(this.settleTimer);
+        this.settleTimer = setTimeout(() => {
+          this.settleTimer = null;
+          if (!this._isSettled) {
+            this._isSettled = true;
+            this.notifyTransition();
+          }
+        }, this.settleMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isSettled, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/loading-indicators.ts
+var DEFAULT_LOADING_SELECTORS, LOADING_ANIMATION_KEYWORDS, LoadingIndicatorDetector;
+var init_loading_indicators = __esm({
+  "src/idle/loading-indicators.ts"() {
+    init_class_name();
+    DEFAULT_LOADING_SELECTORS = [
+      // ARIA
+      '[aria-busy="true"]',
+      '[role="progressbar"]',
+      // Common class conventions
+      ".loading",
+      ".spinner",
+      ".skeleton",
+      ".shimmer",
+      ".loader",
+      ".pending",
+      '[class*="loading"]',
+      '[class*="spinner"]',
+      '[class*="skeleton"]',
+      '[class*="shimmer"]',
+      // HTML elements
+      'progress:not([value="100"]):not([value="1"])',
+      // Framework-specific (popular libraries)
+      ".MuiCircularProgress-root",
+      ".MuiLinearProgress-root",
+      ".MuiSkeleton-root",
+      ".ant-spin",
+      ".ant-skeleton",
+      ".chakra-spinner",
+      // Data attributes
+      '[data-loading="true"]',
+      '[data-pending="true"]',
+      '[data-state="loading"]'
+    ];
+    LOADING_ANIMATION_KEYWORDS = [
+      "spin",
+      "rotate",
+      "pulse",
+      "shimmer",
+      "bounce",
+      "skeleton",
+      "loading",
+      "progress",
+      "indeterminate"
+    ];
+    LoadingIndicatorDetector = class {
+      constructor(config = {}) {
+        this.name = "loading-indicators";
+        this.observer = null;
+        this._indicators = [];
+        this._isIdle = true;
+        this.scanTimer = null;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.7;
+        this.selectors = [...DEFAULT_LOADING_SELECTORS, ...config.additionalSelectors ?? []];
+        this.checkAnimations = config.checkAnimations ?? true;
+        this.checkCursor = config.checkCursor ?? true;
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        this.scan();
+        this.observer = new MutationObserver(() => {
+          if (this.scanTimer) clearTimeout(this.scanTimer);
+          this.scanTimer = setTimeout(() => {
+            this.scanTimer = null;
+            this.scan();
+          }, 100);
+        });
+        this.observer.observe(document.body, {
+          childList: true,
+          attributes: true,
+          subtree: true,
+          attributeFilter: ["class", "aria-busy", "data-loading", "data-pending", "data-state"]
+        });
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        this.observer?.disconnect();
+        this.observer = null;
+        if (this.scanTimer) {
+          clearTimeout(this.scanTimer);
+          this.scanTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isIdle;
+      }
+      getStatus() {
+        return {
+          idle: this._isIdle,
+          loading: !this._isIdle,
+          indicators: [...this._indicators],
+          timestamp: Date.now()
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            this.scan();
+            const status = this.getStatus();
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Loading indicator timeout after ${timeout}ms. ${this._indicators.length} indicators still active.`
+                )
+              );
+            }
+            setTimeout(check, 100);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      /**
+       * Wait for a specific CSS selector to disappear from the loading indicators.
+       */
+      async waitForIndicatorCleared(selector, timeout = 3e4) {
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          const check = () => {
+            this.scan();
+            const matchingSelector = this.selectors.includes(selector) ? selector : void 0;
+            const hasMatch = matchingSelector ? document.querySelector(selector) !== null && this.isElementVisible(document.querySelector(selector)) : false;
+            if (!hasMatch) {
+              return resolve(this.getStatus());
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(new Error(`Indicator "${selector}" still present after ${timeout}ms.`));
+            }
+            setTimeout(check, 100);
+          };
+          check();
+        });
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      scan() {
+        const indicators = [];
+        for (const selector of this.selectors) {
+          try {
+            const elements2 = document.querySelectorAll(selector);
+            for (const el of elements2) {
+              if (this.isElementVisible(el)) {
+                indicators.push({
+                  type: selector.startsWith("[aria-busy") ? "aria-busy" : "selector",
+                  selector,
+                  element: this.getElementId(el)
+                });
+              }
+            }
+          } catch {
+          }
+        }
+        if (this.checkAnimations && typeof document.getAnimations === "function") {
+          try {
+            const animations = document.getAnimations();
+            for (const anim of animations) {
+              const cssAnim = anim;
+              const name = cssAnim.animationName || "";
+              if (name && LOADING_ANIMATION_KEYWORDS.some((k) => name.toLowerCase().includes(k))) {
+                const target = anim.effect?.target;
+                if (target && this.isElementVisible(target)) {
+                  indicators.push({
+                    type: "animation",
+                    element: this.getElementId(target),
+                    details: name
+                  });
+                }
+              }
+            }
+          } catch {
+          }
+        }
+        if (this.checkCursor) {
+          try {
+            const bodyStyle = getComputedStyle(document.body);
+            if (bodyStyle.cursor === "wait" || bodyStyle.cursor === "progress") {
+              indicators.push({
+                type: "cursor",
+                details: bodyStyle.cursor
+              });
+            }
+          } catch {
+          }
+        }
+        const seen = /* @__PURE__ */ new Set();
+        const deduped = indicators.filter((ind) => {
+          const key = `${ind.type}:${ind.element || ""}:${ind.selector || ""}:${ind.details || ""}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const wasIdle = this._isIdle;
+        this._indicators = deduped;
+        this._isIdle = deduped.length === 0;
+        if (wasIdle !== this._isIdle) {
+          this.notifyTransition();
+        }
+      }
+      isElementVisible(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const style = getComputedStyle(el);
+        if (style.display === "none") return false;
+        if (style.visibility === "hidden") return false;
+        if (parseFloat(style.opacity) === 0) return false;
+        return true;
+      }
+      getElementId(el) {
+        return el.getAttribute("data-testid") || el.getAttribute("data-ui-bridge-id") || el.id || `${el.tagName.toLowerCase()}.${classList(el)[0] || "unknown"}`;
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isIdle, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/form-mutation.ts
+var FormMutationDetector;
+var init_form_mutation = __esm({
+  "src/idle/form-mutation.ts"() {
+    FormMutationDetector = class {
+      constructor(config = {}) {
+        this.name = "form-mutation";
+        this.lastMutationAt = 0;
+        this.recentMutations = [];
+        this.settleTimer = null;
+        this._isSettled = true;
+        this.listeners = [];
+        this.installed = false;
+        this.weight = config.weight ?? 0.5;
+        this.settleMs = config.settleMs ?? 800;
+        this.handleInput = this.onFormEvent.bind(this);
+        this.handleChange = this.onFormEvent.bind(this);
+        this.handleFocusIn = this.onFocusIn.bind(this);
+        this.handleFocusOut = this.onFocusOut.bind(this);
+      }
+      install() {
+        if (this.installed) return;
+        this.installed = true;
+        document.addEventListener("input", this.handleInput, true);
+        document.addEventListener("change", this.handleChange, true);
+        document.addEventListener("focusin", this.handleFocusIn, true);
+        document.addEventListener("focusout", this.handleFocusOut, true);
+      }
+      destroy() {
+        if (!this.installed) return;
+        this.installed = false;
+        document.removeEventListener("input", this.handleInput, true);
+        document.removeEventListener("change", this.handleChange, true);
+        document.removeEventListener("focusin", this.handleFocusIn, true);
+        document.removeEventListener("focusout", this.handleFocusOut, true);
+        if (this.settleTimer) {
+          clearTimeout(this.settleTimer);
+          this.settleTimer = null;
+        }
+        this.listeners = [];
+      }
+      isIdle() {
+        return this._isSettled;
+      }
+      getStatus() {
+        const now = Date.now();
+        const cutoff = now - 1e3;
+        const recentCount = this.recentMutations.filter((t) => t >= cutoff).length;
+        return {
+          idle: this._isSettled,
+          settled: this._isSettled,
+          lastMutationAt: this.lastMutationAt,
+          msSinceLastMutation: this.lastMutationAt > 0 ? now - this.lastMutationAt : now,
+          recentMutationCount: recentCount,
+          activeFieldId: this.activeFieldId,
+          timestamp: now
+        };
+      }
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus();
+            if (status.settled) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              return reject(
+                new Error(
+                  `Form mutation settling timeout after ${timeout}ms. Last mutation ${status.msSinceLastMutation}ms ago.`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      isFormElement(target) {
+        if (!target || !(target instanceof HTMLElement)) return false;
+        return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+      }
+      onFormEvent(e) {
+        if (!this.isFormElement(e.target)) return;
+        const now = Date.now();
+        this.lastMutationAt = now;
+        this.recentMutations.push(now);
+        const cutoff = now - 1e3;
+        this.recentMutations = this.recentMutations.filter((t) => t >= cutoff);
+        if (this._isSettled) {
+          this._isSettled = false;
+          this.notifyTransition();
+        }
+        this.resetSettleTimer();
+      }
+      onFocusIn(e) {
+        if (!this.isFormElement(e.target)) return;
+        const el = e.target;
+        this.activeFieldId = el.id || el.getAttribute("name") || void 0;
+      }
+      onFocusOut(e) {
+        if (!this.isFormElement(e.target)) return;
+        this.activeFieldId = void 0;
+      }
+      resetSettleTimer() {
+        if (this.settleTimer) clearTimeout(this.settleTimer);
+        this.settleTimer = setTimeout(() => {
+          this.settleTimer = null;
+          if (!this._isSettled) {
+            this._isSettled = true;
+            this.notifyTransition();
+          }
+        }, this.settleMs);
+      }
+      notifyTransition() {
+        const status = this.getStatus();
+        for (const listener of this.listeners) {
+          try {
+            listener(this._isSettled, status);
+          } catch {
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/idle/composite-idle.ts
+var CompositeIdleDetector;
+var init_composite_idle = __esm({
+  "src/idle/composite-idle.ts"() {
+    init_network_idle();
+    init_dom_settling();
+    init_loading_indicators();
+    init_form_mutation();
+    CompositeIdleDetector = class _CompositeIdleDetector {
+      constructor(config) {
+        this.signals = /* @__PURE__ */ new Map();
+        this.listeners = [];
+        this.lastIdle = null;
+        this.minIdleScore = config?.minIdleScore ?? 0.7;
+      }
+      /**
+       * Create a composite detector with default signals from config.
+       */
+      static create(config = {}) {
+        const detector = new _CompositeIdleDetector({ minIdleScore: config.minIdleScore });
+        if (config.network?.enabled !== false) {
+          detector.addSignal(
+            new NetworkIdleDetector({
+              weight: config.network?.weight ?? 0.9,
+              debounceMs: config.network?.debounceMs,
+              ignorePatterns: config.network?.ignorePatterns,
+              trackXHR: config.network?.trackXHR,
+              tracker: config.network?.tracker
+            })
+          );
+        }
+        if (config.dom?.enabled !== false) {
+          detector.addSignal(
+            new DOMSettlingDetector({
+              weight: config.dom?.weight ?? 0.8,
+              settleMs: config.dom?.settleMs,
+              root: config.dom?.root
+            })
+          );
+        }
+        if (config.loadingIndicators?.enabled !== false) {
+          detector.addSignal(
+            new LoadingIndicatorDetector({
+              weight: config.loadingIndicators?.weight ?? 0.7,
+              additionalSelectors: config.loadingIndicators?.additionalSelectors,
+              checkAnimations: config.loadingIndicators?.checkAnimations,
+              checkCursor: config.loadingIndicators?.checkCursor
+            })
+          );
+        }
+        if (config.formMutation?.enabled !== false) {
+          detector.addSignal(
+            new FormMutationDetector({
+              weight: config.formMutation?.weight ?? 0.5,
+              settleMs: config.formMutation?.settleMs
+            })
+          );
+        }
+        return detector;
+      }
+      /**
+       * Add a signal to the composite. Installs it and subscribes to transitions.
+       */
+      addSignal(signal) {
+        this.signals.set(signal.name, signal);
+        signal.install();
+        signal.onTransition(() => this.evaluate());
+      }
+      /**
+       * Remove a signal by name. Destroys it.
+       */
+      removeSignal(name) {
+        const signal = this.signals.get(name);
+        if (!signal) return false;
+        signal.destroy();
+        this.signals.delete(name);
+        return true;
+      }
+      /**
+       * Get an individual signal by name for direct access.
+       */
+      getSignal(name) {
+        return this.signals.get(name);
+      }
+      /**
+       * List all registered signal names.
+       */
+      getSignalNames() {
+        return Array.from(this.signals.keys());
+      }
+      /**
+       * Whether the composite considers the app idle.
+       */
+      isIdle() {
+        return this.getStatus().idle;
+      }
+      /**
+       * Get full composite status including per-signal breakdown.
+       */
+      getStatus(exclude) {
+        const signalEntries = {};
+        const excludeSet = new Set(exclude ?? []);
+        let totalWeight = 0;
+        let idleWeight = 0;
+        let allCriticalIdle = true;
+        for (const [name, signal] of this.signals) {
+          if (excludeSet.has(name)) continue;
+          const idle = signal.isIdle();
+          const status = signal.getStatus();
+          signalEntries[name] = {
+            name,
+            idle,
+            weight: signal.weight,
+            status
+          };
+          totalWeight += signal.weight;
+          if (idle) idleWeight += signal.weight;
+          if (signal.weight >= 0.8 && !idle) {
+            allCriticalIdle = false;
+          }
+        }
+        const idleScore = totalWeight > 0 ? idleWeight / totalWeight : 1;
+        return {
+          idle: allCriticalIdle && idleScore >= this.minIdleScore,
+          idleScore,
+          signals: signalEntries,
+          timestamp: Date.now()
+        };
+      }
+      /**
+       * Get the status of a single signal by name.
+       */
+      getSignalStatus(name) {
+        return this.signals.get(name)?.getStatus();
+      }
+      /**
+       * Wait for the composite to become idle.
+       */
+      async waitForIdle(options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 500;
+        const exclude = options?.exclude;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            const status = this.getStatus(exclude);
+            if (status.idle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(status);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              const busySignals = Object.values(status.signals).filter((s) => !s.idle).map((s) => s.name);
+              return reject(
+                new Error(
+                  `Idle timeout after ${timeout}ms. Busy signals: ${busySignals.join(", ") || "none"}. Score: ${status.idleScore.toFixed(2)}`
+                )
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      /**
+       * Wait for a specific subset of signals to become idle.
+       * Targets can be signal names or { indicator: '.selector' } for specific loading indicators.
+       */
+      async waitFor(targets, options) {
+        const timeout = options?.timeout ?? 3e4;
+        const minStable = options?.minStableMs ?? 0;
+        return new Promise((resolve, reject) => {
+          const startTime = Date.now();
+          let stableSince = null;
+          const check = () => {
+            let allIdle = true;
+            const results = {};
+            for (const target of targets) {
+              if (typeof target === "string") {
+                const signal = this.signals.get(target);
+                if (signal) {
+                  const status = signal.getStatus();
+                  results[target] = status;
+                  if (!status.idle) allIdle = false;
+                }
+              } else {
+                const el = document.querySelector(target.indicator);
+                const present = el !== null && this.isElementVisible(el);
+                const key = `indicator:${target.indicator}`;
+                results[key] = { idle: !present, timestamp: Date.now() };
+                if (present) allIdle = false;
+              }
+            }
+            if (allIdle) {
+              if (!stableSince) stableSince = Date.now();
+              if (Date.now() - stableSince >= minStable) {
+                return resolve(results);
+              }
+            } else {
+              stableSince = null;
+            }
+            if (Date.now() - startTime > timeout) {
+              const busy = Object.entries(results).filter(([, s]) => !s.idle).map(([k]) => k);
+              return reject(
+                new Error(`Selective wait timeout after ${timeout}ms. Still busy: ${busy.join(", ")}`)
+              );
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      }
+      /**
+       * Wait for a single signal by name.
+       */
+      async waitForSignal(name, options) {
+        const signal = this.signals.get(name);
+        if (!signal) {
+          throw new Error(`Signal not found: ${name}. Available: ${this.getSignalNames().join(", ")}`);
+        }
+        return signal.waitForIdle(options);
+      }
+      /**
+       * Subscribe to composite idle/busy transitions.
+       */
+      onTransition(callback) {
+        this.listeners.push(callback);
+        return () => {
+          const idx = this.listeners.indexOf(callback);
+          if (idx >= 0) this.listeners.splice(idx, 1);
+        };
+      }
+      /**
+       * Install all signals. Called automatically by addSignal, but can be
+       * called explicitly if signals were added without install.
+       */
+      installAll() {
+        for (const signal of this.signals.values()) {
+          signal.install();
+        }
+      }
+      /**
+       * Clean up all signals.
+       */
+      destroy() {
+        for (const signal of this.signals.values()) {
+          signal.destroy();
+        }
+        this.signals.clear();
+        this.listeners = [];
+        this.lastIdle = null;
+      }
+      // ==========================================================================
+      // Private
+      // ==========================================================================
+      evaluate() {
+        const status = this.getStatus();
+        if (this.lastIdle !== status.idle) {
+          this.lastIdle = status.idle;
+          for (const listener of this.listeners) {
+            try {
+              listener(status);
+            } catch {
+            }
+          }
+        }
+      }
+      isElementVisible(el) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        const style = getComputedStyle(el);
+        return style.display !== "none" && style.visibility !== "hidden";
+      }
+    };
+  }
+});
+
+// src/idle/element-settling.ts
+function waitForElementStable(element, options) {
+  const quietMs = options?.quietMs ?? 500;
+  const timeout = options?.timeout ?? 5e3;
+  const observeAttributes = options?.observeAttributes ?? true;
+  const observeSubtree = options?.observeSubtree ?? false;
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let lastActivityAt = Date.now();
+    let rafId = null;
+    let timeoutId = null;
+    let quietCheckId = null;
+    let prevRect = null;
+    let cleaned = false;
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (quietCheckId !== null) clearTimeout(quietCheckId);
+    }
+    function recordActivity() {
+      lastActivityAt = Date.now();
+      scheduleQuietCheck();
+    }
+    function scheduleQuietCheck() {
+      if (quietCheckId !== null) clearTimeout(quietCheckId);
+      quietCheckId = setTimeout(
+        () => {
+          const elapsed = Date.now() - lastActivityAt;
+          if (elapsed >= quietMs) {
+            cleanup();
+            resolve({ stable: true, elapsed: Date.now() - startTime });
+          } else {
+            scheduleQuietCheck();
+          }
+        },
+        quietMs - (Date.now() - lastActivityAt) + 1
+      );
+    }
+    const observer = new MutationObserver((mutations) => {
+      let meaningful = false;
+      for (const m of mutations) {
+        if (m.type === "childList" && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+          meaningful = true;
+          break;
+        }
+        if (m.type === "attributes" || m.type === "characterData") {
+          meaningful = true;
+          break;
+        }
+      }
+      if (meaningful) recordActivity();
+    });
+    observer.observe(element, {
+      childList: true,
+      attributes: observeAttributes,
+      characterData: true,
+      subtree: observeSubtree
+    });
+    function pollBBox() {
+      if (cleaned) return;
+      const rect = element.getBoundingClientRect();
+      if (prevRect !== null && !rectsEqual(prevRect, rect)) {
+        recordActivity();
+      }
+      prevRect = rect;
+      rafId = requestAnimationFrame(pollBBox);
+    }
+    rafId = requestAnimationFrame(pollBBox);
+    timeoutId = setTimeout(() => {
+      cleanup();
+      resolve({ stable: false, elapsed: Date.now() - startTime });
+    }, timeout);
+    scheduleQuietCheck();
+  });
+}
+function rectsEqual(a, b, epsilon = 0.5) {
+  return Math.abs(a.x - b.x) < epsilon && Math.abs(a.y - b.y) < epsilon && Math.abs(a.width - b.width) < epsilon && Math.abs(a.height - b.height) < epsilon;
+}
+var init_element_settling = __esm({
+  "src/idle/element-settling.ts"() {
+  }
+});
+
+// src/idle/stuck-screen.ts
+var StuckScreenDetector;
+var init_stuck_screen = __esm({
+  "src/idle/stuck-screen.ts"() {
+    StuckScreenDetector = class {
+      constructor(detector, config = {}) {
+        this.detector = detector;
+        this.observationWindowMs = config.observationWindowMs ?? 3e3;
+        this.domMutationThreshold = config.domMutationThreshold ?? 3;
+      }
+      /**
+       * Run a stuck-screen diagnosis.
+       *
+       * Takes two snapshots separated by the observation window and compares them
+       * to determine if the app is stuck, loading normally, idle, or in an
+       * ambiguous state.
+       */
+      async diagnose() {
+        const snap1 = this.captureSnapshot();
+        await new Promise((resolve) => setTimeout(resolve, this.observationWindowMs));
+        const snap2 = this.captureSnapshot();
+        const actualWindowMs = snap2.timestamp - snap1.timestamp;
+        const peakMutations = Math.max(snap1.recentDOMMutations, snap2.recentDOMMutations);
+        const domChanged = peakMutations >= this.domMutationThreshold || !snap1.domSettled || !snap2.domSettled;
+        const evidence = {
+          loadingIndicators: snap2.loadingIndicators,
+          domChanged,
+          domMutationCount: peakMutations,
+          networkBusy: !snap2.networkIdle,
+          pendingNetworkRequests: snap2.pendingNetworkRequests,
+          idleScoreStart: snap1.idleScore,
+          idleScoreEnd: snap2.idleScore
+        };
+        const hasLoadingIndicators = snap1.loadingIndicators.length > 0 && snap2.loadingIndicators.length > 0;
+        const hadLoadingIndicators = snap1.loadingIndicators.length > 0 || snap2.loadingIndicators.length > 0;
+        let verdict;
+        let confidence;
+        let summary;
+        const suggestions = [];
+        if (!hadLoadingIndicators) {
+          verdict = "idle";
+          confidence = 0.9;
+          summary = "No loading indicators detected. The app appears to be in a normal resting state.";
+        } else if (hasLoadingIndicators && !domChanged && snap2.networkIdle) {
+          verdict = "stuck";
+          confidence = 0.95;
+          const indicatorDesc = this.describeIndicators(snap2.loadingIndicators);
+          summary = `The app appears stuck. Loading indicators (${indicatorDesc}) have been visible throughout the ${Math.round(actualWindowMs / 1e3)}s observation window with no meaningful DOM changes and no pending network requests.`;
+          suggestions.push("Try refreshing the page.");
+          suggestions.push("Check the browser console for JavaScript errors.");
+          suggestions.push("Check if a required backend service is running.");
+        } else if (hasLoadingIndicators && !domChanged && !snap2.networkIdle) {
+          verdict = "stuck";
+          confidence = 0.7;
+          summary = `The app appears stuck. Loading indicators are visible with no DOM changes, but ${snap2.pendingNetworkRequests} network request(s) are still in flight. A network request may be hanging.`;
+          suggestions.push("Check if a network request is hanging (e.g., unresponsive API server).");
+          suggestions.push("Check the network tab for requests that have been pending too long.");
+          suggestions.push("Verify the server or API endpoint is reachable.");
+        } else if (hadLoadingIndicators && domChanged) {
+          verdict = "loading";
+          confidence = 0.85;
+          summary = `The app is loading. Loading indicators are visible and the DOM is actively changing (${peakMutations} recent mutations), indicating content is being rendered.`;
+        } else if (!hasLoadingIndicators && hadLoadingIndicators) {
+          verdict = "idle";
+          confidence = 0.8;
+          summary = "Loading indicators were present at the start but cleared during observation. The app has finished loading.";
+        } else {
+          verdict = "unknown";
+          confidence = 0.4;
+          summary = "The app state is ambiguous. Signals do not clearly indicate stuck, loading, or idle.";
+          suggestions.push("Try running the diagnosis again with a longer observation window.");
+        }
+        return {
+          verdict,
+          confidence,
+          summary,
+          evidence,
+          observationWindowMs: actualWindowMs,
+          suggestions,
+          timestamp: Date.now()
+        };
+      }
+      captureSnapshot() {
+        const compositeStatus = this.detector.getStatus();
+        const loadingSig = compositeStatus.signals["loading-indicators"];
+        const domSig = compositeStatus.signals["dom"];
+        const networkSig = compositeStatus.signals["network"];
+        const loadingStatus = loadingSig?.status;
+        const domStatus = domSig?.status;
+        const networkStatus = networkSig?.status;
+        return {
+          loadingIndicators: loadingStatus?.indicators ?? [],
+          domSettled: domSig?.idle ?? true,
+          recentDOMMutations: domStatus?.recentMutationCount ?? 0,
+          networkIdle: networkSig?.idle ?? true,
+          pendingNetworkRequests: networkStatus?.pendingCount ?? 0,
+          idleScore: compositeStatus.idleScore,
+          timestamp: Date.now()
+        };
+      }
+      describeIndicators(indicators) {
+        if (indicators.length === 0) return "none";
+        const descriptions = indicators.slice(0, 3).map((ind) => {
+          if (ind.type === "animation") return `animation "${ind.details}"`;
+          if (ind.type === "cursor") return `cursor: ${ind.details}`;
+          if (ind.selector) return ind.selector;
+          return ind.element ?? ind.type;
+        });
+        const suffix = indicators.length > 3 ? ` +${indicators.length - 3} more` : "";
+        return descriptions.join(", ") + suffix;
+      }
+    };
+  }
+});
+
+// src/idle/index.ts
+var idle_exports = {};
+__export(idle_exports, {
+  CompositeIdleDetector: () => CompositeIdleDetector,
+  DOMSettlingDetector: () => DOMSettlingDetector,
+  FormMutationDetector: () => FormMutationDetector,
+  LoadingIndicatorDetector: () => LoadingIndicatorDetector,
+  NetworkIdleDetector: () => NetworkIdleDetector,
+  StuckScreenDetector: () => StuckScreenDetector,
+  waitForElementStable: () => waitForElementStable
+});
+var init_idle = __esm({
+  "src/idle/index.ts"() {
+    init_network_idle();
+    init_dom_settling();
+    init_loading_indicators();
+    init_form_mutation();
+    init_composite_idle();
+    init_element_settling();
+    init_stuck_screen();
+  }
+});
+
 // src/react/UIBridgeProvider.tsx
 init_registry();
 
@@ -15280,169 +15499,8 @@ function filterBySeverity(events, minSeverity) {
   });
 }
 
-// src/debug/shared-utils.ts
-function getEventStack(event) {
-  if ("stack" in event) return event.stack;
-  return void 0;
-}
-
-// src/debug/error-fingerprint.ts
-var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-var UUID_TEST_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-var HEX_RE = /\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b/gi;
-var TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*Z?/g;
-var UNIX_TS_RE = /\b\d{10,13}\b/g;
-var NUMBER_RE = /\b\d+\b/g;
-function normalizeMessage(message) {
-  return message.replace(UUID_RE, "<uuid>").replace(TIMESTAMP_RE, "<timestamp>").replace(HEX_RE, "<hex>").replace(UNIX_TS_RE, "<number>").replace(NUMBER_RE, "<n>");
-}
-function normalizeUrlPath(url) {
-  try {
-    const parsed = new URL(url);
-    const segments = parsed.pathname.split("/").map((seg) => {
-      if (UUID_TEST_RE.test(seg)) {
-        return "<uuid>";
-      }
-      if (/^\d+$/.test(seg)) return "<id>";
-      return seg;
-    });
-    return `${parsed.origin}${segments.join("/")}`;
-  } catch {
-    return normalizeMessage(url);
-  }
-}
-var SKIP_FRAME_PATTERNS = [
-  /node_modules/,
-  /react-dom/,
-  /react\.development/,
-  /react\.production/,
-  /scheduler\./,
-  /webpack-internal/,
-  /webpack:\/\//,
-  /turbopack-internal/,
-  /__webpack_/,
-  /^native code$/,
-  /^<anonymous>$/,
-  /\(native\)/,
-  /extensions::/,
-  /chrome-extension:\/\//,
-  /moz-extension:\/\//
-];
-var V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?$/;
-var SPIDERMONKEY_FRAME_RE = /^(.+?)@(.+?):(\d+):(\d+)$/;
-var JSC_BARE_RE = /^(.+?):(\d+):(\d+)$/;
-function parseFrame(line) {
-  const trimmed = line.trim();
-  const v8 = trimmed.match(V8_FRAME_RE);
-  if (v8) {
-    return { functionName: v8[1], file: v8[2], line: v8[3], col: v8[4] };
-  }
-  const sm = trimmed.match(SPIDERMONKEY_FRAME_RE);
-  if (sm) {
-    return { functionName: sm[1], file: sm[2], line: sm[3], col: sm[4] };
-  }
-  const bare = trimmed.match(JSC_BARE_RE);
-  if (bare) {
-    return { functionName: void 0, file: bare[1], line: bare[2], col: bare[3] };
-  }
-  return null;
-}
-function isAppFrame(frame) {
-  return !SKIP_FRAME_PATTERNS.some((pat) => pat.test(frame.file));
-}
-function extractFilename(file) {
-  let clean = file.split("?")[0].split("#")[0];
-  clean = clean.replace(/^https?:\/\/[^/]+/, "");
-  clean = clean.replace(/^\/_next\/static\/[^/]+\//, "");
-  const parts = clean.split("/").filter(Boolean);
-  if (parts.length > 3) {
-    return parts.slice(-3).join("/");
-  }
-  return parts.join("/") || clean;
-}
-function extractSourceLocation(stack) {
-  if (!stack) return void 0;
-  const lines = stack.split("\n");
-  for (const line of lines) {
-    const frame = parseFrame(line);
-    if (frame && isAppFrame(frame)) {
-      const filename = extractFilename(frame.file);
-      return `${filename}:${frame.line}`;
-    }
-  }
-  for (const line of lines) {
-    const frame = parseFrame(line);
-    if (frame) {
-      const filename = extractFilename(frame.file);
-      return `${filename}:${frame.line}`;
-    }
-  }
-  return void 0;
-}
-function topFrameForFingerprint(stack) {
-  return extractSourceLocation(stack) ?? "";
-}
-function fingerprintConsole(event) {
-  const normalized = normalizeMessage(event.message);
-  const frame = topFrameForFingerprint(event.stack);
-  return `console:${event.level}|${normalized}|${frame}`;
-}
-function fingerprintNetwork(event) {
-  const path = normalizeUrlPath(event.requestUrl);
-  return `network:${event.method}|${path}|${event.status ?? event.kind}`;
-}
-function fingerprintReactError(event) {
-  const normalized = normalizeMessage(event.message);
-  const frame = topFrameForFingerprint(event.stack);
-  return `react-error|${normalized}|${frame}`;
-}
-function fingerprintResourceError(event) {
-  const path = normalizeUrlPath(event.resourceUrl);
-  return `resource-error:${event.tagName}|${path}`;
-}
-function fingerprintHmr(event) {
-  const normalized = normalizeMessage(event.message);
-  return `hmr:${event.level}|${normalized}|${event.moduleName ?? ""}`;
-}
-function fingerprintWsDisconnection(event) {
-  return `ws-disconnection:${event.previousState}->${event.newState}`;
-}
-function computeFingerprint(event) {
-  switch (event.type) {
-    case "console":
-      return fingerprintConsole(event);
-    case "network":
-      return fingerprintNetwork(event);
-    case "react-error":
-      return fingerprintReactError(event);
-    case "resource-error":
-      return fingerprintResourceError(event);
-    case "hmr":
-      return fingerprintHmr(event);
-    case "ws-disconnection":
-      return fingerprintWsDisconnection(event);
-    case "navigation":
-      return `navigation:${event.trigger}|${normalizeUrlPath(event.to)}`;
-    case "long-task":
-      return `long-task:${Math.round(event.durationMs / 50) * 50}ms`;
-    case "long-animation-frame": {
-      const scripts = event.scripts.map((s) => `${s.invoker}@${extractFilename(s.sourceURL)}`).join(",");
-      return `loaf:${Math.round(event.durationMs / 50) * 50}ms|${scripts}`;
-    }
-    case "web-vital":
-      return `web-vital:${event.metric}`;
-    case "memory":
-      return `memory:snapshot`;
-    case "freeze":
-      return `freeze:${Math.round(event.gapMs / 500) * 500}ms`;
-    case "dom-metrics":
-      return `dom-metrics:${Math.round(event.nodeCount / 1e3) * 1e3}`;
-    default: {
-      const _exhaustive = event;
-      return `unknown:${_exhaustive.type}`;
-    }
-  }
-}
+// src/control/action-executor.ts
+init_error_fingerprint();
 
 // src/control/fill-form.ts
 init_element_identifier();
@@ -15501,6 +15559,7 @@ function fillSingleField(element, value, clearFirst) {
 }
 
 // src/debug/error-impact.ts
+init_error_fingerprint();
 var DEFAULT_NAVIGATION_CHANGE_THRESHOLD_MS = 500;
 var DEFAULT_RENDER_BLOCKED_THRESHOLD = 0.2;
 function extractMessage(event) {
@@ -26080,7 +26139,8 @@ function useUIElement(options) {
     position,
     color,
     contextPath,
-    persistWhileMounted
+    persistWhileMounted,
+    reveals
   } = options;
   const registeredElementIdRef = react.useRef(null);
   const untrackBboxRef = react.useRef(null);
@@ -26116,7 +26176,8 @@ function useUIElement(options) {
       variant,
       position,
       color,
-      contextPath
+      contextPath,
+      reveals
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -26137,6 +26198,7 @@ function useUIElement(options) {
     position,
     color,
     contextPath,
+    reveals,
     startBboxTracking
   ]);
   const unregister = react.useCallback(() => {
@@ -26208,7 +26270,10 @@ function useUIElement(options) {
     variant: variant ?? null,
     position: position ?? null,
     color: color ?? null,
-    contextPath: contextPath ?? null
+    contextPath: contextPath ?? null,
+    // Reveals is a plain string array — include it so mid-lifecycle
+    // updates (e.g. dynamic reveal targets) propagate into the registry.
+    reveals: reveals ?? null
   }) : null;
   react.useEffect(() => {
     if (!bridge2 || !registeredRef.current || !elementRef.current || elementKey === null) return;
@@ -26227,7 +26292,8 @@ function useUIElement(options) {
         variant,
         position,
         color,
-        contextPath
+        contextPath,
+        reveals
       });
       if (logLevel) bridge2.registry.setElementLogLevel(id, logLevel);
       startBboxTracking(elementRef.current);
@@ -26241,7 +26307,8 @@ function useUIElement(options) {
       variant,
       position,
       color,
-      contextPath
+      contextPath,
+      reveals
     });
     if (logLevel) bridge2.registry.setElementLogLevel(id, logLevel);
   }, [bridge2, elementKey]);
@@ -26323,7 +26390,7 @@ function useUIComponent(options) {
   const elementIdsRef = react.useRef(options.elementIds || []);
   const stateRef = react.useRef(options.state);
   const computedRef = react.useRef(options.computed);
-  const { id, name, description, autoRegister = true } = options;
+  const { id, name, description, autoRegister = true, scope } = options;
   react.useEffect(() => {
     actionsRef.current = options.actions || [];
     elementIdsRef.current = options.elementIds || [];
@@ -26370,11 +26437,12 @@ function useUIComponent(options) {
       }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
-      getComputed: createGetComputed()
+      getComputed: createGetComputed(),
+      scope
     });
     registeredRef.current = true;
     registeredComponentIdRef.current = id;
-  }, [bridge2, id, name, description, createGetComputed]);
+  }, [bridge2, id, name, description, scope, createGetComputed]);
   const unregister = react.useCallback(() => {
     if (!bridge2 || !registeredRef.current) return;
     bridge2.registry.unregisterComponent(registeredComponentIdRef.current ?? id);
@@ -26436,7 +26504,8 @@ function useUIComponent(options) {
     id,
     name,
     description: description ?? null,
-    elementIds: options.elementIds ?? null
+    elementIds: options.elementIds ?? null,
+    scope: scope ?? null
   }) : null;
   react.useEffect(() => {
     if (!bridge2 || !registeredRef.current || componentKey === null) return;
@@ -26458,7 +26527,8 @@ function useUIComponent(options) {
       }),
       elementIds: elementIdsRef.current,
       getState: stateRef.current,
-      getComputed: createGetComputed()
+      getComputed: createGetComputed(),
+      scope
     };
     const registeredComponentId = registeredComponentIdRef.current;
     if (registeredComponentId === null) return;
@@ -27733,7 +27803,273 @@ function getGlobalStubRegistry() {
 
 // src/react/commandHandlers.ts
 init_bookmarks();
+init_error_fingerprint();
+init_shared_utils();
 init_stable_ref();
+
+// src/server/handlers.ts
+init_nl_assertion_parser();
+init_find();
+init_form_diff();
+init_form_discovery();
+init_ai();
+
+// src/specs/quality-contexts.ts
+var DEFAULT_CONFIG5 = {
+  enabled: true,
+  weight: 0.045,
+  // ~1/22
+  thresholds: { good: 80, warning: 50 }
+};
+function defineContext(name, description, overrides) {
+  const metrics = {};
+  for (const [id, partial] of Object.entries(overrides)) {
+    metrics[id] = { ...DEFAULT_CONFIG5, ...partial };
+  }
+  return { name, description, metrics };
+}
+defineContext(
+  "general",
+  "Balanced evaluation suitable for most web applications.",
+  {
+    // UX (5) — total ~0.20
+    contentOverflow: { weight: 0.05 },
+    aboveFoldRatio: { weight: 0.04 },
+    informationDensity: { weight: 0.04 },
+    containerEfficiency: { weight: 0.04 },
+    viewportUtilization: { weight: 0.03 },
+    // Density (6) — total ~0.16
+    elementDensity: { weight: 0.03 },
+    whitespaceRatio: { weight: 0.03 },
+    localDensityBalance: { weight: 0.025 },
+    horizontalBalance: { weight: 0.025 },
+    verticalBalance: { weight: 0.025 },
+    alignmentConsistency: { weight: 0.025 },
+    // Spacing (4) — total ~0.16
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.04 },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color (4) — total ~0.16
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.04 },
+    saturationConsistency: { weight: 0.04 },
+    // Typography (4) — total ~0.16
+    typeScaleAdherence: { weight: 0.04 },
+    fontWeightConsistency: { weight: 0.04 },
+    headingHierarchy: { weight: 0.04 },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency (5) — total ~0.19
+    buttonConsistency: { weight: 0.04 },
+    cardConsistency: { weight: 0.04 },
+    inputConsistency: { weight: 0.04 },
+    touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.03 }
+  }
+);
+defineContext(
+  "minimal",
+  "Emphasizes whitespace, simplicity, and restrained use of color. Ideal for landing pages and editorial layouts.",
+  {
+    // UX (5) — total ~0.12 (minimalist pages use space intentionally)
+    contentOverflow: { weight: 0.03 },
+    aboveFoldRatio: { weight: 0.025 },
+    informationDensity: { weight: 0.02 },
+    containerEfficiency: { weight: 0.02 },
+    viewportUtilization: { weight: 0.025 },
+    // Density & Layout
+    elementDensity: { weight: 0.025, thresholds: { good: 85, warning: 60 } },
+    whitespaceRatio: { weight: 0.09, thresholds: { good: 85, warning: 60 } },
+    localDensityBalance: { weight: 0.035 },
+    horizontalBalance: { weight: 0.035 },
+    verticalBalance: { weight: 0.035 },
+    alignmentConsistency: { weight: 0.04 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.05 },
+    spacingConsistency: { weight: 0.05 },
+    lineHeightRatio: { weight: 0.045 },
+    interGroupSpacingRatio: { weight: 0.05 },
+    // Color
+    uniqueColorCount: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
+    wcagContrastCompliance: { weight: 0.045 },
+    colorHarmony: { weight: 0.05 },
+    saturationConsistency: { weight: 0.04 },
+    // Typography
+    typeScaleAdherence: { weight: 0.05 },
+    fontWeightConsistency: { weight: 0.035 },
+    headingHierarchy: { weight: 0.035 },
+    fontFamilyCount: { weight: 0.035 },
+    // Consistency
+    buttonConsistency: { weight: 0.025 },
+    cardConsistency: { weight: 0.015 },
+    inputConsistency: { weight: 0.025 },
+    touchTargetCompliance: { weight: 0.035 },
+    customPropertyConsistency: { weight: 0.035 }
+  }
+);
+defineContext(
+  "data-dense",
+  "Optimized for dashboards and data-heavy UIs. Lenient on density, strict on alignment and consistency.",
+  {
+    // UX (5) — total ~0.25 (dashboards are where these problems appear most)
+    contentOverflow: { weight: 0.06 },
+    aboveFoldRatio: { weight: 0.05 },
+    informationDensity: { weight: 0.05 },
+    containerEfficiency: { weight: 0.05, thresholds: { good: 75, warning: 45 } },
+    viewportUtilization: { weight: 0.04 },
+    // Density & Layout
+    elementDensity: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
+    whitespaceRatio: { weight: 0.015, thresholds: { good: 70, warning: 40 } },
+    localDensityBalance: { weight: 0.03 },
+    horizontalBalance: { weight: 0.02 },
+    verticalBalance: { weight: 0.02 },
+    alignmentConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.05 },
+    spacingConsistency: { weight: 0.06, thresholds: { good: 85, warning: 60 } },
+    lineHeightRatio: { weight: 0.03 },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.02 },
+    saturationConsistency: { weight: 0.02 },
+    // Typography
+    typeScaleAdherence: { weight: 0.03 },
+    fontWeightConsistency: { weight: 0.03 },
+    headingHierarchy: { weight: 0.02 },
+    fontFamilyCount: { weight: 0.03 },
+    // Consistency
+    buttonConsistency: { weight: 0.045 },
+    cardConsistency: { weight: 0.045 },
+    inputConsistency: { weight: 0.045 },
+    touchTargetCompliance: { weight: 0.04 },
+    customPropertyConsistency: { weight: 0.04 }
+  }
+);
+defineContext(
+  "mobile",
+  "Optimized for mobile devices. Prioritizes touch targets, readability, and simple hierarchy.",
+  {
+    // UX (5) — total ~0.22 (viewport constraints make overflow critical)
+    contentOverflow: { weight: 0.06, thresholds: { good: 85, warning: 50 } },
+    aboveFoldRatio: { weight: 0.05 },
+    informationDensity: { weight: 0.04 },
+    containerEfficiency: { weight: 0.04 },
+    viewportUtilization: { weight: 0.03 },
+    // Density & Layout
+    elementDensity: { weight: 0.03 },
+    whitespaceRatio: { weight: 0.04 },
+    localDensityBalance: { weight: 0.02 },
+    horizontalBalance: { weight: 0.03 },
+    verticalBalance: { weight: 0.02 },
+    alignmentConsistency: { weight: 0.03 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.05, thresholds: { good: 85, warning: 55 } },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { weight: 0.03 },
+    wcagContrastCompliance: { weight: 0.05 },
+    colorHarmony: { weight: 0.03 },
+    saturationConsistency: { weight: 0.02 },
+    // Typography
+    typeScaleAdherence: { weight: 0.03 },
+    fontWeightConsistency: { weight: 0.03 },
+    headingHierarchy: { weight: 0.03 },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency
+    buttonConsistency: { weight: 0.04 },
+    cardConsistency: { weight: 0.03 },
+    inputConsistency: { weight: 0.04 },
+    touchTargetCompliance: { weight: 0.07, thresholds: { good: 90, warning: 70 } },
+    customPropertyConsistency: { weight: 0.03 }
+  }
+);
+defineContext(
+  "accessibility",
+  "Focused on WCAG compliance and assistive technology support. Visual-only metrics are disabled.",
+  {
+    // UX (5) — total ~0.15 (content reachability matters for assistive tech)
+    contentOverflow: { weight: 0.04 },
+    aboveFoldRatio: { weight: 0.03 },
+    informationDensity: { weight: 0.03 },
+    containerEfficiency: { weight: 0.02 },
+    viewportUtilization: { weight: 0.03 },
+    // Density — mostly disabled for accessibility
+    elementDensity: { enabled: false, weight: 0 },
+    whitespaceRatio: { enabled: false, weight: 0 },
+    localDensityBalance: { enabled: false, weight: 0 },
+    horizontalBalance: { enabled: false, weight: 0 },
+    verticalBalance: { enabled: false, weight: 0 },
+    alignmentConsistency: { weight: 0.03 },
+    // Spacing
+    spacingScaleAdherence: { weight: 0.04 },
+    spacingConsistency: { weight: 0.04 },
+    lineHeightRatio: { weight: 0.07, thresholds: { good: 90, warning: 65 } },
+    interGroupSpacingRatio: { weight: 0.04 },
+    // Color
+    uniqueColorCount: { enabled: false, weight: 0 },
+    wcagContrastCompliance: { weight: 0.22, thresholds: { good: 95, warning: 80 } },
+    colorHarmony: { enabled: false, weight: 0 },
+    saturationConsistency: { enabled: false, weight: 0 },
+    // Typography
+    typeScaleAdherence: { weight: 0.04 },
+    fontWeightConsistency: { weight: 0.035 },
+    headingHierarchy: { weight: 0.13, thresholds: { good: 90, warning: 70 } },
+    fontFamilyCount: { weight: 0.04 },
+    // Consistency
+    buttonConsistency: { weight: 0.015 },
+    cardConsistency: { weight: 0.015 },
+    inputConsistency: { weight: 0.015 },
+    touchTargetCompliance: { weight: 0.12, thresholds: { good: 95, warning: 80 } },
+    customPropertyConsistency: { enabled: false, weight: 0 }
+  }
+);
+
+// src/server/handlers.ts
+init_annotations();
+init_error_fingerprint();
+
+// src/debug/error-timeline.ts
+init_error_fingerprint();
+init_shared_utils();
+
+// src/debug/error-session.ts
+init_error_fingerprint();
+init_shared_utils();
+
+// src/debug/error-snapshot.ts
+init_error_fingerprint();
+init_shared_utils();
+
+// src/debug/ws-streaming.ts
+init_error_fingerprint();
+init_shared_utils();
+
+// src/server/handlers.ts
+init_idle();
+init_class_name();
+init_wait_for_element();
+function buildComponentNotFoundError(id, available, byRoute, currentRoute) {
+  let otherRouteHint = "";
+  if (byRoute) {
+    for (const [route, entry] of Object.entries(byRoute)) {
+      if (route === currentRoute) continue;
+      if (entry?.ids?.includes(id)) {
+        const cur = typeof currentRoute === "string" && currentRoute.length > 0 ? currentRoute : "(unknown)";
+        otherRouteHint = ` (registered on route '${route}', current route is '${cur}')`;
+        break;
+      }
+    }
+  }
+  return `Component "${id}" not found${otherRouteHint}. Available components: [${available.join(", ")}]. Components are only available when their page is active \u2014 navigate to the page that contains this component and try again.`;
+}
+
+// src/react/commandHandlers.ts
+init_wait_for_element();
 function getIntentStore() {
   const g2 = globalThis;
   if (!g2.__UI_BRIDGE_INTENTS__) g2.__UI_BRIDGE_INTENTS__ = /* @__PURE__ */ new Map();
@@ -27838,6 +28174,25 @@ function resolveElementWithFallback(id) {
 function elementToSnapshot(e) {
   const state = e.getState();
   return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+}
+function inProcessComponentNotFoundMessage(id) {
+  let available = [];
+  let byRoute;
+  let currentRoute;
+  try {
+    const reg = getGlobalRegistry();
+    available = reg.getAllComponents().map((c) => c.id);
+    try {
+      byRoute = reg.getCountsByRoute();
+    } catch {
+      byRoute = void 0;
+    }
+  } catch {
+  }
+  if (typeof window !== "undefined" && window.location?.pathname) {
+    currentRoute = window.location.pathname;
+  }
+  return buildComponentNotFoundError(id, available, byRoute, currentRoute);
 }
 function elementToFindResult(e) {
   const state = e.getState();
@@ -28116,7 +28471,9 @@ async function executeCommand(action, payload, bridge) {
           // action on this component without grepping docs. Honours the
           // caller-provided `componentBasePath` when present so relay
           // consumers behind a mount prefix (the runner) get usable paths.
-          actionInvocationPath: `${componentBasePath ?? "/control/component"}/${c.id}/action/{actionId}`
+          actionInvocationPath: `${componentBasePath ?? "/control/component"}/${c.id}/action/{actionId}`,
+          // Phase 3.1: pass scope through verbatim. Undefined ≡ "route".
+          scope: c.scope
         })),
         // Relay handler keeps the legacy `steps` array (not `stepCount`)
         // alongside `activeRuns: []` because existing relay-driven callers
@@ -28595,6 +28952,56 @@ async function executeCommand(action, payload, bridge) {
         timestamp: Date.now()
       };
     }
+    // Phase 2.1 (plan 2026-05-03) — POST /control/element/:id/expect served
+    // by the in-browser SDK runtime. Reuses `pollWaitForElement` so the
+    // predicate semantics stay aligned with `/ai/wait-for-element`. The
+    // 422 status is stamped by the relay handler upstream — this command
+    // returns the data body unchanged.
+    case "expectElement": {
+      const { id, request } = payload;
+      const requestedState = request?.state;
+      if (typeof requestedState !== "string") {
+        return {
+          success: false,
+          error: "expectElement: 'state' is required",
+          timestamp: Date.now()
+        };
+      }
+      if (!WAIT_FOR_ELEMENT_STATES.includes(requestedState)) {
+        return {
+          success: false,
+          error: `expectElement: invalid state '${requestedState}', expected one of ${WAIT_FOR_ELEMENT_STATES.join("|")}`,
+          timestamp: Date.now()
+        };
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeout === "number" ? request.timeout : 5e3, 0),
+        3e4
+      );
+      const pollMs = Math.max(typeof request?.pollMs === "number" ? request.pollMs : 100, 10);
+      const takeSnapshot = () => {
+        try {
+          return snapshotFromRegisteredElement(getElement(id));
+        } catch {
+          return { registered: false, state: null };
+        }
+      };
+      const outcome = await pollWaitForElement({
+        takeSnapshot,
+        predicate: requestedState,
+        timeoutMs,
+        pollMs
+      });
+      const observedState = outcome.observed ? {
+        registered: outcome.observed.registered,
+        state: outcome.observed.state ?? null
+      } : null;
+      return {
+        passed: outcome.found,
+        observedState,
+        durationMs: outcome.durationMs
+      };
+    }
     case "highlightElement": {
       const dom = getElement(payload.id)?.element ?? null;
       if (dom) {
@@ -28723,7 +29130,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -28749,7 +29156,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -28774,7 +29181,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now()
         };
       }
@@ -28792,7 +29199,7 @@ async function executeCommand(action, payload, bridge) {
       if (!comp) {
         return {
           success: false,
-          error: `Component "${id}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(id),
           timestamp: Date.now()
         };
       }

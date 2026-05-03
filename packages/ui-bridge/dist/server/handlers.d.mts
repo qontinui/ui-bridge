@@ -1,17 +1,17 @@
-import { S as SpecStore } from '../store-BP0xE7HU.mjs';
-import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-DHAgZgSv.mjs';
-import { a as UIBridgeServerHandlers } from '../types-DESdbIVG.mjs';
+import { S as SpecStore } from '../store-YDeTApd3.mjs';
+import { F as FillFormRequest, j as FillResult, k as BatchActionRequest, l as BatchActionResponse, m as CapturedError, i as AnyCapturedEvent, n as BrowserEventType, D as DetectedErrorOverlay, e as BridgeEvent, o as ControlSnapshot, U as UIState, p as UIStateGroup, q as UITransition, T as TransitionResult, P as PathResult, N as NavigationResult, S as StateSnapshot, r as ElementHistoryOptions, s as ElementLogEntry, B as BridgeEventType } from '../types-gR41i0Eb.mjs';
+import { a as UIBridgeServerHandlers } from '../types-VtnJDSGD.mjs';
 import { C as CompositeIdleConfig } from '../types-CNyrSSSQ.mjs';
 import { N as NavigationAdapter } from '../navigation-adapter-D0eod-Ve.mjs';
 import { RenderLogEntry } from '../render-log/index.mjs';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-cnGBHZLF.mjs';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-BHqiNVzI.mjs';
 import { AnnotationStore } from '../annotations/index.mjs';
 import { N as NetworkTrackerConfig } from '../tracker-DpZSyunJ.mjs';
-import '../types-BT8zKDeE.mjs';
-import '../find-k9x1U7cK.mjs';
-import '../style-types-B81kmWSf.mjs';
+import '../types-BAi5RZ1S.mjs';
+import '../find-BGz9ewti.mjs';
+import '../style-types-CAMWbmV6.mjs';
 import '../types-C7D5seeQ.mjs';
-import '../error-snapshot-CV--kPt-.mjs';
+import '../error-snapshot-BGG0zdGn.mjs';
 
 /**
  * Registry interface - minimal contract for handler usage
@@ -185,7 +185,43 @@ interface CreateHandlersConfig {
      * If not provided, falls back to window.location navigation.
      */
     navigationAdapter?: NavigationAdapter;
+    /**
+     * Phase 4.1 (plan 2026-05-03) — enable POST /control/sdk/spawn-headless.
+     *
+     * When `true`, the spawn-headless handler dynamically imports
+     * `@qontinui/ui-bridge-headless` (an optional peer) and launches a real
+     * Chromium tab. When omitted/`false`, the route exists but returns 503.
+     *
+     * Precedence (highest first):
+     *   1. Explicit `true` here → enabled.
+     *   2. Environment: `ENABLE_HEADLESS_SPAWN=1` or `=true` → enabled.
+     *   3. Default → disabled.
+     *
+     * Disabled by default because the in-process Playwright launcher pulls
+     * in Chromium (~300 MB download) and a server-controlled headless browser
+     * has security implications outside dev environments.
+     */
+    enableHeadlessSpawn?: boolean;
 }
+/**
+ * Build the enriched "Component not found" error message used by every
+ * component-detail / component-action 404 site (Phase 1.1, plan 2026-05-03).
+ *
+ * Output format:
+ *   `Component "{id}" not found{otherRouteHint}. Available components: [...]. ` +
+ *   `Components are only available when their page is active — navigate to ` +
+ *   `the page that contains this component and try again.`
+ *
+ * `otherRouteHint` is appended only when `byRoute` (Phase 1.2 shape, with
+ * per-route `ids`) shows the missing id is registered on a different route.
+ * Falls back to no hint when `byRoute` / `currentRoute` are absent or the
+ * id genuinely doesn't exist anywhere — callers don't have to special-case
+ * the missing-snapshot scenario.
+ */
+declare function buildComponentNotFoundError(id: string, available: readonly string[], byRoute?: Record<string, {
+    count: number;
+    ids: string[];
+}>, currentRoute?: string | null): string;
 /**
  * Check if the app is responsive based on heartbeat freshness.
  */
@@ -194,6 +230,13 @@ declare function isAppResponsive(): boolean;
  * Get the last heartbeat timestamp.
  */
 declare function getLastHeartbeat(): number;
+/**
+ * Close every spawned headless tab tracked across all `createHandlers()`
+ * instances. Exported so callers (e.g. CLI servers, integration tests) can
+ * trigger the same teardown the `beforeExit` listener would, on signal
+ * handlers or `server.stop()` paths where `beforeExit` won't fire.
+ */
+declare function closeAllSpawnedHeadlessTabs(): Promise<void>;
 declare function createHandlers(registry: RegistryLike, actionExecutor: ActionExecutorLike, config?: CreateHandlersConfig): UIBridgeServerHandlers;
 /**
  * Create partial handlers for AI-specific functionality only
@@ -202,4 +245,4 @@ declare function createHandlers(registry: RegistryLike, actionExecutor: ActionEx
  */
 declare function createAIHandlers(registry: RegistryLike, actionExecutor: ActionExecutorLike): Pick<UIBridgeServerHandlers, 'aiSearch' | 'aiFind' | 'aiExecute' | 'aiAssert' | 'aiAssertBatch' | 'getSemanticSnapshot' | 'getSemanticDiff' | 'getPageSummary'>;
 
-export { type ActionExecutorLike, type BrowserEventCaptureLike, type ConsoleCapturelike, type CreateHandlersConfig, type RegistryLike, createAIHandlers, createHandlers, getLastHeartbeat, isAppResponsive };
+export { type ActionExecutorLike, type BrowserEventCaptureLike, type ConsoleCapturelike, type CreateHandlersConfig, type RegistryLike, buildComponentNotFoundError, closeAllSpawnedHeadlessTabs, createAIHandlers, createHandlers, getLastHeartbeat, isAppResponsive };

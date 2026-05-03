@@ -19,6 +19,11 @@ import type {
   ControlBatchRequest,
   ControlBatchResponse,
   ControlBatchStepResult,
+  StateSummary,
+  ElementExpectRequest,
+  ElementExpectResponse,
+  SpawnHeadlessRequest,
+  SpawnHeadlessResponse,
 } from './types';
 import type {
   ControlSnapshot,
@@ -178,6 +183,14 @@ import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
 import { classString } from '../core/class-name';
+import {
+  pollWaitForElement,
+  snapshotFromRegisteredElement,
+  type WaitForElementState,
+  WAIT_FOR_ELEMENT_STATES,
+  type ElementSnapshot,
+} from '../ai/wait-for-element';
+import type { RegisteredElement } from '../core/types';
 
 /**
  * Parse a natural language assertion into a structured AssertionRequest.
@@ -444,6 +457,23 @@ export interface CreateHandlersConfig {
    * If not provided, falls back to window.location navigation.
    */
   navigationAdapter?: NavigationAdapter;
+  /**
+   * Phase 4.1 (plan 2026-05-03) — enable POST /control/sdk/spawn-headless.
+   *
+   * When `true`, the spawn-headless handler dynamically imports
+   * `@qontinui/ui-bridge-headless` (an optional peer) and launches a real
+   * Chromium tab. When omitted/`false`, the route exists but returns 503.
+   *
+   * Precedence (highest first):
+   *   1. Explicit `true` here → enabled.
+   *   2. Environment: `ENABLE_HEADLESS_SPAWN=1` or `=true` → enabled.
+   *   3. Default → disabled.
+   *
+   * Disabled by default because the in-process Playwright launcher pulls
+   * in Chromium (~300 MB download) and a server-controlled headless browser
+   * has security implications outside dev environments.
+   */
+  enableHeadlessSpawn?: boolean;
 }
 
 /**
@@ -494,6 +524,49 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
     code,
     timestamp: Date.now(),
   };
+}
+
+/**
+ * Build the enriched "Component not found" error message used by every
+ * component-detail / component-action 404 site (Phase 1.1, plan 2026-05-03).
+ *
+ * Output format:
+ *   `Component "{id}" not found{otherRouteHint}. Available components: [...]. ` +
+ *   `Components are only available when their page is active — navigate to ` +
+ *   `the page that contains this component and try again.`
+ *
+ * `otherRouteHint` is appended only when `byRoute` (Phase 1.2 shape, with
+ * per-route `ids`) shows the missing id is registered on a different route.
+ * Falls back to no hint when `byRoute` / `currentRoute` are absent or the
+ * id genuinely doesn't exist anywhere — callers don't have to special-case
+ * the missing-snapshot scenario.
+ */
+export function buildComponentNotFoundError(
+  id: string,
+  available: readonly string[],
+  byRoute?: Record<string, { count: number; ids: string[] }>,
+  currentRoute?: string | null
+): string {
+  let otherRouteHint = '';
+  if (byRoute) {
+    for (const [route, entry] of Object.entries(byRoute)) {
+      if (route === currentRoute) continue;
+      if (entry?.ids?.includes(id)) {
+        const cur =
+          typeof currentRoute === 'string' && currentRoute.length > 0
+            ? currentRoute
+            : '(unknown)';
+        otherRouteHint = ` (registered on route '${route}', current route is '${cur}')`;
+        break;
+      }
+    }
+  }
+  return (
+    `Component "${id}" not found${otherRouteHint}. ` +
+    `Available components: [${available.join(', ')}]. ` +
+    `Components are only available when their page is active — ` +
+    `navigate to the page that contains this component and try again.`
+  );
 }
 
 /**
@@ -703,6 +776,60 @@ export function isAppResponsive(): boolean {
  */
 export function getLastHeartbeat(): number {
   return lastHeartbeatTimestamp;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 (plan 2026-05-03) — module-scoped headless tab tracking.
+//
+// Each createHandlers() call registers its own per-handler Set of tracked
+// tabs. The single beforeExit listener walks every registered set and closes
+// every tracked tab. An idempotent registration guard prevents duplicate
+// listeners when createHandlers is called multiple times in the same
+// process (e.g. tests).
+//
+// Caveat: there's no symmetric `destroy()` hook on the handlers object today,
+// so cleanup relies on `process.on('beforeExit')`. If a host process exits
+// abruptly (SIGKILL / hard crash), Playwright's child Chromium will be
+// reaped by the OS; this listener only handles graceful exits.
+// ---------------------------------------------------------------------------
+
+const _headlessTabSets = new Set<Set<{ close: () => Promise<void> }>>();
+let _headlessExitHookInstalled = false;
+
+function isHeadlessSpawnEnvEnabled(): boolean {
+  if (typeof process === 'undefined' || !process?.env) return false;
+  const raw = process.env.ENABLE_HEADLESS_SPAWN;
+  if (raw === undefined) return false;
+  const v = raw.toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function registerSpawnedHeadlessTabSet(set: Set<{ close: () => Promise<void> }>): void {
+  _headlessTabSets.add(set);
+  if (_headlessExitHookInstalled) return;
+  if (typeof process === 'undefined' || typeof process.on !== 'function') return;
+  _headlessExitHookInstalled = true;
+  // Note: `beforeExit` doesn't fire on signal-driven termination (SIGINT /
+  // SIGTERM) — host processes that need explicit signal handling should
+  // wire their own teardown that calls `closeAllSpawnedHeadlessTabs()`.
+  process.on('beforeExit', () => {
+    void closeAllSpawnedHeadlessTabs();
+  });
+}
+
+/**
+ * Close every spawned headless tab tracked across all `createHandlers()`
+ * instances. Exported so callers (e.g. CLI servers, integration tests) can
+ * trigger the same teardown the `beforeExit` listener would, on signal
+ * handlers or `server.stop()` paths where `beforeExit` won't fire.
+ */
+export async function closeAllSpawnedHeadlessTabs(): Promise<void> {
+  const allTabs: Array<{ close: () => Promise<void> }> = [];
+  for (const set of _headlessTabSets) {
+    for (const t of set) allTabs.push(t);
+    set.clear();
+  }
+  await Promise.allSettled(allTabs.map((t) => t.close()));
 }
 
 export function createHandlers(
@@ -1181,6 +1308,52 @@ export function createHandlers(
     });
   }
 
+  // Phase 1.1 (plan 2026-05-03) — enriched 404 message for component-detail
+  // sites. Pulls a fresh snapshot so `available` and `byRoute` reflect the
+  // moment of failure, not stale cache. Snapshot capture is wrapped because
+  // a flaky enricher must not turn a 404 into a 500.
+  function componentNotFoundMessage(id: string): string {
+    let available: string[];
+    let byRoute:
+      | Record<string, { count: number; ids: string[] }>
+      | undefined;
+    let currentRoute: string | undefined;
+    try {
+      const snapshot = registry.createSnapshot() as ControlSnapshot & {
+        registration?: { byRoute?: Record<string, { count: number; ids: string[] }> };
+        route?: string;
+      };
+      available = snapshot.components.map((c) => c.id);
+      byRoute = snapshot.registration?.byRoute;
+      currentRoute = snapshot.route;
+    } catch {
+      // Best-effort — if the snapshot probe explodes, fall back to a bare
+      // available-components-only message rather than 500ing the request.
+      try {
+        available = (registry.getAllComponents() as Array<{ id: string }>).map(
+          (c) => c.id
+        );
+      } catch {
+        available = [];
+      }
+    }
+    return buildComponentNotFoundError(id, available, byRoute, currentRoute);
+  }
+
+  // ===========================================================================
+  // Phase 4.1 (plan 2026-05-03) — Headless tab spawn lifecycle.
+  //
+  // Tracks every Chromium tab launched via /control/sdk/spawn-headless so we
+  // can close them all on server shutdown. The handler stores a `close()`
+  // thunk per tab; the registered `beforeExit` listener (idempotent across
+  // every createHandlers call in a process) iterates the union of all
+  // tracked sets.
+  // ===========================================================================
+  const headlessSpawnEnabled =
+    config.enableHeadlessSpawn === true || isHeadlessSpawnEnvEnabled();
+  const spawnedHeadlessTabs = new Set<{ close: () => Promise<void> }>();
+  registerSpawnedHeadlessTabSet(spawnedHeadlessTabs);
+
   return {
     // =========================================================================
     // Render Log Handlers
@@ -1242,6 +1415,7 @@ export function createHandlers(
       title?: string;
       aria_label?: string;
       text?: string;
+      revealsAny?: string;
     }): Promise<APIResponse<ControlSnapshot['elements']>> => {
       try {
         const elements = registry.getAllElements();
@@ -1250,12 +1424,18 @@ export function createHandlers(
         // Apply case-insensitive substring filters via the shared matcher
         // (uses the accessible-name fallback chain so callers see consistent
         // results across getElements / waitForElementByCondition / relay).
-        if (options?.title || options?.aria_label || options?.text) {
+        if (
+          options?.title ||
+          options?.aria_label ||
+          options?.text ||
+          options?.revealsAny
+        ) {
           materialized = materialized.filter((el) =>
             matchesElementSelector(el as unknown as MatchableElement, {
               title: options?.title,
               aria_label: options?.aria_label,
               text: options?.text,
+              revealsAny: options?.revealsAny,
             })
           );
         }
@@ -1546,6 +1726,80 @@ export function createHandlers(
       }
     },
 
+    // Phase 2.1 (plan 2026-05-03) — POST /control/element/:id/expect.
+    // Asserts an element predicate. Reuses `evaluateElementPredicate` +
+    // `pollWaitForElement` so the predicate semantics stay aligned with
+    // `/ai/wait-for-element`. The critical difference: this endpoint
+    // returns HTTP 422 + `passed:false` on timeout (instead of 200 +
+    // `found:false`) so callers can fail-fast on assertion violations
+    // without inspecting the body.
+    expectElement: async (
+      id: string,
+      request: ElementExpectRequest
+    ): Promise<APIResponse<ElementExpectResponse>> => {
+      const requestedState = request?.state;
+      if (typeof requestedState !== 'string') {
+        return error("expectElement: 'state' is required", 'VALIDATION_ERROR');
+      }
+      if (!WAIT_FOR_ELEMENT_STATES.includes(requestedState as WaitForElementState)) {
+        return error(
+          `expectElement: invalid state '${requestedState}', expected one of ${WAIT_FOR_ELEMENT_STATES.join('|')}`,
+          'VALIDATION_ERROR'
+        );
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeout === 'number' ? request.timeout : 5000, 0),
+        30_000
+      );
+      const pollMs = Math.max(typeof request?.pollMs === 'number' ? request.pollMs : 100, 10);
+
+      const takeSnapshot = (): ElementSnapshot => {
+        try {
+          const el = registry.getElement(id) as RegisteredElement | undefined;
+          return snapshotFromRegisteredElement(el);
+        } catch {
+          return { registered: false, state: null };
+        }
+      };
+
+      const outcome = await pollWaitForElement({
+        takeSnapshot,
+        predicate: requestedState as WaitForElementState,
+        timeoutMs,
+        pollMs,
+      });
+
+      const observedState = outcome.observed
+        ? {
+            registered: outcome.observed.registered,
+            state: (outcome.observed.state as Record<string, unknown> | null) ?? null,
+          }
+        : null;
+
+      if (outcome.found) {
+        return success<ElementExpectResponse>({
+          passed: true,
+          observedState,
+          durationMs: outcome.durationMs,
+        });
+      }
+
+      // Critical semantic difference vs `/ai/wait-for-element`: surface the
+      // assertion failure as HTTP 422 so callers can fail-fast on the status
+      // code rather than parsing the body.
+      const failureBody: APIResponse<ElementExpectResponse> = {
+        success: true,
+        data: {
+          passed: false,
+          observedState,
+          durationMs: outcome.durationMs,
+        },
+        timestamp: Date.now(),
+        httpStatus: 422,
+      };
+      return failureBody;
+    },
+
     executeBatchAction: async (
       request: BatchActionRequest
     ): Promise<APIResponse<BatchActionResponse>> => {
@@ -1628,7 +1882,7 @@ export function createHandlers(
       try {
         const component = registry.getComponent(id);
         if (!component) {
-          return error(`Component not found: ${id}`, 'NOT_FOUND');
+          return error(componentNotFoundMessage(id), 'NOT_FOUND');
         }
         return success(
           annotateComponentWithInvocationPaths(component) as ControlSnapshot['components'][0]
@@ -1651,14 +1905,14 @@ export function createHandlers(
         // First check if the component exists
         const component = registry.getComponent(id);
         if (!component) {
-          return error(`Component not found: ${id}`, 'NOT_FOUND');
+          return error(componentNotFoundMessage(id), 'NOT_FOUND');
         }
 
         // Use registry's getComponentState if available
         if (registry.getComponentState) {
           const stateResponse = registry.getComponentState(id);
           if (!stateResponse) {
-            return error(`Component not found or not mounted: ${id}`, 'NOT_FOUND');
+            return error(componentNotFoundMessage(id), 'NOT_FOUND');
           }
           return success(stateResponse);
         }
@@ -4831,6 +5085,55 @@ export function createHandlers(
     },
 
     // =========================================================================
+    // State Summary (Phase 1.3, plan 2026-05-03)
+    // =========================================================================
+
+    getStateSummary: async (): Promise<APIResponse<StateSummary>> => {
+      try {
+        const snapshot = registry.createSnapshot() as ControlSnapshot & {
+          route?: string;
+          activeTab?: string;
+        };
+        // Layout-positioned + visible: same predicate the AI/find ranking
+        // uses to mean "the user can actually see it right now". Avoids
+        // false positives from `display:none` slots that still register.
+        const visibleElementCount = snapshot.elements.reduce((acc, el) => {
+          const state = el.state as Partial<typeof el.state> | undefined;
+          const rect = state?.rect;
+          const hasLayout = !!rect && (rect.width > 0 || rect.height > 0);
+          const isVisible = state?.visible !== false;
+          return acc + (hasLayout && isVisible ? 1 : 0);
+        }, 0);
+
+        const modalOpen = (snapshot.modalStack?.count ?? 0) > 0;
+
+        let hasErrors = false;
+        if (consoleCapture) {
+          try {
+            const recent = consoleCapture.getConsoleRecent(1);
+            hasErrors = Array.isArray(recent) && recent.length > 0;
+          } catch {
+            hasErrors = false;
+          }
+        }
+
+        const idleSignals = idleDetector ? idleDetector.getStatus() : null;
+
+        return success({
+          visibleElementCount,
+          modalOpen,
+          hasErrors,
+          idleSignals,
+          registeredComponents: snapshot.components.length,
+          route: snapshot.route ?? null,
+          activeTab: snapshot.activeTab ?? null,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'STATE_SUMMARY_ERROR');
+      }
+    },
+
+    // =========================================================================
     // API Discovery
     // =========================================================================
 
@@ -6331,6 +6634,138 @@ export function createHandlers(
 
         setTimeout(poll, pollMs);
       });
+    },
+
+    // =========================================================================
+    // Phase 4.1 (plan 2026-05-03) — POST /control/sdk/spawn-headless.
+    //
+    // Wraps `@qontinui/ui-bridge-headless`'s in-process `launchHeadlessTab`
+    // so callers can spin up a real Chromium tab without a manual browser.
+    // Gated behind `enableHeadlessSpawn` (off by default) and dynamic-imports
+    // the optional peer so non-headless consumers pay zero cost.
+    //
+    // HTTP semantics:
+    //   - 503 (gate disabled or optional peer absent)
+    //   - 400 (validation: missing/non-string url, bad scheme)
+    //   - 200 (tab launched; `uiBridgeRegistered` may still be false)
+    // =========================================================================
+
+    spawnHeadless: async (
+      request: SpawnHeadlessRequest
+    ): Promise<APIResponse<SpawnHeadlessResponse>> => {
+      // Gate first — gives the caller a clear "not enabled" message instead
+      // of a misleading validation failure when the route is disabled.
+      if (!headlessSpawnEnabled) {
+        return {
+          success: false,
+          error:
+            'Headless spawn is not enabled. ' +
+            'Set ENABLE_HEADLESS_SPAWN=1 (or pass enableHeadlessSpawn: true ' +
+            'to createHandlers / createUIBridgeServer) to enable.',
+          code: 'HEADLESS_SPAWN_DISABLED',
+          timestamp: Date.now(),
+          httpStatus: 503,
+        };
+      }
+
+      // Validation. Both checks must come before the dynamic import so
+      // bad input doesn't trigger a Chromium download attempt.
+      const url = typeof request?.url === 'string' ? request.url.trim() : '';
+      if (!url) {
+        return {
+          success: false,
+          error: 'url is required',
+          code: 'VALIDATION_ERROR',
+          timestamp: Date.now(),
+          httpStatus: 400,
+        };
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        return {
+          success: false,
+          error: 'url must start with http:// or https://',
+          code: 'VALIDATION_ERROR',
+          timestamp: Date.now(),
+          httpStatus: 400,
+        };
+      }
+
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeoutMs === 'number' ? request.timeoutMs : 30_000, 0),
+        60_000
+      );
+      const keepAliveSecs = Math.max(
+        typeof request?.keepAliveSecs === 'number' ? request.keepAliveSecs : 300,
+        0
+      );
+      const headless = request?.headless !== false;
+      const viewportWidth =
+        typeof request?.viewport?.width === 'number' && request.viewport.width > 0
+          ? request.viewport.width
+          : 1280;
+      const viewportHeight =
+        typeof request?.viewport?.height === 'number' && request.viewport.height > 0
+          ? request.viewport.height
+          : 720;
+
+      // Dynamic import keeps the optional peer truly optional. If the
+      // package isn't installed (or fails to load — e.g. Playwright's
+      // browser binaries weren't fetched), surface 503 with the
+      // underlying error so operators know exactly what's missing.
+      let launcher: typeof import('@qontinui/ui-bridge-headless');
+      try {
+        launcher = await import('@qontinui/ui-bridge-headless');
+      } catch (importErr) {
+        return {
+          success: false,
+          error:
+            `@qontinui/ui-bridge-headless is not installed. ` +
+            `Install it as a peer dependency to enable headless spawn. ` +
+            `(import error: ${(importErr as Error).message})`,
+          code: 'HEADLESS_PEER_MISSING',
+          timestamp: Date.now(),
+          httpStatus: 503,
+        };
+      }
+
+      try {
+        const tab = await launcher.launchHeadlessTab({
+          url,
+          headless,
+          waitForUiBridgeMs: timeoutMs,
+          viewportWidth,
+          viewportHeight,
+        });
+
+        // Track the tab for shutdown cleanup, and arm the keep-alive timer.
+        const entry = { close: tab.close };
+        spawnedHeadlessTabs.add(entry);
+        if (keepAliveSecs > 0) {
+          const timer = setTimeout(() => {
+            void tab.close().catch(() => {
+              /* best-effort */
+            });
+            spawnedHeadlessTabs.delete(entry);
+          }, keepAliveSecs * 1000);
+          // Don't keep the host process alive purely on this timer.
+          if (typeof timer.unref === 'function') timer.unref();
+        }
+
+        return success<SpawnHeadlessResponse>({
+          spawned: true,
+          tabId: tab.tabId,
+          uiBridgeRegistered: tab.uiBridgeRegistered,
+          finalUrl: tab.finalUrl,
+        });
+      } catch (launchErr) {
+        return {
+          success: false,
+          error: (launchErr as Error).message ?? 'Headless launch failed',
+          code: 'HEADLESS_LAUNCH_FAILED',
+          timestamp: Date.now(),
+          httpStatus: 500,
+        };
+      }
     },
 
     // =========================================================================

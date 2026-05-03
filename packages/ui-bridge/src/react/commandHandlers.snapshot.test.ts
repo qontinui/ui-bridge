@@ -53,7 +53,7 @@ type Snapshot = {
   registration: {
     totalRegistered: number;
     everHadRegistrations: boolean;
-    byRoute: Record<string, number>;
+    byRoute: Record<string, { count: number; ids: string[] }>;
   };
   elements: Array<Record<string, unknown>>;
   components: Array<Record<string, unknown>>;
@@ -163,10 +163,10 @@ describe('executeCommand · getControlSnapshot · F3 registration metadata', () 
 
     expect(snap.registration.totalRegistered).toBe(3);
     expect(snap.registration.everHadRegistrations).toBe(true);
-    expect(snap.registration.byRoute).toEqual({
-      '/fleet': 2,
-      '/settings': 1,
-    });
+    expect(snap.registration.byRoute['/fleet'].count).toBe(2);
+    expect(new Set(snap.registration.byRoute['/fleet'].ids)).toEqual(new Set(['a', 'b']));
+    expect(snap.registration.byRoute['/settings'].count).toBe(1);
+    expect(snap.registration.byRoute['/settings'].ids).toEqual(['c']);
     // Sanity-check the elements array length agrees with totalRegistered.
     expect(snap.elements).toHaveLength(snap.registration.totalRegistered);
   });
@@ -340,6 +340,75 @@ describe('executeCommand · getControlSnapshot · componentBasePath option', () 
       | { componentActionBasePath?: string }
       | undefined;
     expect(el!.componentActionBasePath).toBe('/control/component/login-form');
+  });
+});
+
+describe('executeCommand · getControlSnapshot · Phase 3 scope+reveals (plan 2026-05-03)', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    window.history.pushState(null, '', '/');
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+    resetGlobalRegistry();
+    vi.restoreAllMocks();
+  });
+
+  it('component scope round-trips: undefined → undefined (default "route")', async () => {
+    const registry = getGlobalRegistry();
+    registry.registerComponent('login-form', {
+      name: 'Login Form',
+      actions: [{ id: 'submit', handler: () => {} }],
+    });
+    const snap = await getSnapshot();
+    const comp = snap.components[0] as { id: string; scope?: string };
+    expect(comp.id).toBe('login-form');
+    // Default behavior: scope is omitted (clients treat undefined as "route").
+    expect(comp.scope).toBeUndefined();
+  });
+
+  it('component scope round-trips: "global" passes through verbatim', async () => {
+    const registry = getGlobalRegistry();
+    registry.registerComponent('command-palette', {
+      name: 'Command Palette',
+      actions: [],
+      scope: 'global',
+    });
+    const snap = await getSnapshot();
+    const comp = snap.components[0] as { id: string; scope?: string };
+    expect(comp.id).toBe('command-palette');
+    expect(comp.scope).toBe('global');
+  });
+
+  it('element reveals round-trips: undefined → undefined', async () => {
+    const registry = getGlobalRegistry();
+    const btn = document.createElement('button');
+    container.appendChild(btn);
+    registry.registerElement('plain-btn', btn);
+    const snap = await getSnapshot();
+    const el = snap.elements[0] as { id: string; reveals?: string[] };
+    expect(el.id).toBe('plain-btn');
+    expect(el.reveals).toBeUndefined();
+  });
+
+  it('element reveals round-trips: array passes through verbatim', async () => {
+    const registry = getGlobalRegistry();
+    const btn = document.createElement('button');
+    container.appendChild(btn);
+    registry.registerElement('sidebar-toggle', btn, {
+      reveals: ['session-card-*', 'promote-to-worktree-*'],
+    });
+    const snap = await getSnapshot();
+    const el = snap.elements.find((e) => e.id === 'sidebar-toggle') as
+      | { reveals?: string[] }
+      | undefined;
+    expect(el).toBeDefined();
+    expect(el!.reveals).toEqual(['session-card-*', 'promote-to-worktree-*']);
   });
 });
 

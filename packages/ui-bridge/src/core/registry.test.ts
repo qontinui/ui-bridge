@@ -489,17 +489,21 @@ describe('UIBridgeRegistry', () => {
       registry.registerElement('a2', a2, { route: '/fleet' });
       registry.registerElement('b1', b1, { route: '/settings' });
 
-      expect(registry.createSnapshot().registration.byRoute).toEqual({
-        '/fleet': 2,
-        '/settings': 1,
-      });
+      const byRoute1 = registry.createSnapshot().registration.byRoute;
+      expect(byRoute1['/fleet'].count).toBe(2);
+      expect(new Set(byRoute1['/fleet'].ids)).toEqual(new Set(['a1', 'a2']));
+      expect(byRoute1['/settings'].count).toBe(1);
+      expect(byRoute1['/settings'].ids).toEqual(['b1']);
 
       // Drop the only /settings element — the key itself should be removed.
       registry.unregisterElement('b1');
-      expect(registry.createSnapshot().registration.byRoute).toEqual({ '/fleet': 2 });
+      const byRoute2 = registry.createSnapshot().registration.byRoute;
+      expect(Object.keys(byRoute2)).toEqual(['/fleet']);
+      expect(byRoute2['/fleet'].count).toBe(2);
+      expect(new Set(byRoute2['/fleet'].ids)).toEqual(new Set(['a1', 'a2']));
 
       // Drop both /fleet elements — byRoute should be fully empty, not
-      // `{ '/fleet': 0 }`.
+      // `{ '/fleet': { count: 0, ids: [] } }`.
       registry.unregisterElement('a1');
       registry.unregisterElement('a2');
       expect(registry.createSnapshot().registration.byRoute).toEqual({});
@@ -515,7 +519,8 @@ describe('UIBridgeRegistry', () => {
       // jsdom defaults to "/" — whatever the current pathname is, it must
       // be present in both the top-level `route` and `byRoute`.
       expect(typeof snap.route).toBe('string');
-      expect(snap.registration.byRoute[snap.route!]).toBe(1);
+      expect(snap.registration.byRoute[snap.route!].count).toBe(1);
+      expect(snap.registration.byRoute[snap.route!].ids).toEqual(['btn-1']);
     });
 
     it('passing route: null opts the element out of byRoute entirely', () => {
@@ -541,7 +546,9 @@ describe('UIBridgeRegistry', () => {
 
       expect(snap.registration.totalRegistered).toBe(1);
       expect(snap.registration.everHadRegistrations).toBe(true);
-      expect(snap.registration.byRoute).toEqual({ '/async-page': 1 });
+      expect(snap.registration.byRoute).toEqual({
+        '/async-page': { count: 1, ids: ['async-btn'] },
+      });
       expect(snap.snapshotTakenAtMs).toBeGreaterThan(0);
       expect(snap.snapshotTakenAtMs).toBe(snap.timestamp);
     });
@@ -563,7 +570,9 @@ describe('UIBridgeRegistry', () => {
       // Reverse the prior entry's route on overwrite so /a goes back to 0
       // (and is therefore dropped) and /b holds the single live count.
       expect(snap.registration.totalRegistered).toBe(1);
-      expect(snap.registration.byRoute).toEqual({ '/b': 1 });
+      expect(snap.registration.byRoute).toEqual({
+        '/b': { count: 1, ids: ['same-id'] },
+      });
     });
 
     it('individual snapshot elements echo their registration route', () => {
@@ -709,6 +718,98 @@ describe('UIBridgeRegistry', () => {
       expect(freshRegistry).toBeInstanceOf(UIBridgeRegistry);
       expect(freshRegistry.getAllElements()).toHaveLength(0);
       expect(freshRegistry).not.toBe(newRegistry);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Phase 3 (plan 2026-05-03): scope on components, reveals on elements.
+  // Both are additive optional fields the registry must round-trip
+  // verbatim into the snapshot. Default-undefined is the supported "no
+  // change" path for existing callers.
+  // ──────────────────────────────────────────────────────────────────────
+  describe('Phase 3 — scope on components', () => {
+    it('defaults scope to undefined when not provided (treated as "route")', () => {
+      const comp = registry.registerComponent('form-1', {
+        name: 'Form',
+        actions: [],
+      });
+      expect(comp.scope).toBeUndefined();
+
+      const snap = registry.createSnapshot();
+      const snapComp = snap.components.find((c) => c.id === 'form-1');
+      expect(snapComp).toBeDefined();
+      expect(snapComp!.scope).toBeUndefined();
+    });
+
+    it('passes scope: "global" through to the registry entry and snapshot', () => {
+      const comp = registry.registerComponent('palette', {
+        name: 'Command Palette',
+        actions: [],
+        scope: 'global',
+      });
+      expect(comp.scope).toBe('global');
+
+      const snap = registry.createSnapshot();
+      const snapComp = snap.components.find((c) => c.id === 'palette');
+      expect(snapComp!.scope).toBe('global');
+    });
+
+    it('updateComponent({scope}) mutates the existing entry without re-registering', () => {
+      registry.registerComponent('p', { name: 'p', actions: [] });
+      // Initial: undefined.
+      expect(registry.getComponent('p')!.scope).toBeUndefined();
+      const ok = registry.updateComponent('p', { scope: 'global' });
+      expect(ok).toBe(true);
+      expect(registry.getComponent('p')!.scope).toBe('global');
+    });
+
+    it('passes scope through createSnapshotAsync as well', async () => {
+      registry.registerComponent('async-p', {
+        name: 'Async Palette',
+        actions: [],
+        scope: 'global',
+      });
+      const snap = await registry.createSnapshotAsync(50);
+      const snapComp = snap.components.find((c) => c.id === 'async-p');
+      expect(snapComp!.scope).toBe('global');
+    });
+  });
+
+  describe('Phase 3 — reveals on elements', () => {
+    it('defaults reveals to undefined when not provided', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      const reg = registry.registerElement('plain-btn', btn);
+      expect(reg.reveals).toBeUndefined();
+
+      const snap = registry.createSnapshot();
+      const el = snap.elements.find((e) => e.id === 'plain-btn');
+      expect(el!.reveals).toBeUndefined();
+    });
+
+    it('passes reveals array through to the registry entry and snapshot', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('toggle', btn, {
+        reveals: ['session-card-*', 'commit-progress-*'],
+      });
+      expect(registry.getElement('toggle')!.reveals).toEqual([
+        'session-card-*',
+        'commit-progress-*',
+      ]);
+
+      const snap = registry.createSnapshot();
+      const el = snap.elements.find((e) => e.id === 'toggle');
+      expect(el!.reveals).toEqual(['session-card-*', 'commit-progress-*']);
+    });
+
+    it('updateElement({reveals}) overwrites the existing array', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('toggle', btn, { reveals: ['a-*'] });
+      const ok = registry.updateElement('toggle', { reveals: ['b-*', 'c-*'] });
+      expect(ok).toBe(true);
+      expect(registry.getElement('toggle')!.reveals).toEqual(['b-*', 'c-*']);
     });
   });
 });

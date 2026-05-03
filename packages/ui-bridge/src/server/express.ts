@@ -234,7 +234,22 @@ function createRouteHandler(
       }
 
       const result = await handler(...args);
-      res.json(result);
+      // Honor APIResponse.httpStatus for endpoints that need 4xx semantics
+      // (e.g. Phase 2.1 `/control/element/:id/expect` → 422 on assertion
+      // failure). Strip the hint from the body so the envelope shape stays
+      // stable for consumers that only know the default 200 contract.
+      const httpStatus =
+        typeof (result as APIResponse<unknown>).httpStatus === 'number'
+          ? (result as APIResponse<unknown>).httpStatus
+          : undefined;
+      let body: unknown = result;
+      if (httpStatus !== undefined) {
+        const { httpStatus: _omit, ...rest } = result as APIResponse<unknown>;
+        body = rest;
+        res.status(httpStatus).json(body);
+      } else {
+        res.json(body);
+      }
     } catch (error) {
       res.status(500).json(wrapError(error as Error, 'INTERNAL_ERROR'));
     }

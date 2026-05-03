@@ -31,6 +31,25 @@ var UI_BRIDGE_ROUTES = [
     params: ["id"],
     bodyRequired: true
   },
+  // Phase 2.1 (plan 2026-05-03) — assert an element predicate. Returns
+  // 200 + passed:true on success, 422 + passed:false on timeout.
+  {
+    method: "POST",
+    path: "/control/element/:id/expect",
+    handler: "expectElement",
+    params: ["id"],
+    bodyRequired: true
+  },
+  // Phase 4.1 (plan 2026-05-03) — spawn a real Chromium tab via
+  // `@qontinui/ui-bridge-headless`. Gated behind `enableHeadlessSpawn`
+  // / `ENABLE_HEADLESS_SPAWN=1`; returns 503 when disabled or the
+  // optional peer dependency is absent.
+  {
+    method: "POST",
+    path: "/control/sdk/spawn-headless",
+    handler: "spawnHeadless",
+    bodyRequired: true
+  },
   {
     method: "POST",
     path: "/control/actions/batch",
@@ -64,6 +83,9 @@ var UI_BRIDGE_ROUTES = [
   { method: "POST", path: "/control/discover", handler: "discover" },
   // @deprecated Use /control/find
   { method: "GET", path: "/control/snapshot", handler: "getControlSnapshot" },
+  // Phase 1.3 (plan 2026-05-03) — flat digest synthesized from snapshot +
+  // console-errors + idle-status. One call instead of five.
+  { method: "GET", path: "/control/state-summary", handler: "getStateSummary" },
   { method: "POST", path: "/control/get-element-images", handler: "getElementImages" },
   // Workflows
   { method: "GET", path: "/control/workflows", handler: "getWorkflows" },
@@ -692,7 +714,15 @@ function createRouteHandler(route, handler) {
         args.push(req.query);
       }
       const result = await handler(...args);
-      res.json(result);
+      const httpStatus = typeof result.httpStatus === "number" ? result.httpStatus : void 0;
+      let body = result;
+      if (httpStatus !== void 0) {
+        const { httpStatus: _omit, ...rest } = result;
+        body = rest;
+        res.status(httpStatus).json(body);
+      } else {
+        res.json(body);
+      }
     } catch (error) {
       res.status(500).json(wrapError(error, "INTERNAL_ERROR"));
     }

@@ -1392,7 +1392,10 @@ function serializeRegisteredElement(el, options = {}) {
     // Route captured at registration time. Mirrored on the snapshot element
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
-    route: el.route
+    route: el.route,
+    // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
+    // can answer "which control unhides element X" without grepping source.
+    reveals: el.reveals
   };
 }
 function captureDocumentVisibility() {
@@ -1770,6 +1773,11 @@ var UIBridgeRegistry = class {
     // without a route (non-DOM environment) are tracked under the empty-string
     // key `""` — snapshot serialization filters that bucket out.
     this.routeCounts = /* @__PURE__ */ new Map();
+    // Per-route element-id sets — paired with `routeCounts` so the snapshot
+    // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
+    // empty-string convention for undefined-route elements; same drop-on-empty
+    // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
+    this.routeIds = /* @__PURE__ */ new Map();
     // External store pattern for useSyncExternalStore
     this.storeVersion = 0;
     this.storeListeners = /* @__PURE__ */ new Set();
@@ -1933,6 +1941,7 @@ var UIBridgeRegistry = class {
     if (options.position !== void 0) existing.position = options.position;
     if (options.color !== void 0) existing.color = options.color;
     if (options.contextPath !== void 0) existing.contextPath = options.contextPath;
+    if (options.reveals !== void 0) existing.reveals = options.reveals;
     return true;
   }
   /**
@@ -2058,7 +2067,10 @@ var UIBridgeRegistry = class {
       // Undefined for interactive elements and for content registered via
       // the heading/paragraph/table-cell content-discovery path.
       content: options.content,
-      role: options.role
+      role: options.role,
+      // Phase 3.2 — ids/globs this control reveals. Undefined for elements
+      // that don't gate any visibility (the common case).
+      reveals: options.reveals
     };
     Object.defineProperty(registered, "__stateOverridesRef", {
       value: stateOverridesRef,
@@ -2068,25 +2080,38 @@ var UIBridgeRegistry = class {
     });
     const prior = this.elements.get(actualId);
     if (prior) {
-      this.decrementRouteCount(prior.route);
+      this.decrementRouteCount(prior.route, actualId);
     }
     this.elements.set(actualId, registered);
     this.everHadRegistrationsFlag = true;
-    this.incrementRouteCount(route);
+    this.incrementRouteCount(route, actualId);
     this.emit("element:registered", { id: actualId, type, label: options.label });
     return registered;
   }
-  incrementRouteCount(route) {
+  incrementRouteCount(route, id) {
     const key = route ?? "";
     this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
+    let ids = this.routeIds.get(key);
+    if (!ids) {
+      ids = /* @__PURE__ */ new Set();
+      this.routeIds.set(key, ids);
+    }
+    ids.add(id);
   }
-  decrementRouteCount(route) {
+  decrementRouteCount(route, id) {
     const key = route ?? "";
     const next = (this.routeCounts.get(key) ?? 0) - 1;
     if (next <= 0) {
       this.routeCounts.delete(key);
     } else {
       this.routeCounts.set(key, next);
+    }
+    const ids = this.routeIds.get(key);
+    if (ids) {
+      ids.delete(id);
+      if (ids.size === 0) {
+        this.routeIds.delete(key);
+      }
     }
   }
   /**
@@ -2168,7 +2193,7 @@ var UIBridgeRegistry = class {
       }
       registered.mounted = false;
       this.elements.delete(id);
-      this.decrementRouteCount(registered.route);
+      this.decrementRouteCount(registered.route, id);
       this.emit("element:unregistered", { id });
       this.options.elementEventLog?.removeElement(id);
       return true;
@@ -2454,6 +2479,7 @@ var UIBridgeRegistry = class {
     if (options.elementIds !== void 0) existing.elementIds = options.elementIds;
     if (options.getState !== void 0) existing.getState = options.getState;
     if (options.getComputed !== void 0) existing.getComputed = options.getComputed;
+    if (options.scope !== void 0) existing.scope = options.scope;
     return true;
   }
   /**
@@ -2475,7 +2501,8 @@ var UIBridgeRegistry = class {
       registeredAt: Date.now(),
       mounted: true,
       getState: options.getState,
-      getComputed: options.getComputed
+      getComputed: options.getComputed,
+      scope: options.scope
     };
     this.components.set(id, registered);
     this.emit("component:registered", { id, name: options.name });
@@ -2932,16 +2959,27 @@ var UIBridgeRegistry = class {
     return this.everHadRegistrationsFlag;
   }
   /**
-   * Per-route counts of currently-registered elements. Returns a plain
-   * object copy so callers can't mutate the internal map. Elements with
-   * an undefined route are omitted. Exposed primarily for tests; production
-   * code should read `BridgeSnapshot.registration.byRoute`.
+   * Per-route counts of currently-registered elements, plus the ids that
+   * make up each count. Returns a plain object copy so callers can't mutate
+   * internal state. Elements with an undefined route are omitted. Exposed
+   * primarily for tests; production code should read
+   * `BridgeSnapshot.registration.byRoute`.
+   *
+   * Each value is `{ count: number; ids: string[] }`. The `count` field
+   * mirrors the prior `Record<string, number>` shape (kept verbatim so
+   * existing readers like the cross-route 404 hint can detect coverage),
+   * and `ids` enumerates the element ids registered on that route at
+   * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
    */
   getCountsByRoute() {
     const out = {};
     for (const [route, count] of this.routeCounts) {
       if (route === "") continue;
-      if (count > 0) out[route] = count;
+      if (count > 0) {
+        const idSet = this.routeIds.get(route);
+        const ids = idSet ? Array.from(idSet) : [];
+        out[route] = { count, ids };
+      }
     }
     return out;
   }
@@ -3118,7 +3156,10 @@ var UIBridgeRegistry = class {
         // Tell the caller exactly how to invoke any action on this component
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
+        elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -3167,7 +3208,10 @@ var UIBridgeRegistry = class {
         // Tell the caller exactly how to invoke any action on this component
         // without having to grep docs or guess the route shape.
         actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds
+        elementIds: comp.elementIds,
+        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+        // is the documented default ("route").
+        scope: comp.scope
       })),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
@@ -3192,6 +3236,7 @@ var UIBridgeRegistry = class {
     this.transitions.clear();
     this.activeStates.clear();
     this.routeCounts.clear();
+    this.routeIds.clear();
     this.everHadRegistrationsFlag = false;
   }
   /**

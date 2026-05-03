@@ -11,6 +11,7 @@ export * from './types';
 export {
   createHandlers,
   createAIHandlers,
+  closeAllSpawnedHeadlessTabs,
   type RegistryLike,
   type ActionExecutorLike,
   type CreateHandlersConfig,

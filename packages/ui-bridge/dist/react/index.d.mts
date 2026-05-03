@@ -1,10 +1,10 @@
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import React$1, { ReactNode, ReactElement } from 'react';
-import { dI as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, eo as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dv as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, en as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eq as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dP as UseUIRelationshipOptions, cz as InlineRelationship, dN as UseDragSourceOptions, dO as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-DHAgZgSv.mjs';
-import { U as UIBridgeWSClient } from '../websocket-client-DXyn4Zfr.mjs';
+import { dI as UIBridgeFeatures, t as UIBridgeConfig, ar as UIBridgeRegistry, b9 as ActionExecutor, eo as WorkflowEngine, a as WSConnectionState, as as RegisteredElement, d8 as RegisteredComponent, c as BridgeSnapshot, B as BridgeEventType, bi as BridgeEventListener, c3 as ElementEventLog, b as WSSubscriptionOptions, e as BridgeEvent, aq as OnBrowserEventCallback, ap as BrowserCaptureConfig, ca as ElementType, dv as StandardAction, bL as CustomAction, at as ElementState, c8 as ElementLogLevel, aT as RelationshipType, c7 as ElementIdentifier, r as ElementHistoryOptions, s as ElementLogEntry, en as Workflow, u as ControlActionRequest, C as ControlActionResponse, v as ComponentActionRequest, g as ComponentActionResponse, w as FindRequest, x as FindResponse, y as WorkflowRunRequest, z as WorkflowRunResponse, p as UIStateGroup, U as UIState, S as StateSnapshot, eq as WorkflowStep, T as TransitionResult, q as UITransition, N as NavigationResult, P as PathResult, bD as ContentRole, aF as DeveloperPageContext, aE as RouteInfo, aI as KeyboardShortcut, dP as UseUIRelationshipOptions, cz as InlineRelationship, dN as UseDragSourceOptions, dO as UseDropZoneOptions, ax as DeclaredUndoState } from '../types-gR41i0Eb.mjs';
+import { U as UIBridgeWSClient } from '../websocket-client-rEtGIRSa.mjs';
 import { RenderLogManager } from '../render-log/index.mjs';
-import { M as MetricsCollector } from '../metrics-kVxhD117.mjs';
-import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-cnGBHZLF.mjs';
+import { M as MetricsCollector } from '../metrics-D3AGz2RJ.mjs';
+import { N as NavigationTracker, S as ShortcutTracker, M as ModalDetector, T as ToastCapture, R as RelationshipTracker, D as DragDropDetector, U as UndoTracker } from '../drag-drop-detector-BHqiNVzI.mjs';
 import { E as ElementAnnotation } from '../types-C7D5seeQ.mjs';
 
 /**
@@ -180,6 +180,18 @@ interface UseUIElementOptions {
      * Default: false.
      */
     persistWhileMounted?: boolean;
+    /**
+     * Phase 3.2 (plan 2026-05-03) — element ids (or simple `*`-glob patterns)
+     * that this control unhides / reveals when activated. Lets clients answer
+     * "which control unhides element X" via
+     * `GET /control/elements?revealsAny=<id-or-glob>` without grepping source.
+     *
+     * Example: a sidebar toggle that exposes session cards might declare
+     * `reveals: ["session-card-*", "promote-to-worktree-*"]`. The query side
+     * matches in either direction — the query value can be a concrete id
+     * matched against a glob entry, or a glob matched against concrete entries.
+     */
+    reveals?: string[];
 }
 /**
  * useUIElement return value
@@ -364,6 +376,15 @@ interface UseUIComponentOptions {
     state?: () => Record<string, unknown>;
     /** Computed properties exposed by the component */
     computed?: Record<string, ComputedPropertyDef | (() => unknown)>;
+    /**
+     * Discoverability scope (Phase 3.1, plan 2026-05-03). Defaults to
+     * `'route'` (the historical behavior — components show up only while the
+     * mounting page is active). Set to `'global'` to advertise the component
+     * as intended for cross-route availability (e.g. a permanent overlay or
+     * app-shell control). The field is plumbed through to listings/snapshots
+     * for clients to consume; it does not currently change mount semantics.
+     */
+    scope?: 'global' | 'route';
 }
 /**
  * useUIComponent return value

@@ -27,6 +27,14 @@ import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
+import { buildComponentNotFoundError } from '../server/handlers';
+import {
+  pollWaitForElement,
+  snapshotFromRegisteredElement,
+  WAIT_FOR_ELEMENT_STATES,
+  type WaitForElementState,
+  type ElementSnapshot,
+} from '../ai/wait-for-element';
 
 // ============================================================================
 // Types
@@ -284,6 +292,36 @@ function resolveElementWithFallback(id: string): RegisteredElement | undefined {
 function elementToSnapshot(e: RegisteredElement) {
   const state = e.getState();
   return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+}
+
+/**
+ * Phase 1.1 (plan 2026-05-03) — enriched component-not-found message for
+ * the four in-process call sites. Uses the global registry to source
+ * available components, route, and Phase-1.2 byRoute metadata, then
+ * defers to `buildComponentNotFoundError` so every site emits the same
+ * shape (with cross-route hint when applicable).
+ */
+function inProcessComponentNotFoundMessage(id: string): string {
+  let available: string[] = [];
+  let byRoute:
+    | Record<string, { count: number; ids: string[] }>
+    | undefined;
+  let currentRoute: string | undefined;
+  try {
+    const reg = getGlobalRegistry();
+    available = reg.getAllComponents().map((c) => c.id);
+    try {
+      byRoute = reg.getCountsByRoute();
+    } catch {
+      byRoute = undefined;
+    }
+  } catch {
+    // Registry probe failed — fall through with empties.
+  }
+  if (typeof window !== 'undefined' && window.location?.pathname) {
+    currentRoute = window.location.pathname;
+  }
+  return buildComponentNotFoundError(id, available, byRoute, currentRoute);
 }
 
 function elementToFindResult(e: RegisteredElement) {
@@ -670,7 +708,7 @@ export async function executeCommand(
       let registration: {
         totalRegistered: number;
         everHadRegistrations: boolean;
-        byRoute: Record<string, number>;
+        byRoute: Record<string, { count: number; ids: string[] }>;
       } = {
         totalRegistered: elements.length,
         everHadRegistrations: false,
@@ -735,6 +773,8 @@ export async function executeCommand(
           // caller-provided `componentBasePath` when present so relay
           // consumers behind a mount prefix (the runner) get usable paths.
           actionInvocationPath: `${componentBasePath ?? '/control/component'}/${c.id}/action/{actionId}`,
+          // Phase 3.1: pass scope through verbatim. Undefined ≡ "route".
+          scope: c.scope,
         })),
         // Relay handler keeps the legacy `steps` array (not `stepCount`)
         // alongside `activeRuns: []` because existing relay-driven callers
@@ -1330,6 +1370,62 @@ export async function executeCommand(
       };
     }
 
+    // Phase 2.1 (plan 2026-05-03) — POST /control/element/:id/expect served
+    // by the in-browser SDK runtime. Reuses `pollWaitForElement` so the
+    // predicate semantics stay aligned with `/ai/wait-for-element`. The
+    // 422 status is stamped by the relay handler upstream — this command
+    // returns the data body unchanged.
+    case 'expectElement': {
+      const { id, request } = payload as {
+        id: string;
+        request: { state: WaitForElementState; timeout?: number; pollMs?: number };
+      };
+      const requestedState = request?.state;
+      if (typeof requestedState !== 'string') {
+        return {
+          success: false,
+          error: "expectElement: 'state' is required",
+          timestamp: Date.now(),
+        };
+      }
+      if (!WAIT_FOR_ELEMENT_STATES.includes(requestedState)) {
+        return {
+          success: false,
+          error: `expectElement: invalid state '${requestedState}', expected one of ${WAIT_FOR_ELEMENT_STATES.join('|')}`,
+          timestamp: Date.now(),
+        };
+      }
+      const timeoutMs = Math.min(
+        Math.max(typeof request?.timeout === 'number' ? request.timeout : 5000, 0),
+        30_000
+      );
+      const pollMs = Math.max(typeof request?.pollMs === 'number' ? request.pollMs : 100, 10);
+      const takeSnapshot = (): ElementSnapshot => {
+        try {
+          return snapshotFromRegisteredElement(getElement(id));
+        } catch {
+          return { registered: false, state: null };
+        }
+      };
+      const outcome = await pollWaitForElement({
+        takeSnapshot,
+        predicate: requestedState,
+        timeoutMs,
+        pollMs,
+      });
+      const observedState = outcome.observed
+        ? {
+            registered: outcome.observed.registered,
+            state: (outcome.observed.state as Record<string, unknown> | null) ?? null,
+          }
+        : null;
+      return {
+        passed: outcome.found,
+        observedState,
+        durationMs: outcome.durationMs,
+      };
+    }
+
     case 'highlightElement': {
       const dom = (getElement(payload.id as string)?.element ?? null) as HTMLElement | null;
       if (dom) {
@@ -1480,7 +1576,7 @@ export async function executeCommand(
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now(),
         };
       }
@@ -1507,7 +1603,7 @@ export async function executeCommand(
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now(),
         };
       }
@@ -1533,7 +1629,7 @@ export async function executeCommand(
       if (!comp) {
         return {
           success: false,
-          error: `Component "${compId}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(compId),
           timestamp: Date.now(),
         };
       }
@@ -1555,7 +1651,7 @@ export async function executeCommand(
       if (!comp) {
         return {
           success: false,
-          error: `Component "${id}" not found. Components are only available when their page is active.`,
+          error: inProcessComponentNotFoundMessage(id),
           timestamp: Date.now(),
         };
       }
