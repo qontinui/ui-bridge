@@ -53,11 +53,15 @@ jobs:
           echo "Derived package: $name"
 
       - name: Install dependencies
-        # --legacy-peer-deps because the root project pins eslint@^10 while
-        # eslint-plugin-react's published peers max out at ^9.7. The conflict
-        # is benign for the publish path (we don't run lint here) but blocks
-        # `npm ci` strict resolution.
-        run: npm ci --legacy-peer-deps
+        # `npm install` (not `npm ci`) because:
+        #   1. --legacy-peer-deps is needed: the root project pins eslint@^10
+        #      while eslint-plugin-react's published peers cap at ^9.7. The
+        #      publish path doesn't lint anything, so the conflict is benign.
+        #   2. npm ci has a long-standing bug with platform-optional deps
+        #      (https://github.com/npm/cli/issues/4828) — Rollup's native
+        #      `@rollup/rollup-linux-x64-gnu` doesn't get installed, breaking
+        #      the build step. `npm install` resolves optional deps correctly.
+        run: npm install --legacy-peer-deps
 
       - name: Build
         run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
