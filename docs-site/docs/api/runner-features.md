@@ -328,6 +328,23 @@ event pump.
 
 ### Mobile transport paths — required reading before testing
 
+> **Precondition.** Installing and launching the qontinui-mobile app on a
+> phone is necessary but **not sufficient** for the runner to see the
+> device. A transport must also be active before `localhost:8087`
+> resolves to the device's UI Bridge or `GET /control/devices` returns a
+> non-empty list. Set up one of:
+>
+> - **USB:** `adb forward tcp:8087 tcp:8087` from the host. Verify with
+>   `adb forward --list | grep tcp:8087`.
+> - **LAN/cloud relay:** pair via the in-app Connection Wizard. Verify
+>   with `GET /control/devices` returning at least one entry.
+> - **Local dev server:** `npx expo start` with the mobile app running
+>   in dev mode. Verify the same way.
+>
+> If `/control/devices` returns `count: 0`, no transport is active —
+> driving the mobile app via UI Bridge will fail with empty snapshots
+> regardless of how the app appears on the phone screen.
+
 `MOBILE_BASE=http://localhost:8087/ui-bridge` only works *after* a
 transport has been established. The mobile app does NOT bind to
 `localhost:8087` on the host machine on its own — it binds on the
@@ -814,6 +831,35 @@ conditional shape is still emitted when `unwrap` is omitted or false.
 **Security filter:** the evaluator rejects expressions matching
 `\bfetch\s*\(`. Use `window["fet"+"ch"]("/url")` for fetch tests
 (see "Network stubs" above).
+
+### Response-shape gotcha — wrap returns in `JSON.stringify`
+
+The default response shape varies by what the IIFE returns:
+
+- **Primitive** (`document.body.children.length`):
+  `{ "data": { "result": { "value": 2 } } }`
+- **Object** (`({x:1, y:2})`):
+  `{ "data": { "result": { "x": 1, "y": 2 } } }` — the object's keys
+  sit directly on `result`; there is no wrapping `value` field.
+- **Null / early return**: `{ "data": { "result": null } }` — `value`
+  is absent entirely.
+
+Callers that hard-code `data.result.value` get burned the moment an
+expression starts returning an object instead of a scalar. The cheap
+fix is a convention: **wrap the IIFE return in `JSON.stringify(...)`**
+so the response is uniformly `{ result: { value: "<json string>" } }`,
+then `JSON.parse(value)` on the client side.
+
+```js
+// Avoid: shape varies
+"({ phase: r.dataset.pipelinePhase })"
+// Prefer: shape uniform — { result: { value: "<json string>" } }
+"JSON.stringify({ phase: r.dataset.pipelinePhase })"
+```
+
+This is a recommendation, not enforced — old callers continue to work,
+and `unwrap: true` (above) is the other way out. Pick one and stick to
+it per call site.
 
 ## Components (preferred over button clicks)
 
