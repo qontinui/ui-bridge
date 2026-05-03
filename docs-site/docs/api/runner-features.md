@@ -843,6 +843,16 @@ Each component detail also includes `actionInvocationPath` templates
 and per-action `path` fields — the response itself tells you how to
 call it.
 
+### JSON field convention (camelCase)
+
+All `/ui-bridge/apps/*` and `/ui-bridge/control/*` endpoints use **camelCase**
+JSON field names. The Rust DTOs derive `#[serde(rename_all = "camelCase")]`
+so a typo like `keep_alive_secs` is silently dropped without `deny_unknown_fields`
+— and on the register endpoint, *with* `deny_unknown_fields` (since 2026-05-03)
+typos return HTTP 400 with the offending field name in the error envelope.
+Example: pass `keepAliveSecs`, not `keep_alive_secs`. `appId`, not `app_id`.
+`baseUrl`, not `base_url`. `pageUrl`, not `page_url`.
+
 ### Driving a specific app (transport-agnostic)
 
 ```http
@@ -883,9 +893,14 @@ POST /ui-bridge/control/wait-for-app
 Polling primitive that mirrors the `wait-for-element` shape but checks
 the registry instead of the DOM. Body: `{appId, transport?, present?,
 timeoutMs?, pollMs?}`. Defaults: `present=true`, `timeoutMs=5000`,
-`pollMs=100`. Resolves with `{satisfied, elapsedMs, timedOut?}` —
-`200` either way; branch on `satisfied`. Useful in scripts that spawn
-a wrapper and need to know when it's actually visible to the runner.
+`pollMs=100`. Resolves with `{satisfied, elapsedMs, timedOut?, app?}` —
+`200` either way; branch on `satisfied`. When `satisfied:true && present:true`,
+the response also carries the matched `app` (a `RegisterAppResponse` with the
+flattened `DiscoveredApp` fields plus `transport`) so callers can act on
+its url/transport without a follow-up `/apps/registered` round-trip.
+Disappearance waits (`present:false`) omit `app` since there's no entry
+to surface. Useful in scripts that spawn a wrapper and need to know when
+it's actually visible to the runner.
 
 ### Pinning an entry past the default TTL
 
