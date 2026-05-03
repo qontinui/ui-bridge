@@ -304,6 +304,96 @@ export interface FillFormResponse {
 }
 
 /**
+ * Request body for `POST /control/tap` — synthesize a press at given screen
+ * coordinates by searching registered elements whose layout rect contains the
+ * point.
+ *
+ * The handler picks the topmost (smallest-area) match — usually the innermost
+ * child — then dispatches the requested action via the standard executor.
+ * `action` defaults to `'press'`.
+ */
+export interface TapAtRequest {
+  x: number;
+  y: number;
+  action?: 'press' | 'longPress' | 'doubleTap';
+}
+
+/**
+ * Response payload returned in `APIResponse.data` for `POST /control/tap`.
+ */
+export interface TapAtResponse {
+  /** Element id whose rect contained the tap coords. */
+  elementId: string;
+  /** Action that was dispatched. */
+  action: 'press' | 'longPress' | 'doubleTap';
+  /** The element's layout rect at dispatch time (best-effort). */
+  layout: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    pageX?: number;
+    pageY?: number;
+  } | null;
+}
+
+/**
+ * Single console error/warn entry captured by the observability ring buffer.
+ * Returned by `GET /control/console-errors`.
+ */
+export interface ConsoleErrorEntry {
+  /** ms since epoch when the entry was captured. */
+  timestamp: number;
+  /** `'error'` or `'warn'`. */
+  level: 'error' | 'warn';
+  /** Joined message string (matches what console would have printed). */
+  message: string;
+  /** Captured stack trace if any of the args was an Error. */
+  stack?: string;
+}
+
+/**
+ * Response payload for `GET /control/console-errors`.
+ */
+export interface ConsoleErrorsResponse {
+  entries: ConsoleErrorEntry[];
+  /** Number of entries returned (post `since`/`limit` filtering). */
+  count: number;
+  /** Total entries currently held in the ring buffer (pre-filter). */
+  bufferSize: number;
+}
+
+/**
+ * Single network request entry captured by the observability ring buffer.
+ * Returned by `GET /sdk/network-requests`.
+ */
+export interface NetworkRequestEntry {
+  /** ms since epoch at request start. */
+  timestamp: number;
+  /** HTTP method (uppercased). */
+  method: string;
+  /** Resolved request URL. */
+  url: string;
+  /** HTTP status code, or 0 if the request errored before a response. */
+  status: number;
+  /** Wall-clock duration in ms from start to settlement. */
+  durationMs: number;
+  /** Whether the request settled with a 2xx response. */
+  ok: boolean;
+  /** Error message when the request rejected before a response. */
+  error?: string;
+}
+
+/**
+ * Response payload for `GET /sdk/network-requests`.
+ */
+export interface NetworkRequestsResponse {
+  entries: NetworkRequestEntry[];
+  count: number;
+  bufferSize: number;
+}
+
+/**
  * Request body for `POST /control/modal/push`.
  *
  * Mirrors `ModalDetector.pushModal`'s `ModalPushInput` shape; `metadata` is
@@ -436,6 +526,16 @@ export interface NativeServerHandlers {
 
   // AI helpers
   fillForm: HandlerFunction<FillFormResponse>;
+
+  // Coord-based tap — synthesizes a press at the given screen coords by
+  // searching registered elements whose layout rect contains the point.
+  tapAt: HandlerFunction<TapAtResponse>;
+
+  // Observability — last-N ring buffers for console + network. Both are
+  // gated behind `features.testHooks` at the route layer; the handlers
+  // themselves return empty buffers when the buffers aren't installed.
+  getConsoleErrors: HandlerFunction<ConsoleErrorsResponse>;
+  getNetworkRequests: HandlerFunction<NetworkRequestsResponse>;
 
   // Test hooks — modal stack manipulation
   pushModal: HandlerFunction<PushModalResponse>;

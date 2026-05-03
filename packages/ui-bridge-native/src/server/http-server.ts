@@ -24,6 +24,7 @@ import type {
 } from './types';
 import type { BridgeEvent } from '../core/types';
 import { createServerHandlers } from './handlers';
+import { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
 import type { WebSocketEventBridge } from './ws-event-bridge';
 import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
 import { isBatchRequest, isSubscribe, isUnsubscribe } from './ws-types';
@@ -116,6 +117,10 @@ const WS_ROUTES: readonly WsRoute[] = [
 
   // Discovery
   { pattern: 'control/find', handler: 'find', httpMethods: ['POST'] },
+  // Runner-parity alias for `control/find`; the runner exposes its
+  // AI-powered element search at `/ui-bridge/ai/find`, so mobile mounts the
+  // same handler at both paths to keep agents portable across platforms.
+  { pattern: 'ai/find', handler: 'find', httpMethods: ['POST'] },
   { pattern: 'control/snapshot', handler: 'getSnapshot', httpMethods: ['GET'] },
   { pattern: 'control/discover', handler: 'getSnapshot' },
 
@@ -162,6 +167,10 @@ const WS_ROUTES: readonly WsRoute[] = [
   // AI helpers — mobile parity with the runner's `/ui-bridge/ai/*` family.
   { pattern: 'ai/fill-form', handler: 'fillForm', httpMethods: ['POST'] },
 
+  // Coord-based tap — synthesizes a press at the given screen coords by
+  // matching against registered elements' layout rects.
+  { pattern: 'control/tap', handler: 'tapAt', httpMethods: ['POST'] },
+
   // Test hooks — gated behind `features.testHooks`. Let external runners
   // drive the ModalDetector over HTTP so tests can flip `snapshot.modalStack`
   // without mounting React components.
@@ -175,6 +184,21 @@ const WS_ROUTES: readonly WsRoute[] = [
     pattern: 'control/modal/dismiss/:id',
     handler: 'dismissModal',
     httpMethods: ['POST'],
+    requiresTestHooks: true,
+  },
+
+  // Observability — last-N console errors + network requests. testHooks-gated
+  // because patching `console.error` / `fetch` is invasive in production.
+  {
+    pattern: 'control/console-errors',
+    handler: 'getConsoleErrors',
+    httpMethods: ['GET'],
+    requiresTestHooks: true,
+  },
+  {
+    pattern: 'sdk/network-requests',
+    handler: 'getNetworkRequests',
+    httpMethods: ['GET'],
     requiresTestHooks: true,
   },
 ];
@@ -221,6 +245,12 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   getMethods: 'List every handler name (legacy introspection)',
   fillForm:
     'Fill multiple inputs in one call: body { fields: [{elementId, value}] } — each field dispatches `type` + `clear:true`',
+  tapAt:
+    'Synthesize a press at given screen coords by matching registered element layout rects: body { x, y, action? }',
+  getConsoleErrors:
+    'TEST HOOK — last-N console.error/console.warn entries; ?since=<ms>&limit=<n>',
+  getNetworkRequests:
+    'TEST HOOK — last-N fetch/XHR entries with status + duration; ?since=<ms>&limit=<n>',
   pushModal:
     'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
   dismissModal:
@@ -367,6 +397,15 @@ export class NativeUIBridgeServer {
    */
   private pendingWaiters = new Map<string, Set<() => void>>();
 
+  /**
+   * Observability ring buffers backing `/control/console-errors` and
+   * `/sdk/network-requests`. Allocated unconditionally so the handler can
+   * always read them, but the global patches (`install()`) only fire on
+   * `start()` when `testHooks` is set — production builds don't monkey-patch.
+   */
+  private consoleErrorBuffer: ConsoleErrorBuffer;
+  private networkRequestBuffer: NetworkRequestBuffer;
+
   constructor(
     private registry: NativeUIBridgeRegistry,
     private executor: NativeActionExecutor,
@@ -377,8 +416,19 @@ export class NativeUIBridgeServer {
       cors: true,
       ...config,
     };
+    this.consoleErrorBuffer = new ConsoleErrorBuffer();
+    this.networkRequestBuffer = new NetworkRequestBuffer();
+    // Mirror appInfo into the registry so `createSnapshot` includes it
+    // automatically — keeps the default `getSnapshot` handler and any other
+    // call site (e.g. context.createSnapshot, cloud-relay tunnels) on the
+    // same code path without each having to thread `appInfo` through.
+    if (this.config.appInfo) {
+      this.registry.setAppInfo(this.config.appInfo);
+    }
     this.handlers = createServerHandlers(registry, executor, {
       appInfo: this.config.appInfo,
+      consoleErrorBuffer: this.consoleErrorBuffer,
+      networkRequestBuffer: this.networkRequestBuffer,
     });
 
     // Set up method introspection from the route table
@@ -515,8 +565,16 @@ export class NativeUIBridgeServer {
   /**
    * Set a route provider for reporting the current navigation route.
    * When set, `control/snapshot` responses include `currentRoute` and `segments`.
+   *
+   * Also forwards the provider into the registry so the *default*
+   * `getSnapshot` handler (and any other call site of
+   * `registry.createSnapshot`) reads the route too — without this the
+   * cloud-relay/bare-server path returned `currentRoute: null` even when
+   * a `RouteTracker` was wired, because that path never installed the
+   * server-level handler override below.
    */
   setRouteProvider(provider: RouteProvider): void {
+    this.registry.setRouteProvider(provider);
     // Override getElements to support currentRouteOnly filtering with real route data
     const baseGetElements = this.handlers.getElements;
     this.handlers.getElements = async (ctx: HandlerContext) => {
@@ -601,6 +659,13 @@ export class NativeUIBridgeServer {
       return;
     }
 
+    // Install observability patches before binding the port — gated behind
+    // `testHooks` so production builds don't monkey-patch console/fetch.
+    if (this.config.testHooks === true) {
+      this.consoleErrorBuffer.install();
+      this.networkRequestBuffer.install();
+    }
+
     await this.adapter.start(this.config.serverPort!, this.handleRequest.bind(this));
     this.running = true;
 
@@ -617,6 +682,10 @@ export class NativeUIBridgeServer {
 
     await this.adapter.stop();
     this.running = false;
+
+    // Restore the original globals; idempotent if never installed.
+    this.consoleErrorBuffer.uninstall();
+    this.networkRequestBuffer.uninstall();
 
     console.log('[ui-bridge-native] HTTP server stopped');
   }

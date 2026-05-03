@@ -7,6 +7,7 @@
 import { type NativeUIBridgeRegistry, extractHandlerNames } from '../core/registry';
 import type {
   NativeElementType,
+  NativeLayout,
   NativeModalInfo,
   WaitOptions,
   WorkflowStep,
@@ -14,16 +15,20 @@ import type {
 import type { NativeActionExecutor } from '../control/types';
 import type {
   APIResponse,
+  ConsoleErrorsResponse,
   DismissModalResponse,
   FillFormFieldInput,
   FillFormFieldResult,
   FillFormResponse,
   HandlerContext,
   NativeServerHandlers,
+  NetworkRequestsResponse,
   PushModalRequest,
   PushModalResponse,
+  TapAtResponse,
 } from './types';
 import { createDesignHandlers } from './design-handlers';
+import type { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
 
 /**
  * Result of executing a single workflow step
@@ -284,7 +289,13 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
 export function createServerHandlers(
   registry: NativeUIBridgeRegistry,
   executor: NativeActionExecutor,
-  config?: { appInfo?: { appId: string; appName: string; appType: string; framework?: string } }
+  config?: {
+    appInfo?: { appId: string; appName: string; appType: string; framework?: string };
+    /** Optional console-error ring buffer powering `GET /control/console-errors`. */
+    consoleErrorBuffer?: ConsoleErrorBuffer;
+    /** Optional network-request ring buffer powering `GET /sdk/network-requests`. */
+    networkRequestBuffer?: NetworkRequestBuffer;
+  }
 ): NativeServerHandlers {
   const designHandlers = createDesignHandlers(registry);
 
@@ -534,7 +545,14 @@ export function createServerHandlers(
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
-      const snapshot = registry.createSnapshot(undefined, { visibleOnly });
+      const currentRouteOnly =
+        ctx.query?.currentRouteOnly === 'true' ||
+        (ctx.body as Record<string, unknown>)?.currentRouteOnly === true;
+      // Pass `undefined` (not `null`) for routeInfo so `createSnapshot`
+      // falls back to a registry-registered route provider if one exists —
+      // without that fallback, the cloud-relay / bare-server path would
+      // emit `currentRoute: null` even when a `RouteTracker` was wired.
+      const snapshot = registry.createSnapshot(undefined, { visibleOnly, currentRouteOnly });
       return success(snapshot);
     },
 
@@ -734,6 +752,185 @@ export function createServerHandlers(
       const failedCount = results.length - succeededCount;
 
       return success({ results, succeededCount, failedCount });
+    },
+
+    // Coord-based tap
+    //
+    // Synthesizes a press at the given screen coordinates by scanning the
+    // registered elements' layout rects for a containing match. We prefer the
+    // *topmost* match (smallest area = innermost child) since native UIs
+    // generally render parents before children, and the user's tap should
+    // logically hit the leaf-most interactive element.
+    //
+    // Coords are interpreted in the absolute (screen) space published by
+    // `measureInWindow`; we compare against `pageX/pageY` when available and
+    // fall back to the layout's relative `x/y` so this works in test fixtures
+    // that don't measure (the fallback only matches single-rooted screens but
+    // is good enough for the unit suite).
+    tapAt: async (ctx: HandlerContext): Promise<APIResponse<TapAtResponse>> => {
+      const body = ctx.body as Partial<{
+        x: number;
+        y: number;
+        action: 'press' | 'longPress' | 'doubleTap';
+      }> | undefined;
+
+      const x = body?.x;
+      const y = body?.y;
+
+      if (typeof x !== 'number' || !Number.isFinite(x)) {
+        return error<TapAtResponse>('"x" must be a finite number', 'INVALID_REQUEST');
+      }
+      if (typeof y !== 'number' || !Number.isFinite(y)) {
+        return error<TapAtResponse>('"y" must be a finite number', 'INVALID_REQUEST');
+      }
+
+      const action = body?.action ?? 'press';
+      const allowedActions: ReadonlyArray<TapAtResponse['action']> = [
+        'press',
+        'longPress',
+        'doubleTap',
+      ];
+      if (!allowedActions.includes(action)) {
+        return error<TapAtResponse>(
+          `"action" must be one of: ${allowedActions.join(', ')}`,
+          'INVALID_REQUEST'
+        );
+      }
+
+      // Collect all candidates whose layout rect contains (x, y). Prefer
+      // pageX/pageY (absolute coords) when both are populated; fall back to
+      // the relative x/y otherwise.
+      type Candidate = {
+        elementId: string;
+        layout: NativeLayout;
+        area: number;
+      };
+      const candidates: Candidate[] = [];
+
+      for (const el of registry.getAllElements()) {
+        const state = el.getState();
+        const layout = state?.layout;
+        if (!layout) continue;
+        if (
+          typeof layout.width !== 'number' ||
+          typeof layout.height !== 'number' ||
+          layout.width <= 0 ||
+          layout.height <= 0
+        ) {
+          continue;
+        }
+
+        const hasPage =
+          typeof layout.pageX === 'number' &&
+          typeof layout.pageY === 'number' &&
+          Number.isFinite(layout.pageX) &&
+          Number.isFinite(layout.pageY);
+
+        const left = hasPage ? layout.pageX : layout.x;
+        const top = hasPage ? layout.pageY : layout.y;
+
+        if (
+          x >= left &&
+          x <= left + layout.width &&
+          y >= top &&
+          y <= top + layout.height
+        ) {
+          candidates.push({
+            elementId: el.id,
+            layout,
+            area: layout.width * layout.height,
+          });
+        }
+      }
+
+      if (candidates.length === 0) {
+        return error<TapAtResponse>(
+          `No element registered at (${x}, ${y})`,
+          'no_element_at_coords'
+        );
+      }
+
+      // Topmost = smallest area. Stable sort preserves registration order for
+      // ties, so a parent and a same-size child won't flip non-deterministically.
+      candidates.sort((a, b) => a.area - b.area);
+      const target = candidates[0];
+
+      const response = await executor.executeAction(target.elementId, { action });
+      if (!response.success) {
+        return error<TapAtResponse>(response.error || 'Action failed', 'ACTION_FAILED');
+      }
+
+      return success<TapAtResponse>({
+        elementId: target.elementId,
+        action,
+        layout: {
+          x: target.layout.x,
+          y: target.layout.y,
+          width: target.layout.width,
+          height: target.layout.height,
+          pageX: target.layout.pageX,
+          pageY: target.layout.pageY,
+        },
+      });
+    },
+
+    // Observability — console error / network request ring buffers.
+    //
+    // The buffers are owned by NativeUIBridgeServer and patched onto the
+    // globals on `start()` (gated behind `features.testHooks`). When no
+    // buffer is provided (no testHooks, or a stripped-down server fixture),
+    // these handlers gracefully return empty arrays so callers can probe
+    // without 500ing.
+    getConsoleErrors: async (ctx: HandlerContext): Promise<APIResponse<ConsoleErrorsResponse>> => {
+      const buf = config?.consoleErrorBuffer;
+      const since = ctx.query?.since !== undefined ? Number(ctx.query.since) : undefined;
+      const limit = ctx.query?.limit !== undefined ? Number(ctx.query.limit) : undefined;
+
+      if (!buf) {
+        return success<ConsoleErrorsResponse>({
+          entries: [],
+          count: 0,
+          bufferSize: 0,
+        });
+      }
+
+      const entries = buf.entries({
+        since: typeof since === 'number' && Number.isFinite(since) ? since : undefined,
+        limit: typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined,
+      });
+
+      return success<ConsoleErrorsResponse>({
+        entries,
+        count: entries.length,
+        bufferSize: buf.size(),
+      });
+    },
+
+    getNetworkRequests: async (
+      ctx: HandlerContext
+    ): Promise<APIResponse<NetworkRequestsResponse>> => {
+      const buf = config?.networkRequestBuffer;
+      const since = ctx.query?.since !== undefined ? Number(ctx.query.since) : undefined;
+      const limit = ctx.query?.limit !== undefined ? Number(ctx.query.limit) : undefined;
+
+      if (!buf) {
+        return success<NetworkRequestsResponse>({
+          entries: [],
+          count: 0,
+          bufferSize: 0,
+        });
+      }
+
+      const entries = buf.entries({
+        since: typeof since === 'number' && Number.isFinite(since) ? since : undefined,
+        limit: typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined,
+      });
+
+      return success<NetworkRequestsResponse>({
+        entries,
+        count: entries.length,
+        bufferSize: buf.size(),
+      });
     },
 
     // Test hooks — modal stack manipulation

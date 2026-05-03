@@ -263,12 +263,43 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     setRegistered(false);
   }, [bridge, id]);
 
-  // Handle layout changes
+  // Keep `onStateChange` in a ref so the layout callback doesn't get
+  // re-created (and thereby miss the first layout event) when the consumer
+  // passes an inline arrow function.
+  const onStateChangeRef = useRef(onStateChange);
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange;
+  }, [onStateChange]);
+
+  // Handle layout changes.
+  //
+  // Registry write gating uses `registeredRef.current` (not the React
+  // `registered` state) so the very first `onLayout` event — which can fire
+  // before `setRegistered(true)` has been committed by React — still pushes
+  // layout into the registry. Without this, snapshots show layout `(?, ?)`
+  // until the element is interacted with, because the initial onLayout's
+  // closure captured `registered === false` and silently dropped the write.
+  // updateElementState itself is also no-op when the id isn't registered,
+  // so this is safe even when `onLayout` fires before mount.
   const onLayout = useCallback(
     (event: LayoutEventData) => {
       const { x, y, width, height } = event.nativeEvent.layout;
 
-      // Get absolute position using measureInWindow
+      const writeLayout = (newLayout: NativeLayout) => {
+        setLayout(newLayout);
+        if (!bridge) return;
+        const newState: NativeElementState = {
+          mounted: true,
+          visible: width > 0 && height > 0,
+          enabled: true,
+          focused: false,
+          layout: newLayout,
+        };
+        bridge.registry.updateElementState(id, newState);
+        onStateChangeRef.current?.(newState);
+      };
+
+      // Get absolute position using measureInWindow when available.
       if (ref.current && 'measureInWindow' in ref.current) {
         (
           ref.current as {
@@ -277,55 +308,14 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
             ) => void;
           }
         ).measureInWindow((pageX: number, pageY: number) => {
-          const newLayout: NativeLayout = {
-            x,
-            y,
-            width,
-            height,
-            pageX,
-            pageY,
-          };
-          setLayout(newLayout);
-
-          // Update state in registry
-          if (bridge && registered) {
-            const newState: NativeElementState = {
-              mounted: true,
-              visible: width > 0 && height > 0,
-              enabled: true,
-              focused: false,
-              layout: newLayout,
-            };
-            bridge.registry.updateElementState(id, newState);
-            onStateChange?.(newState);
-          }
+          writeLayout({ x, y, width, height, pageX, pageY });
         });
       } else {
-        // Fallback if measureInWindow not available
-        const newLayout: NativeLayout = {
-          x,
-          y,
-          width,
-          height,
-          pageX: x,
-          pageY: y,
-        };
-        setLayout(newLayout);
-
-        if (bridge && registered) {
-          const newState: NativeElementState = {
-            mounted: true,
-            visible: width > 0 && height > 0,
-            enabled: true,
-            focused: false,
-            layout: newLayout,
-          };
-          bridge.registry.updateElementState(id, newState);
-          onStateChange?.(newState);
-        }
+        // Fallback when measureInWindow isn't on the ref (test fixtures, web).
+        writeLayout({ x, y, width, height, pageX: x, pageY: y });
       }
     },
-    [bridge, registered, id, onStateChange]
+    [bridge, id]
   );
 
   // Keep latest register/unregister in refs so the auto-register effect does
@@ -349,6 +339,64 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       }
     };
   }, [autoRegister, bridge]);
+
+  // Layout-on-mount fallback.
+  //
+  // Bug being addressed: the registry's `layout` field shows `(?, ?)` until
+  // the element is actioned. Two compounding causes:
+  //   1. The first `onLayout` event used to drop its write because the
+  //      callback's closure captured `registered === false` (fixed above by
+  //      switching to a registry-only write path).
+  //   2. Some consumers don't actually thread `onLayout={onLayout}` onto
+  //      their RN component, so the layout never measures.
+  //
+  // For (2), schedule a `measureInWindow` after registration. We still need
+  // the consumer to thread the `ref` (which they always do — it's how
+  // they get an actionable target), so this is best-effort: when ref is
+  // populated and supports measureInWindow, push the result into the
+  // registry. The dependency list is [bridge, registered, id] so this
+  // re-runs once `register()` flips `registered` to true.
+  useEffect(() => {
+    if (!bridge || !registered) return;
+    const node = ref.current as
+      | (NativeElementRef & {
+          measureInWindow?: (
+            callback: (pageX: number, pageY: number, w: number, h: number) => void
+          ) => void;
+        })
+      | null;
+    if (!node || typeof node.measureInWindow !== 'function') return;
+
+    let cancelled = false;
+    node.measureInWindow((pageX: number, pageY: number, w: number, h: number) => {
+      if (cancelled) return;
+      // measureInWindow can return zeros before layout has actually run.
+      // Skip writing then — `onLayout` (when wired) will fire with real
+      // numbers shortly.
+      if (w <= 0 || h <= 0) return;
+      const newLayout: NativeLayout = {
+        x: pageX,
+        y: pageY,
+        width: w,
+        height: h,
+        pageX,
+        pageY,
+      };
+      setLayout(newLayout);
+      const newState: NativeElementState = {
+        mounted: true,
+        visible: true,
+        enabled: true,
+        focused: false,
+        layout: newLayout,
+      };
+      bridge.registry.updateElementState(id, newState);
+      onStateChangeRef.current?.(newState);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge, registered, id]);
 
   // Auto-register handler props (onPress, onChangeText, etc.) when provided.
   // We use a ref to track which keys were last registered so we can clear

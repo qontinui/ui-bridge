@@ -356,7 +356,8 @@ bridge".
 | Transport | Setup | When to use |
 |-----------|-------|-------------|
 | **USB** | `adb forward tcp:8087 tcp:8087` after a USB debug-enabled device is connected. Verify with `adb devices` (must show your device) and `adb forward --list` (must show the forward). | Device is wired in, fastest, most reliable. |
-| **LAN** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, proxy through the runner: `curl http://localhost:9876/ui-bridge/devices/<deviceId>/control/snapshot`. | Phone on the same Wi-Fi as the dev box; can't or don't want to plug in USB. |
+| **LAN, mDNS** | Mobile app announces over mDNS; the runner's discovery service picks it up. From the host, proxy through the runner: `curl http://localhost:9876/ui-bridge/devices/<deviceId>/control/snapshot`. | Phone on the same Wi-Fi as the dev box; can't or don't want to plug in USB. |
+| **LAN, direct IP** | The mobile UI Bridge server binds `0.0.0.0:8087`, so any same-LAN host can reach it via the phone's LAN IP directly: `curl http://<phone-lan-ip>:8087/ui-bridge/control/snapshot`. Find the IP via `Get-NetNeighbor` (Windows) / `arp -a`, or fall back to a fast parallel TCP scan (`for ip in 192.168.x.{1..254}: probe :8087`) which finds the phone in seconds. No runner involvement. | Same-LAN phone when adb is dark and mDNS isn't registering — bypasses both `adb` and the runner relay entirely. |
 | **Cloud relay** | Mobile app paired via the in-app Connection Wizard. Visible in `GET http://localhost:9876/ui-bridge/devices` with `transport: "cloud"`. Proxy through the runner same as LAN. | Phone is remote (different network); use sparingly — round-trip latency dominates. |
 
 **One-shot detection** — which transport is active?

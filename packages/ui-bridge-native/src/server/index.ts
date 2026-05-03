@@ -13,3 +13,4 @@ export * from './ws-types';
 export { WebSocketConnection } from './ws-connection';
 export type { WebSocketMessageHandler } from './ws-connection';
 export { WebSocketEventBridge } from './ws-event-bridge';
+export { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';

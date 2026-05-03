@@ -367,6 +367,19 @@ export interface NativeRegistrationCoverage {
 }
 
 /**
+ * Application info reported alongside snapshots/health responses.
+ *
+ * Re-export of the `appInfo` shape used in `NativeUIBridgeConfig` so
+ * snapshot consumers can type-narrow without importing the config.
+ */
+export interface NativeAppInfo {
+  appId: string;
+  appName: string;
+  appType: 'web' | 'desktop' | 'mobile' | 'other';
+  framework?: string;
+}
+
+/**
  * Snapshot of the entire native UI bridge state
  */
 export interface NativeBridgeSnapshot {
@@ -416,6 +429,18 @@ export interface NativeBridgeSnapshot {
    * interactive controls but did not register them with the bridge.
    */
   registration?: NativeRegistrationCoverage;
+  /**
+   * Application info — appId, appName, appType, framework.
+   *
+   * Populated when the host wired `config.appInfo` on the server (e.g. via
+   * `UIBridgeNativeProvider`'s `config.appInfo` prop). Mirrors the `uiBridge`
+   * block returned by the `health` endpoint so agents can identify the app
+   * from a snapshot alone — useful for the cloud relay path where the
+   * bridge URL is opaque.
+   *
+   * Empty (undefined) when the host did not configure appInfo.
+   */
+  appInfo?: NativeAppInfo;
 }
 
 // ============================================================================
@@ -530,6 +555,25 @@ export type NativeSnapshotEnricher = (ctx: {
   elements: RegisteredNativeElement[];
   currentRoute: string | null;
 }) => Record<string, unknown>;
+
+/**
+ * Minimal route-provider shape consumed by `NativeUIBridgeRegistry.createSnapshot`.
+ *
+ * Intentionally a structural subset of `RouteProvider` (defined in `server/types`)
+ * so `core/registry` stays free of server-layer imports. The full `RouteProvider`
+ * (which adds `subscribe`) widens this interface; both can be passed to
+ * `registry.setRouteProvider(...)` interchangeably.
+ *
+ * The registry uses this fallback when `createSnapshot` is called WITHOUT an
+ * explicit `routeInfo` argument — the canonical case is the default
+ * `getSnapshot` HTTP handler, which has no direct reference to the
+ * `NativeUIBridgeServer` instance and therefore couldn't read the route
+ * before this hook existed.
+ */
+export interface NativeRouteProviderLike {
+  getCurrentRoute: () => string | null;
+  getSegments?: () => string[];
+}
 
 /**
  * UI Bridge Native feature flags

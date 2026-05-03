@@ -12,10 +12,12 @@ import type {
   NativeElementType,
   NativeStandardAction,
   NativeCustomAction,
+  NativeAppInfo,
   NativeBridgeSnapshot,
   NativeElementIdentifier,
   NativeElementRef,
   NativeRegistrationCoverage,
+  NativeRouteProviderLike,
   NativeSnapshotEnrichers,
   NativeSnapshotEnricher,
   Workflow,
@@ -132,6 +134,29 @@ export class NativeUIBridgeRegistry {
   private enrichers: NativeSnapshotEnrichers = {};
   private snapshotExtras = new Map<string, NativeSnapshotEnricher>();
   /**
+   * App identification metadata (appId/appName/appType/framework). Set via
+   * `setAppInfo` — typically wired in the server constructor from the
+   * `NativeUIBridgeConfig` the host passes to `UIBridgeNativeProvider`.
+   *
+   * When set, `createSnapshot` includes it on the resulting snapshot so
+   * agents can identify the app from snapshot bytes alone (parity with the
+   * `uiBridge` block on the `health` response). Snapshots created before
+   * this is wired simply omit the field.
+   */
+  private appInfo: NativeAppInfo | null = null;
+  /**
+   * Optional route provider. When set, `createSnapshot` reads
+   * `currentRoute`/`segments` from it whenever the caller does not pass an
+   * explicit `routeInfo` argument. This lets the default `getSnapshot` HTTP
+   * handler — which has no direct reference to the `NativeUIBridgeServer`
+   * instance — still emit a populated `currentRoute` field.
+   *
+   * Wired by `NativeUIBridgeServer.setRouteProvider`, which forwards the
+   * provider into the registry alongside the per-handler overrides it
+   * already installs.
+   */
+  private routeProvider: NativeRouteProviderLike | null = null;
+  /**
    * Sticky flag: flips `true` the first time any element is registered and
    * stays `true` even after elements are unregistered. Lets agents distinguish
    * "this route never wired any elements" from "this route registered then
@@ -141,6 +166,39 @@ export class NativeUIBridgeRegistry {
 
   constructor(config: NativeRegistryConfig = {}) {
     this.config = config;
+  }
+
+  // ============================================================================
+  // App Info & Route Provider
+  // ============================================================================
+
+  /**
+   * Set the app identification metadata returned alongside snapshots.
+   * Idempotent — re-calling with the same shape is a no-op.
+   * Pass `null` (or omit a previous call) to clear.
+   */
+  setAppInfo(info: NativeAppInfo | null | undefined): void {
+    this.appInfo = info ?? null;
+  }
+
+  /** Read-only accessor for the registered app info, if any. */
+  getAppInfo(): NativeAppInfo | null {
+    return this.appInfo;
+  }
+
+  /**
+   * Set a route provider whose `getCurrentRoute`/`getSegments` are read by
+   * `createSnapshot` when no explicit `routeInfo` argument is supplied.
+   *
+   * Call with `null` to detach (e.g. when the host swaps providers on HMR).
+   */
+  setRouteProvider(provider: NativeRouteProviderLike | null | undefined): void {
+    this.routeProvider = provider ?? null;
+  }
+
+  /** Read-only accessor for the registered route provider, if any. */
+  getRouteProvider(): NativeRouteProviderLike | null {
+    return this.routeProvider;
   }
 
   // ============================================================================
@@ -614,7 +672,14 @@ export class NativeUIBridgeRegistry {
   // ============================================================================
 
   /**
-   * Create a snapshot of the current state
+   * Create a snapshot of the current state.
+   *
+   * Route resolution: `routeInfo` wins when provided. Otherwise — and this
+   * is the path the default `getSnapshot` HTTP handler takes — we fall back
+   * to the registered `routeProvider`. This means callers that never wire a
+   * server-level override (the bare-server / cloud-relay path) still get a
+   * populated `currentRoute` field as long as `setRouteProvider` was called
+   * on the registry.
    */
   createSnapshot(
     routeInfo?: {
@@ -623,11 +688,38 @@ export class NativeUIBridgeRegistry {
     },
     options?: { visibleOnly?: boolean; currentRouteOnly?: boolean }
   ): NativeBridgeSnapshot {
+    // Resolve route info: prefer the explicit argument, fall back to a
+    // registered route provider. We treat an explicitly-passed `routeInfo`
+    // (even if both fields are null/undefined) as "the caller is in charge"
+    // so server-layer overrides that pass `{currentRoute: null}` keep working.
+    const resolvedRoute: { currentRoute: string | null; segments: string[] | undefined } = (() => {
+      if (routeInfo !== undefined) {
+        return {
+          currentRoute: routeInfo.currentRoute ?? null,
+          segments: routeInfo.segments,
+        };
+      }
+      if (this.routeProvider) {
+        try {
+          return {
+            currentRoute: this.routeProvider.getCurrentRoute() ?? null,
+            segments: this.routeProvider.getSegments?.(),
+          };
+        } catch (error) {
+          if (this.config.verbose) {
+            console.warn(`[ui-bridge-native] routeProvider getCurrentRoute threw:`, error);
+          }
+          return { currentRoute: null, segments: undefined };
+        }
+      }
+      return { currentRoute: null, segments: undefined };
+    })();
+
     let elements = options?.visibleOnly ? this.getVisibleElements() : this.getAllElements();
 
     // Filter to only elements registered on the current route
-    if (options?.currentRouteOnly && routeInfo?.currentRoute) {
-      const currentRoute = routeInfo.currentRoute;
+    if (options?.currentRouteOnly && resolvedRoute.currentRoute) {
+      const currentRoute = resolvedRoute.currentRoute;
       elements = elements.filter((e) => e.registrationRoute === currentRoute);
     }
 
@@ -660,10 +752,16 @@ export class NativeUIBridgeRegistry {
         description: w.description,
         stepCount: w.steps.length,
       })),
-      currentRoute: routeInfo?.currentRoute ?? null,
-      segments: routeInfo?.segments,
+      currentRoute: resolvedRoute.currentRoute,
+      segments: resolvedRoute.segments,
       registration: this.getRegistrationCoverage(),
     };
+
+    // Include app identification metadata so consumers can identify which
+    // app produced this snapshot without a separate health probe.
+    if (this.appInfo) {
+      snapshot.appInfo = this.appInfo;
+    }
 
     // Canonical enrichers — each in its own try/catch so a misbehaving tracker
     // can never break the rest of the snapshot.
@@ -697,7 +795,7 @@ export class NativeUIBridgeRegistry {
 
     // Custom enrichers — keys assign-merged onto the snapshot
     if (this.snapshotExtras.size > 0) {
-      const ctx = { elements, currentRoute: routeInfo?.currentRoute ?? null };
+      const ctx = { elements, currentRoute: resolvedRoute.currentRoute };
       for (const [name, fn] of this.snapshotExtras) {
         try {
           const extra = fn(ctx);
