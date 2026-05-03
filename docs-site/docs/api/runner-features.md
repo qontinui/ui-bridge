@@ -54,6 +54,16 @@ GET /control/snapshot?visibleOnly=true&currentRouteOnly=true
 Returns elements + components + page state. Each element carries its
 dynamic state under `state` (see "Reading element state" below).
 
+**Snapshot, not the DOM, is the authoritative source of element existence.**
+Elements are tracked in an in-memory SDK registry populated by `useUIElement`
+(and similar hooks). They do NOT necessarily appear as `data-uib-id`
+attributes on DOM nodes — running `document.querySelectorAll("[data-uib-id]")`
+from `/control/page/evaluate` may return zero matches even when the snapshot
+shows hundreds of registered elements. Always use `/control/snapshot` (or the
+element-specific endpoints) to verify element existence and state; reach for
+DOM queries only as a last-resort fallback for elements you know are
+DOM-attribute-marked.
+
 The response also includes:
 
 - `route` — `window.location.pathname`
