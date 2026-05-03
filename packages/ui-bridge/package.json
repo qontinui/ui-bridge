@@ -209,6 +209,9 @@
     "url": "https://github.com/qontinui/ui-bridge.git",
     "directory": "packages/ui-bridge"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "react",
     "ui",

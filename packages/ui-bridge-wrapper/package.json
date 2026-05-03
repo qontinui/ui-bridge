@@ -43,6 +43,9 @@
     "url": "https://github.com/qontinui/ui-bridge.git",
     "directory": "packages/ui-bridge-wrapper"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "@qontinui/ui-bridge": "*",
     "@qontinui/ui-bridge-headless": "*",
