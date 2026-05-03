@@ -1115,6 +1115,19 @@ export interface SnapshotRegistrationMetadata {
    * actually re-registered the target page's elements.
    */
   byRoute: Record<string, number>;
+  /**
+   * Mirror of the snapshot's top-level `activeTab`. The runner's
+   * `/ui-bridge/control/snapshot` handler copies this in so callers reading
+   * `registration.activeTab` see the same value `/ui-bridge/control/tabs`
+   * reports without an extra round-trip. Absent for non-runner consumers
+   * (the SDK itself has no tab system).
+   */
+  activeTab?: string;
+  /**
+   * Mirror of the snapshot's top-level `route`. Populated alongside
+   * `activeTab` by the runner's snapshot handler for the same reason.
+   */
+  route?: string;
 }
 
 /**
