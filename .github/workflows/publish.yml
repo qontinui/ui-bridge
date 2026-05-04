@@ -27,6 +27,12 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      # Required for npm trusted publishing — GitHub mints a short-lived
+      # OIDC JWT that npm verifies against the per-package trust policy
+      # configured at npmjs.com. No long-lived NPM_TOKEN secret needed.
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +76,7 @@ jobs:
         run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
 
       - name: Publish
-        run: npm publish --access public --workspace=packages/${{ steps.pkg.outputs.name }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # --provenance generates an attestation linking the npm tarball
+        # back to this exact commit + workflow run, signed by the OIDC
+        # token. Surfaces on the package's npm page under "Provenance".
+        run: npm publish --access public --provenance --workspace=packages/${{ steps.pkg.outputs.name }}
