@@ -41,6 +41,13 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Upgrade npm to 11.5.1+ for trusted publishing
+        # actions/setup-node@v4 with node@20 ships npm@10.8.2, but npm
+        # Trusted Publishers requires 11.5.1+. Without this, the publish
+        # step sends an empty auth header and gets 404 even when the
+        # OIDC + provenance flow succeeds.
+        run: npm install --global npm@latest
+
       - name: Derive package name from tag
         id: pkg
         run: |
@@ -75,22 +82,8 @@ jobs:
       - name: Build
         run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
 
-      - name: Debug OIDC claims (temporary)
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
-        run: |
-          # Fetch the OIDC token aimed at npm and dump its claims so we can
-          # see exactly what npm's trust policy is being asked to match.
-          # Drop this step once trusted publishing is verified working.
-          token=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" | jq -r .value)
-          echo "----- OIDC payload (decoded) -----"
-          echo "$token" | cut -d. -f2 | base64 -d 2>/dev/null | jq . || echo "$token" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq .
-
       - name: Publish
         # --provenance generates an attestation linking the npm tarball
         # back to this exact commit + workflow run, signed by the OIDC
         # token. Surfaces on the package's npm page under "Provenance".
-        # Verbose logging is temporary while we verify trusted publishing.
-        run: npm publish --access public --provenance --loglevel=verbose --workspace=packages/${{ steps.pkg.outputs.name }}
+        run: npm publish --access public --provenance --workspace=packages/${{ steps.pkg.outputs.name }}
