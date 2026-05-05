@@ -69,7 +69,14 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}
+        # Build every workspace package, not just the target. Several
+        # packages (e.g., ui-bridge-wrapper) depend on sibling workspaces
+        # (e.g., ui-bridge-headless) for type declarations during their
+        # own tsc step, and only ui-bridge keeps its dist tracked in git.
+        # Building everything makes the workflow correct regardless of
+        # which package the tag selects, at the cost of a few extra
+        # seconds per run.
+        run: npm run build --workspaces --if-present
 
       - name: Publish
         # --provenance generates an attestation linking the npm tarball
