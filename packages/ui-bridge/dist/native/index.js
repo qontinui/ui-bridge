@@ -1060,7 +1060,7 @@ var useUIBridgeNativeRequired = useUIBridgeNative;
 function useUIElement(options) {
   const bridge = useUIBridgeNativeOptional();
   const ref = react.useRef(null);
-  const [registered, setRegistered] = react.useState(false);
+  const registeredRef = react.useRef(false);
   const [_layout, setLayout] = react.useState(null);
   const propsRef = react.useRef({});
   const {
@@ -1082,7 +1082,7 @@ function useUIElement(options) {
     [id, label]
   );
   const register = react.useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
     bridge.registry.registerElement(id, ref, {
       type,
       label,
@@ -1092,19 +1092,19 @@ function useUIElement(options) {
       testId: id,
       accessibilityLabel: label
     });
-    setRegistered((prev) => prev ? prev : true);
-  }, [bridge, registered, id, type, label, actions, customActions, treePath]);
+    registeredRef.current = true;
+  }, [bridge, id, type, label, actions, customActions, treePath]);
   const unregister = react.useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
     bridge.registry.unregisterElement(id);
-    setRegistered(false);
-  }, [bridge, registered, id]);
+    registeredRef.current = false;
+  }, [bridge, id]);
   const onLayout = react.useCallback(
     (event) => {
       const { x, y, width, height } = event.nativeEvent.layout;
       const commit = (newLayout) => {
         setLayout(newLayout);
-        if (!bridge || !registered) return;
+        if (!bridge || !registeredRef.current) return;
         const newState = {
           mounted: true,
           visible: width > 0 && height > 0,
@@ -1130,7 +1130,7 @@ function useUIElement(options) {
         commit({ x, y, width, height, pageX: x, pageY: y });
       }
     },
-    [bridge, registered, id, onStateChange]
+    [bridge, id, onStateChange]
   );
   react.useEffect(() => {
     if (autoRegister) {
@@ -1143,11 +1143,11 @@ function useUIElement(options) {
   react.useCallback(
     (props) => {
       propsRef.current = { ...propsRef.current, ...props };
-      if (bridge && registered) {
+      if (bridge && registeredRef.current) {
         bridge.registry.updateElementProps(id, props);
       }
     },
-    [bridge, registered, id]
+    [bridge, id]
   );
   const getState = react.useCallback(() => {
     if (!bridge) return null;
@@ -1177,12 +1177,12 @@ function useUIElement(options) {
   const registeredElement = react.useMemo(() => {
     if (!bridge) return null;
     return bridge.registry.getElement(id) || null;
-  }, [bridge, id, registered]);
+  }, [bridge, id]);
   return {
     ref,
     onLayout,
     bridgeProps,
-    registered,
+    registered: registeredRef.current,
     getState,
     getIdentifier,
     trigger,
@@ -1196,11 +1196,11 @@ function useUIElementWithProps(options) {
   const bridge = useUIBridgeNativeOptional();
   const captureProps = react.useCallback(
     (props) => {
-      if (bridge && elementReturn.registered) {
+      if (bridge && bridge.registry.getElement(options.id)) {
         bridge.registry.updateElementProps(options.id, props);
       }
     },
-    [bridge, elementReturn.registered, options.id]
+    [bridge, options.id]
   );
   return {
     ...elementReturn,
