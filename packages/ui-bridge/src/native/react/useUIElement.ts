@@ -5,6 +5,13 @@
  */
 
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+// `useState` is still used below for `_layout` (drives re-render on layout
+// changes). `registered` was migrated to a `useRef` (mirrors the web
+// `useUIElement` at packages/ui-bridge/src/react/useUIElement.ts:165) so
+// the auto-register effect's synchronous call to `register()` no longer
+// trips `@eslint-react/set-state-in-effect`. Consumers read
+// `registered: registeredRef.current` non-reactively — same contract the
+// web hook already exposes.
 import type {
   NativeElementType,
   NativeStandardAction,
@@ -127,7 +134,14 @@ export interface UseUIElementReturn {
 export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const bridge = useUIBridgeNativeOptional();
   const ref = useRef<NativeElementRef>(null);
-  const [registered, setRegistered] = useState(false);
+  // Mirrors the web `useUIElement` (packages/ui-bridge/src/react/useUIElement.ts:165).
+  // Tracking registration in a ref instead of state lets the auto-register
+  // effect call `register()` synchronously without tripping
+  // `@eslint-react/set-state-in-effect`, and avoids the duplicated-state
+  // problem of mirroring the registry's truth into local React state.
+  // Consumers reading `.registered` get a non-reactive snapshot — same
+  // contract the web hook exposes.
+  const registeredRef = useRef(false);
   const [_layout, setLayout] = useState<NativeLayout | null>(null);
   const propsRef = useRef<Record<string, unknown>>({});
 
@@ -154,12 +168,12 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [id, label]
   );
 
-  // Register the element. The setRegistered call uses the functional updater
-  // so that React skips the re-render when the value is unchanged — this
-  // avoids the unnecessary render cycle when register() is invoked from the
-  // auto-register effect.
+  // Register the element. Writing to `registeredRef.current` is a synchronous
+  // mutation, not a state setter, so the auto-register effect can call this
+  // without triggering an extra render or violating
+  // `@eslint-react/set-state-in-effect`.
   const register = useCallback(() => {
-    if (!bridge || registered) return;
+    if (!bridge || registeredRef.current) return;
 
     bridge.registry.registerElement(id, ref, {
       type,
@@ -170,16 +184,16 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       testId: id,
       accessibilityLabel: label,
     });
-    setRegistered((prev) => (prev ? prev : true));
-  }, [bridge, registered, id, type, label, actions, customActions, treePath]);
+    registeredRef.current = true;
+  }, [bridge, id, type, label, actions, customActions, treePath]);
 
   // Unregister the element
   const unregister = useCallback(() => {
-    if (!bridge || !registered) return;
+    if (!bridge || !registeredRef.current) return;
 
     bridge.registry.unregisterElement(id);
-    setRegistered(false);
-  }, [bridge, registered, id]);
+    registeredRef.current = false;
+  }, [bridge, id]);
 
   // Handle layout changes
   const onLayout = useCallback(
@@ -196,7 +210,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       // relative `x`/`y` only when `measureInWindow` is unavailable.
       const commit = (newLayout: NativeLayout) => {
         setLayout(newLayout);
-        if (!bridge || !registered) return;
+        if (!bridge || !registeredRef.current) return;
 
         const newState: NativeElementState = {
           mounted: true,
@@ -234,7 +248,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
         commit({ x, y, width, height, pageX: x, pageY: y });
       }
     },
-    [bridge, registered, id, onStateChange]
+    [bridge, id, onStateChange]
   );
 
   // Auto-register on mount
@@ -252,11 +266,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const _updateProps = useCallback(
     (props: Record<string, unknown>) => {
       propsRef.current = { ...propsRef.current, ...props };
-      if (bridge && registered) {
+      if (bridge && registeredRef.current) {
         bridge.registry.updateElementProps(id, props);
       }
     },
-    [bridge, registered, id]
+    [bridge, id]
   );
 
   // Get state
@@ -296,13 +310,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const registeredElement = useMemo(() => {
     if (!bridge) return null;
     return bridge.registry.getElement(id) || null;
-  }, [bridge, id, registered]);
+  }, [bridge, id]);
 
   return {
     ref,
     onLayout,
     bridgeProps,
-    registered,
+    registered: registeredRef.current,
     getState,
     getIdentifier,
     trigger,
@@ -350,13 +364,19 @@ export function useUIElementWithProps(options: UseUIElementOptions): UseUIElemen
   const elementReturn = useUIElement(options);
   const bridge = useUIBridgeNativeOptional();
 
+  // `elementReturn.registered` is now a non-reactive ref snapshot (mirrors the
+  // web hook). Reading it inside the callback would capture the value at hook
+  // creation time, which is `false` on the first render. Querying the registry
+  // directly gives us the live truth without needing reactivity. The registry
+  // is the authoritative source — same pattern used by `getState` /
+  // `getIdentifier` above.
   const captureProps = useCallback(
     (props: Record<string, unknown>) => {
-      if (bridge && elementReturn.registered) {
+      if (bridge && bridge.registry.getElement(options.id)) {
         bridge.registry.updateElementProps(options.id, props);
       }
     },
-    [bridge, elementReturn.registered, options.id]
+    [bridge, options.id]
   );
 
   return {
