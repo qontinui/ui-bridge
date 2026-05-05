@@ -1,11 +1,11 @@
-import { createContext, useState, useMemo, useCallback, useContext } from 'react';
+import { createContext, useState, useMemo, useCallback, use } from 'react';
 import { Dimensions, StyleSheet, TouchableOpacity, Text, Modal, View, ScrollView } from 'react-native';
 import { jsxs, Fragment, jsx } from 'react/jsx-runtime';
 
 // src/native/debug/inspector.tsx
 var UIBridgeNativeContext = createContext(null);
 function useUIBridgeNativeOptional() {
-  return useContext(UIBridgeNativeContext);
+  return use(UIBridgeNativeContext);
 }
 function ElementCard({
   element,

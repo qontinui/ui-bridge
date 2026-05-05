@@ -66,18 +66,7 @@ jobs:
           echo "Derived package: $name"
 
       - name: Install dependencies
-        # The published package-lock.json was generated on a non-Linux host
-        # and pins out the linux-x64-gnu Rollup native binary; even
-        # `npm install` honors it. npm/cli#4828 is the upstream bug. The
-        # documented fix (also in the rollup error message) is to remove
-        # node_modules + package-lock.json and resolve fresh on the runner.
-        # --legacy-peer-deps further bypasses the eslint@^10 vs
-        # eslint-plugin-react peer conflict — benign for the publish path.
-        # Lockfile drift is acceptable here; the publish path doesn't reuse
-        # the lockfile downstream.
-        run: |
-          rm -rf node_modules package-lock.json
-          npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Build
         run: npm run build --workspace=packages/${{ steps.pkg.outputs.name }}

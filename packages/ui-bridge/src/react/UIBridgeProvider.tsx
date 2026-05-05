@@ -8,7 +8,7 @@
 
 import React, {
   createContext,
-  useContext,
+  use,
   useMemo,
   useEffect,
   useCallback,
@@ -443,7 +443,7 @@ export function UIBridgeProvider({
     ]
   );
 
-  return <UIBridgeContext.Provider value={contextValue}>{children}</UIBridgeContext.Provider>;
+  return <UIBridgeContext value={contextValue}>{children}</UIBridgeContext>;
 }
 
 /**
@@ -452,7 +452,7 @@ export function UIBridgeProvider({
  * Access the UI Bridge context. Throws if used outside provider.
  */
 export function useUIBridgeContext(): UIBridgeContextValue {
-  const context = useContext(UIBridgeContext);
+  const context = use(UIBridgeContext);
   if (!context) {
     throw new Error('useUIBridgeContext must be used within a UIBridgeProvider');
   }
@@ -465,5 +465,5 @@ export function useUIBridgeContext(): UIBridgeContextValue {
  * Access the UI Bridge context, returning null if outside provider.
  */
 export function useUIBridgeOptional(): UIBridgeContextValue | null {
-  return useContext(UIBridgeContext);
+  return use(UIBridgeContext);
 }

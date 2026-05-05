@@ -11,7 +11,7 @@
  * but portable to any app using @qontinui/ui-bridge.
  */
 
-import { useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useUIBridge } from './useUIBridge';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
@@ -143,9 +143,10 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // the server reports our tabId is no longer registered (silent SSE drop).
   const forceReconnectRef = useRef<() => void>(() => {});
 
-  // Stable per-tab identifier, persisted across re-renders but unique per browser tab
-  const tabIdRef = useRef<string | null>(null);
-  if (tabIdRef.current === null) {
+  // Stable per-tab identifier, persisted across re-renders but unique per browser tab.
+  // Uses useState lazy initializer so the side effects (sessionStorage read/write,
+  // crypto.randomUUID) run exactly once during mount, not on every render.
+  const [tabId] = useState<string>(() => {
     const STORAGE_KEY = '__uiBridge_tabId';
     let stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STORAGE_KEY) : null;
     if (!stored) {
@@ -156,9 +157,8 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         /* SSR or quota */
       }
     }
-    tabIdRef.current = stored;
-  }
-  const tabId = tabIdRef.current;
+    return stored;
+  });
 
   // ========================================================================
   // Response Sender

@@ -4,7 +4,7 @@
  * Register and manage UI states with UI Bridge.
  */
 
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { UIState, UIStateGroup, StateSnapshot } from '../core/types';
 import { getGlobalAnnotationStore } from '../annotations';
 import type { IRElementCriteria, IRMetadata, IRProvenance } from './ir-types';
@@ -546,24 +546,35 @@ export function useUIStateGroup(options: UseUIStateGroupOptions): UseUIStateGrou
  */
 export function useActiveStates(): string[] {
   const bridge = useUIBridgeOptional();
-  const [activeStates, setActiveStates] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!bridge) return;
+  // Cache the snapshot so useSyncExternalStore sees stable identity between
+  // renders. `getActiveStates()` returns a fresh array each call; we re-read
+  // only after subscribers fire.
+  const cacheRef = useRef<{ value: string[]; dirty: boolean }>({ value: [], dirty: true });
 
-    // Get initial active states
-    setActiveStates(bridge.registry.getActiveStates());
+  const subscribe = useCallback(
+    (onChange: () => void): (() => void) => {
+      if (!bridge) return () => {};
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge.registry.on('element:stateChanged', () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge]
+  );
 
-    // Subscribe to changes
-    const unsubscribe = bridge.registry.on('element:stateChanged', (event) => {
-      const data = event.data as { activeStates: string[] };
-      setActiveStates(data.activeStates);
-    });
-
-    return unsubscribe;
+  const getSnapshot = useCallback((): string[] => {
+    if (!bridge) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
+      cacheRef.current.value = bridge.registry.getActiveStates();
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge]);
 
-  return activeStates;
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /**

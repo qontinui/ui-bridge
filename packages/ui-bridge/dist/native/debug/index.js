@@ -7,7 +7,7 @@ var jsxRuntime = require('react/jsx-runtime');
 // src/native/debug/inspector.tsx
 var UIBridgeNativeContext = react.createContext(null);
 function useUIBridgeNativeOptional() {
-  return react.useContext(UIBridgeNativeContext);
+  return react.use(UIBridgeNativeContext);
 }
 function ElementCard({
   element,

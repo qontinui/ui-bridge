@@ -1,4 +1,4 @@
-import { createContext, useState, useEffect, useRef, useMemo, useCallback, useContext, useSyncExternalStore, Fragment } from 'react';
+import { createContext, useSyncExternalStore, useRef, useState, useMemo, useEffect, useCallback, use, Fragment } from 'react';
 import { jsx, Fragment as Fragment$1, jsxs } from 'react/jsx-runtime';
 
 var __defProp = Object.defineProperty;
@@ -23463,16 +23463,25 @@ var toastBuffer = new ToastRingBuffer();
 function emitToast(input) {
   return toastBuffer.emit(input);
 }
+var cachedSnapshot = toastBuffer.getAll();
+var snapshotDirty = false;
+var subscribe = (onChange) => {
+  const unsubscribe = toastBuffer.subscribe(() => {
+    snapshotDirty = true;
+    onChange();
+  });
+  return unsubscribe;
+};
+var getSnapshot = () => {
+  if (snapshotDirty) {
+    cachedSnapshot = toastBuffer.getAll();
+    snapshotDirty = false;
+  }
+  return cachedSnapshot;
+};
+var getServerSnapshot = () => cachedSnapshot;
 function useUIBridgeToasts() {
-  const [entries, setEntries] = useState(() => toastBuffer.getAll());
-  useEffect(() => {
-    const unsubscribe = toastBuffer.subscribe((next) => {
-      setEntries(next);
-    });
-    setEntries(toastBuffer.getAll());
-    return unsubscribe;
-  }, []);
-  return entries;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
 // src/relationships/relationship-tracker.ts
@@ -25049,24 +25058,24 @@ function UIBridgeProvider({
       onWsEvent
     ]
   );
-  return /* @__PURE__ */ jsx(UIBridgeContext.Provider, { value: contextValue, children });
+  return /* @__PURE__ */ jsx(UIBridgeContext, { value: contextValue, children });
 }
 function useUIBridgeContext() {
-  const context = useContext(UIBridgeContext);
+  const context = use(UIBridgeContext);
   if (!context) {
     throw new Error("useUIBridgeContext must be used within a UIBridgeProvider");
   }
   return context;
 }
 function useUIBridgeOptional() {
-  return useContext(UIBridgeContext);
+  return use(UIBridgeContext);
 }
 var ComponentScopeContext = createContext(null);
 function UIBridgeComponentScope({ componentId, children }) {
-  return /* @__PURE__ */ jsx(ComponentScopeContext.Provider, { value: componentId, children: /* @__PURE__ */ jsx("div", { "data-ui-bridge-component": componentId, style: { display: "contents" }, children }) });
+  return /* @__PURE__ */ jsx(ComponentScopeContext, { value: componentId, children: /* @__PURE__ */ jsx("div", { "data-ui-bridge-component": componentId, style: { display: "contents" }, children }) });
 }
 function useOwningComponent() {
-  return useContext(ComponentScopeContext);
+  return use(ComponentScopeContext);
 }
 
 // src/react/bbox-tracker.ts
@@ -27432,16 +27441,16 @@ function useUIBridge() {
     }),
     []
   );
-  const subscribe = useCallback(
+  const subscribe2 = useCallback(
     (cb) => context?.registry.subscribe(cb) ?? (() => {
     }),
     [context]
   );
-  const getSnapshot = useCallback(
+  const getSnapshot2 = useCallback(
     () => context?.registry.getSnapshot() ?? emptySnapshot,
     [context, emptySnapshot]
   );
-  const registrySnapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const registrySnapshot = useSyncExternalStore(subscribe2, getSnapshot2, getSnapshot2);
   const elements2 = registrySnapshot.elements;
   const components2 = registrySnapshot.components;
   const workflows2 = registrySnapshot.workflows;
@@ -27909,17 +27918,29 @@ function useUIStateGroup(options) {
 }
 function useActiveStates() {
   const bridge2 = useUIBridgeOptional();
-  const [activeStates, setActiveStates] = useState([]);
-  useEffect(() => {
-    if (!bridge2) return;
-    setActiveStates(bridge2.registry.getActiveStates());
-    const unsubscribe = bridge2.registry.on("element:stateChanged", (event) => {
-      const data = event.data;
-      setActiveStates(data.activeStates);
-    });
-    return unsubscribe;
+  const cacheRef = useRef({ value: [], dirty: true });
+  const subscribe2 = useCallback(
+    (onChange) => {
+      if (!bridge2) return () => {
+      };
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge2.registry.on("element:stateChanged", () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge2]
+  );
+  const getSnapshot2 = useCallback(() => {
+    if (!bridge2) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
+      cacheRef.current.value = bridge2.registry.getActiveStates();
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge2]);
-  return activeStates;
+  return useSyncExternalStore(subscribe2, getSnapshot2, getSnapshot2);
 }
 function useStateSnapshot() {
   const bridge2 = useUIBridgeOptional();
@@ -28096,21 +28117,30 @@ function useTransitions() {
 }
 function useAvailableTransitions() {
   const bridge2 = useUIBridgeOptional();
-  const [available, setAvailable] = useState([]);
-  useEffect(() => {
-    if (!bridge2) return;
-    const updateAvailable = () => {
+  const cacheRef = useRef({ value: [], dirty: true });
+  const subscribe2 = useCallback(
+    (onChange) => {
+      if (!bridge2) return () => {
+      };
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge2.registry.on("element:stateChanged", () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge2]
+  );
+  const getSnapshot2 = useCallback(() => {
+    if (!bridge2) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
       const transitions = bridge2.registry.getAllTransitions();
-      const availableTransitions = transitions.filter(
-        (t) => bridge2.registry.canExecuteTransition(t.id)
-      );
-      setAvailable(availableTransitions);
-    };
-    updateAvailable();
-    const unsubscribe = bridge2.registry.on("element:stateChanged", updateAvailable);
-    return unsubscribe;
+      cacheRef.current.value = transitions.filter((t) => bridge2.registry.canExecuteTransition(t.id));
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge2]);
-  return available;
+  return useSyncExternalStore(subscribe2, getSnapshot2, getSnapshot2);
 }
 function State({ children, ...options }) {
   useUIState(options);
@@ -35915,8 +35945,7 @@ function useCommandRelay(options) {
   });
   const forceReconnectRef = useRef(() => {
   });
-  const tabIdRef = useRef(null);
-  if (tabIdRef.current === null) {
+  const [tabId] = useState(() => {
     const STORAGE_KEY = "__uiBridge_tabId";
     let stored = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(STORAGE_KEY) : null;
     if (!stored) {
@@ -35926,9 +35955,8 @@ function useCommandRelay(options) {
       } catch {
       }
     }
-    tabIdRef.current = stored;
-  }
-  const tabId = tabIdRef.current;
+    return stored;
+  });
   const sendResponse = useCallback(
     async (commandId, ok, result) => {
       try {

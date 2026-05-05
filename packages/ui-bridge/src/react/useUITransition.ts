@@ -4,7 +4,7 @@
  * Register and execute UI state transitions with UI Bridge.
  */
 
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { UITransition, TransitionResult, WorkflowStep } from '../core/types';
 import type { IREffect, IRMetadata, IRProvenance } from './ir-types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
@@ -313,27 +313,33 @@ export function useTransitions(): UITransition[] {
  */
 export function useAvailableTransitions(): UITransition[] {
   const bridge = useUIBridgeOptional();
-  const [available, setAvailable] = useState<UITransition[]>([]);
 
-  useEffect(() => {
-    if (!bridge) return;
+  // Cache the computed snapshot so useSyncExternalStore sees a stable identity
+  // between renders. We recompute only after a state change has notified.
+  const cacheRef = useRef<{ value: UITransition[]; dirty: boolean }>({ value: [], dirty: true });
 
-    const updateAvailable = () => {
+  const subscribe = useCallback(
+    (onChange: () => void): (() => void) => {
+      if (!bridge) return () => {};
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge.registry.on('element:stateChanged', () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge]
+  );
+
+  const getSnapshot = useCallback((): UITransition[] => {
+    if (!bridge) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
       const transitions = bridge.registry.getAllTransitions();
-      const availableTransitions = transitions.filter((t) =>
-        bridge.registry.canExecuteTransition(t.id)
-      );
-      setAvailable(availableTransitions);
-    };
-
-    // Initial check
-    updateAvailable();
-
-    // Subscribe to state changes
-    const unsubscribe = bridge.registry.on('element:stateChanged', updateAvailable);
-
-    return unsubscribe;
+      cacheRef.current.value = transitions.filter((t) => bridge.registry.canExecuteTransition(t.id));
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge]);
 
-  return available;
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

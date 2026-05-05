@@ -22,13 +22,13 @@
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
   },
   "devDependencies": {
+    "@eslint-react/eslint-plugin": "^5.7.2",
     "@eslint/js": "^10.0.1",
     "@qontinui/ui-bridge-auto": "file:../../ui-bridge-auto",
     "@types/node": "^20.10.0",
     "esbuild": "^0.27.4",
-    "eslint": "^10.1.0",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.4.0",
     "prettier": "^3.1.0",
     "typescript": "^6.0.2",

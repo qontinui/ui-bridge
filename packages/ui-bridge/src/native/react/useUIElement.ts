@@ -154,7 +154,10 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     [id, label]
   );
 
-  // Register the element
+  // Register the element. The setRegistered call uses the functional updater
+  // so that React skips the re-render when the value is unchanged — this
+  // avoids the unnecessary render cycle when register() is invoked from the
+  // auto-register effect.
   const register = useCallback(() => {
     if (!bridge || registered) return;
 
@@ -167,7 +170,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       testId: id,
       accessibilityLabel: label,
     });
-    setRegistered(true);
+    setRegistered((prev) => (prev ? prev : true));
   }, [bridge, registered, id, type, label, actions, customActions, treePath]);
 
   // Unregister the element

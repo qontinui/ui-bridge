@@ -993,17 +993,17 @@ function UIBridgeNativeProvider({
       stopServer
     ]
   );
-  return /* @__PURE__ */ jsxRuntime.jsx(UIBridgeNativeContext.Provider, { value: contextValue, children });
+  return /* @__PURE__ */ jsxRuntime.jsx(UIBridgeNativeContext, { value: contextValue, children });
 }
 function useUIBridgeNative() {
-  const context = react.useContext(UIBridgeNativeContext);
+  const context = react.use(UIBridgeNativeContext);
   if (!context) {
     throw new Error("useUIBridgeNative must be used within a UIBridgeNativeProvider");
   }
   return context;
 }
 function useUIBridgeNativeOptional() {
-  return react.useContext(UIBridgeNativeContext);
+  return react.use(UIBridgeNativeContext);
 }
 var useUIBridgeNativeRequired = useUIBridgeNative;
 function useUIElement(options) {
@@ -1041,7 +1041,7 @@ function useUIElement(options) {
       testId: id,
       accessibilityLabel: label
     });
-    setRegistered(true);
+    setRegistered((prev) => prev ? prev : true);
   }, [bridge, registered, id, type, label, actions, customActions, treePath]);
   const unregister = react.useCallback(() => {
     if (!bridge || !registered) return;

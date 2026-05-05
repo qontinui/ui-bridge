@@ -22523,7 +22523,8 @@ var ToastRingBuffer = class {
     }
   }
 };
-new ToastRingBuffer();
+var toastBuffer = new ToastRingBuffer();
+toastBuffer.getAll();
 
 // src/relationships/relationship-tracker.ts
 var ARIA_RELATIONSHIP_MAP = [
@@ -24217,24 +24218,24 @@ function UIBridgeProvider({
       onWsEvent
     ]
   );
-  return /* @__PURE__ */ jsxRuntime.jsx(UIBridgeContext.Provider, { value: contextValue, children });
+  return /* @__PURE__ */ jsxRuntime.jsx(UIBridgeContext, { value: contextValue, children });
 }
 function useUIBridgeContext() {
-  const context = react.useContext(UIBridgeContext);
+  const context = react.use(UIBridgeContext);
   if (!context) {
     throw new Error("useUIBridgeContext must be used within a UIBridgeProvider");
   }
   return context;
 }
 function useUIBridgeOptional() {
-  return react.useContext(UIBridgeContext);
+  return react.use(UIBridgeContext);
 }
 var ComponentScopeContext = react.createContext(null);
 function UIBridgeComponentScope({ componentId, children }) {
-  return /* @__PURE__ */ jsxRuntime.jsx(ComponentScopeContext.Provider, { value: componentId, children: /* @__PURE__ */ jsxRuntime.jsx("div", { "data-ui-bridge-component": componentId, style: { display: "contents" }, children }) });
+  return /* @__PURE__ */ jsxRuntime.jsx(ComponentScopeContext, { value: componentId, children: /* @__PURE__ */ jsxRuntime.jsx("div", { "data-ui-bridge-component": componentId, style: { display: "contents" }, children }) });
 }
 function useOwningComponent() {
-  return react.useContext(ComponentScopeContext);
+  return react.use(ComponentScopeContext);
 }
 
 // src/react/bbox-tracker.ts
@@ -27077,17 +27078,29 @@ function useUIStateGroup(options) {
 }
 function useActiveStates() {
   const bridge2 = useUIBridgeOptional();
-  const [activeStates, setActiveStates] = react.useState([]);
-  react.useEffect(() => {
-    if (!bridge2) return;
-    setActiveStates(bridge2.registry.getActiveStates());
-    const unsubscribe = bridge2.registry.on("element:stateChanged", (event) => {
-      const data = event.data;
-      setActiveStates(data.activeStates);
-    });
-    return unsubscribe;
+  const cacheRef = react.useRef({ value: [], dirty: true });
+  const subscribe = react.useCallback(
+    (onChange) => {
+      if (!bridge2) return () => {
+      };
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge2.registry.on("element:stateChanged", () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge2]
+  );
+  const getSnapshot = react.useCallback(() => {
+    if (!bridge2) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
+      cacheRef.current.value = bridge2.registry.getActiveStates();
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge2]);
-  return activeStates;
+  return react.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 function useStateSnapshot() {
   const bridge2 = useUIBridgeOptional();
@@ -27264,21 +27277,30 @@ function useTransitions() {
 }
 function useAvailableTransitions() {
   const bridge2 = useUIBridgeOptional();
-  const [available, setAvailable] = react.useState([]);
-  react.useEffect(() => {
-    if (!bridge2) return;
-    const updateAvailable = () => {
+  const cacheRef = react.useRef({ value: [], dirty: true });
+  const subscribe = react.useCallback(
+    (onChange) => {
+      if (!bridge2) return () => {
+      };
+      cacheRef.current.dirty = true;
+      const unsubscribe = bridge2.registry.on("element:stateChanged", () => {
+        cacheRef.current.dirty = true;
+        onChange();
+      });
+      return unsubscribe;
+    },
+    [bridge2]
+  );
+  const getSnapshot = react.useCallback(() => {
+    if (!bridge2) return cacheRef.current.value;
+    if (cacheRef.current.dirty) {
       const transitions = bridge2.registry.getAllTransitions();
-      const availableTransitions = transitions.filter(
-        (t) => bridge2.registry.canExecuteTransition(t.id)
-      );
-      setAvailable(availableTransitions);
-    };
-    updateAvailable();
-    const unsubscribe = bridge2.registry.on("element:stateChanged", updateAvailable);
-    return unsubscribe;
+      cacheRef.current.value = transitions.filter((t) => bridge2.registry.canExecuteTransition(t.id));
+      cacheRef.current.dirty = false;
+    }
+    return cacheRef.current.value;
   }, [bridge2]);
-  return available;
+  return react.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 function State({ children, ...options }) {
   useUIState(options);
@@ -31326,8 +31348,7 @@ function useCommandRelay(options) {
   });
   const forceReconnectRef = react.useRef(() => {
   });
-  const tabIdRef = react.useRef(null);
-  if (tabIdRef.current === null) {
+  const [tabId] = react.useState(() => {
     const STORAGE_KEY = "__uiBridge_tabId";
     let stored = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(STORAGE_KEY) : null;
     if (!stored) {
@@ -31337,9 +31358,8 @@ function useCommandRelay(options) {
       } catch {
       }
     }
-    tabIdRef.current = stored;
-  }
-  const tabId = tabIdRef.current;
+    return stored;
+  });
   const sendResponse = react.useCallback(
     async (commandId, ok, result) => {
       try {

@@ -1,4 +1,4 @@
-import { createContext, useRef, useState, useCallback, useEffect, useMemo, useContext } from 'react';
+import { createContext, useRef, useState, useCallback, useEffect, useMemo, use } from 'react';
 import { jsx } from 'react/jsx-runtime';
 
 // src/native/react/UIBridgeNativeProvider.tsx
@@ -991,17 +991,17 @@ function UIBridgeNativeProvider({
       stopServer
     ]
   );
-  return /* @__PURE__ */ jsx(UIBridgeNativeContext.Provider, { value: contextValue, children });
+  return /* @__PURE__ */ jsx(UIBridgeNativeContext, { value: contextValue, children });
 }
 function useUIBridgeNative() {
-  const context = useContext(UIBridgeNativeContext);
+  const context = use(UIBridgeNativeContext);
   if (!context) {
     throw new Error("useUIBridgeNative must be used within a UIBridgeNativeProvider");
   }
   return context;
 }
 function useUIBridgeNativeOptional() {
-  return useContext(UIBridgeNativeContext);
+  return use(UIBridgeNativeContext);
 }
 var useUIBridgeNativeRequired = useUIBridgeNative;
 function useUIElement(options) {
@@ -1039,7 +1039,7 @@ function useUIElement(options) {
       testId: id,
       accessibilityLabel: label
     });
-    setRegistered(true);
+    setRegistered((prev) => prev ? prev : true);
   }, [bridge, registered, id, type, label, actions, customActions, treePath]);
   const unregister = useCallback(() => {
     if (!bridge || !registered) return;

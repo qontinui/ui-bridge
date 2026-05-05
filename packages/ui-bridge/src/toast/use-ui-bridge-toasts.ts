@@ -27,22 +27,40 @@
  *    ```
  */
 
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { toastBuffer, type ToastEntry } from './ring-buffer';
+
+/**
+ * Cache the most recently observed snapshot so useSyncExternalStore sees a
+ * stable identity between renders unless an actual mutation has notified.
+ * `getAll()` returns a fresh array each call, which would otherwise trip
+ * React's "getSnapshot should be cached" warning.
+ */
+let cachedSnapshot: ReadonlyArray<ToastEntry> = toastBuffer.getAll();
+let snapshotDirty = false;
+
+const subscribe = (onChange: () => void): (() => void) => {
+  const unsubscribe = toastBuffer.subscribe(() => {
+    snapshotDirty = true;
+    onChange();
+  });
+  return unsubscribe;
+};
+
+const getSnapshot = (): ReadonlyArray<ToastEntry> => {
+  if (snapshotDirty) {
+    cachedSnapshot = toastBuffer.getAll();
+    snapshotDirty = false;
+  }
+  return cachedSnapshot;
+};
+
+const getServerSnapshot = (): ReadonlyArray<ToastEntry> => cachedSnapshot;
 
 /**
  * Read the live toast buffer as a React value. Re-renders on every
  * emit / markDismissed.
  */
 export function useUIBridgeToasts(): ReadonlyArray<ToastEntry> {
-  const [entries, setEntries] = useState<ReadonlyArray<ToastEntry>>(() => toastBuffer.getAll());
-  useEffect(() => {
-    const unsubscribe = toastBuffer.subscribe((next) => {
-      setEntries(next);
-    });
-    // Capture any entries emitted between first render and effect attach.
-    setEntries(toastBuffer.getAll());
-    return unsubscribe;
-  }, []);
-  return entries;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }

@@ -18,7 +18,7 @@
  * ```
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, use, type ReactNode } from 'react';
 
 const ComponentScopeContext = createContext<string | null>(null);
 
@@ -34,11 +34,11 @@ export function UIBridgeComponentScope({ componentId, children }: UIBridgeCompon
   // `display: contents` keeps the wrapper invisible to layout while still
   // carrying the attribute on a real DOM node.
   return (
-    <ComponentScopeContext.Provider value={componentId}>
+    <ComponentScopeContext value={componentId}>
       <div data-ui-bridge-component={componentId} style={{ display: 'contents' }}>
         {children}
       </div>
-    </ComponentScopeContext.Provider>
+    </ComponentScopeContext>
   );
 }
 
@@ -47,5 +47,5 @@ export function UIBridgeComponentScope({ componentId, children }: UIBridgeCompon
  * `useUIElement` calls this to populate `ownedByComponent` automatically.
  */
 export function useOwningComponent(): string | null {
-  return useContext(ComponentScopeContext);
+  return use(ComponentScopeContext);
 }

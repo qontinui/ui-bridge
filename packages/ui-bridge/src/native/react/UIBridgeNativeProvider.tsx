@@ -6,7 +6,7 @@
 
 import React, {
   createContext,
-  useContext,
+  use,
   useMemo,
   useEffect,
   useCallback,
@@ -222,9 +222,7 @@ export function UIBridgeNativeProvider({
     ]
   );
 
-  return (
-    <UIBridgeNativeContext.Provider value={contextValue}>{children}</UIBridgeNativeContext.Provider>
-  );
+  return <UIBridgeNativeContext value={contextValue}>{children}</UIBridgeNativeContext>;
 }
 
 /**
@@ -233,7 +231,7 @@ export function UIBridgeNativeProvider({
  * Access the UI Bridge Native context. Throws if used outside provider.
  */
 export function useUIBridgeNative(): UIBridgeNativeContextValue {
-  const context = useContext(UIBridgeNativeContext);
+  const context = use(UIBridgeNativeContext);
   if (!context) {
     throw new Error('useUIBridgeNative must be used within a UIBridgeNativeProvider');
   }
@@ -246,7 +244,7 @@ export function useUIBridgeNative(): UIBridgeNativeContextValue {
  * Access the UI Bridge Native context, returning null if outside provider.
  */
 export function useUIBridgeNativeOptional(): UIBridgeNativeContextValue | null {
-  return useContext(UIBridgeNativeContext);
+  return use(UIBridgeNativeContext);
 }
 
 /**

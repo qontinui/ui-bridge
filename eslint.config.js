@@ -1,6 +1,6 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
-import react from 'eslint-plugin-react';
+import eslintReact from '@eslint-react/eslint-plugin';
 import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
@@ -22,8 +22,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
 
   // React flat configs
-  react.configs.flat.recommended,
-  react.configs.flat['jsx-runtime'],
+  eslintReact.configs['recommended-typescript'],
   // Custom configuration
   {
     plugins: {
@@ -43,11 +42,6 @@ export default tseslint.config(
         },
       },
     },
-    settings: {
-      react: {
-        version: '19',
-      },
-    },
     rules: {
       // TypeScript rules
       '@typescript-eslint/no-unused-vars': [
@@ -60,10 +54,11 @@ export default tseslint.config(
       // React Hooks rules (classic only, not React Compiler rules)
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
-
-      // React rules
-      'react/react-in-jsx-scope': 'off',
-      'react/prop-types': 'off',
+      // @eslint-react/exhaustive-deps is intentionally disabled — react-hooks/exhaustive-deps
+      // (above) is the canonical source of truth per the plan's "Scope — out" decision. Keeping
+      // both layered produces duplicate warnings on the same hook. If react-hooks ever lags
+      // behind React's evolving deps semantics, revisit this.
+      '@eslint-react/exhaustive-deps': 'off',
 
       // General rules
       'no-console': 'off',
