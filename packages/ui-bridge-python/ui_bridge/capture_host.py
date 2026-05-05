@@ -94,7 +94,7 @@ class CaptureHostDriver:
 
     def __init__(
         self,
-        client: "UIBridgeClient",
+        client: UIBridgeClient,
         *,
         host_url: str | None = None,
         host_path: str | None = None,
