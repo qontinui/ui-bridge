@@ -1,4 +1,4 @@
-import { L as AssertionResult, G as SearchCriteria, ao as AssertionType } from './types-gR41i0Eb.js';
+import { L as AssertionResult, G as SearchCriteria, ao as AssertionType } from './types-gR41i0Eb.mjs';
 
 /**
  * Spec Types
@@ -152,6 +152,88 @@ interface SpecConfig {
     metadata?: SpecMetadata;
     /** Optional testing configuration for workflow generation and automated test runs */
     testing?: SpecTestingConfig;
+    /**
+     * Optional state machine section — describes distinct UI configurations
+     * (states) and the transitions between them. Used by `buildSpecBrief`
+     * and the AutomationEngine for one-step state navigation.
+     */
+    stateMachine?: SpecStateMachine;
+}
+/**
+ * A single action within a transition's process.
+ */
+interface SpecTransitionAction {
+    action: string;
+    target: Record<string, unknown>;
+    params?: Record<string, unknown>;
+    waitAfter?: {
+        type: string;
+        timeout?: number;
+    };
+}
+/**
+ * A transition from one state to another (or the same one with overlay).
+ * Transitions are ordered processes — multi-step action sequences.
+ */
+interface SpecTransition {
+    id: string;
+    name: string;
+    description?: string;
+    activateStates: string[];
+    deactivateStates: string[];
+    staysVisible?: boolean;
+    process: SpecTransitionAction[];
+}
+/**
+ * A state in the spec stateMachine. Represents a distinct UI configuration.
+ */
+interface SpecState {
+    id: string;
+    name: string;
+    description?: string;
+    elements: Record<string, unknown>[];
+    isInitial?: boolean;
+    transitions: SpecTransition[];
+}
+/**
+ * Minimal structural shape used by helpers that don't need the full
+ * `SpecState` (e.g. `buildSpecBrief` matches preconditions to states by
+ * id/name only). Kept separate so callers can narrow if they want.
+ */
+interface SpecStateShape {
+    id: string;
+    name: string;
+    description?: string;
+    elements?: Record<string, unknown>[];
+    isInitial?: boolean;
+    transitions?: unknown[];
+}
+/**
+ * Top-level state machine section in a SpecConfig.
+ */
+interface SpecStateMachine {
+    states: SpecState[];
+}
+/**
+ * Structurally-minimal alias for `SpecStateMachine` — useful where callers
+ * want to accept either the strict shape or a hand-loaded JSON shape.
+ */
+interface SpecStateMachineShape {
+    states: SpecStateShape[];
+}
+/**
+ * A spec discovered at runtime, wrapping its raw configuration.
+ *
+ * Returned by `GET /spec/list` (the runner's Spec API) and by
+ * `useDiscoveredSpecs` / `loadDiscoveredSpecs` on the consumer side.
+ */
+interface DiscoveredSpec {
+    /** Stable identifier for this spec page (e.g. "settings-ai", "active-runs"). */
+    specId: string;
+    /** The spec configuration. */
+    config: SpecConfig;
+    /** The application this spec belongs to (e.g. "Qontinui Web", "Qontinui Runner"). */
+    appName?: string;
 }
 /**
  * State injection fixtures — pre-populate the world before a scenario runs
@@ -434,4 +516,4 @@ declare const VALID_SPEC_CATEGORIES: readonly SpecCategory[];
 declare const VALID_SPEC_SEVERITIES: readonly SpecSeverity[];
 declare const VALID_SPEC_SOURCES: readonly SpecSource[];
 
-export { type AssertionCondition as A, VALID_SPEC_SOURCES as B, type SpecCategory as S, type TestDataAsset as T, VALID_ASSERTION_TYPES as V, type SpecSeverity as a, type SpecEvent as b, type SpecConfig as c, type SpecGroup as d, type SpecAssertion as e, type SpecCoverage as f, type SpecExecutionResult as g, type SpecGroupResult as h, type SpecAssertionResult as i, type AsyncStrategy as j, SPEC_CONFIG_VERSION as k, SPEC_FILE_EXTENSION as l, type SetupAction as m, type SpecEventType as n, type SpecExecutionOptions as o, type SpecGroupTesting as p, type SpecMetadata as q, type SpecSource as r, type SpecTarget as s, type SpecTestingConfig as t, type TestFixture as u, type TestInfrastructureRequirements as v, type TestScenario as w, type TestStep as x, VALID_SPEC_CATEGORIES as y, VALID_SPEC_SEVERITIES as z };
+export { type AssertionCondition as A, type TestFixture as B, type TestInfrastructureRequirements as C, type DiscoveredSpec as D, type TestScenario as E, type TestStep as F, VALID_SPEC_CATEGORIES as G, VALID_SPEC_SEVERITIES as H, VALID_SPEC_SOURCES as I, type SpecCategory as S, type TestDataAsset as T, VALID_ASSERTION_TYPES as V, type SpecSeverity as a, type SpecEvent as b, type SpecConfig as c, type SpecGroup as d, type SpecAssertion as e, type SpecCoverage as f, type SpecExecutionResult as g, type SpecGroupResult as h, type SpecAssertionResult as i, type AsyncStrategy as j, SPEC_CONFIG_VERSION as k, SPEC_FILE_EXTENSION as l, type SetupAction as m, type SpecEventType as n, type SpecExecutionOptions as o, type SpecGroupTesting as p, type SpecMetadata as q, type SpecSource as r, type SpecState as s, type SpecStateMachine as t, type SpecStateMachineShape as u, type SpecStateShape as v, type SpecTarget as w, type SpecTestingConfig as x, type SpecTransition as y, type SpecTransitionAction as z };

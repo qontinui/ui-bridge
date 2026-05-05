@@ -25,6 +25,15 @@ export type {
   SpecEvent,
   AssertionCondition,
   SetupAction,
+  // State machine section types
+  SpecState,
+  SpecStateShape,
+  SpecTransition,
+  SpecTransitionAction,
+  SpecStateMachine,
+  SpecStateMachineShape,
+  // Discovered spec wrapper
+  DiscoveredSpec,
   // Testing section types
   SpecTestingConfig,
   SpecGroupTesting,
