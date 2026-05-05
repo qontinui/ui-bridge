@@ -1,4 +1,4 @@
-import { c as SpecConfig } from './types-BmCNUYVv.js';
+import { c as SpecConfig } from './types-B4KSr314.js';
 import { G as SearchCriteria } from './types-gR41i0Eb.js';
 
 /**

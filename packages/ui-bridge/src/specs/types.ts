@@ -181,6 +181,102 @@ export interface SpecConfig {
   metadata?: SpecMetadata;
   /** Optional testing configuration for workflow generation and automated test runs */
   testing?: SpecTestingConfig;
+  /**
+   * Optional state machine section — describes distinct UI configurations
+   * (states) and the transitions between them. Used by `buildSpecBrief`
+   * and the AutomationEngine for one-step state navigation.
+   */
+  stateMachine?: SpecStateMachine;
+}
+
+// =============================================================================
+// State machine (optional) — used by the runner's spec→workflow pipeline and
+// the AutomationEngine for navigation. States own their outgoing transitions.
+// =============================================================================
+
+/**
+ * A single action within a transition's process.
+ */
+export interface SpecTransitionAction {
+  action: string;
+  target: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  waitAfter?: { type: string; timeout?: number };
+}
+
+/**
+ * A transition from one state to another (or the same one with overlay).
+ * Transitions are ordered processes — multi-step action sequences.
+ */
+export interface SpecTransition {
+  id: string;
+  name: string;
+  description?: string;
+  activateStates: string[];
+  deactivateStates: string[];
+  staysVisible?: boolean;
+  process: SpecTransitionAction[];
+}
+
+/**
+ * A state in the spec stateMachine. Represents a distinct UI configuration.
+ */
+export interface SpecState {
+  id: string;
+  name: string;
+  description?: string;
+  elements: Record<string, unknown>[];
+  isInitial?: boolean;
+  transitions: SpecTransition[];
+}
+
+/**
+ * Minimal structural shape used by helpers that don't need the full
+ * `SpecState` (e.g. `buildSpecBrief` matches preconditions to states by
+ * id/name only). Kept separate so callers can narrow if they want.
+ */
+export interface SpecStateShape {
+  id: string;
+  name: string;
+  description?: string;
+  elements?: Record<string, unknown>[];
+  isInitial?: boolean;
+  transitions?: unknown[];
+}
+
+/**
+ * Top-level state machine section in a SpecConfig.
+ */
+export interface SpecStateMachine {
+  states: SpecState[];
+}
+
+/**
+ * Structurally-minimal alias for `SpecStateMachine` — useful where callers
+ * want to accept either the strict shape or a hand-loaded JSON shape.
+ */
+export interface SpecStateMachineShape {
+  states: SpecStateShape[];
+}
+
+// =============================================================================
+// Discovered spec wrapper — the runtime shape returned by `/spec/list` and
+// `useDiscoveredSpecs`. Wraps a `SpecConfig` with its discovered identity.
+// =============================================================================
+
+/**
+ * A spec discovered at runtime, wrapping its raw configuration.
+ *
+ * Returned by `GET /spec/list` (the runner's Spec API) and by
+ * `useDiscoveredSpecs` / `loadDiscoveredSpecs` on the consumer side.
+ */
+export interface DiscoveredSpec {
+  /** Stable identifier for this spec page (e.g. "settings-ai", "active-runs"). */
+  specId: string;
+  /** The spec configuration. */
+  config: SpecConfig;
+  /** The application this spec belongs to (e.g. "Qontinui Web", "Qontinui Runner"). */
+  appName?: string;
 }
 
 // =============================================================================
