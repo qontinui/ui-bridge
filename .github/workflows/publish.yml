@@ -69,14 +69,21 @@ jobs:
         run: npm ci
 
       - name: Build
-        # Build every workspace package, not just the target. Several
-        # packages (e.g., ui-bridge-wrapper) depend on sibling workspaces
-        # (e.g., ui-bridge-headless) for type declarations during their
-        # own tsc step, and only ui-bridge keeps its dist tracked in git.
-        # Building everything makes the workflow correct regardless of
-        # which package the tag selects, at the cost of a few extra
-        # seconds per run.
-        run: npm run build --workspaces --if-present
+        # Build packages in topological dep order so each workspace's
+        # tsc step can resolve sibling-workspace types from their dist/.
+        # npm workspaces uses filesystem-alphabetical order by default,
+        # which doesn't respect internal dep graphs. The graph today:
+        #   ui-bridge-headless         — leaf
+        #   ui-bridge                  — imports headless types
+        #   ui-bridge-server           — imports ui-bridge types
+        #   ui-bridge-wrapper          — imports headless types (dynamic)
+        # Other packages have no internal deps, so building the target
+        # last is sufficient. Examples/e2e are intentionally not built
+        # here — they're not publishable and have their own concerns.
+        run: |
+          npm run build --workspace=packages/ui-bridge-headless --if-present
+          npm run build --workspace=packages/ui-bridge --if-present
+          npm run build --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
 
       - name: Publish
         # --provenance generates an attestation linking the npm tarball
