@@ -15,6 +15,8 @@
  *
  * The supervisor must be running on `http://127.0.0.1:9875` for the test to
  * pass. Spawn happens with `rebuild: false` to keep the smoke fast.
+ *
+ * Skipped automatically in environments without a supervisor at SUPERVISOR_URL.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -37,6 +39,11 @@ interface SpawnResponse {
   port?: number;
   runner_port?: number;
 }
+
+// Top-level await is supported under vitest + ESM. probeSupervisor is hoisted
+// (`async function` declaration), so this resolves before the describe block
+// is registered, letting describe.skipIf gate the entire suite.
+const SUPERVISOR_AVAILABLE = await probeSupervisor();
 
 let runnerId: string | null = null;
 let runnerPort: number | null = null;
@@ -154,63 +161,57 @@ async function stopWrapper(): Promise<void> {
   });
 }
 
-beforeAll(
-  async () => {
-    if (!(await probeSupervisor())) {
-      throw new Error(
-        `Supervisor not reachable at ${SUPERVISOR_URL}/health. Start it first or set SUPERVISOR_URL.`
+describe.skipIf(!SUPERVISOR_AVAILABLE)('wrapper-live-example WS dispatch', () => {
+  beforeAll(
+    async () => {
+      // Spawn a temp runner with the cached binary (rebuild:false for speed —
+      // the WS bridge already exists in the binary as of db36037d9).
+      const requesterId = `wrapper-live-example-smoke-${process.pid}`;
+      const spawnRes = await jsonFetch<SpawnResponse>(
+        'POST',
+        `${SUPERVISOR_URL}/runners/spawn-test`,
+        {
+          rebuild: false,
+          wait: true,
+          requester_id: requesterId,
+          queue_timeout_secs: 60,
+        }
       );
-    }
-
-    // Spawn a temp runner with the cached binary (rebuild:false for speed —
-    // the WS bridge already exists in the binary as of db36037d9).
-    const requesterId = `wrapper-live-example-smoke-${process.pid}`;
-    const spawnRes = await jsonFetch<SpawnResponse>(
-      'POST',
-      `${SUPERVISOR_URL}/runners/spawn-test`,
-      {
-        rebuild: false,
-        wait: true,
-        requester_id: requesterId,
-        queue_timeout_secs: 60,
+      if (spawnRes.status !== 200 && spawnRes.status !== 201) {
+        throw new Error(
+          `spawn-test failed: status=${spawnRes.status} body=${JSON.stringify(spawnRes.data)}`
+        );
       }
-    );
-    if (spawnRes.status !== 200 && spawnRes.status !== 201) {
-      throw new Error(
-        `spawn-test failed: status=${spawnRes.status} body=${JSON.stringify(spawnRes.data)}`
-      );
+      runnerId = spawnRes.data.runner_id ?? spawnRes.data.id ?? null;
+      runnerPort = spawnRes.data.port ?? spawnRes.data.runner_port ?? null;
+      if (!runnerId || !runnerPort) {
+        throw new Error(
+          `Could not parse runner_id/port from spawn response: ${JSON.stringify(spawnRes.data)}`
+        );
+      }
+
+      const ready = await waitForRunnerHealth(runnerPort, SPAWN_TIMEOUT_MS);
+      if (!ready)
+        throw new Error(
+          `Runner ${runnerId} on port ${runnerPort} did not become healthy in ${SPAWN_TIMEOUT_MS}ms`
+        );
+
+      await startWrapper(runnerPort);
+    },
+    SPAWN_TIMEOUT_MS + WRAPPER_READY_TIMEOUT_MS + 5_000
+  );
+
+  afterAll(async () => {
+    await stopWrapper();
+    if (runnerId) {
+      try {
+        await fetch(`${SUPERVISOR_URL}/runners/${runnerId}/stop`, { method: 'POST' });
+      } catch {
+        // best-effort cleanup
+      }
     }
-    runnerId = spawnRes.data.runner_id ?? spawnRes.data.id ?? null;
-    runnerPort = spawnRes.data.port ?? spawnRes.data.runner_port ?? null;
-    if (!runnerId || !runnerPort) {
-      throw new Error(
-        `Could not parse runner_id/port from spawn response: ${JSON.stringify(spawnRes.data)}`
-      );
-    }
+  }, 30_000);
 
-    const ready = await waitForRunnerHealth(runnerPort, SPAWN_TIMEOUT_MS);
-    if (!ready)
-      throw new Error(
-        `Runner ${runnerId} on port ${runnerPort} did not become healthy in ${SPAWN_TIMEOUT_MS}ms`
-      );
-
-    await startWrapper(runnerPort);
-  },
-  SPAWN_TIMEOUT_MS + WRAPPER_READY_TIMEOUT_MS + 5_000
-);
-
-afterAll(async () => {
-  await stopWrapper();
-  if (runnerId) {
-    try {
-      await fetch(`${SUPERVISOR_URL}/runners/${runnerId}/stop`, { method: 'POST' });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-}, 30_000);
-
-describe('wrapper-live-example WS dispatch', () => {
   it('returns the wrapper handler shape from GET /ui-bridge/sdk/control/snapshot (proves WS path fired)', async () => {
     if (!runnerPort) throw new Error('no runner port');
     const { status, data } = await jsonFetch<{

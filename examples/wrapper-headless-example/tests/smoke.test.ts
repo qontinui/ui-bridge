@@ -12,13 +12,18 @@
  * The test only exercises the headless path; flipping to headed for CI
  * would require an X server / display, which CI usually doesn't have.
  * Adopters can still drive the headed path manually via `HEADED=1 npm start`.
+ *
+ * Skipped automatically in environments where the Playwright Chromium browser
+ * binary is not installed (e.g. CI without `npx playwright install`).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
 import { HeadlessTransport, type WrapperTransport } from '@qontinui/ui-bridge-wrapper';
 import { registerHandlers } from '../src/handlers.js';
 import type {
@@ -33,6 +38,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = resolve(__dirname, 'fixtures/page.html');
 const VIEWPORT_WIDTH = 1024;
 const VIEWPORT_HEIGHT = 640;
+
+// Probe whether the Playwright Chromium binary is available. `executablePath()`
+// returns the resolved path even when the binary isn't installed, so we check
+// the file actually exists. If the call throws (no browser registered at all),
+// treat that as unavailable too.
+const PLAYWRIGHT_AVAILABLE = (() => {
+  try {
+    const exePath = chromium.executablePath();
+    return existsSync(exePath);
+  } catch {
+    return false;
+  }
+})();
 
 let server: Server | null = null;
 let serverPort = 0;
@@ -70,23 +88,23 @@ async function stopServer(): Promise<void> {
   server = null;
 }
 
-beforeAll(async () => {
-  await startServer();
-}, 90_000);
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)('wrapper-headless-example (HeadlessTransport)', () => {
+  beforeAll(async () => {
+    await startServer();
+  }, 90_000);
 
-afterAll(async () => {
-  if (transport) {
-    try {
-      await transport.close();
-    } catch {
-      // best-effort
+  afterAll(async () => {
+    if (transport) {
+      try {
+        await transport.close();
+      } catch {
+        // best-effort
+      }
+      transport = null;
     }
-    transport = null;
-  }
-  await stopServer();
-}, 30_000);
+    await stopServer();
+  }, 30_000);
 
-describe('wrapper-headless-example (HeadlessTransport)', () => {
   it('drives a real Chromium against a local fixture and observes DOM state changes', async () => {
     transport = new HeadlessTransport({
       kind: 'headless',
