@@ -10268,6 +10268,7 @@ function sleep2(ms) {
 async function loadTauriEventModule(specifier) {
   return import(
     /* @vite-ignore */
+    /* turbopackIgnore: true */
     specifier
   );
 }

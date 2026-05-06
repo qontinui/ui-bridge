@@ -1902,7 +1902,13 @@ function sleep(ms: number): Promise<void> {
  * static import would hard-fail at import-analysis. At runtime in a Tauri
  * webview the module is always present. Vitest's `vi.mock()` still matches
  * by module name and intercepts the dynamic import.
+ *
+ * Magic comments below silence each bundler's import analyzer:
+ * - `@vite-ignore` keeps Vite (and vitest) quiet for consumers that bundle
+ *   the SDK through Vite.
+ * - `turbopackIgnore: true` does the same for Next.js Turbopack consumers
+ *   (Next 15+; required by `examples/nextjs-app` on Next 16).
  */
 async function loadTauriEventModule(specifier: string): Promise<unknown> {
-  return import(/* @vite-ignore */ specifier);
+  return import(/* @vite-ignore */ /* turbopackIgnore: true */ specifier);
 }
