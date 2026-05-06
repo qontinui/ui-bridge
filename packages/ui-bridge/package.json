@@ -147,7 +147,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup && test -s dist/index.d.ts",
+    "build": "tsup && node -e \"process.exit(require('fs').statSync('dist/index.d.ts').size > 0 ? 0 : 1)\"",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
