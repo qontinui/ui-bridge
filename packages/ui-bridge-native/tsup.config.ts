@@ -11,7 +11,10 @@ export default defineConfig({
     'debug/index': 'src/debug/index.ts',
   },
   format: ['cjs', 'esm'],
-  dts: true,
+  // DTS generation is handled by `tsc -p tsconfig.build.json` in the build
+  // script; tsup's worker pool can't resolve the monorepo's root tsconfig
+  // which still has a deprecated baseUrl flag.
+  dts: false,
   splitting: false,
   sourcemap: true,
   clean: true,

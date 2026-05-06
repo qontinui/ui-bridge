@@ -37,7 +37,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.build.json",
     "dev": "tsup --watch",
     "test": "echo \"No tests yet\"",
     "test:watch": "vitest",
