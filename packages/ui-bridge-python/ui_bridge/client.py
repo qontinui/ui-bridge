@@ -1073,11 +1073,13 @@ class UIBridgeClient:
                 the full reload re-initialises the SDK cleanly.
         """
         body: dict[str, Any] = {"url": url, "hard": hard}
-        return self._request("POST", "/control/page/navigate", json=body)
+        result: dict[str, Any] = self._request("POST", "/control/page/navigate", json=body)
+        return result
 
     def page_refresh(self) -> dict[str, Any]:
         """Refresh the connected browser tab."""
-        return self._request("POST", "/control/page/refresh")
+        result: dict[str, Any] = self._request("POST", "/control/page/refresh")
+        return result
 
     # ==========================================================================
     # CDP Tab Discovery
