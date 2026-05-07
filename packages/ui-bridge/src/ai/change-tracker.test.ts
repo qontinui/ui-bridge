@@ -378,6 +378,32 @@ describe('ChangeTracker', () => {
       expect(result.changes).toEqual([]);
     });
 
+    it('peekBuffer returns a snapshot without draining', () => {
+      // Use pushRouteChange to populate without spinning up executeWithDiff.
+      tracker.enableBuffer();
+      tracker.pushRouteChange('/a', '/b', 1000);
+      tracker.pushRouteChange('/b', '/c', 2000);
+
+      const first = tracker.peekBuffer();
+      expect(first).toHaveLength(2);
+      expect(first[0]).toMatchObject({ type: 'route-change', from: '/a', to: '/b', recordedAt: 1000 });
+      expect(first[1]).toMatchObject({ type: 'route-change', from: '/b', to: '/c', recordedAt: 2000 });
+
+      // Repeating peek must yield the same data (does NOT drain).
+      const second = tracker.peekBuffer();
+      expect(second).toHaveLength(2);
+      expect(second[0]).toMatchObject({ from: '/a', to: '/b' });
+
+      // Returned array is a shallow copy — mutating it does not affect the buffer.
+      first.length = 0;
+      expect(tracker.peekBuffer()).toHaveLength(2);
+
+      // Now drain. Buffer should be empty afterwards; peekBuffer reflects that.
+      const drained = tracker.drainBuffer();
+      expect(drained.count).toBe(2);
+      expect(tracker.peekBuffer()).toEqual([]);
+    });
+
     it('should evict oldest entries when buffer exceeds limit', () => {
       const smallTracker = new ChangeTracker(deps, { maxBufferSize: 2 });
       smallTracker.enableBuffer();
