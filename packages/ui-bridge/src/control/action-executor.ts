@@ -2816,7 +2816,28 @@ function computeActionErrorDiff(
 /**
  * Safely serialize a value, replacing functions and handling circular references.
  */
-function safeSerialize(value: unknown, seen = new WeakSet<object>()): unknown {
+/**
+ * Recursion depth cap for safeSerialize.
+ *
+ * Without a cap, walking a useContext-style memoizedState whose value
+ * carries DOM-node back-refs (each with `__reactFiber$` back-references
+ * into parent fibers) explodes the fanout. The WeakSet eventually
+ * terminates the walk via cycle detection, but for a runner UI with a
+ * few hundred registered elements the unguarded walk can run for >10s
+ * — long enough to blow the 10s IPC timeout in
+ * `qontinui-runner/src-tauri/src/mcp/ui_bridge/request.rs` before
+ * `extractReactState` ever returns. 6 is empirically deep enough for
+ * normal hook state (props/state are rarely nested past 3-4) without
+ * letting pathological graphs run away.
+ */
+const SAFE_SERIALIZE_MAX_DEPTH = 6;
+
+function safeSerialize(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0
+): unknown {
+  if (depth > SAFE_SERIALIZE_MAX_DEPTH) return '[MaxDepth]';
   if (value === null || value === undefined) return value;
   if (typeof value === 'function') return '[Function]';
   if (typeof value !== 'object') return value;
@@ -2825,14 +2846,30 @@ function safeSerialize(value: unknown, seen = new WeakSet<object>()): unknown {
   if (seen.has(obj)) return '[Circular]';
   seen.add(obj);
 
+  // DOM node short-circuit. React stores DOM refs in fiber.stateNode and
+  // useRef hooks; walking them would descend into __reactFiber$/__reactProps$
+  // back-references attached as own enumerable properties by React, plus
+  // any data-* attributes. The Element/Document/Window guards are
+  // typeof-protected so this same module still works in non-DOM
+  // environments (the SDK's server-side handlers import from here too).
+  if (typeof Element !== 'undefined' && obj instanceof Element) {
+    return `[${obj.constructor.name}]`;
+  }
+  if (typeof Document !== 'undefined' && obj instanceof Document) {
+    return '[Document]';
+  }
+  if (typeof Window !== 'undefined' && obj instanceof Window) {
+    return '[Window]';
+  }
+
   if (Array.isArray(obj)) {
-    return obj.map((item) => safeSerialize(item, seen));
+    return obj.map((item) => safeSerialize(item, seen, depth + 1));
   }
 
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(obj)) {
     try {
-      result[key] = safeSerialize((obj as Record<string, unknown>)[key], seen);
+      result[key] = safeSerialize((obj as Record<string, unknown>)[key], seen, depth + 1);
     } catch {
       result[key] = '[Error reading property]';
     }
