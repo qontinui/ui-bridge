@@ -11240,6 +11240,26 @@ ${truncateText(details + suffix, remaining - 30)}`
         };
       }
       /**
+       * Return a shallow copy of the registry-level change buffer without
+       * draining it. Safe to call repeatedly — does not advance the drain
+       * cursor.
+       *
+       * Used by callers that filter by timestamp (`getChangesSince`) or by
+       * element id (`getElementHistory`) and need to read the same window
+       * across multiple calls. Compare with `drainBuffer()`, which is the
+       * incremental "give me everything since last drain" reader and
+       * clears the buffer.
+       *
+       * Only the registry-level `changeBuffer` (`BufferedChange |
+       * BufferedRouteChange`) is exposed here. Sub-buffers (DOM mutations,
+       * console errors, network requests, Tauri events) intentionally
+       * remain drain-only — peek is for the change/route-change feed that
+       * external HTTP endpoints filter against.
+       */
+      peekBuffer() {
+        return [...this.changeBuffer];
+      }
+      /**
        * Derive a best-effort CSS selector string for a DOM node.
        * Used for DomMutationEntry.target_selector.
        */
