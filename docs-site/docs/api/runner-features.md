@@ -64,6 +64,17 @@ element-specific endpoints) to verify element existence and state; reach for
 DOM queries only as a last-resort fallback for elements you know are
 DOM-attribute-marked.
 
+**Element ids are derived, not named after the React component.** Buttons
+without an explicit `useUIElement` name get a slugified id from their
+accessible label — `aria-label`, then `<label for>`, then the title attribute, then visible text
+(`getAccessibleLabel` in `packages/ui-bridge/src/react/useAutoRegister.ts:280`,
+slugged to 30 chars via `slugify` at `:367`). A `<button title="Promote this
+session into an isolated git worktree">` lands in the snapshot as
+`button-promote-this-session-into-an-i-1`, NOT `button-promote-to-worktree-*`.
+When grepping snapshot output, search by partial visible text or icon rather
+than a hardcoded prefix; for stable test ids, set an explicit `useUIElement`
+name on the component.
+
 The response also includes:
 
 - `route` — `window.location.pathname`
