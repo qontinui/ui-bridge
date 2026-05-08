@@ -3214,20 +3214,31 @@ function computeActionErrorDiff(fingerprintsBefore, eventsBefore, eventsAfter) {
     errorDelta: countErrors(dedupedNew) - countErrors(dedupedResolved)
   };
 }
-function safeSerialize(value, seen = /* @__PURE__ */ new WeakSet()) {
+var SAFE_SERIALIZE_MAX_DEPTH = 6;
+function safeSerialize(value, seen = /* @__PURE__ */ new WeakSet(), depth = 0) {
+  if (depth > SAFE_SERIALIZE_MAX_DEPTH) return "[MaxDepth]";
   if (value === null || value === void 0) return value;
   if (typeof value === "function") return "[Function]";
   if (typeof value !== "object") return value;
   const obj = value;
   if (seen.has(obj)) return "[Circular]";
   seen.add(obj);
+  if (typeof Element !== "undefined" && obj instanceof Element) {
+    return `[${obj.constructor.name}]`;
+  }
+  if (typeof Document !== "undefined" && obj instanceof Document) {
+    return "[Document]";
+  }
+  if (typeof Window !== "undefined" && obj instanceof Window) {
+    return "[Window]";
+  }
   if (Array.isArray(obj)) {
-    return obj.map((item) => safeSerialize(item, seen));
+    return obj.map((item) => safeSerialize(item, seen, depth + 1));
   }
   const result = {};
   for (const key of Object.keys(obj)) {
     try {
-      result[key] = safeSerialize(obj[key], seen);
+      result[key] = safeSerialize(obj[key], seen, depth + 1);
     } catch {
       result[key] = "[Error reading property]";
     }
