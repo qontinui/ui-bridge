@@ -17439,6 +17439,40 @@ function isDisabled(element) {
   if (element.getAttribute("aria-disabled") === "true") return true;
   return false;
 }
+function getClickDisabledSignals(element) {
+  const ariaDisabled = element.getAttribute("aria-disabled") === "true";
+  const nativeDisabled = (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) && element.disabled;
+  let pointerEvents;
+  try {
+    pointerEvents = window.getComputedStyle(element).pointerEvents;
+  } catch {
+    pointerEvents = "";
+  }
+  const pointerNone = pointerEvents === "none";
+  if (!ariaDisabled && !nativeDisabled && !pointerNone) return null;
+  return {
+    disabled: true,
+    ariaDisabled,
+    nativeDisabled,
+    pointerEvents
+  };
+}
+var CLICK_LIKE_ACTIONS = /* @__PURE__ */ new Set([
+  "click",
+  "doubleClick",
+  "rightClick",
+  "middleClick",
+  "check",
+  "uncheck",
+  "toggle"
+]);
+var ElementDisabledError = class extends Error {
+  constructor(message, elementState) {
+    super(message);
+    this.name = "ElementDisabledError";
+    this.elementState = elementState;
+  }
+};
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -17449,8 +17483,35 @@ function createMouseEvent(type, element, options) {
   return new MouseEvent(type, {
     bubbles: true,
     cancelable: true,
-    view: window,
     button: options?.button === "right" ? 2 : options?.button === "middle" ? 1 : 0,
+    clientX: rect.left + x,
+    clientY: rect.top + y
+  });
+}
+function createPointerEvent(type, element, options) {
+  const rect = element.getBoundingClientRect();
+  const x = options?.position?.x ?? rect.width / 2;
+  const y = options?.position?.y ?? rect.height / 2;
+  const button = options?.button === "right" ? 2 : options?.button === "middle" ? 1 : 0;
+  const downBit = button === 2 ? 2 : button === 1 ? 4 : 1;
+  const buttons = type === "pointerdown" ? downBit : 0;
+  if (typeof PointerEvent === "function") {
+    return new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      button,
+      buttons,
+      clientX: rect.left + x,
+      clientY: rect.top + y,
+      pointerType: "mouse",
+      isPrimary: true
+    });
+  }
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button,
     clientX: rect.left + x,
     clientY: rect.top + y
   });
@@ -17748,10 +17809,20 @@ var DefaultActionExecutor = class {
         idleWaitMs
       };
     } catch (error) {
+      let elementState;
+      if (error instanceof ElementDisabledError) {
+        try {
+          const reg = this.registry.getElement(elementId);
+          const el = reg?.element ?? findElementByIdentifier(elementId);
+          if (el) elementState = getElementState2(el);
+        } catch {
+        }
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : void 0,
+        elementState,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -18177,6 +18248,19 @@ var DefaultActionExecutor = class {
    * Perform an action on an element
    */
   async performAction(element, action2, params) {
+    if (CLICK_LIKE_ACTIONS.has(action2)) {
+      const signals = getClickDisabledSignals(element);
+      if (signals) {
+        const reasons = [];
+        if (signals.ariaDisabled) reasons.push("aria-disabled=true");
+        if (signals.nativeDisabled) reasons.push("disabled property");
+        if (signals.pointerEvents === "none") reasons.push("pointer-events:none");
+        throw new ElementDisabledError(
+          `element is disabled (${reasons.join(", ")}); click was not dispatched`,
+          signals
+        );
+      }
+    }
     const canonical = getCanonicalPerformAction();
     if (canonical) {
       const enriched = action2 === "drag" && params && !("resolveElement" in params) ? {
@@ -18263,7 +18347,9 @@ var DefaultActionExecutor = class {
     }
   }
   performClick(element, options) {
+    element.dispatchEvent(createPointerEvent("pointerdown", element, options));
     element.dispatchEvent(createMouseEvent("mousedown", element, options));
+    element.dispatchEvent(createPointerEvent("pointerup", element, options));
     element.dispatchEvent(createMouseEvent("mouseup", element, options));
     element.click();
     const anchor = element.closest("a");
@@ -18278,13 +18364,17 @@ var DefaultActionExecutor = class {
   }
   performRightClick(element, options) {
     const opts = { ...options, button: "right" };
+    element.dispatchEvent(createPointerEvent("pointerdown", element, opts));
     element.dispatchEvent(createMouseEvent("mousedown", element, opts));
+    element.dispatchEvent(createPointerEvent("pointerup", element, opts));
     element.dispatchEvent(createMouseEvent("mouseup", element, opts));
     element.dispatchEvent(createMouseEvent("contextmenu", element, opts));
   }
   performMiddleClick(element, options) {
     const opts = { ...options, button: "middle" };
+    element.dispatchEvent(createPointerEvent("pointerdown", element, opts));
     element.dispatchEvent(createMouseEvent("mousedown", element, opts));
+    element.dispatchEvent(createPointerEvent("pointerup", element, opts));
     element.dispatchEvent(createMouseEvent("mouseup", element, opts));
     element.dispatchEvent(createMouseEvent("auxclick", element, opts));
   }

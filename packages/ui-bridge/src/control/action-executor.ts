@@ -305,6 +305,78 @@ function isDisabled(element: HTMLElement): boolean {
 }
 
 /**
+ * Click-time disabled signals.
+ *
+ * Distinct from `isDisabled` because we also surface
+ * `pointer-events: none` (a Radix idiom for disabled-by-style buttons that
+ * don't have the DOM `disabled` property) and we want the individual signals
+ * to show up in the error so callers can disambiguate. Returns `null` when the
+ * element is actionable.
+ */
+interface ClickDisabledSignals {
+  disabled: true;
+  ariaDisabled: boolean;
+  nativeDisabled: boolean;
+  pointerEvents: string;
+}
+
+function getClickDisabledSignals(element: HTMLElement): ClickDisabledSignals | null {
+  const ariaDisabled = element.getAttribute('aria-disabled') === 'true';
+  const nativeDisabled =
+    (element instanceof HTMLButtonElement ||
+      element instanceof HTMLInputElement ||
+      element instanceof HTMLSelectElement ||
+      element instanceof HTMLTextAreaElement) &&
+    element.disabled;
+  // `getComputedStyle` is unreliable in some test environments; guard it.
+  let pointerEvents: string;
+  try {
+    pointerEvents = window.getComputedStyle(element).pointerEvents;
+  } catch {
+    pointerEvents = '';
+  }
+  const pointerNone = pointerEvents === 'none';
+
+  if (!ariaDisabled && !nativeDisabled && !pointerNone) return null;
+  return {
+    disabled: true,
+    ariaDisabled,
+    nativeDisabled,
+    pointerEvents,
+  };
+}
+
+/**
+ * Click-like actions that should be blocked when the target is disabled.
+ * Includes `toggle`/`check`/`uncheck` because they call into click handlers
+ * underneath in many component libraries.
+ */
+const CLICK_LIKE_ACTIONS = new Set<string>([
+  'click',
+  'doubleClick',
+  'rightClick',
+  'middleClick',
+  'check',
+  'uncheck',
+  'toggle',
+]);
+
+/**
+ * Error subclass used to carry structured disabled-state details out through
+ * the throw → catch path in `executeAction` without changing every other
+ * error site. The catch block reads `.elementState` off the error and
+ * forwards it onto the response when present.
+ */
+class ElementDisabledError extends Error {
+  readonly elementState: ClickDisabledSignals;
+  constructor(message: string, elementState: ClickDisabledSignals) {
+    super(message);
+    this.name = 'ElementDisabledError';
+    this.elementState = elementState;
+  }
+}
+
+/**
  * Sleep for a duration
  */
 function sleep(ms: number): Promise<void> {
@@ -319,11 +391,73 @@ function createMouseEvent(type: string, element: HTMLElement, options?: MouseAct
   const x = options?.position?.x ?? rect.width / 2;
   const y = options?.position?.y ?? rect.height / 2;
 
+  // NOTE: do NOT pass `view: window` here. Newer jsdom versions (>=23) reject
+  // a cross-realm `window` reference on the MouseEvent constructor with
+  // "member view is not of type Window", silently failing the dispatch chain.
+  // Real browsers don't need `view` for click delivery — this was a latent
+  // bug masked by tests that didn't assert `success` on click responses.
   return new MouseEvent(type, {
     bubbles: true,
     cancelable: true,
-    view: window,
     button: options?.button === 'right' ? 2 : options?.button === 'middle' ? 1 : 0,
+    clientX: rect.left + x,
+    clientY: rect.top + y,
+  });
+}
+
+/**
+ * Create a pointer event relative to an element's bounding rect.
+ *
+ * Mirrors `createMouseEvent` so the dispatch path stays symmetric. Used for the
+ * Radix-style pointer-only handler fallback: components like
+ * `<Tabs.Trigger>` listen for `pointerdown`/`pointerup` rather than
+ * `mousedown`/`mouseup` + `click`, and a click sequence without pointer events
+ * silently no-ops on them.
+ *
+ * In environments without a global `PointerEvent` constructor (older jsdom
+ * versions), falls back to a `MouseEvent` of the same type — pointer-only
+ * handlers won't fire there, but neither will they crash, which preserves the
+ * existing test surface.
+ */
+function createPointerEvent(
+  type: string,
+  element: HTMLElement,
+  options?: MouseAction
+): Event {
+  const rect = element.getBoundingClientRect();
+  const x = options?.position?.x ?? rect.width / 2;
+  const y = options?.position?.y ?? rect.height / 2;
+  const button = options?.button === 'right' ? 2 : options?.button === 'middle' ? 1 : 0;
+  // `buttons` mask: 1=primary, 2=right, 4=middle. For "down" events the
+  // pressed button is set; for "up" events it's cleared. We mirror Playwright
+  // and keep it simple: down = button mask, up/other = 0.
+  const downBit = button === 2 ? 2 : button === 1 ? 4 : 1;
+  const buttons = type === 'pointerdown' ? downBit : 0;
+
+  if (typeof PointerEvent === 'function') {
+    // NOTE: do NOT pass `view: window` here. jsdom's PointerEvent constructor
+    // is stricter than its MouseEvent counterpart and rejects the cross-realm
+    // `window` reference with "member view is not of type Window". Native
+    // browsers don't need it for the event to dispatch correctly.
+    return new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      button,
+      buttons,
+      clientX: rect.left + x,
+      clientY: rect.top + y,
+      pointerType: 'mouse',
+      isPrimary: true,
+    });
+  }
+  // Fallback: synthesize as a MouseEvent so environments without
+  // PointerEvent at least don't throw. Radix-style pointer handlers won't
+  // fire here, but the chain remains idempotent.
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button,
     clientX: rect.left + x,
     clientY: rect.top + y,
   });
@@ -748,10 +882,26 @@ export class DefaultActionExecutor implements ActionExecutor {
         idleWaitMs,
       };
     } catch (error) {
+      // For the disabled-state pre-check, surface the live element snapshot
+      // alongside the error so callers can see why the click was refused
+      // without having to issue a follow-up `/element/:id` read. The
+      // `getElementState` snapshot already exposes `enabled` and
+      // `computedStyles.pointerEvents`, so no separate field is needed.
+      let elementState: ElementState | undefined;
+      if (error instanceof ElementDisabledError) {
+        try {
+          const reg = this.registry.getElement(elementId);
+          const el = reg?.element ?? findElementByIdentifier(elementId);
+          if (el) elementState = getElementState(el);
+        } catch {
+          // Best-effort — never let snapshot failure mask the original error.
+        }
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
+        elementState,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -1307,6 +1457,29 @@ export class DefaultActionExecutor implements ActionExecutor {
     action: string,
     params?: Record<string, unknown>
   ): Promise<unknown> {
+    // Disabled-state pre-check for click-like actions.
+    //
+    // Without this, a click on an `aria-disabled="true"` button or a
+    // `pointer-events: none` Radix button reports `success: true` because the
+    // dispatch sequence "succeeded" — but the React handler is a no-op, so
+    // the user-visible state never changes. Surface this as an explicit
+    // failure so callers can distinguish a transport success from an
+    // effective no-op (the failure mode Phase 3.4's `expectChange` was
+    // designed to surface from the observability side).
+    if (CLICK_LIKE_ACTIONS.has(action)) {
+      const signals = getClickDisabledSignals(element);
+      if (signals) {
+        const reasons: string[] = [];
+        if (signals.ariaDisabled) reasons.push('aria-disabled=true');
+        if (signals.nativeDisabled) reasons.push('disabled property');
+        if (signals.pointerEvents === 'none') reasons.push('pointer-events:none');
+        throw new ElementDisabledError(
+          `element is disabled (${reasons.join(', ')}); click was not dispatched`,
+          signals
+        );
+      }
+    }
+
     // Delegate to ui-bridge-auto's canonical action implementation if available.
     // This ensures a single source of truth for action semantics.
     const canonical = getCanonicalPerformAction();
@@ -1422,8 +1595,13 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performClick(element: HTMLElement, options?: MouseAction): void {
-    // Dispatch mouse events for listeners that depend on the full sequence
+    // Pointer events fire FIRST so Radix-style pointer-only handlers
+    // (e.g. `<Tabs.Trigger>`, `<Switch>`) see them before mouse/click.
+    // They're cheap and idempotent on plain buttons that listen for `click`,
+    // so dispatching unconditionally is safe.
+    element.dispatchEvent(createPointerEvent('pointerdown', element, options));
     element.dispatchEvent(createMouseEvent('mousedown', element, options));
+    element.dispatchEvent(createPointerEvent('pointerup', element, options));
     element.dispatchEvent(createMouseEvent('mouseup', element, options));
 
     // Use native click() which works with React's event delegation.
@@ -1448,14 +1626,20 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private performRightClick(element: HTMLElement, options?: MouseAction): void {
     const opts = { ...options, button: 'right' as const };
+    // Pointer pair around mouse pair so pointer-only handlers fire first.
+    element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
     element.dispatchEvent(createMouseEvent('mousedown', element, opts));
+    element.dispatchEvent(createPointerEvent('pointerup', element, opts));
     element.dispatchEvent(createMouseEvent('mouseup', element, opts));
     element.dispatchEvent(createMouseEvent('contextmenu', element, opts));
   }
 
   private performMiddleClick(element: HTMLElement, options?: MouseAction): void {
     const opts = { ...options, button: 'middle' as const };
+    // Pointer pair around mouse pair so pointer-only handlers fire first.
+    element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
     element.dispatchEvent(createMouseEvent('mousedown', element, opts));
+    element.dispatchEvent(createPointerEvent('pointerup', element, opts));
     element.dispatchEvent(createMouseEvent('mouseup', element, opts));
     // Browsers fire 'auxclick' (not 'click') for non-primary button clicks.
     // React's onAuxClick handler listens for this event type.
