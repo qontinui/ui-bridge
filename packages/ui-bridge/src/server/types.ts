@@ -430,6 +430,17 @@ export interface UIBridgeServerHandlers {
     interactiveOnly?: boolean | string;
     /** snake_case alias for `interactiveOnly`. */
     interactive_only?: boolean | string;
+    /**
+     * Manual-test remediation 2026-05-10 (Item 2) filter: when `true`,
+     * keep only elements that report disabled by any of these signals in
+     * the snapshot's `state`: `disabled === true`,
+     * `ariaDisabled === "true"`, or `enabled === false`. Default `false` —
+     * include everything. All other snapshot metadata (route, activeTab,
+     * registration, viewport, errorSummary) is preserved unchanged.
+     */
+    withDisabledOnly?: boolean | string;
+    /** snake_case alias for `withDisabledOnly`. */
+    with_disabled_only?: boolean | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
   getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
 
