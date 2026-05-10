@@ -921,6 +921,13 @@ typos return HTTP 400 with the offending field name in the error envelope.
 Example: pass `keepAliveSecs`, not `keep_alive_secs`. `appId`, not `app_id`.
 `baseUrl`, not `base_url`. `pageUrl`, not `page_url`.
 
+**The same camelCase convention applies to runner-internal HTTP endpoints**
+under `/coordinator/*`, `/terminals/*`, `/sessions/*`, `/plans/*`, and
+`/task-runs/*`. Reading the response, expect `liveSessions` not
+`live_sessions`, `taskRunId` not `task_run_id`, `assignedSessionId` not
+`assigned_session_id`. The Rust struct fields are snake_case; the wire
+representation isn't.
+
 ### Driving a specific app (transport-agnostic)
 
 ```http
