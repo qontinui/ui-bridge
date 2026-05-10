@@ -2046,6 +2046,25 @@ export function createHandlers(
       interactiveOnly?: boolean | string;
       /** snake_case alias for interactiveOnly (match find/discover). */
       interactive_only?: boolean | string;
+      /**
+       * Manual-test remediation 2026-05-10 (Item 2): when true, keep only
+       * elements that report disabled by ANY signal in the snapshot's
+       * `state`:
+       *   - `state.disabled === true`
+       *   - `state.ariaDisabled === "true"`
+       *   - `state.enabled === false` (current SDK emits `enabled`, not
+       *     `disabled` — keep the predicate broad so the filter is useful
+       *     against today's snapshot shape).
+       * Surfaced because validating the 0.3.7 disabled-state click
+       * pre-check needed a way to find a disabled target without walking
+       * the full snapshot. Other top-level snapshot metadata (route,
+       * activeTab, registration, viewport, errorSummary, page, …) is
+       * preserved unchanged. GET query params arrive as strings, so accept
+       * `'true'` / `'1'` alongside the boolean.
+       */
+      withDisabledOnly?: boolean | string;
+      /** snake_case alias for withDisabledOnly. */
+      with_disabled_only?: boolean | string;
     }): Promise<APIResponse<ControlSnapshot>> => {
       try {
         // GET query params arrive as strings from standalone server
@@ -2094,6 +2113,35 @@ export function createHandlers(
           if (domElements.length > 0) {
             snapshot.elements = domElements as any[];
           }
+        }
+
+        // Manual-test remediation 2026-05-10 (Item 2): apply the
+        // `withDisabledOnly` filter AFTER the materialize/DOM-fallback chain
+        // so registry-empty snapshots can still surface disabled DOM nodes.
+        // Keeps elements that are disabled by ANY signal the SDK might
+        // surface in `state`:
+        //   - `state.disabled === true` (legacy shape, plan-specified)
+        //   - `state.ariaDisabled === "true"` (aria-disabled attr passthrough)
+        //   - `state.enabled === false` (current SDK shape — registry.ts
+        //     emits the inverse `enabled` boolean rather than `disabled`).
+        // Matching all three keeps the filter useful regardless of which
+        // snapshot construction path produced the element record.
+        const wantDisabledOnly =
+          request?.withDisabledOnly === true ||
+          request?.withDisabledOnly === 'true' ||
+          request?.withDisabledOnly === '1' ||
+          request?.with_disabled_only === true ||
+          request?.with_disabled_only === 'true' ||
+          request?.with_disabled_only === '1';
+        if (wantDisabledOnly) {
+          snapshot.elements = snapshot.elements.filter((e: unknown) => {
+            const s = (e as { state?: Record<string, unknown> }).state ?? {};
+            return (
+              s.disabled === true ||
+              s.ariaDisabled === 'true' ||
+              s.enabled === false
+            );
+          });
         }
 
         // Enrich snapshot with error summary if capture is available
