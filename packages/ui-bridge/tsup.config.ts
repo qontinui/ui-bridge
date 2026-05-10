@@ -1,4 +1,6 @@
 import { defineConfig } from 'tsup';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pkg = require('./package.json') as { version: string };
 
 export default defineConfig([
   {
@@ -44,6 +46,12 @@ export default defineConfig([
     sourcemap: true,
     clean: true,
     treeshake: true,
+    // Inject the package.json version as a build-time constant so the SDK
+    // can publish itself as `window.__UI_BRIDGE__.version` without pulling
+    // package.json into the bundle. See `UIBridgeProviderInit.ts`.
+    define: {
+      __SDK_VERSION__: JSON.stringify(pkg.version),
+    },
     external: [
       'react',
       'react-dom',
@@ -75,6 +83,9 @@ export default defineConfig([
     splitting: false,
     sourcemap: true,
     treeshake: true,
+    define: {
+      __SDK_VERSION__: JSON.stringify(pkg.version),
+    },
     external: ['react', 'react-native'],
   },
 ]);

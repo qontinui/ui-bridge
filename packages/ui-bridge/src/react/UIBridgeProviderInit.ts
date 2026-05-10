@@ -27,6 +27,15 @@ import { UndoTracker } from '../undo';
 import { ChangeObserver } from '../core/change-observer';
 
 /**
+ * SDK version string, injected at build time by tsup's `define` and at
+ * test time by vitest's `define` (both source from `package.json`'s
+ * `version` field). Surfaced on `window.__UI_BRIDGE__.version` so
+ * external automation agents can fingerprint which SDK build a runner
+ * is consuming without parsing the runner's bundle.
+ */
+declare const __SDK_VERSION__: string;
+
+/**
  * Bundle of every singleton the provider lazily constructs. Each field is
  * populated once in initializeUIBridge and read by the component through
  * useMemo/useRef afterwards.
@@ -184,6 +193,14 @@ export function exposeProviderOnWindow(internals: UIBridgeInternals): void {
 
   const w = window as unknown as Record<string, unknown>;
   const root = (w.__UI_BRIDGE__ ??= {}) as Record<string, unknown>;
+
+  // Publish the SDK build version so external agents (e.g. headless
+  // automation drivers, the Chrome extension, manual-testing scripts)
+  // can tell which SDK build a runner is actually consuming. This lets
+  // a test that depends on a 0.3.X feature distinguish "runner is on an
+  // older SDK" from "feature is missing". Sourced from package.json at
+  // build time via tsup's `define`. See the `__SDK_VERSION__` decl.
+  root.version = __SDK_VERSION__;
 
   root.specs = { getGlobalSpecStore };
   // Expose the provider's registry alongside the other trackers so diagnostic
