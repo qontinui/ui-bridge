@@ -19,7 +19,7 @@ jobs:
     name: Lint smoke-test script
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Bash syntax check
         run: bash -n scripts/smoke-test-runner.sh
@@ -49,7 +49,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, qontinui-dev]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show environment
         run: |
