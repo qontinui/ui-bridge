@@ -421,13 +421,22 @@ take down the UI Bridge server.
 ```http
 GET /control/tabs
 POST /control/tab/activate { "tabId": "specs" }
+POST /control/page/set-tab  { "tab":   "specs" }
 ```
 
 `GET /control/tabs` returns `{ activeTab, tabs: [{id, label}] }`.
 `POST /control/tab/activate` fires the same `ui-bridge-set-tab` event a
 user click dispatches — lazy-mounts and URL-state-sync fire as usual.
 
-Unknown `tabId` returns HTTP 400 with `{ error: "unknown_tab",
+`POST /control/page/set-tab` is a sibling that dispatches the same
+event via `page/evaluate` and reads back `[data-page-id]` so you get a
+verification signal in the response. The `tab` value is the **bare
+slug** (`llm-analytics`, `prompt-home`, `specs`, …) matching
+`snapshot.activeTab` — NOT a `page-`-prefixed name. Sending
+`page-llm-analytics` returns HTTP 400 with the list of valid slugs in
+the error body.
+
+Unknown `tabId` / `tab` returns HTTP 400 with `{ error: "unknown_tab",
 knownTabs: [...] }` so you don't have to guess.
 
 The snapshot response also surfaces `activeTab` alongside `route` so
