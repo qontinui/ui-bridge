@@ -892,6 +892,39 @@ This is a recommendation, not enforced — old callers continue to work,
 and `unwrap: true` (above) is the other way out. Pick one and stick to
 it per call site.
 
+### Tauri command errors — JSON.stringify, not String
+
+When you invoke a Tauri command via `evaluate` and wrap the call in a
+try/catch, **always serialize the error with `JSON.stringify(e)` and
+inspect `e.kind` / `e.message` directly**. The default `String(e)`
+returns `"[object Object]"` because Tauri error envelopes (`{kind,
+message}` objects) don't have a useful `toString`.
+
+Idiomatic shape that recovers structured errors:
+
+```js
+"(async () => {                                                 \
+  try {                                                          \
+    const out = await window.__TAURI__.core.invoke('cmd', args); \
+    return { ok: true, result: out };                            \
+  } catch (e) {                                                  \
+    return {                                                     \
+      ok: false,                                                 \
+      error: {                                                   \
+        kind: e?.kind,                                           \
+        message: e?.message,                                     \
+        raw: JSON.stringify(e)                                   \
+      }                                                          \
+    };                                                           \
+  }                                                              \
+})()"
+```
+
+Tauri error envelopes are stable: every command's `Result<_, E>` Err
+arm is serialized with `kind` (string discriminant) and `message`
+(human-readable). `raw` is a fallback for commands that emit a
+non-standard shape. `String(e)` swallowing this loses both fields.
+
 ## Components (preferred over button clicks)
 
 ```http
