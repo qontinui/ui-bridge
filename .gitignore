@@ -8,8 +8,8 @@ venv/
 *.egg-info/
 
 # Build outputs
+# (publish.yml builds before npm publish; per-package prepublishOnly mirrors locally)
 dist/
-!packages/ui-bridge/dist/
 build/
 *.tsbuildinfo
 .next/
