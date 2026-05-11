@@ -549,6 +549,163 @@ describe('find() — short query against long disclosure label (Phase B)', () =>
 // it scored 0.12". When `debug` is omitted, alternatives must stay
 // undefined to keep production responses lean.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Phase B2 — Literal-text precedence + alias-noise strip + strict mode.
+//
+// Fixture reproduces the failing real-world queries from the B2 brief:
+// alias-noise tokens (`04`, `tsx`, `tab`, `ui`, `pg`) used to pull the
+// wrong elements ahead of literal label / id matches. After the fix,
+// each query lands on the Expected element at confidence ≥ 0.95.
+// ---------------------------------------------------------------------------
+describe('find() — Phase B2 fixture: literal-text precedence', () => {
+  let engine: SearchEngine;
+
+  // Build a realistic Productivity-tab page: a Plans list, a Plan-list
+  // refresh button, a Decompose Plan button, a Coordinator tab, a Task
+  // list, and a "Plans" heading. The ids deliberately carry the
+  // file-path-shaped noise (`04`, `tsx`) that the old alias generator
+  // pulled into the dictionary as standalone tokens.
+  function buildFixture(): void {
+    // productivity.plan-list — the "Plans" container the noise tokens
+    // used to point at.
+    const planList = document.createElement('div');
+    planList.textContent = 'Plans';
+
+    // productivity.decompose-plan-button — literal label "Decompose".
+    const decomposeBtn = document.createElement('button');
+    decomposeBtn.textContent = 'Decompose';
+
+    // productivity.view-tab-coordinator — literal label "Coordinator".
+    const coordTab = document.createElement('button');
+    coordTab.setAttribute('role', 'tab');
+    coordTab.textContent = 'Coordinator';
+
+    // productivity.task-list — a distractor that the alias noise used
+    // to push ahead of the Coordinator tab.
+    const taskList = document.createElement('div');
+    taskList.textContent = 'Tasks';
+
+    // button-refresh-plans-1 — literal label "Refresh plans".
+    const refreshBtn = document.createElement('button');
+    refreshBtn.textContent = 'Refresh plans';
+
+    // heading-2-plans — distractor matching "Refresh plans" via the
+    // shared "plans" token.
+    const heading = document.createElement('h2');
+    heading.textContent = 'Plans';
+
+    attachToDocument(planList, decomposeBtn, coordTab, taskList, refreshBtn, heading);
+
+    engine.updateElements([
+      makeRegistered('productivity.plan-list-04-tsx', planList, {
+        type: 'list',
+        label: 'Plans',
+      }),
+      makeRegistered('productivity.decompose-plan-button', decomposeBtn, {
+        type: 'button',
+        label: 'Decompose',
+      }),
+      makeRegistered('productivity.view-tab-coordinator', coordTab, {
+        type: 'tab',
+        label: 'Coordinator',
+      }),
+      makeRegistered('productivity.task-list-04-tsx', taskList, {
+        type: 'list',
+        label: 'Tasks',
+      }),
+      makeRegistered('button-refresh-plans-1', refreshBtn, {
+        type: 'button',
+        label: 'Refresh plans',
+      }),
+      makeRegistered('heading-2-plans', heading, {
+        type: 'heading',
+        label: 'Plans',
+      }),
+    ]);
+  }
+
+  beforeEach(() => {
+    engine = new SearchEngine({ fuzzyThreshold: 0.5 });
+    buildFixture();
+  });
+
+  it('"Decompose" → productivity.decompose-plan-button at confidence ≥ 0.95', () => {
+    const result = find('Decompose', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('productivity.decompose-plan-button');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('"decompose-plan-button" (literal id) → productivity.decompose-plan-button at confidence ≥ 0.95', () => {
+    // The query is literally the id of the target element (minus the
+    // `productivity.` namespace). The literal-precedence pass matches
+    // against id directly so this lands on the correct element.
+    const result = find('productivity.decompose-plan-button', engine, {
+      confidenceThreshold: 0.4,
+    });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('productivity.decompose-plan-button');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('"Coordinator" → productivity.view-tab-coordinator at confidence ≥ 0.95', () => {
+    const result = find('Coordinator', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('productivity.view-tab-coordinator');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('"Refresh plans" → button-refresh-plans-1 at confidence ≥ 0.95', () => {
+    const result = find('Refresh plans', engine, { confidenceThreshold: 0.4 });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('button-refresh-plans-1');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('strict: true returns found:false when nothing matches literally', () => {
+    // "Decompose Plan" (with a space) doesn't appear as a literal label
+    // anywhere — the decompose button's label is just "Decompose".
+    // strict mode suppresses the fuzzy fallback so the response is
+    // a clean `found:false`.
+    const result = find('totally-not-on-page', engine, {
+      confidenceThreshold: 0.4,
+      strict: true,
+    });
+    expect(result.found).toBe(false);
+  });
+
+  it('strict: true honours literal id match', () => {
+    const result = find('productivity.decompose-plan-button', engine, {
+      confidenceThreshold: 0.4,
+      strict: true,
+    });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('productivity.decompose-plan-button');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.95);
+    }
+  });
+
+  it('strict: true honours literal label match', () => {
+    const result = find('Decompose', engine, {
+      confidenceThreshold: 0.4,
+      strict: true,
+    });
+    expect(result.found).toBe(true);
+    if (result.found && !result.ambiguous) {
+      expect(result.elementId).toBe('productivity.decompose-plan-button');
+    }
+  });
+});
+
 describe('find() — debug alternatives (P15)', () => {
   let engine: SearchEngine;
 

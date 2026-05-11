@@ -945,15 +945,26 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
       const contentType = inferContentType(element);
       const metadata = inferContentMetadata(element);
+      // Normalize text once and reuse for `label` (truncated 50 chars for the
+      // human-readable slot) and `content` (full normalized text for callers
+      // that need the unabridged string). Mirrors `registerSemanticContentElement`'s
+      // shape so heading/paragraph/table-cell snapshots carry the same fields
+      // as `data-ui-bridge-content` elements (B1 — manual-test remediation
+      // 2026-05-10). Without `content`, consumers couldn't distinguish e.g.
+      // `heading-2-recommendations-queue` from its sibling by text alone
+      // because the 50-char label can truncate long headings.
+      const rawText = element.textContent?.trim();
+      const normalizedText = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
       const label =
         element.getAttribute('data-content-label') ||
-        element.textContent?.trim().substring(0, 50) ||
+        normalizedText?.substring(0, 50) ||
         undefined;
 
       bridge.registry.registerContentElement(id, element, {
         contentType,
         contentMetadata: metadata,
         label,
+        content: normalizedText,
       });
 
       registeredContentElementsRef.current.set(element, id);

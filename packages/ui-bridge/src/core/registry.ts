@@ -1228,6 +1228,14 @@ export class UIBridgeRegistry {
       contentType: string;
       contentMetadata: ContentMetadata;
       label?: string;
+      /**
+       * Full normalized text content (whitespace-collapsed, trimmed). Surfaced
+       * verbatim on the snapshot element's `content` field. Populated by the
+       * heading/paragraph/table-cell auto-register path so consumers can
+       * recover the full text without relying on the 50-char `label` truncation
+       * (B1 — manual-test remediation 2026-05-10).
+       */
+      content?: string;
       /** Defaults to `'auto'` — content elements only flow from the DOM scanner. */
       origin?: 'hook' | 'auto';
     }
@@ -1238,6 +1246,7 @@ export class UIBridgeRegistry {
       actions: [],
       category: 'content',
       contentMetadata: options.contentMetadata,
+      content: options.content,
       origin: options.origin ?? 'auto',
     });
   }

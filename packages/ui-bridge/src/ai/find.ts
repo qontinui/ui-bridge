@@ -15,6 +15,7 @@
 
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from './types';
 import type { SearchEngine } from './search-engine';
+import { probeLiteralMatches } from './search-engine';
 import { decomposeTarget, isSoftTypeHint } from './target-decomposer';
 import type { DecomposedTarget } from './target-decomposer';
 
@@ -54,6 +55,25 @@ export interface FindOptions {
    * threshold and inflates response size — production callers stay lean.
    */
   debug?: boolean;
+  /**
+   * B2 — Strict literal-match mode.
+   *
+   * When `true`, only elements that have a case-insensitive EXACT match on
+   * id / labelText / ariaLabel / textContent / title / placeholder / value
+   * / name against the query string (or any of the user-supplied literal
+   * fields in a structured query) are considered. No fuzzy / alias
+   * fallback. If no exact match exists, returns `{ found: false }`.
+   *
+   * Soft-type and B4 hard-pinned synonym fallbacks are also skipped — the
+   * strict path is intentionally a tight literal probe so callers know
+   * exactly what they're getting.
+   *
+   * Default `false` keeps fuzzy behaviour. The exact-match precedence
+   * pass in `SearchEngine.search` STILL applies when this flag is unset
+   * (literal matches just outrank fuzzy candidates instead of suppressing
+   * them).
+   */
+  strict?: boolean;
 }
 
 /**
@@ -153,6 +173,7 @@ const DEFAULT_FIND_OPTIONS: Required<FindOptions> = {
   confidenceThreshold: 0.5,
   maxResults: 5,
   debug: false,
+  strict: false,
 };
 
 /**
@@ -202,6 +223,96 @@ export function find(
   let criteria: SearchCriteria;
   let decomposed: DecomposedTarget;
 
+  // B2 — Pre-decomposition literal probe.
+  //
+  // The decomposer scrubs synonym words like "button" / "tab" from the
+  // query (e.g. `productivity.decompose-plan-button` decomposes to a
+  // short text with `elementType: button` and the bare id chunk left
+  // over). When the user types a literal id we want that to short-circuit
+  // BEFORE the decomposer ever runs — otherwise the engine probes a
+  // mangled `criteria.text` that no longer matches the original id.
+  //
+  // Probe applies only to string queries (structured callers already
+  // have full control over the criteria they pass). The raw query is
+  // trimmed and compared case-insensitively against id / labelText /
+  // ariaLabel / textContent / title / placeholder / value / name.
+  if (typeof query === 'string' && query.trim().length > 0) {
+    const literalIds = probeLiteralMatches(engine, query);
+    // Strict-mode short-circuit: when the caller asked for literal-only,
+    // any zero-literal-match path must return found:false immediately
+    // (no decomposition, no fuzzy fallback). With one match we resolve
+    // to it at confidence 1.0; with multiple we keep going so the
+    // engine-level pass produces ranked candidates.
+    if (options?.strict === true && literalIds.length === 0) {
+      const durationMs = performance.now() - startTime;
+      const decomposedShape: DecomposedTarget = {
+        elementText: query.trim(),
+        label: query.trim(),
+        ariaLabel: query.trim(),
+        placeholder: query.trim(),
+        name: query.trim(),
+      };
+      return {
+        found: false,
+        ambiguous: false,
+        reason: `No elements matched "${query.trim()}" literally (strict mode)`,
+        partialMatches: [],
+        consideredCount: 0,
+        decomposed: decomposedShape,
+        durationMs,
+      };
+    }
+    if (literalIds.length === 1) {
+      // Resolve the matched element through a structured engine search so
+      // we get back a full AIDiscoveredElement (with description / aliases /
+      // suggested actions) AND the rich per-source match reasons
+      // ("exact aria-label match", "exact name match", etc.). We probe
+      // with text=raw query plus mirrored accessibleName/placeholder so
+      // the scorer's source-by-source comparison fires across every
+      // signal — without this the matchReasons are a generic "literal
+      // match" string that loses the diagnostic value of identifying
+      // WHICH attribute matched.
+      const rawText = query.trim();
+      const exactResponse = engine.search({
+        idPattern: literalIds[0],
+        text: rawText,
+        accessibleName: rawText,
+        placeholder: rawText,
+        fuzzy: true,
+      });
+      const match = exactResponse.results.find((r) => r.element.id === literalIds[0]);
+      if (match) {
+        const durationMs = performance.now() - startTime;
+        // Synthesize a minimal decomposed shape that reflects what the
+        // user actually asked for. Skipping decomposition entirely keeps
+        // the soft-type / B4 / type-relax branches from firing on a
+        // pre-resolved literal match.
+        const decomposedShape: DecomposedTarget = {
+          elementText: rawText,
+          label: rawText,
+          ariaLabel: rawText,
+          placeholder: rawText,
+          name: rawText,
+        };
+        return {
+          found: true,
+          ambiguous: false,
+          element: match.element,
+          elementId: match.element.id,
+          confidence: 1.0,
+          matchReasons: match.matchReasons,
+          alternatives: [],
+          decomposed: decomposedShape,
+          durationMs,
+        };
+      }
+    }
+    // Multiple literal matches → fall through to normal scoring; the
+    // engine-level literal-precedence pass inside search() will give
+    // each candidate a 1.0 base score and the ambiguity gate decides.
+    // Zero literal matches → also fall through; nothing to short-circuit.
+  }
+
   if (typeof query === 'string') {
     decomposed = decomposeTarget(query);
     criteria = resolveCriteria(decomposed, engine, opts);
@@ -219,6 +330,15 @@ export function find(
       placeholder: query.placeholder || elementText || undefined,
       name: elementText || undefined,
     };
+  }
+
+  // B2 — Forward the strict flag into the underlying SearchCriteria so the
+  // engine knows to suppress fuzzy candidates. When the caller didn't pass
+  // a structured criteria with `strict` already set, the find-level option
+  // wins; structured callers that set both have their criteria.strict
+  // preserved (we OR them together).
+  if (opts.strict === true) {
+    criteria = { ...criteria, strict: true };
   }
 
   // Execute search
@@ -273,7 +393,11 @@ export function find(
     viableResults.length === 0 &&
     typeof query === 'string' &&
     isSoftTypeHint(decomposed) &&
-    criteria.type
+    criteria.type &&
+    // B2 — strict mode disables soft-type relaxation: callers asked for
+    // a literal-only match, so falling back to a type-relaxed fuzzy
+    // search would defeat the purpose.
+    opts.strict !== true
   ) {
     const relaxed: SearchCriteria = { ...criteria };
     delete relaxed.type;
@@ -298,7 +422,9 @@ export function find(
     viableResults.length === 0 &&
     typeof query === 'string' &&
     criteria.type &&
-    decomposed.elementType
+    decomposed.elementType &&
+    // B2 — strict mode disables B4's hard-pinned synonym relaxation.
+    opts.strict !== true
   ) {
     const cachedTypeLower = String(criteria.type).toLowerCase();
     const cachedSummaries = engine.getCachedElementSummaries();
