@@ -12,6 +12,28 @@ This page is the **single source of truth** for the endpoints below — slash
 commands, internal docs, and agent test rigs should link here rather than
 duplicate the content.
 
+## Breaking changes since previous release
+
+Surfaced up top so existing scripts can be audited at a glance:
+
+- **`GET /control/console-errors` filters by level by default.** Default
+  response now includes only `error`-level and `unhandledrejection` entries.
+  Pass `?level=all` (or `?level=*`) to restore the previous unfiltered shape.
+  See "Console & network monitoring" below.
+- **`GET /control/components` envelope (Direction B).** The direct path now
+  returns `{success:true, data:{components:[...]}, components:[...]}` — the
+  top-level `components` is **deprecated** and will be removed next release.
+  The `/sdk/` relay now matches the direct path's `data:{components:[...]}`
+  shape. Migrate readers to `data.components`. See "Components" below.
+- **`wait-for-element` predicate/state-form timeouts default to HTTP 200
+  with `found:false`.** Pass `?strictTimeout=true` to flip to HTTP 408 +
+  flat-error today; `strictTimeout=true` will become the default in a future
+  release. NL-form (`{query}` / `{elementId}`) timeouts already return HTTP
+  408. See "Wait-for-element" below.
+- **`wait-for-element` duration key is now `durationMs` everywhere.** The
+  NL/id happy path still emits `elapsed_ms` for one release of backward
+  compatibility (removed after 2026-06); new code should read `durationMs`.
+
 ## First probe: page playbook
 
 ```http
@@ -301,6 +323,13 @@ failure mode.
 
 If an action returns `success: false` with `error: "... requires a 'X' parameter ..."`, the param key was wrong or missing. Sending the wrong key for `type` triggers a hint pointing at the correct one.
 
+> **Field name: `type` takes `text:`, not `value:`.** Sending
+> `{"action":"type","params":{"value":"foo"}}` returns a recoverable HTTP
+> 400 with `type: 'value' is unknown; did you mean 'text'?`. Skip the
+> round-trip — use `{"action":"type","params":{"text":"foo"}}` directly.
+> `value` is for `select` / `setValue`; `type` is for `type` / `clear`'s
+> input fields.
+
 ## Page navigation
 
 ### Soft vs hard
@@ -543,14 +572,54 @@ POST /ai/wait-for-element
 the other keys hit the registry directly. Defaults: `pollMs` 100
 (clamped `[50,1000]`), `timeoutMs` 5000 (clamped `[100,60000]`).
 
-Response on match: `{ element: {id, label, type, ...}, elapsedMs }`.
-Response on timeout: `{ reason: "timeout", elapsedMs, closestMatch? }`
+Response on match: `{ element: {id, label, type, ...}, durationMs }`.
+Response on timeout: `{ reason: "timeout", durationMs, closestMatch? }`
 where `closestMatch` is populated when a predicate-matching element
-exists but fails the `requirement` filter.
+exists but fails the `requirement` filter. (Pre-2026-05 builds used
+`elapsedMs` — see "Duration key — `durationMs` is canonical" below.)
 
 The legacy state-shape above (with `elementId` + `state`) and the
 predicate-shape are routed by body shape on the same path — both keep
 working.
+
+### Timeout response shape — per body shape
+
+The wire response to a timeout differs across the three body shapes the
+endpoint accepts. This is a transitional state — pass `?strictTimeout=true`
+to opt every shape into the flat HTTP 408 contract today; that mode will
+become the default in a future release.
+
+| Body shape | Timeout response (current default) |
+|---|---|
+| `{query: "..."}` or `{elementId: "..."}` (NL/id form) | HTTP 408 + `{success: false, error: "wait-for-element: timeout after ..."}`. `data.durationMs` is emitted on the response; `elapsed_ms` is mirrored alongside it for one release of backward compatibility. |
+| `{predicate: {...}}` (predicate form) | HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. Pass `?strictTimeout=true` to get HTTP 408 + `{success: false, error: "wait_for_element_timeout", data: {found: false, durationMs, lastObservedState}}` instead. |
+| `{state: "...", elementId\|selector: "..."}` (state form) | Same default as predicate — HTTP 200 + `{success: true, data: {found: false, durationMs, lastObservedState}}`. `?strictTimeout=true` is supported on this shape too. |
+
+**Migration window.** New code on predicate / state shapes should pass
+`?strictTimeout=true` and treat HTTP 408 as the timeout signal. Existing
+callers that branch on `data.found === false` continue to work until the
+flip. Plan to flip default-strict in a release once known callers have
+migrated.
+
+### Duration key — `durationMs` is canonical
+
+All three body shapes now emit `durationMs` (camelCase) on both the
+match-success and timeout responses. The NL/id happy path additionally
+emits `elapsed_ms` (snake_case) for one release of backward compatibility;
+new code should read `durationMs`. The `elapsed_ms` mirror will be removed
+after 2026-06.
+
+```json
+// Match (NL/id form) — durationMs canonical; elapsed_ms still mirrored
+{"success":true,"data":{"found":true,"durationMs":123,"elapsed_ms":123,"finalState":{...}}}
+
+// Timeout (predicate / state form, default)
+{"success":true,"data":{"found":false,"durationMs":5000,"lastObservedState":{...}}}
+
+// Timeout with ?strictTimeout=true (predicate / state form)
+// HTTP 408 + flat error envelope, but data is still carried for diagnostics.
+{"success":false,"error":"wait_for_element_timeout","data":{"found":false,"durationMs":5000,"lastObservedState":{...}}}
+```
 
 ## Wait-for-route-change
 
@@ -790,39 +859,103 @@ curl -X POST $BASE/ai/fill-form \
 reach them by element-text matching — useful as a fallback for
 form-heavy pages.
 
-## Idle status
+## Wait-for-idle — the canonical `sleep 2` replacement
 
-```bash
-curl $BASE/ai/idle-status
-curl -X POST $BASE/ai/wait-for-idle \
-  -H "Content-Type: application/json" \
-  -d '{"timeout": 5000}'
+The blocking primitive to use after any UI mutation that triggers async
+follow-on work (tab switch, route navigation, network-triggering click).
+Replaces the `sleep 2` anti-pattern: instead of hoping the UI is settled,
+ask the bridge.
+
+```http
+POST /control/wait-for-idle
+POST /ai/wait-for-idle              # alias
 ```
 
-Returns weighted signals across `dom`, `form-mutation`,
-`loading-indicators`, and `network` with per-signal `idle: bool` plus
-an aggregate `idleScore`. `wait-for-idle` resolves when all signals
-settle or after the timeout.
+Request body:
+
+```json
+{
+  "timeout": 5000,        // ms — max wall time before resolving (default 5000)
+  "minStableMs": 250,     // ms — signals must stay idle this long to count as settled (default 250)
+  "exclude": []           // optional string[] — signal names to ignore
+}
+```
+
+Response: `{success: true, data: <CompositeIdleStatus>}` with `idle: true|false`
+and a per-signal breakdown (`dom`, `network`, `loadingIndicators`,
+`formMutation`, `animation`). Resolves the moment every non-excluded
+signal has been idle for `minStableMs`, or when the `timeout` elapses
+(in which case `data.idle` will be `false` and per-signal flags show
+which signals never settled).
+
+### Canonical recipe — wait for the UI to settle after a tab switch
+
+```http
+POST /control/tab/activate    {"tabId":"productivity"}
+POST /control/wait-for-idle   {"timeout":5000,"minStableMs":250}
+GET  /control/snapshot
+```
+
+This **replaces** the previous `activate → sleep 2 → snapshot` pattern.
+The slash-command sweep in this release migrated
+`.claude/commands/ufix.md` accordingly; other slash commands and scripts
+should follow.
+
+### Per-signal variant
+
+```http
+POST /control/wait-for-idle/{signal}
+```
+
+Where `{signal}` is one of `dom`, `network`, `loading-indicator`,
+`form`, `animation`. Useful when you only care about a specific signal
+(e.g. network for a known-fetch click, dom for a known-render
+mutation) and don't want to block on the others. Body shape and
+response are the same as the composite endpoint, scoped to that signal.
+
+### Instantaneous check
+
+```http
+GET /control/idle-status
+```
+
+Non-blocking — returns the current composite idle state without
+waiting. Use this when you want a snapshot of the signal pipeline (e.g.
+to log why a previous `wait-for-idle` timed out) rather than to block.
+Same `CompositeIdleStatus` payload as the blocking variant.
 
 ## Console & network monitoring
 
 ```http
-GET /control/console-errors                  # legacy: { errors, count }
-GET /control/console-errors?sinceId=N&limit=M # cursor form
+GET /control/console-errors                          # default: error + unhandledrejection only
+GET /control/console-errors?level=all                # restore legacy unfiltered shape
+GET /control/console-errors?level=error,warn         # comma-separated allow-list
+GET /control/console-errors?sinceId=N&limit=M        # cursor form (level filter applies)
 GET /sdk/network-requests
 ```
 
 `console-errors` returns the captured browser-console error buffer.
-Each entry has a monotonic `id`. The cursor form (when `sinceId` is
-present) returns:
+Each entry has a monotonic `id`.
+
+> **As of this release:** the default response includes only `error`-level
+> entries and `unhandledrejection`s (previously: every captured entry
+> regardless of level). To restore the legacy unfiltered shape, pass
+> `?level=all` or `?level=*`.
+>
+> The `level` query param accepts a single value or a comma-separated
+> allow-list. Recognised values: `error`, `warn`, `unhandledrejection`,
+> `info`, `log`, `debug`, plus the wildcards `all` and `*`. Unknown
+> values return HTTP 400.
+
+The cursor form (when `sinceId` is present) returns:
 
 ```json
 {
-  "errors": [...],          // entries with id > sinceId, up to limit
+  "errors": [...],          // entries with id > sinceId, up to limit (level-filtered)
   "nextSinceId": 42,         // pass back as sinceId on the next call
   "droppedCount": 3,         // running total of evictions; growth between
                              // calls means you fell behind the buffer
-  "bufferedCount": 250,      // current buffer size
+  "bufferedCount": 250,      // current buffer size (PRE-filter — total)
   "count": 9                 // legacy, still present
 }
 ```
@@ -830,7 +963,8 @@ present) returns:
 Default limit 50, max 500; buffer capacity 250 by default
 (`QONTINUI_UI_BRIDGE_ERROR_BUFFER_CAPACITY` env var to tune).
 Without `sinceId`, the response keeps the legacy `{errors, count}`
-shape verbatim.
+shape verbatim — only the set of entries inside `errors` is affected
+by the level filter.
 
 `sdk/network-requests` is populated when an SDK is connected;
 otherwise empty.
@@ -908,6 +1042,38 @@ list `/control/components`. Features like `zone-profile-picker`,
 React handler directly — no dropdown state dance, no ordering bugs,
 and each action exposes a `paramSchema` so you know exactly what to
 POST.
+
+### Listing — envelope shape (Direction B)
+
+The list endpoint has two URLs (direct + SDK relay) and they now share
+a `data.components` slot. Read from `data.components` in new code.
+
+| URL | Shape (this release) |
+|---|---|
+| `GET /control/components` (direct) | `{success: true, data: {components: [...]}, components: [...]}` — top-level `components` is **deprecated** and will be removed next release. Migrate to `data.components`. |
+| `GET /sdk/control/components` (SDK relay) | `{success: true, data: {components: [...]}}` — now matches the direct path's `data` slot. Previous shape was `{data: {components: [...]}}` with no `success` field. |
+
+**Deprecation window: one release.** The top-level `components` mirror on
+the direct path is a compatibility shim for existing readers that grew up
+on the legacy shape; the next release removes it, leaving a single
+canonical reader (`data.components`).
+
+**Rationale.** Object-shaped `data` matches every other rich endpoint in
+this doc: `ai/find` returns `data: {found, elementId, element, ...}`,
+`console-errors` returns `data: {errors, count, droppedCount, ...}`,
+`wait-for-element` returns `data: {found, durationMs, finalState}`, and so
+on. Returning a bare array under `data` (as the legacy SDK-relay shape
+did) is the odd one out — promoting `components` into an object opens the
+slot for future top-level fields (`registration`, `byRoute`, etc.) without
+another shape break.
+
+```bash
+# Canonical read — works on both URLs
+curl -s $BASE/control/components | jq '.data.components | length'
+curl -s $BASE/sdk/control/components | jq '.data.components | length'
+```
+
+### Per-component detail & invocation
 
 ```bash
 # Invoke

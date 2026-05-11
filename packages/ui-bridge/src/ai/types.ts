@@ -54,6 +54,21 @@ export interface SearchCriteria {
   includeContent?: boolean;
   /** Only search content elements */
   contentOnly?: boolean;
+  /**
+   * B2 — Strict literal-match mode.
+   *
+   * When `true`, the search engine returns ONLY elements that have a
+   * case-insensitive exact match on one of the identifying signals
+   * (id, labelText, ariaLabel, textContent, title, placeholder, value,
+   * name) against `text` / `textContent` / `accessibleName`. No fuzzy
+   * / alias fallback. Empty result set when no element matches exactly.
+   *
+   * Default `false` keeps the legacy fuzzy-first behaviour — the new
+   * literal-text precedence pass below STILL applies when this flag is
+   * unset (literal matches just outrank fuzzy candidates instead of
+   * suppressing them).
+   */
+  strict?: boolean;
 }
 
 /**

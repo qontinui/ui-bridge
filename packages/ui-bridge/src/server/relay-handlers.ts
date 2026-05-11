@@ -553,7 +553,11 @@ export function createRelayHandlers(
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.components.length === 0);
       const _meta = staleMeta();
-      return success(latestControlSnapshot.components, _meta);
+      // F2 (Direction B): wrap the array in `{components: [...]}` so the
+      // envelope is `{success: true, data: {components: [...]}}`, matching
+      // every other rich endpoint convention and aligning with the runner's
+      // direct `/ui-bridge/control/components` route.
+      return success({ components: latestControlSnapshot.components }, _meta);
     },
 
     async getComponent(id, options) {

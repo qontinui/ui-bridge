@@ -139,11 +139,94 @@ function normalizeAlias(text: string): string {
 }
 
 /**
- * Extract words from text, handling various naming conventions
+ * B2 — Alias noise filter.
+ *
+ * The matcher previously pulled junk tokens from auto-extracted file-path
+ * slugs (e.g., ids like `productivity.plan-list-04-tsx`) and weighted them
+ * equal-or-greater than literal label matches. The fix is to scrub the
+ * tokens before they ever enter the alias dictionary.
+ *
+ * Two classes of noise:
+ *   1. Numeric / hex-ish chunks — `04`, `2e2`, `1a`, file-suffix sequence
+ *      numbers, short hex IDs. Pure digits and short non-alpha-dominated
+ *      hex sequences carry no semantic signal.
+ *   2. English stop-words + code-token noise — words that survive
+ *      camelCase / snake_case splitting from filenames and id slugs but
+ *      are universal across all elements: `the`, `a`, `and`, `is`, plus
+ *      file-extension/code-shaped fragments like `tsx`, `pg`, `ts`, `js`,
+ *      `ui`, `tab`.
+ *
+ * The list is intentionally small — we'd rather under-strip than chew
+ * through a legitimate token. Casing is normalized on input so the table
+ * stays lowercase.
+ */
+const ALIAS_STOP_TOKENS = new Set<string>([
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'is',
+  'no',
+  'for',
+  'to',
+  'of',
+  'in',
+  'on',
+  'at',
+  'ui',
+  'tab',
+  'tsx',
+  'pg',
+  'js',
+  'ts',
+]);
+
+/**
+ * Return `true` when the token is noise that should never reach the alias
+ * dictionary. Centralised so both the text-driven and id/name-driven alias
+ * pipelines apply the same filter.
+ *
+ * Rules:
+ *   - Empty / single-char tokens: caller's `minLength` gate handles them;
+ *     this returns false on them so we don't double-up.
+ *   - Pure digits (`04`, `2026`): always noise — anchored at `^\d+$`.
+ *   - Short hex-like tokens (≤ 4 chars, all `[0-9a-f]`, contains ≥ 1 digit):
+ *     a token like `2e2e`, `1a`, or `0xff` looks like a hex chunk. The
+ *     "contains ≥ 1 digit" clause prevents stripping real words like
+ *     `bed`, `face`, `cafe`, `fed` that happen to be valid hex.
+ *   - English stop-words / code-fragment noise: lookup table above.
+ *
+ * Note on `2e2e` from the spec: JS would parse `Number("2e2e")` as `NaN`
+ * (the second `e` makes it malformed), not Infinity — but the underlying
+ * point stands: it's a hex chunk from an id slug, not a word. The hex
+ * rule below catches it cleanly.
+ */
+export function isAliasNoiseToken(token: string): boolean {
+  if (!token) return false;
+  const t = token.toLowerCase();
+  if (ALIAS_STOP_TOKENS.has(t)) return true;
+  // Pure digits — always noise.
+  if (/^\d+$/.test(t)) return true;
+  // Short hex-like tokens that contain at least one digit: classifies
+  // `04`, `2e2e`, `1a`, `f00`, `0xff` as noise while leaving
+  // dictionary words like `face`, `bed`, `cafe`, `bee` (all-letter hex
+  // sequences) untouched.
+  if (t.length <= 4 && /^[0-9a-f]+$/.test(t) && /\d/.test(t)) return true;
+  return false;
+}
+
+/**
+ * Extract words from text, handling various naming conventions.
+ *
+ * Filters out alias noise (numeric/hex-ish chunks, English stop-words,
+ * code-fragment fillers) so id/name slugs like
+ * `productivity.plan-list-04-tsx` no longer contribute `04`, `tsx`,
+ * `pg`, `tab` to the alias dictionary.
  */
 function extractWords(text: string): string[] {
   const tokens = tokenize(text);
-  return tokens.filter((t) => t.length >= 2);
+  return tokens.filter((t) => t.length >= 2 && !isAliasNoiseToken(t));
 }
 
 /**
@@ -163,7 +246,10 @@ function generateTextAliases(
     aliases.push(normalized);
   }
 
-  // Add individual words
+  // Add individual words — extractWords already strips alias-noise tokens
+  // (pure digits, hex-ish short chunks, English stop-words / code-fragment
+  // noise) so e.g. `productivity-plan-list-04-tsx` doesn't bleed `04` or
+  // `tsx` into the dictionary.
   const words = extractWords(text);
   for (const word of words) {
     if (word.length >= config.minLength) {

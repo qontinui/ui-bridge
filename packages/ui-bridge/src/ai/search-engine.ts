@@ -205,6 +205,74 @@ export const __scoringInternals = {
 };
 
 /**
+ * B2 — Literal-text precedence.
+ *
+ * Returns `true` when the element has a case-insensitive EXACT match
+ * between `needle` and any of its identifying signals: id, labelText,
+ * ariaLabel, textContent, title, placeholder, value, name. These are the
+ * same sources `scoreTextMatch` already probes, just compared without
+ * fuzzy weighting.
+ *
+ * Used to bypass fuzzy/alias scoring when the user typed a literal label
+ * or id. Without this gate, alias-noise (`04`, `tsx`, `pg`, `tab`) used
+ * to pull elements ahead of the literal match — e.g. "Decompose" landing
+ * on `productivity.plan-list` instead of `productivity.decompose-plan-button`.
+ *
+ * Internal — exported only for the unit tests in `find.test.ts` /
+ * `search-engine.test.ts`.
+ */
+function elementMatchesLiteral(searchable: SearchableElement, needle: string): boolean {
+  const n = needle.toLowerCase().trim();
+  if (n.length === 0) return false;
+  // Candidate sources to compare. textContent is included even though it
+  // may carry runs of whitespace — `.trim()` is enough for the common case
+  // of a button whose textContent is "Decompose\n" or " Decompose ".
+  const sources: Array<string | undefined> = [
+    searchable.id,
+    searchable.labelText,
+    searchable.ariaLabel,
+    searchable.textContent,
+    searchable.title,
+    searchable.placeholder,
+    searchable.value,
+    searchable.name,
+  ];
+  for (const s of sources) {
+    if (!s) continue;
+    if (s.toLowerCase() === n) return true;
+    if (s.trim().toLowerCase() === n) return true;
+  }
+  return false;
+}
+
+/**
+ * Internal — expose `elementMatchesLiteral` (and a public probe) for
+ * `find.ts`, which needs to run literal-match against the ORIGINAL query
+ * string before decomposition. The decomposer strips synonym words like
+ * "button" / "tab" from queries that happen to be literal ids
+ * (e.g. `productivity.decompose-plan-button`), so a search-engine-level
+ * probe against `criteria.text` would miss those cases.
+ *
+ * Returns ids of every cached element whose identifying signals match
+ * `needle` exactly (case-insensitive). Order is the engine's cache order;
+ * callers that need ranking should call `search()`.
+ *
+ * @internal
+ */
+export function probeLiteralMatches(engine: SearchEngine, needle: string): string[] {
+  // `cachedElements` is private; we read it through a typed escape hatch
+  // rather than promoting the field to public because the cache invariants
+  // are owned by the engine. The cast is `unknown` → typed to keep the
+  // boundary explicit.
+  const cached = (engine as unknown as { cachedElements: SearchableElement[] }).cachedElements;
+  const out: string[] = [];
+  for (const el of cached) {
+    if (elementMatchesLiteral(el, needle)) out.push(el.id);
+  }
+  return out;
+}
+
+/**
  * Configuration for the search engine
  */
 export interface SearchEngineConfig {
@@ -567,10 +635,102 @@ export class SearchEngine {
       }
     }
 
-    // Score each element
-    const results: SearchResult[] = [];
+    // --------------------------------------------------------------------
+    // B2 — Literal-text precedence pass.
+    //
+    // Probe every cached element for an EXACT (case-insensitive) match on
+    // the user-supplied literal (`text` / `textContent` / `accessibleName`)
+    // against id / labelText / ariaLabel / textContent / title /
+    // placeholder / value / name. Two outcomes:
+    //
+    //   1. `strict: true` — fast-path that returns ONLY exact matches.
+    //      No fuzzy / alias scoring runs. Empty array when no element
+    //      matches literally.
+    //   2. `strict: false` (default) — exact matches are collected and
+    //      assigned a strong base score (1.0) so they outrank alias-only
+    //      candidates. Non-exact-match elements still run through the
+    //      normal scoring loop below; both sets are merged at the end.
+    //
+    // The literal probe is intentionally narrow: only the user-supplied
+    // text fields participate. Spatial (`near`) / containment (`within`) /
+    // role / type are still honoured by the regular scoring path, so
+    // `find("Decompose")` on a page with two buttons named "Decompose"
+    // still returns both candidates (each at 1.0) and lets find.ts
+    // surface the ambiguity.
+    // --------------------------------------------------------------------
+    const literalNeedles: string[] = [];
+    if (typeof criteria.text === 'string' && criteria.text.length > 0) {
+      literalNeedles.push(criteria.text);
+    }
+    if (
+      typeof criteria.textContent === 'string' &&
+      criteria.textContent.length > 0 &&
+      !literalNeedles.includes(criteria.textContent)
+    ) {
+      literalNeedles.push(criteria.textContent);
+    }
+    if (
+      typeof criteria.accessibleName === 'string' &&
+      criteria.accessibleName.length > 0 &&
+      !literalNeedles.includes(criteria.accessibleName)
+    ) {
+      literalNeedles.push(criteria.accessibleName);
+    }
+
+    const exactMatches: SearchResult[] = [];
+    const exactMatchIds = new Set<string>();
+    if (literalNeedles.length > 0) {
+      for (const searchable of searchableElements) {
+        const hit = literalNeedles.some((n) => elementMatchesLiteral(searchable, n));
+        if (!hit) continue;
+        // Run the regular scorer too so we keep the rich match-reasons
+        // (e.g. "exact aria-label match", "exact name match") — but
+        // override the confidence to 1.0 so an exact literal hit can't
+        // be dragged down by, e.g., a role mismatch that contributes
+        // weight but score=0.
+        const scored = this.scoreElement(searchable, criteria);
+        const reasons = [
+          `exact literal match: "${literalNeedles[0]}"`,
+          ...scored.matchReasons,
+        ];
+        exactMatches.push({
+          element: scored.element,
+          confidence: 1.0,
+          matchReasons: reasons,
+          // Carry the scorer's per-strategy breakdown so callers that
+          // introspect `scores` still see the source breakdown; but lift
+          // text to 1.0 to reflect the literal-precedence outcome.
+          scores: { ...scored.scores, text: 1.0 },
+        });
+        exactMatchIds.add(searchable.id);
+      }
+    }
+
+    // Strict mode: return ONLY the exact-match candidates. No fuzzy
+    // fallback at all — callers that opt in (`?strict=true` on /ai/find,
+    // or `strict: true` in SearchCriteria) get a guaranteed-literal
+    // answer or empty.
+    if (criteria.strict === true) {
+      exactMatches.sort((a, b) => b.confidence - a.confidence);
+      const strictLimited = exactMatches.slice(0, this.config.maxResults);
+      return {
+        results: strictLimited,
+        bestMatch: strictLimited.length > 0 ? strictLimited[0] : null,
+        scannedCount: searchableElements.length,
+        durationMs: performance.now() - startTime,
+        criteria,
+        timestamp: Date.now(),
+      };
+    }
+
+    // Score each element. Skip elements that were already collected as
+    // exact matches — re-scoring them through the fuzzy path is wasted
+    // work AND would mean the fuzzy score (almost always < 1.0) replaces
+    // their literal 1.0 in the results array.
+    const results: SearchResult[] = [...exactMatches];
 
     for (const searchable of searchableElements) {
+      if (exactMatchIds.has(searchable.id)) continue;
       const result = this.scoreElement(searchable, criteria);
       if (debugEnabled && allScoredForDebug && result.confidence > 0) {
         allScoredForDebug.push({

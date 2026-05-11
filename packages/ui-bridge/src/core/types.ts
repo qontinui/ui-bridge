@@ -450,13 +450,14 @@ export interface RegisteredElement {
   /** Metadata for media elements */
   mediaMetadata?: MediaMetadata;
   /**
-   * Normalized text content of a semantic content element (whitespace
-   * collapsed, trimmed). Populated by the auto-register scanner for plain
-   * content elements tagged with `data-ui-bridge-content` so snapshots can
-   * expose card/badge/pill text without requiring `/control/page/evaluate`.
-   * Absent for interactive elements and for content registered via the
-   * heading/paragraph/table-cell content-discovery path (those expose their
-   * text via `state.textContent`).
+   * Normalized text content of a content element (whitespace collapsed,
+   * trimmed). Populated by the auto-register scanner for plain content
+   * elements tagged with `data-ui-bridge-content` AND for elements found via
+   * the heading/paragraph/table-cell content-discovery path (B1 —
+   * manual-test remediation 2026-05-10). Lets snapshots expose the full text
+   * of a heading without relying on the 50-char `label` truncation. Absent
+   * for interactive elements; live DOM text is still exposed via
+   * `state.textContent`.
    */
   content?: string;
   /**
@@ -1244,9 +1245,12 @@ export interface BridgeSnapshot {
      */
     kind?: 'interactive' | 'content';
     /**
-     * Normalized text content of a `data-ui-bridge-content` element
-     * (whitespace-collapsed, trimmed). Lets snapshot consumers assert on
-     * card/badge/pill text directly. Undefined for interactive elements.
+     * Normalized text content of a content element (whitespace-collapsed,
+     * trimmed). Populated for `data-ui-bridge-content` semantic elements AND
+     * for heading/paragraph/table-cell elements discovered by the auto-register
+     * scanner (B1 — manual-test remediation 2026-05-10). Lets snapshot
+     * consumers assert on the full text directly without relying on the
+     * 50-char `label` truncation. Undefined for interactive elements.
      */
     content?: string;
     /**

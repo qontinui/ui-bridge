@@ -1869,10 +1869,14 @@ export function createHandlers(
     // Component Handlers
     // =========================================================================
 
-    getComponents: async (): Promise<APIResponse<ControlSnapshot['components']>> => {
+    getComponents: async (): Promise<
+      APIResponse<{ components: ControlSnapshot['components'] }>
+    > => {
       try {
         const components = registry.getAllComponents().map(annotateComponentWithInvocationPaths);
-        return success(components as ControlSnapshot['components']);
+        // F2 (Direction B): `data` is `{components: [...]}` so the envelope
+        // matches the runner's direct `/ui-bridge/control/components` route.
+        return success({ components: components as ControlSnapshot['components'] });
       } catch (err) {
         return error((err as Error).message, 'COMPONENTS_ERROR');
       }
@@ -2671,6 +2675,14 @@ export function createHandlers(
        * second search pass and inflates response size.
        */
       debug?: boolean;
+      /**
+       * B2 — strict literal-match mode. When `true`, only elements with a
+       * case-insensitive exact match on id / labelText / ariaLabel /
+       * textContent / title / placeholder / value / name are returned;
+       * no fuzzy fallback. If no element matches literally, the response
+       * is `found: false`. Default `false` keeps the fuzzy path.
+       */
+      strict?: boolean;
     }): Promise<APIResponse<FindResult>> => {
       try {
         // Wait for the DOM to quiesce before refreshing elements so we read
@@ -2705,6 +2717,7 @@ export function createHandlers(
           confidenceThreshold: request.confidenceThreshold,
           pickFirst: true,
           debug: request.debug === true,
+          strict: request.strict === true,
         });
 
         return success(result);
@@ -6968,6 +6981,8 @@ export function createAIHandlers(
       context?: FindContext;
       confidenceThreshold?: number;
       debug?: boolean;
+      /** B2 — strict literal-match mode (see find() / SearchCriteria.strict). */
+      strict?: boolean;
     }): Promise<APIResponse<FindResult>> => {
       try {
         refreshElements();
@@ -6976,6 +6991,7 @@ export function createAIHandlers(
           confidenceThreshold: request.confidenceThreshold,
           pickFirst: true,
           debug: request.debug === true,
+          strict: request.strict === true,
         });
         return { success: true, data: result, timestamp: Date.now() };
       } catch (err) {

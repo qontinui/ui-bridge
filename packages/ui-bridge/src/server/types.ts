@@ -391,9 +391,12 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Component endpoints
+  // F2 (Direction B): `data` is `{components: [...]}` so the envelope matches
+  // the runner's direct `/ui-bridge/control/components` route and aligns with
+  // every other rich endpoint convention (object-shaped `data`).
   getComponents: (options?: {
     recency?: string;
-  }) => Promise<APIResponse<ControlSnapshot['components']>>;
+  }) => Promise<APIResponse<{ components: ControlSnapshot['components'] }>>;
   getComponent: (
     id: string,
     options?: { recency?: string }
@@ -494,6 +497,13 @@ export interface UIBridgeServerHandlers {
     query: string;
     context?: FindContext;
     confidenceThreshold?: number;
+    /**
+     * B2 — strict literal-match mode. When `true`, returns only elements
+     * with a case-insensitive exact match against id / labelText /
+     * ariaLabel / textContent / title / placeholder / value / name; no
+     * fuzzy fallback. Default `false` keeps fuzzy behaviour.
+     */
+    strict?: boolean;
   }) => Promise<APIResponse<FindResult>>;
   aiExecute: (request: NLActionRequest) => Promise<APIResponse<NLActionResponse>>;
   aiAssert: (request: AssertionRequest) => Promise<APIResponse<AssertionResult>>;
