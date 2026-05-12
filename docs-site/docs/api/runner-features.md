@@ -525,6 +525,45 @@ already collapsed cursor-positioning + DEC 2026 sync-output into the
 final frame). Sibling `GET /terminals/{tab_id}/buffer` / `/output`
 serves the same data on the runner's non-`/ui-bridge/` route family.
 
+### Auto-yield-on-idle (file-lock policy)
+
+The runner runs an optional background policy that releases held
+file locks when their holder has been stdout-idle and another
+session has been waiting (lock-yield-protocol-plan §Open Q4).
+Configured under `settings.lock_yield_policy`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Toggle the background task. |
+| `idle_threshold_secs` | `60` | Minimum holder idle (no stdout) before yieldable. |
+| `min_wait_secs` | `30` | Minimum waiter wait before auto-yield fires. |
+
+Trigger predicate (AND-gated):
+`holder_idle_secs >= idle_threshold_secs && waiter_waited_secs >= min_wait_secs`.
+
+When the policy fires, the runner emits two Tauri/SSE events for the
+released lock — a new `file-lock-auto-yielded` payload AND a
+matching `file-lock-released` event (so existing
+`useFileLockTracking` listeners clear waiter banners without any
+frontend changes):
+
+```json
+{
+  "type": "file-lock-auto-yielded",
+  "file_path": "src/foo.rs",
+  "holder_task_run_id": "task-…",
+  "holder_name": "Session alpha",
+  "holder_idle_secs": 73,
+  "oldest_waiter_task_run_id": "task-…",
+  "oldest_waiter_waited_secs": 42,
+  "auto_yielded_at": 1715539200000
+}
+```
+
+The holder-side `HoldingLockBanner` surfaces an advisory countdown
+`(auto-yield in Ns)` when the policy is enabled and a waiter is
+present, so the holder isn't surprised by the involuntary release.
+
 ## Network stubs (fetch short-circuit)
 
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
