@@ -481,6 +481,29 @@ The snapshot response also surfaces `activeTab` alongside `route` so
 you can confirm a tab activation without a separate `/control/tabs`
 call.
 
+## Terminal sessions (runner only)
+
+```http
+GET /control/terminal-sessions
+GET /control/terminal-sessions/{id}
+```
+
+Inspect the runner's PTY-backed terminal tabs (plain pwsh + AI
+sessions) without screen-scraping. The list endpoint returns
+`{ sessions: [{id, title, task_run_id, claude_session_id, working_dir,
+state, is_alive, exit_code, type, created_at}] }`. `task_run_id` is
+`null` for plain tabs and for AI tabs that haven't yet captured a
+Claude session id (the JSONL-capture window — typically <2s after
+spawn). Per-id GET returns 404 with `{error: "unknown_terminal_session",
+knownIds: [...]}` so callers polling a freshly-spawned tab can recover.
+
+Pair with the `terminal-launch-menu` component's `create-best-account`
+/ `create-ai-session` / `create-with-command` / `create-plain` actions
+— each now returns `{success: true, tab_ids: string[], task_run_ids:
+(string | null)[]}` in the action response, so automation can capture
+the new `tab_ids[i]` and poll `/control/terminal-sessions/{tab_ids[i]}`
+for `state === "idle"`/`"working"` and `task_run_id !== null`.
+
 ## Network stubs (fetch short-circuit)
 
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
