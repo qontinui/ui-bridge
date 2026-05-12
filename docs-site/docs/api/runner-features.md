@@ -86,6 +86,15 @@ element-specific endpoints) to verify element existence and state; reach for
 DOM queries only as a last-resort fallback for elements you know are
 DOM-attribute-marked.
 
+**Dotted ids need attribute-quoted CSS selectors.** Namespaced ids like
+`productivity.file-activity-yield` are valid as `data-ui-bridge-id`
+attribute values, but a bare `[data-ui-bridge-id=productivity.file-activity-yield]`
+selector is a CSS parse error — the dot is read as a class delimiter.
+Always quote the value: `[data-ui-bridge-id="productivity.file-activity-yield"]`.
+When embedding inside JSON-encoded `/control/page/evaluate` expressions,
+the quotes need an extra layer of JSON escaping
+(`\\\"productivity.file-activity-yield\\\"`).
+
 **Element ids are derived, not named after the React component.** Buttons
 without an explicit `useUIElement` name get a slugified id from their
 accessible label — `aria-label`, then `<label for>`, then the title attribute, then visible text
