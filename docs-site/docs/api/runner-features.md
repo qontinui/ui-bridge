@@ -504,6 +504,27 @@ Pair with the `terminal-launch-menu` component's `create-best-account`
 the new `tab_ids[i]` and poll `/control/terminal-sessions/{tab_ids[i]}`
 for `state === "idle"`/`"working"` and `task_run_id !== null`.
 
+### Reading rendered terminal output
+
+```http
+GET /ui-bridge/sdk/terminal/sessions/{tab_id}/buffer?lines=N
+GET /ui-bridge/sdk/terminal/sessions/{tab_id}/grid
+GET /ui-bridge/sdk/terminal/sessions/{tab_id}/text
+```
+
+The same `tab_id` returned by `terminal-launch-menu` actions also keys
+the **VT-parser cell grid** maintained per-session (see the
+[grid-snapshot architecture note](#)). `/buffer?lines=N` returns
+`{session_id, lines: string[], total_lines, truncated}` — the last N
+rendered rows post-ANSI-parsing, capped at `MAX_RETURNED_LINES`.
+`/grid` returns the full `GridSnapshot` (cells + cursor + title). Use
+these to assert on what's *visibly rendered* in a terminal pane
+without screen-scraping or replaying the raw PTY byte stream
+(replay-as-bytes is fundamentally lossy for TUI streams — the parser
+already collapsed cursor-positioning + DEC 2026 sync-output into the
+final frame). Sibling `GET /terminals/{tab_id}/buffer` / `/output`
+serves the same data on the runner's non-`/ui-bridge/` route family.
+
 ## Network stubs (fetch short-circuit)
 
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
