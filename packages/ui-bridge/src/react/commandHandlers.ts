@@ -3781,67 +3781,11 @@ export async function executeCommand(
     }
 
     // ======================================================================
-    // Element Image Metadata
+    // Element Image Metadata — removed in Phase 2 of the UI Bridge Vision
+    // Pipeline (2026-05-13). The legacy `getElementImages` browser-side
+    // command was the DOM-img-scan backing for `/control/get-element-images`;
+    // both are gone in favor of the runner-direct `/vision/*` routes.
     // ======================================================================
-
-    case 'getElementImages': {
-      const maxImages = (payload.max_images as number) || 50;
-      const fullSrc = (payload.full_src as boolean) || false;
-      const imageIndex = payload.image_index as number | undefined;
-
-      let container: Element = document.body;
-      if (payload.element_id) {
-        const el = getElement(payload.element_id as string);
-        if (el?.element) container = el.element;
-      }
-
-      const imgs = container.querySelectorAll('img');
-      const results: Array<{
-        src: string;
-        alt: string;
-        width: number;
-        height: number;
-        naturalWidth: number;
-        naturalHeight: number;
-        parentId: string;
-        visible: boolean;
-      }> = [];
-
-      for (const img of Array.from(imgs).slice(0, maxImages)) {
-        const rect = img.getBoundingClientRect();
-        const visible =
-          rect.width > 0 && rect.height > 0 && getComputedStyle(img).visibility !== 'hidden';
-
-        // Find nearest meaningful parent ID
-        let parentId = '';
-        let parent = img.parentElement;
-        while (parent && !parentId) {
-          if (parent.getAttribute('data-testid') || parent.id) {
-            parentId = parent.getAttribute('data-testid') || parent.id;
-          }
-          parent = parent.parentElement;
-        }
-
-        // For data: URIs, truncate unless full_src requested for this specific index
-        let src = img.src;
-        if (src.startsWith('data:') && !(fullSrc && results.length === imageIndex)) {
-          src = src.substring(0, 100) + '...';
-        }
-
-        results.push({
-          src,
-          alt: img.alt || '',
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-          naturalWidth: img.naturalWidth,
-          naturalHeight: img.naturalHeight,
-          parentId,
-          visible,
-        });
-      }
-
-      return { images: results, total: results.length };
-    }
 
     // ======================================================================
     // Element Assertion

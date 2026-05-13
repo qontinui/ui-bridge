@@ -28,8 +28,6 @@ import type {
 import type {
   ControlSnapshot,
   FindRequest,
-  FindResponse,
-  DiscoveredElement,
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
@@ -130,9 +128,6 @@ import type {
   ElementDesignData,
   StateStyles,
   ResponsiveSnapshot,
-  ElementState,
-  ContentMetadata,
-  MediaMetadata as UiBridgeMediaMetadata,
 } from '../core/types';
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
@@ -1989,15 +1984,50 @@ export function createHandlers(
       }
     },
 
-    getElementImages: async (_request?: Record<string, unknown>) => {
-      // This handler is a stub for direct-mode (non-relay) usage.
-      // In relay mode, the command goes to the browser via commandHandlers.ts.
-      // In direct mode, we scan the registry but can't access DOM img elements.
-      return success({
-        images: [],
-        total: 0,
-        note: 'Use relay mode for DOM image scanning',
-      }) as APIResponse<any>;
+    // Vision pipeline (Phase 2 of plan 2026-05-13) — direct-mode stubs.
+    // Real implementations live in the runner; the SDK exposes the routes
+    // for type-completeness and returns `RUNNER_REQUIRED` when mounted
+    // without a runner backing.
+    visionCapture: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionAnnotate: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionDiff: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionRaw: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionCacheStream: async (_sha256: string) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionHealth: async () => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
     },
 
     discover: async (request?: unknown) => {
@@ -5971,111 +6001,11 @@ export function createHandlers(
     },
 
     // =========================================================================
-    // Media Discovery & Analysis (delegated to browser via relay in relay-handlers)
+    // Media Discovery & Analysis — removed in Phase 2 of the UI Bridge Vision
+    // Pipeline (2026-05-13). See `visionCapture`/`visionAnnotate`/`visionDiff`/
+    // `visionRaw`/`visionCacheStream`/`visionHealth` above. Those routes are
+    // runner-direct; this file only carries SDK stubs.
     // =========================================================================
-
-    findMedia: async (_request) => {
-      try {
-        refreshElements();
-        const allElements = registry.getAllElements();
-        const mediaTypes = new Set(['image', 'video', 'audio', 'svg', 'picture', 'icon']);
-        const rawMediaElements = allElements.filter((el) => {
-          const elType = (el as { type?: string }).type ?? '';
-          return mediaTypes.has(elType);
-        });
-        // Materialize state via getState() so fields like rect/visibility are populated,
-        // then map to DiscoveredElement shape expected by FindResponse.
-        const mediaElements: DiscoveredElement[] = rawMediaElements.map((raw) => {
-          const el = raw as {
-            id: string;
-            type?: string;
-            label?: string;
-            actions?: string[];
-            category?: 'interactive' | 'content' | 'media';
-            contentMetadata?: ContentMetadata;
-            mediaMetadata?: UiBridgeMediaMetadata;
-            element?: HTMLElement;
-            tagName?: string;
-            role?: string;
-            accessibleName?: string;
-            getState?: () => unknown;
-          };
-          const state = (el.getState?.() ?? {}) as ElementState;
-          return {
-            id: el.id,
-            type: el.type ?? 'unknown',
-            label: el.label,
-            tagName: el.element?.tagName?.toLowerCase?.() ?? el.tagName ?? el.type ?? 'unknown',
-            role: el.role,
-            accessibleName: el.accessibleName,
-            actions: el.actions ?? [],
-            state,
-            registered: true,
-            category: el.category ?? 'media',
-            contentMetadata: el.contentMetadata,
-            mediaMetadata: el.mediaMetadata,
-          };
-        });
-        const response: FindResponse = {
-          elements: mediaElements,
-          total: mediaElements.length,
-          durationMs: 0,
-          timestamp: Date.now(),
-        };
-        return success(response);
-      } catch (err) {
-        return error((err as Error).message, 'FIND_MEDIA_ERROR');
-      }
-    },
-
-    mediaAuditAccessibility: async () => {
-      return error(
-        'mediaAuditAccessibility not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    mediaAuditPerformance: async () => {
-      return error(
-        'mediaAuditPerformance not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    captureMediaSnapshot: async (_request) => {
-      return error(
-        'captureMediaSnapshot not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    compareMediaSnapshots: async (_request) => {
-      return error(
-        'compareMediaSnapshots not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    analyzeMedia: async (_request) => {
-      return error(
-        'analyzeMedia not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    analyzeMediaBatch: async (_request) => {
-      return error(
-        'analyzeMediaBatch not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
-
-    analyzeMediaPage: async (_request) => {
-      return error(
-        'analyzeMediaPage not implemented in direct handlers — use relay-handlers',
-        'NOT_IMPLEMENTED'
-      );
-    },
 
     getChangesSince: async (_params) => {
       // Direct handlers don't maintain a change event buffer — use relay-handlers
