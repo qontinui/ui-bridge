@@ -1606,6 +1606,51 @@ export interface ComponentStateResponse {
  * Represents a distinct state in the UI (e.g., "LoginForm", "Dashboard", "Modal").
  * States can be active or inactive, and can block other states from activating.
  */
+/**
+ * State provenance — how a compiled state's identity was decided by the runner-side
+ * `compileStateMachineFromSpecs` pipeline (see
+ * `qontinui-runner/src/lib/compile-state-machine.ts`). The SDK treats these
+ * fields as opaque pass-through: the runner writes them onto the compiled
+ * `StateDefinitionWithProvenance` it hands to `loadStateMachine`, and this
+ * type lets the SDK round-trip them through `registerState` → snapshot →
+ * `/ui-bridge/control/states/snapshot` without stripping.
+ *
+ * Phase 1 of the D5 Git Supervision Channel plan
+ * (`plans/2026-05-13-d5-git-supervision-channel-phase-1.md` §3.3, §4.3)
+ * introduces the `"git-supervised"` value; older runners may emit only the
+ * other three.
+ */
+export type UIStateProvenance =
+  | 'ai-generated'
+  | 'observed'
+  | 'ai-fallback'
+  | 'git-supervised';
+
+/**
+ * Provenance metadata attached to a state explaining *why* the runner-side
+ * compiler picked a particular provenance value. Opaque pass-through on the
+ * SDK side — mirrors `StateProvenanceMeta` in
+ * `qontinui-runner/src/lib/compile-state-machine.ts`.
+ *
+ * - `support` / `contrast` / `observationCount` / `lastObserved` — populated
+ *   when the discovery artifact promoted the state to `observed`.
+ * - `invalidatedAt` — populated only when `provenance === "ai-fallback"`
+ *   (the observed match was invalidated within the recency window).
+ * - `gitProposedAt` / `gitProposalKind` — populated only when
+ *   `provenance === "git-supervised"`; identifies the git event that
+ *   produced the proposal (commit / branch_switch / tag / spec_changed /
+ *   working_tree_drift).
+ */
+export interface UIStateProvenanceMeta {
+  support?: number;
+  contrast?: number;
+  observationCount?: number;
+  lastObserved?: string;
+  invalidatedAt?: string;
+  gitProposedAt?: string;
+  gitProposalKind?: string;
+}
+
 export interface UIState {
   /** Unique state identifier */
   id: string;
@@ -1625,6 +1670,18 @@ export interface UIState {
   pathCost?: number;
   /** Custom metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * Compile-time provenance written by the runner-side compiler. Optional
+   * because hand-authored states registered via `useUIState` don't carry it
+   * — only states produced by `compileStateMachineFromSpecs` and loaded via
+   * `loadStateMachine(json)` will. See [`UIStateProvenance`].
+   */
+  provenance?: UIStateProvenance;
+  /**
+   * Companion metadata explaining the provenance decision. Optional and
+   * shape-correlated with [`provenance`] — see [`UIStateProvenanceMeta`].
+   */
+  provenanceMeta?: UIStateProvenanceMeta;
 }
 
 /**
