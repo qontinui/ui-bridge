@@ -488,20 +488,56 @@ export class NativeUIBridgeRegistry {
     }
     return {
       timestamp: Date.now(),
-      elements: allElements.map((e) => ({
-        id: e.id,
-        type: e.type,
-        label: e.label,
-        identifier: e.getIdentifier(),
-        state: e.getState(),
-        actions: e.actions,
-        customActions: e.customActions ? Object.keys(e.customActions) : undefined,
-        // Live bbox/visibility maintained by `useUIElement`'s onLayout.
-        // Parity with the web snapshot so runners can dispatch taps by
-        // coords without VLM grounding for SDK-registered elements.
-        bbox: e.bbox,
-        visible: e.visible,
-      })),
+      elements: allElements.map((e) => {
+        const identifier = e.getIdentifier();
+        const state = e.getState();
+        // Stream-A A.5 — structural-accessibility view parity with the web
+        // snapshot. React Native's analogues:
+        //   - `role`     → `accessibilityRole` prop (captured on
+        //                  `e.props.accessibilityRole` when the host
+        //                  component forwards it through). May be
+        //                  undefined when the SDK doesn't capture it.
+        //   - `tagName`  → registered element `type` (closest analogue;
+        //                  there's no DOM tag in RN).
+        //   - `ariaLabel`→ `accessibilityLabel` prop, captured on the
+        //                  identifier by the SDK's register call.
+        //   - `accessibleName` → same as `ariaLabel`; native has no
+        //                  separate algorithm.
+        //   - `text`     → `state.textContent` populated by `<Text>`
+        //                  children, falling back to `accessibilityLabel`.
+        const accessibilityRole =
+          e.props && typeof e.props.accessibilityRole === 'string'
+            ? (e.props.accessibilityRole as string)
+            : undefined;
+        const role = accessibilityRole;
+        const tagName = typeof e.type === 'string' ? e.type.toLowerCase() : undefined;
+        const ariaLabel = identifier.accessibilityLabel ?? e.label ?? undefined;
+        const accessibleName = ariaLabel;
+        const rawText = state.textContent ?? ariaLabel;
+        const text =
+          typeof rawText === 'string'
+            ? rawText.replace(/\s+/g, ' ').trim() || undefined
+            : undefined;
+        return {
+          id: e.id,
+          type: e.type,
+          label: e.label,
+          identifier,
+          state,
+          actions: e.actions,
+          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          // Live bbox/visibility maintained by `useUIElement`'s onLayout.
+          // Parity with the web snapshot so runners can dispatch taps by
+          // coords without VLM grounding for SDK-registered elements.
+          bbox: e.bbox,
+          visible: e.visible,
+          role,
+          tagName,
+          ariaLabel,
+          accessibleName,
+          text,
+        };
+      }),
       // Diagnostic: how many interactive DOM elements exist vs how many
       // the registry captured. A large gap (e.g., 30 registered out of
       // 120 in DOM) signals the auto-register missed elements.

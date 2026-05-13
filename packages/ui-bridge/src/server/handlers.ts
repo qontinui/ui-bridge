@@ -49,6 +49,12 @@ import { matchesElementSelector, type MatchableElement } from './selector-match'
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
+import {
+  computeAriaLabel,
+  computeAccessibleNameSafe,
+  computeRoleSafe,
+  computeVisibleText,
+} from '../core/a11y';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, ActionErrorCode, FillResult } from '../core';
 import type {
@@ -249,17 +255,24 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       bbox?: { x: number; y: number; width: number; height: number };
       visible?: boolean;
     };
-    // Capture title and aria-label from the live DOM element for explicit
-    // attribute-level filtering (Tier 1.2). These are separate from `label`
-    // which encodes the best accessible name (aria-label > title > text).
-    const ariaLabel = el.element?.getAttribute?.('aria-label') ?? undefined;
+    // Capture title from the live DOM element for explicit attribute-level
+    // filtering (Tier 1.2). `ariaLabel`, `accessibleName`, `text`, and
+    // `role` come from the canonical a11y helpers so this fallback path
+    // emits the same Stream-A A.5 wire fields as the primary serializer.
     const titleAttr = el.element?.getAttribute?.('title') ?? undefined;
+    const ariaRole = el.element ? computeRoleSafe(el.element) : undefined;
+    const ariaLabel = el.element ? computeAriaLabel(el.element) : undefined;
+    const accessibleName = el.element ? computeAccessibleNameSafe(el.element) : undefined;
+    const visibleText = el.element ? computeVisibleText(el.element) : undefined;
     return {
       id: el.id,
       type: el.type,
       tagName: el.element?.tagName?.toLowerCase?.(),
       label: el.label,
-      ariaLabel: ariaLabel || undefined,
+      role: ariaRole,
+      ariaLabel,
+      accessibleName,
+      text: visibleText,
       title: titleAttr || undefined,
       identifier: el.getIdentifier?.(),
       state: el.getState?.(),

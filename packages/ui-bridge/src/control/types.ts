@@ -384,10 +384,33 @@ export interface ControlSnapshot {
      */
     content?: string;
     /**
-     * ARIA role / semantic role hint for content elements, sourced from
-     * `data-ui-bridge-role` (falls back to the element's `role` attribute).
+     * Canonical ARIA role per W3C ARIA-in-HTML mapping. Resolves the
+     * explicit `role=` attribute when set, otherwise the implicit role
+     * for the tag (e.g. `<button>` → `"button"`). Source of truth for
+     * `IrElementCriteria.role`.
      */
     role?: string;
+    /**
+     * Lowercased HTML tag name (e.g. `"button"`, `"input"`, `"a"`).
+     * Source of truth for `IrElementCriteria.tag_name`.
+     */
+    tagName?: string;
+    /**
+     * Explicit `aria-label`, with `aria-labelledby` reference resolution
+     * fallback. Distinct from `accessibleName`.
+     * Source of truth for `IrElementCriteria.aria_label`.
+     */
+    ariaLabel?: string;
+    /**
+     * W3C accessible-name algorithm output. Source of truth for
+     * `IrElementCriteria.accessible_name`.
+     */
+    accessibleName?: string;
+    /**
+     * Visible text content (innerText-equivalent), whitespace collapsed
+     * and trimmed. Source of truth for `IrElementCriteria.text`.
+     */
+    text?: string;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /**

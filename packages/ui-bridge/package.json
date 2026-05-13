@@ -189,6 +189,9 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "dom-accessibility-api": "^0.5.16"
+  },
   "optionalDependencies": {
     "@tauri-apps/api": "^2.10.1"
   },
