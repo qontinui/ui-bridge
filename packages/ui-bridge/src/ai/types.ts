@@ -1019,10 +1019,10 @@ export interface DomMutationEntry {
   timestamp: number;
 }
 
-/** A console error/warn/unhandledrejection captured while the buffer is active. */
+/** A console error/warn/debug/log/info/unhandledrejection captured while the buffer is active. */
 export interface ConsoleErrorEntry {
-  /** 'error' | 'warn' | 'unhandledrejection' */
-  level: 'error' | 'warn' | 'unhandledrejection';
+  /** 'error' | 'warn' | 'debug' | 'log' | 'info' | 'unhandledrejection' */
+  level: 'error' | 'warn' | 'debug' | 'log' | 'info' | 'unhandledrejection';
   /** Log message text. */
   message: string;
   /** Stack trace if available. */

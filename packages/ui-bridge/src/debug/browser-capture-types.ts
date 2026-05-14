@@ -39,7 +39,7 @@ export interface BrowserCapturedEvent {
 
 export interface ConsoleCapturedEvent extends BrowserCapturedEvent {
   type: 'console';
-  level: 'error' | 'warn' | 'unhandledrejection';
+  level: 'error' | 'warn' | 'debug' | 'log' | 'info' | 'unhandledrejection';
   message: string;
   stack?: string;
 }
@@ -169,7 +169,7 @@ export type OnBrowserEventCallback = (event: AnyCapturedEvent) => void;
 
 export interface CapturedError {
   timestamp: number;
-  level: 'error' | 'warn' | 'unhandledrejection';
+  level: 'error' | 'warn' | 'debug' | 'log' | 'info' | 'unhandledrejection';
   message: string;
   stack?: string;
 }
@@ -186,6 +186,15 @@ export type OnCaptureCallback = (entry: CapturedError) => void;
 export interface BrowserCaptureConfig {
   /** Capture console.error/warn + unhandled rejections. Default: true */
   console?: boolean;
+  /**
+   * Console levels to capture. Defaults to ['error', 'warn'] (matches
+   * pre-0.5 SDK behavior). 'unhandledrejection' is always captured unless
+   * explicitly excluded by passing a set without it.
+   * Set ['error','warn','debug','info','log'] to capture all levels;
+   * use the server-side `?level=` query to filter on read instead of
+   * dropping at capture time.
+   */
+  consoleLevels?: Array<'error' | 'warn' | 'debug' | 'info' | 'log' | 'unhandledrejection'>;
   /** Capture failed fetch requests (4xx/5xx/network errors). Default: true */
   network?: boolean;
   /** Capture History API navigation. Default: true */
