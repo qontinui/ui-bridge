@@ -141,9 +141,13 @@ function classifyConsole(event: AnyCapturedEvent & { type: 'console' }): {
       return { severity: 'error', reason: 'console.error' };
     case 'warn':
       return { severity: 'warning', reason: 'console.warn' };
+    case 'debug':
+    case 'log':
+    case 'info':
+      return { severity: 'noise', reason: `console.${event.level}` };
     default: {
       const _exhaustive: never = event.level;
-      return { severity: 'warning', reason: `console.${_exhaustive}` };
+      return { severity: 'noise', reason: `console.${String(_exhaustive)}` };
     }
   }
 }
