@@ -61,6 +61,14 @@ export interface UseUIElementOptions {
   onStateChange?: (state: NativeElementState) => void;
   /** Parent component path for tree path generation */
   parentPath?: string;
+  /**
+   * React Native `accessibilityRole` to capture on the registered element's
+   * props. Snapshot serializers map this to the `role` field on the wire
+   * (Stream-A A.5). Pass the same value you spread onto the host component
+   * (e.g. `<Pressable accessibilityRole="button" />`) so the bridge's
+   * canonical-accessibility view stays in sync.
+   */
+  accessibilityRole?: string;
 }
 
 /**
@@ -154,6 +162,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     autoRegister = true,
     onStateChange,
     parentPath,
+    accessibilityRole,
   } = options;
 
   // Build tree path
@@ -183,9 +192,12 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       treePath,
       testId: id,
       accessibilityLabel: label,
+      // Forward accessibilityRole onto e.props so the snapshot serializer's
+      // structural-accessibility view (Stream-A A.5) reads it as `role`.
+      props: accessibilityRole !== undefined ? { accessibilityRole } : undefined,
     });
     registeredRef.current = true;
-  }, [bridge, id, type, label, actions, customActions, treePath]);
+  }, [bridge, id, type, label, actions, customActions, treePath, accessibilityRole]);
 
   // Unregister the element
   const unregister = useCallback(() => {
