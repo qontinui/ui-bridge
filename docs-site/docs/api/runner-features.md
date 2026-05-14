@@ -493,7 +493,7 @@ sessions) without screen-scraping. The list endpoint returns
 `{ sessions: [{id, title, task_run_id, claude_session_id, working_dir,
 state, is_alive, exit_code, type, created_at}] }`. `task_run_id` is
 `null` for plain tabs and for AI tabs that haven't yet captured a
-Claude session id (the JSONL-capture window — typically <2s after
+Claude session id (the JSONL-capture window — typically `<2s` after
 spawn). Per-id GET returns 404 with `{error: "unknown_terminal_session",
 knownIds: [...]}` so callers polling a freshly-spawned tab can recover.
 
