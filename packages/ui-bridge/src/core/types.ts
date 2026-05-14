@@ -1254,11 +1254,36 @@ export interface BridgeSnapshot {
      */
     content?: string;
     /**
-     * ARIA role / semantic role hint for content elements, sourced from
-     * `data-ui-bridge-role` (falls back to the element's `role` attribute).
-     * Absent for elements that don't carry one.
+     * Canonical ARIA role per the W3C ARIA-in-HTML mapping. Resolves the
+     * explicit `role=` attribute when set, otherwise the implicit role for
+     * the tag (e.g. `<button>` → `"button"`, `<input type="checkbox">` →
+     * `"checkbox"`). Source of truth for `IrElementCriteria.role` consumed
+     * by Spec-Check's matcher. Falls back to `data-ui-bridge-role` for
+     * legacy content-tagged elements when the ARIA mapping returns nothing.
      */
     role?: string;
+    /**
+     * Explicit `aria-label` attribute, with `aria-labelledby` reference
+     * resolution as fallback (multiple ids joined by spaces). Distinct from
+     * `accessibleName` which runs the full W3C accessible-name algorithm.
+     * Source of truth for `IrElementCriteria.aria_label`.
+     */
+    ariaLabel?: string;
+    /**
+     * W3C accessible-name algorithm output (https://w3c.github.io/accname/).
+     * May consult `aria-label`, `aria-labelledby`, associated `<label>`,
+     * `title`, or descendant text content depending on the role. Source
+     * of truth for `IrElementCriteria.accessible_name`.
+     */
+    accessibleName?: string;
+    /**
+     * Visible text content with whitespace collapsed and trimmed.
+     * `innerText`-equivalent on web (respects CSS visibility), falling
+     * back to `textContent` when `innerText` isn't available. Source of
+     * truth for `IrElementCriteria.text` / `text_contains`. Distinct from
+     * `state.textContent` which is a snapshot of the form-control value.
+     */
+    text?: string;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /** Component (if any) that owns/renders this element. Prefer component actions for automation. */

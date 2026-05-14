@@ -404,6 +404,38 @@ export interface NativeBridgeSnapshot {
     bbox?: ElementBbox;
     /** Live visibility (`bbox.width > 0 && bbox.height > 0`). Paired with `bbox`. */
     visible?: boolean;
+    /**
+     * ARIA role passthrough from React Native's `accessibilityRole` prop
+     * (e.g. `"button"`, `"link"`, `"header"`, `"image"`, `"none"`). Parity
+     * with the web snapshot's `elements[].role`. Source of truth for
+     * `IrElementCriteria.role` on native targets.
+     */
+    role?: string;
+    /**
+     * Lowercased component display name where determinable (e.g. `"text"`,
+     * `"pressable"`, `"view"`). Native parity for the web snapshot's
+     * `tagName`. Undefined for custom components without a `displayName`.
+     */
+    tagName?: string;
+    /**
+     * Passthrough of React Native's `accessibilityLabel` prop. Parity with
+     * the web snapshot's `ariaLabel`. Source of truth for
+     * `IrElementCriteria.aria_label` on native targets.
+     */
+    ariaLabel?: string;
+    /**
+     * Accessible name for the element. On native this is the same value
+     * as `accessibilityLabel` (no separate algorithm) — kept as a distinct
+     * field for wire-format parity with the web snapshot.
+     */
+    accessibleName?: string;
+    /**
+     * Visible text content. Source of truth for `IrElementCriteria.text`.
+     * On native this comes from the registered element's `textContent`
+     * state (set by `<Text>` children) or the `accessibilityLabel` fallback,
+     * whitespace-collapsed and trimmed.
+     */
+    text?: string;
   }>;
   /** All registered components */
   components: Array<{

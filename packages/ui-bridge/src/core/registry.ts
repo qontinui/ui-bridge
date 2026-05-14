@@ -41,6 +41,12 @@ import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
+import {
+  computeAriaLabel,
+  computeAccessibleNameSafe,
+  computeRoleSafe,
+  computeVisibleText,
+} from './a11y';
 
 /**
  * Single source of truth for serializing a `RegisteredElement` to a snapshot
@@ -82,6 +88,15 @@ export function serializeRegisteredElement(
     typeof el.element?.getAttribute === 'function'
       ? el.element.getAttribute('data-ui-bridge-id') ?? undefined
       : undefined;
+  // Structural-accessibility view (Stream-A A.5). Populated from the live
+  // DOM node so Spec-Check's matcher reads these directly without rederiving.
+  // Falls back to the legacy `el.role` (data-ui-bridge-role attribute) when
+  // the ARIA mapping returns nothing — keeps existing content-element
+  // callers working while preferring the canonical W3C role.
+  const ariaRole = computeRoleSafe(el.element) ?? el.role;
+  const ariaLabel = computeAriaLabel(el.element);
+  const accessibleName = computeAccessibleNameSafe(el.element);
+  const visibleText = computeVisibleText(el.element);
   return {
     id: el.id,
     ...(uiBridgeId !== undefined ? { uiBridgeId } : {}),
@@ -95,7 +110,10 @@ export function serializeRegisteredElement(
     category: el.category,
     kind,
     content: el.content,
-    role: el.role,
+    role: ariaRole,
+    ariaLabel,
+    accessibleName,
+    text: visibleText,
     contentMetadata: el.contentMetadata,
     mediaMetadata: el.mediaMetadata,
     ownedByComponent: el.ownedByComponent,

@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "description": "UI Bridge Framework - React hooks and providers for UI observation, control, and debugging",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -188,6 +188,9 @@
     "@qontinui/ui-bridge-headless": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "dom-accessibility-api": "^0.5.16"
   },
   "optionalDependencies": {
     "@tauri-apps/api": "^2.10.1"

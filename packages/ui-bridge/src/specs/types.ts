@@ -265,6 +265,25 @@ export interface SpecStateMachineShape {
 // =============================================================================
 
 /**
+ * Distinctness validation rollup for a spec's state machine (Plan 04).
+ *
+ * Surfaced by the runner's `GET /spec/list` on degenerate specs (specs
+ * whose state machine has empty-criteria, identical-state, or subset-
+ * dominated states). Clean specs omit the field entirely.
+ *
+ * Mirrors `qontinui_types::spec_check::SpecValidation` from
+ * @qontinui/shared-types — duplicated here as a structural type so this
+ * package's consumers don't need a direct dependency on the shared-types
+ * package just for this one field. Field shape MUST match the
+ * shared-types schema or `/spec/list` deserialization will diverge.
+ */
+export interface SpecValidationRollup {
+  pageId: string;
+  degenerateStateIds: string[];
+  indistinguishableStatePairs: [string, string][];
+}
+
+/**
  * A spec discovered at runtime, wrapping its raw configuration.
  *
  * Returned by `GET /spec/list` (the runner's Spec API) and by
@@ -277,6 +296,13 @@ export interface DiscoveredSpec {
   config: SpecConfig;
   /** The application this spec belongs to (e.g. "Qontinui Web", "Qontinui Runner"). */
   appName?: string;
+  /**
+   * Distinctness validation rollup. Present only when the spec's state
+   * machine has degenerate or indistinguishable states (Plan 04). Consumers
+   * can use this to skip degenerate specs from prompts, surface warnings in
+   * the UI, etc. `null` and `undefined` both mean "clean".
+   */
+  validation?: SpecValidationRollup | null;
 }
 
 // =============================================================================

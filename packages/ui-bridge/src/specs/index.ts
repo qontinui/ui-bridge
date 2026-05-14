@@ -34,6 +34,7 @@ export type {
   SpecStateMachineShape,
   // Discovered spec wrapper
   DiscoveredSpec,
+  SpecValidationRollup,
   // Testing section types
   SpecTestingConfig,
   SpecGroupTesting,
