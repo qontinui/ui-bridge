@@ -445,7 +445,14 @@ export interface UIBridgeServerHandlers {
     /** snake_case alias for `withDisabledOnly`. */
     with_disabled_only?: boolean | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
-  getElementImages: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+
+  // Vision pipeline endpoints (Phase 2 — runner-direct; SDK stubs only)
+  visionCapture: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionAnnotate: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionDiff: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionRaw: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionCacheStream: (sha256: string) => Promise<APIResponse<unknown>>;
+  visionHealth: () => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
   getWorkflows: (options?: {
@@ -820,28 +827,14 @@ export interface UIBridgeServerHandlers {
     options?: ElementHistoryOptions
   ) => Promise<APIResponse<unknown[]>>;
 
-  // Media discovery & analysis endpoints
-  findMedia: (request?: FindRequest) => Promise<APIResponse<FindResponse>>;
-  mediaAuditAccessibility: () => Promise<APIResponse<unknown>>;
-  mediaAuditPerformance: () => Promise<APIResponse<unknown>>;
-  captureMediaSnapshot: (request: {
-    elementId: string;
-    maxSize?: number;
-  }) => Promise<APIResponse<unknown>>;
-  compareMediaSnapshots: (request: {
-    snapshotA: unknown;
-    snapshotB: unknown;
-  }) => Promise<APIResponse<unknown>>;
-  analyzeMedia: (request: { elementId: string; maxSize?: number }) => Promise<APIResponse<unknown>>;
-  analyzeMediaBatch: (request: {
-    elementIds: string[];
-    maxSize?: number;
-  }) => Promise<APIResponse<unknown>>;
-  analyzeMediaPage: (request?: {
-    maxElements?: number;
-    maxSize?: number;
-    includeContext?: boolean;
-  }) => Promise<APIResponse<unknown>>;
+  // Media discovery & analysis endpoints — removed in Phase 2 of the
+  // UI Bridge Vision Pipeline (2026-05-13). The `/control/screenshot`,
+  // `/control/annotated-screenshot`, `/control/element-screenshot`,
+  // `/control/capture-element-images`, `/control/get-element-images`,
+  // `/control/diagnose-stuck-screen`, and `/ai/media/*` routes are
+  // superseded by `/vision/{capture,annotate,diff,raw,cache,health}`
+  // declared above (handlers prefixed `vision*`). The runner answers those
+  // routes directly; the SDK keeps stubs for type-completeness.
 
   // Change observation (push-based)
   getChangesSince: (params?: {
@@ -1281,7 +1274,6 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Phase 1.3 (plan 2026-05-03) — flat digest synthesized from snapshot +
   // console-errors + idle-status. One call instead of five.
   { method: 'GET', path: '/control/state-summary', handler: 'getStateSummary' },
-  { method: 'POST', path: '/control/get-element-images', handler: 'getElementImages' },
 
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
@@ -1635,15 +1627,24 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Heartbeat
   { method: 'POST', path: '/heartbeat', handler: 'receiveHeartbeat' },
 
-  // Media discovery & analysis
-  { method: 'POST', path: '/ai/media/find', handler: 'findMedia' },
-  { method: 'POST', path: '/ai/media/audit/accessibility', handler: 'mediaAuditAccessibility' },
-  { method: 'POST', path: '/ai/media/audit/performance', handler: 'mediaAuditPerformance' },
-  { method: 'POST', path: '/ai/media/snapshot', handler: 'captureMediaSnapshot' },
-  { method: 'POST', path: '/ai/media/compare', handler: 'compareMediaSnapshots' },
-  { method: 'POST', path: '/ai/media/analyze', handler: 'analyzeMedia' },
-  { method: 'POST', path: '/ai/media/analyze/batch', handler: 'analyzeMediaBatch' },
-  { method: 'POST', path: '/ai/media/analyze/page', handler: 'analyzeMediaPage' },
+  // Vision pipeline (Phase 2, plan 2026-05-13). Replaces the legacy
+  // `/control/{screenshot,annotated-screenshot,element-screenshot,
+  // capture-element-images,get-element-images,diagnose-stuck-screen}`
+  // and `/ai/media/*` routes. The runner answers these directly; the
+  // SDK exposes stubs that return `runner_required` so the route table
+  // stays the single source of truth.
+  // Note: `/vision/extract` and `/vision/describe` arrive in Phase 4.
+  { method: 'POST', path: '/vision/capture', handler: 'visionCapture' },
+  { method: 'POST', path: '/vision/annotate', handler: 'visionAnnotate' },
+  { method: 'POST', path: '/vision/diff', handler: 'visionDiff' },
+  { method: 'POST', path: '/vision/raw', handler: 'visionRaw' },
+  {
+    method: 'GET',
+    path: '/vision/cache/:sha256',
+    handler: 'visionCacheStream',
+    params: ['sha256'],
+  },
+  { method: 'GET', path: '/vision/health', handler: 'visionHealth' },
 
   // Change observation (push-based)
   { method: 'GET', path: '/control/changes/since', handler: 'getChangesSince' },

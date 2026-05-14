@@ -128,7 +128,10 @@ export interface RelayHandlersOptions {
    *
    * Expected response shape: `{ success: true, data: { screenshot: "<base64>", width: N, height: N } }`
    *
-   * Example: `'http://localhost:9876/ui-bridge/sdk/screenshot'`
+   * Example: `'http://localhost:9876/ui-bridge/vision/capture'`
+   * (Phase 2 of the UI Bridge Vision Pipeline replaced the legacy
+   * `/ui-bridge/sdk/screenshot` and `/ui-bridge/control/*screenshot*` routes
+   * with `/ui-bridge/vision/{capture,annotate,diff,raw,cache,health}`.)
    */
   screenshotFallbackUrl?: string;
   /** Cache TTL in milliseconds for snapshot staleness checks (default: 5000) */
@@ -650,10 +653,33 @@ export function createRelayHandlers(
       return handlers.find(request);
     },
 
-    async getElementImages(request) {
-      const { targetTabId, ...payload } =
-        (request as Record<string, unknown> & { targetTabId?: string }) || {};
-      return relayCommand('getElementImages', payload, { targetTabId });
+    // Vision pipeline (Phase 2 of plan 2026-05-13) — relay-mode stubs.
+    // The runner answers `/vision/*` directly without going through the
+    // browser relay; the SDK relay-handler factory only needs to satisfy
+    // the `UIBridgeServerHandlers` interface so apps that share this
+    // factory don't crash if those routes are mounted.
+    async visionCapture(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionAnnotate(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionDiff(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionRaw(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionCacheStream(_sha256) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionHealth() {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     async getControlSnapshot(request) {
@@ -1549,40 +1575,11 @@ export function createRelayHandlers(
     },
 
     // ========================================================================
-    // Media Discovery & Analysis
+    // Media Discovery & Analysis — removed in Phase 2 of the UI Bridge
+    // Vision Pipeline (2026-05-13). The new `/vision/*` routes are
+    // runner-direct (see the `visionCapture`/`visionAnnotate`/`visionDiff`/
+    // `visionRaw`/`visionCacheStream`/`visionHealth` stubs above).
     // ========================================================================
-
-    async findMedia(request) {
-      return relayCommand('findMedia', request ?? {});
-    },
-
-    async mediaAuditAccessibility() {
-      return relayCommand('mediaAuditAccessibility');
-    },
-
-    async mediaAuditPerformance() {
-      return relayCommand('mediaAuditPerformance');
-    },
-
-    async captureMediaSnapshot(request) {
-      return relayCommand('captureMediaSnapshot', request);
-    },
-
-    async compareMediaSnapshots(request) {
-      return relayCommand('compareMediaSnapshots', request);
-    },
-
-    async analyzeMedia(request) {
-      return relayCommand('analyzeMedia', request);
-    },
-
-    async analyzeMediaBatch(request) {
-      return relayCommand('analyzeMediaBatch', request);
-    },
-
-    async analyzeMediaPage(request) {
-      return relayCommand('analyzeMediaPage', request ?? {});
-    },
 
     async getSpecs() {
       // Try the browser relay first for live spec data
