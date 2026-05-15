@@ -682,6 +682,34 @@ export function createRelayHandlers(
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
+    async visionExtract(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionDescribe(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionAnalyze(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionAssert(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionBaseline(_request) {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionBaselinesList() {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
+    async visionMutationOccurred() {
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
+    },
+
     async getControlSnapshot(request) {
       const recency = parseRecency(request?.recency);
 

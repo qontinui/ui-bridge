@@ -220,6 +220,18 @@ export function exposeProviderOnWindow(internals: UIBridgeInternals): void {
   root.dragDropDetector = internals.dragDropDetector;
   root.undoTracker = internals.undoTracker;
 
+  // Phase 6 of the UI Bridge Vision Pipeline plan: expose a
+  // `mutationOccurred()` signal callers can fire when rendered pixels
+  // change via a path the runner can't observe (route changes,
+  // app-driven re-renders, animation settle). The runner-side endpoint
+  // bumps the vision-cache mutation counter so subsequent
+  // `/ui-bridge/vision/capture` calls see fresh pixels.
+  // Fire-and-forget — failures are swallowed by the underlying client.
+  root.mutationOccurred = async (baseUrl?: string) => {
+    const { mutationOccurred } = await import('../vision/mutation');
+    return mutationOccurred(baseUrl !== undefined ? { baseUrl } : {});
+  };
+
   const providers: string[] = ['UIBridgeProvider'];
   if (internals.browserCapture) providers.push('BrowserCapture');
   if (internals.navigationTracker) providers.push('NavigationTracker');
