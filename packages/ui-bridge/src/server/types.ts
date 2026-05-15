@@ -446,13 +446,22 @@ export interface UIBridgeServerHandlers {
     with_disabled_only?: boolean | string;
   }) => Promise<APIResponse<ControlSnapshot>>;
 
-  // Vision pipeline endpoints (Phase 2 — runner-direct; SDK stubs only)
+  // Vision pipeline endpoints — runner-direct; SDK stubs only.
   visionCapture: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
   visionAnnotate: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
   visionDiff: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
   visionRaw: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
   visionCacheStream: (sha256: string) => Promise<APIResponse<unknown>>;
   visionHealth: () => Promise<APIResponse<unknown>>;
+  // Phase 4 — text-bearing outputs.
+  visionExtract: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionDescribe: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  // Phase 6 — analyzers + assertion DSL + baselines + frontend mutation signal.
+  visionAnalyze: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionAssert: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionBaseline: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionBaselinesList: () => Promise<APIResponse<unknown>>;
+  visionMutationOccurred: () => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
   getWorkflows: (options?: {
@@ -1633,11 +1642,24 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // and `/ai/media/*` routes. The runner answers these directly; the
   // SDK exposes stubs that return `runner_required` so the route table
   // stays the single source of truth.
-  // Note: `/vision/extract` and `/vision/describe` arrive in Phase 4.
   { method: 'POST', path: '/vision/capture', handler: 'visionCapture' },
   { method: 'POST', path: '/vision/annotate', handler: 'visionAnnotate' },
   { method: 'POST', path: '/vision/diff', handler: 'visionDiff' },
   { method: 'POST', path: '/vision/raw', handler: 'visionRaw' },
+  // Phase 4 — text-bearing outputs (OCR + VLM caption).
+  { method: 'POST', path: '/vision/extract', handler: 'visionExtract' },
+  { method: 'POST', path: '/vision/describe', handler: 'visionDescribe' },
+  // Phase 6 — declarative analyzers + assertion DSL.
+  { method: 'POST', path: '/vision/analyze', handler: 'visionAnalyze' },
+  { method: 'POST', path: '/vision/assert', handler: 'visionAssert' },
+  { method: 'POST', path: '/vision/baseline', handler: 'visionBaseline' },
+  { method: 'GET', path: '/vision/baselines', handler: 'visionBaselinesList' },
+  // Frontend → runner mutation signal (Phase 6).
+  {
+    method: 'POST',
+    path: '/vision/mutation-occurred',
+    handler: 'visionMutationOccurred',
+  },
   {
     method: 'GET',
     path: '/vision/cache/:sha256',

@@ -2043,6 +2043,57 @@ export function createHandlers(
       ) as APIResponse<any>;
     },
 
+    // Phase 4 — text-bearing outputs.
+    visionExtract: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionDescribe: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    // Phase 6 — analyzers + assertion DSL + baselines.
+    visionAnalyze: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionAssert: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionBaseline: async (_request?: Record<string, unknown>) => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionBaselinesList: async () => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
+    visionMutationOccurred: async () => {
+      return error(
+        'route is runner-direct, mount the runner',
+        'RUNNER_REQUIRED'
+      ) as APIResponse<any>;
+    },
+
     discover: async (request?: unknown) => {
       // Deprecated, delegates to find
       try {

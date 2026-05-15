@@ -12,6 +12,7 @@ export default defineConfig([
       'control/index': 'src/control/index.ts',
       'render-log/index': 'src/render-log/index.ts',
       'debug/index': 'src/debug/index.ts',
+      'vision/index': 'src/vision/index.ts',
       'ai/index': 'src/ai/index.ts',
       'server/index': 'src/server/index.ts',
       'server/express': 'src/server/express.ts',
