@@ -448,6 +448,34 @@ client.workflow(workflow_id).run(params)
 client.discover(interactive_only=True, limit=100)
 ```
 
+## Releasing
+
+All `@qontinui/*` packages and `ui-bridge-python` published from this repository use **OIDC trusted-publishing** triggered by tag push. Manual `npm publish` / `twine upload` is not supported and is rejected at the registry layer.
+
+To release a new version of a package:
+
+1. Bump the `version` field in `packages/<pkg>/package.json` (or `packages/ui-bridge-python/pyproject.toml`) in a dedicated release PR. PR title shape: `chore(release): <pkg> v<version>`.
+2. Once the release PR is merged, push the tag matching the workflow trigger pattern:
+   ```bash
+   git tag <pkg>-v<version>
+   git push origin <pkg>-v<version>
+   ```
+   For example: `git tag ui-bridge-native-v0.5.2 && git push origin ui-bridge-native-v0.5.2`.
+3. The `publish.yml` workflow (npm packages) or `publish-pypi.yml` workflow (PyPI) fires automatically, runs tests + typecheck + build, and publishes via OIDC. SLSA provenance is generated on every npm publish.
+4. Verify via `npm view @qontinui/<pkg>@<version>` and `npm audit signatures` (npm) or `pip index versions <pkg>` (PyPI).
+
+If a publish workflow fails, **fix the workflow**, not the local fallback. Manual publish is not a sanctioned recovery path — it is intentionally blocked at the registry layer by trusted-publisher policy.
+
+### Why OIDC-only
+
+Three layers enforce the canonical path mechanically:
+
+- **Layer 1 (registry-side)** — npm requires trusted-publishing per package; PyPI requires trusted-publishing per project. Configured via the registry web UI (see operator runbook in `qontinui-dev-notes/runbooks/`).
+- **Layer 2 (CI gates)** — `publish.yml` runs `npm test` + `npm run typecheck` + `npm run build` against the target package before invoking `npm publish`.
+- **Layer 3 (local tripwire)** — every package has a `prepublishOnly` hook that fails on a dirty working tree (`scripts/check-clean-tree.cjs`). Catches the local-publish-from-unstaged footgun even if Layer 1 is misconfigured.
+
+Driver: 2026-05-17 publish-history investigation (`@qontinui/ui-bridge-native` had 11 of 12 versions published manually from operator laptops, producing both silent source/registry drift and an org-wide ETARGET break when an expected manual publish never happened). Architectural decision codified in `qontinui-dev-notes/project-strategy/architectural-decisions.md` § "Publishing discipline — OIDC-only canonical path."
+
 ## Contributing
 
 Contributions are welcome! Please read our contributing guidelines before submitting a pull request.
