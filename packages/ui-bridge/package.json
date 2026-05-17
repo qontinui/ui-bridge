@@ -159,7 +159,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },
   "peerDependencies": {
     "@qontinui/ui-bridge-auto": ">=0.1.0",

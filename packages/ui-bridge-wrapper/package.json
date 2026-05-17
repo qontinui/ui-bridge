@@ -27,7 +27,8 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },
   "keywords": [
     "ui-bridge",

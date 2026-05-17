@@ -43,7 +43,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },
   "dependencies": {
     "@qontinui/ui-bridge": "^0.4.0 || ^0.5.0 || ^0.6.0 || ^0.7.0 || ^0.8.0"
