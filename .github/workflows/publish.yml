@@ -12,6 +12,9 @@ name: Publish to npm
 #   - ui-bridge-wrapper
 #   - ui-bridge-headless
 #   - ui-bridge-native (already on npm; tags reuse the same flow)
+#   - ui-bridge-server (added 2026-05-17 — was previously published via
+#     release.yml's NPM_TOKEN path; migrated to OIDC trusted-publishing
+#     to close the source/registry drift at 0.4.0)
 #
 # To release: bump the version in the package.json, commit, then
 #   git tag <package>-v<version> && git push origin <package>-v<version>
@@ -23,6 +26,7 @@ on:
       - 'ui-bridge-wrapper-v*'
       - 'ui-bridge-headless-v*'
       - 'ui-bridge-native-v*'
+      - 'ui-bridge-server-v*'
 
 jobs:
   publish:
