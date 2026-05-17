@@ -85,6 +85,17 @@ jobs:
           npm run build --workspace=packages/ui-bridge --if-present
           npm run build --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
 
+      - name: Typecheck and test
+        # Gate the publish on the target package's own typecheck + tests.
+        # Without this, publish.yml was build-gated only, so a release
+        # could ship type errors or failing tests that `tsup` doesn't
+        # catch (it transpiles, it doesn't type-check). `--if-present`
+        # keeps this a no-op for any publishable package that doesn't
+        # define these scripts, so it never blocks an unrelated release.
+        run: |
+          npm run typecheck --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
+          npm test --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
+
       - name: Publish
         # --provenance generates an attestation linking the npm tarball
         # back to this exact commit + workflow run, signed by the OIDC
