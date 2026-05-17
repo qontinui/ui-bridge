@@ -19,6 +19,7 @@ import type {
   NavigationProvider,
   RouteProvider,
   ScreenshotProvider,
+  KeepAwakeProvider,
   APIResponse,
   HandlerContext,
 } from './types';
@@ -186,6 +187,12 @@ const WS_ROUTES: readonly WsRoute[] = [
     httpMethods: ['POST'],
     requiresTestHooks: true,
   },
+  {
+    pattern: 'control/keep-awake',
+    handler: 'keepAwake',
+    httpMethods: ['POST'],
+    requiresTestHooks: true,
+  },
 
   // Observability — last-N console errors + network requests. testHooks-gated
   // because patching `console.error` / `fetch` is invasive in production.
@@ -255,6 +262,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
     'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
   dismissModal:
     'TEST HOOK — dismiss a modal by id from the snapshot.modalStack via the registry ModalDetector',
+  keepAwake:
+    'TEST HOOK — keep the device screen awake via the injected keepAwakeProvider: body { enabled: boolean, durationMs?: number }',
 };
 
 /** Static reference for common action names + their params. */
@@ -390,6 +399,7 @@ export class NativeUIBridgeServer {
   private handlers: NativeServerHandlers;
   private adapter?: ServerAdapter;
   private running = false;
+  private keepAwakeProvider?: KeepAwakeProvider;
   /**
    * Per-connection cleanup thunks for in-flight waiters (waitForElement,
    * waitForCondition, ...). Aborted when a client disconnects so the
@@ -641,6 +651,39 @@ export class NativeUIBridgeServer {
           timestamp: Date.now(),
         };
       }
+    };
+  }
+
+  /**
+   * Set a keep-awake provider for native screen-wake control.
+   * This enables `control/keep-awake` and arms the auto-arm hook in
+   * handleRequest (every request keeps the screen alive for 60s).
+   */
+  setKeepAwakeProvider(provider: KeepAwakeProvider): void {
+    this.keepAwakeProvider = provider;
+    this.handlers.keepAwake = async (ctx) => {
+      const { enabled, durationMs } = (ctx.body ?? {}) as {
+        enabled?: unknown;
+        durationMs?: unknown;
+      };
+      if (typeof enabled !== 'boolean') {
+        return {
+          success: false,
+          error: 'enabled must be boolean',
+          code: 'INVALID_REQUEST',
+          timestamp: Date.now(),
+        };
+      }
+      if (enabled) {
+        provider.request('ui-bridge', typeof durationMs === 'number' ? durationMs : undefined);
+      } else {
+        provider.release('ui-bridge');
+      }
+      return {
+        success: true,
+        data: { enabled, durationMs: typeof durationMs === 'number' ? durationMs : null },
+        timestamp: Date.now(),
+      };
     };
   }
 
@@ -1349,6 +1392,20 @@ export class NativeUIBridgeServer {
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return { status: 204, headers, body: '' };
+    }
+
+    // Auto-arm: when test hooks are enabled and a keep-awake provider is
+    // wired, every incoming request keeps the screen alive for 60s so an
+    // external runner driving the device never loses it to a screen lock.
+    // Best-effort — must never throw and break the request. This is the
+    // single chokepoint for HTTP, WS-tunnelled, and cloud-relay paths
+    // (CloudRelayClient calls handleRequest directly).
+    if (this.config.testHooks === true && this.keepAwakeProvider) {
+      try {
+        this.keepAwakeProvider.request('auto-arm', 60_000);
+      } catch {
+        /* keep-awake is best-effort; never break a request */
+      }
     }
 
     try {

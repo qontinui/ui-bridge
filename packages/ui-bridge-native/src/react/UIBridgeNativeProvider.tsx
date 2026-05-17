@@ -31,7 +31,7 @@ import {
   type ServerAdapter,
   type WebSocketServerAdapter,
 } from '../server/http-server';
-import type { RouteProvider } from '../server/types';
+import type { RouteProvider, KeepAwakeProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
 import { DeviceAnnouncer } from '../transport/DeviceAnnouncer';
 import { CloudRelayClient, type CloudRelayConfig } from '../transport/CloudRelayClient';
@@ -115,6 +115,13 @@ export interface UIBridgeNativeProviderProps {
     capture: () => Promise<{ base64: string; width: number; height: number }>;
   };
   /**
+   * Keep-awake provider for native screen-wake control via UI Bridge.
+   * Pass expo-keep-awake's activateKeepAwakeAsync/deactivateKeepAwake (wrapped
+   * to the request/release shape) so an external runner never loses the device
+   * to a screen lock. The SDK never imports expo-keep-awake directly.
+   */
+  keepAwakeProvider?: KeepAwakeProvider;
+  /**
    * Route provider for exposing the current navigation route in snapshots.
    * Wire this to Expo Router's `usePathname()` / `useSegments()` via a module-level ref.
    */
@@ -168,6 +175,7 @@ export function UIBridgeNativeProvider({
   serverAdapter,
   navigationProvider,
   screenshotProvider,
+  keepAwakeProvider,
   routeProvider,
   cloudRelayConfig,
   enableMdnsAnnounce,
@@ -247,6 +255,11 @@ export function UIBridgeNativeProvider({
       server.setScreenshotProvider(screenshotProvider);
     }
 
+    // Wire keep-awake provider if supplied
+    if (keepAwakeProvider) {
+      server.setKeepAwakeProvider(keepAwakeProvider);
+    }
+
     // Wire route provider if supplied (must be set AFTER navigationProvider
     // since both may override getSnapshot / pageNavigate handlers)
     if (routeProvider) {
@@ -317,6 +330,7 @@ export function UIBridgeNativeProvider({
     serverAdapter,
     navigationProvider,
     screenshotProvider,
+    keepAwakeProvider,
     routeProvider,
   ]);
 
@@ -367,6 +381,7 @@ export function UIBridgeNativeProvider({
           });
           if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
           if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
+          if (keepAwakeProvider) bareServer.setKeepAwakeProvider(keepAwakeProvider);
           if (routeProvider) bareServer.setRouteProvider(routeProvider);
           serverRef.current = bareServer;
         } catch (err) {

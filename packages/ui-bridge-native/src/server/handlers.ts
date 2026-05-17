@@ -663,6 +663,15 @@ export function createServerHandlers(
       );
     },
 
+    // Keep-awake (stub — apps should override via setKeepAwakeProvider, which
+    // the provider wires when a keepAwakeProvider prop is supplied)
+    keepAwake: async () => {
+      return error(
+        'keep-awake not configured. Provide a keepAwakeProvider to UIBridgeNativeProvider.',
+        'NOT_SUPPORTED'
+      );
+    },
+
     // Meta / Introspection (stub — server constructor overrides with real route table)
     getMethods: async () => {
       return error('Methods introspection not configured', 'NOT_SUPPORTED');

@@ -41,6 +41,12 @@ export interface ScreenshotProvider {
   capture: () => Promise<{ base64: string; width: number; height: number }>;
 }
 
+/** Device keep-awake capability, injected by the host app (expo-keep-awake is mobile-only). */
+export interface KeepAwakeProvider {
+  request(source: string, durationMs?: number): void;
+  release(source: string): void;
+}
+
 /**
  * Route provider for React Native apps.
  *
@@ -540,6 +546,9 @@ export interface NativeServerHandlers {
   // Test hooks — modal stack manipulation
   pushModal: HandlerFunction<PushModalResponse>;
   dismissModal: HandlerFunction<DismissModalResponse>;
+
+  // Test hooks — device keep-awake (screen stays on for the duration)
+  keepAwake: HandlerFunction<{ enabled: boolean; durationMs: number | null }>;
 
   // Health
   health: HandlerFunction<Record<string, unknown>>;

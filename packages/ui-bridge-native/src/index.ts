@@ -162,6 +162,7 @@ export {
   type NativeServerHandlers,
   type NavigationProvider,
   type ScreenshotProvider,
+  type KeepAwakeProvider,
   type RouteProvider,
   type FillFormFieldInput,
   type FillFormFieldResult,
