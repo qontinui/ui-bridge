@@ -5,6 +5,7 @@
  */
 
 import type { UIBridgeConfig, ElementHistoryOptions } from '../core';
+import type { UiBridgeErrorCode } from '../diagnostics';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -145,10 +146,16 @@ export interface APIResponse<T = unknown> {
   success: boolean;
   /** Response data */
   data?: T;
-  /** Error message if failed */
+  /** Error message if failed (human-readable, dual-audience — plan goal #3) */
   error?: string;
-  /** Error code */
-  code?: string;
+  /**
+   * Stable machine-readable diagnostic code. Populated on every
+   * `success: false` response (plan Phase 1 — required on failure;
+   * optional at the type level only because successful responses omit it).
+   * Always a canonical `UiBridgeErrorCode` (mapped from internal/legacy
+   * codes via the diagnostics `mapInternalErrorCode`).
+   */
+  code?: UiBridgeErrorCode;
   /** Request timestamp */
   timestamp: number;
   /** Response metadata (staleness, diagnostics) */

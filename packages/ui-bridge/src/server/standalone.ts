@@ -12,6 +12,7 @@ import type {
   WebSocketMessage,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { mapInternalErrorCode } from '../diagnostics';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
 import { SSEManager } from './sse-handler';
@@ -55,10 +56,11 @@ const DEFAULT_CONFIG: Required<
  * Wrap error in API format
  */
 function wrapError(error: Error | string, code?: string): APIResponse<never> {
+  const message = typeof error === 'string' ? error : error.message;
   return {
     success: false,
-    error: typeof error === 'string' ? error : error.message,
-    code,
+    error: message,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
 }

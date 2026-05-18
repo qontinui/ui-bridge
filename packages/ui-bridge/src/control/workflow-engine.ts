@@ -14,6 +14,21 @@ import type {
   WorkflowEngine,
   ActionExecutor,
 } from './types';
+import type { UiBridgeErrorCode } from '../diagnostics';
+import { buildActionFailureDetails } from '../diagnostics';
+
+/**
+ * Classify a thrown workflow-step error into a canonical diagnostic code.
+ * Deterministic from the error message; defaults to `UB-ACTION-FAILED`.
+ */
+function classifyStepError(message: string): UiBridgeErrorCode {
+  const m = message.toLowerCase();
+  if (m.includes('timeout') || m.includes('timed out')) return 'UB-ACTION-TIMEOUT';
+  if (m.includes('not found')) return 'UB-ELEM-NOT-FOUND';
+  if (m.includes('condition not met')) return 'UB-STATE-NOT-REACHED';
+  if (m.includes('requires') || m.includes('unknown step type')) return 'UB-VALIDATION-ERROR';
+  return 'UB-ACTION-FAILED';
+}
 
 /**
  * Generate a unique run ID
@@ -197,11 +212,17 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
         timestamp: Date.now(),
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const errorCode = classifyStepError(message);
       return {
         stepId: step.id,
         stepType: step.type,
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
+        failureDetails: buildActionFailureDetails(errorCode, message, {
+          context: { stepId: step.id, stepType: step.type },
+          durationMs: performance.now() - startTime,
+        }),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
       };

@@ -12,7 +12,10 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [20.x]
+        # 22.x: LTS that supports `node --experimental-strip-types` so the
+        # diagnostics generator (scripts/gen-diagnostics.ts) runs with no
+        # transpile step in `diagnostics:check`.
+        node-version: [22.x]
 
     steps:
       - uses: actions/checkout@v5
@@ -26,6 +29,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Diagnostics drift check
+        # Re-runs scripts/gen-diagnostics.ts and fails on any drift between
+        # diagnostics/codes.json and the committed TS/Python mirrors. The Rust
+        # mirror lives in qontinui-schemas and is drift-checked by that repo's
+        # own CI (it is not checked out here).
+        run: npm run diagnostics:check
 
       - name: Lint
         run: npm run lint

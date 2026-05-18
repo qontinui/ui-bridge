@@ -16,6 +16,7 @@ import type {
   RenderLogQuery,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { mapInternalErrorCode } from '../diagnostics';
 import type {
   ControlActionRequest,
   ComponentActionRequest,
@@ -43,10 +44,11 @@ export interface NextJSAdapterConfig extends UIBridgeServerConfig {
  * Wrap error in API format
  */
 function wrapError(error: Error | string, code?: string): APIResponse<never> {
+  const message = typeof error === 'string' ? error : error.message;
   return {
     success: false,
-    error: typeof error === 'string' ? error : error.message,
-    code,
+    error: message,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
 }

@@ -67,6 +67,7 @@ import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
 import { getGlobalCtr } from '../ctr/registry';
+import { buildActionFailureDetails } from '../diagnostics';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -922,9 +923,14 @@ export class DefaultActionExecutor implements ActionExecutor {
     try {
       const component = this.registry.getComponent(componentId);
       if (!component) {
+        const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
         return {
           success: false,
-          error: `Component "${componentId}" not found. Components are only available when their page is active.`,
+          error: message,
+          failureDetails: buildActionFailureDetails('UB-ELEM-NOT-FOUND', message, {
+            elementId: componentId,
+            durationMs: performance.now() - startTime,
+          }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -933,9 +939,15 @@ export class DefaultActionExecutor implements ActionExecutor {
 
       const action = component.actions.find((a) => a.id === request.action);
       if (!action) {
+        const message = `Action not found: ${request.action}`;
         return {
           success: false,
-          error: `Action not found: ${request.action}`,
+          error: message,
+          failureDetails: buildActionFailureDetails('UB-UNSUPPORTED-ACTION', message, {
+            elementId: componentId,
+            context: { action: request.action },
+            durationMs: performance.now() - startTime,
+          }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -952,9 +964,15 @@ export class DefaultActionExecutor implements ActionExecutor {
         requestId: request.requestId,
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
+        failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', message, {
+          elementId: componentId,
+          context: { action: request.action },
+          durationMs: performance.now() - startTime,
+        }),
         stack: error instanceof Error ? error.stack : undefined,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),

@@ -13,6 +13,8 @@ import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { SnapshotToastContext } from '../toast/types';
 import type { SnapshotRelationshipContext } from '../relationships/types';
+import type { UiBridgeErrorCode, RecoverySuggestion } from '../diagnostics';
+export type { UiBridgeErrorCode, RecoverySuggestion } from '../diagnostics';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
@@ -951,25 +953,6 @@ export interface FillResult {
 // ============================================================================
 
 /**
- * Machine-readable error codes for action failures
- */
-export type ActionErrorCode =
-  | 'ELEMENT_NOT_FOUND'
-  | 'ELEMENT_NOT_VISIBLE'
-  | 'ELEMENT_NOT_ENABLED'
-  | 'ELEMENT_NOT_INTERACTABLE'
-  | 'ACTION_TIMEOUT'
-  | 'ACTION_REJECTED'
-  | 'STATE_NOT_REACHED'
-  | 'NETWORK_ERROR'
-  | 'PARSE_ERROR'
-  | 'VALIDATION_ERROR'
-  | 'AMBIGUOUS_MATCH'
-  | 'LOW_CONFIDENCE'
-  | 'UNSUPPORTED_ACTION'
-  | 'UNKNOWN_ERROR';
-
-/**
  * Partial element match found during search
  */
 export interface PartialMatch {
@@ -986,25 +969,11 @@ export interface PartialMatch {
 }
 
 /**
- * Suggested recovery action
- */
-export interface RecoveryAction {
-  /** Human-readable suggestion */
-  suggestion: string;
-  /** Optional command to execute */
-  command?: string;
-  /** Confidence score (0-1) */
-  confidence: number;
-  /** Whether the original action can be retried */
-  retryable: boolean;
-}
-
-/**
  * Structured error details for action failures
  */
 export interface ActionFailureDetails {
   /** Machine-readable error code */
-  errorCode: ActionErrorCode;
+  errorCode: UiBridgeErrorCode;
   /** Human-readable error message */
   message: string;
   /** Element ID that was targeted */
@@ -1018,7 +987,7 @@ export interface ActionFailureDetails {
   /** Screenshot context (base64 or URL) */
   screenshotContext?: string;
   /** Suggested recovery actions */
-  suggestedActions: RecoveryAction[];
+  suggestedActions: RecoverySuggestion[];
   /** Whether retrying is recommended */
   retryRecommended: boolean;
   /** Additional context */

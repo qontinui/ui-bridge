@@ -102,7 +102,10 @@ describe('spawnHeadless (Phase 4.1)', () => {
     const resp = await handlers.spawnHeadless({ url: 'http://localhost:3000/' });
     expect(resp.success).toBe(false);
     expect(resp.httpStatus).toBe(503);
-    expect(resp.code).toBe('HEADLESS_SPAWN_DISABLED');
+    // Phase 1 (diagnostic discipline): APIResponse.code is now a canonical
+    // UiBridgeErrorCode. 'HEADLESS_SPAWN_DISABLED' → UB-ACTION-REJECTED.
+    // The prose `error` keeps the human-readable detail (goal #3).
+    expect(resp.code).toBe('UB-ACTION-REJECTED');
     expect(resp.error).toContain('not enabled');
   });
 
@@ -129,7 +132,8 @@ describe('spawnHeadless (Phase 4.1)', () => {
     const resp = await handlers.spawnHeadless({} as never);
     expect(resp.success).toBe(false);
     expect(resp.httpStatus).toBe(400);
-    expect(resp.code).toBe('VALIDATION_ERROR');
+    // Phase 1: canonical APIResponse.code. 'VALIDATION_ERROR' → UB-VALIDATION-ERROR.
+    expect(resp.code).toBe('UB-VALIDATION-ERROR');
     expect(resp.error).toContain('url is required');
   });
 
@@ -140,7 +144,8 @@ describe('spawnHeadless (Phase 4.1)', () => {
     const resp = await handlers.spawnHeadless({ url: 'ftp://example.com/' });
     expect(resp.success).toBe(false);
     expect(resp.httpStatus).toBe(400);
-    expect(resp.code).toBe('VALIDATION_ERROR');
+    // Phase 1: canonical APIResponse.code. 'VALIDATION_ERROR' → UB-VALIDATION-ERROR.
+    expect(resp.code).toBe('UB-VALIDATION-ERROR');
     expect(resp.error).toContain('http://');
   });
 
@@ -156,7 +161,8 @@ describe('spawnHeadless (Phase 4.1)', () => {
     });
     const resp = await handlers.spawnHeadless({ url: 'http://localhost:3000/' });
     expect(resp.success).toBe(false);
-    expect(resp.code).toBe('HEADLESS_LAUNCH_FAILED');
+    // Phase 1: canonical APIResponse.code. 'HEADLESS_LAUNCH_FAILED' → UB-ACTION-FAILED.
+    expect(resp.code).toBe('UB-ACTION-FAILED');
     expect(resp.httpStatus).toBe(500);
     expect(resp.error).toContain('chromium failed to start');
   });
@@ -259,7 +265,8 @@ describe('spawnHeadless (Phase 4.1) — import failure', () => {
       const resp = await handlers.spawnHeadless({ url: 'http://localhost:3000/' });
       expect(resp.success).toBe(false);
       expect(resp.httpStatus).toBe(503);
-      expect(resp.code).toBe('HEADLESS_PEER_MISSING');
+      // Phase 1: canonical APIResponse.code. 'HEADLESS_PEER_MISSING' → UB-UNSUPPORTED-ACTION.
+      expect(resp.code).toBe('UB-UNSUPPORTED-ACTION');
       expect(resp.error).toContain('@qontinui/ui-bridge-headless');
     } finally {
       vi.doUnmock('@qontinui/ui-bridge-headless');

@@ -7,6 +7,7 @@
 import type {
   ActionRequest,
   ActionResponse,
+  ActionFailureDetails,
   ElementState,
   WaitOptions,
   ContentMetadata,
@@ -88,8 +89,15 @@ export interface ComponentActionResponse {
   success: boolean;
   /** Result from the action */
   result?: unknown;
-  /** Error message if failed */
+  /** Error message if failed (human-readable, dual-audience — plan goal #3) */
   error?: string;
+  /**
+   * Structured failure details. Populated on every `success: false` path
+   * (plan Phase 1 — required on failure; optional at the type level only
+   * because successful responses omit it). `errorCode` is a canonical
+   * `UiBridgeErrorCode`; `suggestedActions` is `RecoverySuggestion[]` (D6).
+   */
+  failureDetails?: ActionFailureDetails;
   /** Stack trace if failed */
   stack?: string;
   /** Duration of the action */
@@ -130,8 +138,15 @@ export interface WorkflowStepResult {
   success: boolean;
   /** Step result */
   result?: unknown;
-  /** Error if failed */
+  /** Error if failed (human-readable, dual-audience — plan goal #3) */
   error?: string;
+  /**
+   * Structured failure details. Populated on every `success: false` path
+   * (plan Phase 1 — required on failure; optional at the type level only
+   * because successful steps omit it). `errorCode` is a canonical
+   * `UiBridgeErrorCode`; `suggestedActions` is `RecoverySuggestion[]` (D6).
+   */
+  failureDetails?: ActionFailureDetails;
   /** Duration in milliseconds */
   durationMs: number;
   /** Timestamp when completed */

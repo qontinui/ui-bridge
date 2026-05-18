@@ -18,7 +18,8 @@ import type {
 } from './types';
 import { parseNLInstruction, describeAction, validateParsedAction } from './nl-action-parser';
 import { SearchEngine, type SearchEngineConfig } from './search-engine';
-import { createErrorContext, ErrorCodes } from './error-context';
+import { createErrorContext } from './error-context';
+import type { UiBridgeErrorCode } from '../diagnostics';
 
 /**
  * Configuration for the NL action executor
@@ -88,7 +89,7 @@ export class NLActionExecutor {
     if (!parsed) {
       return this.createFailureResponse(
         startTime,
-        'PARSE_ERROR',
+        'UB-PARSE-ERROR',
         `Could not parse instruction: "${request.instruction}"`,
         request.instruction,
         [],
@@ -101,7 +102,7 @@ export class NLActionExecutor {
     if (!validation.valid) {
       return this.createFailureResponse(
         startTime,
-        'VALIDATION_ERROR',
+        'UB-VALIDATION-ERROR',
         validation.errors.join('; '),
         request.instruction,
         [],
@@ -118,7 +119,7 @@ export class NLActionExecutor {
     if (!searchResponse.bestMatch) {
       return this.createFailureResponse(
         startTime,
-        'ELEMENT_NOT_FOUND',
+        'UB-ELEM-NOT-FOUND',
         `Could not find element matching: "${parsed.targetDescription}"`,
         request.instruction,
         searchResponse.results,
@@ -132,7 +133,7 @@ export class NLActionExecutor {
       const alternatives = searchResponse.results.slice(0, this.config.maxAlternatives);
       return this.createFailureResponse(
         startTime,
-        'LOW_CONFIDENCE',
+        'UB-LOW-CONFIDENCE',
         `Best match confidence (${(searchResponse.bestMatch.confidence * 100).toFixed(0)}%) is below threshold (${(threshold * 100).toFixed(0)}%)`,
         request.instruction,
         alternatives,
@@ -167,7 +168,7 @@ export class NLActionExecutor {
 
       return this.createFailureResponse(
         startTime,
-        'ACTION_FAILED',
+        'UB-ACTION-FAILED',
         errorMessage,
         request.instruction,
         alternatives,
@@ -194,7 +195,7 @@ export class NLActionExecutor {
     if (!searchResponse.bestMatch) {
       return this.createFailureResponse(
         startTime,
-        'ELEMENT_NOT_FOUND',
+        'UB-ELEM-NOT-FOUND',
         `Could not find element: "${parsed.targetDescription}"`,
         parsed.rawInstruction,
         [],
@@ -206,7 +207,7 @@ export class NLActionExecutor {
     if (searchResponse.bestMatch.confidence < confidenceThreshold) {
       return this.createFailureResponse(
         startTime,
-        'LOW_CONFIDENCE',
+        'UB-LOW-CONFIDENCE',
         `Best match confidence too low`,
         parsed.rawInstruction,
         searchResponse.results.slice(0, this.config.maxAlternatives),
@@ -236,7 +237,7 @@ export class NLActionExecutor {
     } catch (error) {
       return this.createFailureResponse(
         startTime,
-        'ACTION_FAILED',
+        'UB-ACTION-FAILED',
         error instanceof Error ? error.message : String(error),
         parsed.rawInstruction,
         searchResponse.results
@@ -402,7 +403,7 @@ export class NLActionExecutor {
    */
   private createFailureResponse(
     startTime: number,
-    errorCode: string,
+    errorCode: UiBridgeErrorCode,
     errorMessage: string,
     instruction: string,
     alternatives: SearchResult[],
@@ -455,7 +456,7 @@ export class NLActionExecutor {
    * Generate recovery suggestions
    */
   private generateSuggestions(
-    errorCode: string,
+    errorCode: UiBridgeErrorCode,
     instruction: string,
     alternatives: SearchResult[],
     nearestMatch?: SearchResult
@@ -463,14 +464,14 @@ export class NLActionExecutor {
     const suggestions: string[] = [];
 
     switch (errorCode) {
-      case 'PARSE_ERROR':
+      case 'UB-PARSE-ERROR':
         suggestions.push('Try using a simpler phrase like "click Submit button"');
         suggestions.push(
           'Ensure the instruction follows patterns like "click X" or "type Y into X"'
         );
         break;
 
-      case 'ELEMENT_NOT_FOUND':
+      case 'UB-ELEM-NOT-FOUND':
         if (alternatives.length > 0) {
           suggestions.push(`Did you mean: "${alternatives[0].element.description}"?`);
         }
@@ -478,7 +479,7 @@ export class NLActionExecutor {
         suggestions.push('Try using a more specific description');
         break;
 
-      case 'LOW_CONFIDENCE':
+      case 'UB-LOW-CONFIDENCE':
         if (nearestMatch) {
           suggestions.push(
             `Found "${nearestMatch.element.description}" with ${(nearestMatch.confidence * 100).toFixed(0)}% confidence`
@@ -488,7 +489,7 @@ export class NLActionExecutor {
         suggestions.push('Lower the confidence threshold if this match is correct');
         break;
 
-      case 'ACTION_FAILED':
+      case 'UB-ACTION-FAILED':
         suggestions.push('Check if the element is enabled');
         suggestions.push('Wait for any loading to complete');
         suggestions.push('Ensure no modal or overlay is blocking the element');
@@ -505,13 +506,13 @@ export class NLActionExecutor {
    * Get rich error context for debugging
    */
   getErrorContext(
-    errorCode: string,
+    errorCode: UiBridgeErrorCode,
     instruction: string,
     searchCriteria?: SearchCriteria,
     nearestMatch?: SearchResult
   ): AIErrorContext {
     return createErrorContext(
-      errorCode as keyof typeof ErrorCodes,
+      errorCode,
       instruction,
       this.elements,
       searchCriteria,

@@ -16,7 +16,6 @@ import {
   AssertionExecutor,
   parseNLInstruction,
   createErrorContext,
-  ErrorCodes,
 } from '@qontinui/ui-bridge/ai';
 import type { AIDiscoveredElement, SearchCriteria, NLActionRequest } from '@qontinui/ui-bridge/ai';
 import type { DiscoveredElement } from '@qontinui/ui-bridge/control';
@@ -686,7 +685,7 @@ describe('Success Criteria 4: Error messages are actionable with suggestions', (
 
   it('should create rich error context with recovery suggestions', () => {
     const errorContext = createErrorContext(
-      'ELEMENT_NOT_FOUND' as keyof typeof ErrorCodes,
+      'UB-ELEM-NOT-FOUND',
       'click the Nonexistent Button',
       testElements,
       { text: 'Nonexistent Button', fuzzy: true },
@@ -701,7 +700,7 @@ describe('Success Criteria 4: Error messages are actionable with suggestions', (
 
     // Suggestions should have actionable descriptions
     for (const suggestion of errorContext.suggestions) {
-      expect(suggestion.action).toBeDefined();
+      expect(suggestion.suggestion).toBeDefined();
       expect(suggestion.confidence).toBeGreaterThanOrEqual(0);
       expect(suggestion.priority).toBeDefined();
     }
@@ -712,7 +711,7 @@ describe('Success Criteria 4: Error messages are actionable with suggestions', (
     const nearestMatch = response.bestMatch;
 
     const errorContext = createErrorContext(
-      'LOW_CONFIDENCE' as keyof typeof ErrorCodes,
+      'UB-LOW-CONFIDENCE',
       'click the Sbumit button',
       testElements,
       { text: 'Sbumit', fuzzy: true },
@@ -730,7 +729,7 @@ describe('Success Criteria 4: Error messages are actionable with suggestions', (
 
   it('should provide page context in error', () => {
     const errorContext = createErrorContext(
-      'ELEMENT_NOT_FOUND' as keyof typeof ErrorCodes,
+      'UB-ELEM-NOT-FOUND',
       'click the Nonexistent Button',
       testElements
     );
@@ -741,7 +740,7 @@ describe('Success Criteria 4: Error messages are actionable with suggestions', (
 
   it('should include timestamp in error context', () => {
     const errorContext = createErrorContext(
-      'ELEMENT_NOT_FOUND' as keyof typeof ErrorCodes,
+      'UB-ELEM-NOT-FOUND',
       'test action',
       testElements
     );

@@ -10,6 +10,7 @@
  */
 
 import type { CommandRelay } from './command-relay';
+import { mapInternalErrorCode } from '../diagnostics';
 import { buildComponentNotFoundError } from './handlers';
 import type {
   UIBridgeServerHandlers,
@@ -55,7 +56,7 @@ function error(message: string, code?: string, suggestions?: string[]): APIRespo
   return {
     success: false,
     error: message,
-    code,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
     ...(suggestions ? { suggestions } : {}),
   };
@@ -1698,7 +1699,7 @@ export function createRelayHandlers(
           'spawn-headless is not supported on the relay transport. ' +
           'Call /control/sdk/spawn-headless against the in-process server ' +
           '(createHandlers) instead.',
-        code: 'HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY',
+        code: mapInternalErrorCode('HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY'),
         timestamp: Date.now(),
         httpStatus: 501,
       };
