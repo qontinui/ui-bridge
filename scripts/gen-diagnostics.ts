@@ -210,11 +210,17 @@ function emitRust(codes: CodeEntry[]): string {
   lines.push('//! `ui-bridge/scripts/gen-diagnostics.ts`. `FromStr` / `From<&str>` match');
   lines.push('//! the canonical `UB-` strings ONLY — there is intentionally no');
   lines.push('//! legacy-bare-string arm (single-user coordinated cutover, plan D1).');
+  lines.push('//!');
+  lines.push('//! Generated artifact: layout is owned by the generator, not `cargo fmt`.');
+  lines.push('//! Each item carries `#[rustfmt::skip]` (stable; file-level `#![rustfmt::skip]`');
+  lines.push('//! is nightly-only) so regen stays byte-stable and decoupled from rustfmt');
+  lines.push('//! line-width drift across toolchain versions.');
   lines.push('#![allow(clippy::all)]');
   lines.push('');
   lines.push('use std::fmt;');
   lines.push('use std::str::FromStr;');
   lines.push('');
+  lines.push('#[rustfmt::skip]');
   lines.push('#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]');
   lines.push('pub enum UiBridgeErrorCode {');
   for (const c of codes) {
@@ -223,6 +229,7 @@ function emitRust(codes: CodeEntry[]): string {
   }
   lines.push('}');
   lines.push('');
+  lines.push('#[rustfmt::skip]');
   lines.push('impl UiBridgeErrorCode {');
   lines.push('    /// The canonical `UB-` wire string for this code.');
   lines.push('    pub fn as_str(&self) -> &\'static str {');
@@ -265,6 +272,7 @@ function emitRust(codes: CodeEntry[]): string {
   lines.push('');
   lines.push('impl std::error::Error for ParseUiBridgeErrorCodeError {}');
   lines.push('');
+  lines.push('#[rustfmt::skip]');
   lines.push('impl FromStr for UiBridgeErrorCode {');
   lines.push('    type Err = ParseUiBridgeErrorCodeError;');
   lines.push('    fn from_str(s: &str) -> Result<Self, Self::Err> {');
@@ -494,7 +502,7 @@ function main(): void {
     writeOut(RUST_OUT, emitRust(codes));
   }
 
-  // eslint-disable-next-line no-console
+   
   console.log(
     `gen-diagnostics: wrote ${codes.length} codes ->\n  ${TS_OUT}\n  ${PY_OUT}\n  ${MD_OUT}` +
       (rustEmitted ? `\n  ${RUST_OUT}` : `\n  (skipped Rust mirror: ${rustSrcDir} absent)`)
