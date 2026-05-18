@@ -13,6 +13,7 @@ import type {
   CORSOptions,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
 
 /**
@@ -86,10 +87,11 @@ function createCORSMiddleware(options: CORSOptions | boolean) {
  * Wrap error in API format
  */
 function wrapError(error: Error | string, code?: string): APIResponse<never> {
+  const message = typeof error === 'string' ? error : error.message;
   return {
     success: false,
-    error: typeof error === 'string' ? error : error.message,
-    code,
+    error: message,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
 }

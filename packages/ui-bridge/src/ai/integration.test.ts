@@ -423,7 +423,7 @@ describe('AI Module Integration: NL Instruction Flow', () => {
       });
 
       expect(response.success).toBe(false);
-      expect(response.errorCode).toBe('ELEMENT_NOT_FOUND');
+      expect(response.errorCode).toBe('UB-ELEM-NOT-FOUND');
     });
   });
 
@@ -494,7 +494,7 @@ describe('AI Module Integration: Error Recovery', () => {
       });
 
       expect(response.success).toBe(false);
-      expect(response.errorCode).toBe('ELEMENT_NOT_FOUND');
+      expect(response.errorCode).toBe('UB-ELEM-NOT-FOUND');
       expect(response.error).toBeDefined();
     });
 
@@ -546,7 +546,7 @@ describe('AI Module Integration: Error Recovery', () => {
       // With such a high threshold, even a partial match should fail
       expect(response.success).toBe(false);
       // Could be either LOW_CONFIDENCE or ELEMENT_NOT_FOUND depending on if any match was found
-      expect(['LOW_CONFIDENCE', 'ELEMENT_NOT_FOUND']).toContain(response.errorCode);
+      expect(['UB-LOW-CONFIDENCE', 'UB-ELEM-NOT-FOUND']).toContain(response.errorCode);
     });
 
     it('should suggest using exact text for low confidence matches', async () => {
@@ -576,7 +576,7 @@ describe('AI Module Integration: Error Recovery', () => {
       });
 
       expect(response.success).toBe(false);
-      expect(response.errorCode).toBe('PARSE_ERROR');
+      expect(response.errorCode).toBe('UB-PARSE-ERROR');
     });
 
     it('should suggest simpler instruction format on parse error', async () => {
@@ -604,7 +604,7 @@ describe('AI Module Integration: Error Recovery', () => {
       });
 
       expect(response.success).toBe(false);
-      expect(response.errorCode).toBe('ACTION_FAILED');
+      expect(response.errorCode).toBe('UB-ACTION-FAILED');
       expect(response.error).toContain('not interactable');
     });
 
@@ -629,13 +629,13 @@ describe('AI Module Integration: Error Recovery', () => {
   describe('Error context generation', () => {
     it('should create rich error context with page state', () => {
       const context = createErrorContext(
-        'ELEMENT_NOT_FOUND',
+        'UB-ELEM-NOT-FOUND',
         'click the Missing button',
         elements,
         { text: 'Missing' }
       );
 
-      expect(context.code).toBe('ELEMENT_NOT_FOUND');
+      expect(context.code).toBe('UB-ELEM-NOT-FOUND');
       expect(context.attemptedAction).toBe('click the Missing button');
       expect(context.searchResults.candidatesFound).toBe(elements.length);
       expect(context.pageContext.visibleElements).toBeGreaterThan(0);
@@ -647,7 +647,7 @@ describe('AI Module Integration: Error Recovery', () => {
       const searchResult = searchEngine.search({ text: 'Submitt' }); // Close match
 
       const context = createErrorContext(
-        'LOW_CONFIDENCE',
+        'UB-LOW-CONFIDENCE',
         'click the Submitt button',
         elements,
         { text: 'Submitt' },
@@ -665,48 +665,48 @@ describe('AI Module Integration: Error Recovery', () => {
         createMockElement('modal-dialog', 'dialog', 'Confirmation Dialog'),
       ];
 
-      const context = createErrorContext('ELEMENT_BLOCKED', 'click Submit', elementsWithDialog);
+      const context = createErrorContext('UB-ELEM-BLOCKED', 'click Submit', elementsWithDialog);
 
       expect(context.pageContext.possibleBlockers.length).toBeGreaterThan(0);
       expect(context.pageContext.possibleBlockers[0]).toContain('dialog');
     });
 
     it('should format error context for display', () => {
-      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Missing', elements);
+      const context = createErrorContext('UB-ELEM-NOT-FOUND', 'click Missing', elements);
 
       const formatted = formatErrorContext(context);
 
-      expect(formatted).toContain('ELEMENT_NOT_FOUND');
+      expect(formatted).toContain('UB-ELEM-NOT-FOUND');
       expect(formatted).toContain('click Missing');
       expect(formatted).toContain('Suggestions');
     });
 
     it('should provide best recovery suggestion', () => {
-      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Missing', elements);
+      const context = createErrorContext('UB-ELEM-NOT-FOUND', 'click Missing', elements);
 
       const bestSuggestion = getBestRecoverySuggestion(context);
 
       expect(bestSuggestion).not.toBeNull();
-      expect(bestSuggestion!.action).toBeDefined();
+      expect(bestSuggestion!.suggestion).toBeDefined();
       expect(bestSuggestion!.confidence).toBeGreaterThan(0);
     });
   });
 
   describe('Recovery suggestions quality', () => {
     it('should suggest waiting for page load on not found', () => {
-      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Loading Button', []);
+      const context = createErrorContext('UB-ELEM-NOT-FOUND', 'click Loading Button', []);
 
       const hasWaitSuggestion = context.suggestions.some((s) =>
-        s.action.toLowerCase().includes('wait')
+        s.suggestion.toLowerCase().includes('wait')
       );
       expect(hasWaitSuggestion).toBe(true);
     });
 
     it('should suggest scrolling when element might be off-screen', () => {
-      const context = createErrorContext('ELEMENT_NOT_FOUND', 'click Bottom Button', elements);
+      const context = createErrorContext('UB-ELEM-NOT-FOUND', 'click Bottom Button', elements);
 
       const hasScrollSuggestion = context.suggestions.some((s) =>
-        s.action.toLowerCase().includes('scroll')
+        s.suggestion.toLowerCase().includes('scroll')
       );
       expect(hasScrollSuggestion).toBe(true);
     });
@@ -717,11 +717,11 @@ describe('AI Module Integration: Error Recovery', () => {
         createMockElement('blocking-modal', 'dialog', 'Blocking Modal'),
       ];
 
-      const context = createErrorContext('ELEMENT_BLOCKED', 'click Submit', elementsWithModal);
+      const context = createErrorContext('UB-ELEM-BLOCKED', 'click Submit', elementsWithModal);
 
       const hasCloseSuggestion = context.suggestions.some(
         (s) =>
-          s.action.toLowerCase().includes('close') || s.action.toLowerCase().includes('blocking')
+          s.suggestion.toLowerCase().includes('close') || s.suggestion.toLowerCase().includes('blocking')
       );
       expect(hasCloseSuggestion).toBe(true);
     });

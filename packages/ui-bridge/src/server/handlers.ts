@@ -54,7 +54,9 @@ import {
   computeVisibleText,
 } from '../core/a11y';
 import type { RenderLogEntry } from '../render-log';
-import type { ActionFailureDetails, ActionErrorCode, FillResult } from '../core';
+import type { ActionFailureDetails, FillResult } from '../core';
+import type { UiBridgeErrorCode } from '../diagnostics';
+import { getRecoverySuggestions, mapInternalErrorCode } from '../diagnostics';
 import type {
   SearchCriteria,
   SearchResponse,
@@ -523,13 +525,18 @@ function success<T>(data: T): APIResponse<T> {
 }
 
 /**
- * Create an error response
+ * Create an error response.
+ *
+ * The optional `code` accepts historical loosely-typed internal strings;
+ * it is mapped to a canonical `UiBridgeErrorCode` via the single-source
+ * diagnostics mapper (plan Phase 1). Prose `message` is retained as the
+ * dual-audience human field (goal #3).
  */
 function error<T = unknown>(message: string, code?: string): APIResponse<T> {
   return {
     success: false,
     error: message,
-    code,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
 }
@@ -578,145 +585,14 @@ export function buildComponentNotFoundError(
 }
 
 /**
- * Generate recovery suggestions based on error code
- */
-function getRecoverySuggestions(errorCode: ActionErrorCode): Array<{
-  suggestion: string;
-  command?: string;
-  confidence: number;
-  retryable: boolean;
-}> {
-  switch (errorCode) {
-    case 'ELEMENT_NOT_FOUND':
-      return [
-        {
-          suggestion: 'Wait for the page to fully load',
-          command: 'wait for page to load',
-          confidence: 0.7,
-          retryable: true,
-        },
-        {
-          suggestion: 'Use a different description for the element',
-          confidence: 0.8,
-          retryable: false,
-        },
-        {
-          suggestion: 'Scroll the page to reveal the element',
-          command: 'scroll down',
-          confidence: 0.6,
-          retryable: true,
-        },
-      ];
-    case 'ELEMENT_NOT_VISIBLE':
-      return [
-        {
-          suggestion: 'Scroll to make the element visible',
-          command: 'scroll to element',
-          confidence: 0.9,
-          retryable: true,
-        },
-        {
-          suggestion: 'Wait for any loading overlays to disappear',
-          confidence: 0.7,
-          retryable: true,
-        },
-        {
-          suggestion: 'Close any blocking modals or popups',
-          command: 'click close button',
-          confidence: 0.8,
-          retryable: true,
-        },
-      ];
-    case 'ELEMENT_NOT_ENABLED':
-      return [
-        { suggestion: 'Fill in required fields first', confidence: 0.8, retryable: false },
-        {
-          suggestion: 'Complete prerequisite steps in the form',
-          confidence: 0.7,
-          retryable: false,
-        },
-        {
-          suggestion: 'Wait for the element to become enabled',
-          command: 'wait for element to be enabled',
-          confidence: 0.6,
-          retryable: true,
-        },
-      ];
-    case 'ELEMENT_NOT_INTERACTABLE':
-      return [
-        {
-          suggestion: 'Close any modal or popup blocking the element',
-          command: 'click close button',
-          confidence: 0.9,
-          retryable: true,
-        },
-        { suggestion: 'Wait for animations to complete', confidence: 0.7, retryable: true },
-        {
-          suggestion: 'Scroll the element into the viewport',
-          command: 'scroll to element',
-          confidence: 0.8,
-          retryable: true,
-        },
-      ];
-    case 'ACTION_TIMEOUT':
-      return [
-        { suggestion: 'Increase the timeout duration', confidence: 0.8, retryable: true },
-        { suggestion: 'Check if the condition can ever be met', confidence: 0.7, retryable: false },
-        {
-          suggestion: 'Verify the page is responding',
-          command: 'check page status',
-          confidence: 0.6,
-          retryable: true,
-        },
-      ];
-    case 'LOW_CONFIDENCE':
-      return [
-        {
-          suggestion: 'Use the exact text shown on the element',
-          confidence: 0.9,
-          retryable: false,
-        },
-        {
-          suggestion: 'Try a different description that more closely matches the element',
-          confidence: 0.8,
-          retryable: false,
-        },
-        {
-          suggestion: 'Lower the confidence threshold if the match is correct',
-          confidence: 0.7,
-          retryable: true,
-        },
-      ];
-    case 'AMBIGUOUS_MATCH':
-      return [
-        {
-          suggestion: 'Be more specific about which element you mean',
-          confidence: 0.9,
-          retryable: false,
-        },
-        {
-          suggestion: 'Include the section or form name in the description',
-          confidence: 0.8,
-          retryable: false,
-        },
-        { suggestion: 'Use the element ID directly', confidence: 0.7, retryable: false },
-      ];
-    default:
-      return [
-        {
-          suggestion: 'Try a different approach or check the page state',
-          confidence: 0.5,
-          retryable: false,
-        },
-      ];
-  }
-}
-
-/**
- * Create structured failure details
+ * Create structured failure details.
+ *
+ * Recovery suggestions come from the single generated diagnostics catalog
+ * (plan D6) via getRecoverySuggestions(); the prior in-file switch + map are
+ * deleted.
  */
 function createFailureDetails(
-  errorCode: ActionErrorCode,
+  errorCode: UiBridgeErrorCode,
   message: string,
   options: {
     elementId?: string;
@@ -725,12 +601,12 @@ function createFailureDetails(
     timeoutMs?: number;
   } = {}
 ): ActionFailureDetails {
-  const retryableErrors: ActionErrorCode[] = [
-    'ELEMENT_NOT_VISIBLE',
-    'ACTION_TIMEOUT',
-    'LOW_CONFIDENCE',
-    'NETWORK_ERROR',
-    'STATE_NOT_REACHED',
+  const retryableErrors: UiBridgeErrorCode[] = [
+    'UB-ELEM-NOT-VISIBLE',
+    'UB-ACTION-TIMEOUT',
+    'UB-LOW-CONFIDENCE',
+    'UB-NET-ERROR',
+    'UB-STATE-NOT-REACHED',
   ];
 
   return {
@@ -1491,7 +1367,7 @@ export function createHandlers(
         const element = registry.getElement(id);
         if (!element) {
           const failureDetails = createFailureDetails(
-            'ELEMENT_NOT_FOUND',
+            'UB-ELEM-NOT-FOUND',
             `Element not found: ${id}`,
             {
               elementId: id,
@@ -1501,7 +1377,7 @@ export function createHandlers(
           return {
             success: false,
             error: `Element not found: ${id}`,
-            code: 'ELEMENT_NOT_FOUND',
+            code: 'UB-ELEM-NOT-FOUND',
             data: { failureDetails } as any,
             timestamp: Date.now(),
           };
@@ -1626,19 +1502,19 @@ export function createHandlers(
             elementState?: unknown;
           };
           // Determine error code based on error message
-          let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
+          let errorCode: UiBridgeErrorCode = 'UB-UNKNOWN-ERROR';
           const errorMsg = actionResult.error?.toLowerCase() || '';
 
           if (errorMsg.includes('not found')) {
-            errorCode = 'ELEMENT_NOT_FOUND';
+            errorCode = 'UB-ELEM-NOT-FOUND';
           } else if (errorMsg.includes('not visible') || errorMsg.includes('hidden')) {
-            errorCode = 'ELEMENT_NOT_VISIBLE';
+            errorCode = 'UB-ELEM-NOT-VISIBLE';
           } else if (errorMsg.includes('disabled') || errorMsg.includes('not enabled')) {
-            errorCode = 'ELEMENT_NOT_ENABLED';
+            errorCode = 'UB-ELEM-NOT-ENABLED';
           } else if (errorMsg.includes('timeout')) {
-            errorCode = 'ACTION_TIMEOUT';
+            errorCode = 'UB-ACTION-TIMEOUT';
           } else if (errorMsg.includes('blocked') || errorMsg.includes('interactable')) {
-            errorCode = 'ELEMENT_NOT_INTERACTABLE';
+            errorCode = 'UB-ELEM-NOT-INTERACTABLE';
           }
 
           const failureDetails = createFailureDetails(
@@ -1703,14 +1579,14 @@ export function createHandlers(
         return success(result) as APIResponse<any>;
       } catch (err) {
         const errorMessage = (err as Error).message;
-        let errorCode: ActionErrorCode = 'UNKNOWN_ERROR';
+        let errorCode: UiBridgeErrorCode = 'UB-UNKNOWN-ERROR';
 
         if (errorMessage.includes('not found')) {
-          errorCode = 'ELEMENT_NOT_FOUND';
+          errorCode = 'UB-ELEM-NOT-FOUND';
         } else if (errorMessage.includes('timeout')) {
-          errorCode = 'ACTION_TIMEOUT';
+          errorCode = 'UB-ACTION-TIMEOUT';
         } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
-          errorCode = 'NETWORK_ERROR';
+          errorCode = 'UB-NET-ERROR';
         }
 
         const failureDetails = createFailureDetails(errorCode, errorMessage, {
@@ -5109,7 +4985,7 @@ export function createHandlers(
         return {
           success: false,
           error: `Request not found: ${id}`,
-          code: 'NOT_FOUND',
+          code: mapInternalErrorCode('NOT_FOUND'),
           timestamp: Date.now(),
         };
       }
@@ -6717,7 +6593,7 @@ export function createHandlers(
             'Headless spawn is not enabled. ' +
             'Set ENABLE_HEADLESS_SPAWN=1 (or pass enableHeadlessSpawn: true ' +
             'to createHandlers / createUIBridgeServer) to enable.',
-          code: 'HEADLESS_SPAWN_DISABLED',
+          code: mapInternalErrorCode('HEADLESS_SPAWN_DISABLED'),
           timestamp: Date.now(),
           httpStatus: 503,
         };
@@ -6730,7 +6606,7 @@ export function createHandlers(
         return {
           success: false,
           error: 'url is required',
-          code: 'VALIDATION_ERROR',
+          code: mapInternalErrorCode('VALIDATION_ERROR'),
           timestamp: Date.now(),
           httpStatus: 400,
         };
@@ -6739,7 +6615,7 @@ export function createHandlers(
         return {
           success: false,
           error: 'url must start with http:// or https://',
-          code: 'VALIDATION_ERROR',
+          code: mapInternalErrorCode('VALIDATION_ERROR'),
           timestamp: Date.now(),
           httpStatus: 400,
         };
@@ -6777,7 +6653,7 @@ export function createHandlers(
             `@qontinui/ui-bridge-headless is not installed. ` +
             `Install it as a peer dependency to enable headless spawn. ` +
             `(import error: ${(importErr as Error).message})`,
-          code: 'HEADLESS_PEER_MISSING',
+          code: mapInternalErrorCode('HEADLESS_PEER_MISSING'),
           timestamp: Date.now(),
           httpStatus: 503,
         };
@@ -6816,7 +6692,7 @@ export function createHandlers(
         return {
           success: false,
           error: (launchErr as Error).message ?? 'Headless launch failed',
-          code: 'HEADLESS_LAUNCH_FAILED',
+          code: mapInternalErrorCode('HEADLESS_LAUNCH_FAILED'),
           timestamp: Date.now(),
           httpStatus: 500,
         };
@@ -6964,7 +6840,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'AI_SEARCH_ERROR',
+          code: mapInternalErrorCode('AI_SEARCH_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -6992,7 +6868,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'AI_FIND_ERROR',
+          code: mapInternalErrorCode('AI_FIND_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7007,7 +6883,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'AI_EXECUTE_ERROR',
+          code: mapInternalErrorCode('AI_EXECUTE_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7025,7 +6901,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'AI_ASSERT_ERROR',
+          code: mapInternalErrorCode('AI_ASSERT_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7043,7 +6919,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'AI_ASSERT_BATCH_ERROR',
+          code: mapInternalErrorCode('AI_ASSERT_BATCH_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7064,7 +6940,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'SEMANTIC_SNAPSHOT_ERROR',
+          code: mapInternalErrorCode('SEMANTIC_SNAPSHOT_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7080,7 +6956,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'SEMANTIC_DIFF_ERROR',
+          code: mapInternalErrorCode('SEMANTIC_DIFF_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }
@@ -7105,7 +6981,7 @@ export function createAIHandlers(
         return {
           success: false,
           error: (err as Error).message,
-          code: 'PAGE_SUMMARY_ERROR',
+          code: mapInternalErrorCode('PAGE_SUMMARY_ERROR', (err as Error).message),
           timestamp: Date.now(),
         };
       }

@@ -7,6 +7,12 @@
 
 import type { ElementState, ElementType, ContentMetadata } from '../core/types';
 import type { DiscoveredElement } from '../control/types';
+import type { RecoverySuggestion, UiBridgeErrorCode } from '../diagnostics';
+
+// Canonical recovery suggestion (D6). Re-exported here so existing
+// `from './types'` import sites keep resolving; the single definition lives in
+// the generated diagnostics catalog.
+export type { RecoverySuggestion } from '../diagnostics';
 
 // ============================================================================
 // Search Types
@@ -314,20 +320,6 @@ export interface PartialMatchInfo {
 }
 
 /**
- * Recovery suggestion for structured failures
- */
-export interface RecoverySuggestionInfo {
-  /** Human-readable suggestion */
-  suggestion: string;
-  /** Machine-executable command (if applicable) */
-  command?: string;
-  /** Confidence that this action will help (0-1) */
-  confidence: number;
-  /** Whether retry with same parameters might help */
-  retryable: boolean;
-}
-
-/**
  * Structured failure information for NL action responses
  */
 export interface StructuredFailureInfo {
@@ -346,7 +338,7 @@ export interface StructuredFailureInfo {
   /** Reference to visual context (screenshot path/id) */
   screenshotContext?: string;
   /** Suggested recovery actions */
-  suggestedActions?: RecoverySuggestionInfo[];
+  suggestedActions?: RecoverySuggestion[];
   /** Whether retry with same parameters might help */
   retryRecommended: boolean;
   /** Additional context data */
@@ -467,8 +459,15 @@ export interface AssertionResult {
   expected: unknown;
   /** Actual value */
   actual: unknown;
-  /** Failure reason if assertion failed */
+  /** Failure reason if assertion failed (human-readable, dual-audience — plan goal #3) */
   failureReason?: string;
+  /**
+   * Stable machine-readable diagnostic code. Populated on every failure path
+   * (`passed: false`) — optional at the type level only because passing
+   * results omit it. One of the `UB-ASSERT-*` codes. Enforced present on
+   * failure by the Phase 1 unit tests.
+   */
+  failureCode?: UiBridgeErrorCode;
   /** Suggestion for fixing the failure */
   suggestion?: string;
   /** Element state at time of assertion */
@@ -1376,19 +1375,8 @@ export interface AIErrorContext {
   timestamp: number;
 }
 
-/**
- * Recovery suggestion for errors
- */
-export interface RecoverySuggestion {
-  /** Human-readable action description */
-  action: string;
-  /** Command to execute (if applicable) */
-  command?: string;
-  /** Confidence that this will help */
-  confidence: number;
-  /** Priority (lower = try first) */
-  priority: number;
-}
+// (Canonical `RecoverySuggestion` is defined in the generated diagnostics
+// catalog and re-exported at the top of this file — D6.)
 
 // ============================================================================
 // Extended RegisteredElement Type

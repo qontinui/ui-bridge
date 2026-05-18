@@ -12,6 +12,7 @@ import type {
   WebSocketMessage,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { mapInternalErrorCode } from './error-mapper';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import type { BridgeEvent } from '@qontinui/ui-bridge';
 
@@ -48,10 +49,11 @@ const DEFAULT_CONFIG: Required<
  * Wrap error in API format
  */
 function wrapError(error: Error | string, code?: string): APIResponse<never> {
+  const message = typeof error === 'string' ? error : error.message;
   return {
     success: false,
-    error: typeof error === 'string' ? error : error.message,
-    code,
+    error: message,
+    code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
 }

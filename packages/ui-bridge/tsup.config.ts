@@ -1,6 +1,11 @@
 import { defineConfig } from 'tsup';
+import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pkg = require('./package.json') as { version: string };
+
+const CONFIG_DIR = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig([
   {
@@ -8,6 +13,7 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'core/index': 'src/core/index.ts',
+      'diagnostics/index': 'src/diagnostics/index.ts',
       'react/index': 'src/react/index.ts',
       'control/index': 'src/control/index.ts',
       'render-log/index': 'src/render-log/index.ts',
@@ -68,6 +74,34 @@ export default defineConfig([
       '@tauri-apps/api',
       '@tauri-apps/api/event',
     ],
+  },
+  {
+    // CLI binary (`npx @qontinui/ui-bridge explain <CODE>`). CJS-only with a
+    // shebang banner so it runs as an executable; DTS not needed for a bin.
+    // `onSuccess` copies the single-source `diagnostics/codes.json` into
+    // `dist/` so the installed package can read the bundled catalog at
+    // runtime (plan Phase 2 — "must read the bundled codes.json").
+    entry: {
+      cli: 'src/cli.ts',
+    },
+    format: ['cjs'],
+    dts: false,
+    splitting: false,
+    sourcemap: true,
+    treeshake: true,
+    banner: { js: '#!/usr/bin/env node' },
+    define: {
+      __SDK_VERSION__: JSON.stringify(pkg.version),
+    },
+    external: ['fs', 'path', 'url'],
+    async onSuccess() {
+      const src = resolve(CONFIG_DIR, '..', '..', 'diagnostics', 'codes.json');
+      const dest = resolve(CONFIG_DIR, 'dist', 'codes.json');
+      if (existsSync(src)) {
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(src, dest);
+      }
+    },
   },
   {
     // Native: DTS disabled (react-native types not available at build time)

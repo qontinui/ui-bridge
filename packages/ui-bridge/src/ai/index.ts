@@ -260,14 +260,16 @@ export type { SnapshotBookmarkEntry } from './bookmarks';
 
 // Error Context
 export {
-  ErrorCodes,
   createErrorContext,
   formatErrorContext,
   createSimpleError,
   isRecoverableError,
   getBestRecoverySuggestion,
+  ERROR_SUGGESTIONS,
+  getRecoverySuggestions,
+  DIAGNOSTICS,
 } from './error-context';
-export type { ErrorCode } from './error-context';
+export type { UiBridgeErrorCode } from './error-context';
 
 // Data Extraction
 export {

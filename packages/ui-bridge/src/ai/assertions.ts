@@ -10,12 +10,92 @@ import type { DiscoveredElement } from '../control/types';
 import type {
   AssertionRequest,
   AssertionResult,
+  AssertionType,
   BatchAssertionRequest,
   BatchAssertionResult,
   SearchCriteria,
   SearchResult,
   AIDiscoveredElement,
 } from './types';
+import type { UiBridgeErrorCode } from '../diagnostics';
+
+/**
+ * Stable `UB-ASSERT-*` diagnostic code for a failed assertion.
+ *
+ * Plan Phase 1 / §2.1: every failed `AssertionResult` carries a machine
+ * code alongside its prose `failureReason`. The mapping is deterministic
+ * from the assertion type and (for element-resolution / timeout failures)
+ * the failure reason text:
+ *
+ * - element could not be resolved / "not found" / "does not exist"
+ *   / related target missing  → `UB-ASSERT-ELEMENT-MISSING`
+ * - timeout / wait failures                                  → `UB-ASSERT-TIMEOUT`
+ * - `visible` `hidden` `enabled` `disabled` `focused`
+ *   `checked` `unchecked` (element-state predicates)          → `UB-ASSERT-VISIBILITY`
+ * - `hasText` `containsText` `hasValue` `attribute` `count`
+ *   (text / value content predicates)                        → `UB-ASSERT-TEXT-MISMATCH`
+ * - `hasClass` `cssProperty` `cssPropertyInSet`
+ *   `cssPropertyRange` `tokenCompliance` `noOverlap`
+ *   `minSpacing` (geometry / style predicates)               → `UB-ASSERT-LAYOUT`
+ *
+ * `UB-ASSERT-CONTRAST` is in the catalog for the dedicated contrast
+ * assertion surface (visual-audit); the AssertionExecutor has no
+ * `contrast` assertion type, so it is not produced here.
+ */
+export function resolveAssertionFailureCode(
+  type: AssertionType,
+  failureReason?: string
+): UiBridgeErrorCode {
+  const reason = (failureReason ?? '').toLowerCase();
+
+  if (
+    reason.includes('not be found') ||
+    reason.includes('not found') ||
+    reason.includes('does not exist') ||
+    reason.includes('exists but should not') ||
+    reason.includes('element could not be found')
+  ) {
+    return 'UB-ASSERT-ELEMENT-MISSING';
+  }
+
+  if (reason.includes('timeout') || reason.includes('timed out')) {
+    return 'UB-ASSERT-TIMEOUT';
+  }
+
+  switch (type) {
+    case 'visible':
+    case 'hidden':
+    case 'enabled':
+    case 'disabled':
+    case 'focused':
+    case 'checked':
+    case 'unchecked':
+      return 'UB-ASSERT-VISIBILITY';
+
+    case 'hasText':
+    case 'containsText':
+    case 'hasValue':
+    case 'attribute':
+    case 'count':
+      return 'UB-ASSERT-TEXT-MISMATCH';
+
+    case 'hasClass':
+    case 'cssProperty':
+    case 'cssPropertyInSet':
+    case 'cssPropertyRange':
+    case 'tokenCompliance':
+    case 'noOverlap':
+    case 'minSpacing':
+      return 'UB-ASSERT-LAYOUT';
+
+    case 'exists':
+    case 'notExists':
+      return 'UB-ASSERT-ELEMENT-MISSING';
+
+    default:
+      return 'UB-ASSERT-ELEMENT-MISSING';
+  }
+}
 import { SearchEngine } from './search-engine';
 import { find } from './find';
 
@@ -99,7 +179,7 @@ export class AssertionExecutor {
       if (searchDetails) {
         result.searchDetails = searchDetails;
       }
-      return result;
+      return this.withFailureCode(result, request.type);
     }
 
     // Execute the assertion based on type
@@ -107,6 +187,21 @@ export class AssertionExecutor {
     // Attach search details to the result
     if (searchDetails) {
       result.searchDetails = searchDetails;
+    }
+    return this.withFailureCode(result, request.type);
+  }
+
+  /**
+   * Ensure a failed assertion result carries a stable `UB-ASSERT-*` code
+   * (plan Phase 1 — required whenever `passed: false`). Passing results are
+   * returned unchanged. Idempotent: an already-set `failureCode` is kept.
+   */
+  private withFailureCode(
+    result: AssertionResult,
+    type: AssertionType
+  ): AssertionResult {
+    if (!result.passed && !result.failureCode) {
+      result.failureCode = resolveAssertionFailureCode(type, result.failureReason);
     }
     return result;
   }

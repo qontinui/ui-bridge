@@ -269,7 +269,9 @@ describe('expectElement (Phase 2.1)', () => {
       state: 'selected',
     });
     expect(resp.success).toBe(false);
-    expect(resp.code).toBe('VALIDATION_ERROR');
+    // Phase 1 (diagnostic discipline): APIResponse.code is canonical now.
+    // 'VALIDATION_ERROR' → UB-VALIDATION-ERROR. Prose `error` unchanged (goal #3).
+    expect(resp.code).toBe('UB-VALIDATION-ERROR');
     expect(resp.error).toContain('invalid state');
   });
 
@@ -281,6 +283,7 @@ describe('expectElement (Phase 2.1)', () => {
       {}
     );
     expect(resp.success).toBe(false);
-    expect(resp.code).toBe('VALIDATION_ERROR');
+    // Phase 1: canonical APIResponse.code. 'VALIDATION_ERROR' → UB-VALIDATION-ERROR.
+    expect(resp.code).toBe('UB-VALIDATION-ERROR');
   });
 });

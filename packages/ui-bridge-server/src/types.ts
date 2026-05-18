@@ -5,6 +5,7 @@
  */
 
 import type { UIBridgeConfig, ElementHistoryOptions } from '@qontinui/ui-bridge/core';
+import type { UiBridgeErrorCode } from '@qontinui/ui-bridge/diagnostics';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -86,10 +87,16 @@ export interface APIResponse<T = unknown> {
   success: boolean;
   /** Response data */
   data?: T;
-  /** Error message if failed */
+  /** Error message if failed (human-readable, dual-audience — plan goal #3) */
   error?: string;
-  /** Error code */
-  code?: string;
+  /**
+   * Stable machine-readable diagnostic code. Populated on every
+   * `success: false` response (plan Phase 1 — required on failure;
+   * optional at the type level only because successful responses omit it).
+   * Always a canonical `UiBridgeErrorCode` (mapped from internal/legacy
+   * codes via `error-mapper.ts`).
+   */
+  code?: UiBridgeErrorCode;
   /** Request timestamp */
   timestamp: number;
   /** Response time in milliseconds (set by server) */
@@ -254,8 +261,18 @@ export interface UIBridgeServerHandlers {
     >
   >;
 
-  // Diagnostics endpoint
+  // Diagnostics endpoint (SDK runtime state — pre-existing)
   getDiagnostics: () => Promise<APIResponse<unknown>>;
+
+  /**
+   * Diagnostic catalog endpoints (plan Phase 2). Read-only, backed by the
+   * single source `diagnostics/codes.json` (via the generated
+   * `@qontinui/ui-bridge/diagnostics` catalog). `getDiagnosticsCatalog`
+   * returns every code (agent bootstrap); `getDiagnosticCode` returns one
+   * code's entry, 404 + canonical `UiBridgeErrorCode` on an unknown code.
+   */
+  getDiagnosticsCatalog: () => Promise<APIResponse<unknown>>;
+  getDiagnosticCode: (code: string) => Promise<APIResponse<unknown>>;
 
   // Navigation adapter endpoints
   getRoutes: () => Promise<APIResponse<Array<{ name: string; path: string }>>>;
@@ -399,8 +416,20 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/page/read-value', handler: 'readValue', bodyRequired: true },
   { method: 'POST', path: '/control/page/find-by-text', handler: 'findByText', bodyRequired: true },
 
-  // Diagnostics
+  // Diagnostics — SDK runtime state (pre-existing)
   { method: 'GET', path: '/diagnostics', handler: 'getDiagnostics' },
+
+  // Diagnostic catalog (plan Phase 2 — read-only, codes.json-backed).
+  // `/diagnostics/catalog` is registered before `/diagnostics/:code` so the
+  // literal segment is not captured as a `:code` param (matters for both the
+  // express Router and the standalone first-match router).
+  { method: 'GET', path: '/diagnostics/catalog', handler: 'getDiagnosticsCatalog' },
+  {
+    method: 'GET',
+    path: '/diagnostics/:code',
+    handler: 'getDiagnosticCode',
+    params: ['code'],
+  },
 
   // Navigation adapter
   { method: 'GET', path: '/control/page/routes', handler: 'getRoutes' },
