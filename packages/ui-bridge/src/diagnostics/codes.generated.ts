@@ -1,5 +1,5 @@
 // @generated from diagnostics/codes.json — do not edit
-/* eslint-disable */
+ 
 
 /**
  * Canonical UI Bridge diagnostic code vocabulary + recovery catalog.
@@ -161,8 +161,8 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       "The page stopped responding",
     ],
     recoveryTemplate: [
-      { suggestion: "Increase the timeout duration", confidence: 0.8, retryable: true, priority: 1 },
-      { suggestion: "Check if the condition can ever be met", confidence: 0.7, retryable: false, priority: 2 },
+      { suggestion: "Increase the timeout duration (the wait gave up after ${waitDurationMs}ms)", confidence: 0.8, retryable: true, priority: 1 },
+      { suggestion: "Check if the condition '${waitCondition}' can ever be met", confidence: 0.7, retryable: false, priority: 2 },
       { suggestion: "Verify the page is responding", command: "check page status", confidence: 0.6, retryable: true, priority: 3 },
     ],
     category: "action",
@@ -277,7 +277,7 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     recoveryTemplate: [
       { suggestion: "Fill in required fields first", confidence: 0.8, retryable: false, priority: 1 },
       { suggestion: "Complete prerequisite steps", confidence: 0.7, retryable: false, priority: 2 },
-      { suggestion: "Wait for the element to become enabled", command: "wait for element to be enabled", confidence: 0.6, retryable: true, priority: 3 },
+      { suggestion: "Wait for '${elementId}' to become enabled", command: "wait for element to be enabled", confidence: 0.6, retryable: true, priority: 3 },
     ],
     category: "element",
   },
@@ -304,9 +304,9 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       "The element is in a different route or tab than the active one",
     ],
     recoveryTemplate: [
-      { suggestion: "Wait for the page to fully load", command: "wait for page to load", confidence: 0.7, retryable: true, priority: 1 },
-      { suggestion: "Use a different description for the element", confidence: 0.8, retryable: false, priority: 2 },
-      { suggestion: "Scroll the page to reveal the element", command: "scroll down", confidence: 0.6, retryable: true, priority: 3 },
+      { suggestion: "Wait for the page to fully load, then look for '${elementId}' again", command: "wait for page to load", confidence: 0.7, retryable: true, priority: 1 },
+      { suggestion: "Use a different description for the element '${elementId}'", confidence: 0.8, retryable: false, priority: 2 },
+      { suggestion: "Scroll the page to reveal '${elementId}'", command: "scroll down", confidence: 0.6, retryable: true, priority: 3 },
     ],
     category: "element",
   },
@@ -334,7 +334,7 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       "The element has zero size or no layout box",
     ],
     recoveryTemplate: [
-      { suggestion: "Scroll to make the element visible", command: "scroll to element", confidence: 0.9, retryable: true, priority: 1 },
+      { suggestion: "Scroll to make '${elementId}' visible", command: "scroll to element", confidence: 0.9, retryable: true, priority: 1 },
       { suggestion: "Close any blocking modals or popups", command: "click close button", confidence: 0.8, retryable: true, priority: 2 },
       { suggestion: "Wait for any loading overlays to disappear", command: "wait for loading", confidence: 0.7, retryable: true, priority: 3 },
     ],
@@ -568,7 +568,7 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       "The element was detached by a parent update",
     ],
     recoveryTemplate: [
-      { suggestion: "Re-find the element", confidence: 0.9, retryable: true, priority: 1 },
+      { suggestion: "Re-find '${elementId}'", confidence: 0.9, retryable: true, priority: 1 },
       { suggestion: "Wait for page to stabilize", command: "wait 1 second", confidence: 0.7, retryable: true, priority: 2 },
     ],
     category: "element",

@@ -857,8 +857,16 @@ export interface ActionResponse {
   elementState?: ElementState;
   /** Result of the action (for custom actions) */
   result?: unknown;
-  /** Error message if failed */
+  /** Error message if failed (human-readable, dual-audience — plan goal #3) */
   error?: string;
+  /**
+   * Structured failure details. Populated on every sync `success: false`
+   * path (plan Phase 3 — required on failure; optional at the type level
+   * only because successful responses omit it). `errorCode` is a canonical
+   * `UiBridgeErrorCode`; `suggestedActions` is `RecoverySuggestion[]` (D6),
+   * context-rendered from the catalog `recoveryTemplate`.
+   */
+  failureDetails?: ActionFailureDetails;
   /** Stack trace if failed */
   stack?: string;
   /** Duration of the action in milliseconds */
@@ -996,6 +1004,40 @@ export interface ActionFailureDetails {
   durationMs?: number;
   /** Timeout that was configured in milliseconds */
   timeoutMs?: number;
+  /**
+   * Why the element was disabled (set on disabled-signal failure paths).
+   * `native` = the element's `disabled` DOM property/attribute is set;
+   * `aria` = `aria-disabled="true"` without a native disabled property;
+   * `pointer-none` = effective `pointer-events: none` blocks interaction.
+   * Precedence when several apply: native > aria > pointer-none.
+   */
+  disabledReason?: 'native' | 'aria' | 'pointer-none';
+  /**
+   * Why the element was not visible (set on visibility failure paths).
+   * `hidden` = display:none / visibility:hidden / zero opacity;
+   * `off-screen` = laid out but entirely outside the viewport;
+   * `occluded` = covered by another element at its center point;
+   * `no-layout` = no layout box (zero-size / detached from layout).
+   */
+  visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+  /**
+   * Why the element reference was stale (set on stale-element paths).
+   * `unmounted` = the owning component unmounted;
+   * `rerendered` = a re-render replaced the node;
+   * `detached` = the node was detached from the document.
+   */
+  staleReason?: 'unmounted' | 'rerendered' | 'detached';
+  /** The wait condition that was being awaited when a timeout occurred. */
+  waitCondition?: string;
+  /** Milliseconds waited before the wait condition timed out. */
+  waitTimedOutAfterMs?: number;
+  /**
+   * The kind of timeout that occurred (set on timeout paths where
+   * determinable). `network` = an in-flight request did not resolve;
+   * `navigation` = a page navigation did not complete;
+   * `computation` = a JS/render condition never became true.
+   */
+  timeoutType?: 'network' | 'navigation' | 'computation';
 }
 
 // ============================================================================

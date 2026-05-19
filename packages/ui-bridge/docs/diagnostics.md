@@ -127,8 +127,8 @@ The action timed out waiting for a condition to be met.
 
 ### Default recovery template
 
-- **Increase the timeout duration** — confidence: 0.8, retryable: yes, priority: 1
-- **Check if the condition can ever be met** — confidence: 0.7, retryable: no, priority: 2
+- **Increase the timeout duration (the wait gave up after ${waitDurationMs}ms)** — confidence: 0.8, retryable: yes, priority: 1
+- **Check if the condition '${waitCondition}' can ever be met** — confidence: 0.7, retryable: no, priority: 2
 - **Verify the page is responding** — command: `check page status`, confidence: 0.6, retryable: yes, priority: 3
 
 ### See also
@@ -315,7 +315,7 @@ The element is disabled and cannot be interacted with.
 
 - **Fill in required fields first** — confidence: 0.8, retryable: no, priority: 1
 - **Complete prerequisite steps** — confidence: 0.7, retryable: no, priority: 2
-- **Wait for the element to become enabled** — command: `wait for element to be enabled`, confidence: 0.6, retryable: yes, priority: 3
+- **Wait for '${elementId}' to become enabled** — command: `wait for element to be enabled`, confidence: 0.6, retryable: yes, priority: 3
 
 ### See also
 
@@ -358,9 +358,9 @@ No element matching the target description or selector could be found.
 
 ### Default recovery template
 
-- **Wait for the page to fully load** — command: `wait for page to load`, confidence: 0.7, retryable: yes, priority: 1
-- **Use a different description for the element** — confidence: 0.8, retryable: no, priority: 2
-- **Scroll the page to reveal the element** — command: `scroll down`, confidence: 0.6, retryable: yes, priority: 3
+- **Wait for the page to fully load, then look for '${elementId}' again** — command: `wait for page to load`, confidence: 0.7, retryable: yes, priority: 1
+- **Use a different description for the element '${elementId}'** — confidence: 0.8, retryable: no, priority: 2
+- **Scroll the page to reveal '${elementId}'** — command: `scroll down`, confidence: 0.6, retryable: yes, priority: 3
 
 ### See also
 
@@ -404,7 +404,7 @@ The element exists in the DOM but is not currently visible.
 
 ### Default recovery template
 
-- **Scroll to make the element visible** — command: `scroll to element`, confidence: 0.9, retryable: yes, priority: 1
+- **Scroll to make '${elementId}' visible** — command: `scroll to element`, confidence: 0.9, retryable: yes, priority: 1
 - **Close any blocking modals or popups** — command: `click close button`, confidence: 0.8, retryable: yes, priority: 2
 - **Wait for any loading overlays to disappear** — command: `wait for loading`, confidence: 0.7, retryable: yes, priority: 3
 
@@ -790,7 +790,7 @@ The element reference is no longer attached to the DOM.
 
 ### Default recovery template
 
-- **Re-find the element** — confidence: 0.9, retryable: yes, priority: 1
+- **Re-find '${elementId}'** — confidence: 0.9, retryable: yes, priority: 1
 - **Wait for page to stabilize** — command: `wait 1 second`, confidence: 0.7, retryable: yes, priority: 2
 
 ### See also
