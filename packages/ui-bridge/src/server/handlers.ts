@@ -4052,8 +4052,29 @@ export function createHandlers(
         const strategiesAttempted: string[] = [];
         let lastResult: NLActionResponse | undefined;
 
-        // Try recovery strategies based on the failure info
-        const suggestions = request.failure.suggestedActions ?? [];
+        // Try recovery strategies based on the failure info.
+        //
+        // Order deterministically so a sync failure's catalog-rendered
+        // `suggestedActions[]` (Phase 3 — canonical `RecoverySuggestion[]`,
+        // no NL roundtrip) drives an executable command first: prefer
+        // `retryable` entries that carry a `command`, highest `confidence`
+        // first, then lower `priority` number, before falling back to
+        // non-command / non-retryable advice. Stable for equal keys.
+        const suggestions = [...(request.failure.suggestedActions ?? [])]
+          .map((s, idx) => ({ s, idx }))
+          .sort((a, b) => {
+            const aExec = a.s.retryable && !!a.s.command ? 1 : 0;
+            const bExec = b.s.retryable && !!b.s.command ? 1 : 0;
+            if (aExec !== bExec) return bExec - aExec;
+            const aConf = a.s.confidence ?? 0;
+            const bConf = b.s.confidence ?? 0;
+            if (aConf !== bConf) return bConf - aConf;
+            const aPri = a.s.priority ?? Number.MAX_SAFE_INTEGER;
+            const bPri = b.s.priority ?? Number.MAX_SAFE_INTEGER;
+            if (aPri !== bPri) return aPri - bPri;
+            return a.idx - b.idx;
+          })
+          .map((x) => x.s);
 
         for (let i = 0; i < Math.min(suggestions.length, request.maxRetries); i++) {
           const suggestion = suggestions[i];

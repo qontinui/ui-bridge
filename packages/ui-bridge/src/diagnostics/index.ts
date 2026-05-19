@@ -35,17 +35,79 @@ export const ERROR_SUGGESTIONS: Record<UiBridgeErrorCode, RecoverySuggestion[]> 
   ) as Record<UiBridgeErrorCode, RecoverySuggestion[]>;
 
 /**
+ * Context map used to render `${key}` placeholders inside recovery templates.
+ * Values are coerced to strings at substitution time; `undefined`/`null`
+ * entries leave their placeholder untouched (treated as "unknown key").
+ */
+export type RecoveryRenderContext = Record<
+  string,
+  string | number | boolean | null | undefined
+>;
+
+const PLACEHOLDER_RE = /\$\{([^}]+)\}/g;
+
+/**
+ * Substitute `${key}` placeholders in a template string from a context map.
+ *
+ * - Any `${key}` present (and non-nullish) in `context` is replaced with its
+ *   stringified value (at minimum `${elementId}` / `${waitDurationMs}`, but
+ *   any key is supported).
+ * - Unknown placeholders (key absent, or value `undefined`/`null`) are left
+ *   **verbatim** and nothing is logged (per Phase 3 spec).
+ */
+function renderTemplateString(
+  template: string,
+  context: RecoveryRenderContext
+): string {
+  if (template.indexOf('${') === -1) return template;
+  return template.replace(PLACEHOLDER_RE, (whole, key: string) => {
+    const value = context[key];
+    if (value === undefined || value === null) return whole;
+    return String(value);
+  });
+}
+
+/**
+ * Render a single recovery suggestion's `suggestion` and `command` strings
+ * against a failure-context map, returning a fresh object (never mutates the
+ * catalog entry).
+ */
+function renderSuggestion(
+  suggestion: RecoverySuggestion,
+  context: RecoveryRenderContext
+): RecoverySuggestion {
+  const rendered: RecoverySuggestion = {
+    ...suggestion,
+    suggestion: renderTemplateString(suggestion.suggestion, context),
+  };
+  if (suggestion.command !== undefined) {
+    rendered.command = renderTemplateString(suggestion.command, context);
+  }
+  return rendered;
+}
+
+/**
  * Generate recovery suggestions for an error code.
  *
  * Replaces the duplicated `getRecoverySuggestions()` switch statements in
  * `server/handlers.ts` and `ui-bridge-server/handlers.ts` (D6 — one source).
  * Unknown codes fall back to the generic `UB-UNKNOWN-ERROR` template.
+ *
+ * When `context` is supplied, every `${key}` placeholder in each suggestion's
+ * `suggestion`/`command` is substituted from it (Phase 3 — sync failure paths
+ * pass `${elementId}` / `${waitDurationMs}` / etc.). Unknown placeholders are
+ * left untouched. Without `context` the static catalog template is returned
+ * (defensive copy).
  */
 export function getRecoverySuggestions(
-  errorCode: UiBridgeErrorCode
+  errorCode: UiBridgeErrorCode,
+  context?: RecoveryRenderContext
 ): RecoverySuggestion[] {
   const entry = DIAGNOSTICS[errorCode] ?? DIAGNOSTICS['UB-UNKNOWN-ERROR'];
-  return entry.recoveryTemplate.map((r) => ({ ...r }));
+  if (!context) {
+    return entry.recoveryTemplate.map((r) => ({ ...r }));
+  }
+  return entry.recoveryTemplate.map((r) => renderSuggestion(r, context));
 }
 
 /**
@@ -73,6 +135,13 @@ export interface BuiltActionFailureDetails {
   context?: Record<string, unknown>;
   durationMs?: number;
   timeoutMs?: number;
+  /** Typed-reason discriminators (Phase 3) — mirror `ActionFailureDetails`. */
+  disabledReason?: 'native' | 'aria' | 'pointer-none';
+  visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+  staleReason?: 'unmounted' | 'rerendered' | 'detached';
+  waitCondition?: string;
+  waitTimedOutAfterMs?: number;
+  timeoutType?: 'network' | 'navigation' | 'computation';
 }
 
 /**
@@ -167,16 +236,41 @@ export function buildActionFailureDetails(
     context?: Record<string, unknown>;
     durationMs?: number;
     timeoutMs?: number;
+    /**
+     * Failure-context map for rendering `${...}` placeholders in the catalog
+     * recovery templates (Phase 3). `elementId` is auto-merged in when set.
+     */
+    renderContext?: RecoveryRenderContext;
+    /** Typed-reason discriminators (Phase 3). */
+    disabledReason?: 'native' | 'aria' | 'pointer-none';
+    visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+    staleReason?: 'unmounted' | 'rerendered' | 'detached';
+    waitCondition?: string;
+    waitTimedOutAfterMs?: number;
+    timeoutType?: 'network' | 'navigation' | 'computation';
   } = {}
 ): BuiltActionFailureDetails {
+  // The element id is always a valid `${elementId}` substitution source even
+  // when the caller didn't pass an explicit renderContext.
+  const renderContext: RecoveryRenderContext | undefined =
+    options.renderContext || options.elementId !== undefined
+      ? { elementId: options.elementId, ...options.renderContext }
+      : undefined;
+
   return {
     errorCode,
     message,
     elementId: options.elementId,
-    suggestedActions: getRecoverySuggestions(errorCode),
+    suggestedActions: getRecoverySuggestions(errorCode, renderContext),
     retryRecommended: isRetryRecommended(errorCode),
     context: options.context,
     durationMs: options.durationMs,
     timeoutMs: options.timeoutMs,
+    disabledReason: options.disabledReason,
+    visibilityReason: options.visibilityReason,
+    staleReason: options.staleReason,
+    waitCondition: options.waitCondition,
+    waitTimedOutAfterMs: options.waitTimedOutAfterMs,
+    timeoutType: options.timeoutType,
   };
 }

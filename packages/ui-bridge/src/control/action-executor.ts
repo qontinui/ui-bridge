@@ -378,6 +378,87 @@ class ElementDisabledError extends Error {
 }
 
 /**
+ * Why a click-like action's visibility pre-check refused the element.
+ * Maps 1:1 onto `ActionFailureDetails.visibilityReason`.
+ */
+type VisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+
+/**
+ * Inspect a click-like target for the "visible enough to interact" signals.
+ * Returns `null` when the element is interactable; otherwise the specific
+ * `VisibilityReason`.
+ *
+ * Detection is **signal-driven, not measurement-driven**: it keys off
+ * environment-independent CSS facts (`display:none`,
+ * `visibility:hidden|collapse`, an ancestor `display:none` collapsing
+ * `offsetParent`) rather than `getBoundingClientRect()` geometry. jsdom (the
+ * test environment) returns an all-zero rect *and* a zero viewport for every
+ * element regardless of CSS, so any rect/viewport heuristic would
+ * false-positive on every element. Real browsers honour the CSS facts used
+ * here, so the check is meaningful in production without being a no-op or a
+ * jsdom landmine. Occlusion (`occluded`) needs an `elementFromPoint`
+ * hit-test that is unreliable mid-animation and is intentionally not probed
+ * here; it remains a valid discriminator populated by other paths.
+ * Precedence: hidden > no-layout > off-screen.
+ */
+function getClickVisibilityReason(element: HTMLElement): VisibilityReason | null {
+  let style: CSSStyleDeclaration;
+  try {
+    style = window.getComputedStyle(element);
+  } catch {
+    // Without computed style we cannot make a confident call — don't block.
+    return null;
+  }
+
+  // display:none / visibility:hidden|collapse — the strongest, fully
+  // portable hiddenness signals (jsdom honours these via getComputedStyle).
+  if (style.display === 'none') return 'hidden';
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') {
+    return 'hidden';
+  }
+
+  // A zero-size box is `no-layout` — but ONLY when the environment actually
+  // computes layout. jsdom returns an all-zero rect for every element
+  // regardless of CSS, so a bare `width===0` test would false-positive
+  // universally. Gate on an explicit, environment-independent zero-size CSS
+  // declaration instead of the measured rect.
+  const w = element.style.width;
+  const h = element.style.height;
+  if (w === '0px' || w === '0' || h === '0px' || h === '0') {
+    return 'no-layout';
+  }
+
+  // Explicit off-screen positioning via inline style (a common "visually
+  // hide" technique, e.g. left:-9999px). Only inspects the inline style so
+  // it is deterministic and environment-independent.
+  const inline = element.style;
+  const offsetLeft = parseFloat(inline.left || '');
+  const offsetTop = parseFloat(inline.top || '');
+  if (
+    (inline.position === 'absolute' || inline.position === 'fixed') &&
+    ((Number.isFinite(offsetLeft) && offsetLeft <= -9999) ||
+      (Number.isFinite(offsetTop) && offsetTop <= -9999))
+  ) {
+    return 'off-screen';
+  }
+
+  return null;
+}
+
+/**
+ * Error subclass carrying the visibility discriminator out through the
+ * throw → catch path in `executeAction`, mirroring `ElementDisabledError`.
+ */
+class ElementNotVisibleError extends Error {
+  readonly visibilityReason: VisibilityReason;
+  constructor(message: string, visibilityReason: VisibilityReason) {
+    super(message);
+    this.name = 'ElementNotVisibleError';
+    this.visibilityReason = visibilityReason;
+  }
+}
+
+/**
  * Sleep for a duration
  */
 function sleep(ms: number): Promise<void> {
@@ -659,9 +740,15 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       if (!registered?.customActions?.[actionName] && !isCtrTarget) {
+        const message = `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`;
         return {
           success: false,
-          error: `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`,
+          error: message,
+          failureDetails: buildActionFailureDetails('UB-UNSUPPORTED-ACTION', message, {
+            elementId,
+            context: { action: actionName },
+            durationMs: performance.now() - startTime,
+          }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -723,16 +810,33 @@ export class DefaultActionExecutor implements ActionExecutor {
         const wasRegistered = this.registry.getElement(elementId);
         const wasInCache = this.discoveryCache.has(elementId);
         let hint: string;
+        // When the element *was* known to us but is gone, this is a stale
+        // reference rather than a never-existed miss — report it as
+        // UB-STALE-ELEMENT with the matching `staleReason` discriminator so
+        // the runner can re-find instead of re-describing.
+        let errorCode: import('../diagnostics').UiBridgeErrorCode =
+          'UB-ELEM-NOT-FOUND';
+        let staleReason: 'unmounted' | 'rerendered' | 'detached' | undefined;
         if (wasRegistered && !wasRegistered.element?.isConnected) {
           hint = `Element '${elementId}' was registered but is no longer in the DOM (component may have unmounted). Try re-discovering with find() or navigate to the page containing this element.`;
+          errorCode = 'UB-STALE-ELEMENT';
+          staleReason = 'unmounted';
         } else if (wasInCache) {
           hint = `Element '${elementId}' was previously discovered but its DOM node was detached. Run find() again to get a fresh reference.`;
+          errorCode = 'UB-STALE-ELEMENT';
+          staleReason = 'detached';
         } else {
           hint = `Element '${elementId}' was never registered or discovered. Check the ID is correct, ensure the page containing it is mounted, or use find()/discover() to locate it first.`;
         }
+        const message = `Element not found: ${elementId}. ${hint}`;
         return {
           success: false,
-          error: `Element not found: ${elementId}. ${hint}`,
+          error: message,
+          failureDetails: buildActionFailureDetails(errorCode, message, {
+            elementId,
+            staleReason,
+            durationMs: performance.now() - startTime,
+          }),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -744,9 +848,40 @@ export class DefaultActionExecutor implements ActionExecutor {
         const waitResult = await this.waitForElement(element, request.waitOptions);
         waitDurationMs = waitResult.waitedMs;
         if (!waitResult.met) {
+          const message = waitResult.error || 'Wait condition not met';
+          // Describe the awaited condition for the discriminator + template.
+          const wo = request.waitOptions;
+          const conds: string[] = [];
+          if (wo.visible) conds.push('visible');
+          if (wo.enabled) conds.push('enabled');
+          if (wo.focused) conds.push('focused');
+          if (wo.state) {
+            for (const [k, v] of Object.entries(wo.state)) {
+              conds.push(`${k}=${String(v)}`);
+            }
+          }
+          const waitCondition =
+            conds.length > 0 ? conds.join(', ') : 'element condition';
+          const roundedWait = Math.round(waitDurationMs);
           return {
             success: false,
-            error: waitResult.error || 'Wait condition not met',
+            error: message,
+            failureDetails: buildActionFailureDetails(
+              'UB-ACTION-TIMEOUT',
+              message,
+              {
+                elementId,
+                waitCondition,
+                waitTimedOutAfterMs: roundedWait,
+                timeoutType: 'computation',
+                timeoutMs: wo.timeout,
+                durationMs: performance.now() - startTime,
+                renderContext: {
+                  waitDurationMs: roundedWait,
+                  waitCondition,
+                },
+              }
+            ),
             durationMs: performance.now() - startTime,
             timestamp: Date.now(),
             requestId: request.requestId,
@@ -889,6 +1024,8 @@ export class DefaultActionExecutor implements ActionExecutor {
       // `getElementState` snapshot already exposes `enabled` and
       // `computedStyles.pointerEvents`, so no separate field is needed.
       let elementState: ElementState | undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      let failureDetails;
       if (error instanceof ElementDisabledError) {
         try {
           const reg = this.registry.getElement(elementId);
@@ -897,10 +1034,53 @@ export class DefaultActionExecutor implements ActionExecutor {
         } catch {
           // Best-effort — never let snapshot failure mask the original error.
         }
+        // Precedence: native > aria > pointer-none (a native `disabled`
+        // property is the strongest, most actionable signal).
+        const sig = error.elementState;
+        const disabledReason: 'native' | 'aria' | 'pointer-none' =
+          sig.nativeDisabled
+            ? 'native'
+            : sig.ariaDisabled
+              ? 'aria'
+              : 'pointer-none';
+        failureDetails = buildActionFailureDetails('UB-ELEM-DISABLED', message, {
+          elementId,
+          disabledReason,
+          context: {
+            ariaDisabled: sig.ariaDisabled,
+            nativeDisabled: sig.nativeDisabled,
+            pointerEvents: sig.pointerEvents,
+          },
+          durationMs: performance.now() - startTime,
+        });
+      } else if (error instanceof ElementNotVisibleError) {
+        try {
+          const reg = this.registry.getElement(elementId);
+          const el = reg?.element ?? findElementByIdentifier(elementId);
+          if (el) elementState = getElementState(el);
+        } catch {
+          // Best-effort snapshot — never mask the original error.
+        }
+        failureDetails = buildActionFailureDetails(
+          'UB-ELEM-NOT-VISIBLE',
+          message,
+          {
+            elementId,
+            visibilityReason: error.visibilityReason,
+            durationMs: performance.now() - startTime,
+          }
+        );
+      } else {
+        failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+          elementId,
+          context: { action: request.action },
+          durationMs: performance.now() - startTime,
+        });
       }
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
+        failureDetails,
         stack: error instanceof Error ? error.stack : undefined,
         elementState,
         durationMs: performance.now() - startTime,
@@ -1485,6 +1665,18 @@ export class DefaultActionExecutor implements ActionExecutor {
     // effective no-op (the failure mode Phase 3.4's `expectChange` was
     // designed to surface from the observability side).
     if (CLICK_LIKE_ACTIONS.has(action)) {
+      // Visibility pre-check first: an element that is not visible cannot be
+      // meaningfully clicked, and "make it visible" (scroll/close overlay) is
+      // a higher-yield recovery than the disabled-state guidance. Surfacing
+      // UB-ELEM-NOT-VISIBLE here means the runner gets the scroll/reveal
+      // recovery command instead of a transport-success no-op.
+      const visibilityReason = getClickVisibilityReason(element);
+      if (visibilityReason) {
+        throw new ElementNotVisibleError(
+          `element is not visible (${visibilityReason}); click was not dispatched`,
+          visibilityReason
+        );
+      }
       const signals = getClickDisabledSignals(element);
       if (signals) {
         const reasons: string[] = [];

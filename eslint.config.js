@@ -14,6 +14,12 @@ export default tseslint.config(
       '**/*.mjs',
       '**/*.cjs',
       'eslint.config.js',
+      // Generated artifacts — owned by scripts/gen-diagnostics.ts, not the
+      // linter. ESLint --fix was stripping the generator's /* eslint-disable */
+      // directive, desyncing the committed file from generator output and
+      // failing the diagnostics:check drift gate. Same principle as the Rust
+      // mirror's #[rustfmt::skip] (plan D-series).
+      '**/diagnostics/codes.generated.ts',
     ],
   },
 
