@@ -1,5 +1,5 @@
 // @generated from diagnostics/codes.json — do not edit
- 
+/* eslint-disable */
 
 /**
  * Canonical UI Bridge diagnostic code vocabulary + recovery catalog.
