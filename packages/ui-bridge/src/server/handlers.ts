@@ -27,6 +27,7 @@ import type {
 } from './types';
 import type {
   ControlSnapshot,
+  DiscoveredElement,
   FindRequest,
   PageNavigateRequest,
   PageNavigationResponse,
@@ -36,6 +37,7 @@ import type {
   BatchActionRequest,
   BatchActionResponse,
 } from '../control';
+import { diagnosePageHealth } from './page-health';
 import {
   scanDOMForInteractiveElements,
   countDOMInteractiveElements,
@@ -5182,6 +5184,31 @@ export function createHandlers(
         });
       } catch (err) {
         return error((err as Error).message, 'STATE_SUMMARY_ERROR');
+      }
+    },
+
+    // =========================================================================
+    // Page Health Diagnostics
+    // =========================================================================
+
+    /**
+     * `/control/page-health` — port of the runner's page-health analyzer
+     * (qontinui-runner src-tauri/src/mcp/ui_bridge/screenshots.rs::
+     * ui_bridge_page_health_handler) running over the SDK-side snapshot.
+     *
+     * Pure data analysis over the registry's elements; no Tauri-specific
+     * calls. The output shape mirrors the runner's response byte-for-byte
+     * so the page-health skill works identically regardless of transport.
+     */
+    pageHealth: async () => {
+      try {
+        const snapshot = registry.createSnapshot();
+        const report = diagnosePageHealth(
+          (snapshot.elements ?? []) as DiscoveredElement[]
+        );
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_HEALTH_ERROR');
       }
     },
 

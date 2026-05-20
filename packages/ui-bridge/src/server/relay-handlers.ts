@@ -27,6 +27,7 @@ import type {
   FindResponse,
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
+import { diagnosePageHealth } from './page-health';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
@@ -1469,6 +1470,30 @@ export function createRelayHandlers(
         route: snapshot.route ?? null,
         activeTab: snapshot.activeTab ?? null,
       });
+    },
+
+    // ========================================================================
+    // Page Health Diagnostics
+    // ========================================================================
+    //
+    // Pure data-over-snapshot analyzer (mirrors the runner's
+    // `/control/page-health` handler step-for-step). The relay variant
+    // computes the report server-side from the cached snapshot — no extra
+    // round-trip to the browser tab is required because every input
+    // (`state.visible`, `state.normalizedRect`, `category`, `classes`,
+    // `state.textContent`) already lives in the snapshot relay maintains.
+
+    async pageHealth() {
+      try {
+        const snapshot = latestControlSnapshot as ControlSnapshot;
+        const elements = (snapshot?.elements ?? []) as Parameters<
+          typeof diagnosePageHealth
+        >[0];
+        const report = diagnosePageHealth(elements);
+        return success(report);
+      } catch (err) {
+        return error((err as Error).message, 'PAGE_HEALTH_ERROR');
+      }
     },
 
     // ========================================================================

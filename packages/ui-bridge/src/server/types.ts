@@ -23,6 +23,7 @@ import type {
   FillFormRequest,
 } from '../control';
 import type { FillResult } from '../core/types';
+import type { PageHealthReport } from './page-health';
 import type { RenderLogEntry, RenderLogEntryType } from '../render-log';
 import type {
   SearchCriteria,
@@ -828,6 +829,13 @@ export interface UIBridgeServerHandlers {
     request: SpawnHeadlessRequest
   ) => Promise<APIResponse<SpawnHeadlessResponse>>;
 
+  // Page health diagnostics — runs the same spatial-coverage / layout /
+  // text-signal heuristics as the runner's `/control/page-health` analyzer
+  // (qontinui-runner src-tauri/src/mcp/ui_bridge/screenshots.rs) but
+  // server-side over the current snapshot. Pure data-over-elements; no
+  // browser context required beyond a relayed snapshot.
+  pageHealth: () => Promise<APIResponse<PageHealthReport>>;
+
   // API discovery
   getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
 
@@ -1291,6 +1299,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // console-errors + idle-status. One call instead of five.
   { method: 'GET', path: '/control/state-summary', handler: 'getStateSummary' },
 
+  // Page health diagnostics — runs the spatial-coverage / layout / text-
+  // signal heuristics defined in `./page-health.ts`. Byte-equivalent output
+  // shape to the runner's `/control/page-health` handler so the page-health
+  // skill (.claude/skills/page-health/SKILL.md) sees identical payloads
+  // regardless of transport. POST (matches runner) — body reserved for
+  // future per-check toggles (currently ignored).
+  { method: 'POST', path: '/control/page-health', handler: 'pageHealth' },
+
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
   { method: 'POST', path: '/control/workflow/:id/run', handler: 'runWorkflow', params: ['id'] },
@@ -1607,8 +1623,18 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     params: ['id'],
   },
 
-  // Idle detection (static routes before parameterized)
+  // Idle detection (static routes before parameterized).
+  //
+  // `/ai/idle-status` is a **byte-identical alias** of `/control/idle-status`
+  // — same handler key, same payload. The `/control/*` form is canonical
+  // (matches the `/control/*` family convention) and the `/ai/*` alias
+  // exists so semantic-search / AI consumers can reach idle state under
+  // the namespace they already query. Mirrors the runner's
+  // `add_dual!(router, get, "idle-status", …)` registration at
+  // `qontinui-runner/src-tauri/src/mcp/ui_bridge/errors.rs::routes`. See
+  // `docs-site/docs/api/runner-features.md` for the canonicalisation rule.
   { method: 'GET', path: '/control/idle-status', handler: 'getIdleStatus' },
+  { method: 'GET', path: '/ai/idle-status', handler: 'getIdleStatus' },
   { method: 'POST', path: '/control/wait-for-idle', handler: 'waitForIdle' },
   {
     method: 'POST',
