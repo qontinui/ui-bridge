@@ -284,6 +284,7 @@ $BASE/control/element/<id>/action  body:{"action":"click"}
                                        {"action":"middleClick"}
 
 # Type / Clear / SetValue / Select
+# NOTE: `type` takes `{text: "string"}`; `setValue` / `select` take `{value: "string"}`. Not interchangeable.
 {"action":"type","params":{"text":"value","clear":true,"delay":50}}
 {"action":"clear"}
 {"action":"setValue","params":{"value":"new-value"}}
@@ -569,6 +570,8 @@ present, so the holder isn't surprised by the involuntary release.
 Prefer this over monkey-patching `window.fetch` via `page/evaluate`.
 Stubs live in a module-level SDK singleton — they survive React
 re-renders and soft navigations; they clear on hard reload.
+
+> **POST body shape** (camelCase over the wire): `{urlPattern, method, response, times: 1|"always"}`. `urlPattern` is required (substring match); `method` defaults to any; `response` carries `{status?, body? | bodyJson?, headers?}`; `times` is either a positive integer (consumed per match) or the string `"always"`.
 
 ```bash
 # Install — substring URL match, first-registered wins on overlaps.
