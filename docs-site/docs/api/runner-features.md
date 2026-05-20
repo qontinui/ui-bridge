@@ -1009,12 +1009,101 @@ response are the same as the composite endpoint, scoped to that signal.
 
 ```http
 GET /control/idle-status
+GET /ai/idle-status              # alias — byte-identical to /control/idle-status
 ```
 
 Non-blocking — returns the current composite idle state without
 waiting. Use this when you want a snapshot of the signal pipeline (e.g.
 to log why a previous `wait-for-idle` timed out) rather than to block.
 Same `CompositeIdleStatus` payload as the blocking variant.
+
+**Aliasing rule.** `/control/idle-status` is **canonical** (it matches the
+`/control/*` family convention). `/ai/idle-status` is a byte-identical
+alias kept for semantic-search / AI consumers that already query under
+the `/ai/*` namespace — both paths point at the same handler on both
+the runner (`add_dual!(router, get, "idle-status", …)` in
+`qontinui-runner/src-tauri/src/mcp/ui_bridge/errors.rs`) and the web SDK
+(`UI_BRIDGE_ROUTES` in `packages/ui-bridge/src/server/types.ts`). The
+two responses are identical modulo per-request `timestamp` (the
+`CompositeIdleStatus` body is recomputed each call from live state, so
+back-to-back hits can differ on `timestamp` and ms-precision signal
+counters — that's expected variance, not aliasing drift). Use
+`/control/idle-status` in new code.
+
+## Page health diagnostics
+
+```http
+POST /control/page-health
+```
+
+Runs a structured health analyzer over the current snapshot and returns a
+machine-readable report covering spatial coverage, layout regions, element
+diversity, text + CSS class signal scanning, interactive readiness, and
+visual anomalies. The same `POST /control/page-health` route is exposed
+by both the runner (Rust, `qontinui-runner/src-tauri/src/mcp/ui_bridge/
+screenshots.rs::ui_bridge_page_health_handler`) and the web SDK
+(TypeScript, `@qontinui/ui-bridge` `packages/ui-bridge/src/server/
+page-health.ts`). The output shape is byte-equivalent across both
+transports so the `page-health` Claude skill works identically against
+either base URL.
+
+Body is optional and reserved for future per-check toggles
+(`{ options: { … } }`); current builds accept an empty body or none at
+all.
+
+Response shape:
+
+```json
+{
+  "success": true,
+  "data": {
+    "summary": "OK" | "WARNING" | "CRITICAL",   // worst severity across findings
+    "findings": [
+      {
+        "check": "spatial_coverage",
+        "severity": "OK" | "WARNING" | "CRITICAL",
+        "detail": "Elements cover 47% of viewport. Left=58%, Right=36%",
+        "data": { "coverage_pct": 47, "left_half_pct": 58, "right_half_pct": 36 }
+      },
+      { "check": "layout_regions",       ... },
+      { "check": "element_diversity",    ... },
+      { "check": "text_signals",         ... },
+      { "check": "interactive_readiness", ... },
+      { "check": "visual_anomalies",     ... }
+    ],
+    "heatmap": [ "....######....", ... ],         // 20 rows of 20 chars each
+    "element_count": 184,
+    "visible_count": 117
+  }
+}
+```
+
+**Heuristics.** Both implementations agree on these thresholds:
+
+| Check | Severity rule |
+|---|---|
+| `spatial_coverage` | CRITICAL when coverage < 15% OR right < 5% with left > 20%; WARNING when coverage < 30%; otherwise OK |
+| `layout_regions`   | CRITICAL when content region is empty; WARNING when < 3 elements there |
+| `element_diversity`| WARNING when > 5 elements present and *all* types are navigation-only (button / heading / badge / status-message) |
+| `text_signals`     | CRITICAL on any error-phrase match; WARNING on loading / empty-state / CSS-class signal matches |
+| `interactive_readiness` | WARNING when > 50% of `category: "interactive"` elements are disabled |
+| `visual_anomalies` | WARNING on any zero-size or off-viewport visible element |
+
+Smoke test:
+
+```bash
+curl -sX POST http://localhost:9876/ui-bridge/control/page-health | jq '.data.summary, (.data.findings | length)'
+# OK
+# 6
+
+# Web SDK route (after pairing a browser tab)
+curl -sX POST http://localhost:3001/api/ui-bridge/control/page-health | jq '.data.summary, (.data.findings | length)'
+# OK
+# 6
+```
+
+The page-health Claude skill (`.claude/skills/page-health/SKILL.md`)
+reads the same payload — no transport-aware branching is required.
 
 ## Console & network monitoring
 
