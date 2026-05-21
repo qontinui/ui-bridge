@@ -130,4 +130,85 @@ describe('useUIElement — layout populated on mount', () => {
     expect(layout).not.toBeNull();
     expect(layout).toMatchObject({ width: 60, height: 40, pageX: 100, pageY: 200 });
   });
+
+  it('retries measureInWindow with backoff when first calls return zero dims', () => {
+    vi.useFakeTimers();
+    try {
+      // Simulate the lazy-tab / overlay-covered case: the first two measures
+      // return zeros (subtree not yet laid out), then the third succeeds.
+      let call = 0;
+      const measure = vi.fn((cb: (x: number, y: number, w: number, h: number) => void) => {
+        call++;
+        if (call <= 2) cb(0, 0, 0, 0);
+        else cb(40, 60, 200, 50);
+      });
+
+      const { result, rerender } = renderHook(() => useElementWithRegistry('el-4'), {
+        wrapper: Wrapper,
+      });
+
+      (result.current.element.ref as unknown as { current: object }).current = {
+        measureInWindow: measure,
+      };
+
+      // Re-render so the post-registration effect re-runs with the ref attached.
+      act(() => {
+        rerender();
+      });
+
+      // First attempt fired synchronously — zeros, no write yet.
+      expect(measure).toHaveBeenCalledTimes(1);
+      expect(result.current.registry.getElement('el-4')?.getState().layout).toBeNull();
+
+      // Backoff[0] = 50ms → second attempt, still zeros.
+      act(() => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(measure).toHaveBeenCalledTimes(2);
+      expect(result.current.registry.getElement('el-4')?.getState().layout).toBeNull();
+
+      // Backoff[1] = 200ms → third attempt succeeds, layout writes.
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(measure).toHaveBeenCalledTimes(3);
+      const layout = result.current.registry.getElement('el-4')?.getState().layout;
+      expect(layout).toMatchObject({ width: 200, height: 50, pageX: 40, pageY: 60 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying after the configured backoff schedule is exhausted', () => {
+    vi.useFakeTimers();
+    try {
+      const measure = vi.fn((cb: (x: number, y: number, w: number, h: number) => void) => {
+        cb(0, 0, 0, 0);
+      });
+
+      const { result, rerender } = renderHook(() => useElementWithRegistry('el-5'), {
+        wrapper: Wrapper,
+      });
+
+      (result.current.element.ref as unknown as { current: object }).current = {
+        measureInWindow: measure,
+      };
+
+      act(() => {
+        rerender();
+      });
+
+      // Run far past the longest backoff (50 + 200 + 500 + 1000 + 2500 = 4250ms)
+      // to confirm the retry chain terminates instead of looping forever.
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+
+      // 1 immediate attempt + 5 scheduled retries = 6 total.
+      expect(measure).toHaveBeenCalledTimes(6);
+      expect(result.current.registry.getElement('el-5')?.getState().layout).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

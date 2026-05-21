@@ -471,22 +471,27 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     };
   }, [autoRegister, bridge]);
 
-  // Layout-on-mount fallback.
+  // Layout-on-mount fallback with backoff retry.
   //
   // Bug being addressed: the registry's `layout` field shows `(?, ?)` until
-  // the element is actioned. Two compounding causes:
+  // the element is actioned. Three compounding causes:
   //   1. The first `onLayout` event used to drop its write because the
   //      callback's closure captured `registered === false` (fixed above by
   //      switching to a registry-only write path).
   //   2. Some consumers don't actually thread `onLayout={onLayout}` onto
   //      their RN component, so the layout never measures.
+  //   3. Elements registered while their subtree is mounted-but-not-laid-out
+  //      (Expo Router lazy tabs; routes hidden behind an overlay like a
+  //      Connect/login screen) return zero dims from the first
+  //      `measureInWindow` call. RN doesn't re-fire `onLayout` on visibility
+  //      changes when intrinsic dimensions don't change, so a single-shot
+  //      measure leaves the registry entry at `visible:false, layout:null`
+  //      permanently — even after the user navigates to the screen.
   //
-  // For (2), schedule a `measureInWindow` after registration. We still need
-  // the consumer to thread the `ref` (which they always do — it's how
-  // they get an actionable target), so this is best-effort: when ref is
-  // populated and supports measureInWindow, push the result into the
-  // registry. The dependency list is [bridge, registered, id] so this
-  // re-runs once `register()` flips `registered` to true.
+  // Schedule a `measureInWindow` immediately after registration, and retry
+  // with backoff (50/200/500/1000/2500 ms) whenever the call returns zeros.
+  // Stops on first non-zero result or after the last retry. All pending
+  // timers are cleared on unmount / re-register.
   useEffect(() => {
     if (!bridge || !registered) return;
     const node = ref.current as
@@ -499,33 +504,45 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     if (!node || typeof node.measureInWindow !== 'function') return;
 
     let cancelled = false;
-    node.measureInWindow((pageX: number, pageY: number, w: number, h: number) => {
-      if (cancelled) return;
-      // measureInWindow can return zeros before layout has actually run.
-      // Skip writing then — `onLayout` (when wired) will fire with real
-      // numbers shortly.
-      if (w <= 0 || h <= 0) return;
-      const newLayout: NativeLayout = {
-        x: pageX,
-        y: pageY,
-        width: w,
-        height: h,
-        pageX,
-        pageY,
-      };
-      setLayout(newLayout);
-      const newState: NativeElementState = {
-        mounted: true,
-        visible: true,
-        enabled: true,
-        focused: false,
-        layout: newLayout,
-      };
-      bridge.registry.updateElementState(id, newState);
-      onStateChangeRef.current?.(newState);
-    });
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    const backoffMs = [50, 200, 500, 1000, 2500];
+    let attempt = 0;
+
+    const tryMeasure = () => {
+      if (cancelled || !node.measureInWindow) return;
+      node.measureInWindow((pageX: number, pageY: number, w: number, h: number) => {
+        if (cancelled) return;
+        if (w > 0 && h > 0) {
+          const newLayout: NativeLayout = {
+            x: pageX,
+            y: pageY,
+            width: w,
+            height: h,
+            pageX,
+            pageY,
+          };
+          setLayout(newLayout);
+          const newState: NativeElementState = {
+            mounted: true,
+            visible: true,
+            enabled: true,
+            focused: false,
+            layout: newLayout,
+          };
+          bridge.registry.updateElementState(id, newState);
+          onStateChangeRef.current?.(newState);
+          return;
+        }
+        if (attempt >= backoffMs.length) return;
+        pendingTimer = setTimeout(tryMeasure, backoffMs[attempt++]);
+      });
+    };
+
+    tryMeasure();
+
     return () => {
       cancelled = true;
+      if (pendingTimer != null) clearTimeout(pendingTimer);
     };
   }, [bridge, registered, id]);
 
