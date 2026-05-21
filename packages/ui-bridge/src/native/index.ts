@@ -75,9 +75,14 @@ export {
   useUIElement,
   useUIElementWithProps,
   type UseUIElementOptions,
+  type UseUIElementOptionsBase,
+  type UseUIElementOptionsPressNeedingForbidden,
+  type UseUIElementWithPropsOptions,
   type UseUIElementReturn,
   type UseUIElementWithPropsReturn,
   type UIBridgeProps,
+  type PressHandler,
+  type PressNeedingNativeElementType,
 } from './react/useUIElement';
 
 export {

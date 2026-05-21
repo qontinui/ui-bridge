@@ -398,6 +398,24 @@ export interface NativeBridgeSnapshot {
     registeredHandlers?: string[];
     /** Route path where this element was registered (for page-scoped filtering) */
     registrationRoute?: string | null;
+    /**
+     * Best-effort visibility classification for the element. React Native has
+     * no first-class "is this in the viewport" signal — we infer from
+     * `state.visible` (set false by `markRouteOffscreen` on focus change) and
+     * `state.layout` (populated by the user's `onLayout` callback).
+     *
+     * - `"visible"` — `visible: true` AND `layout !== null` (we measured it).
+     * - `"likely-visible"` — `visible: true` AND `layout === null`. Typically
+     *   means the element is registered on the active route but its first
+     *   `onLayout` hasn't fired yet. Treat as visible-but-unverified.
+     * - `"hidden"` — `visible: false` (markRouteOffscreen ran for this route,
+     *   or the host explicitly marked it hidden). Filtered out when callers
+     *   pass `visibleOnly=true`.
+     *
+     * Callers that need stricter guarantees should additionally check
+     * `state.layout !== null`.
+     */
+    visibility?: 'visible' | 'likely-visible' | 'hidden';
   }>;
   /** All registered components */
   components: Array<{

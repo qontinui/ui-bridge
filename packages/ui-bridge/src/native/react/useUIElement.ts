@@ -42,13 +42,32 @@ interface LayoutEventData {
 }
 
 /**
- * useUIElement options
+ * A press handler for `button`/`pressable` types. Matches the loose RN
+ * `Pressable` `onPress` shape (no required argument). Exported for parity
+ * with the `@qontinui/ui-bridge-native` package — consumers using this slim
+ * variant must wire press handlers via `useUIElementWithProps` +
+ * `captureProps({ onPress })`.
  */
-export interface UseUIElementOptions {
+export type PressHandler = (event?: unknown) => void;
+
+/**
+ * Element types that require a press handler at registration. The TS
+ * signature on `useUIElement` rejects these types in this slim variant —
+ * consumers must switch to `useUIElementWithProps` + `captureProps({
+ * onPress })`. See Phase 1 of plan `2026-05-20-manual-test-remediation`.
+ */
+export type PressNeedingNativeElementType = 'button' | 'pressable';
+
+/**
+ * Base options for `useUIElement` (slim variant — no `handlers` field).
+ * Press-needing types are rejected by the discriminated union below; use
+ * `useUIElementWithProps` for those.
+ */
+export interface UseUIElementOptionsBase<T extends NativeElementType = NativeElementType> {
   /** Unique identifier for the element */
   id: string;
   /** Element type (defaults to 'custom') */
-  type?: NativeElementType;
+  type?: T;
   /** Human-readable label */
   label?: string;
   /** Override available actions */
@@ -70,6 +89,33 @@ export interface UseUIElementOptions {
    */
   accessibilityRole?: string;
 }
+
+/**
+ * Press-needing element types in this slim variant must use
+ * `useUIElementWithProps`. Calling `useUIElement` with `type: 'button'`
+ * is a TS error — `never`-keyed brand forces consumers to migrate.
+ */
+export interface UseUIElementOptionsPressNeedingForbidden<
+  T extends PressNeedingNativeElementType = PressNeedingNativeElementType,
+> extends UseUIElementOptionsBase<T> {
+  /**
+   * @deprecated Use `useUIElementWithProps` and `captureProps({onPress})`.
+   * `useUIElement` does not register press handlers in this variant.
+   */
+  __pressNeedingTypesMustUseUseUIElementWithProps: never;
+}
+
+/**
+ * useUIElement options — discriminated union over element type.
+ *
+ * For `type: 'button' | 'pressable'`, this slim variant FORBIDS the call;
+ * consumers must use `useUIElementWithProps` to capture `onPress`.
+ * For all other types, the slim shape is unchanged.
+ */
+export type UseUIElementOptions<T extends NativeElementType = NativeElementType> =
+  T extends PressNeedingNativeElementType
+    ? UseUIElementOptionsPressNeedingForbidden<T>
+    : UseUIElementOptionsBase<T>;
 
 /**
  * Bridge props to spread onto the component
@@ -139,7 +185,45 @@ export interface UseUIElementReturn {
  * }
  * ```
  */
-export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
+/**
+ * Module-scoped set of ids we've already warned about so the dead-button
+ * `console.warn` only fires once per id even if the component re-mounts.
+ */
+const warnedDeadButtonIds = new Set<string>();
+
+function scheduleDeadButtonWarning(
+  bridge: ReturnType<typeof useUIBridgeNativeOptional>,
+  id: string,
+  type: NativeElementType
+): void {
+  if (type !== 'button' && type !== 'pressable') return;
+  if (warnedDeadButtonIds.has(id)) return;
+  if (!bridge) return;
+  setTimeout(() => {
+    if (warnedDeadButtonIds.has(id)) return;
+    const element = bridge.registry.getElement(id);
+    if (!element) return;
+    const props = (element.props ?? {}) as Record<string, unknown>;
+    const hasPress =
+      typeof props.onPress === 'function' ||
+      typeof props.onPressIn === 'function' ||
+      typeof props.onResponderRelease === 'function';
+    if (hasPress) return;
+    warnedDeadButtonIds.add(id);
+    console.warn(
+      `[UI Bridge] Registered \`${type}\` element "${id}" without an \`onPress\` handler — UI Bridge \`press\` actions on this element will fail with "No press handler found on element". Use \`useUIElementWithProps\` and \`captureProps({onPress})\` instead.`
+    );
+  }, 0);
+}
+
+// Public overload — narrow signature. External callers see ONLY this; the
+// discriminated union forbids `type: 'button' | 'pressable'` in this slim
+// variant. Consumers must use `useUIElementWithProps`.
+export function useUIElement<T extends NativeElementType = NativeElementType>(
+  options: UseUIElementOptions<T>
+): UseUIElementReturn;
+// Implementation signature — wide. Used internally by `useUIElementWithProps`.
+export function useUIElement(options: UseUIElementOptionsBase): UseUIElementReturn {
   const bridge = useUIBridgeNativeOptional();
   const ref = useRef<NativeElementRef>(null);
   // Mirrors the web `useUIElement` (packages/ui-bridge/src/react/useUIElement.ts:165).
@@ -197,6 +281,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       props: accessibilityRole !== undefined ? { accessibilityRole } : undefined,
     });
     registeredRef.current = true;
+
+    // Runtime backstop for the type-tightening — fires once per id if a
+    // press-needing type is registered without `onPress` reaching the
+    // registry. Phase 1, plan `2026-05-20-manual-test-remediation`.
+    scheduleDeadButtonWarning(bridge, id, type);
   }, [bridge, id, type, label, actions, customActions, treePath, accessibilityRole]);
 
   // Unregister the element
@@ -372,8 +461,24 @@ export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
   captureProps: (props: Record<string, unknown>) => void;
 }
 
-export function useUIElementWithProps(options: UseUIElementOptions): UseUIElementWithPropsReturn {
-  const elementReturn = useUIElement(options);
+/**
+ * Loose options for `useUIElementWithProps` — accepts ALL element types
+ * including `button`/`pressable` (which `useUIElement` rejects in this slim
+ * variant). The runtime warning in `useUIElement` still backstops the
+ * "captured but never called with onPress" case.
+ */
+export type UseUIElementWithPropsOptions<T extends NativeElementType = NativeElementType> =
+  UseUIElementOptionsBase<T>;
+
+export function useUIElementWithProps<T extends NativeElementType = NativeElementType>(
+  options: UseUIElementWithPropsOptions<T>
+): UseUIElementWithPropsReturn {
+  // `useUIElement`'s public signature rejects press-needing types in this
+  // slim variant — but the whole point of `useUIElementWithProps` is to
+  // capture `onPress` later via the returned `captureProps` callback. Widen
+  // through `unknown` to bypass; runtime warning still fires if no onPress
+  // ever lands in the registry.
+  const elementReturn = useUIElement(options as unknown as UseUIElementOptions<'view'>);
   const bridge = useUIBridgeNativeOptional();
 
   // `elementReturn.registered` is now a non-reactive ref snapshot (mirrors the

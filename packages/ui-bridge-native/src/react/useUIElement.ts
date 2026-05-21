@@ -74,14 +74,37 @@ interface LayoutEventData {
   };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyHandler = (...args: any[]) => any;
+
 /**
- * useUIElement options
+ * A press handler for `button`/`pressable` types. Matches the loose RN
+ * `Pressable` `onPress` shape (no required argument), so consumers can pass
+ * either a no-arg callback or one that consumes the gesture event.
  */
-export interface UseUIElementOptions {
+export type PressHandler = (event?: unknown) => void;
+
+/**
+ * Element types that require a press handler at registration. The TS
+ * signature on `useUIElement` rejects these types unless `handlers.onPress`
+ * is provided in options.
+ *
+ * Picked from the action-executor in `control/action-executor.ts` — the
+ * `press` action looks up `props.onPress` (or `onPressIn` /
+ * `onResponderRelease`); registering a button without one is a guaranteed
+ * dead-button per the 2026-05-20 manual-test session.
+ */
+export type PressNeedingNativeElementType = 'button' | 'pressable';
+
+/**
+ * Base options for `useUIElement`. The discriminated union below layers
+ * `handlers` requirements on top of this — see {@link UseUIElementOptions}.
+ */
+export interface UseUIElementOptionsBase<T extends NativeElementType = NativeElementType> {
   /** Unique identifier for the element */
   id: string;
   /** Element type (defaults to 'custom') */
-  type?: NativeElementType;
+  type?: T;
   /** Human-readable label */
   label?: string;
   /** Override available actions */
@@ -102,10 +125,27 @@ export interface UseUIElementOptions {
     focused?: unknown;
     disabled?: unknown;
   };
+}
+
+/**
+ * Options shape for press-needing types — `handlers.onPress` is REQUIRED.
+ * Registering a `button`/`pressable` without an `onPress` produces a
+ * "No press handler found on element" error when the bridge fires
+ * `POST /control/element/:id/action {"action":"press"}`. Phase 1 of plan
+ * `2026-05-20-manual-test-remediation` makes that a compile-time error.
+ *
+ * Consumers that wire `onPress` lazily (e.g. computed from props during
+ * render) should use {@link useUIElementWithProps} + `captureProps({ onPress })`
+ * instead. The runtime guard in this hook also warns once per id when
+ * `onPress` never reaches the registry.
+ */
+export interface UseUIElementOptionsHandlersRequired<
+  T extends PressNeedingNativeElementType = PressNeedingNativeElementType,
+> extends UseUIElementOptionsBase<T> {
   /**
    * Handler props to auto-register with the bridge for action execution.
-   * When provided, the bridge can invoke these handlers via press/type/toggle actions
-   * without the component needing a separate useEffect + updateElementProps call.
+   * For `button`/`pressable`, `onPress` is required — UI Bridge invokes it
+   * when a `press` action is dispatched.
    *
    * @example
    * ```tsx
@@ -116,9 +156,39 @@ export interface UseUIElementOptions {
    * });
    * ```
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handlers?: Record<string, ((...args: any[]) => any) | undefined>;
+  handlers: {
+    /** Required — UI Bridge invokes this on `press`/`click` actions. */
+    onPress: PressHandler;
+    /** Additional handlers (`onLongPress`, `onPressIn`, etc.) */
+    [key: string]: AnyHandler | undefined;
+  };
 }
+
+/**
+ * Options shape for non-press-needing types — `handlers` is optional.
+ * Applies to `input`, `text`, `view`, `list`, etc. — anything where a
+ * missing `onPress` doesn't indicate a dead button.
+ */
+export interface UseUIElementOptionsHandlersOptional<
+  T extends NativeElementType = NativeElementType,
+> extends UseUIElementOptionsBase<T> {
+  /**
+   * Handler props to auto-register with the bridge for action execution.
+   * Optional for non-press-needing types.
+   */
+  handlers?: Record<string, AnyHandler | undefined>;
+}
+
+/**
+ * useUIElement options — discriminated union over element type.
+ *
+ * For `type: 'button' | 'pressable'`, `handlers.onPress` is required.
+ * For all other types, `handlers` is optional.
+ */
+export type UseUIElementOptions<T extends NativeElementType = NativeElementType> =
+  T extends PressNeedingNativeElementType
+    ? UseUIElementOptionsHandlersRequired<T>
+    : UseUIElementOptionsHandlersOptional<T>;
 
 /**
  * Bridge props to spread onto the component
@@ -193,7 +263,60 @@ export interface UseUIElementReturn {
  * }
  * ```
  */
-export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
+/**
+ * Module-scoped set of ids we've already warned about so the dead-button
+ * `console.warn` only fires once per id even if the component re-mounts.
+ */
+const warnedDeadButtonIds = new Set<string>();
+
+/**
+ * Schedule a deferred check: after one microtask + one macrotask, look up
+ * the registered element. If it's a press-needing type AND no `onPress`
+ * (or fallback press handler) is on the registry's `props`, emit a
+ * `console.warn` pointing at the fix. Deferred so consumers using
+ * {@link useUIElementWithProps} + synchronous `captureProps({ onPress })`
+ * still pass the check.
+ */
+function scheduleDeadButtonWarning(
+  bridge: ReturnType<typeof useUIBridgeNativeOptional>,
+  id: string,
+  type: NativeElementType
+): void {
+  if (type !== 'button' && type !== 'pressable') return;
+  if (warnedDeadButtonIds.has(id)) return;
+  if (!bridge) return;
+
+  // Defer via macrotask so `useUIElementWithProps` consumers that call
+  // `captureProps({ onPress })` from their render body land their props
+  // into the registry first. queueMicrotask alone runs before the next
+  // render commit on some React schedulers; setTimeout(0) is a safer
+  // "after next paint" boundary without bringing in `requestAnimationFrame`.
+  setTimeout(() => {
+    if (warnedDeadButtonIds.has(id)) return;
+    const element = bridge.registry.getElement(id);
+    if (!element) return;
+    const props = (element.props ?? {}) as Record<string, unknown>;
+    const hasPress =
+      typeof props.onPress === 'function' ||
+      typeof props.onPressIn === 'function' ||
+      typeof props.onResponderRelease === 'function';
+    if (hasPress) return;
+    warnedDeadButtonIds.add(id);
+    console.warn(
+      `[UI Bridge] Registered \`${type}\` element "${id}" without an \`onPress\` handler — UI Bridge \`press\` actions on this element will fail with "No press handler found on element". Use \`useUIElementWithProps\` and \`captureProps({onPress})\` instead.`
+    );
+  }, 0);
+}
+
+// Public overload — narrow signature. External callers see ONLY this; the
+// discriminated union forces `handlers.onPress` for press-needing types.
+export function useUIElement<T extends NativeElementType = NativeElementType>(
+  options: UseUIElementOptions<T>
+): UseUIElementReturn;
+// Implementation signature — wide. Not visible to external callers (TS
+// hides the impl sig); used internally by `useUIElementWithProps` via the
+// narrow public sig with a structural cast.
+export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseUIElementReturn {
   const bridge = useUIBridgeNativeOptional();
   const ref = useRef<NativeElementRef>(null);
   const [registered, setRegistered] = useState(false);
@@ -251,6 +374,14 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     registeredRef.current = true;
     registeredIdRef.current = id;
     setRegistered(true);
+
+    // Runtime backstop for the type-tightening: warns once per id when a
+    // press-needing type is registered without an `onPress` reaching the
+    // registry. Catches JS consumers and `as any` escape hatches that
+    // bypass the discriminated-union signature above. Deferred so consumers
+    // using `useUIElementWithProps` + `captureProps({ onPress })` from the
+    // render body still pass.
+    scheduleDeadButtonWarning(bridge, id, type);
   }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp]);
 
   // Unregister the element
@@ -559,8 +690,24 @@ export interface UseUIElementWithPropsReturn extends UseUIElementReturn {
   captureProps: (props: Record<string, unknown>) => void;
 }
 
-export function useUIElementWithProps(options: UseUIElementOptions): UseUIElementWithPropsReturn {
-  const elementReturn = useUIElement(options);
+/**
+ * Loose options for `useUIElementWithProps` — `handlers` is optional for ALL
+ * element types because the consumer will later call `captureProps({ onPress,
+ * ... })` from the render body. The runtime warning in {@link useUIElement}
+ * still backstops the "captured but never called with onPress" case.
+ */
+export type UseUIElementWithPropsOptions<T extends NativeElementType = NativeElementType> =
+  UseUIElementOptionsHandlersOptional<T>;
+
+export function useUIElementWithProps<T extends NativeElementType = NativeElementType>(
+  options: UseUIElementWithPropsOptions<T>
+): UseUIElementWithPropsReturn {
+  // `useUIElement`'s narrow public signature demands `handlers.onPress` for
+  // press-needing types, but the whole point of this hook is to capture
+  // props after the fact (via `captureProps` returned below) — so we widen
+  // through `unknown`. The runtime warning in `useUIElement` still fires if
+  // no onPress ever lands in the registry, regardless of the cast.
+  const elementReturn = useUIElement(options as unknown as UseUIElementOptions<'view'>);
   const bridge = useUIBridgeNativeOptional();
 
   const captureProps = useCallback(

@@ -371,13 +371,45 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
-   * Get all registered elements that are visible and have a layout
+   * Get all registered elements that are visible AND have a measured layout.
+   *
+   * This is the *strict* visibility filter: requires `state.visible === true`
+   * AND `state.layout !== null`. Use this when you need both signals
+   * (e.g. coord-based tap, where you need an actual rect to hit-test against).
+   *
+   * Callers driving an LLM agent typically want
+   * {@link getMountedVisibleElements} instead — that variant accepts
+   * elements that *should* be on screen (visible:true) but whose first
+   * `onLayout` has not yet fired. Without it, a snapshot taken in the gap
+   * between mount and the first layout pass returns 0 elements on a fully
+   * populated screen.
    */
   getVisibleElements(): RegisteredNativeElement[] {
     return this.getAllElements().filter((e) => {
       const state = e.getState();
       return state.visible && state.layout !== null;
     });
+  }
+
+  /**
+   * Get all registered elements marked as visible (regardless of layout).
+   *
+   * Looser than {@link getVisibleElements}: includes elements whose
+   * `onLayout` callback has not yet fired (so `layout === null`). React
+   * Native's `onLayout` is async — there's a one-tick window after mount
+   * where elements are in the tree, the user *sees* them, but the
+   * registry hasn't received their measurements yet. Excluding those
+   * elements makes `getSnapshot?visibleOnly=true` return 0 on a populated
+   * screen, which is a worse failure mode than including a few elements
+   * we can't yet locate spatially.
+   *
+   * Used by `createSnapshot`'s `visibleOnly` filter and by the
+   * `getSnapshot` / `getElements` handlers. Each emitted element carries a
+   * `visibility` discriminator (`"visible"` / `"likely-visible"`) so
+   * agents that *do* require a known rect can branch downstream.
+   */
+  getMountedVisibleElements(): RegisteredNativeElement[] {
+    return this.getAllElements().filter((e) => e.getState().visible);
   }
 
   /**
@@ -715,7 +747,14 @@ export class NativeUIBridgeRegistry {
       return { currentRoute: null, segments: undefined };
     })();
 
-    let elements = options?.visibleOnly ? this.getVisibleElements() : this.getAllElements();
+    // visibleOnly uses the *looser* mounted-visible filter so a snapshot
+    // taken in the gap between mount and the first `onLayout` doesn't
+    // return 0 elements on a populated screen. Each element in the
+    // payload carries a `visibility` field so agents can branch on
+    // measured vs unmeasured.
+    let elements = options?.visibleOnly
+      ? this.getMountedVisibleElements()
+      : this.getAllElements();
 
     // Filter to only elements registered on the current route
     if (options?.currentRouteOnly && resolvedRoute.currentRoute) {
@@ -727,16 +766,23 @@ export class NativeUIBridgeRegistry {
       timestamp: Date.now(),
       elements: elements.map((e) => {
         const handlers = extractHandlerNames(e.props);
+        const state = e.getState();
+        const visibility: 'visible' | 'likely-visible' | 'hidden' = !state.visible
+          ? 'hidden'
+          : state.layout !== null
+            ? 'visible'
+            : 'likely-visible';
         return {
           id: e.id,
           type: e.type,
           label: e.label,
           identifier: e.getIdentifier(),
-          state: e.getState(),
+          state,
           actions: e.actions,
           customActions: e.customActions ? Object.keys(e.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
+          visibility,
         };
       }),
       components: this.getAllComponents().map((c) => ({

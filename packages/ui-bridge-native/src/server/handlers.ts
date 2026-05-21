@@ -309,7 +309,13 @@ export function createServerHandlers(
         | string
         | undefined;
 
-      let allElements = visibleOnly ? registry.getVisibleElements() : registry.getAllElements();
+      // visibleOnly uses the looser mounted-visible filter so callers don't
+      // miss elements whose first `onLayout` hasn't fired yet. Each element
+      // carries a `visibility` field (`"visible"` / `"likely-visible"`) so
+      // agents can branch on measured vs unmeasured downstream.
+      let allElements = visibleOnly
+        ? registry.getMountedVisibleElements()
+        : registry.getAllElements();
 
       // Filter by specific route (injected by setRouteProvider override when currentRouteOnly is set)
       if (forRoute) {
@@ -318,16 +324,23 @@ export function createServerHandlers(
 
       const elements = allElements.map((e) => {
         const handlers = extractHandlerNames(e.props);
+        const state = e.getState();
+        const visibility: 'visible' | 'likely-visible' | 'hidden' = !state.visible
+          ? 'hidden'
+          : state.layout !== null
+            ? 'visible'
+            : 'likely-visible';
         return {
           id: e.id,
           type: e.type,
           label: e.label,
           identifier: e.getIdentifier(),
-          state: e.getState(),
+          state,
           actions: e.actions,
           customActions: e.customActions ? Object.keys(e.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
+          visibility,
         };
       });
 
@@ -668,6 +681,45 @@ export function createServerHandlers(
     keepAwake: async () => {
       return error(
         'keep-awake not configured. Provide a keepAwakeProvider to UIBridgeNativeProvider.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    // AI helpers — runner-only endpoints that have no React Native analog.
+    //
+    // The mobile bridge mounts explicit NOT_SUPPORTED stubs at the runner's
+    // cheatsheet paths so callers (and the /manual-test skill in particular)
+    // get a structured envelope explaining the gap rather than a confusing
+    // HTTP 404. Each error message names an in-tree mobile replacement so
+    // operators aren't left guessing what to use instead.
+    aiForms: async () => {
+      return error<never>(
+        'ai/forms (form discovery) is runner-only; mobile React Native has no DOM to walk. ' +
+          'Use GET /ui-bridge/control/snapshot and filter for type === "input" instead.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    aiIdleStatus: async () => {
+      return error<never>(
+        'ai/idle-status (page-idle signal) is runner-only; mobile React Native has no DOM-mutation / network-idle signals. ' +
+          'Use the registry event stream (WS subscribe to "element:registered"/"element:stateChanged") or poll /control/snapshot for stability.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    aiChangeBufferEnable: async () => {
+      return error<never>(
+        'ai/change-buffer (DOM mutation diff buffer) is runner-only; mobile React Native has no DOM. ' +
+          'Use the WS event bridge (subscribe to "element:registered"/"element:unregistered"/"element:stateChanged") for change notifications.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    aiWaitForElement: async () => {
+      return error<never>(
+        'POST /ai/wait-for-element is runner-only on mobile. ' +
+          'Use the WS "waitForElement" JSON-RPC method or "waitForCondition" instead — same semantics, no HTTP polling overhead.',
         'NOT_SUPPORTED'
       );
     },

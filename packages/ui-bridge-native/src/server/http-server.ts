@@ -168,6 +168,25 @@ const WS_ROUTES: readonly WsRoute[] = [
   // AI helpers — mobile parity with the runner's `/ui-bridge/ai/*` family.
   { pattern: 'ai/fill-form', handler: 'fillForm', httpMethods: ['POST'] },
 
+  // AI helpers — NOT_SUPPORTED stubs. These endpoints exist on the runner-side
+  // UI Bridge surface (and the /manual-test skill's cheatsheet documents them
+  // as if they're universally available). Mobile React Native has no DOM, so
+  // the mobile bridge mounts explicit stubs so callers get a structured
+  // NOT_SUPPORTED envelope (with a hint pointing at the mobile-native
+  // replacement) instead of a confusing HTTP 404.
+  { pattern: 'ai/forms', handler: 'aiForms', httpMethods: ['GET'] },
+  { pattern: 'ai/idle-status', handler: 'aiIdleStatus', httpMethods: ['GET'] },
+  {
+    pattern: 'ai/change-buffer/enable',
+    handler: 'aiChangeBufferEnable',
+    httpMethods: ['POST'],
+  },
+  {
+    pattern: 'ai/wait-for-element',
+    handler: 'aiWaitForElement',
+    httpMethods: ['POST'],
+  },
+
   // Coord-based tap — synthesizes a press at the given screen coords by
   // matching against registered elements' layout rects.
   { pattern: 'control/tap', handler: 'tapAt', httpMethods: ['POST'] },
@@ -252,6 +271,14 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   getMethods: 'List every handler name (legacy introspection)',
   fillForm:
     'Fill multiple inputs in one call: body { fields: [{elementId, value}] } — each field dispatches `type` + `clear:true`',
+  aiForms:
+    'STUB — runner-only; mobile returns NOT_SUPPORTED. Use /control/snapshot + filter type==="input" instead.',
+  aiIdleStatus:
+    'STUB — runner-only; mobile returns NOT_SUPPORTED. Subscribe to registry events over WS for change signals.',
+  aiChangeBufferEnable:
+    'STUB — runner-only; mobile returns NOT_SUPPORTED. Use WS event subscriptions for change notifications.',
+  aiWaitForElement:
+    'STUB — runner-only; mobile returns NOT_SUPPORTED. Use the WS waitForElement / waitForCondition JSON-RPC methods.',
   tapAt:
     'Synthesize a press at given screen coords by matching registered element layout rects: body { x, y, action? }',
   getConsoleErrors:

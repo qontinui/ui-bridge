@@ -13,10 +13,7 @@ vi.mock('react-native', () => ({
 }));
 
 import { useUIElement } from '../useUIElement';
-import {
-  UIBridgeNativeProvider,
-  useUIBridgeNative,
-} from '../UIBridgeNativeProvider';
+import { UIBridgeNativeProvider, useUIBridgeNative } from '../UIBridgeNativeProvider';
 
 /**
  * Phase F regression — `useUIElement` should populate the registry's
@@ -41,9 +38,14 @@ function Wrapper({ children }: { children: ReactNode }) {
  * Combine `useUIElement` with `useUIBridgeNative` so the test can both drive
  * the hook's outputs and inspect the underlying registry that the provider
  * created internally.
+ *
+ * Uses `type: 'view'` (non-press-needing) so the test isn't entangled with
+ * the press-handler-required type-tightening landed in Phase 1 of plan
+ * `2026-05-20-manual-test-remediation`. The layout-on-mount behavior under
+ * test is type-agnostic; switching to `'view'` keeps the fixture honest.
  */
 function useElementWithRegistry(id: string) {
-  const element = useUIElement({ id, type: 'pressable' });
+  const element = useUIElement({ id, type: 'view' });
   const bridge = useUIBridgeNative();
   return { element, registry: bridge.registry };
 }
@@ -78,9 +80,7 @@ describe('useUIElement — layout populated on mount', () => {
     // Stub the ref's measureInWindow so the onLayout path takes the absolute-
     // coord branch and writes pageX/pageY.
     (result.current.element.ref as unknown as { current: object }).current = {
-      measureInWindow(
-        cb: (pageX: number, pageY: number, w: number, h: number) => void
-      ) {
+      measureInWindow(cb: (pageX: number, pageY: number, w: number, h: number) => void) {
         cb(500, 600, 100, 30);
       },
     };
@@ -104,12 +104,10 @@ describe('useUIElement — layout populated on mount', () => {
 
   it('falls back to measureInWindow on mount when consumer never calls onLayout', () => {
     let measureCalls = 0;
-    const measure = vi.fn(
-      (cb: (x: number, y: number, w: number, h: number) => void) => {
-        measureCalls++;
-        cb(100, 200, 60, 40);
-      }
-    );
+    const measure = vi.fn((cb: (x: number, y: number, w: number, h: number) => void) => {
+      measureCalls++;
+      cb(100, 200, 60, 40);
+    });
 
     const { result, rerender } = renderHook(() => useElementWithRegistry('el-3'), {
       wrapper: Wrapper,

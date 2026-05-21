@@ -242,6 +242,32 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Fill multiple input elements in a single call',
   },
 
+  // AI helpers (NOT_SUPPORTED stubs) — these endpoints exist on the runner-side
+  // UI Bridge surface but have no analog on mobile React Native. The mobile
+  // bridge registers explicit stubs so callers get a structured NOT_SUPPORTED
+  // envelope instead of a confusing HTTP 404. The mobile bridge's snapshot +
+  // `/control/find` already cover what an operator would reach for these for.
+  AI_FORMS: {
+    method: 'GET',
+    path: '/ui-bridge/ai/forms',
+    description: 'Discover forms (runner-only; mobile returns NOT_SUPPORTED)',
+  },
+  AI_IDLE_STATUS: {
+    method: 'GET',
+    path: '/ui-bridge/ai/idle-status',
+    description: 'Get page-idle signal (runner-only; mobile returns NOT_SUPPORTED)',
+  },
+  AI_CHANGE_BUFFER_ENABLE: {
+    method: 'POST',
+    path: '/ui-bridge/ai/change-buffer/enable',
+    description: 'Enable DOM change buffer (runner-only; mobile returns NOT_SUPPORTED)',
+  },
+  AI_WAIT_FOR_ELEMENT: {
+    method: 'POST',
+    path: '/ui-bridge/ai/wait-for-element',
+    description: 'Wait for element predicate via HTTP (runner-only; mobile returns NOT_SUPPORTED — use WS waitForElement instead)',
+  },
+
   // Test hooks — drive ModalDetector state from outside the React tree
   // (gated by `features.testHooks`). Mirrors `pushModal` / `dismissModal`
   // calls that components normally make in-process.
@@ -532,6 +558,14 @@ export interface NativeServerHandlers {
 
   // AI helpers
   fillForm: HandlerFunction<FillFormResponse>;
+
+  // AI helpers — NOT_SUPPORTED stubs (runner-only endpoints; see route table).
+  // These return `error(..., 'NOT_SUPPORTED')` and exist so the mobile bridge
+  // never 404s on cheatsheet endpoints that work on the runner.
+  aiForms: HandlerFunction<never>;
+  aiIdleStatus: HandlerFunction<never>;
+  aiChangeBufferEnable: HandlerFunction<never>;
+  aiWaitForElement: HandlerFunction<never>;
 
   // Coord-based tap — synthesizes a press at the given screen coords by
   // searching registered elements whose layout rect contains the point.
