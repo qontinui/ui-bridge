@@ -4050,6 +4050,29 @@ export function createHandlers(
     ): Promise<APIResponse<RecoveryAttemptResult>> => {
       const startTime = Date.now();
       try {
+        // Item A (iter-4 manual-test remediation): operator-contract errors
+        // MUST surface verbatim. `WRONG_TYPE_PARAM` / `MISSING_PARAM` are
+        // emitted by `relay-handlers.executeElementAction` to enforce the
+        // documented `type` action contract (`params.text`, not
+        // `params.value`). If the caller pipes that failure into
+        // `attemptRecovery`, the NL-based fallback below would otherwise
+        // synthesize a fabricated command and, in observed cases, type the
+        // literal string "text" into the field — silently turning a 400
+        // operator bug into a successful-looking action. Short-circuit
+        // recovery for these codes so the 400 propagates unchanged.
+        const passthroughCodes = new Set(['WRONG_TYPE_PARAM', 'MISSING_PARAM']);
+        if (passthroughCodes.has(request.failure?.errorCode)) {
+          return success({
+            recovered: false,
+            strategiesAttempted: [],
+            error:
+              `Operator-contract error (${request.failure.errorCode}) is not recoverable — ` +
+              'fix the request payload at the call site. ' +
+              (request.failure.message || ''),
+            durationMs: Date.now() - startTime,
+          });
+        }
+
         refreshElements();
         const strategiesAttempted: string[] = [];
         let lastResult: NLActionResponse | undefined;

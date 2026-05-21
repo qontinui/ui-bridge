@@ -111,9 +111,41 @@ export function createExpressRouter(
     router.use(createCORSMiddleware(config.cors));
   }
 
-  // Add body parser if requested
+  // Add body parser if requested.
+  //
+  // Item B (iter-4 manual-test remediation): `express.json()` (body-parser
+  // strict mode in newer versions) returns HTTP 400 "Unexpected end of JSON
+  // input" / "EOF" when a POST arrives with `Content-Type: application/json`
+  // but a zero-byte body. Routes like `/control/page-health` take no
+  // parameters, so callers naturally send `curl -X POST -H 'Content-Type:
+  // application/json' .../page-health` without a payload. Normalize an
+  // empty body to `{}` BEFORE the JSON parser sees it so the request reaches
+  // the handler instead of dying at the middleware layer.
   if (config.useBodyParser) {
+    router.use((req: Request, _res: Response, next: NextFunction) => {
+      const contentLength = req.headers['content-length'];
+      const isEmpty = contentLength === '0' || contentLength === undefined;
+      const isJson = (req.headers['content-type'] || '').includes('application/json');
+      if (req.method === 'POST' && isEmpty && isJson) {
+        // Mark body as already-parsed so express.json() short-circuits.
+        // Cast through `unknown` because Request typings consider req.body
+        // an unknown value, not a tagged shape.
+        (req as unknown as { body: unknown; _body: boolean })._body = true;
+        (req as unknown as { body: unknown }).body = {};
+      }
+      next();
+    });
     router.use(express.json());
+    // Catch any residual body-parser errors (malformed JSON with non-zero
+    // content-length): downgrade to a structured 400 response carrying the
+    // canonical `BODY_PARSE_ERROR` code rather than express's default HTML.
+    router.use((err: Error & { type?: string }, _req: Request, res: Response, next: NextFunction) => {
+      if (err && err.type === 'entity.parse.failed') {
+        res.status(400).json(wrapError(err.message || 'Invalid JSON body', 'BODY_PARSE_ERROR'));
+        return;
+      }
+      next(err);
+    });
   }
 
   // Add authentication middleware if configured
@@ -187,9 +219,13 @@ function createRouteHandler(
         }
       }
 
-      // Add body if required
+      // Add body if required. Defensive normalization (iter-4): an
+      // upstream proxy or a body-parser bypass can leave `req.body`
+      // undefined even for a POST. Handlers expect an object (e.g.
+      // `pageHealth()` takes no args but the route is POST). Coerce to
+      // `{}` so destructuring + key-access inside handlers doesn't crash.
       if (route.bodyRequired || route.method === 'POST') {
-        args.push(req.body);
+        args.push(req.body ?? {});
       }
 
       // Add query params for GET requests
