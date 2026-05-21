@@ -315,13 +315,34 @@ export function createRelayHandlers(
   }
 
   // Helper: refresh the cached control snapshot based on Recency requirements
-  const defaultRecency = Recency.MaxAge(options?.cacheTtlMs ?? 5000);
+  const cacheTtlMs = options?.cacheTtlMs ?? 5000;
+  const defaultRecency = Recency.MaxAge(cacheTtlMs);
+  /**
+   * Cache-age multiplier above which `staleMeta()` reports `stale: true`
+   * even when the refresh path never flagged a relay failure. Captures the
+   * "tab disconnected, never reconnected" failure mode where the cache
+   * silently ages out without anyone marking it stale. 5× the TTL is
+   * conservative — at the 5s default, a tab idle ≥25s starts surfacing
+   * stale=true to callers.
+   */
+  const STALE_AGE_MULTIPLIER = 5;
   let snapshotStaleSince: number | null = null;
 
   function staleMeta(): { stale: boolean; staleSinceMs?: number; cacheAgeMs: number } {
     const cacheAgeMs = Date.now() - latestControlSnapshot.timestamp;
     if (snapshotStaleSince) {
       return { stale: true, staleSinceMs: Date.now() - snapshotStaleSince, cacheAgeMs };
+    }
+    // Item B (iter-3 manual-test remediation): mark stale on age-based decay
+    // even when the relay never flagged a failure. Without this, a tab that
+    // disconnected silently (or never connected at all) returns
+    // `stale: false` indefinitely because `snapshotStaleSince` is only set
+    // when `relay.queueCommand` actively throws. Callers reading e.g.
+    // `getControlSnapshot()` on a fresh server with no tab attached would
+    // see `{stale:false, cacheAgeMs: 60_000}` and assume the empty payload
+    // was current.
+    if (cacheAgeMs > cacheTtlMs * STALE_AGE_MULTIPLIER) {
+      return { stale: true, cacheAgeMs };
     }
     return { stale: false, cacheAgeMs };
   }
@@ -543,6 +564,50 @@ export function createRelayHandlers(
     },
 
     async executeElementAction(id, request) {
+      // Item A (iter-3 manual-test remediation): contract enforcement for the
+      // `type` action. The docs (`docs-site/docs/api/runner-features.md` §
+      // "Per-action param names") promise that `type` returns HTTP 400 when
+      // the caller sends `value` instead of `text`, but the relay
+      // pass-through used to forward the malformed payload to the browser,
+      // where the runtime would silently no-op (or, worse, substitute the
+      // element's `type` HTML attribute as the typed text). Validate here
+      // so misuse surfaces immediately with an actionable error envelope.
+      // NEVER fall back to element.type — the docs explicitly call this out.
+      //
+      // The error envelope deliberately bypasses `mapInternalErrorCode` so
+      // callers see the documented literal `WRONG_TYPE_PARAM` / `MISSING_PARAM`
+      // codes rather than the canonical-UB family bucket. These codes are
+      // contract surface (manual-test report + docs reference them by name).
+      if (request && (request as { action?: string }).action === 'type') {
+        const params = (request as { params?: Record<string, unknown> }).params;
+        const hasText = params != null && typeof params['text'] === 'string';
+        const hasValue = params != null && typeof params['value'] === 'string';
+        if (!hasText) {
+          if (hasValue) {
+            return {
+              success: false,
+              error:
+                "type action takes 'text' parameter; got 'value'. Did you mean setValue?",
+              code: 'WRONG_TYPE_PARAM' as APIResponse['code'],
+              data: {
+                hint: { provided: ['value'], required: ['text'] },
+              } as unknown as import('../control').ControlActionResponse,
+              httpStatus: 400,
+              timestamp: Date.now(),
+            };
+          }
+          return {
+            success: false,
+            error: "type action requires 'text' string parameter",
+            code: 'MISSING_PARAM' as APIResponse['code'],
+            data: {
+              required: ['text'],
+            } as unknown as import('../control').ControlActionResponse,
+            httpStatus: 400,
+            timestamp: Date.now(),
+          };
+        }
+      }
       return relayCommand('executeElementAction', { id, request });
     },
 
