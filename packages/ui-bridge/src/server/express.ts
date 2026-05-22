@@ -225,14 +225,47 @@ function createRouteHandler(
         }
       }
 
+      // Item #4 — per-tab routing. Sniff `tabId` from query, header, and
+      // body, then thread it into whichever arg the handler accepts. Body
+      // wins if it already has `tabId` (caller knew what they wanted);
+      // otherwise query > header. Header name matches the Next.js adapter.
+      const queryTabId =
+        (typeof req.query.tabId === 'string' && req.query.tabId) ||
+        (typeof req.query.targetTabId === 'string' && req.query.targetTabId) ||
+        undefined;
+      const headerTabId =
+        (typeof req.headers['x-ui-bridge-tab-id'] === 'string'
+          ? (req.headers['x-ui-bridge-tab-id'] as string)
+          : undefined) ?? undefined;
+      const externalTabId = queryTabId || headerTabId;
+
       // Add body if required
       if (route.bodyRequired || route.method === 'POST') {
-        args.push(req.body);
+        let body = req.body;
+        if (
+          externalTabId &&
+          body !== null &&
+          typeof body === 'object' &&
+          !Array.isArray(body) &&
+          (body as Record<string, unknown>).tabId === undefined &&
+          (body as Record<string, unknown>).targetTabId === undefined
+        ) {
+          body = { ...(body as Record<string, unknown>), tabId: externalTabId };
+        } else if (!body && externalTabId) {
+          body = { tabId: externalTabId };
+        }
+        args.push(body);
       }
 
       // Add query params for GET requests
-      if (route.method === 'GET' && Object.keys(req.query).length > 0) {
-        args.push(req.query);
+      if (route.method === 'GET') {
+        const query = { ...req.query } as Record<string, unknown>;
+        if (externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
+          query.tabId = externalTabId;
+        }
+        if (Object.keys(query).length > 0) {
+          args.push(query);
+        }
       }
 
       const result = await handler(...args);
