@@ -88,6 +88,21 @@ export interface NativeServerConfig extends NativeUIBridgeConfig {
    * `features.testHooks` into this slot.
    */
   testHooks?: boolean;
+  /**
+   * Viewport getter for `POST /control/page-health`.
+   *
+   * Injected by `UIBridgeNativeProvider` from `Dimensions.get('window')`.
+   * Lives at config-injection level because importing react-native from
+   * `handlers.ts` (or even `require('react-native')` with try/catch) crashed
+   * the host RN app in 0.6.3/0.6.4: Metro/Hermes raised
+   * `unknownModuleError` past every local try/catch and tore down the JS
+   * thread (blank screen, React tree destroyed). The provider already has
+   * a live import of `react-native`, so it's the safe injection point.
+   *
+   * When absent: `page-health` falls back to `body.viewport`, then `{0,0}`
+   * (degenerate coverage report — no crash).
+   */
+  viewportProvider?: () => { width: number; height: number };
 }
 
 /**

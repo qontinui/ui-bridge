@@ -244,11 +244,10 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     expect(parsed.data.heatmap).toHaveLength(20);
   });
 
-  it('honors body.viewport override even when Dimensions is unavailable', async () => {
-    // The handler's `require('react-native')` will succeed in this test env
-    // (vitest happy-dom loads the shim), so we can't assert the failure
-    // branch directly. But by providing body.viewport, we exercise the
-    // priority-1 path: explicit body trumps the Dimensions lookup.
+  it('honors body.viewport over any injected viewportProvider', async () => {
+    // body.viewport is priority-1 — explicit input wins over the host's
+    // injected Dimensions getter. No react-native dep needed in this code
+    // path (the test server doesn't pass a viewportProvider).
     const { registry, server } = buildServer();
     registry.registerElement('x', makeRef(), { type: 'text' });
     registry.updateElementState('x', {
@@ -287,38 +286,68 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     expect(parsed.data).toBeDefined();
   });
 
-  it('regression: empty-body call must not require("react-native") from the async handler', async () => {
-    // The very first 0.6.3 publish crashed the host RN app on first call to
-    // `/control/page-health` because the handler did
-    //   `try { require('react-native') } catch { ... }`
-    // INSIDE its async body. Metro's `require()` inside an async function is
-    // uncatchable — the throw escapes the local try/catch and tears down the
-    // JS thread. design-handlers.ts dodged this by extracting the require
-    // into a SYNC helper (`getScreenDimensions`); the original page-health
-    // handler did not.
+  it('regression: handlers.ts must not import or require react-native', async () => {
+    // 0.6.3 and 0.6.4 both crashed the host RN app on first call to
+    // `/control/page-health`. The pattern that failed:
+    //   try { require('react-native') } catch { ... }
+    // both inline in the async handler (0.6.3) AND extracted into a sync
+    // helper called from the handler (0.6.4). Metro/Hermes raised
+    // `unknownModuleError` past every try/catch and tore down the JS thread
+    // — blank screen, React tree destroyed, C++ HTTP server still alive.
     //
-    // This test pins the fix: hitting the route with an empty body (so the
-    // handler has to resolve viewport via the Dimensions lookup, not from
-    // body.viewport) must return a structured response without throwing.
-    // The vitest env doesn't actually error on require('react-native') —
-    // happy-dom ships a shim. The real protection is: the sync helper
-    // pattern is now the only path, mirroring design-handlers. If a future
-    // refactor reintroduces `require('react-native')` inside the async
-    // handler body, this test still passes (vitest is forgiving), but
-    // production will crash again. The mitigation lives in the comment on
-    // `getWindowDimensions` + this regression's failure mode docs.
+    // The same latent failure mode existed in `design-handlers.ts` (verified
+    // by hitting `POST /design/responsive` on 0.6.4 — it killed the JS host
+    // identically). Both files have been moved off the require pattern;
+    // viewport is now an INJECTED dependency from `UIBridgeNativeProvider`,
+    // which holds the only react-native import in the runtime path.
+    //
+    // This test would fail at import time if `handlers.ts` re-acquired any
+    // `react-native` reference (static OR require()) — vitest's rolldown
+    // parser rejects react-native's Flow syntax, so the whole file would
+    // fail to load.
     const { server } = buildServer();
     const res = await server.handleRequest({
       method: 'POST',
       path: '/ui-bridge/control/page-health',
       headers: { 'content-type': 'application/json' },
       query: {},
-      // Empty body — forces the Dimensions code path.
       body: {},
     });
     expect(res.status).toBe(200);
     const parsed = JSON.parse(res.body) as { success: boolean; data: unknown };
     expect(parsed.success).toBe(true);
     expect(parsed.data).toBeDefined();
+  });
+
+  it('uses injected viewportProvider when body.viewport is absent', async () => {
+    // The host app injects a viewportProvider via createNativeServer({
+    //   viewportProvider: () => Dimensions.get('window')
+    // }). The handler reads it when body.viewport is missing.
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    const server = new NativeUIBridgeServer(registry, executor, {
+      viewportProvider: () => ({ width: 200, height: 400 }),
+    });
+
+    registry.registerElement('full-bleed', makeRef(), { type: 'text' });
+    registry.updateElementState('full-bleed', {
+      visible: true,
+      layout: { x: 0, y: 0, width: 200, height: 400, pageX: 0, pageY: 0 },
+    });
+
+    const res = await server.handleRequest({
+      method: 'POST',
+      path: '/ui-bridge/control/page-health',
+      headers: { 'content-type': 'application/json' },
+      query: {},
+      body: {},
+    });
+
+    const parsed = JSON.parse(res.body) as {
+      data: { findings: Array<{ check: string; data: { coverage_pct?: number } }> };
+    };
+    const spatial = parsed.data.findings.find((f) => f.check === 'spatial_coverage');
+    // Element fills the entire injected viewport → 100% coverage.
+    expect(spatial?.data.coverage_pct).toBe(100);
   });
 });
