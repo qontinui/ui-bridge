@@ -261,28 +261,6 @@ async function executeWorkflowStep(
   }
 }
 
-/**
- * Read `Dimensions.get('window')` from a SYNCHRONOUS context.
- *
- * Metro's `require()` inside an `async` function is uncatchable — a missing
- * module throws past any local `try`/`catch` and the error tears down the JS
- * thread. Calling this from inside an async handler isolates the require()
- * inside this sync frame, where the try/catch actually catches.
- *
- * Mirrors `getScreenDimensions()` in design-handlers.ts. Returns `{0,0}`
- * under Node / vitest where react-native isn't available; callers should
- * treat that as a "viewport unknown" signal.
- */
-function getWindowDimensions(): { width: number; height: number } {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Dimensions } = require('react-native');
-    const win = Dimensions.get('window');
-    return { width: win.width, height: win.height };
-  } catch {
-    return { width: 0, height: 0 };
-  }
-}
 
 /**
  * Create a success response
@@ -319,6 +297,17 @@ export function createServerHandlers(
     consoleErrorBuffer?: ConsoleErrorBuffer;
     /** Optional network-request ring buffer powering `GET /sdk/network-requests`. */
     networkRequestBuffer?: NetworkRequestBuffer;
+    /**
+     * Optional viewport getter for `POST /control/page-health`. Injected by
+     * `UIBridgeNativeProvider` from `Dimensions.get('window')`. Kept out of
+     * `handlers.ts` so this file has no `react-native` dep at all — the
+     * `require('react-native')` pattern crashed the host in 0.6.3/0.6.4
+     * (Metro/Hermes can't statically resolve the require even with a
+     * `try/catch`; the `unknownModuleError` escapes and tears down the JS
+     * thread). When absent (e.g. tests, or a custom host that doesn't pass
+     * one), `getPageHealth` falls back to `body.viewport` then `{0,0}`.
+     */
+    viewportProvider?: () => { width: number; height: number };
   }
 ): NativeServerHandlers {
   const designHandlers = createDesignHandlers(registry);
@@ -595,19 +584,22 @@ export function createServerHandlers(
 
     getPageHealth: async (ctx: HandlerContext) => {
       // Viewport resolution priority:
-      //   1. Explicit body.viewport — for offline analysis or replaying a
-      //      snapshot from a different device.
-      //   2. Dimensions.get('window') — the host app's live viewport, via
-      //      a SYNC helper. The require() MUST run inside a synchronous
-      //      function: Metro's `require()` inside an async function is
-      //      uncatchable — try/catch around it doesn't fire, and the
-      //      uncaught error tears down the JS thread. design-handlers.ts
-      //      uses the same pattern (`getScreenDimensions`).
-      //   3. {0,0} fallback (degrades to a coverage_pct=0 report rather
-      //      than crashing the host app).
+      //   1. Explicit body.viewport — for offline analysis, replaying a
+      //      snapshot from a different device, or any caller that wants to
+      //      override the device's reported viewport.
+      //   2. `config.viewportProvider()` — injected by
+      //      `UIBridgeNativeProvider` from `Dimensions.get('window')`.
+      //   3. `{0,0}` fallback (degenerates to a coverage_pct=0 report
+      //      rather than crashing).
+      //
+      // The injection indirection exists because importing react-native
+      // from this file (or `require('react-native')` with try/catch) both
+      // crash the host RN app — see the [[viewportProvider]] doc comment
+      // in `NativeServerConfig` and the project memory entry
+      // `feedback_metro_require_gotcha.md`.
       const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })
         ?.viewport;
-      const viewport = bodyViewport ?? getWindowDimensions();
+      const viewport = bodyViewport ?? config?.viewportProvider?.() ?? { width: 0, height: 0 };
 
       const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
         type: e.type,

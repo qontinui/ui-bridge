@@ -472,6 +472,7 @@ export class NativeUIBridgeServer {
       appInfo: this.config.appInfo,
       consoleErrorBuffer: this.consoleErrorBuffer,
       networkRequestBuffer: this.networkRequestBuffer,
+      viewportProvider: this.config.viewportProvider,
     });
 
     // Set up method introspection from the route table

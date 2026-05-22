@@ -13,6 +13,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { Dimensions } from 'react-native';
 import type {
   NativeUIBridgeFeatures,
   NativeUIBridgeConfig,
@@ -241,6 +242,16 @@ export function UIBridgeNativeProvider({
       cors: true,
       appInfo: config.appInfo,
       testHooks: features.testHooks === true,
+      // Injected device-viewport getter for POST /control/page-health. The
+      // server doesn't import `react-native` itself — the require/import
+      // pattern there crashed the host RN app in 0.6.3/0.6.4 (Metro/Hermes
+      // raised `unknownModuleError` past every try/catch). This provider
+      // already has a live react-native import, so it's the safe injection
+      // point. See feedback_metro_require_gotcha for the full incident.
+      viewportProvider: () => {
+        const win = Dimensions.get('window');
+        return { width: win.width, height: win.height };
+      },
     });
 
     server.setAdapter(serverAdapter);
@@ -378,6 +389,10 @@ export function UIBridgeNativeProvider({
             cors: true,
             appInfo: config.appInfo,
             testHooks: features.testHooks === true,
+            viewportProvider: () => {
+              const win = Dimensions.get('window');
+              return { width: win.width, height: win.height };
+            },
           });
           if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
           if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);
