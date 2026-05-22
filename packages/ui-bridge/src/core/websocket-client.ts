@@ -176,6 +176,50 @@ export class UIBridgeWSClient {
   }
 
   /**
+   * Re-arm and immediately re-establish the connection.
+   *
+   * Unlike the `onclose` auto-reconnect path — which is gated on a socket
+   * having reached the `connected` state at least once (`wasConnected`) and on
+   * not having exhausted `maxReconnectAttempts` — this is an additive,
+   * externally-triggered re-arm. It is intended to be called on navigation
+   * (e.g. a 307 redirect that kills the WS handshake before it ever reaches
+   * `connected`), where the standard auto-reconnect would never fire.
+   *
+   * Behaviour:
+   *  - Clears any pending reconnect timer.
+   *  - Resets the reconnect attempt counter (fresh budget).
+   *  - If already `connected` or `connecting`, this is a no-op (no double
+   *    sockets). Otherwise it initiates a fresh `connect()`.
+   *
+   * Safe to call repeatedly / idempotent.
+   */
+  reconnectNow(): void {
+    // Clear any pending scheduled reconnect so we don't end up with two
+    // in-flight connection attempts.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Fresh reconnect budget — a navigation is a legitimate reason to retry
+    // from scratch even if a prior burst exhausted maxReconnectAttempts.
+    this.reconnectAttempts = 0;
+
+    // Already live or mid-handshake — nothing to do. This is what makes the
+    // method idempotent: repeated calls while connecting/connected no-op.
+    if (this.state === 'connected' || this.state === 'connecting') {
+      return;
+    }
+
+    // From 'disconnected' or 'reconnecting' — start a fresh connection.
+    this.connect().catch(() => {
+      // Connection failure here re-enters the standard onclose handling; if the
+      // socket reaches 'connected' and later drops, the wasConnected-gated
+      // auto-reconnect takes over from this point.
+    });
+  }
+
+  /**
    * Disconnect from the server
    */
   disconnect(): void {

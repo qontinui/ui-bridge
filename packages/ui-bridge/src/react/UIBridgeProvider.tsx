@@ -239,6 +239,35 @@ export function UIBridgeProvider({
     });
   }, [wsClient, browserCapture]);
 
+  // Navigation-driven WS re-arm.
+  //
+  // A headless dashboard tab's WebSocket can die during a navigation/redirect
+  // (e.g. a 307 from /runners → /login kills the handshake before it ever
+  // reaches `connected`). The client's onclose auto-reconnect is gated on
+  // `wasConnected`, so a handshake that dies before connecting never schedules
+  // a reconnect — heartbeats stop and the relay's stale-tab sweep prunes the
+  // tab after ~30s. The NavigationTracker (installed in UIBridgeProviderInit)
+  // dispatches `navigation:change` onto the registry event bus on every SPA
+  // navigation; we listen for that and re-arm the socket whenever it is not in
+  // a live/in-flight state. `reconnectNow()` is idempotent, so this is safe to
+  // fire on every navigation.
+  useEffect(() => {
+    if (!wsClient) return;
+    // Touch navigationTracker so the effect re-runs if the tracker instance is
+    // ever swapped; the actual signal arrives via the registry event bus, which
+    // is where NavigationTracker.install routes `navigation:change`.
+    void navigationTracker;
+    return registry.on('navigation:change', () => {
+      const state = wsClient.connectionState;
+      // Re-arm only when the socket is not already live or mid-handshake.
+      // 'reconnecting' is included: a navigation grants a fresh attempt budget
+      // even if a prior backoff burst was in flight or had exhausted its cap.
+      if (state === 'disconnected' || state === 'reconnecting') {
+        wsClient.reconnectNow();
+      }
+    });
+  }, [wsClient, navigationTracker, registry]);
+
   // onBrowserEvent prop is live — re-register the callback when it changes.
   useEffect(() => {
     browserCapture.setOnEvent(onBrowserEvent ?? null);
