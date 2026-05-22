@@ -72,6 +72,8 @@ export interface TransportDiagnostics {
   pendingCommandIds: string[];
   commandListenerCount: number;
   connectedTabs: string[];
+  /** Item #15 — subset of `connectedTabs` whose heartbeat is fresh. */
+  activeTabs: string[];
   primaryTabId: string | null;
   demotedTabs: string[];
   buildId: string;
@@ -80,6 +82,8 @@ export interface TransportDiagnostics {
   commandQueueLength: number;
   tabHeartbeats: Record<string, number>;
   tabMetadata: Record<string, { url: string; title: string; visibility: string; lastSeen: number }>;
+  /** Item #15 — heartbeat-staleness threshold currently in force, for ops visibility. */
+  staleHeartbeatMs: number;
 }
 
 export interface CommandRelayOptions {
@@ -97,10 +101,62 @@ export interface CommandRelayOptions {
   heartbeatStaleMs?: number;
   /** Time after which a demoted tab with no heartbeat is cleaned up (default: 60000) */
   tabDemotionTtlMs?: number;
+  /**
+   * Threshold after which a tab whose heartbeat has gone silent is forcibly
+   * disconnected ("pruned") by the relay — its SSE listener / WebSocket
+   * entry are dropped, primary status is demoted, and `connectedTabs` no
+   * longer reports it. Distinct from `tabDemotionTtlMs`, which only purges
+   * the *metadata* of an already-disconnected tab.
+   *
+   * Defaults to 30_000 ms (≈ 6 missed heartbeats at the SDK's 5s cadence).
+   * Override via the `UI_BRIDGE_STALE_HEARTBEAT_MS` env var when bootstrapping
+   * from a runtime without a constructor option (e.g. `next dev`).
+   */
+  staleHeartbeatMs?: number;
+  /**
+   * Interval between stale-tab sweep passes. Lower values prune zombie tabs
+   * faster at the cost of more wake-ups. Defaults to 10_000 ms.
+   */
+  staleHeartbeatSweepMs?: number;
+}
+
+/** Read a positive-integer env override, returning `fallback` on miss/invalid. */
+function envInt(name: string, fallback: number): number {
+  if (typeof process === 'undefined' || !process?.env) return fallback;
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 // Commands that cause the page to unload — resolved immediately after delivery
 const DEFAULT_FIRE_AND_FORGET = new Set(['pageNavigate', 'pageRefresh']);
+
+/**
+ * Error subclass thrown when a `targetTabId` is supplied but the relay
+ * cannot route the command to that tab. The `code` field surfaces the
+ * specific failure mode so callers can render an actionable diagnostic
+ * (`TAB_NOT_FOUND`, `TAB_STALE`) instead of inferring intent from the
+ * prose message.
+ */
+export class TabRoutingError extends Error {
+  readonly code: 'TAB_NOT_FOUND' | 'TAB_STALE';
+  readonly tabId: string;
+  readonly connectedTabs: string[];
+
+  constructor(
+    code: 'TAB_NOT_FOUND' | 'TAB_STALE',
+    tabId: string,
+    connectedTabs: string[],
+    message: string
+  ) {
+    super(message);
+    this.name = 'TabRoutingError';
+    this.code = code;
+    this.tabId = tabId;
+    this.connectedTabs = connectedTabs;
+  }
+}
 
 // ============================================================================
 // CommandRelay
@@ -114,6 +170,8 @@ export class CommandRelay {
   private readonly maxPendingCommands: number;
   private readonly heartbeatStaleMs: number;
   private readonly tabDemotionTtlMs: number;
+  private readonly staleHeartbeatMs: number;
+  private readonly staleHeartbeatSweepMs: number;
 
   // All state lives on globalThis for HMR survival
   private readonly pendingCommands: Map<string, PendingCommand>;
@@ -147,6 +205,12 @@ export class CommandRelay {
     this.maxPendingCommands = options?.maxPendingCommands ?? 200;
     this.heartbeatStaleMs = options?.heartbeatStaleMs ?? 30_000;
     this.tabDemotionTtlMs = options?.tabDemotionTtlMs ?? 60_000;
+    // Item #15 — tab pruning (forced disconnect of zombie tabs). Precedence:
+    // explicit option > UI_BRIDGE_STALE_HEARTBEAT_MS env > default 30s. Six
+    // missed heartbeats at the SDK's typical 5s cadence.
+    this.staleHeartbeatMs =
+      options?.staleHeartbeatMs ?? envInt('UI_BRIDGE_STALE_HEARTBEAT_MS', 30_000);
+    this.staleHeartbeatSweepMs = options?.staleHeartbeatSweepMs ?? 10_000;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const g = globalThis as any;
@@ -185,13 +249,185 @@ export class CommandRelay {
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.buildId = g[key('BuildId')];
 
-    // Periodic cleanup of stale tab entries (every 30s)
+    // Periodic cleanup. Runs at `staleHeartbeatSweepMs` cadence and performs
+    // two passes: (a) the legacy metadata GC for tabs that already lost their
+    // transport, and (b) Item #15 — active prune of zombie tabs whose
+    // heartbeat has gone stale despite the transport still appearing
+    // connected. Bundled into one interval to avoid two competing timers.
     if (!g[key('CleanupInterval')]) {
       g[key('CleanupInterval')] = setInterval(() => {
-        this.cleanupStaleTabs();
-      }, 30_000);
+        try {
+          this.pruneStaleTabs();
+        } catch (err) {
+          console.error('[ui-bridge] pruneStaleTabs failed:', err);
+        }
+        try {
+          this.cleanupStaleTabs();
+        } catch (err) {
+          console.error('[ui-bridge] cleanupStaleTabs failed:', err);
+        }
+      }, this.staleHeartbeatSweepMs);
     }
     this.cleanupInterval = g[key('CleanupInterval')];
+  }
+
+  // --------------------------------------------------------------------------
+  // Item #15 — Stale-Tab Pruning
+  // --------------------------------------------------------------------------
+
+  /**
+   * Forcibly disconnect tabs whose heartbeat has gone silent for longer
+   * than `staleHeartbeatMs`. Removes their SSE listener entry, WebSocket
+   * client entry, heartbeat record, and metadata. If the pruned tab was
+   * the current primary, demotes it and re-selects the most-recently
+   * heartbeated alternative.
+   *
+   * Returns the list of pruned tab ids — exposed for tests and ops tooling
+   * that want to drive a sweep deterministically without waiting for the
+   * timer.
+   */
+  pruneStaleTabs(): string[] {
+    const now = Date.now();
+    const pruned: string[] = [];
+
+    // Collect every connected tab id (SSE + WS) along with its last beat.
+    const candidates = new Set<string>();
+    for (const id of this.tabListeners.keys()) candidates.add(id);
+    for (const id of this.wsClients.keys()) candidates.add(id);
+
+    for (const tabId of candidates) {
+      const lastBeat = this.tabHeartbeats.get(tabId);
+      // Tabs that have never sent a heartbeat are NOT pruned — they may
+      // still be in the proactive-snapshot warmup window before the SDK
+      // emits its first beat. Heartbeat-aware pruning fires once the SDK
+      // has demonstrated it knows the cadence and then went silent.
+      if (lastBeat === undefined) continue;
+      const ageMs = now - lastBeat;
+      if (ageMs <= this.staleHeartbeatMs) continue;
+
+      // Drop the transport entries. Listeners that were registered via
+      // `subscribeToCommands` had their unsubscribe stored in the SSE
+      // stream closure; dropping the entry here means the callback is
+      // never invoked again — the stream itself will tear down on the
+      // next heartbeat-timeout from the client side, which is acceptable
+      // since the tab is already a zombie.
+      this.tabListeners.delete(tabId);
+      const wsEntry = this.wsClients.get(tabId);
+      if (wsEntry) {
+        try {
+          wsEntry.client.close();
+        } catch {
+          /* connection may already be torn down */
+        }
+        this.wsClients.delete(tabId);
+      }
+      this.tabHeartbeats.delete(tabId);
+      this.tabMetadata.delete(tabId);
+      this.tabLastSuccess.delete(tabId);
+      this.demotedTabs.delete(tabId);
+
+      // If this was the primary, demote and pick a successor below.
+      if (this.primaryTabId === tabId) {
+        this.primaryTabId = null;
+        this.persistPrimaryTab();
+      }
+
+      pruned.push(tabId);
+      // Structured emission — JSON payload on a single line so log aggregators
+      // can parse without multiline buffering.
+      console.log(
+        `[ui-bridge] ${JSON.stringify({
+          event: 'tab.pruned',
+          id: tabId,
+          lastHeartbeatAt: lastBeat,
+          age_ms: ageMs,
+          staleHeartbeatMs: this.staleHeartbeatMs,
+        })}`
+      );
+    }
+
+    // If we dropped the primary, recompute. Picks the alternative with the
+    // most recent heartbeat (falls back to insertion order via
+    // `getPrimaryTabId`'s tabLastSuccess sort).
+    if (pruned.length > 0 && this.primaryTabId === null) {
+      const successor = this.selectPrimarySuccessor();
+      if (successor) {
+        this.setPrimaryTab(successor);
+      }
+    }
+
+    if (pruned.length > 0) {
+      this.resetConnectionGateIfEmpty();
+    }
+
+    return pruned;
+  }
+
+  /**
+   * Pick the most-recently-heartbeated connected tab as the new primary.
+   * Returns `null` if no candidate is connected.
+   */
+  private selectPrimarySuccessor(): string | null {
+    const candidates: string[] = [];
+    for (const id of this.tabListeners.keys()) {
+      if (!this.demotedTabs.has(id)) candidates.push(id);
+    }
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected() && !this.demotedTabs.has(id) && !candidates.includes(id)) {
+        candidates.push(id);
+      }
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+      const ah = this.tabHeartbeats.get(a) ?? 0;
+      const bh = this.tabHeartbeats.get(b) ?? 0;
+      return bh - ah;
+    });
+    return candidates[0]!;
+  }
+
+  /**
+   * Return the set of currently active (non-stale) connected tab ids.
+   * Used by `GET /tabs?activeOnly=true` and the "is this tab still
+   * routable?" check inside `queueCommandInner`.
+   */
+  getActiveTabs(): string[] {
+    const now = Date.now();
+    const active: string[] = [];
+    const seen = new Set<string>();
+    const consider = (id: string): void => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const lastBeat = this.tabHeartbeats.get(id);
+      // A tab with no heartbeat yet (e.g. brand-new SSE connection that
+      // hasn't beaten yet) is treated as active — same policy as
+      // pruneStaleTabs(), which doesn't prune those tabs either.
+      if (lastBeat === undefined) {
+        active.push(id);
+        return;
+      }
+      if (now - lastBeat <= this.staleHeartbeatMs) {
+        active.push(id);
+      }
+    };
+    for (const id of this.tabListeners.keys()) consider(id);
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected()) consider(id);
+    }
+    return active;
+  }
+
+  /**
+   * Check whether a specific tab id is currently active (connected and
+   * fresh-heartbeated). Used by per-tab dispatch routing to reject
+   * stale-tab targets fast.
+   */
+  isTabActive(tabId: string): boolean {
+    const hasTransport = this.tabListeners.has(tabId) || this.wsClients.has(tabId);
+    if (!hasTransport) return false;
+    const lastBeat = this.tabHeartbeats.get(tabId);
+    if (lastBeat === undefined) return true; // pre-heartbeat warmup
+    return Date.now() - lastBeat <= this.staleHeartbeatMs;
   }
 
   /**
@@ -392,8 +628,41 @@ export class CommandRelay {
   ): Promise<T> {
     const targetTabId = options?.targetTabId;
 
-    // Explicit target — send directly, no failover
+    // Explicit target — Item #4 (per-tab routing). Validate that the tab is
+    // both registered AND not stale BEFORE attempting to send. Without this,
+    // a caller pinning a zombie tab would either silently route to nobody
+    // (broadcast-to-zero) or hang until the wsTimeoutMs/sseTimeoutMs grace
+    // expired. We want a fast, structured failure with a code the upstream
+    // multi-machine driver can branch on.
     if (targetTabId) {
+      const hasTransport =
+        this.tabListeners.has(targetTabId) || this.wsClients.has(targetTabId);
+      if (!hasTransport) {
+        const connected = Array.from(
+          new Set([...this.tabListeners.keys(), ...this.wsClients.keys()])
+        );
+        throw new TabRoutingError(
+          'TAB_NOT_FOUND',
+          targetTabId,
+          connected,
+          `tabId "${targetTabId}" is not in connectedTabs (currently: [${connected.join(', ')}]). ` +
+            `Use GET /tabs to discover live tab ids, or omit tabId to dispatch to the primary tab.`
+        );
+      }
+      if (!this.isTabActive(targetTabId)) {
+        const lastBeat = this.tabHeartbeats.get(targetTabId);
+        const ageMs = lastBeat ? Date.now() - lastBeat : -1;
+        const active = this.getActiveTabs();
+        throw new TabRoutingError(
+          'TAB_STALE',
+          targetTabId,
+          active,
+          `tabId "${targetTabId}" is registered but its last heartbeat is ` +
+            `${ageMs}ms old (threshold ${this.staleHeartbeatMs}ms). ` +
+            `Active tabs: [${active.join(', ')}]. ` +
+            `The tab will be pruned on the next sweep — retry without pinning, or pick another tab.`
+        );
+      }
       return this.sendCommand<T>(action, payload, options);
     }
 
@@ -933,6 +1202,7 @@ export class CommandRelay {
       pendingCommandIds: Array.from(this.pendingCommands.keys()),
       commandListenerCount: this.tabListeners.size,
       connectedTabs: Array.from(this.tabListeners.keys()),
+      activeTabs: this.getActiveTabs(),
       primaryTabId: this.getPrimaryTabId(),
       demotedTabs: Array.from(this.demotedTabs),
       buildId: this.buildId,
@@ -941,6 +1211,7 @@ export class CommandRelay {
       commandQueueLength: this.commandQueue.length,
       tabHeartbeats: Object.fromEntries(this.tabHeartbeats),
       tabMetadata: Object.fromEntries(this.tabMetadata),
+      staleHeartbeatMs: this.staleHeartbeatMs,
     };
   }
 

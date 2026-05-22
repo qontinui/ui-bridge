@@ -60,6 +60,7 @@ export { SSEManager } from './sse-handler';
 // Command relay
 export {
   CommandRelay,
+  TabRoutingError,
   type QueuedCommand,
   type CommandListener,
   type TabListener,

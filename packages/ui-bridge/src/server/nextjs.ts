@@ -2,6 +2,28 @@
  * Next.js Adapter
  *
  * Next.js API route handlers for UI Bridge server.
+ *
+ * Per-tab routing (Item #4)
+ * --------------------------
+ * When more than one browser tab is connected to the same relay (e.g. two
+ * operator machines both pointed at the same Vercel deployment of
+ * `demo.staging.qontinui.io`), the default dispatch routes the command to
+ * `primaryTabId` — and `primaryTabId` flips to the most-recently-registered
+ * tab. That means an element id resolved from tab A's snapshot may be
+ * dispatched to tab B and 404 with "Element not found".
+ *
+ * To pin a command to a specific tab, supply `tabId` in ANY of three places
+ * (in order of precedence, highest first):
+ *
+ *   1. Query string:   ?tabId=<uuid>
+ *   2. HTTP header:    X-UI-Bridge-Tab-Id: <uuid>
+ *   3. JSON body:      { "tabId": "<uuid>", ... }
+ *
+ * Discover live tab ids with `GET /tabs` (or `GET /tabs?activeOnly=true` to
+ * filter out tabs whose heartbeat has gone stale). If the supplied tabId is
+ * not connected, the relay rejects the command with `code: "TAB_NOT_FOUND"`;
+ * if the tab is registered but stale, `code: "TAB_STALE"`. Omitting tabId
+ * preserves the legacy primary-tab fallback (backward compatible).
  */
 
 // Define NextRequest interface locally to avoid requiring next as a dependency
@@ -187,20 +209,50 @@ export function createNextRouteHandlers(
         }
       }
 
+      // Item #4 — per-tab routing. Sniff `tabId` from URL query, then the
+      // `X-UI-Bridge-Tab-Id` header. If found, we'll splice it into the
+      // body / query object below so handlers downstream can route the
+      // relay command to a specific tab instead of `primaryTabId`. Body
+      // takes lowest precedence — see `extractTabRouting` in relay-handlers.
+      const queryTabId =
+        request.nextUrl.searchParams.get('tabId') ??
+        request.nextUrl.searchParams.get('targetTabId') ??
+        undefined;
+      const headerTabId =
+        request.headers.get('x-ui-bridge-tab-id') ??
+        request.headers.get('X-UI-Bridge-Tab-Id') ??
+        undefined;
+      const externalTabId = queryTabId ?? headerTabId ?? undefined;
+
       // Add body for POST/PUT/PATCH requests or when body is required
       if (route.bodyRequired || method === 'POST' || method === 'PUT' || method === 'PATCH') {
         try {
           const body = await request.json();
+          if (
+            externalTabId &&
+            body !== null &&
+            typeof body === 'object' &&
+            !Array.isArray(body) &&
+            (body as Record<string, unknown>).tabId === undefined &&
+            (body as Record<string, unknown>).targetTabId === undefined
+          ) {
+            (body as Record<string, unknown>).tabId = externalTabId;
+          }
           args.push(body);
         } catch {
-          // No body or invalid JSON
-          args.push({});
+          // No body or invalid JSON — synthesize a body that still carries
+          // tabId so per-tab routing works on endpoints whose handler signature
+          // requires a body but whose caller sent none.
+          args.push(externalTabId ? { tabId: externalTabId } : {});
         }
       }
 
       // Add query params for GET requests
       if (method === 'GET') {
         const searchParams = Object.fromEntries(request.nextUrl.searchParams);
+        if (externalTabId && searchParams.tabId === undefined && searchParams.targetTabId === undefined) {
+          searchParams.tabId = externalTabId;
+        }
         if (Object.keys(searchParams).length > 0) {
           args.push(searchParams);
         }
@@ -700,34 +752,53 @@ function handleRelayRoute(
     })();
   }
 
-  // GET /tabs — connected tab info with metadata
+  // GET /tabs — connected tab info with metadata.
+  // Query params:
+  //   ?detailed=true     Issue a per-tab `getTabInfo` round-trip to enrich
+  //                      each entry with the live URL/pathname/title.
+  //   ?activeOnly=true   Item #15 — return only tabs whose last heartbeat
+  //                      falls within `staleHeartbeatMs`. Use this BEFORE
+  //                      pinning a command with `?tabId=<id>` to avoid
+  //                      racing the next stale-tab sweep.
   if (method === 'GET' && path === '/tabs') {
     const url = new URL(request.url);
     const detailed = url.searchParams.get('detailed') === 'true';
+    const activeOnly = url.searchParams.get('activeOnly') === 'true';
     const diag = relay.getTransportDiagnostics();
+    const tabIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
+    const activeSet = new Set(diag.activeTabs);
     if (detailed) {
       return (async () => {
         const tabInfos = await relay.getTabsWithInfo();
-        const tabs = tabInfos.map((info) => ({
+        const filtered = activeOnly
+          ? tabInfos.filter((info) => activeSet.has(info.tabId))
+          : tabInfos;
+        const tabs = filtered.map((info) => ({
           ...info,
           ...(diag.tabMetadata[info.tabId] || {}),
           lastHeartbeat: diag.tabHeartbeats[info.tabId] ?? null,
           isPrimary: info.tabId === diag.primaryTabId,
           isDemoted: diag.demotedTabs.includes(info.tabId),
+          isActive: activeSet.has(info.tabId),
         }));
-        return jsonResponse({ success: true, data: { tabs }, timestamp: Date.now() });
+        return jsonResponse({
+          success: true,
+          data: { tabs, staleHeartbeatMs: diag.staleHeartbeatMs },
+          timestamp: Date.now(),
+        });
       })();
     }
-    const tabs = diag.connectedTabs.map((tabId) => ({
+    const tabs = tabIds.map((tabId) => ({
       tabId,
       ...(diag.tabMetadata[tabId] || {}),
       lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
       isPrimary: tabId === diag.primaryTabId,
       isDemoted: diag.demotedTabs.includes(tabId),
+      isActive: activeSet.has(tabId),
     }));
     return jsonResponse({
       success: true,
-      data: { tabs },
+      data: { tabs, staleHeartbeatMs: diag.staleHeartbeatMs },
       timestamp: Date.now(),
     });
   }

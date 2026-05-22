@@ -194,17 +194,101 @@ export function createRelayHandlers(
   // Cache for console errors (returned when browser disconnects)
   let lastConsoleErrorsCache: APIResponse<unknown> | null = null;
 
-  // Helper: relay a command, return success/error
+  /**
+   * Extract `targetTabId` from a relay-command payload — Item #4 routing.
+   *
+   * Callers (the Next.js / Express adapter, in particular) thread `tabId`
+   * into the request body so every handler downstream sees it without
+   * per-handler plumbing. We strip it here so the browser-side dispatcher
+   * doesn't receive a stray `tabId`/`targetTabId` field it doesn't expect.
+   *
+   * Both spellings are accepted: external `?tabId` query / `tabId` body
+   * field uses the public name; the internal relay option is `targetTabId`.
+   *
+   * Two locations are checked:
+   *   1. The top-level payload object (e.g. `relayCommand('find', payload)`)
+   *   2. The nested `payload.request` object (the common pattern for
+   *      action-style handlers: `relayCommand('executeElementAction',
+   *      { id, request })` — `request` is the body the adapter threaded
+   *      `tabId` into).
+   *
+   * Top-level wins over nested when both exist.
+   */
+  function extractTabRouting(payload: unknown): {
+    targetTabId: string | undefined;
+    cleaned: unknown;
+  } {
+    if (payload === null || payload === undefined || typeof payload !== 'object') {
+      return { targetTabId: undefined, cleaned: payload };
+    }
+    const obj = payload as Record<string, unknown>;
+    const topTarget = typeof obj.targetTabId === 'string' ? (obj.targetTabId as string) : undefined;
+    const topPublic = typeof obj.tabId === 'string' ? (obj.tabId as string) : undefined;
+
+    // Inspect the nested `request` wrapper used by action-style handlers.
+    let nestedTabId: string | undefined;
+    let cleanedRequest: unknown = obj.request;
+    if (obj.request !== null && typeof obj.request === 'object' && !Array.isArray(obj.request)) {
+      const req = obj.request as Record<string, unknown>;
+      const nestedTarget =
+        typeof req.targetTabId === 'string' ? (req.targetTabId as string) : undefined;
+      const nestedPublic = typeof req.tabId === 'string' ? (req.tabId as string) : undefined;
+      nestedTabId = nestedTarget ?? nestedPublic;
+      if (nestedTabId !== undefined) {
+        const { targetTabId: _omitT, tabId: _omitP, ...restReq } = req;
+        cleanedRequest = restReq;
+      }
+    }
+
+    const targetTabId = topTarget ?? topPublic ?? nestedTabId;
+    if (targetTabId === undefined) return { targetTabId: undefined, cleaned: payload };
+
+    const { targetTabId: _omitTarget, tabId: _omitPublic, ...rest } = obj;
+    if (cleanedRequest !== obj.request) {
+      (rest as Record<string, unknown>).request = cleanedRequest;
+    }
+    return { targetTabId, cleaned: rest };
+  }
+
+  // Helper: relay a command, return success/error. Honors `targetTabId`
+  // sourced from either the explicit `opts` argument (used by a couple of
+  // handlers that destructure it manually) or the payload itself (the
+  // catch-all Item #4 path — nextjs/express adapters stuff `tabId` into the
+  // body so every handler picks it up uniformly).
   async function relayCommand<T>(
     action: string,
     payload: unknown = {},
     opts?: { targetTabId?: string }
   ): Promise<APIResponse<T>> {
+    const { targetTabId: payloadTabId, cleaned } = extractTabRouting(payload);
+    const effectiveOpts =
+      opts?.targetTabId || payloadTabId
+        ? { targetTabId: opts?.targetTabId ?? payloadTabId }
+        : undefined;
     try {
-      const result = await relay.queueCommand<T>(action, payload, opts);
+      const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
       return success(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Per-tab routing errors get a dedicated code so callers can branch
+      // without parsing prose (Item #4). Bypass `mapInternalErrorCode` and
+      // return the literal `TAB_NOT_FOUND` / `TAB_STALE` codes — these are
+      // contract surface (multi-machine drivers branch on them), same shape
+      // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
+      const tabErr = e as { code?: unknown; name?: unknown };
+      if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
+        return {
+          success: false,
+          error: msg,
+          code: tabErr.code as APIResponse['code'],
+          timestamp: Date.now(),
+          suggestions: [
+            'GET /tabs?activeOnly=true to discover currently live tabs',
+            'Omit tabId to fall back to the relay primary tab',
+            'Wait for the target tab to reconnect, then retry',
+          ],
+        } as APIResponse<T>;
+      }
       const hasListeners = relay.hasCommandListeners() || relay.getWebSocketClientCount() > 0;
       const isTimeout = msg.includes('timeout') || msg.includes('Timeout');
       const hint = !hasListeners
@@ -243,8 +327,10 @@ export function createRelayHandlers(
     payload: unknown = {},
     fallback: T
   ): Promise<APIResponse<T>> {
+    const { targetTabId, cleaned } = extractTabRouting(payload);
+    const opts = targetTabId ? { targetTabId } : undefined;
     try {
-      const result = await relay.queueCommand<T>(action, payload);
+      const result = await relay.queueCommand<T>(action, cleaned, opts);
       return success(result);
     } catch {
       return success(fallback, {
