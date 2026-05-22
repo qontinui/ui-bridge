@@ -2058,6 +2058,506 @@ export async function executeCommand(
       });
     }
 
+    // ======================================================================
+    // Wait-for-element / wait-for-route — relay path.
+    //
+    // The server-side handlers in `src/server/handlers.ts` own the canonical
+    // implementations for in-process consumers (the runner). When the bridge
+    // is paired to a real browser the server-side relay-handlers
+    // (`src/server/relay-handlers.ts:1832-1842`) forward each request through
+    // `relayCommand(...)` to this dispatcher.
+    //
+    // The browser context owns the DOM + the SDK registry, so we re-implement
+    // a DOM-driven version here that matches the server-side shape (success
+    // payload vs `{reason: 'timeout', ...}` timeout payload). This was an
+    // outstanding gap that shipped 2026-04-24 in `0b5b438` — the relay routed
+    // the command to the browser but the browser dispatcher threw
+    // `Unknown command action: …`, so every web-frontend wait-for-element /
+    // wait-for-route call was failing.
+    //
+    // Wrapping shape: the relay-handlers thread the success envelope around
+    // the browser response inside the runner (relayCommand returns
+    // `APIResponse<T>` after wrapping a successful dispatch result via
+    // `success(...)`), so we return the inner payload here only.
+    // ======================================================================
+
+    case 'waitForElementRegistered': {
+      const req = (payload ?? {}) as {
+        predicate?: {
+          id?: string;
+          label?: string;
+          testId?: string;
+          selector?: string;
+        };
+        requirement?: 'registered' | 'visible' | 'has-layout';
+        pollMs?: number;
+        timeoutMs?: number;
+      };
+      const predicate = req.predicate ?? {};
+      const requirement = req.requirement ?? 'registered';
+      const pollMs = Math.min(
+        Math.max(typeof req.pollMs === 'number' ? req.pollMs : 100, 50),
+        1000
+      );
+      const timeoutMs = Math.min(
+        Math.max(typeof req.timeoutMs === 'number' ? req.timeoutMs : 5000, 100),
+        60_000
+      );
+
+      const labelNeedle =
+        typeof predicate.label === 'string' && predicate.label.length > 0
+          ? predicate.label.toLowerCase()
+          : null;
+
+      const predicateMatches = (
+        el: RegisteredElement,
+        domEl: HTMLElement | null
+      ): boolean => {
+        if (typeof predicate.id === 'string' && predicate.id.length > 0) {
+          if (el.id !== predicate.id) return false;
+        }
+        if (labelNeedle) {
+          const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
+          const ariaLabel = domEl?.getAttribute?.('aria-label')?.toLowerCase() ?? '';
+          if (!label.includes(labelNeedle) && !ariaLabel.includes(labelNeedle)) {
+            return false;
+          }
+        }
+        if (typeof predicate.testId === 'string' && predicate.testId.length > 0) {
+          const testId = domEl?.getAttribute?.('data-testid');
+          if (testId !== predicate.testId) return false;
+        }
+        return true;
+      };
+
+      const requirementMet = (
+        el: RegisteredElement,
+        domEl: HTMLElement | null
+      ): boolean => {
+        if (requirement === 'registered') return true;
+
+        if (requirement === 'visible') {
+          if (typeof el.visible === 'boolean') return el.visible;
+          if (!domEl) return false;
+          if (domEl.offsetParent === null) return false;
+          const rect = domEl.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }
+
+        if (requirement === 'has-layout') {
+          const w = el.bbox?.width ?? 0;
+          const h = el.bbox?.height ?? 0;
+          if (w > 0 && h > 0) return true;
+          if (domEl) {
+            const rect = domEl.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+          return false;
+        }
+
+        return true;
+      };
+
+      const started = Date.now();
+
+      type Match = { element: Record<string, unknown>; domEl: HTMLElement | null };
+
+      const attempt = (): Match | null => {
+        try {
+          // Re-read the registry each tick — the outer `elements` snapshot
+          // was captured before the poll started, so elements registered
+          // mid-wait would otherwise be invisible. Matches the runner-side
+          // handler's behaviour of calling `registry.getAllElements()` on
+          // every poll pass.
+          const live = registry.getAllElements();
+          for (const el of live) {
+            const domEl = el.element ?? null;
+            if (!predicateMatches(el, domEl)) continue;
+            if (!requirementMet(el, domEl)) continue;
+            return { element: serializeRegisteredElement(el), domEl };
+          }
+        } catch {
+          // Registry serialization errors are non-fatal; keep polling.
+        }
+
+        // DOM-selector fallback — only kicks in when caller supplied one and
+        // the registry didn't satisfy the predicate. Matches the
+        // server-side handler's behaviour for un-instrumented widgets.
+        if (
+          typeof predicate.selector === 'string' &&
+          predicate.selector.length > 0 &&
+          typeof document !== 'undefined'
+        ) {
+          try {
+            const domEl = document.querySelector(predicate.selector) as HTMLElement | null;
+            if (domEl) {
+              const syntheticEl: Record<string, unknown> = {
+                id: domEl.id || `dom-${predicate.selector}`,
+                label:
+                  domEl.getAttribute('aria-label') ??
+                  domEl.textContent?.trim() ??
+                  undefined,
+                type: domEl.tagName?.toLowerCase?.(),
+                ariaLabel: domEl.getAttribute('aria-label') ?? undefined,
+              };
+              // Build a minimal RegisteredElement-shaped object purely for
+              // requirementMet's interface. Visibility/layout checks fall
+              // through to the live DOM since `visible`/`bbox` are absent.
+              const reqMet = requirementMet(
+                { visible: undefined, bbox: undefined } as unknown as RegisteredElement,
+                domEl
+              );
+              if (!reqMet) return null;
+              return { element: syntheticEl, domEl };
+            }
+          } catch {
+            // Invalid selector — treat as no match.
+          }
+        }
+
+        return null;
+      };
+
+      // Fast path — check before scheduling any timers.
+      const first = attempt();
+      if (first) {
+        return {
+          element: first.element,
+          elapsedMs: Date.now() - started,
+        };
+      }
+
+      return new Promise((resolve) => {
+        let done = false;
+        let lastPartial: Record<string, unknown> | undefined;
+
+        const poll = () => {
+          if (done) return;
+          const elapsed = Date.now() - started;
+
+          const match = attempt();
+          if (match) {
+            done = true;
+            resolve({
+              element: match.element,
+              elapsedMs: Date.now() - started,
+            });
+            return;
+          }
+
+          // Track "closest match" — predicate-matched but requirement-failed
+          // element, so timeouts surface why they failed. Re-read the live
+          // registry for the same reason as `attempt()`.
+          if (requirement !== 'registered') {
+            try {
+              for (const el of registry.getAllElements()) {
+                const domEl = el.element ?? null;
+                if (predicateMatches(el, domEl)) {
+                  lastPartial = serializeRegisteredElement(el);
+                  break;
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+
+          if (elapsed >= timeoutMs) {
+            done = true;
+            resolve({
+              reason: 'timeout',
+              elapsedMs: elapsed,
+              closestMatch: lastPartial,
+            });
+            return;
+          }
+
+          setTimeout(poll, pollMs);
+        };
+
+        setTimeout(poll, pollMs);
+      });
+    }
+
+    case 'waitForElementByCondition': {
+      const req = (payload ?? {}) as {
+        selector?: {
+          id?: string;
+          title?: string;
+          aria_label?: string;
+          text?: string;
+          type?: string;
+        };
+        timeout_ms?: number;
+        condition?: 'present' | 'visible' | 'clickable' | 'text-matches';
+        text_match?: string;
+      };
+      const selector = req.selector ?? {};
+      const condition = req.condition ?? 'present';
+      const text_match = req.text_match;
+
+      const timeoutMs = Math.min(
+        Math.max(typeof req.timeout_ms === 'number' ? req.timeout_ms : 5000, 100),
+        60_000
+      );
+
+      const started = Date.now();
+      const POLL_MS = 100;
+
+      const matchesSelector = (el: RegisteredElement): boolean => {
+        const domEl = el.element ?? null;
+        const elType = typeof el.type === 'string' ? el.type.toLowerCase() : '';
+        const elTag = (domEl?.tagName ?? '').toLowerCase();
+        if (selector.type) {
+          const needle = selector.type.toLowerCase();
+          if (!elType.includes(needle) && !elTag.includes(needle)) return false;
+        }
+        if (selector.id && el.id !== selector.id) return false;
+
+        const ariaLabel = domEl?.getAttribute?.('aria-label') ?? undefined;
+        const title = domEl?.getAttribute?.('title') ?? undefined;
+
+        if (selector.title) {
+          const needle = selector.title.toLowerCase();
+          const t = (title ?? '').toLowerCase();
+          const a = (ariaLabel ?? '').toLowerCase();
+          const l = (el.label ?? '').toLowerCase();
+          if (!t.includes(needle) && !a.includes(needle) && !l.includes(needle)) {
+            return false;
+          }
+        }
+        if (selector.aria_label) {
+          const needle = selector.aria_label.toLowerCase();
+          const a = (ariaLabel ?? '').toLowerCase();
+          const l = (el.label ?? '').toLowerCase();
+          if (!a.includes(needle) && !l.includes(needle)) return false;
+        }
+        if (selector.text) {
+          const needle = selector.text.toLowerCase();
+          const l = (el.label ?? '').toLowerCase();
+          const i = el.id.toLowerCase();
+          if (!l.includes(needle) && !i.includes(needle)) return false;
+        }
+        return true;
+      };
+
+      const checkCondition = (el: RegisteredElement, domEl: HTMLElement | null): boolean => {
+        switch (condition) {
+          case 'present':
+            return true;
+          case 'visible': {
+            if (!domEl) return false;
+            if (domEl.offsetParent === null) return false;
+            const rect = domEl.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+          case 'clickable': {
+            if (!domEl) return false;
+            if (domEl.offsetParent === null) return false;
+            const rect = domEl.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            if ((domEl as HTMLButtonElement | HTMLInputElement).disabled) return false;
+            if (domEl.getAttribute('aria-disabled') === 'true') return false;
+            return true;
+          }
+          case 'text-matches': {
+            if (!text_match) return true;
+            const needle = text_match.toLowerCase();
+            const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
+            const ariaLabel = (domEl?.getAttribute?.('aria-label') ?? '').toLowerCase();
+            const title = (domEl?.getAttribute?.('title') ?? '').toLowerCase();
+            const textContent = domEl?.textContent?.toLowerCase() ?? '';
+            return (
+              label.includes(needle) ||
+              ariaLabel.includes(needle) ||
+              title.includes(needle) ||
+              textContent.includes(needle)
+            );
+          }
+          default:
+            return true;
+        }
+      };
+
+      return new Promise((resolve) => {
+        let done = false;
+
+        const poll = () => {
+          if (done) return;
+          const waited_ms = Date.now() - started;
+
+          try {
+            // Re-read the live registry each tick so elements registered
+            // mid-wait are visible (the outer `elements` snapshot was
+            // captured before the poll started).
+            for (const el of registry.getAllElements()) {
+              if (!matchesSelector(el)) continue;
+              const domEl = el.element ?? null;
+              if (checkCondition(el, domEl)) {
+                done = true;
+                resolve({
+                  matched: true,
+                  element: serializeRegisteredElement(el),
+                  waited_ms,
+                });
+                return;
+              }
+            }
+          } catch {
+            // Registry errors are non-fatal; keep polling.
+          }
+
+          if (waited_ms >= timeoutMs) {
+            done = true;
+            resolve({ matched: false, waited_ms });
+            return;
+          }
+
+          setTimeout(poll, POLL_MS);
+        };
+
+        poll();
+      });
+    }
+
+    case 'waitForRouteChange': {
+      const req = (payload ?? {}) as {
+        fromRoute?: string;
+        toRoute?: string;
+        matchMode?: 'exact' | 'prefix' | 'regex';
+        timeoutMs?: number;
+      };
+      const matchMode = req.matchMode ?? 'exact';
+      const timeoutMs = Math.min(
+        Math.max(typeof req.timeoutMs === 'number' ? req.timeoutMs : 5000, 100),
+        60_000
+      );
+
+      // Validate `toRoute` matcher up front so invalid regex surfaces as a
+      // synchronous validation error — matches the server-side handler shape.
+      let toMatcher: ((candidate: string) => boolean) | null = null;
+      if (typeof req.toRoute === 'string' && req.toRoute.length > 0) {
+        const needle = req.toRoute;
+        if (matchMode === 'exact') {
+          toMatcher = (c) => c === needle;
+        } else if (matchMode === 'prefix') {
+          toMatcher = (c) => c.startsWith(needle);
+        } else if (matchMode === 'regex') {
+          let re: RegExp;
+          try {
+            re = new RegExp(needle);
+          } catch (err) {
+            return {
+              success: false,
+              error: `Invalid regex toRoute: ${(err as Error).message}`,
+              code: 'VALIDATION_ERROR',
+            };
+          }
+          toMatcher = (c) => re.test(c);
+        }
+      }
+
+      const fromMatcher =
+        typeof req.fromRoute === 'string' && req.fromRoute.length > 0
+          ? (candidate: string) => candidate === req.fromRoute
+          : null;
+
+      const started = Date.now();
+      const initialRoute =
+        typeof window !== 'undefined' ? window.location.pathname : '';
+
+      return new Promise((resolve) => {
+        let settled = false;
+        let lastFrom = initialRoute;
+        let lastTo: string | undefined;
+        const cleanups: Array<() => void> = [];
+
+        const done = (value: unknown) => {
+          if (settled) return;
+          settled = true;
+          for (const c of cleanups) {
+            try {
+              c();
+            } catch {
+              /* ignore */
+            }
+          }
+          resolve(value);
+        };
+
+        const checkAndFire = (from: string, to: string) => {
+          lastTo = to;
+          if (from === to) return; // Not a transition.
+          if (fromMatcher && !fromMatcher(from)) return;
+          if (toMatcher && !toMatcher(to)) return;
+          done({ from, to, elapsedMs: Date.now() - started });
+        };
+
+        // Hook 1: popstate (covers back/forward + manually-dispatched
+        // popstate events that React Router v6 uses).
+        const popstateHandler = () => {
+          if (typeof window === 'undefined') return;
+          const current = window.location.pathname;
+          const from = lastFrom;
+          lastFrom = current;
+          checkAndFire(from, current);
+        };
+        if (typeof window !== 'undefined') {
+          window.addEventListener('popstate', popstateHandler);
+          cleanups.push(() => window.removeEventListener('popstate', popstateHandler));
+        }
+
+        // Hook 2: history.pushState / replaceState wrap. React Router and
+        // every other client-side router calls one of these to mutate
+        // location.pathname; the native methods don't dispatch events, so we
+        // wrap them with a synchronous tap that fires the matcher. Restores
+        // the originals on cleanup.
+        if (typeof window !== 'undefined' && window.history) {
+          const origPush = window.history.pushState.bind(window.history);
+          const origReplace = window.history.replaceState.bind(window.history);
+
+          window.history.pushState = (
+            data: unknown,
+            unused: string,
+            url?: string | URL | null
+          ) => {
+            const from = window.location.pathname;
+            origPush(data as never, unused, url as never);
+            const to = window.location.pathname;
+            lastFrom = to;
+            checkAndFire(from, to);
+          };
+          window.history.replaceState = (
+            data: unknown,
+            unused: string,
+            url?: string | URL | null
+          ) => {
+            const from = window.location.pathname;
+            origReplace(data as never, unused, url as never);
+            const to = window.location.pathname;
+            lastFrom = to;
+            checkAndFire(from, to);
+          };
+
+          cleanups.push(() => {
+            window.history.pushState = origPush;
+            window.history.replaceState = origReplace;
+          });
+        }
+
+        // Timeout. Mirror the server-side shape: `{reason: 'timeout',
+        // lastKnownRoute, elapsedMs}`.
+        const timer = setTimeout(() => {
+          done({
+            reason: 'timeout',
+            lastKnownRoute: lastTo ?? lastFrom,
+            elapsedMs: Date.now() - started,
+          });
+        }, timeoutMs);
+        cleanups.push(() => clearTimeout(timer));
+      });
+    }
+
     case 'categorizeLastDiff':
       return { category: 'unknown', timestamp: Date.now() };
 
