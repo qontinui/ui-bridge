@@ -478,6 +478,72 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Update an element's descriptive metadata (label / accessibilityLabel /
+   * testId). Sister to {@link updateElementState} (which carries layout +
+   * visibility) and {@link updateElementProps} (which carries event handlers).
+   *
+   * Idempotent — if every passed field equals the existing value, the call
+   * returns without mutating the entry or emitting an event. This keeps
+   * `useUIElement().updateLabel(...)` cheap when consumers re-publish from a
+   * render path that produces the same string on every tick.
+   *
+   * Returns `true` when the entry was mutated, `false` otherwise. Callers
+   * that want to gate a `console.warn` on no-op invocations can use the
+   * return value instead of recomputing equality.
+   */
+  updateElementMeta(
+    id: string,
+    meta: { label?: string; accessibilityLabel?: string; testId?: string }
+  ): boolean {
+    const element = this.elements.get(id);
+    if (!element) return false;
+
+    // The `testId` on a registered element lives inside the identifier
+    // closure (see registerElement's `getIdentifier`). To rebuild it we
+    // need the current value — read it via the existing identifier and
+    // overlay the new one if provided.
+    const currentIdentifier = element.getIdentifier();
+    const nextLabel = meta.label !== undefined ? meta.label : element.label;
+    const nextAccessibilityLabel =
+      meta.accessibilityLabel !== undefined
+        ? meta.accessibilityLabel
+        : currentIdentifier.accessibilityLabel;
+    const nextTestId = meta.testId !== undefined ? meta.testId : currentIdentifier.testId;
+
+    const labelChanged = nextLabel !== element.label;
+    const accessibilityLabelChanged = nextAccessibilityLabel !== currentIdentifier.accessibilityLabel;
+    const testIdChanged = nextTestId !== currentIdentifier.testId;
+
+    if (!labelChanged && !accessibilityLabelChanged && !testIdChanged) {
+      return false;
+    }
+
+    const updated: RegisteredNativeElement = {
+      ...element,
+      label: nextLabel,
+      getIdentifier: (): NativeElementIdentifier => ({
+        uiId: id,
+        testId: nextTestId,
+        accessibilityLabel: nextAccessibilityLabel,
+        treePath: currentIdentifier.treePath,
+      }),
+    };
+    this.elements.set(id, updated);
+
+    // Reuse `element:registered` rather than minting a new event — downstream
+    // consumers already subscribe to it for label/identifier diffs, and
+    // adding a new BridgeEventType ('element:metaChanged') would force a
+    // SemVer-major bump on every snapshot consumer.
+    this.emit('element:registered', {
+      id,
+      type: element.type,
+      label: nextLabel,
+    });
+
+    return true;
+  }
+
+  /**
    * Update element props (for action execution)
    */
   updateElementProps(id: string, props: Record<string, unknown>): void {
