@@ -124,6 +124,10 @@ const WS_ROUTES: readonly WsRoute[] = [
   { pattern: 'ai/find', handler: 'find', httpMethods: ['POST'] },
   { pattern: 'control/snapshot', handler: 'getSnapshot', httpMethods: ['GET'] },
   { pattern: 'control/discover', handler: 'getSnapshot' },
+  // Page health — accepts both GET and POST so the canonical skill invocation
+  // (`POST .../control/page-health` with an empty body) and ad-hoc curls both
+  // work without a body-shape gotcha.
+  { pattern: 'control/page-health', handler: 'getPageHealth', httpMethods: ['GET', 'POST'] },
 
   // Workflows
   { pattern: 'control/workflows', handler: 'getWorkflows', httpMethods: ['GET'] },
@@ -248,6 +252,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   find: 'AI-powered element search by natural-language query',
   getSnapshot:
     'Full snapshot: elements + route + state. Supports ?visibleOnly=true and ?currentRouteOnly=true',
+  getPageHealth:
+    'Holistic page health diagnostic over current snapshot elements (spatial coverage, layout regions, text/anomaly signals, heatmap). Optional body: { viewport?: { width, height } } to override Dimensions.get("window").',
   getWorkflows: 'List registered workflows',
   runWorkflow: 'Trigger a workflow by id',
   pageRefresh: 'Reload the current route',
