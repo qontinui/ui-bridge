@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NativeUIBridgeRegistry } from './registry';
+import { NativeUIBridgeRegistry, matchesCurrentRoute } from './registry';
 import type { NativeElementRef } from './types';
 
 function makeRef(): React.RefObject<NativeElementRef> {
@@ -194,5 +194,221 @@ describe('NativeUIBridgeRegistry.getVisibleElements', () => {
 
     const visible = registry.getVisibleElements();
     expect(visible.map((e) => e.id)).toEqual(['visible-with-layout']);
+  });
+});
+
+/**
+ * Item 2 of the 0.6.6 robustness pass — seed `state.value` from
+ * `props.value` for controlled-input elements so AI drivers can read the
+ * default value before the user has typed.
+ *
+ * Pre-fix: `useUIElementWithProps + captureProps({ value, onChangeText })`
+ * registered a `type:'input'` element whose `state.value` was undefined
+ * until the FIRST `onChangeText` call. The bridge could see the input but
+ * not its default text.
+ */
+describe('NativeUIBridgeRegistry — controlled-input state.value mirror (Item 2)', () => {
+  it('seeds state.value from props.value at registration for type:"input"', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('api-url', makeRef(), {
+      type: 'input',
+      props: { value: 'https://demo.staging.qontinui.io' },
+    });
+    expect(registry.getElement('api-url')!.getState().value).toBe(
+      'https://demo.staging.qontinui.io'
+    );
+  });
+
+  it('mirrors props.value updates into state.value on updateElementProps', () => {
+    // Simulates `useUIElementWithProps + captureProps({ value, onChangeText })`
+    // where the parent re-passes a new value on a controlled re-render.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('search', makeRef(), { type: 'input' });
+    expect(registry.getElement('search')!.getState().value).toBeUndefined();
+
+    registry.updateElementProps('search', { value: 'initial', onChangeText: () => {} });
+    expect(registry.getElement('search')!.getState().value).toBe('initial');
+
+    registry.updateElementProps('search', { value: 'updated' });
+    expect(registry.getElement('search')!.getState().value).toBe('updated');
+  });
+
+  it('does NOT touch state.value for non-input element types', () => {
+    // A switch's "value" prop is a boolean and lives on `state.checked`.
+    // The input-only mirror must not clobber that.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('s', makeRef(), { type: 'switch' });
+    registry.updateElementProps('s', { value: true });
+    expect(registry.getElement('s')!.getState().value).toBeUndefined();
+  });
+
+  it('does NOT touch state.value when props.value is not a string', () => {
+    // Defensive: if a consumer somehow passes value={undefined} or null
+    // (common in transitional render paths), don't blow away whatever
+    // state.value already holds.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('i', makeRef(), {
+      type: 'input',
+      props: { value: 'seeded' },
+    });
+    expect(registry.getElement('i')!.getState().value).toBe('seeded');
+
+    registry.updateElementProps('i', { value: undefined });
+    expect(registry.getElement('i')!.getState().value).toBe('seeded');
+
+    registry.updateElementProps('i', { value: null });
+    expect(registry.getElement('i')!.getState().value).toBe('seeded');
+  });
+
+  it('lets the bridge-driven type action still update state.value', () => {
+    // The action-executor `type` action calls
+    // `updateElementState(id, { value: params.text })` directly — verify
+    // the controlled-input mirror doesn't fight that path.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('i', makeRef(), {
+      type: 'input',
+      props: { value: 'before' },
+    });
+    expect(registry.getElement('i')!.getState().value).toBe('before');
+
+    // Simulate the action-executor's type-action mutation.
+    registry.updateElementState('i', { value: 'typed-from-bridge' });
+    expect(registry.getElement('i')!.getState().value).toBe('typed-from-bridge');
+  });
+});
+
+/**
+ * Item 3 of the 0.6.6 robustness pass — surface a text element's dynamic
+ * label as `state.value` so bridge consumers can grep text content with a
+ * uniform `state.value` accessor instead of parsing `label`.
+ *
+ * Pre-fix: a status text registered via `useUIElement({id, type:'text', label})`
+ * exposed its dynamic label only via the top-level `label` field. Reading
+ * "Status: online" / "Status: offline" required string-parsing `label`.
+ */
+describe('NativeUIBridgeRegistry — text label mirrored to state.value (Item 3)', () => {
+  it('seeds state.value from label at registration for type:"text"', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('status', makeRef(), {
+      type: 'text',
+      label: 'Status: online',
+    });
+    expect(registry.getElement('status')!.getState().value).toBe('Status: online');
+  });
+
+  it('keeps state.value in sync when updateElementMeta changes the label', () => {
+    // The hook calls `bridge.registry.updateElementMeta({label: newLabel})`
+    // from `updateLabel(...)`. The mirror should follow.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('status', makeRef(), {
+      type: 'text',
+      label: 'Status: online',
+    });
+    expect(registry.getElement('status')!.getState().value).toBe('Status: online');
+
+    const changed = registry.updateElementMeta('status', { label: 'Status: offline' });
+    expect(changed).toBe(true);
+    expect(registry.getElement('status')!.getState().value).toBe('Status: offline');
+    // And the label field itself updated too.
+    expect(registry.getElement('status')!.label).toBe('Status: offline');
+  });
+
+  it('does NOT touch state.value for non-text element types', () => {
+    // A button has a label too, but its label is the action name — exposing
+    // it as state.value would conflict with text-input semantics.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('b', makeRef(), { type: 'button', label: 'Submit' });
+    expect(registry.getElement('b')!.getState().value).toBeUndefined();
+  });
+
+  it('does not mirror when label is unchanged (idempotent updateElementMeta)', () => {
+    // updateElementMeta returns false on a redundant call — the mirror
+    // should not re-emit a state change in that case.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('t', makeRef(), { type: 'text', label: 'Hello' });
+
+    let stateChanges = 0;
+    registry.on('element:stateChanged', () => {
+      stateChanges++;
+    });
+
+    const changed = registry.updateElementMeta('t', { label: 'Hello' });
+    expect(changed).toBe(false);
+    expect(stateChanges).toBe(0);
+  });
+});
+
+/**
+ * Item 4 of the 0.6.6 robustness pass — `currentRouteOnly=true` should
+ * INCLUDE route-agnostic elements (no `registrationRoute`) PLUS elements
+ * matching the current route. Only excludes elements whose `route` field
+ * is set to a non-matching route.
+ *
+ * Pre-fix: strict equality (`e.registrationRoute === currentRoute`)
+ * dropped every app-root registration on mobile because tabs/header chrome
+ * is typically registered at the root with `registrationRoute: null`.
+ */
+describe('matchesCurrentRoute — route-agnostic + current-route filter (Item 4)', () => {
+  it('includes elements registered on the current route', () => {
+    expect(matchesCurrentRoute('/dashboard', '/dashboard')).toBe(true);
+  });
+
+  it('includes route-agnostic elements (null/undefined/empty route)', () => {
+    expect(matchesCurrentRoute(null, '/dashboard')).toBe(true);
+    expect(matchesCurrentRoute(undefined, '/dashboard')).toBe(true);
+    expect(matchesCurrentRoute('', '/dashboard')).toBe(true);
+  });
+
+  it('excludes elements registered on a different route', () => {
+    expect(matchesCurrentRoute('/settings', '/dashboard')).toBe(false);
+  });
+});
+
+describe('createSnapshot with currentRouteOnly=true (Item 4)', () => {
+  it('includes route-agnostic elements alongside current-route elements', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/dashboard',
+      subscribe: () => () => {},
+    });
+
+    // Tab bar registered at the app root — no `registrationRoute`.
+    registry.registerElement('tab-home', makeRef(), { type: 'button' });
+    // Header registered at the app root.
+    registry.registerElement('app-header', makeRef(), { type: 'text' });
+    // Dashboard-scoped card.
+    registry.registerElement('dash-card', makeRef(), {
+      type: 'view',
+      registrationRoute: '/dashboard',
+    });
+    // Settings-scoped element — must be EXCLUDED.
+    registry.registerElement('settings-row', makeRef(), {
+      type: 'view',
+      registrationRoute: '/settings',
+    });
+
+    const snapshot = registry.createSnapshot(undefined, { currentRouteOnly: true });
+    const ids = snapshot.elements.map((e) => e.id).sort();
+    expect(ids).toEqual(['app-header', 'dash-card', 'tab-home']);
+    expect(ids).not.toContain('settings-row');
+  });
+
+  it('falls back to all elements when no currentRoute resolvable', () => {
+    // When the route provider returns null, currentRouteOnly is a no-op —
+    // the filter is gated on `resolvedRoute.currentRoute` being truthy.
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => null,
+      subscribe: () => () => {},
+    });
+
+    registry.registerElement('a', makeRef(), { type: 'view' });
+    registry.registerElement('b', makeRef(), {
+      type: 'view',
+      registrationRoute: '/dashboard',
+    });
+
+    const snapshot = registry.createSnapshot(undefined, { currentRouteOnly: true });
+    expect(snapshot.elements.map((e) => e.id).sort()).toEqual(['a', 'b']);
   });
 });

@@ -4,7 +4,11 @@
  * Request handlers for the HTTP API endpoints.
  */
 
-import { type NativeUIBridgeRegistry, extractHandlerNames } from '../core/registry';
+import {
+  type NativeUIBridgeRegistry,
+  extractHandlerNames,
+  matchesCurrentRoute,
+} from '../core/registry';
 import type {
   NativeElementType,
   NativeLayout,
@@ -310,7 +314,14 @@ export function createServerHandlers(
     viewportProvider?: () => { width: number; height: number };
   }
 ): NativeServerHandlers {
-  const designHandlers = createDesignHandlers(registry);
+  // Pipe the injected viewportProvider through to the design handlers so
+  // they share the same react-native-free dependency-injection pattern as
+  // `getPageHealth`. Without this, `design-handlers.ts` falls back to
+  // `require('react-native')` inside `getScreenDimensions()` — which is the
+  // identical Metro/Hermes `unknownModuleError` latent crash that 0.6.3/0.6.4
+  // shipped on the page-health endpoint. See the `viewportProvider` doc
+  // comment on this config and `feedback_metro_require_gotcha.md`.
+  const designHandlers = createDesignHandlers(registry, config?.viewportProvider);
 
   return {
     // Elements
@@ -330,9 +341,13 @@ export function createServerHandlers(
         ? registry.getMountedVisibleElements()
         : registry.getAllElements();
 
-      // Filter by specific route (injected by setRouteProvider override when currentRouteOnly is set)
+      // Filter by specific route. Uses the same loose `matchesCurrentRoute`
+      // semantics as `createSnapshot` so app-root chrome (tabs, persistent
+      // headers) registered with `registrationRoute: null` survives the
+      // filter alongside elements explicitly tagged for `forRoute`. See
+      // `matchesCurrentRoute` in core/registry.ts for the contract.
       if (forRoute) {
-        allElements = allElements.filter((e) => e.registrationRoute === forRoute);
+        allElements = allElements.filter((e) => matchesCurrentRoute(e.registrationRoute, forRoute));
       }
 
       const elements = allElements.map((e) => {

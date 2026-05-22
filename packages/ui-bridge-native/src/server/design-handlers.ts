@@ -88,19 +88,39 @@ export interface NativeDesignHandlers {
 
 /**
  * Create design review handlers.
+ *
+ * @param registry - the registered native element registry
+ * @param viewportProvider - optional injected viewport getter. Same shape as
+ *   the `viewportProvider` consumed by `handlers.ts`/`getPageHealth`. This is
+ *   injected by `createServerHandlers` from the `NativeServerConfig` the host
+ *   passes to `UIBridgeNativeProvider`/`NativeUIBridgeServer`, which in turn
+ *   reads `Dimensions.get('screen')` (or `'window'`). The indirection exists
+ *   because `require('react-native')` from this file crashes the host RN
+ *   app the moment any design endpoint is invoked: Metro/Hermes raise
+ *   `unknownModuleError` past every try/catch and tear down the JS thread.
+ *   This was the same latent crash that took out 0.6.3/0.6.4 page-health
+ *   handler — the design handlers had it too, just hiding on unused
+ *   endpoints until `POST /design/responsive` was first called.
+ *
+ *   When the injected provider is absent (tests, custom hosts) the design
+ *   handlers fall back to `{width:0, height:0}` — the responsive snapshot
+ *   degenerates to "zero-dimension viewport" rather than crashing.
  */
-export function createDesignHandlers(registry: NativeUIBridgeRegistry): NativeDesignHandlers {
-  // Helper to get screen dimensions (React Native's Dimensions API must be
-  // called at handler time, not import time, so we use a lazy getter).
+export function createDesignHandlers(
+  registry: NativeUIBridgeRegistry,
+  viewportProvider?: () => { width: number; height: number }
+): NativeDesignHandlers {
+  // Helper to get screen dimensions via the injected provider.
+  //
+  // The 0.6.3/0.6.4 implementation called `require('react-native')` here
+  // inside a try/catch; Metro/Hermes still surfaced `unknownModuleError`
+  // up the stack and tore down the JS thread the moment any design endpoint
+  // was touched. The fix is to take the viewport as an injected dependency
+  // (parity with `getPageHealth`) so this file has no `react-native` dep
+  // at all — see the doc comment on `createDesignHandlers` above and the
+  // project memory entry `feedback_metro_require_gotcha.md`.
   function getScreenDimensions(): { width: number; height: number } {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { Dimensions } = require('react-native');
-      const screen = Dimensions.get('screen');
-      return { width: screen.width, height: screen.height };
-    } catch {
-      return { width: 0, height: 0 };
-    }
+    return viewportProvider?.() ?? { width: 0, height: 0 };
   }
 
   return {
