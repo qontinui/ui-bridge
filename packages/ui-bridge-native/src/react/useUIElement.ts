@@ -234,6 +234,25 @@ export interface UseUIElementReturn {
     style: unknown,
     stateStyles?: { pressed?: unknown; focused?: unknown; disabled?: unknown }
   ) => void;
+  /**
+   * Re-publish the element's label (and the mirrored `accessibilityLabel` /
+   * `testId` so spec-check and a11y stay in sync). Idempotent — no-op when
+   * the new label equals the current registered value.
+   *
+   * Labels passed via `useUIElement({ id, label })` are captured ONCE at
+   * registration; if the source state changes (e.g. a tab's active suffix,
+   * or a list's "N events" count), the registry would otherwise hold the
+   * mount-time label forever. Call `updateLabel(...)` from a `useEffect`
+   * (or directly from a handler) to keep the registry in sync.
+   *
+   * @example
+   * ```tsx
+   * const label = `${events.length} events`;
+   * const { updateLabel } = useUIElement({ id: 'events-list', label, type: 'list' });
+   * useEffect(() => { updateLabel(label); }, [label, updateLabel]);
+   * ```
+   */
+  updateLabel: (newLabel: string) => void;
 }
 
 /**
@@ -268,6 +287,14 @@ export interface UseUIElementReturn {
  * `console.warn` only fires once per id even if the component re-mounts.
  */
 const warnedDeadButtonIds = new Set<string>();
+
+/**
+ * Module-scoped set of ids that have already received a no-op-updateLabel
+ * warning. Mirrors {@link warnedDeadButtonIds} — one warn per id per process
+ * lifetime, so a hot loop calling `updateLabel(sameString)` doesn't spam
+ * the console while still surfacing the case during development.
+ */
+const warnedRedundantUpdateLabelIds = new Set<string>();
 
 /**
  * Schedule a deferred check: after one microtask + one macrotask, look up
@@ -636,6 +663,36 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     [bridge, id]
   );
 
+  // Re-publish label / a11y label / testId for state-driven labels.
+  //
+  // The bug being addressed: `useUIElement({id, label})` registers the label
+  // exactly once on mount. Consumers that compute a label from state
+  // (e.g. `Tab: Actions${active ? ' (active)' : ''}`, `${events.length} events`)
+  // see the registry permanently stuck at the mount-time string.
+  //
+  // Idempotent — the registry's `updateElementMeta` returns false when no
+  // field actually changed, so a hot render loop calling `updateLabel(sameString)`
+  // costs one Map lookup + three equality checks. To surface obviously-redundant
+  // call sites during development, we emit a one-time `console.warn` per id on
+  // the first observed no-op.
+  const updateLabel = useCallback(
+    (newLabel: string) => {
+      if (!bridge || !registered) return;
+      const changed = bridge.registry.updateElementMeta(id, {
+        label: newLabel,
+        accessibilityLabel: newLabel,
+        testId: id,
+      });
+      if (!changed && !warnedRedundantUpdateLabelIds.has(id)) {
+        warnedRedundantUpdateLabelIds.add(id);
+        console.warn(
+          `[UI Bridge] updateLabel("${newLabel}") on element "${id}" was a no-op (label unchanged). Gate the call behind a useEffect with [label] deps to avoid redundant publishes.`
+        );
+      }
+    },
+    [bridge, registered, id]
+  );
+
   // Update style for design review
   const updateStyle = useCallback(
     (
@@ -670,6 +727,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     unregister,
     registeredElement,
     updateStyle,
+    updateLabel,
   };
 }
 
