@@ -24,6 +24,13 @@ QUEUE_TIMEOUT_SECS=60
 RUNNER_HEALTH_TIMEOUT=60   # seconds
 AUTO_LOGIN_TIMEOUT=20      # seconds — short wait; we fall back to manual login on timeout
 
+# Dev auto-login credentials for the manual-login fallback below.
+# Defaults match qontinui-web/dev-credentials.json (the cross-repo single
+# source of truth for the local dev password). Override via env if testing
+# a different local dev user. Do NOT hardcode a literal password here.
+DEV_EMAIL="${QONTINUI_DEV_EMAIL:-josh@qontinui.io}"
+DEV_PASSWORD="${QONTINUI_DEV_PASSWORD:-Qontinui123+}"
+
 # ANSI colors
 if [[ -t 1 ]]; then
   RED=$'\033[0;31m'
@@ -214,7 +221,7 @@ while (( elapsed < AUTO_LOGIN_TIMEOUT )); do
 done
 if [[ "$logged_in" != "1" ]]; then
   log "Auto-login did not complete in ${AUTO_LOGIN_TIMEOUT}s — attempting manual login."
-  manual_login_expr='(async function() { var e = document.querySelector("input[type=email]"); var p = document.querySelector("input[type=password]"); if (!e || !p) return "no-login-form"; var s = (el, v) => { var set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value").set; set.call(el, v); el.dispatchEvent(new Event("input", {bubbles: true})); }; s(e, "josh@qontinui.io"); s(p, "dev123"); await new Promise(r => setTimeout(r, 200)); var btn = document.querySelector("button[type=submit]"); if (!btn) return "no-submit"; btn.click(); await new Promise(r => setTimeout(r, 3000)); return !document.querySelector("input[type=password]") ? "ok" : "still-on-login"; })()'
+  manual_login_expr='(async function() { var e = document.querySelector("input[type=email]"); var p = document.querySelector("input[type=password]"); if (!e || !p) return "no-login-form"; var s = (el, v) => { var set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value").set; set.call(el, v); el.dispatchEvent(new Event("input", {bubbles: true})); }; s(e, "'"$DEV_EMAIL"'"); s(p, "'"$DEV_PASSWORD"'"); await new Promise(r => setTimeout(r, 200)); var btn = document.querySelector("button[type=submit]"); if (!btn) return "no-submit"; btn.click(); await new Promise(r => setTimeout(r, 3000)); return !document.querySelector("input[type=password]") ? "ok" : "still-on-login"; })()'
   manual_body=$(python -c 'import json, sys; print(json.dumps({"expression": sys.argv[1]}))' "$manual_login_expr")
   body=""; status=""
   curl_json body status POST "${BASE}/control/page/evaluate" "$manual_body"
