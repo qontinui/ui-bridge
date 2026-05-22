@@ -206,6 +206,78 @@ describe('GET /control/elements?visibleOnly=true — parity with snapshot', () =
   });
 });
 
+describe('GET /control/snapshot?currentRouteOnly=true — Item 4 (0.6.6): route-agnostic elements survive', () => {
+  it('includes elements registered with no route alongside current-route elements', async () => {
+    // Mobile apps typically register chrome (tab bar, header) at the app
+    // root with `registrationRoute: null`. Pre-0.6.6 the strict-equality
+    // filter dropped them from `currentRouteOnly=true` responses, leaving
+    // an empty snapshot on screens where the chrome was the only thing
+    // registered globally.
+    const { registry, server } = buildServer();
+    server.setRouteProvider(staticRouteProvider('/dashboard'));
+
+    // App-root registrations (no route).
+    registry.registerElement('tab-home', makeRef(), { type: 'button' });
+    registry.registerElement('tab-settings', makeRef(), { type: 'button' });
+    // Dashboard-scoped elements.
+    registry.registerElement('dash-hero', makeRef(), {
+      type: 'view',
+      registrationRoute: '/dashboard',
+    });
+    // Settings-scoped element — must be excluded.
+    registry.registerElement('settings-toggle', makeRef(), {
+      type: 'switch',
+      registrationRoute: '/settings',
+    });
+
+    const res = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/control/snapshot',
+      headers: {},
+      query: { currentRouteOnly: 'true' },
+    });
+
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body) as ParsedSnapshotResponse;
+    const ids = parsed.data.elements.map((e) => e.id).sort();
+    expect(ids).toEqual(['dash-hero', 'tab-home', 'tab-settings']);
+    expect(ids).not.toContain('settings-toggle');
+  });
+
+  it('GET /control/elements?currentRouteOnly=true mirrors snapshot semantics', async () => {
+    // The /control/elements override in setRouteProvider injects the
+    // current route into `ctx.query.route`; the base handler's `forRoute`
+    // filter must use the loose `matchesCurrentRoute` predicate so it
+    // doesn't strip away route-agnostic chrome.
+    const { registry, server } = buildServer();
+    server.setRouteProvider(staticRouteProvider('/dashboard'));
+
+    registry.registerElement('global-header', makeRef(), { type: 'text' });
+    registry.registerElement('dash-card', makeRef(), {
+      type: 'view',
+      registrationRoute: '/dashboard',
+    });
+    registry.registerElement('settings-card', makeRef(), {
+      type: 'view',
+      registrationRoute: '/settings',
+    });
+
+    const res = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/control/elements',
+      headers: {},
+      query: { currentRouteOnly: 'true' },
+    });
+
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body) as ParsedElementsResponse;
+    const ids = parsed.data.elements.map((e) => e.id).sort();
+    expect(ids).toContain('global-header');
+    expect(ids).toContain('dash-card');
+    expect(ids).not.toContain('settings-card');
+  });
+});
+
 describe('strict getVisibleElements() preserves the legacy contract', () => {
   it('still requires layout !== null for backward compat with non-snapshot callers', () => {
     const { registry } = buildServer();

@@ -83,6 +83,37 @@ export function extractHandlerNames(props?: Record<string, unknown>): string[] {
 }
 
 /**
+ * `currentRouteOnly` filter predicate for `registrationRoute`.
+ *
+ * Returns `true` when an element should be INCLUDED in a current-route-only
+ * view. Two classes of elements pass the filter:
+ *
+ *   1. Elements registered on the current route
+ *      (`registrationRoute === currentRoute`).
+ *   2. Route-agnostic elements (`registrationRoute == null` or `''`) — these
+ *      are typically registered at the app root (tab bars, persistent
+ *      headers, modal hosts) and apply to every route. Excluding them by
+ *      default makes `currentRouteOnly=true` return empty on mobile where
+ *      most apps register chrome at the root and screens via routed stacks.
+ *
+ * The filter only DROPS elements whose `registrationRoute` is set to a
+ * non-matching route — i.e. they belong to a different screen. This matches
+ * the runner-side semantics: route-tagged DOM nodes that don't match the
+ * active URL are scoped out; untagged nodes are always in scope.
+ *
+ * Surfaced 2026-05-23 (item 4 of the 0.6.6 robustness pass) — the prior
+ * strict equality returned 0 elements on mobile screens that register tabs
+ * at the root, because tab elements had `registrationRoute: null`.
+ */
+export function matchesCurrentRoute(
+  registrationRoute: string | null | undefined,
+  currentRoute: string
+): boolean {
+  if (registrationRoute == null || registrationRoute === '') return true;
+  return registrationRoute === currentRoute;
+}
+
+/**
  * Infer available actions based on element type
  */
 function inferActions(type: NativeElementType): NativeStandardAction[] {
@@ -330,13 +361,31 @@ export class NativeUIBridgeRegistry {
 
     // Seed a sensible initial state so elements are immediately visible in snapshots
     // even before onLayout fires. Layout-measuring code can overwrite this later.
-    this.updateElementState(id, {
+    //
+    // For controlled-input elements (`type:'input'` with a string `props.value`),
+    // also seed `state.value` from the prop so bridge consumers can read the
+    // default value before the user has typed. See `updateElementProps` for
+    // the corresponding re-sync path on prop changes.
+    const seededState: Partial<NativeElementState> = {
       mounted: true,
       visible: true,
       enabled: true,
       focused: false,
       layout: null,
-    });
+    };
+    if (type === 'input' && typeof props?.value === 'string') {
+      seededState.value = props.value;
+    }
+    // For `type:'text'` elements, surface the (dynamic) label as `state.value`
+    // so bridge consumers can read text content with a uniform `state.value`
+    // accessor instead of parsing the `label` field ("Status: ..."). The hook
+    // already re-publishes the label via `updateElementMeta` when consumers
+    // call `updateLabel(newLabel)` — that path also re-syncs `state.value`
+    // (see `updateElementMeta`).
+    if (type === 'text' && typeof label === 'string') {
+      seededState.value = label;
+    }
+    this.updateElementState(id, seededState);
 
     return registered;
   }
@@ -530,6 +579,15 @@ export class NativeUIBridgeRegistry {
     };
     this.elements.set(id, updated);
 
+    // For text-type elements, mirror the new label into `state.value` so
+    // bridge consumers can read text content with a uniform `state.value`
+    // accessor. Initial seed lives in `registerElement`; this keeps the
+    // mirror in sync when consumers call `updateLabel(newLabel)` from a
+    // state-driven render path (e.g. `Status: ${connected ? 'online' : 'offline'}`).
+    if (element.type === 'text' && labelChanged && typeof nextLabel === 'string') {
+      this.updateElementState(id, { value: nextLabel });
+    }
+
     // Reuse `element:registered` rather than minting a new event — downstream
     // consumers already subscribe to it for label/identifier diffs, and
     // adding a new BridgeEventType ('element:metaChanged') would force a
@@ -544,7 +602,22 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
-   * Update element props (for action execution)
+   * Update element props (for action execution).
+   *
+   * Side effect for `type: 'input'` elements: when `props.value` is a string,
+   * mirror it into `state.value` so AI drivers reading the registry don't see
+   * `state.value === undefined` until the user types. Before this mirror,
+   * controlled-input consumers (`<TextInput value={x} onChangeText={setX} />`
+   * with `captureProps({ value: x, onChangeText: setX })`) registered an
+   * input whose `state.value` only became defined after the FIRST
+   * `onChangeText` call — bridge consumers couldn't read the default value
+   * (e.g. a pre-populated API-URL input) until someone typed into it.
+   *
+   * Re-runs on every `updateElementProps` so a parent passing a fresh
+   * `value` prop (controlled re-render) keeps the registry in sync. The
+   * mirror is gated on `type === 'input'` to avoid touching non-input
+   * elements that may carry an unrelated `value` prop (e.g. a Switch's
+   * boolean value, which lives on `state.checked`).
    */
   updateElementProps(id: string, props: Record<string, unknown>): void {
     const element = this.elements.get(id);
@@ -554,6 +627,18 @@ export class NativeUIBridgeRegistry {
         props: { ...element.props, ...props },
       };
       this.elements.set(id, updated);
+
+      // Controlled-input value mirror — see doc comment above.
+      if (
+        element.type === 'input' &&
+        Object.prototype.hasOwnProperty.call(props, 'value') &&
+        typeof props.value === 'string'
+      ) {
+        const currentState = updated.getState();
+        if (currentState.value !== props.value) {
+          this.updateElementState(id, { value: props.value });
+        }
+      }
     }
   }
 
@@ -822,10 +907,14 @@ export class NativeUIBridgeRegistry {
       ? this.getMountedVisibleElements()
       : this.getAllElements();
 
-    // Filter to only elements registered on the current route
+    // Filter to elements that belong on the current route. Route-agnostic
+    // elements (no `registrationRoute`) pass through too — see the
+    // `matchesCurrentRoute` doc comment for the rationale (tab bars, modal
+    // hosts and other app-root registrations have a null route and apply to
+    // every screen).
     if (options?.currentRouteOnly && resolvedRoute.currentRoute) {
       const currentRoute = resolvedRoute.currentRoute;
-      elements = elements.filter((e) => e.registrationRoute === currentRoute);
+      elements = elements.filter((e) => matchesCurrentRoute(e.registrationRoute, currentRoute));
     }
 
     const snapshot: NativeBridgeSnapshot = {
