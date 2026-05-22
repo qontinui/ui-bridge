@@ -29,6 +29,7 @@ import type {
 } from './types';
 import { createDesignHandlers } from './design-handlers';
 import type { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
+import { diagnosePageHealth, type PageHealthElement } from './page-health';
 
 /**
  * Result of executing a single workflow step
@@ -567,6 +568,36 @@ export function createServerHandlers(
       // emit `currentRoute: null` even when a `RouteTracker` was wired.
       const snapshot = registry.createSnapshot(undefined, { visibleOnly, currentRouteOnly });
       return success(snapshot);
+    },
+
+    getPageHealth: async (ctx: HandlerContext) => {
+      // Viewport resolution priority:
+      //   1. Explicit body.viewport — for offline analysis or replaying a
+      //      snapshot from a different device.
+      //   2. Dimensions.get('window') — the host app's live viewport. Lazy
+      //      `require` so tests under Node (no react-native) can still call
+      //      the handler by supplying viewport in the body.
+      const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })
+        ?.viewport;
+      let viewport = bodyViewport;
+      if (!viewport) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { Dimensions } = require('react-native');
+          const win = Dimensions.get('window');
+          viewport = { width: win.width, height: win.height };
+        } catch {
+          viewport = { width: 0, height: 0 };
+        }
+      }
+
+      const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
+        type: e.type,
+        state: e.getState(),
+      }));
+
+      const report = diagnosePageHealth(elements, viewport);
+      return success(report);
     },
 
     // Workflows

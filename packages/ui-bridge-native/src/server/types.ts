@@ -153,6 +153,12 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/snapshot',
     description: 'Get full bridge snapshot',
   },
+  PAGE_HEALTH: {
+    method: 'POST',
+    path: '/ui-bridge/control/page-health',
+    description:
+      'Holistic page health diagnostic: spatial coverage, layout regions, text signals, interactive readiness, anomalies + ASCII heatmap',
+  },
 
   // Workflows
   GET_WORKFLOWS: {
@@ -504,6 +510,10 @@ export interface NativeServerHandlers {
   // Discovery
   find: HandlerFunction<NativeFindResponse>;
   getSnapshot: HandlerFunction<NativeBridgeSnapshot>;
+  // Page health — structured diagnostic over the snapshot's elements +
+  // device viewport. Output shape mirrors the runner/web analyzer so the
+  // `page-health` skill is platform-neutral.
+  getPageHealth: HandlerFunction<unknown>;
 
   // Workflows
   getWorkflows: HandlerFunction<{ workflows: unknown[] }>;
