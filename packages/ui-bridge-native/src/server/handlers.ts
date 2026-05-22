@@ -262,6 +262,29 @@ async function executeWorkflowStep(
 }
 
 /**
+ * Read `Dimensions.get('window')` from a SYNCHRONOUS context.
+ *
+ * Metro's `require()` inside an `async` function is uncatchable — a missing
+ * module throws past any local `try`/`catch` and the error tears down the JS
+ * thread. Calling this from inside an async handler isolates the require()
+ * inside this sync frame, where the try/catch actually catches.
+ *
+ * Mirrors `getScreenDimensions()` in design-handlers.ts. Returns `{0,0}`
+ * under Node / vitest where react-native isn't available; callers should
+ * treat that as a "viewport unknown" signal.
+ */
+function getWindowDimensions(): { width: number; height: number } {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Dimensions } = require('react-native');
+    const win = Dimensions.get('window');
+    return { width: win.width, height: win.height };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
+
+/**
  * Create a success response
  */
 function success<T>(data: T): APIResponse<T> {
@@ -574,22 +597,17 @@ export function createServerHandlers(
       // Viewport resolution priority:
       //   1. Explicit body.viewport — for offline analysis or replaying a
       //      snapshot from a different device.
-      //   2. Dimensions.get('window') — the host app's live viewport. Lazy
-      //      `require` so tests under Node (no react-native) can still call
-      //      the handler by supplying viewport in the body.
+      //   2. Dimensions.get('window') — the host app's live viewport, via
+      //      a SYNC helper. The require() MUST run inside a synchronous
+      //      function: Metro's `require()` inside an async function is
+      //      uncatchable — try/catch around it doesn't fire, and the
+      //      uncaught error tears down the JS thread. design-handlers.ts
+      //      uses the same pattern (`getScreenDimensions`).
+      //   3. {0,0} fallback (degrades to a coverage_pct=0 report rather
+      //      than crashing the host app).
       const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })
         ?.viewport;
-      let viewport = bodyViewport;
-      if (!viewport) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { Dimensions } = require('react-native');
-          const win = Dimensions.get('window');
-          viewport = { width: win.width, height: win.height };
-        } catch {
-          viewport = { width: 0, height: 0 };
-        }
-      }
+      const viewport = bodyViewport ?? getWindowDimensions();
 
       const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
         type: e.type,

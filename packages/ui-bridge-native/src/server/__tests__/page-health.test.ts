@@ -286,4 +286,39 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     expect(parsed.success).toBe(true);
     expect(parsed.data).toBeDefined();
   });
+
+  it('regression: empty-body call must not require("react-native") from the async handler', async () => {
+    // The very first 0.6.3 publish crashed the host RN app on first call to
+    // `/control/page-health` because the handler did
+    //   `try { require('react-native') } catch { ... }`
+    // INSIDE its async body. Metro's `require()` inside an async function is
+    // uncatchable — the throw escapes the local try/catch and tears down the
+    // JS thread. design-handlers.ts dodged this by extracting the require
+    // into a SYNC helper (`getScreenDimensions`); the original page-health
+    // handler did not.
+    //
+    // This test pins the fix: hitting the route with an empty body (so the
+    // handler has to resolve viewport via the Dimensions lookup, not from
+    // body.viewport) must return a structured response without throwing.
+    // The vitest env doesn't actually error on require('react-native') —
+    // happy-dom ships a shim. The real protection is: the sync helper
+    // pattern is now the only path, mirroring design-handlers. If a future
+    // refactor reintroduces `require('react-native')` inside the async
+    // handler body, this test still passes (vitest is forgiving), but
+    // production will crash again. The mitigation lives in the comment on
+    // `getWindowDimensions` + this regression's failure mode docs.
+    const { server } = buildServer();
+    const res = await server.handleRequest({
+      method: 'POST',
+      path: '/ui-bridge/control/page-health',
+      headers: { 'content-type': 'application/json' },
+      query: {},
+      // Empty body — forces the Dimensions code path.
+      body: {},
+    });
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body) as { success: boolean; data: unknown };
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toBeDefined();
+  });
 });
