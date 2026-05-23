@@ -14,6 +14,18 @@
  * Output shape matches the runner's report exactly so MCP / agent tooling
  * (e.g. the page-health skill at .claude/skills/page-health/SKILL.md) gets
  * byte-equivalent payloads regardless of which transport answers.
+ *
+ * Fold semantics (see Step 7: Visual anomalies):
+ *
+ *   The `outside_viewport` count tracks only *horizontal* overflow — elements
+ *   whose normalized x is left of the viewport (`x + width < 0`) or right of
+ *   it (`x > 1`). Vertical offsets (`y > 1`, `y + height < 0`) are NOT an
+ *   anomaly: scrollable page content legitimately extends above or below the
+ *   visible fold, and the user reaches it by scrolling. Flagging those would
+ *   WARNING every long-scroll page. Only horizontal overflow is meaningfully
+ *   unreachable on typical layouts (no horizontal scroll), so that's the
+ *   anomaly we surface. Kept aligned with the mobile clone in
+ *   `packages/ui-bridge-native/src/server/page-health.ts`.
  */
 
 import type { DiscoveredElement } from '../control';
@@ -326,6 +338,9 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   });
 
   // --- Step 7: Visual anomalies ---------------------------------------------
+  // `outside_viewport` counts only *horizontal* overflow. Below-fold and
+  // above-fold content is normal on scrollable pages and must not flag —
+  // see the fold-semantics note at the top of this file.
   let zeroSize = 0;
   let outsideViewport = 0;
   for (const el of visible) {
@@ -333,12 +348,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
       .normalizedRect;
     if (!rect) continue;
     if (rect.width === 0 || rect.height === 0) zeroSize++;
-    if (
-      rect.x + rect.width < 0 ||
-      rect.y + rect.height < 0 ||
-      rect.x > 1 ||
-      rect.y > 1
-    ) {
+    if (rect.x + rect.width < 0 || rect.x > 1) {
       outsideViewport++;
     }
   }
@@ -348,7 +358,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   findings.push({
     check: 'visual_anomalies',
     severity: anomalySeverity,
-    detail: `zero_size=${zeroSize}, outside_viewport=${outsideViewport}`,
+    detail: `zero_size=${zeroSize}, outside_viewport=${outsideViewport} (horizontal-overflow only; below/above-fold scrollable content is not an anomaly)`,
     data: { zero_size: zeroSize, outside_viewport: outsideViewport },
   });
 

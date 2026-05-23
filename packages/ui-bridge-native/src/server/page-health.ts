@@ -26,6 +26,18 @@
  *     `class contains spin|pulse|skeleton|...` heuristic is always empty.
  *     We still emit the `css_signals` field (as `[]`) so the response shape
  *     stays platform-neutral.
+ *
+ * Fold semantics (see Step 7: Visual anomalies):
+ *
+ *   The `outside_viewport` count tracks only *horizontal* overflow — elements
+ *   whose normalized x is left of the viewport (`x + width < 0`) or right of
+ *   it (`x > 1`). Vertical offsets (`y > 1`, `y + height < 0`) are NOT an
+ *   anomaly on mobile: ScrollView / FlatList content legitimately extends
+ *   above or below the visible fold, and the user reaches it by scrolling.
+ *   Flagging those would WARNING every scrollable screen (settings, feed,
+ *   list pages). Only horizontal overflow is unreachable by the user on
+ *   typical mobile layouts (the viewport is ~full-width, no horizontal
+ *   scroll), so that's the meaningful anomaly we surface.
  */
 
 import type { NativeElementState } from '../core/types';
@@ -368,11 +380,14 @@ export function diagnosePageHealth(
   });
 
   // --- Step 7: Visual anomalies ---------------------------------------------
+  // `outside_viewport` counts only *horizontal* overflow. Below-fold and
+  // above-fold content is normal on scrollable mobile screens and must not
+  // flag — see the fold-semantics note at the top of this file.
   let zeroSize = 0;
   let outsideViewport = 0;
   for (const { rect } of visible) {
     if (rect.width === 0 || rect.height === 0) zeroSize++;
-    if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > 1 || rect.y > 1) {
+    if (rect.x + rect.width < 0 || rect.x > 1) {
       outsideViewport++;
     }
   }
@@ -382,7 +397,7 @@ export function diagnosePageHealth(
   findings.push({
     check: 'visual_anomalies',
     severity: anomalySeverity,
-    detail: `zero_size=${zeroSize}, outside_viewport=${outsideViewport}`,
+    detail: `zero_size=${zeroSize}, outside_viewport=${outsideViewport} (horizontal-overflow only; below/above-fold scrollable content is not an anomaly)`,
     data: { zero_size: zeroSize, outside_viewport: outsideViewport },
   });
 
