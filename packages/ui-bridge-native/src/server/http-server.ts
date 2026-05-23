@@ -124,6 +124,10 @@ const WS_ROUTES: readonly WsRoute[] = [
   { pattern: 'ai/find', handler: 'find', httpMethods: ['POST'] },
   { pattern: 'control/snapshot', handler: 'getSnapshot', httpMethods: ['GET'] },
   { pattern: 'control/discover', handler: 'getSnapshot' },
+  // Page health — accepts both GET and POST so the canonical skill invocation
+  // (`POST .../control/page-health` with an empty body) and ad-hoc curls both
+  // work without a body-shape gotcha.
+  { pattern: 'control/page-health', handler: 'getPageHealth', httpMethods: ['GET', 'POST'] },
 
   // Workflows
   { pattern: 'control/workflows', handler: 'getWorkflows', httpMethods: ['GET'] },
@@ -191,6 +195,18 @@ const WS_ROUTES: readonly WsRoute[] = [
   // matching against registered elements' layout rects.
   { pattern: 'control/tap', handler: 'tapAt', httpMethods: ['POST'] },
 
+  // App-agnostic interaction parity — mirrors the web/runner convenience
+  // endpoints (`/control/page/click-by-text` etc.) so the SAME cross-platform
+  // contract drives mobile. Text/label-based interactions compose
+  // `executor.find` + `executor.executeAction` over the registry; the
+  // DOM-selector-only variants (`click-by-selector`, `read-value`) have no RN
+  // analog and return a structured NOT_SUPPORTED envelope.
+  { pattern: 'control/page/click-by-text', handler: 'clickByText', httpMethods: ['POST'] },
+  { pattern: 'control/page/click-by-selector', handler: 'clickBySelector', httpMethods: ['POST'] },
+  { pattern: 'control/page/type-into', handler: 'typeInto', httpMethods: ['POST'] },
+  { pattern: 'control/page/read-value', handler: 'readValue', httpMethods: ['POST'] },
+  { pattern: 'control/page/find-by-text', handler: 'findByText', httpMethods: ['POST'] },
+
   // Test hooks — gated behind `features.testHooks`. Let external runners
   // drive the ModalDetector over HTTP so tests can flip `snapshot.modalStack`
   // without mounting React components.
@@ -248,6 +264,8 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   find: 'AI-powered element search by natural-language query',
   getSnapshot:
     'Full snapshot: elements + route + state. Supports ?visibleOnly=true and ?currentRouteOnly=true',
+  getPageHealth:
+    'Holistic page health diagnostic over current snapshot elements (spatial coverage, layout regions, text/anomaly signals, heatmap). Optional body: { viewport?: { width, height } } to override Dimensions.get("window").',
   getWorkflows: 'List registered workflows',
   runWorkflow: 'Trigger a workflow by id',
   pageRefresh: 'Reload the current route',
@@ -281,6 +299,16 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
     'STUB — runner-only; mobile returns NOT_SUPPORTED. Use the WS waitForElement / waitForCondition JSON-RPC methods.',
   tapAt:
     'Synthesize a press at given screen coords by matching registered element layout rects: body { x, y, action? }',
+  clickByText:
+    'App-agnostic: press the first element matching free-text (label/accessibilityLabel/testID): body { text, visibleOnly? }',
+  clickBySelector:
+    'STUB — selector-based; NOT_SUPPORTED on native (no DOM). Use clickByText or /control/find + /control/element/:id/action.',
+  typeInto:
+    'App-agnostic: type into the input matching a label: body { label, text, clear?, visibleOnly? }. (selector form is web-only)',
+  readValue:
+    'STUB — selector-based; NOT_SUPPORTED on native (no DOM). Use /control/element/:id/state to read a value.',
+  findByText:
+    'App-agnostic: list elements matching free-text (no press): body { text, visibleOnly? }',
   getConsoleErrors:
     'TEST HOOK — last-N console.error/console.warn entries; ?since=<ms>&limit=<n>',
   getNetworkRequests:

@@ -29,6 +29,63 @@ import type {
 } from './types';
 import { createDesignHandlers } from './design-handlers';
 import type { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
+import { diagnosePageHealth, type PageHealthElement } from './page-health';
+
+/**
+ * Registry-based text/label match used by the app-agnostic interaction
+ * handlers (clickByText / typeInto / findByText). Mirrors the priority order
+ * the `find` handler applies to a `query`: label first, then identifier
+ * fields (testId / accessibilityLabel / treePath / uiId), then registered
+ * handler names. Returns matches sorted by best-priority, then registry
+ * insertion order (stable). `visibleOnly` filters to currently-visible
+ * elements before scoring.
+ *
+ * Native has no DOM, so there is no `query` field on `NativeFindRequest`
+ * (the executor only filters by type/testId/accessibilityLabel pattern);
+ * this helper provides the same free-text matching the `find` handler does
+ * for its `query` param, shared so the interaction handlers stay aligned.
+ */
+function matchElementsByText(
+  registry: NativeUIBridgeRegistry,
+  text: string,
+  opts?: { visibleOnly?: boolean }
+): Array<{ id: string; type: NativeElementType; label?: string }> {
+  const needle = text.toLowerCase();
+  const contains = (v: unknown): boolean =>
+    typeof v === 'string' && v.toLowerCase().includes(needle);
+
+  let all = registry.getAllElements();
+  if (opts?.visibleOnly) {
+    all = all.filter((e) => e.getState().visible);
+  }
+
+  const scored: Array<{
+    rank: number;
+    element: { id: string; type: NativeElementType; label?: string };
+  }> = [];
+
+  for (const e of all) {
+    let rank = Number.POSITIVE_INFINITY;
+    if (contains(e.label)) rank = Math.min(rank, 0);
+    const ident = e.getIdentifier();
+    if (ident) {
+      if (contains(ident.testId)) rank = Math.min(rank, 1);
+      if (contains(ident.accessibilityLabel)) rank = Math.min(rank, 1);
+      if (contains(ident.treePath)) rank = Math.min(rank, 1);
+      if (contains(ident.uiId)) rank = Math.min(rank, 1);
+    }
+    if (rank === Number.POSITIVE_INFINITY) {
+      const handlers = extractHandlerNames(e.props);
+      if (handlers.some((h) => h.toLowerCase().includes(needle))) rank = 2;
+    }
+    if (rank !== Number.POSITIVE_INFINITY) {
+      scored.push({ rank, element: { id: e.id, type: e.type, label: e.label } });
+    }
+  }
+
+  scored.sort((a, b) => a.rank - b.rank);
+  return scored.map((s) => s.element);
+}
 
 /**
  * Result of executing a single workflow step
@@ -569,6 +626,36 @@ export function createServerHandlers(
       return success(snapshot);
     },
 
+    getPageHealth: async (ctx: HandlerContext) => {
+      // Viewport resolution priority:
+      //   1. Explicit body.viewport — for offline analysis or replaying a
+      //      snapshot from a different device.
+      //   2. Dimensions.get('window') — the host app's live viewport. Lazy
+      //      `require` so tests under Node (no react-native) can still call
+      //      the handler by supplying viewport in the body.
+      const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })
+        ?.viewport;
+      let viewport = bodyViewport;
+      if (!viewport) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { Dimensions } = require('react-native');
+          const win = Dimensions.get('window');
+          viewport = { width: win.width, height: win.height };
+        } catch {
+          viewport = { width: 0, height: 0 };
+        }
+      }
+
+      const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
+        type: e.type,
+        state: e.getState(),
+      }));
+
+      const report = diagnosePageHealth(elements, viewport);
+      return success(report);
+    },
+
     // Workflows
     getWorkflows: async () => {
       const workflows = registry.getAllWorkflows().map((w) => ({
@@ -813,6 +900,105 @@ export function createServerHandlers(
       const failedCount = results.length - succeededCount;
 
       return success({ results, succeededCount, failedCount });
+    },
+
+    // ========================================================================
+    // App-agnostic interaction parity (cross-platform `/control/page/*`)
+    //
+    // Mirrors the web/runner convenience endpoints so the SAME contract drives
+    // mobile. Text/label interactions compose `executor.find` (registry-based
+    // discovery) + `executor.executeAction` (press/type). Selector-only
+    // variants have no React-Native analog and return NOT_SUPPORTED — the
+    // mobile bridge's snapshot + `/control/find` (testID / accessibilityLabel)
+    // cover what a selector would on web.
+    // ========================================================================
+
+    clickByText: async (
+      ctx: HandlerContext
+    ): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
+      const body = ctx.body as { text?: string; visibleOnly?: boolean } | undefined;
+      const text = typeof body?.text === 'string' ? body.text.trim() : '';
+      if (!text) {
+        return error('text is required and must not be empty', 'INVALID_REQUEST');
+      }
+      const match = matchElementsByText(registry, text, { visibleOnly: body?.visibleOnly })[0];
+      if (!match) {
+        return error(`No element found with text "${text}"`, 'ELEMENT_NOT_FOUND');
+      }
+      const response = await executor.executeAction(match.id, { action: 'press' });
+      if (!response.success) {
+        return error(response.error || 'Press failed', 'ACTION_FAILED');
+      }
+      return success({
+        clicked: true,
+        element: { id: match.id, type: match.type, label: match.label },
+      });
+    },
+
+    clickBySelector: async (): Promise<APIResponse<never>> => {
+      return error(
+        'clickBySelector is not supported on native platform — React Native has no CSS-selector DOM. Use clickByText, or /control/find with testIdPattern/accessibilityLabelPattern then /control/element/:id/action.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    typeInto: async (
+      ctx: HandlerContext
+    ): Promise<APIResponse<{ typed: boolean; element?: unknown }>> => {
+      const body = ctx.body as
+        | { label?: string; text?: string; clear?: boolean; visibleOnly?: boolean }
+        | undefined;
+      const label = typeof body?.label === 'string' ? body.label.trim() : '';
+      if (!label) {
+        return error(
+          'label is required on native (selector-based typeInto is web-only)',
+          'INVALID_REQUEST'
+        );
+      }
+      const text = typeof body?.text === 'string' ? body.text : '';
+      const match = matchElementsByText(registry, label, { visibleOnly: body?.visibleOnly })[0];
+      if (!match) {
+        return error(`No input found for label "${label}"`, 'ELEMENT_NOT_FOUND');
+      }
+      const response = await executor.executeAction(match.id, {
+        action: 'type',
+        params: { text, clear: body?.clear === true },
+      });
+      if (!response.success) {
+        return error(response.error || 'Type failed', 'ACTION_FAILED');
+      }
+      return success({
+        typed: true,
+        element: { id: match.id, type: match.type, label: match.label },
+      });
+    },
+
+    readValue: async (): Promise<APIResponse<never>> => {
+      return error(
+        'readValue is not supported on native platform — React Native has no CSS-selector DOM. Use /control/element/:id/state to read an element value.',
+        'NOT_SUPPORTED'
+      );
+    },
+
+    findByText: async (
+      ctx: HandlerContext
+    ): Promise<
+      APIResponse<Array<{ index: number; id: string; type: string; label?: string }>>
+    > => {
+      const body = ctx.body as { text?: string; visibleOnly?: boolean } | undefined;
+      const text = typeof body?.text === 'string' ? body.text.trim() : '';
+      if (!text) {
+        return error('text is required and must not be empty', 'INVALID_REQUEST');
+      }
+      const matches = matchElementsByText(registry, text, { visibleOnly: body?.visibleOnly });
+      return success(
+        matches.map((el, index) => ({
+          index,
+          id: el.id,
+          type: el.type,
+          label: el.label,
+        }))
+      );
     },
 
     // Coord-based tap

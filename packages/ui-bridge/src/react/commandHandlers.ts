@@ -29,6 +29,11 @@ import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/handlers';
 import {
+  findElementsByText,
+  findElementBySelector,
+  findElementByLabel,
+} from '../server/dom-fallback';
+import {
   pollWaitForElement,
   snapshotFromRegisteredElement,
   WAIT_FOR_ELEMENT_STATES,
@@ -640,6 +645,74 @@ const errorBaselines = new Map<string, { label: string; timestamp: number; error
 
 // Style guide
 let loadedStyleGuide: unknown = null;
+
+/**
+ * React-aware value fill for the app-agnostic `typeInto` relay command.
+ *
+ * The standalone-server `typeInto` (server/handlers.ts) sets `el.value += text`
+ * raw, which does NOT update React's internal `_valueTracker`, so controlled
+ * inputs silently revert on the next render. The element-registry `type`
+ * action (in `executeElementAction`) already does this correctly; this helper
+ * factors out that React-fidelity logic so the relay `typeInto` case behaves
+ * identically to the registry path (native setter + tracker reset + input/
+ * change dispatch + direct `__reactProps$.onChange` invocation for embedded
+ * WebViews). Falls back to `textContent` / `execCommand` for contenteditable.
+ */
+function reactAwareFill(el: HTMLElement, text: string, clear: boolean): void {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const proto =
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+
+    const domEl = el as unknown as Record<string, unknown>;
+    const rPropsKey = Object.keys(domEl).find((k) => k.startsWith('__reactProps$'));
+    const rProps = rPropsKey
+      ? (domEl[rPropsKey] as Record<string, unknown> | undefined)
+      : undefined;
+
+    const notifyReact = (oldValue: string) => {
+      const tracker = (el as unknown as { _valueTracker?: { setValue(v: string): void } })
+        ._valueTracker;
+      if (tracker) tracker.setValue(oldValue);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      if (rProps?.onChange && typeof rProps.onChange === 'function') {
+        (rProps.onChange as (e: unknown) => void)({
+          target: el,
+          currentTarget: el,
+          type: 'change',
+          bubbles: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new Event('input'),
+        });
+      }
+    };
+
+    if (clear) {
+      const prevClear = el.value;
+      if (setter) setter.call(el, '');
+      else el.value = '';
+      notifyReact(prevClear);
+    }
+    el.focus();
+    const cur = el.value;
+    if (setter) setter.call(el, cur + text);
+    else el.value = cur + text;
+    notifyReact(cur);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+  // contenteditable / non-input fallback
+  el.focus();
+  if (clear) el.textContent = '';
+  if (el.isContentEditable) {
+    document.execCommand('insertText', false, text);
+  } else {
+    el.textContent = (el.textContent ?? '') + text;
+  }
+}
 
 // ============================================================================
 // Main Command Executor
@@ -1439,6 +1512,139 @@ export async function executeCommand(
         }, 2000);
       }
       return { success: true };
+    }
+
+    // ======================================================================
+    // App-agnostic interaction relay commands
+    //
+    // These mirror the standalone-server convenience endpoints
+    // (server/handlers.ts: clickByText/clickBySelector/typeInto/readValue/
+    // findByText) so the relay path (web SSE, runner WS) executes the SAME
+    // app-agnostic interactions against the connected tab's live DOM instead
+    // of hitting `default: throw` and silently falling back to the runner's
+    // own webview. Each case returns the bare data object the standalone
+    // handler passes to `success(...)`; `relayCommand` re-wraps it. The
+    // action strings are pinned canonical in
+    // `INTERACTION_RELAY_COMMAND_ACTIONS` (server/types.ts) and guarded by
+    // `relay-handlers.contract.test.ts`.
+    // ======================================================================
+
+    case 'clickByText': {
+      const { text, tag, exact } = payload as {
+        text?: string;
+        tag?: string;
+        exact?: boolean;
+      };
+      if (!text || !text.trim()) {
+        return { success: false, error: 'text is required and must not be empty' };
+      }
+      const matches = findElementsByText(text, { tag, exact });
+      if (matches.length === 0) {
+        return { success: false, error: `No element found with text "${text}"` };
+      }
+      const el = matches[0];
+      el.click();
+      return {
+        clicked: true,
+        element: {
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim().slice(0, 200) ?? '',
+          rect: el.getBoundingClientRect(),
+        },
+      };
+    }
+
+    case 'clickBySelector': {
+      const { selector, index } = payload as { selector?: string; index?: number };
+      if (!selector || !selector.trim()) {
+        return { success: false, error: 'selector is required and must not be empty' };
+      }
+      const el = findElementBySelector(selector, index);
+      if (!el) {
+        return { success: false, error: `No element found for selector "${selector}"` };
+      }
+      el.click();
+      return {
+        clicked: true,
+        element: {
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim().slice(0, 200) ?? '',
+          rect: el.getBoundingClientRect(),
+        },
+      };
+    }
+
+    case 'typeInto': {
+      const { selector, label, text, clear } = payload as {
+        selector?: string;
+        label?: string;
+        text?: string;
+        clear?: boolean;
+      };
+      if (!label && !selector) {
+        return { success: false, error: 'Either label or selector is required' };
+      }
+      let el: HTMLElement | null = null;
+      if (label) el = findElementByLabel(label);
+      else if (selector) el = findElementBySelector(selector);
+      if (!el) {
+        return {
+          success: false,
+          error: `No input found for ${
+            label ? 'label "' + label + '"' : 'selector "' + selector + '"'
+          }`,
+        };
+      }
+      reactAwareFill(el, text ?? '', clear === true);
+      return {
+        typed: true,
+        element: {
+          tag: el.tagName.toLowerCase(),
+          value:
+            'value' in el ? (el as HTMLInputElement).value : el.textContent,
+        },
+      };
+    }
+
+    case 'readValue': {
+      const { selector, index } = payload as { selector?: string; index?: number };
+      if (!selector || !selector.trim()) {
+        return { success: false, error: 'selector is required and must not be empty' };
+      }
+      const el = findElementBySelector(selector, index);
+      if (!el) {
+        return { success: false, error: `No element found for selector "${selector}"` };
+      }
+      const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
+      return { value, length: value?.length ?? 0 };
+    }
+
+    case 'findByText': {
+      const { text, tag, exact } = payload as {
+        text?: string;
+        tag?: string;
+        exact?: boolean;
+      };
+      if (!text || !text.trim()) {
+        return { success: false, error: 'text is required and must not be empty' };
+      }
+      const matches = findElementsByText(text, { tag, exact });
+      return matches.map((el, i) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          index: i,
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim().slice(0, 200) ?? '',
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+          disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
+          visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
+        };
+      });
     }
 
     case 'find':
