@@ -277,11 +277,22 @@ export function createRelayHandlers(
       // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
       const tabErr = e as { code?: unknown; name?: unknown };
       if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
+        // Surface HTTP-level status codes so adapters (Express / Next.js)
+        // translate the per-tab routing failure into the documented
+        // status, not the default 200. The vet for multi-tab routing
+        // (mtc post-vet) explicitly required HTTP 404 when a pinned
+        // `?tabId=<id>` is not registered. TAB_STALE → 410 Gone reads
+        // as "the tab existed but is no longer routable", consistent
+        // with the RFC 7231 semantic. Callers that branch on the
+        // envelope code keep working unchanged.
+        const httpStatus =
+          tabErr.code === 'TAB_NOT_FOUND' ? 404 : tabErr.code === 'TAB_STALE' ? 410 : undefined;
         return {
           success: false,
           error: msg,
           code: tabErr.code as APIResponse['code'],
           timestamp: Date.now(),
+          ...(httpStatus !== undefined ? { httpStatus } : {}),
           suggestions: [
             'GET /tabs?activeOnly=true to discover currently live tabs',
             'Omit tabId to fall back to the relay primary tab',

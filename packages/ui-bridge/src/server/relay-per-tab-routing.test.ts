@@ -21,6 +21,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { CommandRelay, TabRoutingError } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
+import { createNextRouteHandlers } from './nextjs';
 
 function freshRelay(options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>): CommandRelay {
   // Each test gets its own globalThis-key prefix so persisted state does
@@ -210,6 +211,116 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     expect(result.code).toBe('TAB_NOT_FOUND');
     expect(result.error).toContain('tab-zombie');
     expect(result.error).toContain('connectedTabs');
+  });
+
+  it('TAB_NOT_FOUND envelope carries httpStatus=404 for adapter to translate', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+
+    const result = await handlers.executeElementAction!('foo', {
+      action: 'click',
+      tabId: 'tab-zombie',
+    } as unknown as Parameters<typeof handlers.executeElementAction>[1]);
+
+    // The adapter (Express / Next.js) reads `httpStatus` off the envelope
+    // and uses it as the HTTP response status, stripping it from the body.
+    // 404 specifically marks "the pinned tab is not in the registry" —
+    // distinct from a generic 500 and parsable without prose-matching.
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TAB_NOT_FOUND');
+    expect((result as { httpStatus?: number }).httpStatus).toBe(404);
+  });
+
+  it('Next.js adapter returns HTTP 404 when ?tabId=<unknown>', async () => {
+    // End-to-end through the Next.js route adapter: query-param `?tabId`
+    // is sniffed by the adapter, threaded into the body, picked up by
+    // relay-handlers' `extractTabRouting`, fails the relay's per-tab
+    // validation with `TAB_NOT_FOUND`, the envelope carries
+    // `httpStatus: 404`, and the adapter strips that field and returns
+    // the actual HTTP 404 response.
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    const route = createNextRouteHandlers(handlers);
+
+    // Construct a minimal NextRequest-compatible object — the adapter
+    // only touches `nextUrl`, `headers`, `method`, and `json()`.
+    const url = new URL(
+      'http://localhost/api/ui-bridge/control/element/foo/action?tabId=tab-zombie'
+    );
+    const req = new Request(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'click' }),
+    }) as unknown as Request & { nextUrl: URL };
+    req.nextUrl = url;
+
+    const response = await route.POST(req as never, {
+      params: { path: ['control', 'element', 'foo', 'action'] },
+    } as never);
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBe('TAB_NOT_FOUND');
+    // httpStatus must be stripped from the JSON body — it's a transport hint
+    expect(body.httpStatus).toBeUndefined();
+  });
+
+  it('Next.js adapter returns HTTP 200 when ?tabId=<known> routes successfully', async () => {
+    // Default routing (no tabId or known tabId) must NOT trip the 404 path.
+    // Mock the queueCommand so we don't need an end-to-end browser response.
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue({ ok: true } as unknown);
+    const handlers = createRelayHandlers(relay);
+    const route = createNextRouteHandlers(handlers);
+
+    const url = new URL(
+      'http://localhost/api/ui-bridge/control/element/foo/action?tabId=tab-a'
+    );
+    const req = new Request(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'click', params: { text: 'hi' } }),
+    }) as unknown as Request & { nextUrl: URL };
+    req.nextUrl = url;
+
+    const response = await route.POST(req as never, {
+      params: { path: ['control', 'element', 'foo', 'action'] },
+    } as never);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+  });
+
+  it('TAB_STALE envelope carries httpStatus=410 for adapter to translate', async () => {
+    const relay = freshRelay({ staleHeartbeatMs: 5_000, staleHeartbeatSweepMs: 60_000 });
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      relay.receiveHeartbeat('tab-a');
+      vi.setSystemTime(new Date('2026-01-01T00:01:00Z')); // +60s
+
+      const result = await handlers.executeElementAction!('foo', {
+        action: 'click',
+        tabId: 'tab-a',
+      } as unknown as Parameters<typeof handlers.executeElementAction>[1]);
+
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('TAB_STALE');
+      // 410 Gone — the tab existed but is no longer routable. Distinct
+      // from 404 so callers can decide whether to retry (stale: yes,
+      // wait for heartbeat) or re-discover (not-found: query /tabs).
+      expect((result as { httpStatus?: number }).httpStatus).toBe(410);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
