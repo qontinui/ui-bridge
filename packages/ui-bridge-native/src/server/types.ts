@@ -584,6 +584,18 @@ export interface NativeServerHandlers {
   // AI helpers
   fillForm: HandlerFunction<FillFormResponse>;
 
+  // App-agnostic interaction parity — cross-platform contract shared with the
+  // web/runner bridge (`/control/page/*`). Text/label-based interactions
+  // compose find + executeAction over the registry; selector-only variants
+  // return NOT_SUPPORTED on native (no DOM).
+  clickByText: HandlerFunction<{ clicked: boolean; element?: unknown }>;
+  clickBySelector: HandlerFunction<never>;
+  typeInto: HandlerFunction<{ typed: boolean; element?: unknown }>;
+  readValue: HandlerFunction<never>;
+  findByText: HandlerFunction<
+    Array<{ index: number; id: string; type: string; label?: string }>
+  >;
+
   // AI helpers — NOT_SUPPORTED stubs (runner-only endpoints; see route table).
   // These return `error(..., 'NOT_SUPPORTED')` and exist so the mobile bridge
   // never 404s on cheatsheet endpoints that work on the runner.
