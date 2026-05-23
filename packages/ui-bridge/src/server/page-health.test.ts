@@ -216,6 +216,92 @@ describe('diagnosePageHealth', () => {
     expect(inter.data.disabled).toBe(2);
   });
 
+  describe('visual_anomalies outside_viewport: horizontal-overflow only (fold semantics)', () => {
+    // Below-fold and above-fold elements are normal on scrollable pages and
+    // must NOT count as outside_viewport. Only horizontal overflow (off-left
+    // / off-right) is a real anomaly — there's no horizontal scroll on
+    // typical layouts.
+    function anomaliesFor(elements: DiscoveredElement[]) {
+      const report = diagnosePageHealth(elements);
+      return {
+        report,
+        anomalies: report.findings.find((f) => f.check === 'visual_anomalies')!,
+      };
+    }
+
+    // Backlog of on-screen content so layout_regions / spatial_coverage
+    // don't dominate the summary.
+    function backlog(extra: DiscoveredElement[]): DiscoveredElement[] {
+      return [
+        el({ id: 'h', rect: { x: 0.25, y: 0.0, width: 0.5, height: 0.07 } }),
+        el({
+          id: 'c1',
+          type: 'paragraph',
+          category: 'content',
+          rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.2 },
+        }),
+        el({
+          id: 'c2',
+          type: 'paragraph',
+          category: 'content',
+          rect: { x: 0.25, y: 0.5, width: 0.5, height: 0.2 },
+        }),
+        el({
+          id: 'c3',
+          type: 'paragraph',
+          category: 'content',
+          rect: { x: 0.25, y: 0.75, width: 0.5, height: 0.15 },
+        }),
+        ...extra,
+      ];
+    }
+
+    it('does NOT flag a below-fold element (y=1.5, height=0.1)', () => {
+      const below = el({
+        id: 'below',
+        type: 'paragraph',
+        category: 'content',
+        rect: { x: 0.1, y: 1.5, width: 0.5, height: 0.1 },
+      });
+      const { anomalies } = anomaliesFor(backlog([below]));
+      expect(anomalies.data.outside_viewport).toBe(0);
+      expect(anomalies.severity).toBe('OK');
+    });
+
+    it('does NOT flag an above-fold element (y=-0.5, height=0.1)', () => {
+      const above = el({
+        id: 'above',
+        type: 'paragraph',
+        category: 'content',
+        rect: { x: 0.1, y: -0.5, width: 0.5, height: 0.1 },
+      });
+      const { anomalies } = anomaliesFor(backlog([above]));
+      expect(anomalies.data.outside_viewport).toBe(0);
+      expect(anomalies.severity).toBe('OK');
+    });
+
+    it('flags an off-screen-RIGHT element (x=1.5, width=0.1) as outside_viewport', () => {
+      const offRight = el({
+        id: 'off-right',
+        rect: { x: 1.5, y: 0.3, width: 0.1, height: 0.05 },
+      });
+      const { anomalies } = anomaliesFor(backlog([offRight]));
+      expect(anomalies.data.outside_viewport).toBe(1);
+      expect(anomalies.severity).toBe('WARNING');
+    });
+
+    it('flags an off-screen-LEFT element (x=-0.5, width=0.1) as outside_viewport', () => {
+      // x + width = -0.4 (< 0) → off the left edge.
+      const offLeft = el({
+        id: 'off-left',
+        rect: { x: -0.5, y: 0.3, width: 0.1, height: 0.05 },
+      });
+      const { anomalies } = anomaliesFor(backlog([offLeft]));
+      expect(anomalies.data.outside_viewport).toBe(1);
+      expect(anomalies.severity).toBe('WARNING');
+    });
+  });
+
   it('flags WARNING on zero-size visible elements', () => {
     const elements: DiscoveredElement[] = [
       el({

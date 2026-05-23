@@ -168,6 +168,126 @@ describe('diagnosePageHealth (mobile)', () => {
     expect((spatial?.data as { coverage_pct: number }).coverage_pct).toBe(100);
   });
 
+  describe('visual_anomalies outside_viewport: horizontal-overflow only (fold semantics)', () => {
+    // Regression for the 0.6.6 false-positive on /settings, where every
+    // scrollable settings row whose `pageY > window.height` was flagged.
+    // ScrollView/FlatList content below or above the fold is legitimate;
+    // only horizontal overflow (no horizontal scroll on mobile) is an
+    // anomaly the user can't reach.
+
+    function anomaliesFinding(elements: PageHealthElement[]) {
+      const report = diagnosePageHealth(elements, VIEWPORT);
+      return {
+        report,
+        anomalies: report.findings.find((f) => f.check === 'visual_anomalies'),
+      };
+    }
+
+    // We need some on-screen content to clear the layout_regions /
+    // spatial_coverage checks so the report's summary reflects ONLY the
+    // visual_anomalies finding for these assertions.
+    function withContentBacklog(extra: PageHealthElement[]): PageHealthElement[] {
+      return [
+        laidOut('text', 0, 0, VIEWPORT.width, 60),
+        laidOut('text', 16, 100, VIEWPORT.width - 32, 80, {
+          textContent: 'Welcome',
+        }),
+        laidOut('list', 0, 200, VIEWPORT.width, 400),
+        laidOut('listItem', 16, 220, VIEWPORT.width - 32, 60, {
+          textContent: 'Row A',
+        }),
+        laidOut('listItem', 16, 290, VIEWPORT.width - 32, 60, {
+          textContent: 'Row B',
+        }),
+        laidOut('listItem', 16, 360, VIEWPORT.width - 32, 60, {
+          textContent: 'Row C',
+        }),
+        ...extra,
+      ];
+    }
+
+    it('does NOT flag a below-fold element (y=1.5, scrollable content)', () => {
+      // pageY=1200 on an 800px-tall viewport → normalized y=1.5, well below the
+      // fold but reachable by scrolling. Must NOT count toward outside_viewport.
+      const belowFold = laidOut('text', 16, 1200, VIEWPORT.width - 32, 80, {
+        textContent: 'Below the fold',
+      });
+      const { report, anomalies } = anomaliesFinding(withContentBacklog([belowFold]));
+
+      expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(0);
+      expect(anomalies?.severity).toBe('OK');
+      expect(report.summary).toBe('OK');
+    });
+
+    it('does NOT flag an above-fold element (y=-0.5, scrolled past)', () => {
+      // pageY=-400 on an 800px-tall viewport → normalized y=-0.5, above the
+      // visible area (user scrolled past it). Reachable by scrolling back, so
+      // not an anomaly.
+      const aboveFold = laidOut('text', 16, -400, VIEWPORT.width - 32, 80, {
+        textContent: 'Above the fold',
+      });
+      const { report, anomalies } = anomaliesFinding(withContentBacklog([aboveFold]));
+
+      expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(0);
+      expect(anomalies?.severity).toBe('OK');
+      expect(report.summary).toBe('OK');
+    });
+
+    it('flags an off-screen-RIGHT element (x=1.5) as outside_viewport', () => {
+      // pageX=600 on a 400px-wide viewport → normalized x=1.5, past the right
+      // edge. There's no horizontal scroll on a typical mobile screen so the
+      // user can't reach this — meaningful anomaly.
+      const offRight = laidOut('button', 600, 200, 40, 40, {
+        textContent: 'Hidden right',
+      });
+      const { anomalies } = anomaliesFinding(withContentBacklog([offRight]));
+
+      expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(1);
+      expect(anomalies?.severity).toBe('WARNING');
+    });
+
+    it('flags an off-screen-LEFT element (x=-0.5) as outside_viewport', () => {
+      // pageX=-200 on a 400px-wide viewport → normalized x+width = -0.4 (still
+      // < 0). Off the left edge, unreachable on mobile.
+      const offLeft = laidOut('button', -200, 200, 40, 40, {
+        textContent: 'Hidden left',
+      });
+      const { anomalies } = anomaliesFinding(withContentBacklog([offLeft]));
+
+      expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(1);
+      expect(anomalies?.severity).toBe('WARNING');
+    });
+
+    it('regression: long scrollable settings page reports OK (all rows below fold)', () => {
+      // The exact failure shape from iter-4 manual test: 11 settings rows
+      // stacked beyond the visible 800px fold. None should count as
+      // outside_viewport. There also needs to be at least one above-fold
+      // content element so layout_regions clears OK.
+      const elements: PageHealthElement[] = [
+        laidOut('text', 0, 0, VIEWPORT.width, 60), // header
+        laidOut('text', 16, 100, VIEWPORT.width - 32, 40, {
+          textContent: 'Settings',
+        }),
+      ];
+      // 11 settings rows starting at y=200 with 80px each = bottom at 1080,
+      // i.e. y=200..1080 (some on-screen, most below fold).
+      for (let i = 0; i < 11; i++) {
+        elements.push(
+          laidOut('listItem', 16, 200 + i * 80, VIEWPORT.width - 32, 70, {
+            textContent: `Setting ${i + 1}`,
+          })
+        );
+      }
+
+      const report = diagnosePageHealth(elements, VIEWPORT);
+      const anomalies = report.findings.find((f) => f.check === 'visual_anomalies');
+
+      expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(0);
+      expect(anomalies?.severity).toBe('OK');
+      expect(report.summary).toBe('OK');
+    });
+  });
+
   it('counts disabled interactive elements via type-based detection (no `category` field)', () => {
     // Mobile elements have `type` instead of `category`. The analyzer's
     // INTERACTIVE_TYPES set must catch them so the disabled-ratio check
