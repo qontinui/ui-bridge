@@ -1423,40 +1423,184 @@ Runs the accessibility / visual audit pass. Requires a style guide to
 be loaded first (`design_load_style_guide`). Returns HTTP 400 with a
 flat `{success:false, error}` envelope when no guide is loaded.
 
-## Error envelopes (response contract)
+## Error Envelope
 
-Every IPC-backed UI Bridge handler funnels through a single unwrapper
-(`wrap_ipc_result`). The wire shape:
+Every UI Bridge handler — runner (Rust) and web SDK (TypeScript) — emits
+a single canonical response envelope. Success carries `data`; failure
+carries `code` + `message` (+ optional `data` / `suggestions`). Agents
+and SDK consumers branch on `success` and `code`, NOT on HTTP status
+alone and NOT on parsing free-form `message` text.
 
-- **Success:** HTTP 200 with `{ success: true, data: <result> }`.
-- **Soft failure** (operation rejected the request — bad input, missing
-  preconditions, element not found, etc.): HTTP 400 with a flat
-  `{ success: false, error: "..." }` body. **No nested `data`, no inner
-  `success` field.** This is the F2 contract — agents check the outer
-  status code and the outer `error` string.
-- **Transport failure** (frontend not mounted yet, IPC timeout): HTTP
-  503 / 500 with `{ success: false, error_detail: { code, message,
-recovery } }` so the caller can branch on whether to retry.
-
-Three high-friction errors carry `hint` objects to short-circuit
-trial-and-error:
+### Canonical shape
 
 ```json
-// element-not-found 404
+{
+  "success": false,
+  "code": "<ERROR_CODE>",
+  "message": "<human-readable description>",
+  "data": { /* optional context, e.g. allowed values, requested id */ },
+  "suggestions": [ /* optional recovery hints, e.g. ["check the browser SDK is connected"] */ ]
+}
+```
+
+Success responses are the symmetric shape:
+
+```json
+{
+  "success": true,
+  "data": { /* handler-specific payload */ }
+}
+```
+
+Field rules:
+
+- `success` (bool, **required**) — `true` on success, `false` on every
+  error path. Branch on this first.
+- `code` (string, **required on failure**) — stable, machine-readable
+  identifier. **String codes only**, SCREAMING_SNAKE_CASE or
+  `UB-DASH-CASE` (legacy). Identical strings across runner + web for
+  the same semantic condition — `NO_BROWSER_CONNECTED` means the same
+  thing on both transports.
+- `message` (string, **required on failure**) — human-readable
+  description for logs / surfaces. Not stable; do not pattern-match.
+- `data` (object, optional) — context the caller needs to recover:
+  the requested id, the allowed-values list, the closest-match
+  candidates, the last-observed state, etc.
+- `suggestions` (string[], optional) — recovery hints the caller can
+  surface to a planner or to the user. Examples:
+  `["check the browser SDK is connected"]`,
+  `["call POST /control/discover to re-scan the page"]`.
+
+### Common `code` values
+
+These are the stable error codes shipped across runner + web today.
+String identifiers, agreed across transports:
+
+| Code | Meaning | Typical HTTP status |
+|---|---|---|
+| `NO_BROWSER_CONNECTED` | Web SDK route invoked but no browser tab is paired to relay the call. | `503` |
+| `INVALID_TAB_ID` | The `tabId` / `tab` value doesn't match any registered tab. `data.knownTabs` carries the valid slugs. | `400` |
+| `INVALID_STATE` | The request was well-formed but the bridge is in a state that can't satisfy it (e.g. wait-for-element predicate against a missing requirement). | `400` |
+| `ELEMENT_NOT_FOUND` | The requested element id / selector / predicate did not resolve. `data.closestMatches` may carry Levenshtein-ranked suggestions. | `404` |
+| `ACTION_NOT_SUPPORTED` | The action is not registered for the target element / component. `data.allowedActions` carries the valid list. | `400` |
+| `UB-COMPONENT-NOT-AVAILABLE` | The named component is not currently registered (route unmounted, SDK not yet attached). | `404` |
+| `INTERNAL_ERROR` | Unhandled exception inside the handler. Always indicates a bug worth filing; `data` may carry a redacted stack trace. | `500` |
+
+New error conditions should reuse an existing code where the semantics
+match. Coin a new one only when none of the above fits — and add it to
+this table in the same PR.
+
+### HTTP status conventions
+
+The transport layer's HTTP status mirrors the envelope's failure
+category. Agents that hard-code on status alone work for the common
+cases below; agents that hard-code on `code` are forward-compatible
+across future status refinements.
+
+| HTTP | When | Codes |
+|---|---|---|
+| `200` | Success. `success: true`. | (none — `data` carries the payload) |
+| `400` | Client-side error: bad input, unknown id, unsupported action, bridge-state mismatch. | `INVALID_TAB_ID`, `INVALID_STATE`, `ACTION_NOT_SUPPORTED` |
+| `404` | Requested resource doesn't exist in the registry. | `ELEMENT_NOT_FOUND`, `UB-COMPONENT-NOT-AVAILABLE` |
+| `408` | Wait-primitive timed out under `?strictTimeout=true`. | `wait_for_element_timeout` (see Wait-for-element above) |
+| `503` | Bridge / transport not ready — retryable. | `NO_BROWSER_CONNECTED` |
+| `500` | Handler crashed. Not retryable without escalation. | `INTERNAL_ERROR` |
+
+### Examples
+
+```json
+// NO_BROWSER_CONNECTED — web SDK route invoked with no paired browser
+// HTTP 503
+{
+  "success": false,
+  "code": "NO_BROWSER_CONNECTED",
+  "message": "No browser SDK is currently connected to relay this call",
+  "data": {},
+  "suggestions": ["check the browser SDK is connected", "open the dashboard and verify the pairing badge"]
+}
+
+// ELEMENT_NOT_FOUND — close-match list returned for recovery
+// HTTP 404
+{
+  "success": false,
+  "code": "ELEMENT_NOT_FOUND",
+  "message": "Element not found: foo-btn",
+  "data": { "closestMatches": ["foo-button-0", "fooBtn"] },
+  "suggestions": ["try one of the closestMatches", "call GET /control/snapshot to list registered elements"]
+}
+
+// ACTION_NOT_SUPPORTED — allowed-actions list returned for recovery
+// HTTP 400
+{
+  "success": false,
+  "code": "ACTION_NOT_SUPPORTED",
+  "message": "Action 'check' not allowed on this element",
+  "data": { "allowedActions": ["click", "focus", "blur", "hover"] }
+}
+
+// INVALID_TAB_ID — known-tabs list returned for recovery
+// HTTP 400
+{
+  "success": false,
+  "code": "INVALID_TAB_ID",
+  "message": "Unknown tab: page-llm-analytics",
+  "data": { "knownTabs": ["llm-analytics", "prompt-home", "specs"] },
+  "suggestions": ["use the bare slug, not the page- prefix"]
+}
+
+// INVALID_STATE — wait predicate against a missing requirement
+// HTTP 400
+{
+  "success": false,
+  "code": "INVALID_STATE",
+  "message": "Cannot wait for 'visible' on a non-registered element",
+  "data": { "predicate": { "label": "Save" }, "requirement": "visible" }
+}
+```
+
+### Deprecated: `error_detail` nesting
+
+Older runner endpoints — and a handful of legacy web routes — returned
+nested error shapes:
+
+```json
+// LEGACY — do not emit on new endpoints
+{
+  "success": false,
+  "error": "Element not found: foo-btn",
+  "error_detail": {
+    "code": "ELEMENT_NOT_FOUND",
+    "context": { "closestMatches": ["foo-button-0"] }
+  }
+}
+```
+
+Two legacy shapes are migrating to the flat canonical envelope:
+
+- **`error_detail.code` + `error_detail.context`** — promote `code` to
+  top-level; rename `context` to `data`.
+- **`error` (free-form string only, no `code`)** — add a top-level
+  `code`; keep the human string under `message` (drop the `error` key).
+
+Consumers should read top-level `code` first and fall back to
+`error_detail.code` only for transitional compatibility. The
+`error_detail` nesting and the bare-string `error` field will be removed
+once runner + web parity is complete — track migration via the parity
+audit in `docs-site/docs/api/`.
+
+Three high-friction errors continue to carry `hint` objects today; new
+endpoints should emit the same context under `data` instead. `hint` is
+preserved as a read-side compat alias on the affected routes:
+
+```json
+// element-not-found 404 — legacy `hint` shape, still emitted today
 {
   "success": false,
   "error": "Element not found: foo-btn",
   "hint": { "closestMatches": ["foo-button-0", "fooBtn", ...] }
 }
 
-// action-not-allowed
-{
-  "success": false,
-  "error": "Action 'check' not allowed on this element",
-  "hint": { "allowedActions": ["click", "focus", "blur", "hover"] }
-}
-
-// page/evaluate rejected by the security guard
+// page/evaluate rejected by the security guard — legacy `hint` (string)
 {
   "success": false,
   "error": "Expression rejected: contains prohibited pattern",
@@ -1465,7 +1609,8 @@ trial-and-error:
 ```
 
 `closestMatches` is Levenshtein-ranked, capped at 5, edit-distance ≤ 50%
-of element-id length.
+of element-id length — same on both the legacy `hint.closestMatches`
+slot and the canonical `data.closestMatches` slot.
 
 ## Health (Tauri runner)
 
