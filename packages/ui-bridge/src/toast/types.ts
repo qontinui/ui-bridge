@@ -71,6 +71,12 @@ export interface ToastCaptureConfig {
   recentRetention?: number;
   /** Polling interval for dismissal detection (ms, default: 500) */
   pollInterval?: number;
+  /**
+   * Maximum age before a still-visible "toast" is auto-dismissed (ms, default: 60000).
+   * Defense-in-depth against greedy selectors capturing persistent UI surfaces
+   * (status bars, banners, sticky modals) and tracking them indefinitely.
+   */
+  maxToastAgeMs?: number;
 }
 
 /**
