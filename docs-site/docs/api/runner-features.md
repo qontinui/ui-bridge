@@ -1290,6 +1290,42 @@ curl -s $BASE/control/components | jq '.data.components | length'
 curl -s $BASE/sdk/control/components | jq '.data.components | length'
 ```
 
+### Route scoping — empty list on a route with no components is expected
+
+`GET /control/components` returns the current contents of the in-memory
+SDK registry — every component registered via `useUIComponent` that is
+**currently mounted**. There is no cross-route catalogue: when the SPA
+navigates, React unmounts the departing route's components, which fires
+their cleanup effects and calls `registry.unregisterComponent(id)`. The
+arriving route's components register on mount. The endpoint always
+reflects "what is mounted right now," scoped to the current route.
+
+**Consequence.** A route that doesn't call `useUIComponent` anywhere
+(detail pages, landing pages, modals-only views) returns
+`data.components: []` — **this is not a bug or a stale cache.** Confirm
+your assumption with two cheap probes:
+
+```bash
+# 1. What route is the bridge currently on?
+curl -s $BASE/control/snapshot | jq '.data.route'
+
+# 2. Has any route ever registered components in this session?
+curl -s $BASE/control/snapshot | jq '.data.registration'
+# { totalRegistered: N, everHadRegistrations: true|false, byRoute: {...} }
+```
+
+If `everHadRegistrations: false`, no `useUIComponent` call has run in
+this session — either the host page has no component coverage, or the
+SDK hasn't fully mounted yet. If `everHadRegistrations: true` but
+`data.components` is empty on the current route, the registry is
+working as designed: navigate to a route that owns components, or use
+`/control/snapshot` + `byRoute` to see which routes have coverage.
+
+To drive a component, navigate to its owning route first
+(`POST /control/page/navigate {url}` or `POST /control/tab/activate
+{tabId}`), then re-list. Components are not addressable across routes
+in this build.
+
 ### Per-component detail & invocation
 
 ```bash
