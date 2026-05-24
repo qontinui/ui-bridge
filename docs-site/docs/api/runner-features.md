@@ -436,6 +436,36 @@ expose UI Bridge state. Either set up one of the three transports
 above, or limit testing to server-side artifact verification (AAB
 manifest grep, `eas-cli channel:view`, backend logs).
 
+### Mobile→Runner transports
+
+The reverse direction — the mobile app's API client calling the
+runner's HTTP API — uses one of three transports. Selection logic
+lives in `qontinui-mobile/src/api/core/HttpTransport.ts` (constructor
+L88-100 chooses cloud-relay vs direct; `fetch<T>` L188-195 handles the
+adb-reverse fallback).
+
+1. **Cloud relay** (default when a `proxyBaseUrl` is configured):
+   requests go to `{apiUrl}/api/v1/device-bridge/runner-proxy/*`,
+   where `apiUrl` is the mobile's configured backend URL. The backend
+   forwards through the device WebSocket to the runner co-located with
+   the backend. Note the literal path segment is
+   `device-bridge/runner-proxy` — other plausible-looking variants
+   under `/api/v1/devices/{id}/*` return 404.
+
+2. **Direct LAN**: the mobile hits the runner's HTTP API directly
+   (e.g. `http://192.168.x.x:9876/*`) when on the same LAN and the
+   runner accepts unauthenticated LAN requests. Selected by passing a
+   LAN host/port to the `HttpTransport` constructor with no
+   `proxyBaseUrl`.
+
+3. **adb-reverse fallback** (USB-tethered dev only): after
+   `adb reverse tcp:9876 tcp:9876` on the host, the runner is
+   reachable from the device at `http://localhost:9876`. The mobile
+   `HttpTransport` flips to this automatically on Android when a
+   LAN-host fetch fails with a network-layer error (see
+   `enableAndroidLoopbackFallback` / `canAttemptAndroidLoopback`), and
+   it sticks for the lifetime of the transport instance.
+
 ### Mobile route navigation
 
 ```bash
