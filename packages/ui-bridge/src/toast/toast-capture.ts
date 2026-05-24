@@ -21,13 +21,17 @@ import { classString } from '../core/class-name';
 // Built-in selectors for common toast/notification libraries
 // ============================================================================
 
+// NOTE: bare `[aria-live="polite"]` / `[aria-live="assertive"]` are intentionally
+// NOT in this list. They are too greedy — they match persistent status-bar text
+// (e.g. "13 terminals open", "Analyzing: idle"), form-validation banners, and
+// many other legit non-toast surfaces. Once captured, the walker tracks them
+// indefinitely and surfaces `durationMs` in the hours+ range. Library-specific
+// selectors below cover real toast libraries; apps with custom toast surfaces
+// can register their own selectors via `customSelectors`.
 const BUILT_IN_SELECTORS: string[] = [
   // ARIA roles
   '[role="alert"]',
   '[role="status"]',
-  // ARIA live regions
-  '[aria-live="polite"]',
-  '[aria-live="assertive"]',
   // Sonner
   '[data-sonner-toast]',
   // Radix (children of viewport)
@@ -49,6 +53,24 @@ const BUILT_IN_SELECTORS: string[] = [
   '[data-toast]',
   '[data-notification]',
 ];
+
+// ============================================================================
+// Max-age guard
+// ============================================================================
+
+/**
+ * Defense-in-depth ceiling on how long a captured "toast" can stay in the
+ * active set before being auto-dismissed. Real toast notifications are
+ * transient (seconds). Anything tracked for longer than this is almost
+ * certainly a persistent UI surface that was mis-classified (status bar,
+ * banner, form-validation region, sticky modal toast, etc.). Auto-dismissing
+ * prevents `durationMs` from drifting into hours/days in `/control/snapshot`.
+ *
+ * Covers two failure modes:
+ *  1. A user app uses a library with greedy selectors (e.g. bare aria-live).
+ *  2. A future SDK addition reintroduces a greedy selector into BUILT_IN_SELECTORS.
+ */
+const MAX_TOAST_AGE_MS = 60_000;
 
 // ============================================================================
 // Level inference helpers
@@ -275,7 +297,7 @@ function isElementVisible(el: Element): boolean {
 
 export class ToastCapture {
   private config: Required<
-    Pick<ToastCaptureConfig, 'maxRecent' | 'recentRetention' | 'pollInterval'>
+    Pick<ToastCaptureConfig, 'maxRecent' | 'recentRetention' | 'pollInterval' | 'maxToastAgeMs'>
   > & { customSelectors: string[] };
 
   private observer: MutationObserver | null = null;
@@ -296,6 +318,7 @@ export class ToastCapture {
       customSelectors: config?.customSelectors ?? [],
       recentRetention: config?.recentRetention ?? 60000,
       pollInterval: config?.pollInterval ?? 500,
+      maxToastAgeMs: config?.maxToastAgeMs ?? MAX_TOAST_AGE_MS,
     };
     this.allSelectors = [...BUILT_IN_SELECTORS, ...this.config.customSelectors];
   }
@@ -474,9 +497,17 @@ export class ToastCapture {
     for (const [id, entry] of this.activeToasts) {
       if (!isElementVisible(entry.element)) {
         toDismiss.push(id);
-      } else {
-        // Update durationMs for still-visible toasts
-        entry.toast.durationMs = now - entry.toast.appearedAt;
+        continue;
+      }
+      // Update durationMs for still-visible toasts
+      const age = now - entry.toast.appearedAt;
+      entry.toast.durationMs = age;
+      // Max-age guard: a still-visible "toast" that has been tracked longer
+      // than maxToastAgeMs is almost certainly a persistent UI surface that
+      // was mis-classified. Auto-dismiss to keep durationMs bounded and to
+      // stop it from polluting `/control/snapshot.toasts.active` indefinitely.
+      if (age > this.config.maxToastAgeMs) {
+        toDismiss.push(id);
       }
     }
 

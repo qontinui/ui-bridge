@@ -618,4 +618,123 @@ describe('ToastCapture', () => {
     expect(active).toHaveLength(1);
     expect(active[0].level).toBe('info');
   });
+
+  // --------------------------------------------------------------------------
+  // Regression: bare aria-live regions are NOT captured
+  //
+  // The walker used to include bare `[aria-live="polite"]` and
+  // `[aria-live="assertive"]` in BUILT_IN_SELECTORS, which matched
+  // persistent status-bar text (e.g. the runner's TerminalTabBar
+  // "13 terminals open" + ZoneStatusBar "Analyzing: idle"). Those got
+  // tracked indefinitely and surfaced `durationMs` in the hours range.
+  // After tightening, bare aria-live alone must NOT trigger capture.
+  // --------------------------------------------------------------------------
+  it('should NOT capture an element with bare aria-live="polite"', async () => {
+    capture = new ToastCapture();
+    capture.install();
+
+    addToast({ 'aria-live': 'polite' }, 'Analyzing: idle');
+    await flushAndScan();
+
+    const active = capture.getActive();
+    expect(active).toHaveLength(0);
+    expect(capture.getSnapshot().totalCaptured).toBe(0);
+  });
+
+  it('should NOT capture an element with bare aria-live="assertive"', async () => {
+    capture = new ToastCapture();
+    capture.install();
+
+    addToast({ 'aria-live': 'assertive' }, '13 terminals open');
+    await flushAndScan();
+
+    const active = capture.getActive();
+    expect(active).toHaveLength(0);
+    expect(capture.getSnapshot().totalCaptured).toBe(0);
+  });
+
+  // --------------------------------------------------------------------------
+  // Regression: role="status" + aria-live + persistent text is auto-dismissed
+  //
+  // role="status" remains a legitimate signal (deliberate ARIA widget), so an
+  // element using it IS captured initially. But the max-age guard ensures it
+  // does not linger in `active` indefinitely — after maxToastAgeMs the entry
+  // is auto-dismissed and moves to `recent`, preventing the `durationMs`
+  // drift the original bug surfaced.
+  // --------------------------------------------------------------------------
+  it('should auto-dismiss role="status" + aria-live persistent regions after maxToastAgeMs', async () => {
+    capture = new ToastCapture({ maxToastAgeMs: 5_000, pollInterval: 500 });
+    capture.install();
+
+    addToast({ role: 'status', 'aria-live': 'polite' }, 'Analyzing: idle');
+    await flushAndScan();
+
+    // Initial capture happens (role="status" is legitimate)
+    expect(capture.getActive()).toHaveLength(1);
+
+    // Element stays in DOM (it's persistent) — advance past max-age window
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    // Max-age guard should have moved it out of active into recent
+    expect(capture.getActive()).toHaveLength(0);
+    const recent = capture.getRecent();
+    expect(recent).toHaveLength(1);
+    expect(recent[0].message).toBe('Analyzing: idle');
+    expect(recent[0].visible).toBe(false);
+    expect(recent[0].dismissedAt).toBeDefined();
+  });
+
+  // --------------------------------------------------------------------------
+  // Defense-in-depth: custom-selector toasts also dismissed after maxToastAgeMs
+  //
+  // If a user app registers a custom selector that matches a long-lived
+  // element (e.g. a sticky modal banner), the max-age guard keeps the
+  // capture bounded. This is the Fix B safety net for greedy app-provided
+  // selectors.
+  // --------------------------------------------------------------------------
+  it('should auto-dismiss custom-selector toast after maxToastAgeMs', async () => {
+    capture = new ToastCapture({
+      customSelectors: ['.my-sticky-toast'],
+      maxToastAgeMs: 3_000,
+      pollInterval: 500,
+    });
+    capture.install();
+
+    addToast({ className: 'my-sticky-toast' }, 'Persistent banner');
+    await flushAndScan();
+
+    expect(capture.getActive()).toHaveLength(1);
+
+    // Advance well past max-age
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(capture.getActive()).toHaveLength(0);
+    const recent = capture.getRecent();
+    expect(recent).toHaveLength(1);
+    expect(recent[0].message).toBe('Persistent banner');
+    expect(recent[0].visible).toBe(false);
+    expect(recent[0].dismissedAt).toBeDefined();
+    // Duration should reflect the time-to-dismiss (approx max-age)
+    expect(recent[0].durationMs).toBeGreaterThanOrEqual(3_000);
+  });
+
+  // --------------------------------------------------------------------------
+  // Max-age guard: a short-lived toast (< maxToastAgeMs) is NOT auto-dismissed
+  //
+  // Sanity check that the guard only fires on genuinely long-lived elements
+  // and doesn't preempt normal toast lifecycles.
+  // --------------------------------------------------------------------------
+  it('should NOT auto-dismiss a still-fresh toast under maxToastAgeMs', async () => {
+    capture = new ToastCapture({ maxToastAgeMs: 10_000, pollInterval: 500 });
+    capture.install();
+
+    addToast({ role: 'alert' }, 'Fresh toast');
+    await flushAndScan();
+
+    // Advance only halfway through the window — should still be active
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(capture.getActive()).toHaveLength(1);
+    expect(capture.getActive()[0].message).toBe('Fresh toast');
+  });
 });
