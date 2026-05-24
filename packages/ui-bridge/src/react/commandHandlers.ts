@@ -477,6 +477,98 @@ async function awaitDOMSettledRelay(timeout = 500): Promise<void> {
   }
 }
 
+/**
+ * Dispatch a realistic pointer + mouse + click sequence on an element so
+ * pointer-event-driven libraries (Radix UI Tabs/menus/dialogs, Reach,
+ * Headless UI, etc.) respond. A bare `element.click()` fires only the
+ * synthetic `click` MouseEvent — Radix triggers listen on `pointerdown`
+ * (and never see `click` for their open/select logic), so the relay would
+ * return success while nothing happened and the transition's `waitAfter`
+ * would time out.
+ *
+ * Sequence (mirrors a real user tap/click):
+ *   focus → pointerdown → mousedown → pointerup → mouseup → click
+ *
+ * Each event is `{ bubbles, cancelable, composed }` with primary-pointer /
+ * left-button coordinates so capturing listeners on ancestors (Radix uses
+ * capture-phase + bubbling) and `composed` shadow-DOM boundaries both see
+ * it. We keep a final native `.click()` as a fallback for plain
+ * `<button>`/anchor controls and environments without `PointerEvent`
+ * (older jsdom), so existing plain-React behavior is preserved.
+ */
+function dispatchRealClick(el: HTMLElement): void {
+  try {
+    (el as HTMLElement).focus?.();
+  } catch {
+    /* focus can throw on detached / non-focusable nodes — ignore */
+  }
+
+  const rect = (() => {
+    try {
+      return el.getBoundingClientRect();
+    } catch {
+      return { left: 0, top: 0, width: 0, height: 0 } as DOMRect;
+    }
+  })();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
+
+  const pointerInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    pointerId: 1,
+    button: 0,
+    buttons: 1,
+    isPrimary: true,
+    pointerType: 'mouse',
+    clientX,
+    clientY,
+  };
+  const mouseInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    button: 0,
+    buttons: 1,
+    clientX,
+    clientY,
+  };
+
+  // PointerEvent may be undefined in older jsdom — fall back to MouseEvent
+  // so the pointerdown/pointerup still bubble (Radix accepts either as long
+  // as the event type matches).
+  const makePointer = (type: string): Event => {
+    try {
+      if (typeof PointerEvent === 'function') {
+        return new PointerEvent(type, pointerInit);
+      }
+    } catch {
+      /* fall through to MouseEvent */
+    }
+    return new MouseEvent(type, mouseInit);
+  };
+  const makeMouse = (type: string): Event => new MouseEvent(type, mouseInit);
+
+  try {
+    el.dispatchEvent(makePointer('pointerdown'));
+    el.dispatchEvent(makeMouse('mousedown'));
+    el.dispatchEvent(makePointer('pointerup'));
+    el.dispatchEvent(makeMouse('mouseup'));
+    el.dispatchEvent(makeMouse('click'));
+  } catch {
+    /* event construction unsupported — fall back to native click below */
+  }
+
+  // Fallback for plain controls (and label/checkbox semantics the synthetic
+  // `click` MouseEvent above does not replicate, e.g. default form actions).
+  try {
+    el.click();
+  } catch {
+    /* native click unavailable — the dispatched sequence above stands in */
+  }
+}
+
 // Annotation store singleton (lazy-initialized)
 async function getAnnotationStore() {
   try {
@@ -958,7 +1050,7 @@ export async function executeCommand(
       try {
         switch (request.action) {
           case 'click':
-            dom.click();
+            dispatchRealClick(dom);
             break;
           case 'focus':
             dom.focus();
@@ -1100,9 +1192,9 @@ export async function executeCommand(
               dom.checked = !dom.checked;
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else if (dom.getAttribute('role') === 'switch') {
-              dom.click();
+              dispatchRealClick(dom);
             } else {
-              dom.click(); // generic toggle via click
+              dispatchRealClick(dom); // generic toggle via pointer+click
             }
             break;
           }
@@ -1296,7 +1388,7 @@ export async function executeCommand(
           case 'submit': {
             const form = dom.closest('form');
             if (form) form.requestSubmit();
-            else dom.click();
+            else dispatchRealClick(dom);
             break;
           }
           case 'reset': {
@@ -1543,7 +1635,7 @@ export async function executeCommand(
         return { success: false, error: `No element found with text "${text}"` };
       }
       const el = matches[0];
-      el.click();
+      dispatchRealClick(el);
       return {
         clicked: true,
         element: {
@@ -1563,7 +1655,7 @@ export async function executeCommand(
       if (!el) {
         return { success: false, error: `No element found for selector "${selector}"` };
       }
-      el.click();
+      dispatchRealClick(el);
       return {
         clicked: true,
         element: {
@@ -2069,7 +2161,7 @@ export async function executeCommand(
       try {
         switch (parsed.action) {
           case 'click':
-            dom.click();
+            dispatchRealClick(dom);
             break;
           case 'type':
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
