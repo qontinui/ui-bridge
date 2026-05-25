@@ -414,6 +414,36 @@ curl -X POST http://localhost:9876/elements/submit-button/action \
 curl http://localhost:9876/render-log
 ```
 
+### Action body shape: `POST /control/element/:id/action`
+
+The mobile bridge takes the **same `{ action, params }` envelope** as the
+runner/web SDK. The element id goes in the **path**; the action name goes in the
+JSON **body** under the top-level `action` field (NOT in the path, NOT under a
+nested key). The on-device bridge listens on port **8087** under the
+`/ui-bridge/` prefix:
+
+```bash
+# ✅ Press a button — `action` is a top-level body field
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/submit-button/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "press"}'
+```
+
+```jsonc
+// Request body schema
+{
+  "action": "press",          // required — the action name (press, type, setValue, scroll, …)
+  "params": { },              // optional — per-action arguments (see below)
+  "waitOptions": { }          // optional — pre-action wait predicate
+}
+```
+
+A body that omits the top-level `action` field is rejected with
+`{"success": false, "code": "INVALID_REQUEST", "error": "Action is required"}`.
+Actions that take no arguments (`press`, `longPress`, `focus`, `blur`, …) need
+only `{"action": "<name>"}` — `params` is optional for those. Value-mutating
+actions require their argument under `params` (next section).
+
 ### Setting an input's value (mobile envelope)
 
 :::caution Mobile requires a `params` envelope — top-level `value`/`text` is rejected

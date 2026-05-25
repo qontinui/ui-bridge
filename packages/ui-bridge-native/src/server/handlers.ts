@@ -514,21 +514,47 @@ export function createServerHandlers(
     },
 
     executeAction: async (ctx: HandlerContext) => {
-      const { id } = ctx.params;
-      const body = ctx.body as {
-        action: string;
+      // Accept BOTH action-envelope shapes so the mobile server matches the
+      // runner/web SDK contract:
+      //   1. Flat HTTP body — `POST /control/element/:id/action` with
+      //      `{ action, params, waitOptions }` (the documented HTTP shape).
+      //   2. Relay/WS nested envelope — the runner SDK dispatches element
+      //      actions as `relayCommand('executeElementAction', { id, request })`
+      //      where `request = { action, params, waitOptions }` (see
+      //      `ui-bridge/src/react/commandHandlers.ts` `executeElementAction`).
+      //      Over the WS/JSON-RPC and cloud-relay transports the whole `params`
+      //      object becomes `ctx.body`, so the action lives at `body.request`,
+      //      NOT `body.action`. Without this unwrap a runner-driven
+      //      `{ action: 'press' }` was rejected with "Action is required".
+      const rawBody = (ctx.body ?? {}) as {
+        action?: string;
         params?: Record<string, unknown>;
         waitOptions?: WaitOptions;
+        id?: string;
+        request?: {
+          action?: string;
+          params?: Record<string, unknown>;
+          waitOptions?: WaitOptions;
+        };
       };
 
-      if (!body?.action) {
+      // The nested `request` envelope wins when present (relay/WS path);
+      // otherwise read the flat fields (direct HTTP path).
+      const envelope =
+        rawBody.request && typeof rawBody.request === 'object' ? rawBody.request : rawBody;
+
+      // Element id comes from the path param (`/control/element/:id/action`),
+      // falling back to `body.id` for the relay `{ id, request }` envelope.
+      const id = ctx.params.id ?? rawBody.id ?? '';
+
+      if (!envelope?.action) {
         return error('Action is required', 'INVALID_REQUEST');
       }
 
       const response = await executor.executeAction(id, {
-        action: body.action,
-        params: body.params,
-        waitOptions: body.waitOptions,
+        action: envelope.action,
+        params: envelope.params,
+        waitOptions: envelope.waitOptions,
       });
 
       if (!response.success) {
