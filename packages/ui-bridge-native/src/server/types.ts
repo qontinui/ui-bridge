@@ -168,6 +168,11 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/snapshot',
     description: 'Get full bridge snapshot',
   },
+  DISCOVER: {
+    method: 'GET',
+    path: '/ui-bridge/control/discover',
+    description: 'Discover elements (alias for snapshot; web/runner parity)',
+  },
   PAGE_HEALTH: {
     method: 'POST',
     path: '/ui-bridge/control/page-health',
@@ -303,6 +308,19 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Dismiss a modal by id (testHooks)',
   },
 
+  // Observability — last-N ring buffers (always mounted; `installed:false`
+  // when the console/network patches are off, i.e. no testHooks).
+  CONSOLE_ERRORS: {
+    method: 'GET',
+    path: '/ui-bridge/control/console-errors',
+    description: 'Last-N captured console.error/console.warn entries',
+  },
+  NETWORK_REQUESTS: {
+    method: 'GET',
+    path: '/ui-bridge/sdk/network-requests',
+    description: 'Last-N captured fetch/XHR requests with status + duration',
+  },
+
   // Health
   HEALTH: {
     method: 'GET',
@@ -414,6 +432,13 @@ export interface ConsoleErrorsResponse {
   count: number;
   /** Total entries currently held in the ring buffer (pre-filter). */
   bufferSize: number;
+  /**
+   * Whether the console capture patch is actively installed. `false` means
+   * the endpoint is mounted and schema-valid but not observing — typically
+   * because `features.testHooks` is off (production builds don't patch
+   * `console.error`/`console.warn`). When `false`, `entries` is always empty.
+   */
+  installed: boolean;
 }
 
 /**
@@ -444,6 +469,13 @@ export interface NetworkRequestsResponse {
   entries: NetworkRequestEntry[];
   count: number;
   bufferSize: number;
+  /**
+   * Whether the network capture patch is actively installed. `false` means
+   * the endpoint is mounted and schema-valid but not observing — typically
+   * because `features.testHooks` is off (production builds don't patch
+   * `fetch`/`XMLHttpRequest`). When `false`, `entries` is always empty.
+   */
+  installed: boolean;
 }
 
 /**

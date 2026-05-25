@@ -205,6 +205,7 @@ export type NativeStandardAction =
   | 'longPress'
   | 'doubleTap'
   | 'type'
+  | 'setValue'
   | 'clear'
   | 'focus'
   | 'blur'
