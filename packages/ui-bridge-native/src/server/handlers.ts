@@ -4,6 +4,17 @@
  * Request handlers for the HTTP API endpoints.
  */
 
+/**
+ * SDK version string, injected at build time by tsup's `define` and at
+ * test time by vitest's `define` (both source from this package's
+ * `package.json` `version` field). Surfaced on the `/health` endpoint's
+ * `data.uiBridge.version` so external automation agents can fingerprint
+ * which on-device SDK build a runner is consuming without parsing the
+ * bundle. Mirrors the web SDK's `__SDK_VERSION__` convention in
+ * `@qontinui/ui-bridge` (see UIBridgeProviderInit.ts / tsup.config.ts).
+ */
+declare const __SDK_VERSION__: string;
+
 import {
   type NativeUIBridgeRegistry,
   extractHandlerNames,
@@ -1318,7 +1329,7 @@ export function createServerHandlers(
 
       if (config?.appInfo) {
         response.uiBridge = {
-          version: '0.3.0',
+          version: __SDK_VERSION__,
           ...config.appInfo,
           capabilities: ['elements', 'components', 'actions', 'design'],
           elementCount: stats.elements,
