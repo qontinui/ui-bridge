@@ -142,14 +142,28 @@ export class StandaloneServer {
       }
 
       const wss = this.wsServer as {
-        on(event: 'connection', callback: (ws: WebSocketLike) => void): void;
+        on(
+          event: 'connection',
+          callback: (ws: WebSocketLike, request?: { url?: string }) => void
+        ): void;
         on(event: 'error', callback: (error: Error) => void): void;
         close(): void;
       };
 
-      wss.on('connection', (ws) => {
+      wss.on('connection', (ws, request) => {
         this.wsConnections.add(ws);
-        this.wsHandler!.handleConnection(ws);
+        // Forward the persisted tab id (?tabId=) so the client resumes its
+        // server-side identity across reconnects instead of churning ids.
+        let preferredId: string | undefined;
+        const rawUrl = request?.url;
+        if (rawUrl) {
+          try {
+            preferredId = new URL(rawUrl, 'http://localhost').searchParams.get('tabId') ?? undefined;
+          } catch {
+            /* malformed url — fall back to generated id */
+          }
+        }
+        this.wsHandler!.handleConnection(ws, preferredId);
 
         ws.onclose = () => {
           this.wsConnections.delete(ws);

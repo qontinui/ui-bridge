@@ -71,6 +71,15 @@ export {
   type CommandRelayOptions,
 } from './command-relay';
 
+// Cross-instance relay bus (P0a) — optional shared-state for serverless scale-out
+export {
+  RedisRelayBus,
+  createRedisRelayBus,
+  type RelayBus,
+  type RelayCommandEnvelope,
+  type RelayResponseEnvelope,
+} from './relay-bus';
+
 // Relay handlers
 export { createRelayHandlers, type RelayHandlersOptions } from './relay-handlers';
 

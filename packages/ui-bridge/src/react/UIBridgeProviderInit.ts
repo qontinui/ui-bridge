@@ -142,8 +142,21 @@ export function initializeUIBridge({
   let wsClient: UIBridgeWSClient | null = null;
   if (config.websocket) {
     const wsPort = config.websocketPort || config.serverPort || 9876;
+    // Reuse the same persisted tab id the SSE relay path uses (sessionStorage
+    // `__uiBridge_tabId`) so the WS transport resumes its server-side identity
+    // across reconnects instead of churning ids.
+    let persistedTabId: string | undefined;
+    try {
+      persistedTabId =
+        (typeof sessionStorage !== 'undefined'
+          ? sessionStorage.getItem('__uiBridge_tabId')
+          : null) ?? undefined;
+    } catch {
+      /* SSR / privacy mode — fall back to a server-generated id */
+    }
     wsClient = createWSClient({
       url: `ws://localhost:${wsPort}`,
+      tabId: persistedTabId,
       autoReconnect: true,
       reconnectDelay: 1000,
       maxReconnectAttempts: 10,

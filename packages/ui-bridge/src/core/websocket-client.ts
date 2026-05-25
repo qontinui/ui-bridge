@@ -55,6 +55,7 @@ export class UIBridgeWSClient {
   constructor(config: WSClientConfig) {
     this.config = {
       url: config.url,
+      tabId: config.tabId ?? '',
       autoReconnect: config.autoReconnect ?? true,
       reconnectDelay: config.reconnectDelay ?? 1000,
       maxReconnectAttempts: config.maxReconnectAttempts ?? 10,
@@ -90,7 +91,7 @@ export class UIBridgeWSClient {
       this.setState('connecting');
 
       try {
-        this.ws = new WebSocket(this.config.url);
+        this.ws = new WebSocket(this.buildConnectUrl());
       } catch (error) {
         this.setState('disconnected');
         reject(error);
@@ -436,6 +437,21 @@ export class UIBridgeWSClient {
   }
 
   // Private methods
+
+  /**
+   * Build the connect URL, appending `?tabId=` when a stable tabId is
+   * configured so the server resumes this tab's identity across reconnects.
+   * Manual query-append (rather than `new URL`) keeps it robust for `ws://` /
+   * `wss://` schemes across runtimes.
+   */
+  private buildConnectUrl(): string {
+    const base = this.config.url;
+    const tabId = this.config.tabId;
+    if (!tabId) return base;
+    if (/[?&]tabId=/.test(base)) return base; // already present
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}tabId=${encodeURIComponent(tabId)}`;
+  }
 
   private setState(state: WSConnectionState): void {
     this.state = state;
