@@ -414,6 +414,35 @@ curl -X POST http://localhost:9876/elements/submit-button/action \
 curl http://localhost:9876/render-log
 ```
 
+### Setting an input's value (mobile envelope)
+
+:::caution Mobile requires a `params` envelope — top-level `value`/`text` is rejected
+On the mobile (`ui-bridge-native`) bridge, value-mutating actions take their
+argument **inside `params`**, not at the top level. The on-device bridge
+listens on port **8087** under the `/ui-bridge/` prefix:
+
+```bash
+# ✅ Correct — text lives under params
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "setValue", "params": {"text": "user@example.com"}}'
+
+# `type` uses the same envelope and supports clear:true to replace atomically
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "type", "params": {"text": "user@example.com", "clear": true}}'
+
+# ❌ Rejected — a top-level `value` or `text` is NOT read on mobile
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -d '{"action": "setValue", "value": "user@example.com"}'   # → no value set
+```
+
+`setValue` accepts either `params.text` (canonical) **or** `params.value` as an
+alias, but both must be **inside `params`**. After the action,
+`GET /ui-bridge/control/element/email-input` and `/ui-bridge/control/snapshot`
+both reflect the new `state.value` synchronously — no polling needed.
+:::
+
 ## Python Client Usage
 
 ```python

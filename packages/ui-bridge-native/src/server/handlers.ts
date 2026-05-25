@@ -103,6 +103,41 @@ function matchElementsByText(
 }
 
 /**
+ * Resolve the element's runtime state for the single-element read endpoints,
+ * guaranteeing `state.value` is populated for controlled inputs.
+ *
+ * Why this exists: `setValue`/`type`/`clear` write the new value into
+ * `state.value` via `registry.updateElementState`, and `/control/snapshot`
+ * reads it straight back. But a controlled `<TextInput value={x} />` carries
+ * its value on `props.value` too, and there are windows where `state.value`
+ * has not yet been mirrored from the prop (registration before the first
+ * `updateElementProps`, or a host that wires `onChangeText` without threading
+ * `value` into `useUIElement`). In those windows `GET /control/element/:id`
+ * returned `value: undefined` while the snapshot — which benefits from the
+ * registry's prop→state mirror on the same element — showed the real value.
+ *
+ * The fallback keeps the single-element read path consistent with the
+ * snapshot: when `state.value` is absent for an input that has a string
+ * `props.value`, surface the prop value. Never overwrites an explicit
+ * `state.value` (which an action or `onChangeText` set), and only applies to
+ * `type: 'input'` so non-inputs that happen to carry a `value` prop are
+ * untouched (mirrors the gating in `registry.updateElementProps`).
+ */
+function resolveElementState(
+  element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>
+): ReturnType<NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>['getState']> {
+  const state = element.getState();
+  if (
+    element.type === 'input' &&
+    state.value === undefined &&
+    typeof element.props?.value === 'string'
+  ) {
+    return { ...state, value: element.props.value as string };
+  }
+  return state;
+}
+
+/**
  * Result of executing a single workflow step
  */
 interface WorkflowStepResult {
@@ -458,7 +493,7 @@ export function createServerHandlers(
           type: element.type,
           label: element.label,
           identifier: element.getIdentifier(),
-          state: element.getState(),
+          state: resolveElementState(element),
           actions: element.actions,
           customActions: element.customActions ? Object.keys(element.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
@@ -475,7 +510,7 @@ export function createServerHandlers(
         return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
       }
 
-      return success({ state: element.getState() });
+      return success({ state: resolveElementState(element) });
     },
 
     executeAction: async (ctx: HandlerContext) => {
