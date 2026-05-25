@@ -337,7 +337,11 @@ describe('NativeUIBridgeServer — observability endpoints', () => {
     await server.stop();
   });
 
-  it('returns NOT_FOUND for /control/console-errors when testHooks is off', async () => {
+  it('returns a schema-valid 200 (not 404) for /control/console-errors when testHooks is off', async () => {
+    // The route is always mounted so agents get a well-formed envelope rather
+    // than a 404 they can't distinguish from a missing route. When testHooks
+    // is off the console patch isn't installed, so `installed:false` and the
+    // buffer is empty — but the contract is still honoured.
     const registry = new NativeUIBridgeRegistry();
     const executor = new DefaultNativeActionExecutor(registry);
     const server = new NativeUIBridgeServer(registry, executor, { testHooks: false });
@@ -348,13 +352,34 @@ describe('NativeUIBridgeServer — observability endpoints', () => {
       headers: {},
       query: {},
     });
-    expect(response.status).toBe(400);
-    const parsed = JSON.parse(response.body);
-    expect(parsed.success).toBe(false);
-    expect(parsed.code).toBe('NOT_FOUND');
+    expect(response.status).toBe(200);
+    const parsed = JSON.parse(response.body) as ParsedResponse<ConsoleErrorsResponse>;
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.entries).toEqual([]);
+    expect(parsed.data?.count).toBe(0);
+    expect(parsed.data?.installed).toBe(false);
   });
 
-  it('does NOT advertise observability endpoints in /_routes when testHooks is off', async () => {
+  it('returns a schema-valid 200 (not 404) for /sdk/network-requests when testHooks is off', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    const server = new NativeUIBridgeServer(registry, executor, { testHooks: false });
+
+    const response = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/sdk/network-requests',
+      headers: {},
+      query: {},
+    });
+    expect(response.status).toBe(200);
+    const parsed = JSON.parse(response.body) as ParsedResponse<NetworkRequestsResponse>;
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.entries).toEqual([]);
+    expect(parsed.data?.count).toBe(0);
+    expect(parsed.data?.installed).toBe(false);
+  });
+
+  it('advertises observability endpoints in /_routes regardless of testHooks', async () => {
     const registry = new NativeUIBridgeRegistry();
     const executor = new DefaultNativeActionExecutor(registry);
     const server = new NativeUIBridgeServer(registry, executor, { testHooks: false });
@@ -369,8 +394,8 @@ describe('NativeUIBridgeServer — observability endpoints', () => {
       data: { routes: Array<{ method: string; path: string }> };
     };
     const paths = parsed.data.routes.map((r) => r.path);
-    expect(paths).not.toContain('/ui-bridge/control/console-errors');
-    expect(paths).not.toContain('/ui-bridge/sdk/network-requests');
+    expect(paths).toContain('/ui-bridge/control/console-errors');
+    expect(paths).toContain('/ui-bridge/sdk/network-requests');
   });
 
   it('does advertise observability endpoints in /_routes when testHooks is on', async () => {

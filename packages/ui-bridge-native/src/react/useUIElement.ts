@@ -111,6 +111,16 @@ export interface UseUIElementOptionsBase<T extends NativeElementType = NativeEle
   actions?: NativeStandardAction[];
   /** Custom actions */
   customActions?: Record<string, NativeCustomAction>;
+  /**
+   * Current controlled value for text inputs. When provided, it is threaded
+   * into the registered element's `state.value` so a `GET /control/element/:id`
+   * (or `/state`) reflects what the user sees — without this, the input
+   * registers with `value: undefined` and a bridge read returns null even
+   * though the field is populated. Pass the same value you bind to the RN
+   * `<TextInput value={...} />` prop; the hook keeps the registry in sync as
+   * it changes.
+   */
+  value?: string;
   /** Whether to automatically register on mount */
   autoRegister?: boolean;
   /** Callback when state changes */
@@ -368,6 +378,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     style,
     stateStyles: stateStylesProp,
     handlers: handlersProp,
+    value: valueProp,
   } = options;
 
   // Build tree path
@@ -400,6 +411,15 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     });
     registeredRef.current = true;
     registeredIdRef.current = id;
+
+    // Seed the controlled value into the element state so a bridge read
+    // reflects what the user sees immediately on mount — before any `type`/
+    // `setValue` action runs. Only write when a value was actually supplied
+    // so non-input elements aren't given a spurious empty `value`.
+    if (typeof valueProp === 'string') {
+      bridge.registry.updateElementState(id, { value: valueProp });
+    }
+
     setRegistered(true);
 
     // Runtime backstop for the type-tightening: warns once per id when a
@@ -409,7 +429,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     // using `useUIElementWithProps` + `captureProps({ onPress })` from the
     // render body still pass.
     scheduleDeadButtonWarning(bridge, id, type);
-  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp]);
+  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp, valueProp]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -618,6 +638,21 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       }
     };
   }, [bridge, registered, id, handlersProp]);
+
+  // Keep the registry's `state.value` in sync with the controlled `value`
+  // prop. RN controlled inputs re-render with a new `value` on every
+  // keystroke; mirroring it here means a bridge read (`/control/element/:id`)
+  // always reflects the live field contents, not just the value at mount or
+  // the last bridge-driven `type`/`setValue`. Guarded on `registered` so the
+  // write lands after registration; `updateElementState` is a no-op for
+  // unknown ids anyway.
+  useEffect(() => {
+    if (!bridge || !registered) return;
+    if (typeof valueProp !== 'string') return;
+    const current = bridge.registry.getElement(id)?.getState().value;
+    if (current === valueProp) return;
+    bridge.registry.updateElementState(id, { value: valueProp });
+  }, [bridge, registered, id, valueProp]);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
   const _updateProps = useCallback(
