@@ -18,6 +18,7 @@
 
 import type { ControlSnapshot } from '../control';
 import type { DOMChangeEvent } from './types';
+import type { RelayBus } from './relay-bus';
 
 // ============================================================================
 // Types
@@ -45,6 +46,13 @@ export interface PendingCommand {
   errorResponseCount: number;
   firstError?: Error;
   graceTimeout?: ReturnType<typeof setTimeout>;
+  /**
+   * Cross-instance bus cleanup (P0a): set when this command was dispatched via
+   * the {@link RelayBus} to a tab on another instance. Unsubscribes the
+   * per-command response channel once the command settles (resolve/reject/
+   * timeout). Absent for same-instance commands.
+   */
+  busUnsub?: () => void;
 }
 
 export interface WebSocketClient {
@@ -118,6 +126,16 @@ export interface CommandRelayOptions {
    * faster at the cost of more wake-ups. Defaults to 10_000 ms.
    */
   staleHeartbeatSweepMs?: number;
+  /**
+   * Optional cross-instance message bus (P0a). When provided, commands whose
+   * target tab is NOT connected to THIS process instance are delivered to the
+   * instance that holds the tab via the bus, and the browser's response is
+   * routed back to this instance. Required for correct operation on
+   * horizontally-scaled serverless (Vercel) where each request may hit a
+   * different lambda instance. When omitted, the relay is single-process
+   * in-memory exactly as before. See {@link RelayBus}.
+   */
+  bus?: RelayBus;
 }
 
 /** Read a positive-integer env override, returning `fallback` on miss/invalid. */
@@ -190,6 +208,12 @@ export class CommandRelay {
   private primaryTabId: string | null;
   readonly buildId: string;
 
+  /**
+   * Optional cross-instance bus (P0a). `null` = single-process in-memory
+   * (default, behavior unchanged). All bus call sites are guarded by `this.bus`.
+   */
+  private readonly bus: RelayBus | null;
+
   // Cleanup interval handle
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -211,6 +235,7 @@ export class CommandRelay {
     this.staleHeartbeatMs =
       options?.staleHeartbeatMs ?? envInt('UI_BRIDGE_STALE_HEARTBEAT_MS', 30_000);
     this.staleHeartbeatSweepMs = options?.staleHeartbeatSweepMs ?? 10_000;
+    this.bus = options?.bus ?? null;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const g = globalThis as any;
@@ -265,6 +290,13 @@ export class CommandRelay {
           this.cleanupStaleTabs();
         } catch (err) {
           console.error('[ui-bridge] cleanupStaleTabs failed:', err);
+        }
+        if (this.bus) {
+          try {
+            this.refreshBusTabPresence();
+          } catch (err) {
+            console.error('[ui-bridge] refreshBusTabPresence failed:', err);
+          }
         }
       }, this.staleHeartbeatSweepMs);
     }
@@ -638,6 +670,13 @@ export class CommandRelay {
       const hasTransport =
         this.tabListeners.has(targetTabId) || this.wsClients.has(targetTabId);
       if (!hasTransport) {
+        // Cross-instance (P0a): the tab may be connected to a DIFFERENT process
+        // instance (Vercel serverless fan-out). Consult the shared presence
+        // registry; if the tab is known elsewhere, dispatch via the bus (which
+        // routes the command to the holding instance and the response back).
+        if (this.bus && (await this.bus.isTabKnown(targetTabId))) {
+          return this.sendCommand<T>(action, payload, options);
+        }
         const connected = Array.from(
           new Set([...this.tabListeners.keys(), ...this.wsClients.keys()])
         );
@@ -720,6 +759,29 @@ export class CommandRelay {
         timeoutMs = this.wsTimeoutMs;
       }
 
+      // Cross-instance (P0a): when the target tab is NOT reachable from this
+      // instance but a bus is configured, route the command to the instance
+      // holding the tab and await the response over the bus. Gated on
+      // "not deliverable locally" so same-instance delivery never double-fires.
+      const deliverableLocally =
+        sentViaWebSocket ||
+        (targetTabId ? this.tabListeners.has(targetTabId) : this.tabListeners.size > 0);
+      if (!deliverableLocally && this.bus) {
+        if (fireAndForget) {
+          this.bus.publishCommand({
+            commandId,
+            action,
+            payload,
+            timestamp: Date.now(),
+            targetTabId,
+          });
+          resolve({ success: true, fireAndForget: true, action, timestamp: Date.now() } as T);
+        } else {
+          this.dispatchViaBus<T>(commandId, action, payload, targetTabId, resolve, reject);
+        }
+        return;
+      }
+
       // Fail fast if no transport available
       if (!sentViaWebSocket && this.tabListeners.size === 0) {
         reject(
@@ -766,6 +828,7 @@ export class CommandRelay {
           if (oldest) {
             clearTimeout(oldest.timeout);
             if (oldest.graceTimeout) clearTimeout(oldest.graceTimeout);
+            if (oldest.busUnsub) oldest.busUnsub();
             oldest.reject(new Error('Command evicted: too many pending commands'));
           }
           this.pendingCommands.delete(oldestKey);
@@ -819,6 +882,86 @@ export class CommandRelay {
         }
       }
     });
+  }
+
+  /**
+   * Cross-instance (P0a) dispatch: register the pending promise + a per-command
+   * bus response subscription, THEN publish the command over the bus. Publishing
+   * last guarantees no response can race ahead of the pending registration.
+   * The browser's response POST may land on any instance; that instance forwards
+   * it via {@link resolveCommand}/{@link rejectCommand} → bus → here.
+   */
+  private dispatchViaBus<T>(
+    commandId: string,
+    action: string,
+    payload: unknown,
+    targetTabId: string | undefined,
+    resolve: (value: T) => void,
+    reject: (error: Error) => void
+  ): void {
+    const bus = this.bus!;
+    const timeoutMs = this.sseTimeoutMs;
+
+    const timeout = setTimeout(() => {
+      const pending = this.pendingCommands.get(commandId);
+      if (pending?.busUnsub) pending.busUnsub();
+      this.pendingCommands.delete(commandId);
+      reject(
+        new Error(
+          `Command ${action} timed out after ${timeoutMs}ms (bus). ` +
+            'No instance reported a response — the target tab may be disconnected.'
+        )
+      );
+    }, timeoutMs);
+
+    const busUnsub = bus.subscribeResponse(commandId, (env) => {
+      const pending = this.pendingCommands.get(commandId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+      if (pending.busUnsub) pending.busUnsub();
+      this.pendingCommands.delete(commandId);
+      if (env.ok) {
+        pending.resolve(env.result);
+      } else {
+        pending.reject(new Error(env.error || `Command ${action} failed`));
+      }
+    });
+
+    this.pendingCommands.set(commandId, {
+      resolve: resolve as (value: unknown) => void,
+      reject,
+      timeout,
+      tabsNotified: 1,
+      errorResponseCount: 0,
+      busUnsub,
+    });
+
+    bus.publishCommand({ commandId, action, payload, timestamp: Date.now(), targetTabId });
+  }
+
+  /**
+   * TTL (seconds) for shared tab-presence registry entries. Comfortably longer
+   * than the sweep cadence (which refreshes it) so a live tab never expires
+   * between refreshes.
+   */
+  private busTabTtlSeconds(): number {
+    return Math.ceil(
+      Math.max(this.staleHeartbeatMs * 2, this.staleHeartbeatSweepMs * 3) / 1000
+    );
+  }
+
+  /**
+   * Re-announce every tab connected to THIS instance in the shared presence
+   * registry so its TTL doesn't lapse. Called from the periodic sweep.
+   */
+  private refreshBusTabPresence(): void {
+    if (!this.bus) return;
+    const ttl = this.busTabTtlSeconds();
+    const ids = new Set<string>([...this.tabListeners.keys(), ...this.wsClients.keys()]);
+    for (const id of ids) {
+      this.bus.registerTab(id, ttl);
+    }
   }
 
   private broadcastToListeners(command: QueuedCommand, targetTabId?: string): number {
@@ -983,10 +1126,20 @@ export class CommandRelay {
    */
   resolveCommand(commandId: string, result: unknown, tabId?: string): boolean {
     const pending = this.pendingCommands.get(commandId);
-    if (!pending) return false;
+    if (!pending) {
+      // Cross-instance (P0a): the browser's response landed on an instance that
+      // did NOT originate the command. Forward it over the bus to the instance
+      // holding the pending promise.
+      if (this.bus) {
+        this.bus.publishResponse({ commandId, ok: true, result, tabId });
+        return true;
+      }
+      return false;
+    }
 
     clearTimeout(pending.timeout);
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
+    if (pending.busUnsub) pending.busUnsub();
     this.pendingCommands.delete(commandId);
     pending.resolve(result);
 
@@ -1004,7 +1157,14 @@ export class CommandRelay {
    */
   rejectCommand(commandId: string, errorMessage: string): boolean {
     const pending = this.pendingCommands.get(commandId);
-    if (!pending) return false;
+    if (!pending) {
+      // Cross-instance (P0a): forward the error to the originating instance.
+      if (this.bus) {
+        this.bus.publishResponse({ commandId, ok: false, error: errorMessage });
+        return true;
+      }
+      return false;
+    }
 
     pending.errorResponseCount++;
     if (!pending.firstError) {
@@ -1058,6 +1218,32 @@ export class CommandRelay {
 
     console.log(`[ui-bridge] SSE listener connected: ${id} (total: ${this.tabListeners.size})`);
 
+    // Cross-instance (P0a): this instance now holds the SSE stream for `id`.
+    // Subscribe to the bus so commands dispatched from OTHER instances (which
+    // have no local listener for this tab) are delivered down this stream.
+    let busUnsubCmd: (() => void) | null = null;
+    if (this.bus) {
+      // Announce this tab in the shared presence registry so OTHER instances'
+      // routing guard knows it exists here. TTL > sweep interval; refreshed by
+      // the periodic cleanup sweep. Removed on unsubscribe.
+      this.bus.registerTab(id, this.busTabTtlSeconds());
+      busUnsubCmd = this.bus.subscribeCommands(id, (env) => {
+        // Deliver only if this tab's listener is still registered here.
+        const current = this.tabListeners.get(id);
+        if (!current) return;
+        try {
+          current.callback({
+            commandId: env.commandId,
+            action: env.action,
+            payload: env.payload,
+            timestamp: env.timestamp,
+          });
+        } catch {
+          /* self-cleaning */
+        }
+      });
+    }
+
     // Proactive snapshot capture
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const captureSnapshot = async (): Promise<boolean> => {
@@ -1090,6 +1276,8 @@ export class CommandRelay {
     return () => {
       clearTimeout(proactiveTimer);
       if (retryTimer) clearTimeout(retryTimer);
+      if (busUnsubCmd) busUnsubCmd();
+      if (this.bus) this.bus.unregisterTab(id);
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
       this.tabMetadata.delete(id);

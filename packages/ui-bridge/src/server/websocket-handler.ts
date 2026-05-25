@@ -107,15 +107,34 @@ export class UIBridgeWSHandler {
   }
 
   /**
-   * Handle new WebSocket connection
+   * Handle new WebSocket connection.
+   *
+   * @param preferredId Stable tab/client id supplied by the client (e.g. the
+   *   persisted `__uiBridge_tabId`, forwarded by the server adapter from the
+   *   `?tabId=` query param of the upgrade request). When present, the client
+   *   RESUMES under that id across reconnects instead of being assigned a fresh
+   *   one — otherwise a tab churns its server-side identity on every reconnect,
+   *   defeating `?tabId=` command pinning. Falls back to a generated id.
    */
-  handleConnection(ws: WebSocketLike): string {
-    const clientId = generateId();
+  handleConnection(ws: WebSocketLike, preferredId?: string): string {
+    const clientId = preferredId && preferredId.trim() ? preferredId.trim() : generateId();
+
+    // Resume: if a prior socket is still registered under this id (stale
+    // connection not yet reaped), evict it. The old socket's late `onclose`
+    // is neutralised by the ws-identity guard in handleDisconnect below.
+    const existing = this.clients.get(clientId);
+    if (existing && existing.ws !== ws) {
+      try {
+        existing.ws.close?.();
+      } catch {
+        /* best-effort */
+      }
+    }
 
     const client: ConnectedClient = {
       id: clientId,
       ws,
-      subscription: {
+      subscription: existing?.subscription ?? {
         events: new Set(),
         elementIds: new Set(),
         componentIds: new Set(),
@@ -126,7 +145,10 @@ export class UIBridgeWSHandler {
     this.clients.set(clientId, client);
 
     if (this.verbose) {
-      this.log(`[WS] Client connected: ${clientId}`);
+      this.log(
+        `[WS] Client ${existing ? 'resumed' : 'connected'}: ${clientId}` +
+          (preferredId ? ' (client-supplied id)' : '')
+      );
     }
 
     // Set up message handler
@@ -134,9 +156,10 @@ export class UIBridgeWSHandler {
       this.handleMessage(clientId, event.data);
     };
 
-    // Set up close handler
+    // Set up close handler. Capture THIS ws so a stale socket's delayed close
+    // cannot evict a newer resumed client registered under the same id.
     ws.onclose = () => {
-      this.handleDisconnect(clientId);
+      this.handleDisconnect(clientId, ws);
     };
 
     // Send welcome message
@@ -159,9 +182,20 @@ export class UIBridgeWSHandler {
   }
 
   /**
-   * Handle client disconnect
+   * Handle client disconnect.
+   *
+   * @param ws When provided, only evict the registered client if it is STILL
+   *   the same socket. This prevents a stale socket's late close from removing
+   *   a newer connection that resumed under the same id (see handleConnection).
    */
-  handleDisconnect(clientId: string): void {
+  handleDisconnect(clientId: string, ws?: WebSocketLike): void {
+    if (ws) {
+      const current = this.clients.get(clientId);
+      if (current && current.ws !== ws) {
+        // A newer socket already resumed this id — leave it intact.
+        return;
+      }
+    }
     this.clients.delete(clientId);
 
     if (this.verbose) {

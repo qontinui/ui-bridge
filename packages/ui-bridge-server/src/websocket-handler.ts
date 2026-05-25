@@ -83,13 +83,25 @@ export class UIBridgeWSHandler {
   /**
    * Handle new WebSocket connection
    */
-  handleConnection(ws: WebSocketLike): string {
-    const clientId = generateId();
+  handleConnection(ws: WebSocketLike, preferredId?: string): string {
+    // Resume under a client-supplied stable id (e.g. persisted `__uiBridge_tabId`,
+    // forwarded from the upgrade request's `?tabId=`) so a tab keeps its
+    // server-side identity across reconnects instead of churning ids.
+    const clientId = preferredId && preferredId.trim() ? preferredId.trim() : generateId();
+
+    const existing = this.clients.get(clientId);
+    if (existing && existing.ws !== ws) {
+      try {
+        existing.ws.close?.();
+      } catch {
+        /* best-effort */
+      }
+    }
 
     const client: ConnectedClient = {
       id: clientId,
       ws,
-      subscription: {
+      subscription: existing?.subscription ?? {
         events: new Set(),
         elementIds: new Set(),
         componentIds: new Set(),
@@ -100,7 +112,7 @@ export class UIBridgeWSHandler {
     this.clients.set(clientId, client);
 
     if (this.verbose) {
-      this.log(`[WS] Client connected: ${clientId}`);
+      this.log(`[WS] Client ${existing ? 'resumed' : 'connected'}: ${clientId}`);
     }
 
     // Set up message handler
@@ -108,9 +120,10 @@ export class UIBridgeWSHandler {
       this.handleMessage(clientId, event.data);
     };
 
-    // Set up close handler
+    // Set up close handler. Capture THIS ws so a stale socket's delayed close
+    // cannot evict a newer resumed client registered under the same id.
     ws.onclose = () => {
-      this.handleDisconnect(clientId);
+      this.handleDisconnect(clientId, ws);
     };
 
     // Send welcome message
@@ -135,7 +148,14 @@ export class UIBridgeWSHandler {
   /**
    * Handle client disconnect
    */
-  handleDisconnect(clientId: string): void {
+  handleDisconnect(clientId: string, ws?: WebSocketLike): void {
+    if (ws) {
+      const current = this.clients.get(clientId);
+      if (current && current.ws !== ws) {
+        // A newer socket already resumed this id — leave it intact.
+        return;
+      }
+    }
     this.clients.delete(clientId);
 
     if (this.verbose) {

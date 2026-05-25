@@ -2210,6 +2210,13 @@ export type WSConnectionState = 'connecting' | 'connected' | 'disconnected' | 'r
 export interface WSClientConfig {
   /** WebSocket server URL */
   url: string;
+  /**
+   * Stable tab/client id (e.g. the persisted `__uiBridge_tabId`). When set, it
+   * is sent to the server as a `?tabId=` query param on every (re)connect so
+   * the server resumes this tab's identity instead of minting a new id each
+   * time — keeping `?tabId=` command routing stable across reconnects.
+   */
+  tabId?: string;
   /** Auto-reconnect on disconnect */
   autoReconnect?: boolean;
   /** Reconnect delay in milliseconds */
