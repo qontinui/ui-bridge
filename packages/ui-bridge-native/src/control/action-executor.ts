@@ -225,6 +225,9 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       case 'type':
         return this.performType(element, props, params as unknown as TypeActionParams);
 
+      case 'setValue':
+        return this.performSetValue(element, props, params as unknown as TypeActionParams);
+
       case 'clear':
         return this.performClear(element, props);
 
@@ -353,6 +356,53 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
     // Update element state
     if (element) {
       this.registry.updateElementState(element.id, { value: params.text });
+    }
+  }
+
+  /**
+   * Perform setValue action.
+   *
+   * Web/runner UI Bridge parity: `setValue` replaces the input's value
+   * atomically in a single call (no per-character keystroke simulation),
+   * mirroring the web bridge's `setValue` semantics. On native there is no
+   * DOM value to assign, so we drive the controlled-input handler
+   * (`onChangeText`, falling back to `onChange`) with the full string. The
+   * registry's `state.value` is then synced so a subsequent GET on the
+   * element reflects the new value.
+   *
+   * Unlike `type`, this does not append to existing content and ignores
+   * `delay` — it is the deterministic "set the field to exactly this" action.
+   */
+  private async performSetValue(
+    element: ReturnType<NativeUIBridgeRegistry['getElement']>,
+    props: Record<string, unknown>,
+    params: TypeActionParams
+  ): Promise<void> {
+    // `text` is the canonical key; accept `value` as an alias so callers using
+    // the web bridge's `{ value }` body shape work without translation.
+    const next =
+      typeof params?.text === 'string'
+        ? params.text
+        : typeof (params as { value?: unknown })?.value === 'string'
+          ? ((params as { value?: string }).value as string)
+          : undefined;
+
+    if (typeof next !== 'string') {
+      throw new Error('setValue action requires a string "text" (or "value") parameter');
+    }
+
+    if (typeof props.onChangeText === 'function') {
+      (props.onChangeText as (text: string) => void)(next);
+    } else if (typeof props.onChange === 'function') {
+      (props.onChange as (event: { nativeEvent: { text: string } }) => void)({
+        nativeEvent: { text: next },
+      });
+    } else {
+      throw new Error('No text change handler found on element');
+    }
+
+    if (element) {
+      this.registry.updateElementState(element.id, { value: next });
     }
   }
 

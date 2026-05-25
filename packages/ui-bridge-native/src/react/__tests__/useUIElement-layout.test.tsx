@@ -50,6 +50,12 @@ function useElementWithRegistry(id: string) {
   return { element, registry: bridge.registry };
 }
 
+function useInputWithRegistry(id: string, value?: string) {
+  const element = useUIElement({ id, type: 'input', value });
+  const bridge = useUIBridgeNative();
+  return { element, registry: bridge.registry };
+}
+
 describe('useUIElement — layout populated on mount', () => {
   it('writes layout to the registry when onLayout fires immediately on mount', () => {
     const { result } = renderHook(() => useElementWithRegistry('el-1'), {
@@ -210,5 +216,103 @@ describe('useUIElement — layout populated on mount', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * Item C — RN snapshot visibility computed from the MEASURED layout rect.
+ *
+ * Regression: content elements (Text / flex children) fire `onLayout` with
+ * transient zero dimensions before the subtree settles. The old code computed
+ * `visible` straight from the onLayout event's width/height, stamping
+ * `visible:false` onto every content element — so `visibleOnly` returned only
+ * the always-sized tab buttons. The fix derives visibility from the
+ * `measureInWindow` rect and never downgrades an already-visible element on a
+ * transient zero reading.
+ */
+describe('useUIElement — Item C: layout-derived visibility', () => {
+  it('marks an element visible when measureInWindow reports a positive-area rect', () => {
+    const { result } = renderHook(() => useElementWithRegistry('content-1'), { wrapper: Wrapper });
+
+    (result.current.element.ref as unknown as { current: object }).current = {
+      measureInWindow(cb: (x: number, y: number, w: number, h: number) => void) {
+        cb(0, 120, 300, 24);
+      },
+    };
+
+    act(() => {
+      // onLayout event reports its own dims; measured dims are authoritative.
+      result.current.element.onLayout({
+        nativeEvent: { layout: { x: 0, y: 120, width: 300, height: 24 } },
+      });
+    });
+
+    const state = result.current.registry.getElement('content-1')?.getState();
+    expect(state?.visible).toBe(true);
+    expect(state?.layout).toMatchObject({ width: 300, height: 24 });
+  });
+
+  it('does NOT downgrade a measured-visible element to hidden on a transient zero onLayout', () => {
+    const { result } = renderHook(() => useElementWithRegistry('content-2'), { wrapper: Wrapper });
+
+    // First: a real measurement → visible.
+    (result.current.element.ref as unknown as { current: object }).current = {
+      measureInWindow(cb: (x: number, y: number, w: number, h: number) => void) {
+        cb(0, 0, 200, 40);
+      },
+    };
+    act(() => {
+      result.current.element.onLayout({
+        nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 40 } },
+      });
+    });
+    expect(result.current.registry.getElement('content-2')?.getState().visible).toBe(true);
+
+    // Then: a transient zero-dim onLayout (subtree reflow). measureInWindow
+    // also returns zeros — but we must keep the prior visibility, not strand it.
+    (result.current.element.ref as unknown as { current: object }).current = {
+      measureInWindow(cb: (x: number, y: number, w: number, h: number) => void) {
+        cb(0, 0, 0, 0);
+      },
+    };
+    act(() => {
+      result.current.element.onLayout({
+        nativeEvent: { layout: { x: 0, y: 0, width: 0, height: 0 } },
+      });
+    });
+
+    expect(result.current.registry.getElement('content-2')?.getState().visible).toBe(true);
+  });
+});
+
+/**
+ * Item A — controlled input value threaded into element state so a bridge read
+ * reflects what the user sees, even before any `type`/`setValue` action.
+ */
+describe('useUIElement — Item A: controlled value reflected in state', () => {
+  it('seeds state.value from the value option on registration', () => {
+    const { result } = renderHook(() => useInputWithRegistry('email', 'a@b.test'), {
+      wrapper: Wrapper,
+    });
+    expect(result.current.registry.getElement('email')?.getState().value).toBe('a@b.test');
+  });
+
+  it('keeps state.value in sync as the controlled value prop changes', () => {
+    let value = 'first';
+    const { result, rerender } = renderHook(
+      () => useInputWithRegistry('field', value),
+      { wrapper: Wrapper }
+    );
+    expect(result.current.registry.getElement('field')?.getState().value).toBe('first');
+
+    value = 'second';
+    act(() => rerender());
+    expect(result.current.registry.getElement('field')?.getState().value).toBe('second');
+  });
+
+  it('advertises type/setValue/clear on input elements', () => {
+    const { result } = renderHook(() => useInputWithRegistry('typed'), { wrapper: Wrapper });
+    const actions = result.current.registry.getElement('typed')?.actions ?? [];
+    expect(actions).toEqual(expect.arrayContaining(['type', 'setValue', 'clear']));
   });
 });

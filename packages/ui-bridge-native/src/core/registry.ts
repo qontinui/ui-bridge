@@ -94,7 +94,7 @@ function inferActions(type: NativeElementType): NativeStandardAction[] {
     case 'pressable':
       return [...baseActions, 'click', 'press', 'longPress', 'doubleTap'];
     case 'input':
-      return [...baseActions, 'click', 'press', 'type', 'clear'];
+      return [...baseActions, 'click', 'press', 'type', 'setValue', 'clear'];
     case 'text':
       return [...baseActions, 'click', 'press', 'longPress'];
     case 'view':

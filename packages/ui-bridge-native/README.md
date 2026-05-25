@@ -206,6 +206,33 @@ The package includes an embedded HTTP server for external control. Configure wit
 | POST   | `/ui-bridge/control/component/:id/action/:actionId` | Execute component action |
 | POST   | `/ui-bridge/control/find`                           | Find elements            |
 | GET    | `/ui-bridge/control/snapshot`                       | Get full snapshot        |
+| GET/POST | `/ui-bridge/control/discover`                     | Discover elements (snapshot alias; web/runner parity) |
+| GET    | `/ui-bridge/control/console-errors`                 | Last-N captured console.error/warn entries |
+| GET    | `/ui-bridge/sdk/network-requests`                   | Last-N captured fetch/XHR requests |
+
+### Mobile feature coverage
+
+The native SDK mirrors the web/runner UI Bridge surface so the same automation
+scripts work cross-platform. A few endpoints differ on React Native:
+
+- **Observability** (`/control/console-errors`, `/sdk/network-requests`):
+  always mounted and schema-valid (200, never 404). They return real captured
+  entries — `console.error`/`console.warn` and `fetch`/`XMLHttpRequest` are
+  hooked — **only when `features.testHooks` is enabled** (typically gated on
+  `__DEV__`), because monkey-patching those globals is too invasive for
+  production. When capture is off the response carries `installed: false` with
+  an empty `entries` array, so callers can tell "not capturing" from
+  "no events".
+- **`/control/discover`**: a thin alias for `/control/snapshot` (matches the
+  web/runner deprecated discover route); returns the full snapshot.
+- **Runner-only AI endpoints** (`/ai/forms`, `/ai/idle-status`,
+  `/ai/change-buffer/*`, `/ai/wait-for-element`): no DOM analog on RN — these
+  return a structured `NOT_SUPPORTED` envelope (not a 404) pointing at the
+  in-tree mobile replacement (snapshot filtering / WS `waitForElement`).
+- **Input elements** expose `type`, `setValue`, and `clear` actions; the
+  controlled `value` prop is reflected into `state.value` (pass it via the
+  `value` option to `useUIElement`) so a bridge read returns the live field
+  contents.
 
 ### Custom Server Adapter
 

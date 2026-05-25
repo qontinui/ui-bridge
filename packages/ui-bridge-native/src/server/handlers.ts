@@ -1138,6 +1138,7 @@ export function createServerHandlers(
           entries: [],
           count: 0,
           bufferSize: 0,
+          installed: false,
         });
       }
 
@@ -1150,6 +1151,7 @@ export function createServerHandlers(
         entries,
         count: entries.length,
         bufferSize: buf.size(),
+        installed: buf.isInstalled(),
       });
     },
 
@@ -1165,6 +1167,7 @@ export function createServerHandlers(
           entries: [],
           count: 0,
           bufferSize: 0,
+          installed: false,
         });
       }
 
@@ -1177,6 +1180,7 @@ export function createServerHandlers(
         entries,
         count: entries.length,
         bufferSize: buf.size(),
+        installed: buf.isInstalled(),
       });
     },
 

@@ -123,7 +123,10 @@ const WS_ROUTES: readonly WsRoute[] = [
   // same handler at both paths to keep agents portable across platforms.
   { pattern: 'ai/find', handler: 'find', httpMethods: ['POST'] },
   { pattern: 'control/snapshot', handler: 'getSnapshot', httpMethods: ['GET'] },
-  { pattern: 'control/discover', handler: 'getSnapshot' },
+  // Discovery alias — web/runner parity with `POST /control/discover` (a
+  // legacy alias for snapshot/find). Mounted on HTTP (GET+POST) so mobile
+  // doesn't 404 where web returns 200; delegates to the snapshot handler.
+  { pattern: 'control/discover', handler: 'getSnapshot', httpMethods: ['GET', 'POST'] },
   // Page health — accepts both GET and POST so the canonical skill invocation
   // (`POST .../control/page-health` with an empty body) and ad-hoc curls both
   // work without a body-shape gotcha.
@@ -229,19 +232,26 @@ const WS_ROUTES: readonly WsRoute[] = [
     requiresTestHooks: true,
   },
 
-  // Observability — last-N console errors + network requests. testHooks-gated
-  // because patching `console.error` / `fetch` is invasive in production.
+  // Observability — last-N console errors + network requests.
+  //
+  // Always mounted (not testHooks-gated) so they return a schema-valid 200
+  // on every build instead of a 404 that agents can't distinguish from a
+  // missing route. The INVASIVE part — monkey-patching `console.error` /
+  // `fetch` / `XMLHttpRequest` — stays gated behind `testHooks` (see
+  // NativeUIBridgeServer.start → buffer.install()). When the patches aren't
+  // installed the handlers report `installed: false` + empty entries, so
+  // production builds expose the contract without observing real users'
+  // console/network traffic. Set `features.testHooks` (typically on
+  // `__DEV__`) to populate the buffers with live data.
   {
     pattern: 'control/console-errors',
     handler: 'getConsoleErrors',
     httpMethods: ['GET'],
-    requiresTestHooks: true,
   },
   {
     pattern: 'sdk/network-requests',
     handler: 'getNetworkRequests',
     httpMethods: ['GET'],
-    requiresTestHooks: true,
   },
 ];
 
@@ -310,9 +320,9 @@ const HANDLER_DESCRIPTIONS: Record<string, string> = {
   findByText:
     'App-agnostic: list elements matching free-text (no press): body { text, visibleOnly? }',
   getConsoleErrors:
-    'TEST HOOK — last-N console.error/console.warn entries; ?since=<ms>&limit=<n>',
+    'Last-N console.error/console.warn entries; ?since=<ms>&limit=<n>. `installed:false` when capture is off (no testHooks) — entries empty but schema-valid.',
   getNetworkRequests:
-    'TEST HOOK — last-N fetch/XHR entries with status + duration; ?since=<ms>&limit=<n>',
+    'Last-N fetch/XHR entries with status + duration; ?since=<ms>&limit=<n>. `installed:false` when capture is off (no testHooks) — entries empty but schema-valid.',
   pushModal:
     'TEST HOOK — push a modal onto the snapshot.modalStack via the registry ModalDetector',
   dismissModal:

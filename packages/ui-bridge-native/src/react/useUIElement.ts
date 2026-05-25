@@ -111,6 +111,16 @@ export interface UseUIElementOptionsBase<T extends NativeElementType = NativeEle
   actions?: NativeStandardAction[];
   /** Custom actions */
   customActions?: Record<string, NativeCustomAction>;
+  /**
+   * Current controlled value for text inputs. When provided, it is threaded
+   * into the registered element's `state.value` so a `GET /control/element/:id`
+   * (or `/state`) reflects what the user sees — without this, the input
+   * registers with `value: undefined` and a bridge read returns null even
+   * though the field is populated. Pass the same value you bind to the RN
+   * `<TextInput value={...} />` prop; the hook keeps the registry in sync as
+   * it changes.
+   */
+  value?: string;
   /** Whether to automatically register on mount */
   autoRegister?: boolean;
   /** Callback when state changes */
@@ -341,6 +351,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     style,
     stateStyles: stateStylesProp,
     handlers: handlersProp,
+    value: valueProp,
   } = options;
 
   // Build tree path
@@ -373,6 +384,15 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     });
     registeredRef.current = true;
     registeredIdRef.current = id;
+
+    // Seed the controlled value into the element state so a bridge read
+    // reflects what the user sees immediately on mount — before any `type`/
+    // `setValue` action runs. Only write when a value was actually supplied
+    // so non-input elements aren't given a spurious empty `value`.
+    if (typeof valueProp === 'string') {
+      bridge.registry.updateElementState(id, { value: valueProp });
+    }
+
     setRegistered(true);
 
     // Runtime backstop for the type-tightening: warns once per id when a
@@ -382,7 +402,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     // using `useUIElementWithProps` + `captureProps({ onPress })` from the
     // render body still pass.
     scheduleDeadButtonWarning(bridge, id, type);
-  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp]);
+  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp, valueProp]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -416,12 +436,37 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     (event: LayoutEventData) => {
       const { x, y, width, height } = event.nativeEvent.layout;
 
-      const writeLayout = (newLayout: NativeLayout) => {
+      // Visibility is derived from the element's MEASURED layout rect — the
+      // RN analogue of the web SDK's bounding-box visibility check (Phase 6).
+      //
+      // Bug this fixes: the old code computed `visible` purely from the
+      // `onLayout` event's own width/height. RN fires `onLayout` for content
+      // elements (Text, flex children inside a ScrollView) with transient
+      // zero dimensions before the subtree settles. That stamped
+      // `visible:false` onto every content element, leaving snapshots with
+      // only the tab-bar buttons (which always have intrinsic size) reported
+      // visible — `visibleOnly` then returned just the tabs.
+      //
+      // Fix: prefer the `measureInWindow` rect (authoritative on-screen size)
+      // for the visibility decision, fall back to the onLayout rect, and —
+      // critically — never DOWNGRADE an already-visible element to hidden on
+      // a transient zero-dim reading. A measured positive-area rect means the
+      // element is genuinely laid out and on screen; a zero reading is treated
+      // as "not yet measured", which the backoff `measureInWindow` retry below
+      // resolves, rather than as "hidden".
+      const writeLayout = (newLayout: NativeLayout, measuredW: number, measuredH: number) => {
         setLayout(newLayout);
         if (!bridge) return;
+
+        const hasPositiveArea = measuredW > 0 && measuredH > 0;
+        const prevVisible = bridge.registry.getElement(id)?.getState().visible ?? false;
+        // Visible if we measured a real positive-area rect; otherwise keep the
+        // prior visibility (don't strand a laid-out element on a zero blip).
+        const visible = hasPositiveArea ? true : prevVisible;
+
         const newState: NativeElementState = {
           mounted: true,
-          visible: width > 0 && height > 0,
+          visible,
           enabled: true,
           focused: false,
           layout: newLayout,
@@ -430,7 +475,9 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         onStateChangeRef.current?.(newState);
       };
 
-      // Get absolute position using measureInWindow when available.
+      // Get absolute position + measured size using measureInWindow when
+      // available. The measured w/h are the on-screen dimensions and take
+      // precedence over the onLayout rect for the visibility decision.
       if (ref.current && 'measureInWindow' in ref.current) {
         (
           ref.current as {
@@ -438,12 +485,20 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
               callback: (pageX: number, pageY: number, w: number, h: number) => void
             ) => void;
           }
-        ).measureInWindow((pageX: number, pageY: number) => {
-          writeLayout({ x, y, width, height, pageX, pageY });
+        ).measureInWindow((pageX: number, pageY: number, w: number, h: number) => {
+          // Prefer measured dims; fall back to onLayout dims if the platform
+          // returns zeros (some RN versions report 0 for off-screen subtrees).
+          const finalW = w > 0 ? w : width;
+          const finalH = h > 0 ? h : height;
+          writeLayout(
+            { x, y, width: finalW, height: finalH, pageX, pageY },
+            finalW,
+            finalH
+          );
         });
       } else {
         // Fallback when measureInWindow isn't on the ref (test fixtures, web).
-        writeLayout({ x, y, width, height, pageX: x, pageY: y });
+        writeLayout({ x, y, width, height, pageX: x, pageY: y }, width, height);
       }
     },
     [bridge, id]
@@ -591,6 +646,21 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       }
     };
   }, [bridge, registered, id, handlersProp]);
+
+  // Keep the registry's `state.value` in sync with the controlled `value`
+  // prop. RN controlled inputs re-render with a new `value` on every
+  // keystroke; mirroring it here means a bridge read (`/control/element/:id`)
+  // always reflects the live field contents, not just the value at mount or
+  // the last bridge-driven `type`/`setValue`. Guarded on `registered` so the
+  // write lands after registration; `updateElementState` is a no-op for
+  // unknown ids anyway.
+  useEffect(() => {
+    if (!bridge || !registered) return;
+    if (typeof valueProp !== 'string') return;
+    const current = bridge.registry.getElement(id)?.getState().value;
+    if (current === valueProp) return;
+    bridge.registry.updateElementState(id, { value: valueProp });
+  }, [bridge, registered, id, valueProp]);
 
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
   const _updateProps = useCallback(
