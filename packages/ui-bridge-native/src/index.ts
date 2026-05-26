@@ -190,6 +190,8 @@ export {
 } from './server/http-server';
 
 export { buildUpgradeResponse, computeAcceptKey } from './server/ws-protocol';
+export { bindWithRetry, isAddrInUseError } from './server/bind-retry';
+export type { BindWithRetryOptions } from './server/bind-retry';
 export { WebSocketConnection } from './server/ws-connection';
 export type { WebSocketMessageHandler } from './server/ws-connection';
 export { WebSocketEventBridge } from './server/ws-event-bridge';

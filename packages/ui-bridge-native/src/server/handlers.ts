@@ -4,6 +4,17 @@
  * Request handlers for the HTTP API endpoints.
  */
 
+/**
+ * SDK version string, injected at build time by tsup's `define` and at
+ * test time by vitest's `define` (both source from this package's
+ * `package.json` `version` field). Surfaced on the `/health` endpoint's
+ * `data.uiBridge.version` so external automation agents can fingerprint
+ * which on-device SDK build a runner is consuming without parsing the
+ * bundle. Mirrors the web SDK's `__SDK_VERSION__` convention in
+ * `@qontinui/ui-bridge` (see UIBridgeProviderInit.ts / tsup.config.ts).
+ */
+declare const __SDK_VERSION__: string;
+
 import {
   type NativeUIBridgeRegistry,
   extractHandlerNames,
@@ -89,6 +100,41 @@ function matchElementsByText(
 
   scored.sort((a, b) => a.rank - b.rank);
   return scored.map((s) => s.element);
+}
+
+/**
+ * Resolve the element's runtime state for the single-element read endpoints,
+ * guaranteeing `state.value` is populated for controlled inputs.
+ *
+ * Why this exists: `setValue`/`type`/`clear` write the new value into
+ * `state.value` via `registry.updateElementState`, and `/control/snapshot`
+ * reads it straight back. But a controlled `<TextInput value={x} />` carries
+ * its value on `props.value` too, and there are windows where `state.value`
+ * has not yet been mirrored from the prop (registration before the first
+ * `updateElementProps`, or a host that wires `onChangeText` without threading
+ * `value` into `useUIElement`). In those windows `GET /control/element/:id`
+ * returned `value: undefined` while the snapshot — which benefits from the
+ * registry's prop→state mirror on the same element — showed the real value.
+ *
+ * The fallback keeps the single-element read path consistent with the
+ * snapshot: when `state.value` is absent for an input that has a string
+ * `props.value`, surface the prop value. Never overwrites an explicit
+ * `state.value` (which an action or `onChangeText` set), and only applies to
+ * `type: 'input'` so non-inputs that happen to carry a `value` prop are
+ * untouched (mirrors the gating in `registry.updateElementProps`).
+ */
+function resolveElementState(
+  element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>
+): ReturnType<NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>['getState']> {
+  const state = element.getState();
+  if (
+    element.type === 'input' &&
+    state.value === undefined &&
+    typeof element.props?.value === 'string'
+  ) {
+    return { ...state, value: element.props.value as string };
+  }
+  return state;
 }
 
 /**
@@ -447,7 +493,7 @@ export function createServerHandlers(
           type: element.type,
           label: element.label,
           identifier: element.getIdentifier(),
-          state: element.getState(),
+          state: resolveElementState(element),
           actions: element.actions,
           customActions: element.customActions ? Object.keys(element.customActions) : undefined,
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
@@ -464,25 +510,51 @@ export function createServerHandlers(
         return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
       }
 
-      return success({ state: element.getState() });
+      return success({ state: resolveElementState(element) });
     },
 
     executeAction: async (ctx: HandlerContext) => {
-      const { id } = ctx.params;
-      const body = ctx.body as {
-        action: string;
+      // Accept BOTH action-envelope shapes so the mobile server matches the
+      // runner/web SDK contract:
+      //   1. Flat HTTP body — `POST /control/element/:id/action` with
+      //      `{ action, params, waitOptions }` (the documented HTTP shape).
+      //   2. Relay/WS nested envelope — the runner SDK dispatches element
+      //      actions as `relayCommand('executeElementAction', { id, request })`
+      //      where `request = { action, params, waitOptions }` (see
+      //      `ui-bridge/src/react/commandHandlers.ts` `executeElementAction`).
+      //      Over the WS/JSON-RPC and cloud-relay transports the whole `params`
+      //      object becomes `ctx.body`, so the action lives at `body.request`,
+      //      NOT `body.action`. Without this unwrap a runner-driven
+      //      `{ action: 'press' }` was rejected with "Action is required".
+      const rawBody = (ctx.body ?? {}) as {
+        action?: string;
         params?: Record<string, unknown>;
         waitOptions?: WaitOptions;
+        id?: string;
+        request?: {
+          action?: string;
+          params?: Record<string, unknown>;
+          waitOptions?: WaitOptions;
+        };
       };
 
-      if (!body?.action) {
+      // The nested `request` envelope wins when present (relay/WS path);
+      // otherwise read the flat fields (direct HTTP path).
+      const envelope =
+        rawBody.request && typeof rawBody.request === 'object' ? rawBody.request : rawBody;
+
+      // Element id comes from the path param (`/control/element/:id/action`),
+      // falling back to `body.id` for the relay `{ id, request }` envelope.
+      const id = ctx.params.id ?? rawBody.id ?? '';
+
+      if (!envelope?.action) {
         return error('Action is required', 'INVALID_REQUEST');
       }
 
       const response = await executor.executeAction(id, {
-        action: body.action,
-        params: body.params,
-        waitOptions: body.waitOptions,
+        action: envelope.action,
+        params: envelope.params,
+        waitOptions: envelope.waitOptions,
       });
 
       if (!response.success) {
@@ -1318,7 +1390,7 @@ export function createServerHandlers(
 
       if (config?.appInfo) {
         response.uiBridge = {
-          version: '0.3.0',
+          version: __SDK_VERSION__,
           ...config.appInfo,
           capabilities: ['elements', 'components', 'actions', 'design'],
           elementCount: stats.elements,

@@ -157,9 +157,19 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         requestId: request.requestId,
         durationMs: successTime - startTime,
       });
+      // Re-fetch the element from the registry rather than reusing the
+      // `registered` reference captured before `performAction`. Mutating
+      // actions (`type`/`setValue`/`clear`/`focus`/...) call
+      // `registry.updateElementState`, which REPLACES the map entry with a
+      // fresh object carrying a new `getState` closure — the captured
+      // `registered.getState` is stale and omits the just-set `value`. Without
+      // this re-fetch the action response's `elementState` disagrees with a
+      // subsequent `GET /control/element/:id` and `/control/snapshot`, which is
+      // the inconsistent read-path the manual-test session flagged.
+      const fresh = this.registry.getElement(registered.id) ?? registered;
       return {
         success: true,
-        elementState: registered.getState(),
+        elementState: fresh.getState(),
         result,
         durationMs: successTime - startTime,
         timestamp: successTime,

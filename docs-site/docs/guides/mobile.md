@@ -414,6 +414,65 @@ curl -X POST http://localhost:9876/elements/submit-button/action \
 curl http://localhost:9876/render-log
 ```
 
+### Action body shape: `POST /control/element/:id/action`
+
+The mobile bridge takes the **same `{ action, params }` envelope** as the
+runner/web SDK. The element id goes in the **path**; the action name goes in the
+JSON **body** under the top-level `action` field (NOT in the path, NOT under a
+nested key). The on-device bridge listens on port **8087** under the
+`/ui-bridge/` prefix:
+
+```bash
+# ✅ Press a button — `action` is a top-level body field
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/submit-button/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "press"}'
+```
+
+```jsonc
+// Request body schema
+{
+  "action": "press",          // required — the action name (press, type, setValue, scroll, …)
+  "params": { },              // optional — per-action arguments (see below)
+  "waitOptions": { }          // optional — pre-action wait predicate
+}
+```
+
+A body that omits the top-level `action` field is rejected with
+`{"success": false, "code": "INVALID_REQUEST", "error": "Action is required"}`.
+Actions that take no arguments (`press`, `longPress`, `focus`, `blur`, …) need
+only `{"action": "<name>"}` — `params` is optional for those. Value-mutating
+actions require their argument under `params` (next section).
+
+### Setting an input's value (mobile envelope)
+
+:::caution Mobile requires a `params` envelope — top-level `value`/`text` is rejected
+On the mobile (`ui-bridge-native`) bridge, value-mutating actions take their
+argument **inside `params`**, not at the top level. The on-device bridge
+listens on port **8087** under the `/ui-bridge/` prefix:
+
+```bash
+# ✅ Correct — text lives under params
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "setValue", "params": {"text": "user@example.com"}}'
+
+# `type` uses the same envelope and supports clear:true to replace atomically
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "type", "params": {"text": "user@example.com", "clear": true}}'
+
+# ❌ Rejected — a top-level `value` or `text` is NOT read on mobile
+curl -X POST http://<device-ip>:8087/ui-bridge/control/element/email-input/action \
+  -d '{"action": "setValue", "value": "user@example.com"}'   # → no value set
+```
+
+`setValue` accepts either `params.text` (canonical) **or** `params.value` as an
+alias, but both must be **inside `params`**. After the action,
+`GET /ui-bridge/control/element/email-input` and `/ui-bridge/control/snapshot`
+both reflect the new `state.value` synchronously — no polling needed.
+:::
+
 ## Python Client Usage
 
 ```python

@@ -14,3 +14,5 @@ export { WebSocketConnection } from './ws-connection';
 export type { WebSocketMessageHandler } from './ws-connection';
 export { WebSocketEventBridge } from './ws-event-bridge';
 export { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
+export { bindWithRetry, isAddrInUseError } from './bind-retry';
+export type { BindWithRetryOptions } from './bind-retry';
