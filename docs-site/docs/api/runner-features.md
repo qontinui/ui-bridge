@@ -1497,6 +1497,23 @@ trial-and-error:
 `closestMatches` is Levenshtein-ranked, capped at 5, edit-distance ≤ 50%
 of element-id length.
 
+### Transport-layer error codes
+
+Beyond the soft-failure `error` string, the runner's HTTP transport layer
+emits a top-level SCREAMING_SNAKE_CASE `code` for request-level rejections
+that never reach a handler — a malformed body, the wrong `Content-Type`, or
+an unmatched route. These originate in the axum JSON extractor and the
+router fallback (not in an application handler) but are surfaced through the
+same canonical envelope, so callers branch on `code` uniformly:
+
+| `code` | Meaning | HTTP |
+|---|---|---|
+| `UNSUPPORTED_MEDIA_TYPE` | Body sent with no (or a non-`application/json`) `Content-Type`. | `415` |
+| `INVALID_JSON` | Body not parseable as JSON (syntax error), or unreadable. | `400` |
+| `INVALID_REQUEST` | Body parsed as JSON but failed to deserialize into the target type (missing/unknown field, wrong type). | `422` |
+| `PAYLOAD_TOO_LARGE` | Body exceeded the configured size limit. | `413` |
+| `NOT_FOUND` | No route matched the request method + path (router fallback). | `404` |
+
 ## Health (Tauri runner)
 
 ```http
