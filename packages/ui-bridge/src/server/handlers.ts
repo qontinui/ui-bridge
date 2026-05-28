@@ -1437,6 +1437,12 @@ export function createHandlers(
     ) => {
       const startTime = Date.now();
       try {
+        // Settle before reading the registry — same pattern as
+        // getControlSnapshot and the primary aiFind. Without this, a hard
+        // navigation leaves the registry empty during the debounce-queue
+        // commit window and the lookup fails with ELEMENT_NOT_FOUND even
+        // though the DOM node exists.
+        await awaitDOMSettled();
         // Pre-flight registry check.
         // Page-level sentinel IDs ("document", "body", "window") bypass the registry
         // check — the action executor resolves them to document.documentElement directly.

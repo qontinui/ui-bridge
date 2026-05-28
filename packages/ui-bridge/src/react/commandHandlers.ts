@@ -821,6 +821,7 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
   'aiExecute',
   'aiAssert',
   'aiAssertBatch',
+  'executeElementAction',
 ]);
 
 export async function executeCommand(
