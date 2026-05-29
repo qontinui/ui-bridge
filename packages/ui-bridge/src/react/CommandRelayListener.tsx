@@ -51,6 +51,14 @@ export interface CommandRelayListenerProps {
    * defaults baked into the static config.
    */
   version?: string;
+  /**
+   * Optional hook returning the current session token (raw value, no
+   * `Bearer ` prefix). When supplied, the SDK attaches
+   * `Authorization: Bearer <value>` to outbound `POST /commands` and
+   * `POST /heartbeat` and appends `_auth=<value>` to the SSE URL.
+   * See `UseCommandRelayOptions.authHeader` for the full contract.
+   */
+  authHeader?: () => string | null | undefined;
 }
 
 export function CommandRelayListener(props: CommandRelayListenerProps): null {
@@ -66,6 +74,7 @@ export function CommandRelayListener(props: CommandRelayListenerProps): null {
     framework: props.framework,
     capabilities: props.capabilities,
     version: props.version,
+    authHeader: props.authHeader,
   };
   useCommandRelay(options);
   return null;

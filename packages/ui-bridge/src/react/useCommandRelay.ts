@@ -83,7 +83,93 @@ export interface UseCommandRelayOptions {
    * build-time defaults baked into a static config).
    */
   version?: string;
+  /**
+   * Optional hook that returns the current session token (the raw token
+   * value, WITHOUT a `Bearer ` prefix). When supplied and returns a
+   * non-empty string, the SDK:
+   *
+   *   - attaches `Authorization: Bearer <value>` to outbound
+   *     `POST {basePath}/commands` and `POST {basePath}/heartbeat`;
+   *   - appends a `_auth=<value>` query parameter to the SSE URL
+   *     `GET {basePath}/commands/stream` (EventSource cannot set custom
+   *     headers per the WhatWG spec).
+   *
+   * Called fresh on every outbound request — implementations should read
+   * the token from a live source (e.g. `sessionStorage`) so a token
+   * rotation is picked up without remounting the listener. Returning
+   * `null` / `undefined` / empty string means "no auth this call" and
+   * the transport falls back to legacy unauth'd / cookie-based behavior
+   * (matching the SDK's pre-`authHeader` shape).
+   *
+   * Required to authenticate against any relay endpoint that enforces a
+   * session-bound auth gate (e.g. qontinui-web's
+   * `UI_BRIDGE_REQUIRE_AUTH=1` mode).
+   */
+  authHeader?: () => string | null | undefined;
 }
+
+/**
+ * Internal: resolve the current auth token from the consumer's hook, or
+ * `null` if no token is available. Centralizes the null / empty-string /
+ * undefined / throw normalization so each transport site doesn't have to
+ * repeat it.
+ */
+function resolveAuthToken(
+  authHeader: (() => string | null | undefined) | undefined,
+): string | null {
+  if (!authHeader) return null;
+  try {
+    const value = authHeader();
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Internal: produce the headers object for a transport POST, attaching
+ * `Authorization: Bearer <token>` when a token is resolved.
+ */
+function transportHeaders(
+  authHeader: (() => string | null | undefined) | undefined,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const token = resolveAuthToken(authHeader);
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+/**
+ * Internal: append the SSE `_auth` query parameter when a token is
+ * resolved. EventSource has no way to send headers, so the auth signal
+ * has to ride in the URL. The query parameter is prefixed with `_` to
+ * signal "private auth payload" to any access-log filter.
+ */
+function appendAuthQuery(
+  url: string,
+  authHeader: (() => string | null | undefined) | undefined,
+): string {
+  const token = resolveAuthToken(authHeader);
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_auth=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Test-only re-exports for the internal helpers above. The `__test_`
+ * prefix follows the SDK convention for non-public-but-accessible names
+ * (cf. `__SDK_VERSION__`). NOT part of the public API surface and may
+ * change at any time.
+ */
+export const __test_resolveAuthToken = resolveAuthToken;
+export const __test_transportHeaders = transportHeaders;
+export const __test_appendAuthQuery = appendAuthQuery;
 
 /**
  * Hook that connects the browser to the server's command relay.
@@ -98,6 +184,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const enabled = options?.enabled ?? true;
   const basePath = options?.basePath ?? '/api/ui-bridge';
   const heartbeatIntervalMs = options?.heartbeatInterval ?? HEARTBEAT_INTERVAL_MS;
+  // Capture the auth-header hook in a ref so the 3 transport call sites
+  // read the freshest token without re-running effects on every render.
+  // The hook is called per-request inside the helpers above.
+  const authHeaderRef = useRef<UseCommandRelayOptions['authHeader']>(undefined);
+  authHeaderRef.current = options?.authHeader;
 
   const uiBridge = useUIBridge();
   const context = useUIBridgeOptional();
@@ -169,7 +260,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
       try {
         await fetch(`${basePath}/commands`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: transportHeaders(authHeaderRef.current),
           body: safeJsonStringify({
             commandId,
             success: ok,
@@ -250,9 +341,8 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const connect = () => {
       if (!isMounted) return;
-      const es = new EventSource(
-        `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`
-      );
+      const baseUrl = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
+      const es = new EventSource(appendAuthQuery(baseUrl, authHeaderRef.current));
       eventSourceRef.current = es;
 
       es.onmessage = (event) => {
@@ -368,7 +458,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
         const resp = await fetch(`${basePath}/heartbeat`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: transportHeaders(authHeaderRef.current),
           body: JSON.stringify(body),
         });
         // Recovery: the server reports whether our tabId is a registered SSE
