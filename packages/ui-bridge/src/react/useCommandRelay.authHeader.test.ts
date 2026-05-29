@@ -3,7 +3,7 @@
  *
  * The hook itself attaches to a React component lifecycle and is tested
  * via integration in the consuming app. The helpers it composes
- * (`resolveAuthToken`, `transportHeaders`, `appendAuthQuery`) are pure
+ * (`resolveAuthToken`, `transportHeaders`, `parseSSEDataBlock`) are pure
  * functions and the security boundary that matters; lock them here.
  *
  * The helpers are NOT publicly exported from the package — this test
@@ -28,7 +28,7 @@ import {
 import {
   __test_resolveAuthToken as resolveAuthToken,
   __test_transportHeaders as transportHeaders,
-  __test_appendAuthQuery as appendAuthQuery,
+  __test_parseSSEDataBlock as parseSSEDataBlock,
 } from './useCommandRelay';
 
 type Hook = UseCommandRelayOptions['authHeader'];
@@ -104,48 +104,28 @@ describe('transportHeaders', () => {
   });
 });
 
-describe('appendAuthQuery', () => {
-  it('returns the url unchanged when no token resolves', () => {
-    const url = 'https://example.com/api/ui-bridge/commands/stream';
-    expect(appendAuthQuery(url, undefined)).toBe(url);
-    expect(appendAuthQuery(url, (() => null) as Hook)).toBe(url);
+describe('parseSSEDataBlock', () => {
+  it('extracts the data payload from a single data: line', () => {
+    expect(parseSSEDataBlock('data: {"a":1}')).toBe('{"a":1}');
   });
 
-  it('appends ?_auth=<token> on a url with no existing query', () => {
-    const url = 'https://example.com/api/ui-bridge/commands/stream';
-    expect(appendAuthQuery(url, (() => 'abc') as Hook)).toBe(
-      'https://example.com/api/ui-bridge/commands/stream?_auth=abc',
-    );
+  it('returns null for a comment-only (heartbeat) block', () => {
+    expect(parseSSEDataBlock(': heartbeat')).toBe(null);
   });
 
-  it('appends &_auth=<token> on a url with an existing query', () => {
-    const url =
-      'https://example.com/api/ui-bridge/commands/stream?tabId=foo';
-    expect(appendAuthQuery(url, (() => 'abc') as Hook)).toBe(
-      'https://example.com/api/ui-bridge/commands/stream?tabId=foo&_auth=abc',
-    );
+  it('returns null for an empty block', () => {
+    expect(parseSSEDataBlock('')).toBe(null);
   });
 
-  it('URL-encodes the token value so dots / slashes survive', () => {
-    // A real JWT looks like header.payload.signature; the value contains
-    // base64url characters that are URL-safe, but we encode defensively.
-    expect(
-      appendAuthQuery(
-        'https://example.com/x',
-        (() => 'aBc.dEf.gHi-_~') as Hook,
-      ),
-    ).toBe('https://example.com/x?_auth=aBc.dEf.gHi-_~');
-    expect(
-      appendAuthQuery('https://example.com/x', (() => 'has space') as Hook),
-    ).toBe('https://example.com/x?_auth=has%20space');
+  it('ignores event: lines and returns just the data payload', () => {
+    expect(parseSSEDataBlock('event: foo\ndata: {"x":2}')).toBe('{"x":2}');
   });
 
-  it('uses the trimmed token in the query', () => {
-    expect(
-      appendAuthQuery(
-        'https://example.com/x',
-        (() => '   padded   ') as Hook,
-      ),
-    ).toBe('https://example.com/x?_auth=padded');
+  it('joins multi-line data: payloads with a newline', () => {
+    expect(parseSSEDataBlock('data: line1\ndata: line2')).toBe('line1\nline2');
+  });
+
+  it('preserves data with no leading space after the colon', () => {
+    expect(parseSSEDataBlock('data:nospace')).toBe('nospace');
   });
 });
