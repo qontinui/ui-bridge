@@ -90,9 +90,10 @@ export interface UseCommandRelayOptions {
    *
    *   - attaches `Authorization: Bearer <value>` to outbound
    *     `POST {basePath}/commands` and `POST {basePath}/heartbeat`;
-   *   - appends a `_auth=<value>` query parameter to the SSE URL
-   *     `GET {basePath}/commands/stream` (EventSource cannot set custom
-   *     headers per the WhatWG spec).
+   *   - attaches `Authorization: Bearer <value>` to the SSE
+   *     `GET {basePath}/commands/stream` request as well — the stream is
+   *     consumed via `fetch` streaming, so the header rides on the request
+   *     (no token in the URL).
    *
    * Called fresh on every outbound request — implementations should read
    * the token from a live source (e.g. `sessionStorage`) so a token
@@ -146,19 +147,24 @@ function transportHeaders(
 }
 
 /**
- * Internal: append the SSE `_auth` query parameter when a token is
- * resolved. EventSource has no way to send headers, so the auth signal
- * has to ride in the URL. The query parameter is prefixed with `_` to
- * signal "private auth payload" to any access-log filter.
+ * Parse the `data:` payload out of a single SSE event block — the text
+ * between `\n\n` delimiters. Returns the concatenated data string, or
+ * `null` for blocks with no data field (e.g. `: heartbeat` keep-alive
+ * comments). Mirrors the WhatWG SSE semantics for the fields the command
+ * stream uses: `data:` lines are kept (one optional leading space
+ * stripped); `:` comment lines and `event:`/`id:`/`retry:` lines are
+ * ignored.
  */
-function appendAuthQuery(
-  url: string,
-  authHeader: (() => string | null | undefined) | undefined,
-): string {
-  const token = resolveAuthToken(authHeader);
-  if (!token) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}_auth=${encodeURIComponent(token)}`;
+function parseSSEDataBlock(block: string): string | null {
+  const dataLines: string[] = [];
+  for (const line of block.split('\n')) {
+    if (line.startsWith(':')) continue;
+    if (!line.startsWith('data:')) continue;
+    let value = line.slice(5);
+    if (value.startsWith(' ')) value = value.slice(1);
+    dataLines.push(value);
+  }
+  return dataLines.length > 0 ? dataLines.join('\n') : null;
 }
 
 /**
@@ -169,7 +175,7 @@ function appendAuthQuery(
  */
 export const __test_resolveAuthToken = resolveAuthToken;
 export const __test_transportHeaders = transportHeaders;
-export const __test_appendAuthQuery = appendAuthQuery;
+export const __test_parseSSEDataBlock = parseSSEDataBlock;
 
 /**
  * Hook that connects the browser to the server's command relay.
@@ -227,7 +233,6 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     [uiBridge, context]
   );
 
-  const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processCommandRef = useRef<(command: QueuedCommand) => void>(() => {});
   // Exposes a force-reconnect function that the heartbeat loop can call when
@@ -326,10 +331,6 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
   useEffect(() => {
     if (!enabled) {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -338,43 +339,83 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     }
 
     let isMounted = true;
+    let abortController: AbortController | null = null;
+
+    const closeStream = () => {
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (!isMounted) return;
+      if (reconnectTimeoutRef.current) return; // already scheduled
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        if (isMounted) connect();
+      }, SSE_RECONNECT_DELAY_MS);
+    };
 
     const connect = () => {
       if (!isMounted) return;
-      const baseUrl = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
-      const es = new EventSource(appendAuthQuery(baseUrl, authHeaderRef.current));
-      eventSourceRef.current = es;
+      closeStream();
+      const controller = new AbortController();
+      abortController = controller;
 
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'connected') return;
-          if (data.commandId && data.action) processCommandRef.current(data as QueuedCommand);
-        } catch (e) {
-          console.error('[UIBridge] Failed to parse SSE message:', e);
-        }
-      };
+      const url = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
+      const headers: Record<string, string> = { Accept: 'text/event-stream' };
+      const token = resolveAuthToken(authHeaderRef.current);
+      if (token) headers.Authorization = `Bearer ${token}`;
 
-      es.onerror = () => {
-        es.close();
-        // Only nullify ref if it still points to this EventSource (avoid race with new connection)
-        if (eventSourceRef.current === es) eventSourceRef.current = null;
-        // Always reconnect — automation tools need SSE even in background tabs
-        if (isMounted) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectTimeoutRef.current = null;
-            if (isMounted) connect();
-          }, SSE_RECONNECT_DELAY_MS);
-        }
-      };
+      fetch(url, { method: 'GET', headers, signal: controller.signal, cache: 'no-store' })
+        .then(async (resp) => {
+          if (!resp.ok || !resp.body) {
+            if (abortController === controller) abortController = null;
+            scheduleReconnect();
+            return;
+          }
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              let sep: number;
+              while ((sep = buffer.indexOf('\n\n')) !== -1) {
+                const block = buffer.slice(0, sep);
+                buffer = buffer.slice(sep + 2);
+                const data = parseSSEDataBlock(block);
+                if (data == null) continue;
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.type === 'connected') continue;
+                  if (parsed.commandId && parsed.action) {
+                    processCommandRef.current(parsed as QueuedCommand);
+                  }
+                } catch (e) {
+                  console.error('[UIBridge] Failed to parse SSE message:', e);
+                }
+              }
+            }
+          } catch {
+            /* stream read aborted or network drop — fall through to reconnect */
+          }
+          if (abortController === controller) abortController = null;
+          if (isMounted && !controller.signal.aborted) scheduleReconnect();
+        })
+        .catch(() => {
+          if (abortController === controller) abortController = null;
+          if (isMounted && !controller.signal.aborted) scheduleReconnect();
+        });
     };
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        // Reconnect immediately if SSE was dropped while hidden.
-        // Clear any pending reconnect timeout to prevent the error handler's
-        // delayed reconnect from racing with this immediate one.
-        if (!eventSourceRef.current) {
+        // Reconnect immediately if the stream was dropped while hidden.
+        if (!abortController) {
           if (reconnectTimeoutRef.current) {
             clearTimeout(reconnectTimeoutRef.current);
             reconnectTimeoutRef.current = null;
@@ -385,17 +426,12 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
       // Do NOT disconnect on hide — automation tools need background access
     };
 
-    // Always connect immediately — automation tools need background tab access
     connect();
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Publish a force-reconnect hook callable by the heartbeat recovery loop
     forceReconnectRef.current = () => {
       if (!isMounted) return;
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
+      closeStream();
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -406,10 +442,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     return () => {
       isMounted = false;
       forceReconnectRef.current = () => {};
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
+      closeStream();
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -463,7 +496,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         });
         // Recovery: the server reports whether our tabId is a registered SSE
         // listener. If it is not (e.g. after a client-side navigation that
-        // silently closed the EventSource without triggering onerror), we
+        // silently closed the fetch stream without surfacing an error), we
         // need to reopen the stream — otherwise the tab will appear
         // disconnected to all automation tools until the user reloads.
         if (resp.ok) {
@@ -472,7 +505,7 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
             const tabRegistered = data?.tabRegistered ?? data?.data?.tabRegistered ?? null;
             if (tabRegistered === false) {
               // Server lost our registration. Force a full reconnect
-              // regardless of the EventSource's local readyState — the SSE
+              // regardless of the local stream's apparent state — the SSE
               // may appear open locally while the server-side stream has
               // already been reaped (e.g. after a client-side navigation
               // that ran strict-mode double-effects or after a proxy
