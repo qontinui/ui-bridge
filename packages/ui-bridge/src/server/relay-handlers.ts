@@ -17,6 +17,7 @@ import type {
   APIResponse,
   CapabilitiesResponse,
   DOMChangeEvent,
+  HandlerContext,
   StateSummary,
 } from './types';
 import type { RenderLogEntry } from '../render-log';
@@ -216,54 +217,106 @@ export function createRelayHandlers(
    */
   function extractTabRouting(payload: unknown): {
     targetTabId: string | undefined;
+    callerUserId: string | undefined;
     cleaned: unknown;
   } {
     if (payload === null || payload === undefined || typeof payload !== 'object') {
-      return { targetTabId: undefined, cleaned: payload };
+      return { targetTabId: undefined, callerUserId: undefined, cleaned: payload };
     }
     const obj = payload as Record<string, unknown>;
     const topTarget = typeof obj.targetTabId === 'string' ? (obj.targetTabId as string) : undefined;
     const topPublic = typeof obj.tabId === 'string' ? (obj.tabId as string) : undefined;
+    const topCallerUserId =
+      typeof obj.__callerUserId === 'string' ? (obj.__callerUserId as string) : undefined;
 
     // Inspect the nested `request` wrapper used by action-style handlers.
     let nestedTabId: string | undefined;
+    let nestedCaller: string | undefined;
     let cleanedRequest: unknown = obj.request;
+    let requestRewritten = false;
     if (obj.request !== null && typeof obj.request === 'object' && !Array.isArray(obj.request)) {
       const req = obj.request as Record<string, unknown>;
       const nestedTarget =
         typeof req.targetTabId === 'string' ? (req.targetTabId as string) : undefined;
       const nestedPublic = typeof req.tabId === 'string' ? (req.tabId as string) : undefined;
       nestedTabId = nestedTarget ?? nestedPublic;
-      if (nestedTabId !== undefined) {
-        const { targetTabId: _omitT, tabId: _omitP, ...restReq } = req;
+      nestedCaller =
+        typeof req.__callerUserId === 'string' ? (req.__callerUserId as string) : undefined;
+      if (nestedTabId !== undefined || nestedCaller !== undefined) {
+        const {
+          targetTabId: _omitT,
+          tabId: _omitP,
+          __callerUserId: _omitC,
+          ...restReq
+        } = req;
         cleanedRequest = restReq;
+        requestRewritten = true;
       }
     }
 
     const targetTabId = topTarget ?? topPublic ?? nestedTabId;
-    if (targetTabId === undefined) return { targetTabId: undefined, cleaned: payload };
+    const callerUserId = topCallerUserId ?? nestedCaller;
+    if (targetTabId === undefined && callerUserId === undefined) {
+      return { targetTabId: undefined, callerUserId: undefined, cleaned: payload };
+    }
 
-    const { targetTabId: _omitTarget, tabId: _omitPublic, ...rest } = obj;
-    if (cleanedRequest !== obj.request) {
+    const {
+      targetTabId: _omitTarget,
+      tabId: _omitPublic,
+      __callerUserId: _omitCaller,
+      ...rest
+    } = obj;
+    if (requestRewritten) {
       (rest as Record<string, unknown>).request = cleanedRequest;
     }
-    return { targetTabId, cleaned: rest };
+    return { targetTabId, callerUserId, cleaned: rest };
   }
 
   // Helper: relay a command, return success/error. Honors `targetTabId`
   // sourced from either the explicit `opts` argument (used by a couple of
   // handlers that destructure it manually) or the payload itself (the
   // catch-all Item #4 path — nextjs/express adapters stuff `tabId` into the
-  // body so every handler picks it up uniformly).
+  // body so every handler picks it up uniformly). Per-user tab scoping
+  // (§4.2) lifts the consumer-provided `__callerUserId` into `ownerCheck`
+  // so the relay enforces the dispatch boundary regardless of which
+  // handler the request lands on. `OwnerMismatchError` is re-stamped as
+  // `TAB_NOT_FOUND` at the envelope so the response shape mirrors a
+  // genuine missing-tab case (no enumeration leak).
+  //
+  // Per-user tab scoping (§4.2) closing-the-hole pass: the `opts.context`
+  // is the explicit channel for handlers whose signature has no request
+  // bag (zero-arg `captureSnapshot()`, id-only `getElementState(id)`,
+  // etc.). The adapter passes `{callerUserId}` as the final positional arg
+  // and the handler forwards it here via `opts.context` so the ownership
+  // check fires even when there's no payload to splice `__callerUserId`
+  // into. Precedence (highest first): explicit `opts.ownerCheck` →
+  // payload-supplied `__callerUserId` → `opts.context.callerUserId`.
   async function relayCommand<T>(
     action: string,
     payload: unknown = {},
-    opts?: { targetTabId?: string }
+    opts?: {
+      targetTabId?: string;
+      ownerCheck?: { userId: string };
+      context?: HandlerContext;
+    }
   ): Promise<APIResponse<T>> {
-    const { targetTabId: payloadTabId, cleaned } = extractTabRouting(payload);
+    const {
+      targetTabId: payloadTabId,
+      callerUserId,
+      cleaned,
+    } = extractTabRouting(payload);
+    const effectiveTabId = opts?.targetTabId ?? payloadTabId;
+    const contextUserId = opts?.context?.callerUserId;
+    const effectiveOwnerCheck =
+      opts?.ownerCheck ??
+      (callerUserId ? { userId: callerUserId } : undefined) ??
+      (contextUserId ? { userId: contextUserId } : undefined);
     const effectiveOpts =
-      opts?.targetTabId || payloadTabId
-        ? { targetTabId: opts?.targetTabId ?? payloadTabId }
+      effectiveTabId || effectiveOwnerCheck
+        ? {
+            ...(effectiveTabId ? { targetTabId: effectiveTabId } : {}),
+            ...(effectiveOwnerCheck ? { ownerCheck: effectiveOwnerCheck } : {}),
+          }
         : undefined;
     try {
       const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
@@ -276,6 +329,27 @@ export function createRelayHandlers(
       // contract surface (multi-machine drivers branch on them), same shape
       // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
       const tabErr = e as { code?: unknown; name?: unknown };
+      // Per-user tab scoping (§4.2): OwnerMismatchError is redacted to
+      // TAB_NOT_FOUND (404) at the HTTP envelope so callers cannot
+      // distinguish "tab exists but not yours" from "tab does not
+      // exist". The structured field (`callerUserId` / `storedUserId`)
+      // stays in the relay's exception for server-side observability
+      // and never reaches the wire.
+      if (tabErr?.name === 'OwnerMismatchError') {
+        return {
+          success: false,
+          error:
+            `tabId is not in connectedTabs. ` +
+            `Use GET /tabs to discover live tab ids, or omit tabId to dispatch to the primary tab.`,
+          code: 'TAB_NOT_FOUND' as APIResponse['code'],
+          timestamp: Date.now(),
+          httpStatus: 404,
+          suggestions: [
+            'GET /tabs?activeOnly=true to discover currently live tabs',
+            'Omit tabId to fall back to the relay primary tab',
+          ],
+        } as APIResponse<T>;
+      }
       if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
         // Surface HTTP-level status codes so adapters (Express / Next.js)
         // translate the per-tab routing failure into the documented
@@ -336,10 +410,18 @@ export function createRelayHandlers(
   async function relayWithFallback<T>(
     action: string,
     payload: unknown = {},
-    fallback: T
+    fallback: T,
+    context?: HandlerContext
   ): Promise<APIResponse<T>> {
-    const { targetTabId, cleaned } = extractTabRouting(payload);
-    const opts = targetTabId ? { targetTabId } : undefined;
+    const { targetTabId, callerUserId, cleaned } = extractTabRouting(payload);
+    const effectiveCallerUserId = callerUserId ?? context?.callerUserId;
+    const opts =
+      targetTabId || effectiveCallerUserId
+        ? {
+            ...(targetTabId ? { targetTabId } : {}),
+            ...(effectiveCallerUserId ? { ownerCheck: { userId: effectiveCallerUserId } } : {}),
+          }
+        : undefined;
     try {
       const result = await relay.queueCommand<T>(action, cleaned, opts);
       return success(result);
@@ -349,6 +431,17 @@ export function createRelayHandlers(
         reason: `Relay command '${action}' failed or timed out — returning default value. Ensure the target app is connected and responsive.`,
       });
     }
+  }
+
+  // Helper: resolve callerUserId from optional context. Returns the
+  // `relayCommand` opts shape (just the `context` slot — preserves
+  // existing precedence rules). Centralizes the per-handler boilerplate
+  // for the dozens of handlers that need to thread context into the
+  // relay layer.
+  function ctxOpts(
+    context?: HandlerContext
+  ): { context?: HandlerContext } | undefined {
+    return context ? { context } : undefined;
   }
 
   // Helper: filter cached snapshot elements using find/discover criteria.
@@ -516,10 +609,15 @@ export function createRelayHandlers(
     // Render Log (server-side)
     // ========================================================================
 
-    async getRenderLog(query) {
+    async getRenderLog(query, context) {
       // Try relaying to the browser first for live render log data
       try {
-        const result = await relay.queueCommand('getRenderLog', query ?? {});
+        const { cleaned, callerUserId } = extractTabRouting(query ?? {});
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const liveOpts = effectiveUserId
+          ? { ownerCheck: { userId: effectiveUserId } }
+          : undefined;
+        const result = await relay.queueCommand('getRenderLog', cleaned, liveOpts);
         if (
           result &&
           typeof result === 'object' &&
@@ -538,19 +636,25 @@ export function createRelayHandlers(
       return success(results);
     },
 
-    async clearRenderLog() {
+    async clearRenderLog(context) {
       renderLogEntries = [];
-      // Also relay the clear to the browser so live render log entries are cleared
+      // Also relay the clear to the browser so live render log entries are cleared.
+      // Per-user tab scoping (§4.2): when invoked through the HTTP layer
+      // with `X-Caller-User-Id`, the adapter passes the userId via `context`
+      // so the live-relay leg dispatches only to the caller's tabs.
       try {
-        await relay.queueCommand('clearRenderLog', {});
+        const liveOpts = context?.callerUserId
+          ? { ownerCheck: { userId: context.callerUserId } }
+          : undefined;
+        await relay.queueCommand('clearRenderLog', {}, liveOpts);
       } catch {
         // Browser may be disconnected — server-side cache already cleared above
       }
       return success(undefined);
     },
 
-    async captureSnapshot() {
-      return relayCommand('captureSnapshot');
+    async captureSnapshot(context) {
+      return relayCommand('captureSnapshot', {}, ctxOpts(context));
     },
 
     async getRenderLogPath() {
@@ -561,7 +665,7 @@ export function createRelayHandlers(
     // Control — Elements
     // ========================================================================
 
-    async getElements(options) {
+    async getElements(options, _context) {
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const _meta = staleMeta();
@@ -592,7 +696,7 @@ export function createRelayHandlers(
       return success(elements, _meta);
     },
 
-    async rankElements(request) {
+    async rankElements(request, _context) {
       // Rank against the cached relay snapshot — the disambiguation
       // metadata is passthrough from the browser tab's registry, so no
       // live relay call is needed. Respects the caller's recency hint
@@ -614,10 +718,15 @@ export function createRelayHandlers(
       );
     },
 
-    async getElement(id, options) {
+    async getElement(id, options, context) {
       // Try relay first for live element data when browser is connected
       try {
-        const result = await relay.queueCommand('getElement', { id });
+        const { callerUserId } = extractTabRouting(options ?? {});
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const liveOpts = effectiveUserId
+          ? { ownerCheck: { userId: effectiveUserId } }
+          : undefined;
+        const result = await relay.queueCommand('getElement', { id }, liveOpts);
         if (result) return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
       } catch {
         // Relay failed — fall back to cached snapshot
@@ -644,23 +753,34 @@ export function createRelayHandlers(
       return success(element);
     },
 
-    async getElementState(id) {
+    async getElementState(id, context) {
+      // Per-user tab scoping (§4.2): the adapter threads the
+      // authenticated caller's userId via the `context` final argument so
+      // the dispatch is gated on the caller's tabs, NEVER on whichever
+      // tab happens to be `primaryTabId` (which could belong to a
+      // different user).
+      const liveOpts = context?.callerUserId
+        ? { ownerCheck: { userId: context.callerUserId } }
+        : undefined;
       try {
-        const result = await relay.queueCommand('getElementState', { id });
+        const result = await relay.queueCommand('getElementState', { id }, liveOpts);
         if (result) return success(result);
       } catch {
-        // Relay failed — fall back to state from cached snapshot
+        // Relay failed — fall back to state from cached snapshot.
+        // The cached snapshot is shared across users (refresh path runs
+        // unscoped), so the fallback below leaks no more than an
+        // unauthenticated admin GET against the same id would.
       }
       const element = latestControlSnapshot.elements.find((e) => e.id === id);
-      if (element && 'state' in element) return success((element as any).state);
+      if (element && 'state' in element) return success((element as { state: unknown }).state);
       return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
     },
 
-    async getElementReactState(id) {
-      return relayCommand('getElementReactState', { id });
+    async getElementReactState(id, context) {
+      return relayCommand('getElementReactState', { id }, ctxOpts(context));
     },
 
-    async executeElementAction(id, request) {
+    async executeElementAction(id, request, context) {
       // Item A (iter-3 manual-test remediation): contract enforcement for the
       // `type` action. The docs (`docs-site/docs/api/runner-features.md` §
       // "Per-action param names") promise that `type` returns HTTP 400 when
@@ -705,18 +825,18 @@ export function createRelayHandlers(
           };
         }
       }
-      return relayCommand('executeElementAction', { id, request });
+      return relayCommand('executeElementAction', { id, request }, ctxOpts(context));
     },
 
-    async executeBatchAction(request) {
-      return relayCommand('executeBatchAction', { request });
+    async executeBatchAction(request, context) {
+      return relayCommand('executeBatchAction', { request }, ctxOpts(context));
     },
 
     // ========================================================================
     // Control — Components
     // ========================================================================
 
-    async getComponents(options) {
+    async getComponents(options, _context) {
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.components.length === 0);
       const _meta = staleMeta();
@@ -727,7 +847,7 @@ export function createRelayHandlers(
       return success({ components: latestControlSnapshot.components }, _meta);
     },
 
-    async getComponent(id, options) {
+    async getComponent(id, options, _context) {
       // Refresh snapshot before looking up — components mount/unmount with page navigation
       // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
       let component = latestControlSnapshot.components.find((c) => c.id === id);
@@ -760,36 +880,55 @@ export function createRelayHandlers(
       return success(component);
     },
 
-    async getComponentState(id) {
-      return relayCommand('getComponentState', { id });
+    async getComponentState(id, context) {
+      return relayCommand('getComponentState', { id }, ctxOpts(context));
     },
 
-    async executeComponentAction(id, request, body?: Record<string, unknown>) {
+    async executeComponentAction(
+      id,
+      request,
+      bodyOrContext?: (Record<string, unknown> & HandlerContext) | HandlerContext
+    ) {
       // The Express adapter passes (id, actionId, body) based on route params ['id', 'actionId'].
-      // When called from Express: id=componentId, request=actionId (string), body=req.body.
-      // When called from Next.js/WebSocket: id=componentId, request={action, params}.
-      // Normalize both calling conventions into the relay command format.
+      // When called from Express: id=componentId, request=actionId (string), bodyOrContext=req.body.
+      // When called from Next.js/WebSocket: id=componentId, request={action, params}, bodyOrContext=HandlerContext.
+      // Per-user tab scoping (§4.2): the trailing arg from the Next.js
+      // catch-all dispatcher is a `HandlerContext` `{ callerUserId }`;
+      // disambiguate by inspecting the body-shape fields.
       let normalizedRequest: ComponentActionRequest;
+      let context: HandlerContext | undefined;
       if (typeof request === 'string') {
         // Express path: request is actually the actionId string, body is the 3rd argument
-        normalizedRequest = { action: request, params: body?.params as Record<string, unknown> };
+        const body = bodyOrContext as Record<string, unknown> | undefined;
+        normalizedRequest = {
+          action: request,
+          params: body?.params as Record<string, unknown>,
+        };
+        // Express never threads HandlerContext through this path.
+        context = undefined;
       } else {
         normalizedRequest = request;
+        // The trailing arg is the HandlerContext threaded by Next.js.
+        context = bodyOrContext as HandlerContext | undefined;
       }
-      return relayCommand('executeComponentAction', { id, request: normalizedRequest });
+      return relayCommand(
+        'executeComponentAction',
+        { id, request: normalizedRequest },
+        ctxOpts(context)
+      );
     },
 
     // ========================================================================
     // Find / Discovery
     // ========================================================================
 
-    async find(request) {
+    async find(request, context) {
       const {
         targetTabId,
         recency: recencyParam,
         ...payload
       } = (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
-      const result = await relayCommand<FindResponse>('find', payload, { targetTabId });
+      const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
       // Relay failed — fall back to filtering cached snapshot elements
       const recency = parseRecency(recencyParam);
@@ -813,8 +952,8 @@ export function createRelayHandlers(
      * so browser-side wrappers no longer need a separate `discover` handler.
      * Will be removed in a future major version.
      */
-    async discover(request) {
-      return handlers.find(request);
+    async discover(request, context) {
+      return handlers.find(request, context);
     },
 
     // Vision pipeline (Phase 2 of plan 2026-05-13) — relay-mode stubs.
@@ -822,59 +961,59 @@ export function createRelayHandlers(
     // browser relay; the SDK relay-handler factory only needs to satisfy
     // the `UIBridgeServerHandlers` interface so apps that share this
     // factory don't crash if those routes are mounted.
-    async visionCapture(_request) {
+    async visionCapture(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionAnnotate(_request) {
+    async visionAnnotate(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionDiff(_request) {
+    async visionDiff(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionRaw(_request) {
+    async visionRaw(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionCacheStream(_sha256) {
+    async visionCacheStream(_sha256, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionHealth() {
+    async visionHealth(_context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionExtract(_request) {
+    async visionExtract(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionDescribe(_request) {
+    async visionDescribe(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionAnalyze(_request) {
+    async visionAnalyze(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionAssert(_request) {
+    async visionAssert(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionBaseline(_request) {
+    async visionBaseline(_request, _context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionBaselinesList() {
+    async visionBaselinesList(_context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async visionMutationOccurred() {
+    async visionMutationOccurred(_context) {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
-    async getControlSnapshot(request) {
+    async getControlSnapshot(request, context) {
       const recency = parseRecency(request?.recency);
 
       // Fast path: Recency.Any returns cached snapshot immediately
@@ -909,10 +1048,15 @@ export function createRelayHandlers(
       }
 
       try {
+        const { callerUserId } = extractTabRouting(request ?? {});
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const queueOpts: { targetTabId?: string; ownerCheck?: { userId: string } } = {};
+        if (request?.targetTabId) queueOpts.targetTabId = request.targetTabId;
+        if (effectiveUserId) queueOpts.ownerCheck = { userId: effectiveUserId };
         const result = await relay.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
           {},
-          { targetTabId: request?.targetTabId }
+          Object.keys(queueOpts).length > 0 ? queueOpts : undefined
         );
         latestControlSnapshot = result;
         snapshotStaleSince = null;
@@ -950,27 +1094,27 @@ export function createRelayHandlers(
     // Workflows
     // ========================================================================
 
-    async getWorkflows(options) {
+    async getWorkflows(options, _context) {
       const recency = resolveRecency(options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.workflows.length === 0);
       const _meta = staleMeta();
       return success(latestControlSnapshot.workflows, _meta);
     },
 
-    async runWorkflow(id, request) {
-      return relayCommand('runWorkflow', { id, request });
+    async runWorkflow(id, request, context) {
+      return relayCommand('runWorkflow', { id, request }, ctxOpts(context));
     },
 
-    async getWorkflowStatus(runId) {
-      return relayCommand('getWorkflowStatus', { runId });
+    async getWorkflowStatus(runId, context) {
+      return relayCommand('getWorkflowStatus', { runId }, ctxOpts(context));
     },
 
     // ========================================================================
     // Debug
     // ========================================================================
 
-    async getActionHistory(limit) {
-      return relayWithFallback('getActionHistory', { limit }, [] as unknown[]);
+    async getActionHistory(limit, context) {
+      return relayWithFallback('getActionHistory', { limit }, [] as unknown[], context);
     },
 
     async getMetrics() {
@@ -983,15 +1127,15 @@ export function createRelayHandlers(
       });
     },
 
-    async highlightElement(id) {
-      return relayCommand('highlightElement', { id });
+    async highlightElement(id, context) {
+      return relayCommand('highlightElement', { id }, ctxOpts(context));
     },
 
-    async getElementTree() {
-      return relayCommand('getElementTree');
+    async getElementTree(context) {
+      return relayCommand('getElementTree', {}, ctxOpts(context));
     },
 
-    async getConsoleErrors(params) {
+    async getConsoleErrors(params, context) {
       type ConsoleErrorsResult = {
         errors: import('../debug/browser-capture-types').CapturedError[];
         count: number;
@@ -1006,9 +1150,15 @@ export function createRelayHandlers(
       };
       const isGrouped = params?.group === true;
       try {
+        const { cleaned, callerUserId } = extractTabRouting(params ?? {});
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const liveOpts = effectiveUserId
+          ? { ownerCheck: { userId: effectiveUserId } }
+          : undefined;
         const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
-          params ?? {}
+          cleaned,
+          liveOpts
         );
         // Cache successful result for fallback when browser disconnects (ungrouped only)
         if (!isGrouped && result && typeof result === 'object') {
@@ -1026,39 +1176,45 @@ export function createRelayHandlers(
       }
     },
 
-    async clearConsoleErrors() {
-      return relayCommand('clearConsoleErrors');
+    async clearConsoleErrors(context) {
+      return relayCommand('clearConsoleErrors', {}, ctxOpts(context));
     },
 
     // ========================================================================
     // AI-Native
     // ========================================================================
 
-    async aiSearch(criteria) {
-      return relayCommand('aiSearch', criteria);
+    async aiSearch(criteria, context) {
+      return relayCommand('aiSearch', criteria, ctxOpts(context));
     },
 
-    async aiFind(request) {
-      return relayCommand('aiFind', request);
+    async aiFind(request, context) {
+      return relayCommand('aiFind', request, ctxOpts(context));
     },
 
-    async aiExecute(request) {
-      return relayCommand('aiExecute', request);
+    async aiExecute(request, context) {
+      return relayCommand('aiExecute', request, ctxOpts(context));
     },
 
-    async aiAssert(request) {
-      return relayCommand('aiAssert', request);
+    async aiAssert(request, context) {
+      return relayCommand('aiAssert', request, ctxOpts(context));
     },
 
-    async aiAssertBatch(request) {
-      return relayCommand('aiAssertBatch', request);
+    async aiAssertBatch(request, context) {
+      return relayCommand('aiAssertBatch', request, ctxOpts(context));
     },
 
-    async getSemanticSnapshot(options) {
+    async getSemanticSnapshot(options, context) {
       try {
+        const { cleaned, callerUserId } = extractTabRouting(options ?? {});
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const liveOpts = effectiveUserId
+          ? { ownerCheck: { userId: effectiveUserId } }
+          : undefined;
         const result = await relay.queueCommand<SemanticSnapshot>(
           'getSemanticSnapshot',
-          options ?? {}
+          cleaned,
+          liveOpts
         );
         latestSemanticSnapshot = result;
         return success(result);
@@ -1068,151 +1224,151 @@ export function createRelayHandlers(
       }
     },
 
-    async getSemanticDiff(since) {
-      return relayCommand('getSemanticDiff', { since });
+    async getSemanticDiff(since, context) {
+      return relayCommand('getSemanticDiff', { since }, ctxOpts(context));
     },
 
-    async getPageSummary() {
-      return relayCommand('getPageSummary');
+    async getPageSummary(context) {
+      return relayCommand('getPageSummary', {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Change Tracking
     // ========================================================================
 
-    async executeWithDiff(request) {
-      return relayCommand('executeWithDiff', request);
+    async executeWithDiff(request, context) {
+      return relayCommand('executeWithDiff', request, ctxOpts(context));
     },
 
-    async waitForChange(request) {
-      return relayCommand('waitForChange', request);
+    async waitForChange(request, context) {
+      return relayCommand('waitForChange', request, ctxOpts(context));
     },
 
-    async categorizeLastDiff() {
-      return relayCommand('categorizeLastDiff');
+    async categorizeLastDiff(context) {
+      return relayCommand('categorizeLastDiff', {}, ctxOpts(context));
     },
 
-    async getScopedDiff(request) {
-      return relayCommand('getScopedDiff', request);
+    async getScopedDiff(request, context) {
+      return relayCommand('getScopedDiff', request, ctxOpts(context));
     },
 
-    async summarizeDiff(request) {
-      return relayCommand('summarizeDiff', request);
+    async summarizeDiff(request, context) {
+      return relayCommand('summarizeDiff', request, ctxOpts(context));
     },
 
-    async analyzeStructuredChanges(request) {
-      return relayCommand('analyzeStructuredChanges', request);
+    async analyzeStructuredChanges(request, context) {
+      return relayCommand('analyzeStructuredChanges', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Change Buffer
     // ========================================================================
 
-    async enableChangeBuffer() {
-      return relayCommand('enableChangeBuffer');
+    async enableChangeBuffer(context) {
+      return relayCommand('enableChangeBuffer', {}, ctxOpts(context));
     },
 
-    async disableChangeBuffer() {
-      return relayCommand('disableChangeBuffer');
+    async disableChangeBuffer(context) {
+      return relayCommand('disableChangeBuffer', {}, ctxOpts(context));
     },
 
-    async drainChangeBuffer() {
-      return relayCommand('drainChangeBuffer');
+    async drainChangeBuffer(context) {
+      return relayCommand('drainChangeBuffer', {}, ctxOpts(context));
     },
 
-    async getChangeBufferSize() {
-      return relayCommand('getChangeBufferSize');
+    async getChangeBufferSize(context) {
+      return relayCommand('getChangeBufferSize', {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Snapshot Bookmarks
     // ========================================================================
 
-    async saveBookmark(request) {
-      return relayCommand('saveBookmark', request);
+    async saveBookmark(request, context) {
+      return relayCommand('saveBookmark', request, ctxOpts(context));
     },
 
-    async getBookmark(name) {
-      return relayCommand('getBookmark', { name });
+    async getBookmark(name, context) {
+      return relayCommand('getBookmark', { name }, ctxOpts(context));
     },
 
-    async deleteBookmark(name) {
-      return relayCommand('deleteBookmark', { name });
+    async deleteBookmark(name, context) {
+      return relayCommand('deleteBookmark', { name }, ctxOpts(context));
     },
 
-    async listBookmarks() {
-      return relayCommand('listBookmarks');
+    async listBookmarks(context) {
+      return relayCommand('listBookmarks', {}, ctxOpts(context));
     },
 
-    async diffFromBookmark(name) {
-      return relayCommand('diffFromBookmark', { name });
+    async diffFromBookmark(name, context) {
+      return relayCommand('diffFromBookmark', { name }, ctxOpts(context));
     },
 
     // ========================================================================
     // Semantic Search
     // ========================================================================
 
-    async aiSemanticSearch(criteria) {
-      return relayCommand('aiSemanticSearch', criteria);
+    async aiSemanticSearch(criteria, context) {
+      return relayCommand('aiSemanticSearch', criteria, ctxOpts(context));
     },
 
     // ========================================================================
     // State Management
     // ========================================================================
 
-    async getStates() {
-      return relayWithFallback('getStates', {}, []);
+    async getStates(context) {
+      return relayWithFallback('getStates', {}, [], context);
     },
 
-    async getState(id) {
-      return relayCommand('getState', { id });
+    async getState(id, context) {
+      return relayCommand('getState', { id }, ctxOpts(context));
     },
 
-    async getActiveStates() {
-      return relayWithFallback('getActiveStates', {}, []);
+    async getActiveStates(context) {
+      return relayWithFallback('getActiveStates', {}, [], context);
     },
 
-    async activateState(id) {
-      return relayCommand('activateState', { id });
+    async activateState(id, context) {
+      return relayCommand('activateState', { id }, ctxOpts(context));
     },
 
-    async deactivateState(id) {
-      return relayCommand('deactivateState', { id });
+    async deactivateState(id, context) {
+      return relayCommand('deactivateState', { id }, ctxOpts(context));
     },
 
-    async getStateGroups() {
-      return relayWithFallback('getStateGroups', {}, []);
+    async getStateGroups(context) {
+      return relayWithFallback('getStateGroups', {}, [], context);
     },
 
-    async activateStateGroup(id) {
-      return relayCommand('activateStateGroup', { id });
+    async activateStateGroup(id, context) {
+      return relayCommand('activateStateGroup', { id }, ctxOpts(context));
     },
 
-    async deactivateStateGroup(id) {
-      return relayCommand('deactivateStateGroup', { id });
+    async deactivateStateGroup(id, context) {
+      return relayCommand('deactivateStateGroup', { id }, ctxOpts(context));
     },
 
-    async getTransitions() {
-      return relayWithFallback('getTransitions', {}, []);
+    async getTransitions(context) {
+      return relayWithFallback('getTransitions', {}, [], context);
     },
 
-    async canExecuteTransition(id) {
-      return relayCommand('canExecuteTransition', { id });
+    async canExecuteTransition(id, context) {
+      return relayCommand('canExecuteTransition', { id }, ctxOpts(context));
     },
 
-    async executeTransition(id) {
-      return relayCommand('executeTransition', { id });
+    async executeTransition(id, context) {
+      return relayCommand('executeTransition', { id }, ctxOpts(context));
     },
 
-    async findPath(request) {
-      return relayCommand('findPath', request);
+    async findPath(request, context) {
+      return relayCommand('findPath', request, ctxOpts(context));
     },
 
-    async navigateTo(request) {
-      return relayCommand('navigateTo', request);
+    async navigateTo(request, context) {
+      return relayCommand('navigateTo', request, ctxOpts(context));
     },
 
-    async getStateSnapshot() {
+    async getStateSnapshot(context) {
       return relayWithFallback(
         'getStateSnapshot',
         {},
@@ -1222,7 +1378,8 @@ export function createRelayHandlers(
           states: [],
           groups: [],
           transitions: [],
-        }
+        },
+        context
       );
     },
 
@@ -1230,67 +1387,67 @@ export function createRelayHandlers(
     // Intent
     // ========================================================================
 
-    async executeIntent(request) {
-      return relayCommand('executeIntent', request);
+    async executeIntent(request, context) {
+      return relayCommand('executeIntent', request, ctxOpts(context));
     },
 
-    async findIntent(request) {
-      return relayCommand('findIntent', request);
+    async findIntent(request, context) {
+      return relayCommand('findIntent', request, ctxOpts(context));
     },
 
-    async listIntents() {
-      return relayWithFallback('listIntents', {}, []);
+    async listIntents(context) {
+      return relayWithFallback('listIntents', {}, [], context);
     },
 
-    async registerIntent(intent) {
-      return relayCommand('registerIntent', intent);
+    async registerIntent(intent, context) {
+      return relayCommand('registerIntent', intent, ctxOpts(context));
     },
 
-    async executeIntentFromQuery(request) {
-      return relayCommand('executeIntentFromQuery', request);
+    async executeIntentFromQuery(request, context) {
+      return relayCommand('executeIntentFromQuery', request, ctxOpts(context));
     },
 
-    async deleteIntent(name) {
-      return relayCommand('deleteIntent', { name });
+    async deleteIntent(name, context) {
+      return relayCommand('deleteIntent', { name }, ctxOpts(context));
     },
 
     // ========================================================================
     // Recovery
     // ========================================================================
 
-    async attemptRecovery(request) {
-      return relayCommand('attemptRecovery', request);
+    async attemptRecovery(request, context) {
+      return relayCommand('attemptRecovery', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Cross-App Analysis
     // ========================================================================
 
-    async analyzePageData() {
-      return relayCommand('analyzePageData');
+    async analyzePageData(context) {
+      return relayCommand('analyzePageData', {}, ctxOpts(context));
     },
 
-    async analyzePageRegions() {
-      return relayCommand('analyzePageRegions');
+    async analyzePageRegions(context) {
+      return relayCommand('analyzePageRegions', {}, ctxOpts(context));
     },
 
-    async analyzeStructuredData() {
-      return relayCommand('analyzeStructuredData');
+    async analyzeStructuredData(context) {
+      return relayCommand('analyzeStructuredData', {}, ctxOpts(context));
     },
 
-    async crossAppCompare(request) {
-      return relayCommand('crossAppCompare', request);
+    async crossAppCompare(request, context) {
+      return relayCommand('crossAppCompare', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Page Navigation
     // ========================================================================
 
-    async pageRefresh() {
-      return relayCommand('pageRefresh');
+    async pageRefresh(context) {
+      return relayCommand('pageRefresh', {}, ctxOpts(context));
     },
 
-    async pageNavigate(request) {
+    async pageNavigate(request, context) {
       const { targetTabId, ...payload } = request as unknown as Record<string, unknown> & {
         targetTabId?: string;
       };
@@ -1325,55 +1482,55 @@ export function createRelayHandlers(
           );
         }
       }
-      return relayCommand('pageNavigate', payload, { targetTabId });
+      return relayCommand('pageNavigate', payload, { targetTabId, context });
     },
 
-    async pageGoBack() {
-      return relayCommand('pageGoBack');
+    async pageGoBack(context) {
+      return relayCommand('pageGoBack', {}, ctxOpts(context));
     },
 
-    async pageGoForward() {
-      return relayCommand('pageGoForward');
+    async pageGoForward(context) {
+      return relayCommand('pageGoForward', {}, ctxOpts(context));
     },
 
-    async pageEvaluate(request: unknown) {
-      return relayCommand('pageEvaluate', request);
+    async pageEvaluate(request: unknown, context) {
+      return relayCommand('pageEvaluate', request, ctxOpts(context));
     },
 
-    async pageScroll(request: unknown) {
-      return relayCommand('pageScroll', request);
+    async pageScroll(request: unknown, context) {
+      return relayCommand('pageScroll', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Annotations
     // ========================================================================
 
-    async getAnnotations() {
-      return relayWithFallback('getAnnotations', {}, {});
+    async getAnnotations(context) {
+      return relayWithFallback('getAnnotations', {}, {}, context);
     },
 
-    async getAnnotation(id) {
-      return relayCommand('getAnnotation', { id });
+    async getAnnotation(id, context) {
+      return relayCommand('getAnnotation', { id }, ctxOpts(context));
     },
 
-    async setAnnotation(id, annotation) {
-      return relayCommand('setAnnotation', { id, annotation });
+    async setAnnotation(id, annotation, context) {
+      return relayCommand('setAnnotation', { id, annotation }, ctxOpts(context));
     },
 
-    async deleteAnnotation(id) {
-      return relayCommand('deleteAnnotation', { id });
+    async deleteAnnotation(id, context) {
+      return relayCommand('deleteAnnotation', { id }, ctxOpts(context));
     },
 
-    async importAnnotations(config) {
-      return relayCommand('importAnnotations', config);
+    async importAnnotations(config, context) {
+      return relayCommand('importAnnotations', config, ctxOpts(context));
     },
 
-    async exportAnnotations() {
-      return relayCommand('exportAnnotations');
+    async exportAnnotations(context) {
+      return relayCommand('exportAnnotations', {}, ctxOpts(context));
     },
 
-    async getAnnotationCoverage() {
-      return relayCommand('getAnnotationCoverage');
+    async getAnnotationCoverage(context) {
+      return relayCommand('getAnnotationCoverage', {}, ctxOpts(context));
     },
 
     // ========================================================================
@@ -1386,8 +1543,11 @@ export function createRelayHandlers(
      * dispatches the `setClipboard` action.
      * Will be removed in a future major version.
      */
-    async clipboardWrite(request: unknown) {
-      return handlers.setClipboard(request as Parameters<typeof handlers.setClipboard>[0]);
+    async clipboardWrite(request: unknown, context) {
+      return handlers.setClipboard(
+        request as Parameters<typeof handlers.setClipboard>[0],
+        context
+      );
     },
 
     /**
@@ -1396,180 +1556,180 @@ export function createRelayHandlers(
      * dispatches the `getClipboard` action.
      * Will be removed in a future major version.
      */
-    async clipboardRead() {
-      return handlers.getClipboard();
+    async clipboardRead(context) {
+      return handlers.getClipboard(context);
     },
 
     // ========================================================================
     // Performance Diagnostics
     // ========================================================================
 
-    async getPerformanceEntries() {
-      return relayCommand('getPerformanceEntries');
+    async getPerformanceEntries(context) {
+      return relayCommand('getPerformanceEntries', {}, ctxOpts(context));
     },
 
-    async clearPerformanceEntries() {
-      return relayCommand('clearPerformanceEntries');
+    async clearPerformanceEntries(context) {
+      return relayCommand('clearPerformanceEntries', {}, ctxOpts(context));
     },
 
-    async getBrowserEvents(params) {
-      return relayCommand('getBrowserEvents', params ?? {});
+    async getBrowserEvents(params, context) {
+      return relayCommand('getBrowserEvents', params ?? {}, ctxOpts(context));
     },
 
-    async getTimeline(params) {
-      return relayCommand('getTimeline', params ?? {});
+    async getTimeline(params, context) {
+      return relayCommand('getTimeline', params ?? {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Health & Error Debugging
     // ========================================================================
 
-    async getHealthReport(params) {
-      return relayCommand('getHealthReport', params ?? {});
+    async getHealthReport(params, context) {
+      return relayCommand('getHealthReport', params ?? {}, ctxOpts(context));
     },
 
-    async getNetworkChains(params) {
-      return relayCommand('getNetworkChains', params ?? {});
+    async getNetworkChains(params, context) {
+      return relayCommand('getNetworkChains', params ?? {}, ctxOpts(context));
     },
 
-    async startErrorSession(request) {
-      return relayCommand('startErrorSession', request);
+    async startErrorSession(request, context) {
+      return relayCommand('startErrorSession', request, ctxOpts(context));
     },
 
-    async endErrorSession() {
-      return relayCommand('endErrorSession');
+    async endErrorSession(context) {
+      return relayCommand('endErrorSession', {}, ctxOpts(context));
     },
 
-    async getErrorSessions() {
-      return relayCommand('getErrorSessions');
+    async getErrorSessions(context) {
+      return relayCommand('getErrorSessions', {}, ctxOpts(context));
     },
 
-    async captureErrorBaseline(request) {
-      return relayCommand('captureErrorBaseline', request);
+    async captureErrorBaseline(request, context) {
+      return relayCommand('captureErrorBaseline', request, ctxOpts(context));
     },
 
-    async compareErrorBaseline(request) {
-      return relayCommand('compareErrorBaseline', request);
+    async compareErrorBaseline(request, context) {
+      return relayCommand('compareErrorBaseline', request, ctxOpts(context));
     },
 
-    async getErrorSnapshots(params) {
-      return relayCommand('getErrorSnapshots', params ?? {});
+    async getErrorSnapshots(params, context) {
+      return relayCommand('getErrorSnapshots', params ?? {}, ctxOpts(context));
     },
 
-    async getErrorReport() {
-      return relayCommand('getErrorReport');
+    async getErrorReport(context) {
+      return relayCommand('getErrorReport', {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Design Review
     // ========================================================================
 
-    async getElementStyles(id) {
-      return relayCommand('getElementStyles', { id });
+    async getElementStyles(id, context) {
+      return relayCommand('getElementStyles', { id }, ctxOpts(context));
     },
 
-    async getElementStateStyles(id, request) {
-      return relayCommand('getElementStateStyles', { id, ...request });
+    async getElementStateStyles(id, request, context) {
+      return relayCommand('getElementStateStyles', { id, ...request }, ctxOpts(context));
     },
 
-    async getDesignSnapshot(request) {
-      return relayCommand('getDesignSnapshot', request ?? {});
+    async getDesignSnapshot(request, context) {
+      return relayCommand('getDesignSnapshot', request ?? {}, ctxOpts(context));
     },
 
-    async getResponsiveSnapshots(request) {
-      return relayCommand('getResponsiveSnapshots', request);
+    async getResponsiveSnapshots(request, context) {
+      return relayCommand('getResponsiveSnapshots', request, ctxOpts(context));
     },
 
-    async setViewportConstraints(request) {
-      return relayCommand('setViewportConstraints', request);
+    async setViewportConstraints(request, context) {
+      return relayCommand('setViewportConstraints', request, ctxOpts(context));
     },
 
-    async runDesignAudit(request) {
-      return relayCommand('runDesignAudit', request ?? {});
+    async runDesignAudit(request, context) {
+      return relayCommand('runDesignAudit', request ?? {}, ctxOpts(context));
     },
 
-    async loadStyleGuide(request) {
-      return relayCommand('loadStyleGuide', request);
+    async loadStyleGuide(request, context) {
+      return relayCommand('loadStyleGuide', request, ctxOpts(context));
     },
 
-    async getStyleGuide() {
-      return relayCommand('getStyleGuide');
+    async getStyleGuide(context) {
+      return relayCommand('getStyleGuide', {}, ctxOpts(context));
     },
 
-    async clearStyleGuide() {
-      return relayCommand('clearStyleGuide');
+    async clearStyleGuide(context) {
+      return relayCommand('clearStyleGuide', {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Quality Evaluation
     // ========================================================================
 
-    async evaluateQuality(request) {
-      return relayCommand('evaluateQuality', request ?? {});
+    async evaluateQuality(request, context) {
+      return relayCommand('evaluateQuality', request ?? {}, ctxOpts(context));
     },
 
-    async getQualityContexts() {
-      return relayCommand('getQualityContexts');
+    async getQualityContexts(context) {
+      return relayCommand('getQualityContexts', {}, ctxOpts(context));
     },
 
-    async saveBaseline(request) {
-      return relayCommand('saveBaseline', request ?? {});
+    async saveBaseline(request, context) {
+      return relayCommand('saveBaseline', request ?? {}, ctxOpts(context));
     },
 
-    async diffBaseline(request) {
-      return relayCommand('diffBaseline', request ?? {});
+    async diffBaseline(request, context) {
+      return relayCommand('diffBaseline', request ?? {}, ctxOpts(context));
     },
 
     // ========================================================================
     // Form State Awareness
     // ========================================================================
 
-    async getForms() {
-      return relayCommand('getForms');
+    async getForms(context) {
+      return relayCommand('getForms', {}, ctxOpts(context));
     },
 
-    async fillForm(request) {
-      return relayCommand('fillForm', request);
+    async fillForm(request, context) {
+      return relayCommand('fillForm', request, ctxOpts(context));
     },
 
-    async snapshotForms() {
-      return relayCommand('snapshotForms');
+    async snapshotForms(context) {
+      return relayCommand('snapshotForms', {}, ctxOpts(context));
     },
 
-    async diffForms(request) {
-      return relayCommand('diffForms', request);
+    async diffForms(request, context) {
+      return relayCommand('diffForms', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Clipboard
     // ========================================================================
 
-    async getClipboard() {
-      return relayCommand('getClipboard');
+    async getClipboard(context) {
+      return relayCommand('getClipboard', {}, ctxOpts(context));
     },
 
-    async setClipboard(request) {
-      return relayCommand('setClipboard', request);
+    async setClipboard(request, context) {
+      return relayCommand('setClipboard', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Network Request Monitoring
     // ========================================================================
 
-    async getNetworkRequests(params) {
-      return relayCommand('getNetworkRequests', params ?? {});
+    async getNetworkRequests(params, context) {
+      return relayCommand('getNetworkRequests', params ?? {}, ctxOpts(context));
     },
 
-    async getNetworkRequestsInFlight() {
-      return relayCommand('getNetworkRequestsInFlight');
+    async getNetworkRequestsInFlight(context) {
+      return relayCommand('getNetworkRequestsInFlight', {}, ctxOpts(context));
     },
 
-    async waitForNetworkRequest(request) {
-      return relayCommand('waitForNetworkRequest', request);
+    async waitForNetworkRequest(request, context) {
+      return relayCommand('waitForNetworkRequest', request, ctxOpts(context));
     },
 
-    async getNetworkRequest(id) {
-      return relayCommand('getNetworkRequest', { id });
+    async getNetworkRequest(id, context) {
+      return relayCommand('getNetworkRequest', { id }, ctxOpts(context));
     },
 
     // ========================================================================
@@ -1662,40 +1822,40 @@ export function createRelayHandlers(
     // Idle Detection
     // ========================================================================
 
-    async getIdleStatus() {
-      return relayCommand('getIdleStatus');
+    async getIdleStatus(context) {
+      return relayCommand('getIdleStatus', {}, ctxOpts(context));
     },
 
-    async getIdleSignalStatus(signal) {
-      return relayCommand('getIdleSignalStatus', { signal });
+    async getIdleSignalStatus(signal, context) {
+      return relayCommand('getIdleSignalStatus', { signal }, ctxOpts(context));
     },
 
-    async waitForIdle(request) {
-      return relayCommand('waitForIdle', request ?? {});
+    async waitForIdle(request, context) {
+      return relayCommand('waitForIdle', request ?? {}, ctxOpts(context));
     },
 
-    async waitForSignalIdle(signal, request) {
-      return relayCommand('waitForSignalIdle', { signal, ...request });
+    async waitForSignalIdle(signal, request, context) {
+      return relayCommand('waitForSignalIdle', { signal, ...request }, ctxOpts(context));
     },
 
-    async waitForTargets(request) {
-      return relayCommand('waitForTargets', request);
+    async waitForTargets(request, context) {
+      return relayCommand('waitForTargets', request, ctxOpts(context));
     },
 
     // ========================================================================
     // Undo/Redo
     // ========================================================================
 
-    async getUndoState() {
-      return relayCommand('getUndoState');
+    async getUndoState(context) {
+      return relayCommand('getUndoState', {}, ctxOpts(context));
     },
 
-    async executeUndo() {
-      return relayCommand('executeUndo');
+    async executeUndo(context) {
+      return relayCommand('executeUndo', {}, ctxOpts(context));
     },
 
-    async executeRedo() {
-      return relayCommand('executeRedo');
+    async executeRedo(context) {
+      return relayCommand('executeRedo', {}, ctxOpts(context));
     },
 
     // ========================================================================
@@ -1815,8 +1975,13 @@ export function createRelayHandlers(
       return result;
     },
 
-    async getElementHistory(elementId, options) {
-      return relayWithFallback('getElementHistory', { elementId, options }, [] as unknown[]);
+    async getElementHistory(elementId, options, context) {
+      return relayWithFallback(
+        'getElementHistory',
+        { elementId, options },
+        [] as unknown[],
+        context
+      );
     },
 
     // ========================================================================
@@ -1831,26 +1996,26 @@ export function createRelayHandlers(
     },
 
     // Enhanced discovery — relay to browser context
-    async query(request) {
-      return relayCommand('query', request);
+    async query(request, context) {
+      return relayCommand('query', request, ctxOpts(context));
     },
 
-    async waitForElement(request) {
-      return relayCommand('waitForElement', request);
+    async waitForElement(request, context) {
+      return relayCommand('waitForElement', request, ctxOpts(context));
     },
 
     // Tier 3.1 — relay to browser context so the JS SDK can do registry polling
-    async waitForElementByCondition(request) {
-      return relayCommand('waitForElementByCondition', request);
+    async waitForElementByCondition(request, context) {
+      return relayCommand('waitForElementByCondition', request, ctxOpts(context));
     },
 
     // Testing-friendliness — relay route-change waits to the browser
     // context, which owns the ChangeTracker state.
-    async waitForRouteChange(request) {
-      return relayCommand('waitForRouteChange', request);
+    async waitForRouteChange(request, context) {
+      return relayCommand('waitForRouteChange', request, ctxOpts(context));
     },
-    async waitForElementRegistered(request) {
-      return relayCommand('waitForElementRegistered', request);
+    async waitForElementRegistered(request, context) {
+      return relayCommand('waitForElementRegistered', request, ctxOpts(context));
     },
 
     // Phase 2.1 (plan 2026-05-03) — relay element-predicate assertion to
@@ -1858,12 +2023,12 @@ export function createRelayHandlers(
     // the live registry; we forward the verdict and re-stamp the 422
     // semantics so external consumers see the same status code regardless
     // of whether the in-process or relay path serves the request.
-    async expectElement(id, request) {
+    async expectElement(id, request, context) {
       const relayed = await relayCommand<{
         passed: boolean;
         observedState: { registered: boolean; state: Record<string, unknown> | null } | null;
         durationMs: number;
-      }>('expectElement', { id, request });
+      }>('expectElement', { id, request }, ctxOpts(context));
       if (!relayed.success || !relayed.data) return relayed;
       if (relayed.data.passed === false) {
         return {
@@ -1893,38 +2058,38 @@ export function createRelayHandlers(
     },
 
     // Tier 3.2 — relay batch to browser context
-    async controlBatch(request) {
-      return relayCommand('controlBatch', request);
+    async controlBatch(request, context) {
+      return relayCommand('controlBatch', request, ctxOpts(context));
     },
 
     // App-agnostic convenience endpoints
-    async clickByText(request) {
-      return relayCommand('clickByText', request);
+    async clickByText(request, context) {
+      return relayCommand('clickByText', request, ctxOpts(context));
     },
-    async clickBySelector(request) {
-      return relayCommand('clickBySelector', request);
+    async clickBySelector(request, context) {
+      return relayCommand('clickBySelector', request, ctxOpts(context));
     },
-    async typeInto(request) {
-      return relayCommand('typeInto', request);
+    async typeInto(request, context) {
+      return relayCommand('typeInto', request, ctxOpts(context));
     },
-    async readValue(request) {
-      return relayCommand('readValue', request);
+    async readValue(request, context) {
+      return relayCommand('readValue', request, ctxOpts(context));
     },
-    async findByText(request) {
-      return relayCommand('findByText', request);
+    async findByText(request, context) {
+      return relayCommand('findByText', request, ctxOpts(context));
     },
 
     // Diagnostics
-    async getDiagnostics() {
-      return relayCommand('getDiagnostics');
+    async getDiagnostics(context) {
+      return relayCommand('getDiagnostics', {}, ctxOpts(context));
     },
 
     // Navigation adapter
-    async getRoutes() {
-      return relayCommand('getRoutes');
+    async getRoutes(context) {
+      return relayCommand('getRoutes', {}, ctxOpts(context));
     },
-    async navigateByAdapter(request) {
-      return relayCommand('navigateByAdapter', request);
+    async navigateByAdapter(request, context) {
+      return relayCommand('navigateByAdapter', request, ctxOpts(context));
     },
   };
 

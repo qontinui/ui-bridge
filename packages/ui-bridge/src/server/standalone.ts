@@ -298,7 +298,10 @@ export class StandaloneServer {
         try {
           const snapshotResult = await this.handlers.getControlSnapshot?.();
           if (snapshotResult?.success && snapshotResult.data) {
-            const data = snapshotResult.data as any;
+            const data = snapshotResult.data as {
+              elements?: unknown[];
+              components?: unknown[];
+            };
             uiBridge.elementCount = data.elements?.length ?? 0;
             uiBridge.componentCount = data.components?.length ?? 0;
           }
@@ -410,7 +413,23 @@ export class StandaloneServer {
         }
       }
 
-      if (route.bodyRequired || method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      // Per-user tab scoping (§4.2): mirror the Next.js / Express
+      // adapters' X-Caller-User-Id sniff so the trusted-identity-bound
+      // `context` reaches every relay-dispatching handler.
+      const headerCallerUserId =
+        (typeof req.headers['x-caller-user-id'] === 'string'
+          ? (req.headers['x-caller-user-id'] as string)
+          : undefined) ?? undefined;
+
+      if (route.bodyRequired) {
+        if (
+          headerCallerUserId &&
+          body !== null &&
+          typeof body === 'object' &&
+          !Array.isArray(body)
+        ) {
+          body = { ...(body as Record<string, unknown>), __callerUserId: headerCallerUserId };
+        }
         args.push(body);
       }
 
@@ -420,6 +439,11 @@ export class StandaloneServer {
           args.push(query);
         }
       }
+
+      // Per-user tab scoping (§4.2) — trailing context arg. Adapter
+      // always supplies it so zero-arg / id-only handlers still enforce
+      // ownership.
+      args.push({ callerUserId: headerCallerUserId });
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(

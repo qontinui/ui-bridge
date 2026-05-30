@@ -59,6 +59,18 @@ export interface CommandRelayListenerProps {
    * See `UseCommandRelayOptions.authHeader` for the full contract.
    */
   authHeader?: () => string | null | undefined;
+  /**
+   * Optional hook returning the current tab-ownership registration
+   * metadata `{userId, sessionId}`. When supplied, every heartbeat
+   * carries this envelope so the server can scope tabs to the
+   * authenticated user (filter `/tabs`, reject cross-user
+   * `targetTabId` dispatch, scope unscoped fanout). Strict mode is the
+   * only mode in @qontinui/ui-bridge ≥ 0.12 — without this hook the
+   * strict server returns HTTP 400 / `MISSING_REGISTRATION_METADATA`
+   * on every heartbeat. See
+   * `UseCommandRelayOptions.registrationMetadata` for the full contract.
+   */
+  registrationMetadata?: () => { userId: string; sessionId: string } | null | undefined;
 }
 
 export function CommandRelayListener(props: CommandRelayListenerProps): null {
@@ -75,6 +87,7 @@ export function CommandRelayListener(props: CommandRelayListenerProps): null {
     capabilities: props.capabilities,
     version: props.version,
     authHeader: props.authHeader,
+    registrationMetadata: props.registrationMetadata,
   };
   useCommandRelay(options);
   return null;

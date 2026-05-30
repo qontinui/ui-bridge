@@ -107,6 +107,30 @@ export interface UseCommandRelayOptions {
    * `UI_BRIDGE_REQUIRE_AUTH=1` mode).
    */
   authHeader?: () => string | null | undefined;
+  /**
+   * Per-user tab-scoping registration metadata. When supplied, every
+   * heartbeat carries `{userId, sessionId}` as a top-level
+   * `registrationMetadata` field. The server uses these values to:
+   *
+   *   - record tab ownership keyed on this tabId
+   *   - filter `/tabs` / `/tabs/wait` responses to the caller's own tabs
+   *   - reject cross-user `targetTabId` dispatch with a 404
+   *   - scope unscoped fanout (no `targetTabId`) to the caller's tabs
+   *
+   * Strict mode: as of @qontinui/ui-bridge 0.12 the server REJECTS any
+   * `POST /heartbeat` whose body is missing this field. Tabs without
+   * registration metadata never enter the ownership registry and so are
+   * unreachable by authenticated dispatch — this hook is therefore
+   * effectively required when the consumer (qontinui-web et al.) ships
+   * the strict relay route. Older relays simply ignore the extra field.
+   *
+   * Like `authHeader`, this is a function (not a static value) so a
+   * consumer can rotate `sessionId` on re-login without remounting the
+   * listener. Read fresh on every heartbeat. Returning `null` /
+   * `undefined` or a value missing either field means "no metadata this
+   * beat" — strict servers will respond 400.
+   */
+  registrationMetadata?: () => { userId: string; sessionId: string } | null | undefined;
 }
 
 /**
@@ -168,6 +192,31 @@ function parseSSEDataBlock(block: string): string | null {
 }
 
 /**
+ * Internal: resolve the current registration metadata from the consumer's
+ * hook. Returns the live `{userId, sessionId}` shape ONLY when both fields
+ * are non-empty strings; any other shape (null / partial / non-string) is
+ * normalized to `null` so the heartbeat doesn't ship a half-valid
+ * envelope the strict server would reject anyway. Defensive against
+ * throwing hooks for the same reason `resolveAuthToken` is.
+ */
+function resolveRegistrationMetadata(
+  hook: (() => { userId: string; sessionId: string } | null | undefined) | undefined,
+): { userId: string; sessionId: string } | null {
+  if (!hook) return null;
+  try {
+    const value = hook();
+    if (!value || typeof value !== 'object') return null;
+    const userId = (value as { userId?: unknown }).userId;
+    const sessionId = (value as { sessionId?: unknown }).sessionId;
+    if (typeof userId !== 'string' || userId.trim().length === 0) return null;
+    if (typeof sessionId !== 'string' || sessionId.trim().length === 0) return null;
+    return { userId: userId.trim(), sessionId: sessionId.trim() };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Test-only re-exports for the internal helpers above. The `__test_`
  * prefix follows the SDK convention for non-public-but-accessible names
  * (cf. `__SDK_VERSION__`). NOT part of the public API surface and may
@@ -176,6 +225,7 @@ function parseSSEDataBlock(block: string): string | null {
 export const __test_resolveAuthToken = resolveAuthToken;
 export const __test_transportHeaders = transportHeaders;
 export const __test_parseSSEDataBlock = parseSSEDataBlock;
+export const __test_resolveRegistrationMetadata = resolveRegistrationMetadata;
 
 /**
  * Hook that connects the browser to the server's command relay.
@@ -195,6 +245,12 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   // The hook is called per-request inside the helpers above.
   const authHeaderRef = useRef<UseCommandRelayOptions['authHeader']>(undefined);
   authHeaderRef.current = options?.authHeader;
+  // Same ref pattern for registrationMetadata: every heartbeat reads the
+  // current value so a sessionId rotation (re-login) is picked up without
+  // remounting. See the option-type docblock for the strict-mode contract.
+  const registrationMetadataRef =
+    useRef<UseCommandRelayOptions['registrationMetadata']>(undefined);
+  registrationMetadataRef.current = options?.registrationMetadata;
 
   const uiBridge = useUIBridge();
   const context = useUIBridgeOptional();
@@ -488,6 +544,19 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
         if (heartbeatFramework !== undefined) body.framework = heartbeatFramework;
         if (heartbeatCapabilities !== undefined) body.capabilities = heartbeatCapabilities;
         if (heartbeatVersion !== undefined) body.version = heartbeatVersion;
+        // Strict per-user tab scoping: include `registrationMetadata` whenever
+        // the consumer wired the hook. Read fresh per heartbeat so a
+        // sessionId rotation on re-login is picked up without remounting.
+        // The strict server (v0.12+) rejects heartbeats without this field
+        // with HTTP 400 / `MISSING_REGISTRATION_METADATA`; older relays
+        // simply ignore the extra field, so it's safe to always include
+        // when the hook is wired.
+        const registrationMetadata = resolveRegistrationMetadata(
+          registrationMetadataRef.current
+        );
+        if (registrationMetadata !== null) {
+          body.registrationMetadata = registrationMetadata;
+        }
 
         const resp = await fetch(`${basePath}/heartbeat`, {
           method: 'POST',

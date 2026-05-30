@@ -327,45 +327,95 @@ export interface SpawnHeadlessResponse {
 }
 
 /**
+ * Per-user tab scoping context (§4.2) — threaded as the final positional
+ * argument of every relay-dispatching handler.
+ *
+ * The Next.js adapter populates `callerUserId` from the trusted
+ * `X-Caller-User-Id` request header (set by the consumer's auth gate from
+ * the authenticated identity — NEVER from a browser-supplied value). The
+ * relay-handlers layer lifts `callerUserId` into `ownerCheck.userId` on the
+ * downstream `relay.queueCommand` call so the relay refuses to dispatch
+ * the command to a tab owned by a different user.
+ *
+ * The reason this is a dedicated final-arg `context` object instead of a
+ * field in the request body / query: many handlers (e.g. `captureSnapshot`,
+ * `clearRenderLog`, `getElementState(id)`) have zero-arg or args-without-bag
+ * signatures, so there is no body/query for the adapter to splice
+ * `__callerUserId` into. Without this explicit channel, those handlers
+ * would bypass per-user scoping entirely and silently dispatch to whichever
+ * tab happened to be `primaryTabId` — including tabs owned by other users.
+ */
+export interface HandlerContext {
+  /**
+   * Authenticated caller's user id, as supplied by the consumer's auth gate
+   * via the `X-Caller-User-Id` header. When present, the relay restricts
+   * dispatch to tabs owned by this user. When absent, the call is treated
+   * as a trusted admin / server-side call and the unfiltered primary-tab
+   * fallback applies.
+   */
+  callerUserId?: string;
+}
+
+/**
  * Server handler interface
  *
  * Implementations provide these handlers for different frameworks.
+ *
+ * Per-user tab scoping (§4.2): handlers that dispatch to a browser tab
+ * accept an optional final `context?: HandlerContext` parameter. The
+ * Next.js / Express adapters thread the authenticated caller's user id
+ * through that parameter so the relay can enforce per-user dispatch
+ * boundaries.
  */
 export interface UIBridgeServerHandlers {
   // Render log endpoints
-  getRenderLog: (query?: RenderLogQuery) => Promise<APIResponse<RenderLogEntry[]>>;
-  clearRenderLog: () => Promise<APIResponse<void>>;
-  captureSnapshot: () => Promise<APIResponse<unknown>>;
+  getRenderLog: (
+    query?: RenderLogQuery,
+    context?: HandlerContext
+  ) => Promise<APIResponse<RenderLogEntry[]>>;
+  clearRenderLog: (context?: HandlerContext) => Promise<APIResponse<void>>;
+  captureSnapshot: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
   getRenderLogPath: () => Promise<APIResponse<{ path: string }>>;
 
   // Control endpoints
-  getElements: (options?: {
-    recency?: string;
-    /** Case-insensitive substring filter on the element's title DOM attribute */
-    title?: string;
-    /** Case-insensitive substring filter on the element's aria-label DOM attribute */
-    aria_label?: string;
-    /** Case-insensitive substring filter on the element's visible text / label */
-    text?: string;
-    /**
-     * Phase 3.2 (plan 2026-05-03) — return only elements whose `reveals`
-     * array contains an entry that matches this query. Bi-directional glob
-     * match: query may be a concrete id matching a `*`-glob entry, or a
-     * `*`-glob matching concrete entries.
-     */
-    revealsAny?: string;
-  }) => Promise<APIResponse<ControlSnapshot['elements']>>;
+  getElements: (
+    options?: {
+      recency?: string;
+      /** Case-insensitive substring filter on the element's title DOM attribute */
+      title?: string;
+      /** Case-insensitive substring filter on the element's aria-label DOM attribute */
+      aria_label?: string;
+      /** Case-insensitive substring filter on the element's visible text / label */
+      text?: string;
+      /**
+       * Phase 3.2 (plan 2026-05-03) — return only elements whose `reveals`
+       * array contains an entry that matches this query. Bi-directional glob
+       * match: query may be a concrete id matching a `*`-glob entry, or a
+       * `*`-glob matching concrete entries.
+       */
+      revealsAny?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<ControlSnapshot['elements']>>;
   getElement: (
     id: string,
-    options?: { recency?: string }
+    options?: { recency?: string },
+    context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['elements'][0]>>;
-  getElementState: (id: string) => Promise<APIResponse<unknown>>;
-  getElementReactState: (id: string) => Promise<APIResponse<unknown>>;
+  getElementState: (id: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  getElementReactState: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
   executeElementAction: (
     id: string,
-    request: ControlActionRequest
+    request: ControlActionRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<ControlActionResponse>>;
-  executeBatchAction: (request: BatchActionRequest) => Promise<APIResponse<BatchActionResponse>>;
+  executeBatchAction: (
+    request: BatchActionRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<BatchActionResponse>>;
   /**
    * Rank snapshot elements by natural-language query against the
    * structured disambiguation metadata (variant, position, color,
@@ -376,18 +426,21 @@ export interface UIBridgeServerHandlers {
    * filters. See `@qontinui/ui-bridge/core` `findElements` for the
    * scoring model.
    */
-  rankElements: (request: {
-    text?: string;
-    type?: string;
-    variant?: string;
-    position?: string;
-    color?: string;
-    contextPathContains?: string;
-    origin?: 'hook' | 'auto';
-    visibleOnly?: boolean;
-    limit?: number;
-    minScore?: number;
-  }) => Promise<
+  rankElements: (
+    request: {
+      text?: string;
+      type?: string;
+      variant?: string;
+      position?: string;
+      color?: string;
+      contextPathContains?: string;
+      origin?: 'hook' | 'auto';
+      visibleOnly?: boolean;
+      limit?: number;
+      minScore?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<
       Array<{
         id: string;
@@ -402,14 +455,21 @@ export interface UIBridgeServerHandlers {
   // F2 (Direction B): `data` is `{components: [...]}` so the envelope matches
   // the runner's direct `/ui-bridge/control/components` route and aligns with
   // every other rich endpoint convention (object-shaped `data`).
-  getComponents: (options?: {
-    recency?: string;
-  }) => Promise<APIResponse<{ components: ControlSnapshot['components'] }>>;
+  getComponents: (
+    options?: {
+      recency?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ components: ControlSnapshot['components'] }>>;
   getComponent: (
     id: string,
-    options?: { recency?: string }
+    options?: { recency?: string },
+    context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['components'][0]>>;
-  getComponentState: (id: string) => Promise<
+  getComponentState: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<{
       state: Record<string, unknown>;
       computed: Record<string, unknown>;
@@ -418,16 +478,24 @@ export interface UIBridgeServerHandlers {
   >;
   executeComponentAction: (
     id: string,
-    request: ComponentActionRequest
+    request: ComponentActionRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<ComponentActionResponse>>;
 
   // Find endpoints
-  find: (request?: FindRequest & { recency?: string }) => Promise<APIResponse<FindResponse>>;
+  find: (
+    request?: FindRequest & { recency?: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<FindResponse>>;
   /**
    * @deprecated Use find() instead
    */
-  discover: (request?: FindRequest & { recency?: string }) => Promise<APIResponse<FindResponse>>;
-  getControlSnapshot: (request?: {
+  discover: (
+    request?: FindRequest & { recency?: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<FindResponse>>;
+  getControlSnapshot: (
+    request?: {
     targetTabId?: string;
     url?: string;
     skipSettle?: boolean | string;
@@ -452,53 +520,95 @@ export interface UIBridgeServerHandlers {
     withDisabledOnly?: boolean | string;
     /** snake_case alias for `withDisabledOnly`. */
     with_disabled_only?: boolean | string;
-  }) => Promise<APIResponse<ControlSnapshot>>;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<ControlSnapshot>>;
 
   // Vision pipeline endpoints — runner-direct; SDK stubs only.
-  visionCapture: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionAnnotate: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionDiff: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionRaw: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionCacheStream: (sha256: string) => Promise<APIResponse<unknown>>;
-  visionHealth: () => Promise<APIResponse<unknown>>;
+  visionCapture: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionAnnotate: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionDiff: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionRaw: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionCacheStream: (sha256: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  visionHealth: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
   // Phase 4 — text-bearing outputs.
-  visionExtract: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionDescribe: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
+  visionExtract: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionDescribe: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
   // Phase 6 — analyzers + assertion DSL + baselines + frontend mutation signal.
-  visionAnalyze: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionAssert: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionBaseline: (request?: Record<string, unknown>) => Promise<APIResponse<unknown>>;
-  visionBaselinesList: () => Promise<APIResponse<unknown>>;
-  visionMutationOccurred: () => Promise<APIResponse<unknown>>;
+  visionAnalyze: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionAssert: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionBaseline: (
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  visionBaselinesList: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  visionMutationOccurred: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
   // Workflow endpoints
-  getWorkflows: (options?: {
-    recency?: string;
-  }) => Promise<APIResponse<ControlSnapshot['workflows']>>;
+  getWorkflows: (
+    options?: {
+      recency?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<ControlSnapshot['workflows']>>;
   runWorkflow: (
     id: string,
-    request?: WorkflowRunRequest
+    request?: WorkflowRunRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<WorkflowRunResponse>>;
-  getWorkflowStatus: (runId: string) => Promise<APIResponse<WorkflowRunResponse>>;
+  getWorkflowStatus: (
+    runId: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<WorkflowRunResponse>>;
 
   // Debug endpoints
-  getActionHistory: (limit?: number) => Promise<APIResponse<unknown[]>>;
+  getActionHistory: (
+    limit?: number,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown[]>>;
   getMetrics: () => Promise<APIResponse<unknown>>;
-  highlightElement: (id: string) => Promise<APIResponse<void>>;
-  getElementTree: () => Promise<APIResponse<unknown>>;
-  getConsoleErrors: (params?: {
-    since?: number;
-    /**
-     * Monotonic id cursor — return only entries with `id > sinceId`.
-     * Paired with `nextSinceId` in the ungrouped response for pagination.
-     * Takes precedence over the legacy `since` timestamp filter when both
-     * are provided.
-     */
-    sinceId?: number;
-    limit?: number;
-    group?: boolean;
-    groupBy?: 'fingerprint' | 'message' | 'source';
-  }) => Promise<
+  highlightElement: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  getElementTree: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  getConsoleErrors: (
+    params?: {
+      since?: number;
+      /**
+       * Monotonic id cursor — return only entries with `id > sinceId`.
+       * Paired with `nextSinceId` in the ungrouped response for pagination.
+       * Takes precedence over the legacy `since` timestamp filter when both
+       * are provided.
+       */
+      sinceId?: number;
+      limit?: number;
+      group?: boolean;
+      groupBy?: 'fingerprint' | 'message' | 'source';
+    },
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<
       | {
           errors: CapturedError[];
@@ -513,187 +623,307 @@ export interface UIBridgeServerHandlers {
       | { groups: unknown[]; totalErrors: number; totalGroups: number }
     >
   >;
-  clearConsoleErrors: () => Promise<APIResponse<{ cleared: boolean }>>;
+  clearConsoleErrors: (context?: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
 
   // AI-native endpoints
-  aiSearch: (criteria: SearchCriteria) => Promise<APIResponse<SearchResponse>>;
-  aiFind: (request: {
-    query: string;
-    context?: FindContext;
-    confidenceThreshold?: number;
-    /**
-     * B2 — strict literal-match mode. When `true`, returns only elements
-     * with a case-insensitive exact match against id / labelText /
-     * ariaLabel / textContent / title / placeholder / value / name; no
-     * fuzzy fallback. Default `false` keeps fuzzy behaviour.
-     */
-    strict?: boolean;
-  }) => Promise<APIResponse<FindResult>>;
-  aiExecute: (request: NLActionRequest) => Promise<APIResponse<NLActionResponse>>;
-  aiAssert: (request: AssertionRequest) => Promise<APIResponse<AssertionResult>>;
-  aiAssertBatch: (request: BatchAssertionRequest) => Promise<APIResponse<BatchAssertionResult>>;
-  getSemanticSnapshot: (options?: {
-    includeForms?: string | boolean;
-  }) => Promise<APIResponse<SemanticSnapshot>>;
-  getSemanticDiff: (since?: number) => Promise<APIResponse<SemanticDiff | null>>;
-  getPageSummary: () => Promise<APIResponse<string>>;
+  aiSearch: (
+    criteria: SearchCriteria,
+    context?: HandlerContext
+  ) => Promise<APIResponse<SearchResponse>>;
+  aiFind: (
+    request: {
+      query: string;
+      context?: FindContext;
+      confidenceThreshold?: number;
+      /**
+       * B2 — strict literal-match mode. When `true`, returns only elements
+       * with a case-insensitive exact match against id / labelText /
+       * ariaLabel / textContent / title / placeholder / value / name; no
+       * fuzzy fallback. Default `false` keeps fuzzy behaviour.
+       */
+      strict?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<FindResult>>;
+  aiExecute: (
+    request: NLActionRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<NLActionResponse>>;
+  aiAssert: (
+    request: AssertionRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<AssertionResult>>;
+  aiAssertBatch: (
+    request: BatchAssertionRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<BatchAssertionResult>>;
+  getSemanticSnapshot: (
+    options?: {
+      includeForms?: string | boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<SemanticSnapshot>>;
+  getSemanticDiff: (
+    since?: number,
+    context?: HandlerContext
+  ) => Promise<APIResponse<SemanticDiff | null>>;
+  getPageSummary: (context?: HandlerContext) => Promise<APIResponse<string>>;
 
   // Change tracking endpoints
-  executeWithDiff: (request: ActionWithDiffRequest) => Promise<APIResponse<ActionDiffResult>>;
-  waitForChange: (request: {
-    predicate: ChangePredicate;
-    options?: WaitForChangeOptions;
-  }) => Promise<APIResponse<SemanticDiff>>;
-  categorizeLastDiff: () => Promise<APIResponse<CategorizedDiff | null>>;
-  getScopedDiff: (request: {
-    scope: string;
-    fromBookmark?: string;
-  }) => Promise<APIResponse<SemanticDiff | null>>;
+  executeWithDiff: (
+    request: ActionWithDiffRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ActionDiffResult>>;
+  waitForChange: (
+    request: {
+      predicate: ChangePredicate;
+      options?: WaitForChangeOptions;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<SemanticDiff>>;
+  categorizeLastDiff: (context?: HandlerContext) => Promise<APIResponse<CategorizedDiff | null>>;
+  getScopedDiff: (
+    request: {
+      scope: string;
+      fromBookmark?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<SemanticDiff | null>>;
   // Budget-aware diff summary
-  summarizeDiff: (request: {
-    budget: number;
-    includeIds?: boolean;
-    includeCategory?: boolean;
-    fromBookmark?: string;
-  }) => Promise<APIResponse<{ summary: string }>>;
+  summarizeDiff: (
+    request: {
+      budget: number;
+      includeIds?: boolean;
+      includeCategory?: boolean;
+      fromBookmark?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ summary: string }>>;
   // Structured change analysis (table/list-aware)
-  analyzeStructuredChanges: (request: {
-    fromBookmark?: string;
-  }) => Promise<APIResponse<StructuredChangeAnalysis>>;
+  analyzeStructuredChanges: (
+    request: {
+      fromBookmark?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<StructuredChangeAnalysis>>;
 
   // Change buffer endpoints
-  enableChangeBuffer: () => Promise<APIResponse<{ enabled: boolean }>>;
-  disableChangeBuffer: () => Promise<APIResponse<{ enabled: boolean }>>;
-  drainChangeBuffer: () => Promise<APIResponse<ChangeBufferDrainResult>>;
-  getChangeBufferSize: () => Promise<APIResponse<{ size: number; enabled: boolean }>>;
+  enableChangeBuffer: (context?: HandlerContext) => Promise<APIResponse<{ enabled: boolean }>>;
+  disableChangeBuffer: (context?: HandlerContext) => Promise<APIResponse<{ enabled: boolean }>>;
+  drainChangeBuffer: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<ChangeBufferDrainResult>>;
+  getChangeBufferSize: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ size: number; enabled: boolean }>>;
 
   // Snapshot bookmark endpoints
-  saveBookmark: (request: { name: string }) => Promise<APIResponse<SnapshotBookmark>>;
-  getBookmark: (name: string) => Promise<APIResponse<SnapshotBookmark>>;
-  deleteBookmark: (name: string) => Promise<APIResponse<{ deleted: boolean }>>;
-  listBookmarks: () => Promise<APIResponse<string[]>>;
-  diffFromBookmark: (name: string) => Promise<APIResponse<SemanticDiff | null>>;
+  saveBookmark: (
+    request: { name: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<SnapshotBookmark>>;
+  getBookmark: (name: string, context?: HandlerContext) => Promise<APIResponse<SnapshotBookmark>>;
+  deleteBookmark: (
+    name: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ deleted: boolean }>>;
+  listBookmarks: (context?: HandlerContext) => Promise<APIResponse<string[]>>;
+  diffFromBookmark: (
+    name: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<SemanticDiff | null>>;
 
   // Semantic search (embedding-based)
   aiSemanticSearch: (
-    criteria: SemanticSearchCriteria
+    criteria: SemanticSearchCriteria,
+    context?: HandlerContext
   ) => Promise<APIResponse<SemanticSearchResponse>>;
 
   // State management endpoints
-  getStates: () => Promise<APIResponse<UIState[]>>;
-  getState: (id: string) => Promise<APIResponse<UIState>>;
-  getActiveStates: () => Promise<APIResponse<UIState[]>>;
-  activateState: (id: string) => Promise<APIResponse<void>>;
-  deactivateState: (id: string) => Promise<APIResponse<void>>;
-  getStateGroups: () => Promise<APIResponse<UIStateGroup[]>>;
-  activateStateGroup: (id: string) => Promise<APIResponse<void>>;
-  deactivateStateGroup: (id: string) => Promise<APIResponse<void>>;
-  getTransitions: () => Promise<APIResponse<UITransition[]>>;
+  getStates: (context?: HandlerContext) => Promise<APIResponse<UIState[]>>;
+  getState: (id: string, context?: HandlerContext) => Promise<APIResponse<UIState>>;
+  getActiveStates: (context?: HandlerContext) => Promise<APIResponse<UIState[]>>;
+  activateState: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  deactivateState: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  getStateGroups: (context?: HandlerContext) => Promise<APIResponse<UIStateGroup[]>>;
+  activateStateGroup: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  deactivateStateGroup: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  getTransitions: (context?: HandlerContext) => Promise<APIResponse<UITransition[]>>;
   canExecuteTransition: (
-    id: string
+    id: string,
+    context?: HandlerContext
   ) => Promise<APIResponse<{ canExecute: boolean; reason?: string }>>;
-  executeTransition: (id: string) => Promise<APIResponse<TransitionResult>>;
-  findPath: (request: { targetStates: string[] }) => Promise<APIResponse<PathResult>>;
-  navigateTo: (request: { targetStates: string[] }) => Promise<APIResponse<NavigationResult>>;
-  getStateSnapshot: () => Promise<APIResponse<StateSnapshot>>;
+  executeTransition: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<TransitionResult>>;
+  findPath: (
+    request: { targetStates: string[] },
+    context?: HandlerContext
+  ) => Promise<APIResponse<PathResult>>;
+  navigateTo: (
+    request: { targetStates: string[] },
+    context?: HandlerContext
+  ) => Promise<APIResponse<NavigationResult>>;
+  getStateSnapshot: (context?: HandlerContext) => Promise<APIResponse<StateSnapshot>>;
 
   // Intent endpoints
-  executeIntent: (request: {
-    intentId: string;
-    params?: Record<string, unknown>;
-  }) => Promise<APIResponse<IntentExecutionResult>>;
-  findIntent: (request: { query: string }) => Promise<APIResponse<IntentSearchResponse>>;
-  listIntents: () => Promise<APIResponse<Intent[]>>;
-  registerIntent: (intent: Intent) => Promise<APIResponse<Intent>>;
-  executeIntentFromQuery: (request: {
-    query: string;
-    params?: Record<string, unknown>;
-  }) => Promise<APIResponse<IntentExecutionResult>>;
-  deleteIntent: (name: string) => Promise<APIResponse<{ deleted: boolean }>>;
+  executeIntent: (
+    request: {
+      intentId: string;
+      params?: Record<string, unknown>;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<IntentExecutionResult>>;
+  findIntent: (
+    request: { query: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<IntentSearchResponse>>;
+  listIntents: (context?: HandlerContext) => Promise<APIResponse<Intent[]>>;
+  registerIntent: (intent: Intent, context?: HandlerContext) => Promise<APIResponse<Intent>>;
+  executeIntentFromQuery: (
+    request: {
+      query: string;
+      params?: Record<string, unknown>;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<IntentExecutionResult>>;
+  deleteIntent: (
+    name: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ deleted: boolean }>>;
 
   // Recovery endpoints
-  attemptRecovery: (request: RecoveryAttemptRequest) => Promise<APIResponse<RecoveryAttemptResult>>;
+  attemptRecovery: (
+    request: RecoveryAttemptRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<RecoveryAttemptResult>>;
 
   // Cross-app analysis endpoints
-  analyzePageData: () => Promise<APIResponse<PageDataMap>>;
-  analyzePageRegions: () => Promise<APIResponse<PageRegionMap>>;
-  analyzeStructuredData: () => Promise<APIResponse<StructuredDataExtraction>>;
-  crossAppCompare: (request: {
-    sourceSnapshot: SemanticSnapshot;
-    targetSnapshot: SemanticSnapshot;
-    sourceComponents?: ComponentInfo[];
-    targetComponents?: ComponentInfo[];
-  }) => Promise<APIResponse<CrossAppComparisonReport>>;
+  analyzePageData: (context?: HandlerContext) => Promise<APIResponse<PageDataMap>>;
+  analyzePageRegions: (context?: HandlerContext) => Promise<APIResponse<PageRegionMap>>;
+  analyzeStructuredData: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<StructuredDataExtraction>>;
+  crossAppCompare: (
+    request: {
+      sourceSnapshot: SemanticSnapshot;
+      targetSnapshot: SemanticSnapshot;
+      sourceComponents?: ComponentInfo[];
+      targetComponents?: ComponentInfo[];
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<CrossAppComparisonReport>>;
 
   // Page navigation endpoints
-  pageRefresh: () => Promise<APIResponse<PageNavigationResponse>>;
-  pageNavigate: (request: PageNavigateRequest) => Promise<APIResponse<PageNavigationResponse>>;
-  pageGoBack: () => Promise<APIResponse<PageNavigationResponse>>;
-  pageGoForward: () => Promise<APIResponse<PageNavigationResponse>>;
-  pageEvaluate: (request: unknown) => Promise<APIResponse<unknown>>;
-  pageScroll: (request: unknown) => Promise<APIResponse<unknown>>;
+  pageRefresh: (context?: HandlerContext) => Promise<APIResponse<PageNavigationResponse>>;
+  pageNavigate: (
+    request: PageNavigateRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<PageNavigationResponse>>;
+  pageGoBack: (context?: HandlerContext) => Promise<APIResponse<PageNavigationResponse>>;
+  pageGoForward: (context?: HandlerContext) => Promise<APIResponse<PageNavigationResponse>>;
+  pageEvaluate: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  pageScroll: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
   // Clipboard endpoints (browser gesture-based)
-  clipboardWrite: (request: unknown) => Promise<APIResponse<unknown>>;
-  clipboardRead: () => Promise<APIResponse<unknown>>;
+  clipboardWrite: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  clipboardRead: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
   // Annotation endpoints
-  getAnnotations: () => Promise<APIResponse<Record<string, ElementAnnotation>>>;
-  getAnnotation: (id: string) => Promise<APIResponse<ElementAnnotation>>;
+  getAnnotations: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<Record<string, ElementAnnotation>>>;
+  getAnnotation: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ElementAnnotation>>;
   setAnnotation: (
     id: string,
-    annotation: ElementAnnotation
+    annotation: ElementAnnotation,
+    context?: HandlerContext
   ) => Promise<APIResponse<ElementAnnotation>>;
-  deleteAnnotation: (id: string) => Promise<APIResponse<void>>;
-  importAnnotations: (config: AnnotationConfig) => Promise<APIResponse<{ count: number }>>;
-  exportAnnotations: () => Promise<APIResponse<AnnotationConfig>>;
-  getAnnotationCoverage: () => Promise<APIResponse<AnnotationCoverage>>;
+  deleteAnnotation: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
+  importAnnotations: (
+    config: AnnotationConfig,
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ count: number }>>;
+  exportAnnotations: (context?: HandlerContext) => Promise<APIResponse<AnnotationConfig>>;
+  getAnnotationCoverage: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<AnnotationCoverage>>;
 
   // Performance diagnostics endpoints
-  getPerformanceEntries: () => Promise<APIResponse<unknown>>;
-  clearPerformanceEntries: () => Promise<APIResponse<{ cleared: boolean }>>;
-  getBrowserEvents: (params?: {
-    type?: string;
-    since?: number;
-    limit?: number;
-    severity?: string;
-    deduplicate?: boolean;
-  }) => Promise<APIResponse<BrowserEventsResponse>>;
-  getTimeline: (params?: {
-    since?: number;
-    limit?: number;
-    minSeverity?: string;
-  }) => Promise<APIResponse<{ entries: TimelineEntry[]; count: number }>>;
+  getPerformanceEntries: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  clearPerformanceEntries: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ cleared: boolean }>>;
+  getBrowserEvents: (
+    params?: {
+      type?: string;
+      since?: number;
+      limit?: number;
+      severity?: string;
+      deduplicate?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<BrowserEventsResponse>>;
+  getTimeline: (
+    params?: {
+      since?: number;
+      limit?: number;
+      minSeverity?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ entries: TimelineEntry[]; count: number }>>;
 
   // Health score endpoint
-  getHealthReport: (params?: { windowMs?: number }) => Promise<APIResponse<HealthReport>>;
+  getHealthReport: (
+    params?: { windowMs?: number },
+    context?: HandlerContext
+  ) => Promise<APIResponse<HealthReport>>;
 
   // Network chain endpoints
-  getNetworkChains: (params?: {
-    since?: number;
-    limit?: number;
-    failuresOnly?: boolean;
-    url?: string;
-  }) => Promise<APIResponse<{ chains: NetworkChain[]; count: number }>>;
+  getNetworkChains: (
+    params?: {
+      since?: number;
+      limit?: number;
+      failuresOnly?: boolean;
+      url?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ chains: NetworkChain[]; count: number }>>;
 
   // Error session endpoints
-  startErrorSession: (request: { label?: string }) => Promise<APIResponse<{ sessionId: string }>>;
-  endErrorSession: () => Promise<APIResponse<ErrorSessionSummary | null>>;
-  getErrorSessions: () => Promise<APIResponse<ErrorSessionSummary[]>>;
-  captureErrorBaseline: (request: {
-    label: string;
-  }) => Promise<APIResponse<{ label: string; capturedAt: number; fingerprintCount: number }>>;
-  compareErrorBaseline: (request: {
-    label: string;
-  }) => Promise<APIResponse<BaselineComparison | null>>;
+  startErrorSession: (
+    request: { label?: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ sessionId: string }>>;
+  endErrorSession: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<ErrorSessionSummary | null>>;
+  getErrorSessions: (context?: HandlerContext) => Promise<APIResponse<ErrorSessionSummary[]>>;
+  captureErrorBaseline: (
+    request: { label: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ label: string; capturedAt: number; fingerprintCount: number }>>;
+  compareErrorBaseline: (
+    request: { label: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<BaselineComparison | null>>;
 
   // Error snapshots (auto-captured on significant errors)
-  getErrorSnapshots: (params?: {
-    limit?: number;
-  }) => Promise<APIResponse<{ snapshots: ErrorSnapshot[]; count: number }>>;
+  getErrorSnapshots: (
+    params?: {
+      limit?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ snapshots: ErrorSnapshot[]; count: number }>>;
 
   // Composite error report (health + recent errors + session in one call)
-  getErrorReport: () => Promise<
+  getErrorReport: (
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<{
       health: HealthReport;
       recentErrors: AnyCapturedEvent[];
@@ -703,20 +933,33 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Design review endpoints
-  getElementStyles: (id: string) => Promise<APIResponse<ElementDesignData>>;
+  getElementStyles: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ElementDesignData>>;
   getElementStateStyles: (
     id: string,
-    request: { states?: InteractionStateName[] }
+    request: { states?: InteractionStateName[] },
+    context?: HandlerContext
   ) => Promise<APIResponse<{ elementId: string; stateStyles: StateStyles[] }>>;
-  getDesignSnapshot: (request?: {
-    elementIds?: string[];
-    includePseudoElements?: boolean;
-  }) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
-  getResponsiveSnapshots: (request: {
-    viewports?: Record<string, number>;
-    elementIds?: string[];
-  }) => Promise<APIResponse<ResponsiveSnapshot[]>>;
-  setViewportConstraints: (request: { width?: number; restore?: boolean }) => Promise<
+  getDesignSnapshot: (
+    request?: {
+      elementIds?: string[];
+      includePseudoElements?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>>;
+  getResponsiveSnapshots: (
+    request: {
+      viewports?: Record<string, number>;
+      elementIds?: string[];
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<ResponsiveSnapshot[]>>;
+  setViewportConstraints: (
+    request: { width?: number; restore?: boolean },
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<{
       success: boolean;
       viewportWidth: number;
@@ -724,85 +967,130 @@ export interface UIBridgeServerHandlers {
       timestamp: number;
     }>
   >;
-  runDesignAudit: (request?: {
-    guide?: StyleGuideConfig;
-    elementIds?: string[];
-  }) => Promise<APIResponse<StyleAuditReport>>;
-  loadStyleGuide: (request: {
-    guide: StyleGuideConfig;
-  }) => Promise<APIResponse<{ loaded: boolean }>>;
-  getStyleGuide: () => Promise<APIResponse<StyleGuideConfig | null>>;
-  clearStyleGuide: () => Promise<APIResponse<{ cleared: boolean }>>;
+  runDesignAudit: (
+    request?: {
+      guide?: StyleGuideConfig;
+      elementIds?: string[];
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<StyleAuditReport>>;
+  loadStyleGuide: (
+    request: {
+      guide: StyleGuideConfig;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ loaded: boolean }>>;
+  getStyleGuide: (context?: HandlerContext) => Promise<APIResponse<StyleGuideConfig | null>>;
+  clearStyleGuide: (context?: HandlerContext) => Promise<APIResponse<{ cleared: boolean }>>;
 
   // Quality evaluation endpoints
-  evaluateQuality: (request?: EvaluateRequest) => Promise<APIResponse<QualityEvaluationReport>>;
-  getQualityContexts: () => Promise<APIResponse<Array<{ name: string; description: string }>>>;
-  saveBaseline: (request?: {
-    label?: string;
-    elementIds?: string[];
-  }) => Promise<APIResponse<{ saved: boolean; elementCount: number }>>;
-  diffBaseline: (request?: { elementIds?: string[] }) => Promise<APIResponse<SnapshotDiffReport>>;
+  evaluateQuality: (
+    request?: EvaluateRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<QualityEvaluationReport>>;
+  getQualityContexts: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<Array<{ name: string; description: string }>>>;
+  saveBaseline: (
+    request?: {
+      label?: string;
+      elementIds?: string[];
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ saved: boolean; elementCount: number }>>;
+  diffBaseline: (
+    request?: { elementIds?: string[] },
+    context?: HandlerContext
+  ) => Promise<APIResponse<SnapshotDiffReport>>;
 
   // Form state awareness endpoints
-  getForms: () => Promise<APIResponse<FormsResponse>>;
-  fillForm: (request: FillFormRequest) => Promise<APIResponse<FillResult>>;
-  snapshotForms: () => Promise<APIResponse<FormSnapshot>>;
-  diffForms: (request: {
-    before: FormSnapshot;
-    after: FormSnapshot;
-  }) => Promise<APIResponse<FormDiff>>;
+  getForms: (context?: HandlerContext) => Promise<APIResponse<FormsResponse>>;
+  fillForm: (
+    request: FillFormRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<FillResult>>;
+  snapshotForms: (context?: HandlerContext) => Promise<APIResponse<FormSnapshot>>;
+  diffForms: (
+    request: {
+      before: FormSnapshot;
+      after: FormSnapshot;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<FormDiff>>;
 
   // Clipboard endpoints
-  getClipboard: () => Promise<APIResponse<{ text: string | null; formats: string[] }>>;
-  setClipboard: (request: {
-    text: string;
-    html?: string;
-  }) => Promise<APIResponse<{ written: boolean; formats: string[] }>>;
+  getClipboard: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ text: string | null; formats: string[] }>>;
+  setClipboard: (
+    request: {
+      text: string;
+      html?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ written: boolean; formats: string[] }>>;
 
   // Network request monitoring endpoints
-  getNetworkRequests: (params?: {
-    status?: string;
-    method?: string;
-    urlPattern?: string;
-    failuresOnly?: boolean;
-    since?: number;
-    limit?: number;
-  }) => Promise<
+  getNetworkRequests: (
+    params?: {
+      status?: string;
+      method?: string;
+      urlPattern?: string;
+      failuresOnly?: boolean;
+      since?: number;
+      limit?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<{ requests: NetworkRequestEntry[]; count: number; inFlightCount: number }>
   >;
 
-  getNetworkRequestsInFlight: () => Promise<
-    APIResponse<{ requests: NetworkRequestEntry[]; count: number }>
-  >;
+  getNetworkRequestsInFlight: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ requests: NetworkRequestEntry[]; count: number }>>;
 
   waitForNetworkRequest: (
-    request: WaitForRequestOptions
+    request: WaitForRequestOptions,
+    context?: HandlerContext
   ) => Promise<APIResponse<WaitForRequestResult>>;
 
-  getNetworkRequest: (id: string) => Promise<APIResponse<NetworkRequestEntry>>;
+  getNetworkRequest: (
+    id: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<NetworkRequestEntry>>;
 
   // Idle detection endpoints
-  getIdleStatus: () => Promise<APIResponse<CompositeIdleStatus>>;
-  getIdleSignalStatus: (signal: string) => Promise<APIResponse<SignalStatus>>;
-  waitForIdle: (request?: {
-    timeout?: number;
-    minStableMs?: number;
-    exclude?: string[];
-  }) => Promise<APIResponse<CompositeIdleStatus>>;
+  getIdleStatus: (context?: HandlerContext) => Promise<APIResponse<CompositeIdleStatus>>;
+  getIdleSignalStatus: (
+    signal: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<SignalStatus>>;
+  waitForIdle: (
+    request?: {
+      timeout?: number;
+      minStableMs?: number;
+      exclude?: string[];
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<CompositeIdleStatus>>;
   waitForSignalIdle: (
     signal: string,
-    request?: { timeout?: number; minStableMs?: number }
+    request?: { timeout?: number; minStableMs?: number },
+    context?: HandlerContext
   ) => Promise<APIResponse<SignalStatus>>;
-  waitForTargets: (request: {
-    targets: Array<string | { indicator: string }>;
-    timeout?: number;
-    minStableMs?: number;
-  }) => Promise<APIResponse<Record<string, SignalStatus>>>;
+  waitForTargets: (
+    request: {
+      targets: Array<string | { indicator: string }>;
+      timeout?: number;
+      minStableMs?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<Record<string, SignalStatus>>>;
 
   // Undo/redo awareness endpoints
-  getUndoState: () => Promise<APIResponse<UndoRedoState>>;
-  executeUndo: () => Promise<APIResponse<{ executed: boolean }>>;
-  executeRedo: () => Promise<APIResponse<{ executed: boolean }>>;
+  getUndoState: (context?: HandlerContext) => Promise<APIResponse<UndoRedoState>>;
+  executeUndo: (context?: HandlerContext) => Promise<APIResponse<{ executed: boolean }>>;
+  executeRedo: (context?: HandlerContext) => Promise<APIResponse<{ executed: boolean }>>;
 
   // Phase 1.3 (plan 2026-05-03) — flat machine-readable digest of "is the
   // page in a sensible state right now?" so callers don't have to fan out
@@ -817,7 +1105,8 @@ export interface UIBridgeServerHandlers {
   // `/ai/wait-for-element` so semantics stay aligned.
   expectElement: (
     id: string,
-    request: ElementExpectRequest
+    request: ElementExpectRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<ElementExpectResponse>>;
 
   // Phase 4.1 (plan 2026-05-03) — spawn a real Chromium tab via
@@ -826,7 +1115,8 @@ export interface UIBridgeServerHandlers {
   // (off by default); returns 503 when disabled or when the optional peer
   // dependency isn't installed; 400 on bad input.
   spawnHeadless: (
-    request: SpawnHeadlessRequest
+    request: SpawnHeadlessRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<SpawnHeadlessResponse>>;
 
   // Page health diagnostics — runs the same spatial-coverage / layout /
@@ -848,7 +1138,8 @@ export interface UIBridgeServerHandlers {
   // Element event log
   getElementHistory: (
     elementId: string,
-    options?: ElementHistoryOptions
+    options?: ElementHistoryOptions,
+    context?: HandlerContext
   ) => Promise<APIResponse<unknown[]>>;
 
   // Media discovery & analysis endpoints — removed in Phase 2 of the
@@ -870,18 +1161,24 @@ export interface UIBridgeServerHandlers {
   destroy?: () => void;
 
   // Enhanced discovery endpoints
-  query: (request: {
-    selector: string;
-    limit?: number;
-    includeState?: boolean;
-  }) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
+  query: (
+    request: {
+      selector: string;
+      limit?: number;
+      includeState?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ elements: unknown[]; count: number }>>;
 
-  waitForElement: (request: {
-    selector?: string;
-    elementId?: string;
-    timeout?: number;
-    pollInterval?: number;
-  }) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
+  waitForElement: (
+    request: {
+      selector?: string;
+      elementId?: string;
+      timeout?: number;
+      pollInterval?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ found: boolean; element?: unknown; waitedMs: number }>>;
 
   /**
    * Tier 3.1 — Wait for an element matching a structured selector to satisfy
@@ -890,7 +1187,8 @@ export interface UIBridgeServerHandlers {
    * Implemented via registry polling so it works with both DOM and native elements.
    */
   waitForElementByCondition: (
-    request: WaitForElementByConditionRequest
+    request: WaitForElementByConditionRequest,
+    context?: HandlerContext
   ) => Promise<APIResponse<WaitForElementByConditionResponse>>;
 
   /**
@@ -899,7 +1197,8 @@ export interface UIBridgeServerHandlers {
    * matching navigation occurs before `timeoutMs`.
    */
   waitForRouteChange: (
-    request?: WaitForRouteChangeRequest
+    request?: WaitForRouteChangeRequest,
+    context?: HandlerContext
   ) => Promise<
     APIResponse<
       WaitForRouteChangeResponse | { reason: 'timeout'; lastKnownRoute?: string; elapsedMs: number }
@@ -913,7 +1212,8 @@ export interface UIBridgeServerHandlers {
    * `predicate.selector` is given.
    */
   waitForElementRegistered: (
-    request: WaitForElementRequest
+    request: WaitForElementRequest,
+    context?: HandlerContext
   ) => Promise<
     APIResponse<
       | WaitForElementSuccessResponse
@@ -925,33 +1225,51 @@ export interface UIBridgeServerHandlers {
    * Tier 3.2 — Execute a heterogeneous sequence of actions, waits, and
    * snapshots in one round-trip.
    */
-  controlBatch: (request: ControlBatchRequest) => Promise<APIResponse<ControlBatchResponse>>;
+  controlBatch: (
+    request: ControlBatchRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ControlBatchResponse>>;
 
   // App-agnostic convenience endpoints
-  clickByText: (request: {
-    text: string;
-    tag?: string;
-    exact?: boolean;
-  }) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
+  clickByText: (
+    request: {
+      text: string;
+      tag?: string;
+      exact?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
 
-  clickBySelector: (request: {
-    selector: string;
-    index?: number;
-  }) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
+  clickBySelector: (
+    request: {
+      selector: string;
+      index?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
 
-  typeInto: (request: {
-    selector?: string;
-    label?: string;
-    text: string;
-    clear?: boolean;
-  }) => Promise<APIResponse<{ typed: boolean; element?: unknown }>>;
+  typeInto: (
+    request: {
+      selector?: string;
+      label?: string;
+      text: string;
+      clear?: boolean;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ typed: boolean; element?: unknown }>>;
 
-  readValue: (request: {
-    selector: string;
-    index?: number;
-  }) => Promise<APIResponse<{ value: string | null; length: number }>>;
+  readValue: (
+    request: {
+      selector: string;
+      index?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ value: string | null; length: number }>>;
 
-  findByText: (request: { text: string; tag?: string; exact?: boolean }) => Promise<
+  findByText: (
+    request: { text: string; tag?: string; exact?: boolean },
+    context?: HandlerContext
+  ) => Promise<
     APIResponse<
       Array<{
         index: number;
@@ -965,7 +1283,7 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Diagnostics endpoint
-  getDiagnostics: () => Promise<
+  getDiagnostics: (context?: HandlerContext) => Promise<
     APIResponse<{
       sdk_initialized: boolean;
       auto_register_active: boolean;
@@ -983,10 +1301,13 @@ export interface UIBridgeServerHandlers {
   >;
 
   // Navigation adapter endpoints
-  getRoutes: () => Promise<APIResponse<Array<{ name: string; path: string }>>>;
-  navigateByAdapter: (request: {
-    page: string;
-  }) => Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>>;
+  getRoutes: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<Array<{ name: string; path: string }>>>;
+  navigateByAdapter: (
+    request: { page: string },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ navigated: boolean; route: { name: string; path: string } }>>;
 }
 
 /**
@@ -1369,6 +1690,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/ai/structured-changes',
     handler: 'analyzeStructuredChanges',
+    bodyRequired: true,
   },
 
   // Change buffer
