@@ -288,4 +288,4 @@ Include:
 
 ## License
 
-By contributing to UI Bridge, you agree that your contributions will be licensed under the MIT License.
+UI Bridge is licensed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`); see [`LICENSE`](LICENSE). By contributing, you agree that your contributions are licensed under AGPL-3.0-or-later and you sign the [Contributor License Agreement](CLA.md) — which additionally grants Joshua Spinak the right to relicense your contribution (e.g. under a commercial/dual license). The CLA is retained on UI Bridge specifically because it is the embeddable library where the dual-/commercial-license lever is a real revenue path; the other qontinui apps use the DCO instead.
