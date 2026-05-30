@@ -33,6 +33,16 @@ export interface RelayCommandEnvelope {
   timestamp: number;
   /** Target tab; absent = broadcast to all tabs. */
   targetTabId?: string;
+  /**
+   * Per-user tab scoping (§4.2): the userId of the authenticated caller
+   * that originated this dispatch. The instance HOLDING the target tab
+   * compares this value against its LOCAL `tabOwnership[targetTabId]`
+   * before forwarding to the listener — necessary because the sending
+   * instance may carry stale ownership metadata. Absent when the
+   * caller is unscoped (admin / trusted server-side caller); receivers
+   * skip the check in that case.
+   */
+  senderUserId?: string;
 }
 
 /** A browser response, routed back to the originating instance. */

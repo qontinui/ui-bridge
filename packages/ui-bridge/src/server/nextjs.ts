@@ -224,8 +224,25 @@ export function createNextRouteHandlers(
         undefined;
       const externalTabId = queryTabId ?? headerTabId ?? undefined;
 
-      // Add body for POST/PUT/PATCH requests or when body is required
-      if (route.bodyRequired || method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      // Per-user tab scoping (§4.2): the consumer's auth gate populates
+      // `X-Caller-User-Id` from the authenticated identity (NEVER from a
+      // browser-supplied value). When present, splice it into the payload
+      // as `__callerUserId` so `relay-handlers.extractTabRouting` can lift
+      // it into `ownerCheck` and the relay enforces per-user dispatch
+      // boundaries. Reserved key — do NOT use `callerUserId` to avoid
+      // colliding with handler request bodies.
+      const callerUserId =
+        request.headers.get('x-caller-user-id') ??
+        request.headers.get('X-Caller-User-Id') ??
+        undefined;
+
+      // Add body when the route declares one. Per-user tab scoping (§4.2):
+      // POST routes WITHOUT `bodyRequired:true` are context-only handlers
+      // (`captureSnapshot`, `clearConsoleErrors`, `enableChangeBuffer`,
+      // …) whose signatures accept just the trailing `context?:
+      // HandlerContext`. Pushing a body for those would shift the
+      // context to the wrong positional slot. Stick to the route table.
+      if (route.bodyRequired) {
         try {
           const body = await request.json();
           if (
@@ -238,16 +255,34 @@ export function createNextRouteHandlers(
           ) {
             (body as Record<string, unknown>).tabId = externalTabId;
           }
+          if (
+            callerUserId &&
+            body !== null &&
+            typeof body === 'object' &&
+            !Array.isArray(body)
+          ) {
+            (body as Record<string, unknown>).__callerUserId = callerUserId;
+          }
           args.push(body);
         } catch {
           // No body or invalid JSON — synthesize a body that still carries
-          // tabId so per-tab routing works on endpoints whose handler signature
-          // requires a body but whose caller sent none.
-          args.push(externalTabId ? { tabId: externalTabId } : {});
+          // tabId / callerUserId so per-tab routing + ownership enforcement
+          // work on endpoints whose handler signature requires a body but
+          // whose caller sent none.
+          const synth: Record<string, unknown> = {};
+          if (externalTabId) synth.tabId = externalTabId;
+          if (callerUserId) synth.__callerUserId = callerUserId;
+          args.push(synth);
         }
       }
 
-      // Add query params for GET requests
+      // Add query params for GET requests. Per-user tab scoping (§4.2):
+      // `__callerUserId` is delivered via the trailing `context` arg
+      // (below) — NOT spliced into the searchParams bag. Splicing it
+      // would push an otherwise-empty query as the 2nd positional arg
+      // to id-only handlers like `getElementState(id, context?)`,
+      // shifting `context` to the wrong slot. The `tabId` splice stays
+      // (it's a payload field many handlers read via `extractTabRouting`).
       if (method === 'GET') {
         const searchParams = Object.fromEntries(request.nextUrl.searchParams);
         if (externalTabId && searchParams.tabId === undefined && searchParams.targetTabId === undefined) {
@@ -257,6 +292,16 @@ export function createNextRouteHandlers(
           args.push(searchParams);
         }
       }
+
+      // Per-user tab scoping (§4.2) — trailing context arg. The adapter
+      // ALWAYS supplies this final positional argument so zero-arg /
+      // id-only handlers (captureSnapshot, clearRenderLog,
+      // getElementState(id)) — whose signatures don't carry
+      // __callerUserId in the body/query — still enforce ownership when
+      // X-Caller-User-Id is present. Adds NO overhead when the header is
+      // absent (context.callerUserId undefined → relay falls back to
+      // primary-tab dispatch).
+      args.push({ callerUserId });
 
       // Call handler
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
@@ -644,28 +689,73 @@ function handleRelayRoute(
     return handleCommandResponse(request, relay);
   }
 
-  // POST /heartbeat — browser heartbeat
+  // POST /heartbeat — browser heartbeat.
+  //
+  // Per-user tab scoping (§4.2, strict mode): the body MUST carry
+  // `registrationMetadata: {userId, sessionId}`. A missing or malformed
+  // envelope → HTTP 400 + `MISSING_REGISTRATION_METADATA`. No listener
+  // entry / metadata is created in that case, and the next stale-tab
+  // sweep will evict any SSE listener opened for this tabId. Backward
+  // compatibility is NOT a goal — sibling SDKs are updated separately.
   if (method === 'POST' && path === '/heartbeat') {
     return (async () => {
-      let heartbeatTabId: string | undefined;
+      let body: Record<string, unknown>;
       try {
-        const body = await request.json();
-        heartbeatTabId = body?.tabId as string | undefined;
-        relay.receiveHeartbeat(heartbeatTabId, {
-          url: body?.url as string | undefined,
-          title: body?.title as string | undefined,
-          visibility: body?.visibility as string | undefined,
-        });
+        body = (await request.json()) as Record<string, unknown>;
       } catch {
-        relay.receiveHeartbeat();
+        return jsonResponse(
+          {
+            success: false,
+            error: 'heartbeat body required',
+            code: 'MISSING_REGISTRATION_METADATA',
+            timestamp: Date.now(),
+          },
+          400
+        );
       }
+
+      const heartbeatTabId =
+        typeof body?.tabId === 'string' ? (body.tabId as string) : undefined;
+
+      // Strict ownership metadata enforcement.
+      const rawMeta = body?.registrationMetadata as
+        | { userId?: unknown; sessionId?: unknown }
+        | undefined;
+      const userId =
+        typeof rawMeta?.userId === 'string' && rawMeta.userId.trim().length > 0
+          ? (rawMeta.userId as string).trim()
+          : undefined;
+      const sessionId =
+        typeof rawMeta?.sessionId === 'string' && rawMeta.sessionId.trim().length > 0
+          ? (rawMeta.sessionId as string).trim()
+          : undefined;
+      if (!heartbeatTabId || !userId || !sessionId) {
+        return jsonResponse(
+          {
+            success: false,
+            error:
+              'heartbeat requires tabId and registrationMetadata.{userId, sessionId} (strict mode)',
+            code: 'MISSING_REGISTRATION_METADATA',
+            timestamp: Date.now(),
+          },
+          400
+        );
+      }
+
+      relay.recordRegistration(heartbeatTabId, { userId, sessionId });
+      relay.receiveHeartbeat(heartbeatTabId, {
+        url: typeof body?.url === 'string' ? (body.url as string) : undefined,
+        title: typeof body?.title === 'string' ? (body.title as string) : undefined,
+        visibility:
+          typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
+      });
+
       // Report whether the server currently holds an SSE listener for this
       // tabId. The SDK uses this to detect silent disconnects (e.g. when a
       // client-side route change dropped the EventSource without firing
       // onerror) and recover by reopening the stream.
       const diag = relay.getTransportDiagnostics();
-      const tabRegistered =
-        heartbeatTabId !== undefined && diag.connectedTabs.includes(heartbeatTabId);
+      const tabRegistered = diag.connectedTabs.includes(heartbeatTabId);
       return jsonResponse({
         success: true,
         data: { received: true, tabRegistered },
@@ -705,6 +795,13 @@ function handleRelayRoute(
   //   ?timeoutMs=<ms>   default 30000, max 120000
   //   ?pollMs=<ms>      default 250, min 50
   //
+  // Per-user tab scoping (§4.2): when the request carries
+  // `X-Caller-User-Id`, the response is filtered to tabs owned by that
+  // user. Without the header (trusted server-side / admin callers),
+  // ALL tabs are returned. SECURITY: the header MUST be set by the
+  // consumer's auth gate from the authenticated identity — NEVER trust a
+  // value forwarded from the browser.
+  //
   // Response (tab connected):
   //   { success: true, data: { tabs: [...], waitedMs: N }, timestamp }
   // Response (timeout):
@@ -719,13 +816,20 @@ function handleRelayRoute(
       50,
       Number.parseInt(url.searchParams.get('pollMs') ?? '250', 10) || 250
     );
+    const callerUserId =
+      request.headers.get('x-caller-user-id') ??
+      request.headers.get('X-Caller-User-Id') ??
+      null;
     return (async () => {
       const startedAt = Date.now();
       const deadline = startedAt + timeoutMs;
       while (Date.now() < deadline) {
         const diag = relay.getTransportDiagnostics();
-        if (diag.connectedTabs.length > 0) {
-          const tabs = diag.connectedTabs.map((tabId) => ({
+        const visibleIds = callerUserId
+          ? relay.listOwnedTabs(callerUserId)
+          : diag.connectedTabs;
+        if (visibleIds.length > 0) {
+          const tabs = visibleIds.map((tabId) => ({
             tabId,
             ...(diag.tabMetadata[tabId] || {}),
             lastHeartbeat: diag.tabHeartbeats[tabId] ?? null,
@@ -760,19 +864,34 @@ function handleRelayRoute(
   //                      falls within `staleHeartbeatMs`. Use this BEFORE
   //                      pinning a command with `?tabId=<id>` to avoid
   //                      racing the next stale-tab sweep.
+  //
+  // Per-user tab scoping (§4.2): when the request carries
+  // `X-Caller-User-Id`, the response is filtered to tabs owned by that
+  // user. Without the header (trusted server-side / admin callers),
+  // ALL tabs are returned. SECURITY: the header MUST be set by the
+  // consumer's auth gate from the authenticated identity — NEVER trust a
+  // value forwarded from the browser.
   if (method === 'GET' && path === '/tabs') {
     const url = new URL(request.url);
     const detailed = url.searchParams.get('detailed') === 'true';
     const activeOnly = url.searchParams.get('activeOnly') === 'true';
+    const callerUserId =
+      request.headers.get('x-caller-user-id') ??
+      request.headers.get('X-Caller-User-Id') ??
+      null;
     const diag = relay.getTransportDiagnostics();
-    const tabIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
+    const ownedSet = callerUserId ? new Set(relay.listOwnedTabs(callerUserId)) : null;
+    const baseIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
+    const tabIds = ownedSet ? baseIds.filter((id) => ownedSet.has(id)) : baseIds;
     const activeSet = new Set(diag.activeTabs);
     if (detailed) {
       return (async () => {
         const tabInfos = await relay.getTabsWithInfo();
-        const filtered = activeOnly
-          ? tabInfos.filter((info) => activeSet.has(info.tabId))
-          : tabInfos;
+        const filtered = tabInfos.filter((info) => {
+          if (activeOnly && !activeSet.has(info.tabId)) return false;
+          if (ownedSet && !ownedSet.has(info.tabId)) return false;
+          return true;
+        });
         const tabs = filtered.map((info) => ({
           ...info,
           ...(diag.tabMetadata[info.tabId] || {}),

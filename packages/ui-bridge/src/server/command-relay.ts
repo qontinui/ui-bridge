@@ -90,6 +90,15 @@ export interface TransportDiagnostics {
   commandQueueLength: number;
   tabHeartbeats: Record<string, number>;
   tabMetadata: Record<string, { url: string; title: string; visibility: string; lastSeen: number }>;
+  /**
+   * Per-user tab scoping (§4.2): tab id → `{userId, sessionId}`. ONLY
+   * populated for tabs whose strict-mode heartbeat carried
+   * `registrationMetadata`. Surfaced here so the HTTP layer can filter
+   * `/tabs` / `/tabs/wait` by the caller's `X-Caller-User-Id` without
+   * reaching into the relay's private state. `sessionId` is included
+   * for ops diagnostics — it MUST NOT be forwarded to other users.
+   */
+  tabOwnership: Record<string, TabOwnership>;
   /** Item #15 — heartbeat-staleness threshold currently in force, for ops visibility. */
   staleHeartbeatMs: number;
 }
@@ -176,6 +185,53 @@ export class TabRoutingError extends Error {
   }
 }
 
+/**
+ * Error subclass thrown when a caller asks the relay to dispatch a command
+ * to a `targetTabId` whose stored ownership metadata does NOT match the
+ * caller's authenticated `userId`. The relay surfaces this as
+ * `TAB_NOT_FOUND` (404) at the HTTP layer — NOT `403` — because the
+ * caller is not supposed to learn that the tab even exists. The
+ * dedicated subclass exists so the HTTP layer can distinguish a real
+ * `TAB_NOT_FOUND` from an ownership-mismatch redaction for metrics /
+ * structured logging, without leaking the distinction to the wire.
+ */
+export class OwnerMismatchError extends Error {
+  readonly code = 'OWNER_MISMATCH' as const;
+  readonly tabId: string;
+  /** The userId the caller authenticated as. */
+  readonly callerUserId: string;
+  /** The userId stored as the tab's owner (NEVER returned over the wire). */
+  readonly storedUserId: string;
+
+  constructor(tabId: string, callerUserId: string, storedUserId: string) {
+    // Intentionally generic prose so the message itself doesn't leak the
+    // existence of the tab — callers should re-stamp this as TAB_NOT_FOUND
+    // at the HTTP boundary. The structured fields are for server-side
+    // observability only.
+    super(`tabId "${tabId}" is not addressable by the authenticated caller`);
+    this.name = 'OwnerMismatchError';
+    this.tabId = tabId;
+    this.callerUserId = callerUserId;
+    this.storedUserId = storedUserId;
+  }
+}
+
+/**
+ * Stored ownership record for a registered tab. Populated by
+ * `recordRegistration` on first heartbeat carrying `registrationMetadata`
+ * and refreshed on every subsequent heartbeat. A tab WITHOUT an entry
+ * here is treated as un-registered by `listOwnedTabs`,
+ * `assertOwnership`, and the bus-envelope receiver check.
+ */
+export interface TabOwnership {
+  userId: string;
+  sessionId: string;
+  /** First heartbeat that supplied metadata. */
+  firstSeen: number;
+  /** Most recent heartbeat that supplied metadata. */
+  lastSeen: number;
+}
+
 // ============================================================================
 // CommandRelay
 // ============================================================================
@@ -203,6 +259,14 @@ export class CommandRelay {
     { url: string; title: string; visibility: string; lastSeen: number }
   >;
   private readonly tabLastSuccess: Map<string, number>;
+  /**
+   * Per-user tab-scoping registry. Tracks which authenticated user a tab
+   * was registered under via the strict heartbeat protocol. A tab is
+   * "registered" — and therefore addressable by authenticated dispatch —
+   * only when it has an entry here. Lives on `globalThis` alongside the
+   * other relay state for Next.js HMR survival.
+   */
+  private readonly tabOwnership: Map<string, TabOwnership>;
 
   // Simple value state
   private primaryTabId: string | null;
@@ -250,6 +314,7 @@ export class CommandRelay {
     if (!g[key('TabHeartbeats')]) g[key('TabHeartbeats')] = new Map();
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
+    if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
     if (!g[key('ConnectionReady')]) {
@@ -272,6 +337,7 @@ export class CommandRelay {
     this.tabHeartbeats = g[key('TabHeartbeats')];
     this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
+    this.tabOwnership = g[key('TabOwnership')];
     this.buildId = g[key('BuildId')];
 
     // Periodic cleanup. Runs at `staleHeartbeatSweepMs` cadence and performs
@@ -356,6 +422,7 @@ export class CommandRelay {
       this.tabHeartbeats.delete(tabId);
       this.tabMetadata.delete(tabId);
       this.tabLastSuccess.delete(tabId);
+      this.tabOwnership.delete(tabId);
       this.demotedTabs.delete(tabId);
 
       // If this was the primary, demote and pick a successor below.
@@ -477,6 +544,10 @@ export class CommandRelay {
           this.demotedTabs.delete(tabId);
           this.tabLastSuccess.delete(tabId);
           this.tabMetadata.delete(tabId);
+          // Ownership tracks the *transport* — once the transport is gone
+          // and the heartbeat has aged out, drop the owner record too so
+          // a future tab with a recycled id doesn't inherit a stale owner.
+          this.tabOwnership.delete(tabId);
         }
       }
     }
@@ -598,14 +669,34 @@ export class CommandRelay {
   /**
    * Queue a command with primary tab routing, automatic failover,
    * and retry-on-disconnect.
+   *
+   * Per-user tab scoping (§4.2): pass `options.ownerCheck = {userId}` to
+   * enforce that the dispatched command can only reach tabs owned by the
+   * given authenticated user. With `targetTabId`, a mismatch surfaces as
+   * `TabRoutingError` / `TAB_NOT_FOUND` (deliberately the same shape as
+   * an unknown-tab failure — see {@link OwnerMismatchError}). Without
+   * `targetTabId`, the fanout is restricted to the user's tabs and
+   * yields `SDK_DISCONNECTED` if none match (the no-leak fallback —
+   * never disclose that other users have tabs).
    */
   async queueCommand<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string }
+    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
   ): Promise<T> {
+    // Owner-scoped fanout: when no targetTabId AND an ownerCheck is in
+    // play, gate the "wait for any transport" branch on the caller's
+    // OWN tabs, not the global registry. Without this, an unscoped
+    // dispatch by a user with zero tabs would block waiting for someone
+    // else's tab to connect.
+    const ownerCheck = options?.ownerCheck;
+    const hasOwnerCheck = !!ownerCheck;
+    const ownedCount = hasOwnerCheck
+      ? this.listOwnedTabs(ownerCheck!.userId).length
+      : this.tabListeners.size + this.wsClients.size;
+
     // Wait for at least one transport if none available
-    if (!options?.targetTabId && this.tabListeners.size === 0 && this.wsClients.size === 0) {
+    if (!options?.targetTabId && ownedCount === 0) {
       await Promise.race([
         this.connectionReady,
         new Promise<void>((_, reject) =>
@@ -613,13 +704,18 @@ export class CommandRelay {
             () =>
               reject(
                 new Error(
-                  'No browser connected — no WebSocket clients and no SSE listeners. ' +
+                  'SDK_DISCONNECTED: No browser connected — no WebSocket clients and no SSE listeners. ' +
                     'Open the web app in a browser tab, or launch a headless one with ' +
                     '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
                     'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
                 )
               ),
-            3000
+            // Owner-scoped fallback: a same-user reconnect within ~3s is
+            // plausible, but the cross-user "leak guard" cares about a
+            // FAST `NO_BROWSER_CONNECTED` shape so the caller doesn't
+            // infer "other users have tabs" from a 3s hang. Short-circuit
+            // ownership-scoped misses immediately.
+            hasOwnerCheck ? 0 : 3000
           )
         ),
       ]);
@@ -630,7 +726,15 @@ export class CommandRelay {
       return await this.queueCommandInner<T>(action, payload, options);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Ownership mismatch surfaces as TAB_NOT_FOUND at the HTTP layer.
+      // Re-throw without a retry — the caller is not addressing a tab
+      // they own, no reconnect will fix that.
+      if (err instanceof OwnerMismatchError) throw err;
       if (msg.includes('SDK_DISCONNECTED') || msg.includes('No browser connected')) {
+        // Owner-scoped misses don't retry — the reconnection branch
+        // waits on the GLOBAL connection-ready gate, which would block
+        // a per-user dispatch on a tab belonging to a different user.
+        if (hasOwnerCheck) throw err;
         console.log(`[ui-bridge] ${action} failed (disconnected), waiting for reconnection...`);
         try {
           await Promise.race([
@@ -656,9 +760,10 @@ export class CommandRelay {
   private async queueCommandInner<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string }
+    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
   ): Promise<T> {
     const targetTabId = options?.targetTabId;
+    const ownerCheck = options?.ownerCheck;
 
     // Explicit target — Item #4 (per-tab routing). Validate that the tab is
     // both registered AND not stale BEFORE attempting to send. Without this,
@@ -667,6 +772,16 @@ export class CommandRelay {
     // expired. We want a fast, structured failure with a code the upstream
     // multi-machine driver can branch on.
     if (targetTabId) {
+      // Per-user tab scoping (§4.2): when an ownerCheck is in play, verify
+      // the stored owner matches BEFORE the transport / heartbeat checks.
+      // The mismatch surfaces as `TAB_NOT_FOUND` at the HTTP layer so the
+      // caller cannot distinguish "tab does not exist" from "tab belongs
+      // to someone else". `assertOwnership` is a no-op for tabs that have
+      // no ownership record yet — those fall through to the TAB_NOT_FOUND
+      // path below regardless.
+      if (ownerCheck) {
+        this.assertOwnership(targetTabId, ownerCheck.userId);
+      }
       const hasTransport =
         this.tabListeners.has(targetTabId) || this.wsClients.has(targetTabId);
       if (!hasTransport) {
@@ -677,9 +792,12 @@ export class CommandRelay {
         if (this.bus && (await this.bus.isTabKnown(targetTabId))) {
           return this.sendCommand<T>(action, payload, options);
         }
-        const connected = Array.from(
-          new Set([...this.tabListeners.keys(), ...this.wsClients.keys()])
-        );
+        // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
+        // caller's own tabs so the response doesn't reveal that other users
+        // have tabs. Admin/no-owner callers continue to see the full list.
+        const connected = ownerCheck
+          ? this.listOwnedTabs(ownerCheck.userId)
+          : Array.from(new Set([...this.tabListeners.keys(), ...this.wsClients.keys()]));
         throw new TabRoutingError(
           'TAB_NOT_FOUND',
           targetTabId,
@@ -691,7 +809,12 @@ export class CommandRelay {
       if (!this.isTabActive(targetTabId)) {
         const lastBeat = this.tabHeartbeats.get(targetTabId);
         const ageMs = lastBeat ? Date.now() - lastBeat : -1;
-        const active = this.getActiveTabs();
+        const active = ownerCheck
+          ? this.getActiveTabs().filter((id) => {
+              const owner = this.tabOwnership.get(id);
+              return owner?.userId === ownerCheck.userId;
+            })
+          : this.getActiveTabs();
         throw new TabRoutingError(
           'TAB_STALE',
           targetTabId,
@@ -703,6 +826,39 @@ export class CommandRelay {
         );
       }
       return this.sendCommand<T>(action, payload, options);
+    }
+
+    // Owner-scoped unscoped fanout: pick the caller's primary tab (the
+    // most-recently-heartbeated of their own tabs), or fan out across
+    // their tabs only. Never touches another user's tabs. If the user
+    // has zero tabs, surface SDK_DISCONNECTED — the no-leak fallback.
+    if (ownerCheck) {
+      const owned = this.listOwnedTabs(ownerCheck.userId);
+      if (owned.length === 0) {
+        throw new Error(
+          `SDK_DISCONNECTED: No browser connected to receive ${action} command. ` +
+            'No WebSocket clients and no SSE listeners registered. ' +
+            'Open the web app in a browser tab, or launch a headless one with ' +
+            '`npx @qontinui/ui-bridge-headless --url <your-app-url>`. ' +
+            'Use `GET /tabs/wait?timeoutMs=<ms>` to block until the tab registers.'
+        );
+      }
+      // Prefer the user's most-recently-successful tab to stay sticky.
+      owned.sort((a, b) => (this.tabLastSuccess.get(b) ?? 0) - (this.tabLastSuccess.get(a) ?? 0));
+      const ownedPrimary = owned[0]!;
+      return this.sendCommand<T>(action, payload, {
+        targetTabId: ownedPrimary,
+        ownerCheck,
+      }).catch((firstError: Error) => {
+        if (owned.length <= 1) throw firstError;
+        // One automatic failover across the user's other tabs. Mirrors
+        // the global primary-tab failover behavior, bounded to this user.
+        const fallback = owned[1]!;
+        console.log(
+          `[ui-bridge] Owned tab ${ownedPrimary} failed for ${action}, retrying on ${fallback}`
+        );
+        return this.sendCommand<T>(action, payload, { targetTabId: fallback, ownerCheck });
+      });
     }
 
     // Primary tab routing with automatic failover
@@ -729,13 +885,18 @@ export class CommandRelay {
 
   /**
    * Low-level: send a command to a specific tab or broadcast to all.
+   * `ownerCheck` is threaded through to the cross-instance bus envelope
+   * so the receiving instance re-verifies ownership against ITS local
+   * registry (not whatever the sending instance "thinks" the owner is —
+   * the sending instance may hold stale ownership metadata).
    */
   private sendCommand<T>(
     action: string,
     payload: unknown,
-    options?: { targetTabId?: string }
+    options?: { targetTabId?: string; ownerCheck?: { userId: string } }
   ): Promise<T> {
     const targetTabId = options?.targetTabId;
+    const senderUserId = options?.ownerCheck?.userId;
     const commandId = this.generateCommandId();
     const fireAndForget = DEFAULT_FIRE_AND_FORGET.has(action);
     console.log(
@@ -774,10 +935,19 @@ export class CommandRelay {
             payload,
             timestamp: Date.now(),
             targetTabId,
+            senderUserId,
           });
           resolve({ success: true, fireAndForget: true, action, timestamp: Date.now() } as T);
         } else {
-          this.dispatchViaBus<T>(commandId, action, payload, targetTabId, resolve, reject);
+          this.dispatchViaBus<T>(
+            commandId,
+            action,
+            payload,
+            targetTabId,
+            senderUserId,
+            resolve,
+            reject
+          );
         }
         return;
       }
@@ -896,6 +1066,7 @@ export class CommandRelay {
     action: string,
     payload: unknown,
     targetTabId: string | undefined,
+    senderUserId: string | undefined,
     resolve: (value: T) => void,
     reject: (error: Error) => void
   ): void {
@@ -937,7 +1108,14 @@ export class CommandRelay {
       busUnsub,
     });
 
-    bus.publishCommand({ commandId, action, payload, timestamp: Date.now(), targetTabId });
+    bus.publishCommand({
+      commandId,
+      action,
+      payload,
+      timestamp: Date.now(),
+      targetTabId,
+      senderUserId,
+    });
   }
 
   /**
@@ -1076,6 +1254,9 @@ export class CommandRelay {
    */
   unregisterWebSocketClient(clientId: string): void {
     this.wsClients.delete(clientId);
+    // Same rationale as the SSE unsubscribe path: ownership rides on the
+    // transport, so a closed transport invalidates the owner record.
+    this.tabOwnership.delete(clientId);
     console.log(`[UIBridge] WebSocket client unregistered: ${clientId}`);
     this.resetConnectionGateIfEmpty();
   }
@@ -1231,6 +1412,26 @@ export class CommandRelay {
         // Deliver only if this tab's listener is still registered here.
         const current = this.tabListeners.get(id);
         if (!current) return;
+        // Per-user tab scoping (§4.2): the sending instance MAY hold stale
+        // ownership metadata, so we don't trust its assertion alone. Re-
+        // verify against the LOCAL ownership registry before forwarding.
+        // Mismatch → reject the command back over the bus with the same
+        // generic prose `OwnerMismatchError` uses; do NOT deliver. When
+        // the envelope carries no `senderUserId` (e.g. admin dispatch,
+        // legacy path, fire-and-forget broadcast), the check is skipped.
+        if (env.senderUserId !== undefined) {
+          const owner = this.tabOwnership.get(id);
+          if (!owner || owner.userId !== env.senderUserId) {
+            if (this.bus) {
+              this.bus.publishResponse({
+                commandId: env.commandId,
+                ok: false,
+                error: `tabId "${id}" is not addressable by the authenticated caller`,
+              });
+            }
+            return;
+          }
+        }
         try {
           current.callback({
             commandId: env.commandId,
@@ -1281,6 +1482,9 @@ export class CommandRelay {
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
       this.tabMetadata.delete(id);
+      // Drop ownership when the transport closes. A future tab with the
+      // SAME id must re-register before authenticated dispatch sees it.
+      this.tabOwnership.delete(id);
       console.log(
         `[ui-bridge] SSE listener disconnected: ${id} (total: ${this.tabListeners.size})`
       );
@@ -1378,6 +1582,127 @@ export class CommandRelay {
   }
 
   // --------------------------------------------------------------------------
+  // Per-User Tab Scoping (§4.2)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Record the authenticated ownership of `tabId`. Called from the HTTP
+   * heartbeat handler after extracting `registrationMetadata` from the
+   * body. Updates an existing entry's `lastSeen` rather than rewriting
+   * `firstSeen`.
+   *
+   * Strict-mode invariant: a tab is "registered" only after this method
+   * has been called for it. `listOwnedTabs`, `assertOwnership`, and the
+   * bus-envelope receiver check all key off this map.
+   *
+   * Re-registration under a DIFFERENT `userId` is permitted (e.g. a tab
+   * survives a re-login) — the entry is overwritten in place. This is
+   * the safe path: the alternative (reject + force a reconnect) would
+   * leave the tab unaddressable until the SSE stream re-establishes,
+   * which is strictly worse for the operator UX. The new ownership
+   * takes effect on the next dispatch.
+   */
+  recordRegistration(tabId: string, metadata: { userId: string; sessionId: string }): void {
+    const now = Date.now();
+    const existing = this.tabOwnership.get(tabId);
+    if (existing && existing.userId === metadata.userId) {
+      existing.sessionId = metadata.sessionId;
+      existing.lastSeen = now;
+      return;
+    }
+    this.tabOwnership.set(tabId, {
+      userId: metadata.userId,
+      sessionId: metadata.sessionId,
+      firstSeen: existing?.firstSeen ?? now,
+      lastSeen: now,
+    });
+  }
+
+  /**
+   * Return the stored ownership record for a tab, or `null` if the tab
+   * has not registered yet. The full record (including timestamps) is
+   * exposed for observability tooling; the wire layer should never
+   * forward `sessionId` to other users.
+   */
+  getOwnership(tabId: string): TabOwnership | null {
+    return this.tabOwnership.get(tabId) ?? null;
+  }
+
+  /**
+   * Return connected tab ids whose stored ownership matches `userId`.
+   * Tabs without an ownership entry are NOT included — strict mode
+   * makes "unregistered" the same as "not yours". Used by `/tabs` and
+   * `/tabs/wait` to scope the response to the authenticated caller.
+   *
+   * Includes both SSE and WebSocket transports. Result order tracks
+   * `getConnectedTabs` (insertion order) for stability.
+   */
+  listOwnedTabs(userId: string): string[] {
+    const owned: string[] = [];
+    const seen = new Set<string>();
+    const consider = (id: string): void => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const owner = this.tabOwnership.get(id);
+      if (owner && owner.userId === userId) owned.push(id);
+    };
+    for (const id of this.tabListeners.keys()) consider(id);
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected()) consider(id);
+    }
+    return owned;
+  }
+
+  /**
+   * Admin / trusted-caller bypass: return ALL connected tab ids
+   * regardless of ownership. Intended for server-side callers that
+   * don't know a userId (internal admin tooling, runner introspection).
+   * Equivalent to `getConnectedTabs()` plus any WebSocket-only tabs.
+   *
+   * Distinct from `listOwnedTabs(userId)` deliberately so the call site
+   * names the bypass — there is no `listOwnedTabs(null)` overload. Mis-
+   * using a null userId would silently widen scope across every consumer.
+   */
+  adminListAllTabs(): string[] {
+    const all: string[] = [];
+    const seen = new Set<string>();
+    for (const id of this.tabListeners.keys()) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        all.push(id);
+      }
+    }
+    for (const [id, entry] of this.wsClients.entries()) {
+      if (entry.client.isConnected() && !seen.has(id)) {
+        seen.add(id);
+        all.push(id);
+      }
+    }
+    return all;
+  }
+
+  /**
+   * Throw {@link OwnerMismatchError} when `tabId` exists in the
+   * ownership registry but its stored `userId` does not equal
+   * `callerUserId`. Returns silently when:
+   *
+   *   - the tab has no ownership record yet (strict-mode dispatch
+   *     against an unregistered tab is rejected one layer up via
+   *     `TabRoutingError` / `TAB_NOT_FOUND` — this method is only
+   *     reached after the per-tab routing guard succeeds, and a
+   *     transport-only tab with no metadata should not be reachable
+   *     here, but defending in depth is cheap);
+   *   - the stored owner matches the caller.
+   */
+  assertOwnership(tabId: string, callerUserId: string): void {
+    const stored = this.tabOwnership.get(tabId);
+    if (!stored) return;
+    if (stored.userId !== callerUserId) {
+      throw new OwnerMismatchError(tabId, callerUserId, stored.userId);
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Diagnostics
   // --------------------------------------------------------------------------
 
@@ -1399,6 +1724,7 @@ export class CommandRelay {
       commandQueueLength: this.commandQueue.length,
       tabHeartbeats: Object.fromEntries(this.tabHeartbeats),
       tabMetadata: Object.fromEntries(this.tabMetadata),
+      tabOwnership: Object.fromEntries(this.tabOwnership),
       staleHeartbeatMs: this.staleHeartbeatMs,
     };
   }
@@ -1461,6 +1787,7 @@ export class CommandRelay {
     this.tabHeartbeats.clear();
     this.tabMetadata.clear();
     this.tabLastSuccess.clear();
+    this.tabOwnership.clear();
     this.demotedTabs.clear();
     this.tabListeners.clear();
     this.commandQueue.length = 0;

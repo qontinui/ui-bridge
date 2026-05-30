@@ -239,8 +239,21 @@ function createRouteHandler(
           : undefined) ?? undefined;
       const externalTabId = queryTabId || headerTabId;
 
-      // Add body if required
-      if (route.bodyRequired || route.method === 'POST') {
+      // Per-user tab scoping (§4.2): mirror the Next.js adapter's
+      // X-Caller-User-Id sniff so the trusted-identity-bound `context`
+      // reaches every relay-dispatching handler — even the zero-arg ones
+      // (captureSnapshot, clearRenderLog, getElementState, …) whose body
+      // / query splice can't carry `__callerUserId`.
+      const headerCallerUserId =
+        (typeof req.headers['x-caller-user-id'] === 'string'
+          ? (req.headers['x-caller-user-id'] as string)
+          : undefined) ?? undefined;
+
+      // Add body when the route declares one. See nextjs.ts for the
+      // per-user-scoping rationale (POST routes without `bodyRequired`
+      // are context-only handlers whose signatures end at the trailing
+      // `context?: HandlerContext` arg).
+      if (route.bodyRequired) {
         let body = req.body;
         if (
           externalTabId &&
@@ -254,10 +267,21 @@ function createRouteHandler(
         } else if (!body && externalTabId) {
           body = { tabId: externalTabId };
         }
+        if (
+          headerCallerUserId &&
+          body !== null &&
+          typeof body === 'object' &&
+          !Array.isArray(body)
+        ) {
+          body = { ...(body as Record<string, unknown>), __callerUserId: headerCallerUserId };
+        } else if (!body && headerCallerUserId) {
+          body = { __callerUserId: headerCallerUserId };
+        }
         args.push(body);
       }
 
-      // Add query params for GET requests
+      // Add query params for GET requests. See nextjs.ts for why
+      // `__callerUserId` is NOT spliced into the searchParams.
       if (route.method === 'GET') {
         const query = { ...req.query } as Record<string, unknown>;
         if (externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
@@ -267,6 +291,15 @@ function createRouteHandler(
           args.push(query);
         }
       }
+
+      // Per-user tab scoping (§4.2) — trailing context arg. The adapter
+      // ALWAYS supplies this so zero-arg / id-only handlers
+      // (captureSnapshot, clearRenderLog, getElementState(id)) — whose
+      // signatures can't carry __callerUserId in the body/query — still
+      // enforce ownership when X-Caller-User-Id is present. Adds NO
+      // overhead when the header is absent (context.callerUserId
+      // undefined → relay falls back to primary-tab dispatch).
+      args.push({ callerUserId: headerCallerUserId });
 
       const result = await handler(...args);
       // Honor APIResponse.httpStatus for endpoints that need 4xx semantics
