@@ -49,6 +49,67 @@ import {
 } from './a11y';
 
 /**
+ * Sentinel value substituted for any input/textarea/select value covered
+ * by a `data-bridge-redact="true"` boundary (or the implicit `password`
+ * input redaction). Exported so consumers writing assertions can match
+ * on this literal — useful for ESLint rules / tests that verify a
+ * sensitive site is wrapped.
+ *
+ * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.6.
+ */
+export const REDACTED_VALUE = '[REDACTED]';
+
+/**
+ * The attribute that opts an element (and its subtree) out of the
+ * relay's snapshot. Used by §4.5's "AI in control" banner to make
+ * itself unsnapshot-able / unclickable through the bridge.
+ *
+ * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.5.
+ */
+const BRIDGE_INVISIBLE_ATTR = 'data-bridge-invisible';
+
+/**
+ * The attribute that marks an input value as sensitive — its `state.value`
+ * is replaced with `REDACTED_VALUE` in every snapshot. Honored on the
+ * element itself OR on any ancestor (so a form can opt its whole subtree
+ * in with one attribute).
+ *
+ * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.6.
+ */
+const BRIDGE_REDACT_ATTR = 'data-bridge-redact';
+
+/**
+ * Walk from `el` up through `parentElement` until we find an ancestor
+ * (or el itself) with `data-bridge-redact="true"`. Returns the matched
+ * element, or null if none. The truthy check accepts `"true"` exactly —
+ * NOT `""` / `"false"` / `"yes"` — so a typo can't accidentally turn
+ * redaction off; the attribute must be explicit.
+ */
+function closestRedactionBoundary(el: HTMLElement): HTMLElement | null {
+  let cursor: HTMLElement | null = el;
+  while (cursor !== null) {
+    if (cursor.getAttribute(BRIDGE_REDACT_ATTR) === 'true') return cursor;
+    cursor = cursor.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Walk from `el` up until we find `data-bridge-invisible="true"`. Returns
+ * true when present. Auto-register checks this BEFORE registering an
+ * element — invisible elements never enter the registry, so they don't
+ * appear in snapshots and the bridge cannot drive them by id.
+ */
+export function isBridgeInvisible(el: HTMLElement): boolean {
+  let cursor: HTMLElement | null = el;
+  while (cursor !== null) {
+    if (cursor.getAttribute(BRIDGE_INVISIBLE_ATTR) === 'true') return true;
+    cursor = cursor.parentElement;
+  }
+  return false;
+}
+
+/**
  * Single source of truth for serializing a `RegisteredElement` to a snapshot
  * entry. Used by `createSnapshot`/`createSnapshotAsync` here AND by the
  * runner's `serializeElement` helper so the two paths cannot drift. When you
@@ -304,8 +365,22 @@ function getElementState(element: HTMLElement): ElementState {
     rect.left < window.innerWidth &&
     rect.right > 0;
 
+  // §4.6 redaction boundary — when this element (or an ancestor) carries
+  // `data-bridge-redact="true"`, we must scrub not just `state.value` but
+  // also the human-readable text fields (`accessibleName`, `textContent`,
+  // option labels) so a label like "prod (token: xyz)" doesn't leak the
+  // secret it describes. `<input type="password">` is redacted
+  // unconditionally — every browser already treats password fields as
+  // sensitive at the OS keystroke level, so making them snapshot-visible
+  // would be a strictly weaker contract than the browser's own.
+  const isRedacted =
+    (element instanceof HTMLInputElement && element.type === 'password') ||
+    closestRedactionBoundary(element) !== null;
+
   const roleAttr = element.getAttribute('role') || undefined;
-  const accessibleName = computeAccessibleName(element);
+  const accessibleName = isRedacted
+    ? REDACTED_VALUE
+    : computeAccessibleName(element);
 
   const state: ElementState = {
     visible: isElementVisible(element, rect, computedStyle, inViewport),
@@ -323,7 +398,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    textContent: element.textContent?.trim() || undefined,
+    textContent: isRedacted ? REDACTED_VALUE : element.textContent?.trim() || undefined,
     computedStyles: {
       display: computedStyle.display,
       visibility: computedStyle.visibility,
@@ -442,24 +517,30 @@ function getElementState(element: HTMLElement): ElementState {
     }
   }
 
-  // Add input-specific state
+  // Add input-specific state. `isRedacted` was computed at the top of
+  // this function — when set, it ALSO scrubs `accessibleName` +
+  // `textContent` (which can carry secrets via option labels).
   if (element instanceof HTMLInputElement) {
-    state.value = element.value;
+    state.value = isRedacted ? REDACTED_VALUE : element.value;
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
     captureFormControlState(element, state);
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = element.value;
+    state.value = isRedacted ? REDACTED_VALUE : element.value;
     captureFormControlState(element, state);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = element.value;
-    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
-    state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: opt.value,
-      label: opt.label || opt.textContent?.trim() || opt.value,
-      selected: opt.selected,
-    }));
+    state.value = isRedacted ? REDACTED_VALUE : element.value;
+    state.selectedOptions = isRedacted
+      ? [REDACTED_VALUE]
+      : Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.availableOptions = isRedacted
+      ? [{ value: REDACTED_VALUE, label: REDACTED_VALUE, selected: false }]
+      : Array.from(element.options).map((opt) => ({
+          value: opt.value,
+          label: opt.label || opt.textContent?.trim() || opt.value,
+          selected: opt.selected,
+        }));
     captureFormControlState(element, state);
   }
 
