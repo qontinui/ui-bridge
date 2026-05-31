@@ -17,8 +17,28 @@ export interface InjectedRuntimeApi {
    * until DOM-ready, so callers should wait.
    */
   ready: boolean;
+  /**
+   * `true` once the DOM has **settled** — a seed pass has registered at least
+   * one interactive element AND no further re-seed has fired for the quiet
+   * window (or the hard settle timeout elapsed). On a client-rendered SPA the
+   * registry is empty at `ready` and fills in as the app paints; `settled` is
+   * the signal that the page is actually drivable, so a driver should gate its
+   * first snapshot/find on `settled` rather than `ready`. Always becomes `true`
+   * eventually (genuinely-empty and never-quiet pages resolve at the timeout).
+   */
+  settled: boolean;
+  /** Interactive elements registered as of the most recent seed pass. */
+  elementCount: number;
   /** SDK version the bundle was built from. */
   version: string;
+  /**
+   * Resolve once the DOM is {@link settled}, or after `timeoutMs` (default: the
+   * runtime's configured settle timeout). Resolves immediately if already
+   * settled. The resolved value reflects state at resolution time, so a
+   * timed-out wait reports `settled: false`. Drivers prefer this over polling
+   * `getControlSnapshot` through hydration.
+   */
+  whenSettled(timeoutMs?: number): Promise<{ settled: boolean; elementCount: number }>;
   /**
    * Run a relay command action against the populated registry — the exact
    * dispatcher embedded apps use (`executeCommand`). Returns the action result
@@ -47,6 +67,16 @@ export interface InjectedRuntimeConfig {
   appId?: string;
   /** Display name reported to the relay registry. */
   appName?: string;
+  /**
+   * Quiet window (ms) with no further DOM re-seed before the runtime declares
+   * itself {@link InjectedRuntimeApi.settled}. Default 500.
+   */
+  settleQuietMs?: number;
+  /**
+   * Hard cap (ms) after which the runtime declares itself settled regardless of
+   * ongoing mutations (never-quiet or empty pages). Default 10000.
+   */
+  settleTimeoutMs?: number;
 }
 
 declare global {
