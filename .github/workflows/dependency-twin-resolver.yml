@@ -1,0 +1,114 @@
+name: Dependency Twin Resolver
+
+# Async resolver job for the Ξ_Dep (dependencies) digital-twin sub-space.
+# See plan 2026-05-30-twin-dependencies-layer.md §5, §7.2 (Phase 3).
+#
+# This job runs the install-safety + registry checks that CANNOT run in
+# qontinui-coord's request path (they need the npm resolver toolchain and
+# outbound network to registry.npmjs.org). It:
+#   1. runs `npm ci --dry-run --json` (an ERESOLVE = a non-zero exit with an
+#      ERESOLVE body) plus a `--package-lock-only --dry-run` fallback signal;
+#   2. queries the npm registry per publishable @qontinui/* package for
+#      missing/deprecated external deps + whether <pkg>@<version> is already
+#      published;
+#   3. classifies the result and assembles a JSON payload matching the
+#      coord.dependency_resolution_observations columns;
+#   4. POSTs the payload to coord's ingest endpoint (tolerant — a coord-side
+#      error never fails the job; the computed artifact is the durable value);
+#   5. always uploads the payload as a workflow artifact.
+
+on:
+  # Daily — keeps the async observations fresh for the coord twin / merge gate.
+  schedule:
+    - cron: '17 6 * * *'
+  # Manual re-run.
+  workflow_dispatch:
+  # A manifest/lock change re-checks install-safety promptly.
+  push:
+    paths:
+      - 'packages/*/package.json'
+      - 'package-lock.json'
+
+# Don't pile up overlapping resolver runs; the latest manifest state wins.
+concurrency:
+  group: dependency-twin-resolver-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Base URL of the coord ingest endpoint. Override via repo/org variable or
+  # secret if coord moves; defaults to production coord.
+  COORD_HTTP_URL: ${{ secrets.COORD_HTTP_URL || 'https://coord.qontinui.io' }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js
+        uses: actions/setup-node@v5
+        with:
+          # Match publish.yml — node@20 is the workspace's publish/CI runtime.
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        # The resolver script shells out to `npm ci --dry-run`, which only
+        # needs the lockfile + manifests present (the checkout provides them),
+        # not an installed node_modules. We do NOT run a real `npm ci` here on
+        # purpose — installing would mask a would-be ERESOLVE behind npm's
+        # install-time conflict handling. The script has zero runtime deps.
+        run: node --version
+
+      - name: Run dependency twin resolver
+        # Computes the payload and writes dependency-resolution-observations.json
+        # at the repo root. Degrades to a coverage<1 payload and exits 0 if npm
+        # or the network are unavailable, so the artifact is always produced.
+        run: node scripts/dependency-twin-resolver.mjs
+
+      - name: Ingest into coord (tolerant)
+        # POST the observations to coord. This MUST NOT fail the job on a
+        # coord-side error — the job's value is the computation + artifact even
+        # if ingest is down. `curl` failures and non-2xx are swallowed.
+        env:
+          COORD_INGEST_TOKEN: ${{ secrets.COORD_INGEST_TOKEN }}
+        run: |
+          set +e
+          payload_file="dependency-resolution-observations.json"
+          if [ ! -f "$payload_file" ]; then
+            echo "::warning::resolver produced no payload file; skipping ingest"
+            exit 0
+          fi
+          # Wrap the observations array as {observations: [...]} for the ingest
+          # contract. The script's payload already carries `observations`; we
+          # re-shape to exactly {observations: [...]} so coord matches the
+          # documented body regardless of the extra run-metadata keys.
+          body="$(node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            process.stdout.write(JSON.stringify({ observations: p.observations || [] }));
+          ' "$payload_file")"
+          endpoint="${COORD_HTTP_URL%/}/coord/dependency-resolution/ingest"
+          echo "POST $endpoint ($(echo "$body" | wc -c) bytes)"
+          http_code="$(printf '%s' "$body" | curl -sS -o /tmp/ingest-resp.txt -w '%{http_code}' \
+            --max-time 30 \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${COORD_INGEST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @- || true)"
+          echo "coord ingest HTTP status: ${http_code:-<curl-failed>}"
+          echo "coord ingest response:"; cat /tmp/ingest-resp.txt 2>/dev/null || true
+          # Always succeed — ingest is best-effort.
+          exit 0
+
+      - name: Upload observations artifact
+        # Always upload so the payload is inspectable even if ingest failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-resolution-observations
+          path: dependency-resolution-observations.json
+          if-no-files-found: warn

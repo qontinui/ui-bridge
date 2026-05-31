@@ -48,3 +48,7 @@ cookies.txt
 *.tgz
 .npmrc
 .worktrees/
+
+# Dependency twin resolver output (scripts/dependency-twin-resolver.mjs)
+# — a generated artifact; uploaded by CI, never committed.
+dependency-resolution-observations.json
