@@ -17,6 +17,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
+import { isBridgeInvisible } from '../core/registry';
 import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
@@ -782,6 +783,14 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         if (element.matches(selector)) {
           return false;
         }
+      }
+
+      // §4.5: `data-bridge-invisible="true"` (on the element itself or any
+      // ancestor) hard-excludes the subtree from the registry. The bridge
+      // cannot see or drive these elements — used for the "AI in control"
+      // banner so the bridge can't dismiss its own indicator.
+      if (isBridgeInvisible(element)) {
+        return false;
       }
 
       // Check if already registered
