@@ -52,7 +52,13 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
 
 Optional:
   --headed                     Launch with a visible window (default: headless)
-  --ready-timeout <ms>         Max wait for the injected runtime ready gate (default 30000)
+  --ready-timeout <ms>         Max wait for the injected runtime ready/settle gate (default 30000)
+  --no-settle                  Gate ready on the runtime being live only, NOT on the DOM
+                               settling. By default the launcher waits for the page to paint
+                               + go quiet (so a client-rendered SPA is drivable immediately),
+                               which is almost always what you want.
+  --settle-quiet <ms>          Quiet window with no DOM re-seed before settled (default 500)
+  --settle-timeout <ms>        Hard cap before settling regardless of mutations (default 10000)
   --viewport <WxH>             Viewport size, e.g. 1280x720
   --quiet                      Suppress human-readable logs (JSON results still print)
   --help, -h                   Print this help and exit
@@ -85,6 +91,10 @@ export interface InjectCliArgs {
   registrationMetadata: { userId: string; sessionId: string } | null;
   headed: boolean;
   readyTimeoutMs: number | null;
+  /** When false (via --no-settle), gate ready() on `ready` only, not `settled`. */
+  waitForSettle: boolean;
+  settleQuietMs: number | null;
+  settleTimeoutMs: number | null;
   appId: string | null;
   appName: string | null;
   tabId: string | null;
@@ -146,6 +156,9 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     registrationMetadata: null,
     headed: false,
     readyTimeoutMs: null,
+    waitForSettle: true,
+    settleQuietMs: null,
+    settleTimeoutMs: null,
     appId: null,
     appName: null,
     tabId: null,
@@ -238,6 +251,31 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.readyTimeoutMs = n;
         break;
       }
+      case '--no-settle':
+        args.waitForSettle = false;
+        break;
+      case '--settle-quiet': {
+        const raw = argv[++i];
+        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n < 0) {
+          throw new InjectCliArgError(
+            `--settle-quiet expects a non-negative integer (got ${raw ?? '<missing>'})`
+          );
+        }
+        args.settleQuietMs = n;
+        break;
+      }
+      case '--settle-timeout': {
+        const raw = argv[++i];
+        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new InjectCliArgError(
+            `--settle-timeout expects a positive integer (got ${raw ?? '<missing>'})`
+          );
+        }
+        args.settleTimeoutMs = n;
+        break;
+      }
       case '--viewport': {
         const raw = argv[++i];
         const match = raw?.match(/^(\d+)x(\d+)$/);
@@ -299,6 +337,9 @@ export function buildTransportOptions(args: InjectCliArgs): Record<string, unkno
   if (args.registrationMetadata) options.registrationMetadata = args.registrationMetadata;
   if (args.headed) options.headed = true;
   if (args.readyTimeoutMs !== null) options.readyTimeoutMs = args.readyTimeoutMs;
+  if (!args.waitForSettle) options.waitForSettle = false;
+  if (args.settleQuietMs !== null) options.settleQuietMs = args.settleQuietMs;
+  if (args.settleTimeoutMs !== null) options.settleTimeoutMs = args.settleTimeoutMs;
   if (args.appId) options.appId = args.appId;
   if (args.appName) options.appName = args.appName;
   if (args.tabId) options.tabId = args.tabId;

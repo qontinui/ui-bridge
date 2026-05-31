@@ -66,6 +66,18 @@ interface InjectedExtraOptions {
   headed: boolean;
   /** Max ms to wait for `window.__uiBridgeInjected.ready`. Default 30000. */
   readyTimeoutMs: number;
+  /**
+   * Whether `ready()` waits for the in-page runtime to report `settled` (DOM
+   * quiet after content appeared), not merely `ready` (runtime live, registry
+   * possibly still empty on a client-rendered SPA). Default true — this is the
+   * fix that lets a driver snapshot immediately after `ready()` without polling
+   * through hydration. Set false to revert to ready-only gating.
+   */
+  waitForSettle: boolean;
+  /** Quiet window (ms) before the runtime declares itself settled. Default 500. */
+  settleQuietMs?: number;
+  /** Hard cap (ms) after which the runtime settles regardless. Default 10000. */
+  settleTimeoutMs?: number;
   /** Bearer token for the auth-gated relay (Variant B). */
   authToken?: string;
   /** Strict per-user tab-scoping metadata for relay heartbeats (Variant B). */
@@ -90,6 +102,18 @@ export interface InjectedContext extends HeadlessContext {
   readonly kind: 'injected';
   /** True once the injected runtime reported ready (always true post-`ready()`). */
   readonly ready: boolean;
+  /**
+   * Re-read the in-page runtime's current settle state. After `ready()` with
+   * the default `waitForSettle`, this is already `settled: true`; it's exposed
+   * for drivers that disabled settle-gating or want the live element count.
+   */
+  settleState(): Promise<{ settled: boolean; elementCount: number }>;
+  /**
+   * Wait for the in-page runtime to report settled (DOM quiet after content),
+   * or `timeoutMs`. Useful after a soft-navigation re-render when the caller
+   * wants to re-settle before the next assertion.
+   */
+  whenSettled(timeoutMs?: number): Promise<{ settled: boolean; elementCount: number }>;
   /** Run any relay action against the in-page runtime. */
   execute<T = unknown>(action: string, payload?: unknown): Promise<T>;
   /** Semantic find — by label / text / role / type / testId. */
@@ -113,6 +137,11 @@ export class InjectedTransport extends HeadlessTransport {
       headed,
       readyTimeoutMs:
         typeof raw['readyTimeoutMs'] === 'number' ? (raw['readyTimeoutMs'] as number) : 30_000,
+      waitForSettle: raw['waitForSettle'] !== false,
+      settleQuietMs:
+        typeof raw['settleQuietMs'] === 'number' ? (raw['settleQuietMs'] as number) : undefined,
+      settleTimeoutMs:
+        typeof raw['settleTimeoutMs'] === 'number' ? (raw['settleTimeoutMs'] as number) : undefined,
       authToken: typeof raw['authToken'] === 'string' ? (raw['authToken'] as string) : undefined,
       registrationMetadata: isRegistrationMetadata(raw['registrationMetadata'])
         ? (raw['registrationMetadata'] as { userId: string; sessionId: string })
@@ -123,24 +152,34 @@ export class InjectedTransport extends HeadlessTransport {
     };
   }
 
-  /** Build the relay config injected ahead of the bundle, or null for Variant A. */
-  private relayConfig(): Record<string, unknown> | null {
+  /**
+   * Build the `__uiBridgeInjectedConfig` injected ahead of the bundle, or null
+   * if there's nothing to configure. Carries the relay fields (Variant B only,
+   * when `uiBridgeBase` is set) AND the settle-tuning fields (both variants).
+   */
+  private injectedConfig(): Record<string, unknown> | null {
+    const cfg: Record<string, unknown> = {};
     const base = this.options.uiBridgeBase;
-    if (!base) return null;
-    const cfg: Record<string, unknown> = { uiBridgeBase: base };
-    if (this.injected.authToken) cfg.authToken = this.injected.authToken;
-    if (this.injected.registrationMetadata)
-      cfg.registrationMetadata = this.injected.registrationMetadata;
-    if (this.injected.appId) cfg.appId = this.injected.appId;
-    if (this.injected.appName) cfg.appName = this.injected.appName;
-    if (this.injected.tabId) cfg.tabId = this.injected.tabId;
-    return cfg;
+    if (base) {
+      cfg.uiBridgeBase = base;
+      if (this.injected.authToken) cfg.authToken = this.injected.authToken;
+      if (this.injected.registrationMetadata)
+        cfg.registrationMetadata = this.injected.registrationMetadata;
+      if (this.injected.appId) cfg.appId = this.injected.appId;
+      if (this.injected.appName) cfg.appName = this.injected.appName;
+      if (this.injected.tabId) cfg.tabId = this.injected.tabId;
+    }
+    if (this.injected.settleQuietMs !== undefined)
+      cfg.settleQuietMs = this.injected.settleQuietMs;
+    if (this.injected.settleTimeoutMs !== undefined)
+      cfg.settleTimeoutMs = this.injected.settleTimeoutMs;
+    return Object.keys(cfg).length > 0 ? cfg : null;
   }
 
   protected override async buildInitScripts(): Promise<string[]> {
     const scripts: string[] = [];
     // Config first so it exists when the bundle's init-script runs.
-    const cfg = this.relayConfig();
+    const cfg = this.injectedConfig();
     if (cfg) {
       scripts.push(`window.__uiBridgeInjectedConfig = ${JSON.stringify(cfg)};`);
     }
@@ -169,6 +208,35 @@ export class InjectedTransport extends HeadlessTransport {
         { cause, retryable: true }
       );
     }
+
+    // Then wait for the DOM to SETTLE (content painted + quiet) so the driver
+    // can snapshot immediately after ready() without polling through SPA
+    // hydration. The runtime always settles eventually (its own hard cap), so
+    // this resolves the in-page `whenSettled()` rather than racing a Playwright
+    // poll; we still bound the outer wait by readyTimeoutMs as a backstop in
+    // case the page realm wedged. Non-fatal: a settle wait that doesn't resolve
+    // (e.g. realm torn down) leaves `ready` true and lets dispatch proceed.
+    if (this.injected.waitForSettle) {
+      try {
+        await page.waitForFunction(
+          () =>
+            (
+              window as unknown as { __uiBridgeInjected?: { settled?: boolean } }
+            ).__uiBridgeInjected?.settled === true,
+          undefined,
+          { timeout: this.injected.readyTimeoutMs }
+        );
+      } catch (cause) {
+        throw new WrapperTransportError(
+          'INJECTED_RUNTIME_NOT_SETTLED',
+          `The injected UI Bridge runtime did not report settled within ` +
+            `${this.injected.readyTimeoutMs}ms. The page kept mutating past its ` +
+            `settle cap, or the realm was torn down. Pass options.waitForSettle=false ` +
+            `to gate on ready only, or raise options.settleTimeoutMs / readyTimeoutMs.`,
+          { cause, retryable: true }
+        );
+      }
+    }
   }
 
   protected override async buildContext(): Promise<InjectedContext> {
@@ -191,6 +259,41 @@ export class InjectedTransport extends HeadlessTransport {
         [action, payload] as [string, unknown]
       ) as Promise<T>;
 
+    const settleState = (): Promise<{ settled: boolean; elementCount: number }> =>
+      page.evaluate(() => {
+        const api = (
+          window as unknown as {
+            __uiBridgeInjected?: { settled?: boolean; elementCount?: number };
+          }
+        ).__uiBridgeInjected;
+        return { settled: api?.settled === true, elementCount: api?.elementCount ?? 0 };
+      });
+
+    const whenSettled = (
+      timeoutMs?: number
+    ): Promise<{ settled: boolean; elementCount: number }> =>
+      page.evaluate(
+        (ms: number | null) => {
+          const api = (
+            window as unknown as {
+              __uiBridgeInjected?: {
+                whenSettled?: (
+                  t?: number
+                ) => Promise<{ settled: boolean; elementCount: number }>;
+                settled?: boolean;
+                elementCount?: number;
+              };
+            }
+          ).__uiBridgeInjected;
+          if (api?.whenSettled) return api.whenSettled(ms ?? undefined);
+          return Promise.resolve({
+            settled: api?.settled === true,
+            elementCount: api?.elementCount ?? 0,
+          });
+        },
+        (timeoutMs ?? null) as number | null
+      );
+
     return {
       kind: 'injected',
       page,
@@ -199,6 +302,8 @@ export class InjectedTransport extends HeadlessTransport {
       uiBridgeRegistered,
       ready: true,
       tabId,
+      settleState,
+      whenSettled,
       execute,
       find: (criteria?: Record<string, unknown>) => execute('find', criteria ?? {}),
       act: (id: string, request: Record<string, unknown>) =>

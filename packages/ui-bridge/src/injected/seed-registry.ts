@@ -92,6 +92,13 @@ export function seedRegistryFromDom(
 export interface ObserveOptions {
   /** Debounce (ms) for re-seeding after DOM mutations. Default 100. */
   debounceMs?: number;
+  /**
+   * Called after every seed pass (the initial pass and each debounced re-seed),
+   * with the registry's total element count at that point. The injected
+   * bootstrap uses this to drive its settle tracker. The count is read from the
+   * registry (not {@link SeedResult.registered}) so it reflects removals too.
+   */
+  onSeed?: (elementCount: number) => void;
 }
 
 /**
@@ -110,9 +117,14 @@ export function observeAndSeed(
 ): () => void {
   const tracked = new Map<HTMLElement, string>();
   const debounceMs = options.debounceMs ?? 100;
+  const onSeed = options.onSeed;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const reseed = () => seedRegistryFromDom(registry, root, { tracked });
+  const reseed = () => {
+    const result = seedRegistryFromDom(registry, root, { tracked });
+    onSeed?.(registry.getAllElements().length);
+    return result;
+  };
 
   // Initial pass.
   reseed();
