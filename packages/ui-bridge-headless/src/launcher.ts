@@ -61,6 +61,19 @@ export interface LaunchHeadlessTabOptions {
    * logging during client-side routing.
    */
   onPageUrl?: (url: string) => void;
+
+  /**
+   * Scripts to register on the browser context via
+   * `BrowserContext.addInitScript` BEFORE the first navigation. Each entry
+   * is evaluated in the page realm before any of the page's own scripts run
+   * and re-runs on every navigation in the context — the contract injected
+   * mode relies on to define `window.__uiBridgeInjected` before first paint
+   * (see the UI Bridge injected-transport plan §3.5).
+   *
+   * Backward-compatible: when unset, no init scripts are registered and
+   * behavior is unchanged.
+   */
+  initScripts?: string[];
 }
 
 export interface HeadlessTab {
@@ -135,6 +148,7 @@ export async function launchHeadlessTab(
     userAgent,
     forwardConsole = true,
     onPageUrl,
+    initScripts,
   } = options;
 
   const browser = await chromium.launch({ headless });
@@ -142,6 +156,15 @@ export async function launchHeadlessTab(
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent,
   });
+
+  // Register init scripts before the first page is created so they run in
+  // the page realm before any of the target's own scripts execute. Order is
+  // preserved — callers that need a config global available to a later
+  // bundle script should list the config script first.
+  for (const content of initScripts ?? []) {
+    await context.addInitScript({ content });
+  }
+
   const page = await context.newPage();
 
   if (forwardConsole) {

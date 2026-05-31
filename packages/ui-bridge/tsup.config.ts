@@ -33,6 +33,7 @@ export default defineConfig([
       'ctr/migrate': 'src/ctr/migrate-specs-to-ctr.ts',
       'verification-layers/index': 'src/verification-layers/index.ts',
       'artifacts/index': 'src/artifacts/index.ts',
+      'injected/index': 'src/injected/index.ts',
     },
     format: ['cjs', 'esm'],
     // DTS rollup traverses transitive types from node_modules; a handful
@@ -122,5 +123,33 @@ export default defineConfig([
       __SDK_VERSION__: JSON.stringify(pkg.version),
     },
     external: ['react', 'react-native'],
+  },
+  {
+    // Injected runtime bundle. A SELF-CONTAINED IIFE a driver injects via
+    // Playwright `addInitScript` into a page that ships no UI Bridge code
+    // (injected-transport plan §3.2). Output: `dist/injected/bundle.global.js`.
+    //
+    // No `external` — the bundle must run in a bare page realm with no module
+    // loader, so everything it references is inlined. `executeCommand`'s
+    // runtime graph is React-free and Node-free (the two react-importing
+    // modules, `debug/inspector` and `toast/use-ui-bridge-toasts`, are not in
+    // its path), so the bundle stays small and browser-safe. If a future edit
+    // drags `react`/`ws`/a Node builtin into the graph, this build surfaces it
+    // (bundled or unresolved) rather than letting it 404 at inject time.
+    entry: {
+      'injected/bundle': 'src/injected/bootstrap.ts',
+    },
+    format: ['iife'],
+    dts: false,
+    splitting: false,
+    sourcemap: true,
+    treeshake: true,
+    minify: true,
+    define: {
+      __SDK_VERSION__: JSON.stringify(pkg.version),
+    },
+    outExtension() {
+      return { js: '.global.js' };
+    },
   },
 ]);

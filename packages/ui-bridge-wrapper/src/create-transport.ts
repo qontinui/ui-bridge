@@ -11,6 +11,7 @@
 import { ApiTransport } from './transports/api.js';
 import { HeadlessTransport } from './transports/headless.js';
 import { HeadedTransport } from './transports/headed.js';
+import { InjectedTransport } from './transports/injected.js';
 import { LiveSessionTransport } from './transports/live.js';
 import type { TransportConfig, WrapperTransport } from './types.js';
 import { WrapperTransportError } from './types.js';
@@ -23,6 +24,8 @@ export function createTransport(config: TransportConfig): WrapperTransport {
       return new HeadlessTransport(config);
     case 'headed':
       return new HeadedTransport(config);
+    case 'injected':
+      return new InjectedTransport(config);
     case 'live': {
       // Allow Node wrappers to pass `ws` via `options.webSocketCtor` without
       // constructing `LiveSessionTransport` directly. In the browser, leave

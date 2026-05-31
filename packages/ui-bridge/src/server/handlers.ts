@@ -46,6 +46,7 @@ import {
   findElementByLabel,
 } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
+import { buildComponentNotFoundError } from './component-not-found';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
@@ -543,48 +544,14 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
   };
 }
 
-/**
- * Build the enriched "Component not found" error message used by every
- * component-detail / component-action 404 site (Phase 1.1, plan 2026-05-03).
- *
- * Output format:
- *   `Component "{id}" not found{otherRouteHint}. Available components: [...]. ` +
- *   `Components are only available when their page is active — navigate to ` +
- *   `the page that contains this component and try again.`
- *
- * `otherRouteHint` is appended only when `byRoute` (Phase 1.2 shape, with
- * per-route `ids`) shows the missing id is registered on a different route.
- * Falls back to no hint when `byRoute` / `currentRoute` are absent or the
- * id genuinely doesn't exist anywhere — callers don't have to special-case
- * the missing-snapshot scenario.
- */
-export function buildComponentNotFoundError(
-  id: string,
-  available: readonly string[],
-  byRoute?: Record<string, { count: number; ids: string[] }>,
-  currentRoute?: string | null
-): string {
-  let otherRouteHint = '';
-  if (byRoute) {
-    for (const [route, entry] of Object.entries(byRoute)) {
-      if (route === currentRoute) continue;
-      if (entry?.ids?.includes(id)) {
-        const cur =
-          typeof currentRoute === 'string' && currentRoute.length > 0
-            ? currentRoute
-            : '(unknown)';
-        otherRouteHint = ` (registered on route '${route}', current route is '${cur}')`;
-        break;
-      }
-    }
-  }
-  return (
-    `Component "${id}" not found${otherRouteHint}. ` +
-    `Available components: [${available.join(', ')}]. ` +
-    `Components are only available when their page is active — ` +
-    `navigate to the page that contains this component and try again.`
-  );
-}
+// `buildComponentNotFoundError` now lives in its own zero-dependency module
+// (`./component-not-found`) so browser-side consumers (the relay command
+// dispatcher, the injected runtime bundle) can import it without pulling the
+// whole `server/handlers` graph into a browser bundle. Imported here for the
+// internal 404 call sites and re-exported so existing
+// `import { buildComponentNotFoundError } from '.../server/handlers'` call
+// sites keep working.
+export { buildComponentNotFoundError };
 
 /**
  * Create structured failure details.

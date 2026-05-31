@@ -11,46 +11,18 @@
  * but portable to any app using @qontinui/ui-bridge.
  */
 
-import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
 import { useUIBridge } from './useUIBridge';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
-
-// SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
-const SSE_RECONNECT_DELAY_MS = 10_000;
-
-/**
- * JSON.stringify replacer that strips DOM nodes and handles circular references.
- * Command handler results can contain HTMLElement refs (e.g., from component
- * getState() or action handlers), which create cycles via React's __reactFiber$.
- */
-function safeJsonStringify(value: unknown): string {
-  const seen = new WeakSet();
-  return JSON.stringify(value, (_key, val) => {
-    if (val !== null && typeof val === 'object') {
-      // Strip DOM nodes — they're never meaningful in JSON responses
-      if (typeof Node !== 'undefined' && val instanceof Node) {
-        return `[${val.constructor.name}]`;
-      }
-      // Break circular references
-      if (seen.has(val)) return '[Circular]';
-      seen.add(val);
-    }
-    // Strip functions
-    if (typeof val === 'function') return undefined;
-    return val;
-  });
-}
-
-// Heartbeat interval — kept alive even when tab is hidden
-const HEARTBEAT_INTERVAL_MS = 10_000;
-
-interface QueuedCommand {
-  commandId: string;
-  action: string;
-  payload: unknown;
-  timestamp: number;
-}
+import {
+  startRelayClient,
+  resolveTabId,
+  resolveAuthToken,
+  transportHeaders,
+  parseSSEDataBlock,
+  resolveRegistrationMetadata,
+} from '../relay/relay-client';
 
 export interface UseCommandRelayOptions {
   /** Whether the relay is enabled (default: true) */
@@ -134,93 +106,10 @@ export interface UseCommandRelayOptions {
 }
 
 /**
- * Internal: resolve the current auth token from the consumer's hook, or
- * `null` if no token is available. Centralizes the null / empty-string /
- * undefined / throw normalization so each transport site doesn't have to
- * repeat it.
- */
-function resolveAuthToken(
-  authHeader: (() => string | null | undefined) | undefined,
-): string | null {
-  if (!authHeader) return null;
-  try {
-    const value = authHeader();
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Internal: produce the headers object for a transport POST, attaching
- * `Authorization: Bearer <token>` when a token is resolved.
- */
-function transportHeaders(
-  authHeader: (() => string | null | undefined) | undefined,
-): Record<string, string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  const token = resolveAuthToken(authHeader);
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
-}
-
-/**
- * Parse the `data:` payload out of a single SSE event block — the text
- * between `\n\n` delimiters. Returns the concatenated data string, or
- * `null` for blocks with no data field (e.g. `: heartbeat` keep-alive
- * comments). Mirrors the WhatWG SSE semantics for the fields the command
- * stream uses: `data:` lines are kept (one optional leading space
- * stripped); `:` comment lines and `event:`/`id:`/`retry:` lines are
- * ignored.
- */
-function parseSSEDataBlock(block: string): string | null {
-  const dataLines: string[] = [];
-  for (const line of block.split('\n')) {
-    if (line.startsWith(':')) continue;
-    if (!line.startsWith('data:')) continue;
-    let value = line.slice(5);
-    if (value.startsWith(' ')) value = value.slice(1);
-    dataLines.push(value);
-  }
-  return dataLines.length > 0 ? dataLines.join('\n') : null;
-}
-
-/**
- * Internal: resolve the current registration metadata from the consumer's
- * hook. Returns the live `{userId, sessionId}` shape ONLY when both fields
- * are non-empty strings; any other shape (null / partial / non-string) is
- * normalized to `null` so the heartbeat doesn't ship a half-valid
- * envelope the strict server would reject anyway. Defensive against
- * throwing hooks for the same reason `resolveAuthToken` is.
- */
-function resolveRegistrationMetadata(
-  hook: (() => { userId: string; sessionId: string } | null | undefined) | undefined,
-): { userId: string; sessionId: string } | null {
-  if (!hook) return null;
-  try {
-    const value = hook();
-    if (!value || typeof value !== 'object') return null;
-    const userId = (value as { userId?: unknown }).userId;
-    const sessionId = (value as { sessionId?: unknown }).sessionId;
-    if (typeof userId !== 'string' || userId.trim().length === 0) return null;
-    if (typeof sessionId !== 'string' || sessionId.trim().length === 0) return null;
-    return { userId: userId.trim(), sessionId: sessionId.trim() };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Test-only re-exports for the internal helpers above. The `__test_`
- * prefix follows the SDK convention for non-public-but-accessible names
- * (cf. `__SDK_VERSION__`). NOT part of the public API surface and may
- * change at any time.
+ * Test-only re-exports for the transport helpers, now sourced from the
+ * framework-free `relay-client` module. The `__test_` prefix follows the SDK
+ * convention for non-public-but-accessible names (cf. `__SDK_VERSION__`). NOT
+ * part of the public API surface and may change at any time.
  */
 export const __test_resolveAuthToken = resolveAuthToken;
 export const __test_transportHeaders = transportHeaders;
@@ -239,7 +128,9 @@ export const __test_resolveRegistrationMetadata = resolveRegistrationMetadata;
 export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const enabled = options?.enabled ?? true;
   const basePath = options?.basePath ?? '/api/ui-bridge';
-  const heartbeatIntervalMs = options?.heartbeatInterval ?? HEARTBEAT_INTERVAL_MS;
+  // Default mirrors `startRelayClient`'s own (10s); passed through explicitly
+  // so the effect's dep array tracks an override.
+  const heartbeatIntervalMs = options?.heartbeatInterval ?? 10_000;
   // Capture the auth-header hook in a ref so the 3 transport call sites
   // read the freshest token without re-running effects on every render.
   // The hook is called per-request inside the helpers above.
@@ -289,231 +180,20 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     [uiBridge, context]
   );
 
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const processCommandRef = useRef<(command: QueuedCommand) => void>(() => {});
-  // Exposes a force-reconnect function that the heartbeat loop can call when
-  // the server reports our tabId is no longer registered (silent SSE drop).
-  const forceReconnectRef = useRef<() => void>(() => {});
+  // Stable per-tab identifier, persisted across re-renders but unique per
+  // browser tab. Lazy initializer so the side effects (sessionStorage
+  // read/write, crypto.randomUUID) run exactly once during mount.
+  const [tabId] = useState<string>(() => resolveTabId());
 
-  // Stable per-tab identifier, persisted across re-renders but unique per browser tab.
-  // Uses useState lazy initializer so the side effects (sessionStorage read/write,
-  // crypto.randomUUID) run exactly once during mount, not on every render.
-  const [tabId] = useState<string>(() => {
-    const STORAGE_KEY = '__uiBridge_tabId';
-    let stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(STORAGE_KEY) : null;
-    if (!stored) {
-      stored = crypto.randomUUID();
-      try {
-        sessionStorage.setItem(STORAGE_KEY, stored);
-      } catch {
-        /* SSR or quota */
-      }
-    }
-    return stored;
-  });
+  // Keep the live BridgeAccess in a ref so the relay client's `execute`
+  // closure always dispatches against the freshest registry wiring without
+  // restarting the SSE/heartbeat loop on every render.
+  const bridgeRef = useRef<BridgeAccess>(bridge as unknown as BridgeAccess);
+  bridgeRef.current = bridge as unknown as BridgeAccess;
 
-  // ========================================================================
-  // Response Sender
-  // ========================================================================
-
-  const sendResponse = useCallback(
-    async (commandId: string, ok: boolean, result: unknown) => {
-      try {
-        await fetch(`${basePath}/commands`, {
-          method: 'POST',
-          headers: transportHeaders(authHeaderRef.current),
-          body: safeJsonStringify({
-            commandId,
-            success: ok,
-            result,
-            tabId,
-            error: ok ? undefined : (result as { error?: string })?.error,
-          }),
-        });
-      } catch (e) {
-        console.error('[UIBridge] Failed to send command response:', e);
-      }
-    },
-    [basePath, tabId]
-  );
-
-  // ========================================================================
-  // Command Processor
-  // ========================================================================
-
-  const processCommand = useCallback(
-    async (command: QueuedCommand) => {
-      try {
-        const result = await executeCommand(
-          command.action,
-          command.payload as Record<string, unknown>,
-          bridge as unknown as BridgeAccess
-        );
-        const resultObj = result as { success?: boolean };
-        if (resultObj && resultObj.success === false) {
-          await sendResponse(command.commandId, false, result);
-          return;
-        }
-        await sendResponse(command.commandId, true, result);
-      } catch (e: unknown) {
-        const errorMessage = e instanceof Error ? e.message : String(e);
-        let errorCode = 'UNKNOWN_ERROR';
-        if (errorMessage.includes('not found')) errorCode = 'ELEMENT_NOT_FOUND';
-        else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
-        else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
-
-        await sendResponse(command.commandId, false, {
-          success: false,
-          error: errorMessage,
-          failureDetails: {
-            errorCode,
-            message: errorMessage,
-            timestamp: Date.now(),
-          },
-          durationMs: 0,
-          timestamp: Date.now(),
-        });
-      }
-    },
-    [bridge, sendResponse]
-  );
-
-  // Keep processCommand ref current without triggering SSE reconnect
-  processCommandRef.current = processCommand;
-
-  // ========================================================================
-  // SSE Connection
-  // ========================================================================
-
-  useEffect(() => {
-    if (!enabled) {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      return;
-    }
-
-    let isMounted = true;
-    let abortController: AbortController | null = null;
-
-    const closeStream = () => {
-      if (abortController) {
-        abortController.abort();
-        abortController = null;
-      }
-    };
-
-    const scheduleReconnect = () => {
-      if (!isMounted) return;
-      if (reconnectTimeoutRef.current) return; // already scheduled
-      reconnectTimeoutRef.current = setTimeout(() => {
-        reconnectTimeoutRef.current = null;
-        if (isMounted) connect();
-      }, SSE_RECONNECT_DELAY_MS);
-    };
-
-    const connect = () => {
-      if (!isMounted) return;
-      closeStream();
-      const controller = new AbortController();
-      abortController = controller;
-
-      const url = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
-      const headers: Record<string, string> = { Accept: 'text/event-stream' };
-      const token = resolveAuthToken(authHeaderRef.current);
-      if (token) headers.Authorization = `Bearer ${token}`;
-
-      fetch(url, { method: 'GET', headers, signal: controller.signal, cache: 'no-store' })
-        .then(async (resp) => {
-          if (!resp.ok || !resp.body) {
-            if (abortController === controller) abortController = null;
-            scheduleReconnect();
-            return;
-          }
-          const reader = resp.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          try {
-            for (;;) {
-              const { value, done } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, { stream: true });
-              let sep: number;
-              while ((sep = buffer.indexOf('\n\n')) !== -1) {
-                const block = buffer.slice(0, sep);
-                buffer = buffer.slice(sep + 2);
-                const data = parseSSEDataBlock(block);
-                if (data == null) continue;
-                try {
-                  const parsed = JSON.parse(data);
-                  if (parsed.type === 'connected') continue;
-                  if (parsed.commandId && parsed.action) {
-                    processCommandRef.current(parsed as QueuedCommand);
-                  }
-                } catch (e) {
-                  console.error('[UIBridge] Failed to parse SSE message:', e);
-                }
-              }
-            }
-          } catch {
-            /* stream read aborted or network drop — fall through to reconnect */
-          }
-          if (abortController === controller) abortController = null;
-          if (isMounted && !controller.signal.aborted) scheduleReconnect();
-        })
-        .catch(() => {
-          if (abortController === controller) abortController = null;
-          if (isMounted && !controller.signal.aborted) scheduleReconnect();
-        });
-    };
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        // Reconnect immediately if the stream was dropped while hidden.
-        if (!abortController) {
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-          }
-          connect();
-        }
-      }
-      // Do NOT disconnect on hide — automation tools need background access
-    };
-
-    connect();
-    document.addEventListener('visibilitychange', handleVisibility);
-
-    forceReconnectRef.current = () => {
-      if (!isMounted) return;
-      closeStream();
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      connect();
-    };
-
-    return () => {
-      isMounted = false;
-      forceReconnectRef.current = () => {};
-      closeStream();
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [enabled, basePath, tabId]);
-
-  // ========================================================================
-  // Heartbeat
-  // ========================================================================
-
-  // Resolve heartbeat metadata fields once per render — these mirror the
-  // identity fields used by phone-home registration so the server's
-  // "what's actually connected right now" view matches the runner registry.
+  // Heartbeat metadata fields — mirror the identity fields used by phone-home
+  // registration so the server's "what's connected right now" view matches
+  // the runner registry. Read here so the effect restarts when they change.
   const heartbeatAppId = options?.appId;
   const heartbeatAppName = options?.appName;
   const heartbeatAppType = options?.appType;
@@ -521,78 +201,34 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
   const heartbeatCapabilities = options?.capabilities;
   const heartbeatVersion = options?.version;
 
+  // ========================================================================
+  // Relay transport (SSE receive + execute + result POST + heartbeat)
+  //
+  // Delegated to the framework-free `startRelayClient`, shared verbatim with
+  // the injected runtime bundle. The hook owns only the React-specific
+  // wiring: the live `bridge` ref, the freshest `authHeader` /
+  // `registrationMetadata` hooks (via refs), and effect lifecycle.
+  // ========================================================================
   useEffect(() => {
     if (!enabled) return;
 
-    const sendHeartbeat = async () => {
-      try {
-        // Build heartbeat body. Metadata fields are included only when the
-        // host app passes them, so older servers that don't read these stay
-        // backwards-compatible (extra JSON fields are simply ignored on the
-        // wire). Server uses them to populate `uiBridge` on health probes
-        // for the actually-connected tab(s).
-        const body: Record<string, unknown> = {
-          timestamp: Date.now(),
-          tabId,
-          url: typeof window !== 'undefined' ? window.location.href : undefined,
-          title: typeof document !== 'undefined' ? document.title : undefined,
-          visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
-        };
-        if (heartbeatAppId !== undefined) body.appId = heartbeatAppId;
-        if (heartbeatAppName !== undefined) body.appName = heartbeatAppName;
-        if (heartbeatAppType !== undefined) body.appType = heartbeatAppType;
-        if (heartbeatFramework !== undefined) body.framework = heartbeatFramework;
-        if (heartbeatCapabilities !== undefined) body.capabilities = heartbeatCapabilities;
-        if (heartbeatVersion !== undefined) body.version = heartbeatVersion;
-        // Strict per-user tab scoping: include `registrationMetadata` whenever
-        // the consumer wired the hook. Read fresh per heartbeat so a
-        // sessionId rotation on re-login is picked up without remounting.
-        // The strict server (v0.12+) rejects heartbeats without this field
-        // with HTTP 400 / `MISSING_REGISTRATION_METADATA`; older relays
-        // simply ignore the extra field, so it's safe to always include
-        // when the hook is wired.
-        const registrationMetadata = resolveRegistrationMetadata(
-          registrationMetadataRef.current
-        );
-        if (registrationMetadata !== null) {
-          body.registrationMetadata = registrationMetadata;
-        }
+    const client = startRelayClient({
+      basePath,
+      tabId,
+      heartbeatIntervalMs,
+      execute: (action, payload) =>
+        executeCommand(action, payload as Record<string, unknown>, bridgeRef.current),
+      authHeader: () => authHeaderRef.current?.(),
+      registrationMetadata: () => registrationMetadataRef.current?.(),
+      appId: heartbeatAppId,
+      appName: heartbeatAppName,
+      appType: heartbeatAppType,
+      framework: heartbeatFramework,
+      capabilities: heartbeatCapabilities,
+      version: heartbeatVersion,
+    });
 
-        const resp = await fetch(`${basePath}/heartbeat`, {
-          method: 'POST',
-          headers: transportHeaders(authHeaderRef.current),
-          body: JSON.stringify(body),
-        });
-        // Recovery: the server reports whether our tabId is a registered SSE
-        // listener. If it is not (e.g. after a client-side navigation that
-        // silently closed the fetch stream without surfacing an error), we
-        // need to reopen the stream — otherwise the tab will appear
-        // disconnected to all automation tools until the user reloads.
-        if (resp.ok) {
-          try {
-            const data = await resp.json();
-            const tabRegistered = data?.tabRegistered ?? data?.data?.tabRegistered ?? null;
-            if (tabRegistered === false) {
-              // Server lost our registration. Force a full reconnect
-              // regardless of the local stream's apparent state — the SSE
-              // may appear open locally while the server-side stream has
-              // already been reaped (e.g. after a client-side navigation
-              // that ran strict-mode double-effects or after a proxy
-              // dropped the idle connection).
-              forceReconnectRef.current();
-            }
-          } catch {
-            /* older server — no recovery payload */
-          }
-        }
-      } catch {
-        /* non-fatal */
-      }
-    };
-
-    sendHeartbeat();
-    const interval = setInterval(sendHeartbeat, heartbeatIntervalMs);
-    return () => clearInterval(interval);
+    return () => client.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- capabilities is a stable array reference for the component's lifetime
   }, [
     enabled,
