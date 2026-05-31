@@ -18,6 +18,9 @@
       "require": "./dist/react/index.cjs"
     }
   },
+  "bin": {
+    "ui-bridge-inject": "./dist/inject-cli.cjs"
+  },
   "files": [
     "dist",
     "README.md"
