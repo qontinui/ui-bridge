@@ -218,3 +218,36 @@ describe('validation error paths', () => {
     expect(USAGE).toContain('--exec');
   });
 });
+
+describe('settle flags', () => {
+  const base = ['--url', 'https://x.test/login', '--exec', 'find {}'];
+
+  it('defaults to settle-gating — no settle keys emitted', () => {
+    const opts = buildTransportOptions(parseArgs([...base]));
+    expect(opts.waitForSettle).toBeUndefined();
+    expect(opts.settleQuietMs).toBeUndefined();
+    expect(opts.settleTimeoutMs).toBeUndefined();
+  });
+
+  it('--no-settle emits waitForSettle:false', () => {
+    const opts = buildTransportOptions(parseArgs([...base, '--no-settle']));
+    expect(opts.waitForSettle).toBe(false);
+  });
+
+  it('--settle-quiet / --settle-timeout map to numeric options', () => {
+    const opts = buildTransportOptions(
+      parseArgs([...base, '--settle-quiet', '250', '--settle-timeout', '8000'])
+    );
+    expect(opts.settleQuietMs).toBe(250);
+    expect(opts.settleTimeoutMs).toBe(8000);
+  });
+
+  it('--settle-quiet accepts 0 (no quiet window) but rejects negatives', () => {
+    expect(buildTransportOptions(parseArgs([...base, '--settle-quiet', '0'])).settleQuietMs).toBe(0);
+    expect(() => parseArgs([...base, '--settle-quiet', '-1'])).toThrow(InjectCliArgError);
+  });
+
+  it('--settle-timeout rejects non-positive values', () => {
+    expect(() => parseArgs([...base, '--settle-timeout', '0'])).toThrow(InjectCliArgError);
+  });
+});
