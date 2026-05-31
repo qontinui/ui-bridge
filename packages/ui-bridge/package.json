@@ -14,6 +14,13 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
     },
+    "./injected": {
+      "types": "./dist/injected/index.d.ts",
+      "import": "./dist/injected/index.mjs",
+      "require": "./dist/injected/index.js"
+    },
+    "./injected/bundle.global.js": "./dist/injected/bundle.global.js",
+    "./package.json": "./package.json",
     "./core": {
       "types": "./dist/core/index.d.ts",
       "import": "./dist/core/index.mjs",

@@ -42,7 +42,7 @@ export interface HeadlessTransportOptions {
 
 /** Context shape delivered to each headless/headed handler. */
 export interface HeadlessContext {
-  readonly kind: 'headless' | 'headed';
+  readonly kind: 'headless' | 'headed' | 'injected';
   readonly page: Page;
   readonly browserContext: BrowserContext;
   readonly browser: Browser;
@@ -62,7 +62,7 @@ export class HeadlessTransport extends BaseTransport {
   protected readonly options: HeadlessTransportOptions;
   protected readonly headless: boolean;
 
-  private tab: {
+  protected tab: {
     browser: Browser;
     context: BrowserContext;
     page: Page;
@@ -116,6 +116,9 @@ export class HeadlessTransport extends BaseTransport {
     // keeps startup snappy.
     const { launchHeadlessTab } = await import('@qontinui/ui-bridge-headless');
 
+    // Subclasses (injected) supply init-scripts to run before first paint.
+    const initScripts = await this.buildInitScripts();
+
     const tab = await launchHeadlessTab({
       url: this.options.targetUrl,
       headless: this.headless,
@@ -125,6 +128,7 @@ export class HeadlessTransport extends BaseTransport {
       viewportHeight: this.options.viewportHeight,
       userAgent: this.options.userAgent,
       forwardConsole: this.options.forwardConsole,
+      initScripts: initScripts.length > 0 ? initScripts : undefined,
     });
 
     this.tab = {
@@ -135,6 +139,27 @@ export class HeadlessTransport extends BaseTransport {
       tabId: tab.tabId,
       close: tab.close,
     };
+
+    // Subclass hook: block until the page-side runtime is ready (e.g. the
+    // injected bundle reports `window.__uiBridgeInjected.ready === true`).
+    await this.afterLaunch(tab.page);
+  }
+
+  /**
+   * Subclass hook: init-scripts to register on the browser context before the
+   * first navigation (via `context.addInitScript`). Default: none. Injected
+   * mode overrides this to inject the config + runtime bundle pre-paint.
+   */
+  protected async buildInitScripts(): Promise<string[]> {
+    return [];
+  }
+
+  /**
+   * Subclass hook: run after launch + navigation, before `ready()` resolves.
+   * Default: no-op. Injected mode overrides it to await the in-page runtime.
+   */
+  protected async afterLaunch(_page: Page): Promise<void> {
+    // no-op for headless/headed
   }
 
   protected async onClose(): Promise<void> {

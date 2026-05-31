@@ -193,16 +193,35 @@ export interface DOMFallbackElement {
   _domFallback: true;
 }
 
+/** A {@link DOMFallbackElement} paired with the live `HTMLElement` it describes. */
+export interface DOMFallbackElementWithRef extends DOMFallbackElement {
+  /**
+   * The live DOM node. Carried alongside the serialized data so callers that
+   * need to act on the element (e.g. the injected-mode registry seeder, which
+   * registers each node into a `UIBridgeRegistry` with its live ref) don't
+   * have to re-query. Never serialized over the wire — strip it via
+   * {@link scanDOMForInteractiveElements} when only data is needed.
+   */
+  element: HTMLElement;
+}
+
 /**
- * Scan the DOM for interactive elements as a fallback when the SDK registry is empty.
- * Returns structured element data compatible with the standard discovery response format.
+ * Core DOM scan: returns each interactive element's structured data **and**
+ * its live `HTMLElement` ref. The single source of truth for the selector
+ * walk, id derivation, and collision disambiguation.
+ *
+ * Use this when you need to operate on the elements (register them, act on
+ * them). Use {@link scanDOMForInteractiveElements} when you only need the
+ * serializable data (the wire / diagnostics path).
  */
-export function scanDOMForInteractiveElements(root?: HTMLElement): DOMFallbackElement[] {
+export function scanDOMForInteractiveElementsWithRefs(
+  root?: HTMLElement
+): DOMFallbackElementWithRef[] {
   const container = root ?? document.body;
   if (!container) return [];
 
   const nodeList = container.querySelectorAll<HTMLElement>(COMBINED_SELECTOR);
-  const elements: DOMFallbackElement[] = [];
+  const elements: DOMFallbackElementWithRef[] = [];
   const seenIds = new Set<string>();
 
   nodeList.forEach((el, index) => {
@@ -250,10 +269,22 @@ export function scanDOMForInteractiveElements(root?: HTMLElement): DOMFallbackEl
         htmlId: el.id || undefined,
       },
       _domFallback: true,
+      element: el,
     });
   });
 
   return elements;
+}
+
+/**
+ * Scan the DOM for interactive elements as a fallback when the SDK registry is empty.
+ * Returns structured element data compatible with the standard discovery response format.
+ *
+ * Thin wrapper over {@link scanDOMForInteractiveElementsWithRefs} that drops
+ * the live `element` ref so the result is JSON-serializable.
+ */
+export function scanDOMForInteractiveElements(root?: HTMLElement): DOMFallbackElement[] {
+  return scanDOMForInteractiveElementsWithRefs(root).map(({ element: _element, ...data }) => data);
 }
 
 /**

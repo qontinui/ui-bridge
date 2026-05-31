@@ -27,7 +27,7 @@ import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
-import { buildComponentNotFoundError } from '../server/handlers';
+import { buildComponentNotFoundError } from '../server/component-not-found';
 import {
   findElementsByText,
   findElementBySelector,

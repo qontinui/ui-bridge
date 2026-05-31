@@ -10,7 +10,7 @@
 import type { HandlerRegistry, WrapperHandler } from './handler-registry.js';
 
 /** Supported transport kinds for a wrapper runtime. */
-export type WrapperTransportKind = 'api' | 'headless' | 'headed' | 'live';
+export type WrapperTransportKind = 'api' | 'headless' | 'headed' | 'live' | 'injected';
 
 /** Transport lifecycle states surfaced to callers (and React via `useWrapperStatus`). */
 export type WrapperTransportStatus = 'idle' | 'connecting' | 'ready' | 'error' | 'closed';
