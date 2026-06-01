@@ -196,10 +196,20 @@ const CHROME_ONLY_HTML = `<!doctype html>
 </body>
 </html>`;
 
+// A genuinely empty page: static text only, ZERO interactive elements, so the
+// registry stays at 0 and the (no-selector) settle gate is never satisfied.
+const EMPTY_HTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Nothing here</title></head>
+<body><main><p>Just some static text. No controls.</p></main></body>
+</html>`;
+
 let chromeServer: Server;
 let chromeUrl: string;
 let chromeOnlyServer: Server;
 let chromeOnlyUrl: string;
+let emptyServer: Server;
+let emptyUrl: string;
 
 beforeAll(async () => {
   chromeServer = createServer((_req, res) => {
@@ -215,12 +225,20 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => chromeOnlyServer.listen(0, '127.0.0.1', resolve));
   chromeOnlyUrl = `http://127.0.0.1:${(chromeOnlyServer.address() as AddressInfo).port}/login`;
+
+  emptyServer = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(EMPTY_HTML);
+  });
+  await new Promise<void>((resolve) => emptyServer.listen(0, '127.0.0.1', resolve));
+  emptyUrl = `http://127.0.0.1:${(emptyServer.address() as AddressInfo).port}/login`;
 });
 
 afterAll(async () => {
   if (chromeServer) await new Promise<void>((resolve) => chromeServer.close(() => resolve()));
   if (chromeOnlyServer)
     await new Promise<void>((resolve) => chromeOnlyServer.close(() => resolve()));
+  if (emptyServer) await new Promise<void>((resolve) => emptyServer.close(() => resolve()));
 });
 
 describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (expectSelector gate)', () => {
@@ -309,6 +327,38 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (expectSelector gate
         expect(state.settled).toBe(true);
         expect(state.settledByTimeout).toBe(true);
         expect(state.expectSatisfied).toBe(false);
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    },
+    60_000
+  );
+
+  it(
+    'ready() throws on a genuinely empty page even with NO expectSelector (0-element BLOCKED)',
+    async () => {
+      // No expectSelector: the default gate is "≥1 element registered". An empty
+      // page never satisfies it, so the settle cap fires with expectSatisfied:false
+      // and afterLaunch throws rather than handing back a control-less page.
+      const transport = createTransport({
+        kind: 'injected',
+        options: {
+          targetUrl: emptyUrl,
+          readyTimeoutMs: 30_000,
+          settleQuietMs: 300,
+          settleTimeoutMs: 1_500, // short cap: nothing interactive ever mounts
+        },
+      });
+
+      try {
+        const err = await transport.ready().then(
+          () => null,
+          (e: unknown) => e
+        );
+        expect(err).not.toBeNull();
+        expect(err).toMatchObject({ code: 'INJECTED_EXPECT_SELECTOR_UNMET' });
+        // The no-selector branch names the empty registry, not a selector.
+        expect(String((err as Error).message)).toContain('empty registry');
       } finally {
         await transport.close().catch(() => {});
       }
