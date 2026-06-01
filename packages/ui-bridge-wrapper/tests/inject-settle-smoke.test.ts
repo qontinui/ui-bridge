@@ -154,3 +154,165 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (deferred render)', 
     60_000
   );
 });
+
+/**
+ * Expected-selector gate (Gap 1): chrome paints first and goes quiet, THEN the
+ * login form mounts ~1.2s later — past the quiet window. The plain settle gate
+ * fires on the chrome (form absent); `expectSelector: '#login'` waits for the
+ * form. And when the gated control never appears, `ready()` throws a structured
+ * BLOCKED error instead of returning a control-less page.
+ */
+const CHROME_THEN_FORM_HTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>App</title></head>
+<body>
+  <header><nav><button type="button">Menu</button></nav></header>
+  <main><p>Welcome</p></main>
+  <script>
+    // The login form mounts well AFTER the chrome has gone quiet (1200ms >
+    // the 400ms settle quiet window), so a plain settle gate settles on the
+    // chrome — only an expectSelector gate waits for #login.
+    setTimeout(function () {
+      var main = document.querySelector('main');
+      main.innerHTML =
+        '<form id="login">' +
+        '<label for="email">Email</label>' +
+        '<input id="email" name="email" type="email" />' +
+        '<label for="password">Password</label>' +
+        '<input id="password" name="password" type="password" />' +
+        '<button type="submit">Sign in</button>' +
+        '</form>';
+    }, 1200);
+  </script>
+</body>
+</html>`;
+
+const CHROME_ONLY_HTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>App</title></head>
+<body>
+  <header><nav><button type="button">Menu</button></nav></header>
+  <main><p>Welcome</p></main>
+</body>
+</html>`;
+
+let chromeServer: Server;
+let chromeUrl: string;
+let chromeOnlyServer: Server;
+let chromeOnlyUrl: string;
+
+beforeAll(async () => {
+  chromeServer = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(CHROME_THEN_FORM_HTML);
+  });
+  await new Promise<void>((resolve) => chromeServer.listen(0, '127.0.0.1', resolve));
+  chromeUrl = `http://127.0.0.1:${(chromeServer.address() as AddressInfo).port}/login`;
+
+  chromeOnlyServer = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(CHROME_ONLY_HTML);
+  });
+  await new Promise<void>((resolve) => chromeOnlyServer.listen(0, '127.0.0.1', resolve));
+  chromeOnlyUrl = `http://127.0.0.1:${(chromeOnlyServer.address() as AddressInfo).port}/login`;
+});
+
+afterAll(async () => {
+  if (chromeServer) await new Promise<void>((resolve) => chromeServer.close(() => resolve()));
+  if (chromeOnlyServer)
+    await new Promise<void>((resolve) => chromeOnlyServer.close(() => resolve()));
+});
+
+describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (expectSelector gate)', () => {
+  it(
+    'expectSelector waits for the lazily-mounted form past the quiet window',
+    async () => {
+      const transport = createTransport({
+        kind: 'injected',
+        options: {
+          targetUrl: chromeUrl,
+          readyTimeoutMs: 30_000,
+          settleQuietMs: 400,
+          settleTimeoutMs: 20_000,
+          expectSelector: '#login',
+        },
+      });
+      transport.register('getControlSnapshot', (p: unknown, ctx: unknown) =>
+        (ctx as InjectedContext).execute('getControlSnapshot', p)
+      );
+
+      try {
+        await transport.ready(); // gated on #login, not the chrome
+        const snapshot = (await transport.dispatch('getControlSnapshot', {})) as unknown;
+        const snapText = JSON.stringify(snapshot).toLowerCase();
+        // The lazily-mounted form is present at the first snapshot.
+        expect(snapText).toContain('password');
+        expect(snapText).toContain('sign in');
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    },
+    60_000
+  );
+
+  it(
+    'ready() throws INJECTED_EXPECT_SELECTOR_UNMET when the gated control never appears',
+    async () => {
+      const transport = createTransport({
+        kind: 'injected',
+        options: {
+          targetUrl: chromeOnlyUrl,
+          readyTimeoutMs: 30_000,
+          settleQuietMs: 300,
+          settleTimeoutMs: 1_500, // short cap: #login never mounts here
+          expectSelector: '#login',
+        },
+      });
+
+      try {
+        await expect(transport.ready()).rejects.toMatchObject({
+          code: 'INJECTED_EXPECT_SELECTOR_UNMET',
+        });
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    },
+    60_000
+  );
+
+  it(
+    'settleState reports settledByTimeout + expectSatisfied=false on the unmet page (no-settle escape)',
+    async () => {
+      // With waitForSettle=false ready() does not throw, so a driver can still
+      // inspect the state machine's verdict directly.
+      const transport = createTransport({
+        kind: 'injected',
+        options: {
+          targetUrl: chromeOnlyUrl,
+          readyTimeoutMs: 30_000,
+          settleQuietMs: 300,
+          settleTimeoutMs: 1_500,
+          expectSelector: '#login',
+          waitForSettle: false,
+        },
+      });
+      let captured: InjectedContext | null = null;
+      transport.register('__ctx', (_p: unknown, ctx: unknown) => {
+        captured = ctx as InjectedContext;
+        return true;
+      });
+
+      try {
+        await transport.ready();
+        await transport.dispatch('__ctx');
+        const state = await captured!.whenSettled(5_000);
+        expect(state.settled).toBe(true);
+        expect(state.settledByTimeout).toBe(true);
+        expect(state.expectSatisfied).toBe(false);
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    },
+    60_000
+  );
+});

@@ -27,6 +27,27 @@ export interface InjectedRuntimeApi {
    * eventually (genuinely-empty and never-quiet pages resolve at the timeout).
    */
   settled: boolean;
+  /**
+   * `true` when the settle was forced by the hard timeout cap rather than the
+   * gating condition going quiet. A `settled` runtime with
+   * `settledByTimeout: true` AND `expectSatisfied: false` means the expected
+   * content never appeared in time — a driver should treat that as
+   * BLOCKED/UNVERIFIED, not a clean settle.
+   */
+  settledByTimeout: boolean;
+  /**
+   * Whether the settle gating condition was met. With no {@link expectSelector}
+   * this tracks "≥1 element registered"; with one, "an element matching the
+   * selector exists". On a clean (non-timeout) settle this is always `true`.
+   */
+  expectSatisfied: boolean;
+  /**
+   * The expected-selector gate in effect, or `null` if settle gates only on
+   * "any content present". When set, settle won't fire until an element matching
+   * this CSS selector exists — so a driver gets the TARGET control, not just the
+   * first chrome that paints.
+   */
+  expectSelector: string | null;
   /** Interactive elements registered as of the most recent seed pass. */
   elementCount: number;
   /** SDK version the bundle was built from. */
@@ -38,7 +59,12 @@ export interface InjectedRuntimeApi {
    * timed-out wait reports `settled: false`. Drivers prefer this over polling
    * `getControlSnapshot` through hydration.
    */
-  whenSettled(timeoutMs?: number): Promise<{ settled: boolean; elementCount: number }>;
+  whenSettled(timeoutMs?: number): Promise<{
+    settled: boolean;
+    elementCount: number;
+    settledByTimeout: boolean;
+    expectSatisfied: boolean;
+  }>;
   /**
    * Run a relay command action against the populated registry — the exact
    * dispatcher embedded apps use (`executeCommand`). Returns the action result
@@ -77,6 +103,14 @@ export interface InjectedRuntimeConfig {
    * ongoing mutations (never-quiet or empty pages). Default 10000.
    */
   settleTimeoutMs?: number;
+  /**
+   * Optional CSS selector that must match an element before the runtime
+   * considers the DOM settled. Use it when the target control (e.g. a login
+   * form) mounts lazily AFTER unrelated chrome — without it, settle can fire on
+   * the chrome and `ready()` returns before the target exists. A malformed
+   * selector is ignored (treated as no gate).
+   */
+  expectSelector?: string;
 }
 
 declare global {

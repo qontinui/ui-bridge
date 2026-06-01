@@ -59,6 +59,11 @@ Optional:
                                which is almost always what you want.
   --settle-quiet <ms>          Quiet window with no DOM re-seed before settled (default 500)
   --settle-timeout <ms>        Hard cap before settling regardless of mutations (default 10000)
+  --expect-selector <css>      Don't settle until an element matching this CSS selector
+                               exists — use when the target control (e.g. a login form)
+                               mounts lazily after unrelated chrome. If it never appears
+                               before --settle-timeout, ready() fails with a BLOCKED error
+                               instead of returning a control-less page.
   --viewport <WxH>             Viewport size, e.g. 1280x720
   --quiet                      Suppress human-readable logs (JSON results still print)
   --help, -h                   Print this help and exit
@@ -95,6 +100,7 @@ export interface InjectCliArgs {
   waitForSettle: boolean;
   settleQuietMs: number | null;
   settleTimeoutMs: number | null;
+  expectSelector: string | null;
   appId: string | null;
   appName: string | null;
   tabId: string | null;
@@ -159,6 +165,7 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     waitForSettle: true,
     settleQuietMs: null,
     settleTimeoutMs: null,
+    expectSelector: null,
     appId: null,
     appName: null,
     tabId: null,
@@ -276,6 +283,14 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.settleTimeoutMs = n;
         break;
       }
+      case '--expect-selector': {
+        const raw = argv[++i];
+        if (raw === undefined || raw.length === 0) {
+          throw new InjectCliArgError(`--expect-selector expects a CSS selector (got <missing>)`);
+        }
+        args.expectSelector = raw;
+        break;
+      }
       case '--viewport': {
         const raw = argv[++i];
         const match = raw?.match(/^(\d+)x(\d+)$/);
@@ -340,6 +355,7 @@ export function buildTransportOptions(args: InjectCliArgs): Record<string, unkno
   if (!args.waitForSettle) options.waitForSettle = false;
   if (args.settleQuietMs !== null) options.settleQuietMs = args.settleQuietMs;
   if (args.settleTimeoutMs !== null) options.settleTimeoutMs = args.settleTimeoutMs;
+  if (args.expectSelector !== null) options.expectSelector = args.expectSelector;
   if (args.appId) options.appId = args.appId;
   if (args.appName) options.appName = args.appName;
   if (args.tabId) options.tabId = args.tabId;

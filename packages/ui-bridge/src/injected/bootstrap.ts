@@ -50,9 +50,36 @@ declare const __SDK_VERSION__: string;
     timeoutMs: typeof cfg?.settleTimeoutMs === 'number' ? cfg.settleTimeoutMs : 10_000,
   });
 
+  // Optional expected-selector gate: when set, a seed pass only counts as
+  // "satisfied" (arming the quiet countdown) once an element matching the
+  // selector exists in the DOM. This stops settle from firing early on unrelated
+  // chrome that paints before a lazily-mounted target control (e.g. a login
+  // widget). A malformed selector is treated as "no gate" rather than throwing.
+  const expectSelector =
+    typeof cfg?.expectSelector === 'string' && cfg.expectSelector.length > 0
+      ? cfg.expectSelector
+      : null;
+  const expectMatches = (): boolean => {
+    if (!expectSelector) return true; // no gate → "content present" governs via count
+    try {
+      return document.querySelector(expectSelector) !== null;
+    } catch {
+      return true; // invalid selector: don't wedge the runtime, fall back to count
+    }
+  };
+
+  const mirrorSettleState = (): void => {
+    api.settled = settle.settled;
+    api.settledByTimeout = settle.settledByTimeout;
+    api.expectSatisfied = settle.expectSatisfied;
+  };
+
   const api: InjectedRuntimeApi = {
     ready: false,
     settled: false,
+    settledByTimeout: false,
+    expectSatisfied: false,
+    expectSelector,
     elementCount: 0,
     version: typeof __SDK_VERSION__ === 'string' ? __SDK_VERSION__ : 'unknown',
     whenSettled: (timeoutMs?: number) => settle.whenSettled(timeoutMs),
@@ -65,22 +92,23 @@ declare const __SDK_VERSION__: string;
     // Begin the settle hard-timeout cap as soon as observation starts.
     settle.start();
     // Populate + keep the registry live from the bare DOM. Each seed pass feeds
-    // the settle tracker, which flips `settled` once the DOM quiets after
-    // content appears (or the cap elapses) and mirrors state onto the api.
+    // the settle tracker, which flips `settled` once the gated DOM quiets after
+    // content appears (or the cap elapses) and mirrors state onto the api. When
+    // an expected-selector gate is set, a pass is only "satisfied" once that
+    // selector matches — so settle waits for the TARGET control, not just any
+    // content.
     observeAndSeed(registry, document.body, {
       onSeed: (elementCount) => {
         api.elementCount = elementCount;
-        settle.noteSeed(elementCount);
-        api.settled = settle.settled;
+        settle.noteSeed(elementCount, expectSelector ? expectMatches() : undefined);
+        mirrorSettleState();
       },
     });
     api.ready = true;
-    // The quiet/cap timers flip `settle.settled` asynchronously; mirror it onto
-    // the api when it resolves so `window.__uiBridgeInjected.settled` is current
+    // The quiet/cap timers flip `settle.settled` asynchronously; mirror state
+    // onto the api when it resolves so `window.__uiBridgeInjected.*` is current
     // even between seed passes.
-    void settle.whenSettled().then(() => {
-      api.settled = true;
-    });
+    void settle.whenSettled().then(mirrorSettleState);
 
     // Variant B — register as a relay tab when a base was injected.
     if (cfg?.uiBridgeBase) {
