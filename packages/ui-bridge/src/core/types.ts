@@ -9,6 +9,7 @@ import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-t
 export type { CapturedError } from '../debug/browser-capture-types';
 import type { ErrorSeverity } from '../debug/error-severity';
 import type { ErrorImpact } from '../debug/error-impact';
+import type { EffectVerification } from '../control/effect-types';
 import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { SnapshotToastContext } from '../toast/types';
@@ -881,6 +882,8 @@ export interface ActionResponse {
   errorDiff?: ActionErrorDiff;
   /** Error impact assessment: how errors affected the UI (only present when significant errors occurred) */
   errorImpact?: ErrorImpact;
+  /** D3 effect-calculus verification: predicted-vs-observed outcome for this action (present only when a signature resolved). */
+  effectVerification?: EffectVerification;
 }
 
 /**

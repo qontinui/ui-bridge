@@ -68,6 +68,12 @@ import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
+import { EffectVerifier } from './effect-verifier';
+import { createDefaultSignatureRegistry } from './effect-signatures';
+import { createSnapshotManager } from '../ai/semantic-snapshot';
+import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
+import type { SignatureLookup } from './effect-signatures';
+import type { ActionParams, EffectVerification, ObservabilityScope } from './effect-types';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -648,18 +654,67 @@ export class DefaultActionExecutor implements ActionExecutor {
   private discoveryCache = new Map<string, HTMLElement>();
   private maxDiscoveryCacheSize: number;
 
+  // ---- D3 effect calculus (opt-in; default off = zero hot-path cost) ----
+  /** When true, actions with a resolvable signature run a predict-then-verify
+   *  cycle and attach `effectVerification` to the response. Off by default so
+   *  existing action behaviour is byte-identical. */
+  private effectVerificationEnabled: boolean;
+  /** Signature registry resolving an EffectSignature per (action, element). */
+  private signatureRegistry: SignatureLookup;
+  /** Lazily built — only constructed when verification first runs. */
+  private effectVerifier?: EffectVerifier;
+  /** Lazily built — converts a ControlSnapshot into a SemanticSnapshot. */
+  private snapshotManager?: SemanticSnapshotManager;
+
   constructor(
     private registry: UIBridgeRegistry,
     private consoleCapture?: BrowserEventCapture,
-    options?: { maxDiscoveryCacheSize?: number }
+    options?: {
+      maxDiscoveryCacheSize?: number;
+      /** Enable D3 effect-calculus verification (default false). */
+      enableEffectVerification?: boolean;
+      /** Override the signature registry (default: the Phase 1 defaults). */
+      signatureRegistry?: SignatureLookup;
+    }
   ) {
     this.maxDiscoveryCacheSize = options?.maxDiscoveryCacheSize ?? 500;
+    this.effectVerificationEnabled = options?.enableEffectVerification ?? false;
+    this.signatureRegistry = options?.signatureRegistry ?? createDefaultSignatureRegistry();
     // Initialize impact assessor if we're in a browser environment
     if (typeof document !== 'undefined') {
       this.impactAssessor = new ErrorImpactAssessor({
         captureUIState: () => this.captureUIStateSnapshot(),
       });
     }
+  }
+
+  /**
+   * Toggle D3 effect-calculus verification at runtime. When enabled, any action
+   * whose `(action, element)` resolves an {@link EffectSignature} runs a
+   * predict-then-verify cycle and returns `effectVerification` on its response.
+   */
+  setEffectVerificationEnabled(enabled: boolean): void {
+    this.effectVerificationEnabled = enabled;
+  }
+
+  /**
+   * Lazily build the {@link EffectVerifier}. Its snapshot dependency reuses the
+   * executor's existing `getSnapshot()` (ControlSnapshot) and the semantic
+   * snapshot manager — no parallel capture pipeline. The scope arg is accepted
+   * for future scoped capture; Phase 1 captures whole-page (coverage stays 1).
+   */
+  private getEffectVerifier(): EffectVerifier {
+    if (!this.effectVerifier) {
+      this.effectVerifier = new EffectVerifier({
+        captureSnapshot: async (_scope: ObservabilityScope) => {
+          const control = await this.getSnapshot();
+          if (!this.snapshotManager) this.snapshotManager = createSnapshotManager();
+          return this.snapshotManager.createSnapshot(control);
+        },
+        settle: (ms: number) => sleep(ms),
+      });
+    }
+    return this.effectVerifier;
   }
 
   /**
@@ -923,7 +978,36 @@ export class DefaultActionExecutor implements ActionExecutor {
           actionParams = { ...dragRootFields, ...request.params };
         }
       }
-      const result = await this.performAction(element, request.action, actionParams);
+      // D3 effect calculus: when enabled AND a signature resolves for this
+      // (action, element), wrap the execution in a predict-then-verify cycle.
+      // Default-off and signature-gated, so the common path is unchanged. The
+      // verifier never throws on a bad prediction (the outcome is data); only a
+      // genuine action failure propagates to the catch below.
+      let result: unknown;
+      let effectVerification: EffectVerification | undefined;
+      const signature = this.effectVerificationEnabled
+        ? this.signatureRegistry.resolve(
+            request.action,
+            { id: elementId, reveals: registered?.reveals },
+            actionParams as Record<string, unknown> | undefined
+          )
+        : undefined;
+      if (signature) {
+        const effectParams: ActionParams = {
+          action: request.action,
+          elementId,
+          params: actionParams as Record<string, unknown> | undefined,
+        };
+        const verified = await this.getEffectVerifier().verifyAction(
+          effectParams,
+          signature,
+          () => this.performAction(element, request.action, actionParams)
+        );
+        result = verified.result;
+        effectVerification = verified.verification;
+      } else {
+        result = await this.performAction(element, request.action, actionParams);
+      }
 
       // Visual click feedback — show a brief highlight at the action location
       // for observability during automation (TuriX-CUA inspired pattern)
@@ -1011,6 +1095,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         browserEvents,
         errorDiff,
         errorImpact,
+        effectVerification,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
