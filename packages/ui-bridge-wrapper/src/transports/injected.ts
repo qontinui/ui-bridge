@@ -78,6 +78,15 @@ interface InjectedExtraOptions {
   settleQuietMs?: number;
   /** Hard cap (ms) after which the runtime settles regardless. Default 10000. */
   settleTimeoutMs?: number;
+  /**
+   * CSS selector that must match before the DOM counts as settled. Without it,
+   * settle fires on any content going quiet — which can be unrelated chrome that
+   * paints before a lazily-mounted target control. With it, `ready()` waits for
+   * the TARGET; and if the selector never matches before the settle cap,
+   * `afterLaunch` throws `INJECTED_EXPECT_SELECTOR_UNMET` instead of returning a
+   * page that's missing the control.
+   */
+  expectSelector?: string;
   /** Bearer token for the auth-gated relay (Variant B). */
   authToken?: string;
   /** Strict per-user tab-scoping metadata for relay heartbeats (Variant B). */
@@ -88,6 +97,18 @@ interface InjectedExtraOptions {
   appName?: string;
   /** Stable per-tab id override (Variant B). */
   tabId?: string;
+}
+
+/** In-page settle state surfaced by {@link InjectedContext.settleState}/`whenSettled`. */
+export interface InjectedSettleState {
+  /** True once the DOM has settled (gated quiet window, or the hard cap). */
+  settled: boolean;
+  /** Interactive elements registered as of the most recent seed pass. */
+  elementCount: number;
+  /** True when settle was forced by the cap rather than a clean quiet window. */
+  settledByTimeout: boolean;
+  /** Whether the gating condition (content / expectSelector) was met. */
+  expectSatisfied: boolean;
 }
 
 /**
@@ -106,14 +127,15 @@ export interface InjectedContext extends HeadlessContext {
    * Re-read the in-page runtime's current settle state. After `ready()` with
    * the default `waitForSettle`, this is already `settled: true`; it's exposed
    * for drivers that disabled settle-gating or want the live element count.
+   * `settledByTimeout` + `expectSatisfied: false` means the gate never met.
    */
-  settleState(): Promise<{ settled: boolean; elementCount: number }>;
+  settleState(): Promise<InjectedSettleState>;
   /**
    * Wait for the in-page runtime to report settled (DOM quiet after content),
    * or `timeoutMs`. Useful after a soft-navigation re-render when the caller
    * wants to re-settle before the next assertion.
    */
-  whenSettled(timeoutMs?: number): Promise<{ settled: boolean; elementCount: number }>;
+  whenSettled(timeoutMs?: number): Promise<InjectedSettleState>;
   /** Run any relay action against the in-page runtime. */
   execute<T = unknown>(action: string, payload?: unknown): Promise<T>;
   /** Semantic find — by label / text / role / type / testId. */
@@ -142,6 +164,10 @@ export class InjectedTransport extends HeadlessTransport {
         typeof raw['settleQuietMs'] === 'number' ? (raw['settleQuietMs'] as number) : undefined,
       settleTimeoutMs:
         typeof raw['settleTimeoutMs'] === 'number' ? (raw['settleTimeoutMs'] as number) : undefined,
+      expectSelector:
+        typeof raw['expectSelector'] === 'string' && (raw['expectSelector'] as string).length > 0
+          ? (raw['expectSelector'] as string)
+          : undefined,
       authToken: typeof raw['authToken'] === 'string' ? (raw['authToken'] as string) : undefined,
       registrationMetadata: isRegistrationMetadata(raw['registrationMetadata'])
         ? (raw['registrationMetadata'] as { userId: string; sessionId: string })
@@ -173,6 +199,8 @@ export class InjectedTransport extends HeadlessTransport {
       cfg.settleQuietMs = this.injected.settleQuietMs;
     if (this.injected.settleTimeoutMs !== undefined)
       cfg.settleTimeoutMs = this.injected.settleTimeoutMs;
+    if (this.injected.expectSelector !== undefined)
+      cfg.expectSelector = this.injected.expectSelector;
     return Object.keys(cfg).length > 0 ? cfg : null;
   }
 
@@ -214,9 +242,14 @@ export class InjectedTransport extends HeadlessTransport {
     // hydration. The runtime always settles eventually (its own hard cap), so
     // this resolves the in-page `whenSettled()` rather than racing a Playwright
     // poll; we still bound the outer wait by readyTimeoutMs as a backstop in
-    // case the page realm wedged. Non-fatal: a settle wait that doesn't resolve
-    // (e.g. realm torn down) leaves `ready` true and lets dispatch proceed.
+    // case the page realm wedged.
     if (this.injected.waitForSettle) {
+      let state: {
+        settled: boolean;
+        settledByTimeout: boolean;
+        expectSatisfied: boolean;
+        elementCount: number;
+      };
       try {
         await page.waitForFunction(
           () =>
@@ -226,6 +259,24 @@ export class InjectedTransport extends HeadlessTransport {
           undefined,
           { timeout: this.injected.readyTimeoutMs }
         );
+        state = await page.evaluate(() => {
+          const api = (
+            window as unknown as {
+              __uiBridgeInjected?: {
+                settled?: boolean;
+                settledByTimeout?: boolean;
+                expectSatisfied?: boolean;
+                elementCount?: number;
+              };
+            }
+          ).__uiBridgeInjected;
+          return {
+            settled: api?.settled === true,
+            settledByTimeout: api?.settledByTimeout === true,
+            expectSatisfied: api?.expectSatisfied === true,
+            elementCount: api?.elementCount ?? 0,
+          };
+        });
       } catch (cause) {
         throw new WrapperTransportError(
           'INJECTED_RUNTIME_NOT_SETTLED',
@@ -234,6 +285,30 @@ export class InjectedTransport extends HeadlessTransport {
             `settle cap, or the realm was torn down. Pass options.waitForSettle=false ` +
             `to gate on ready only, or raise options.settleTimeoutMs / readyTimeoutMs.`,
           { cause, retryable: true }
+        );
+      }
+
+      // The runtime settled, but distinguish a clean settle from "the cap fired
+      // while the gating condition was still unmet". With an expectSelector that
+      // means the target control never appeared; without one it means the page
+      // stayed empty. Either way the page is NOT drivable — surface it as a
+      // structured error rather than handing back a control-less page that the
+      // caller would mis-read as a clean snapshot.
+      if (state.settledByTimeout && !state.expectSatisfied) {
+        const sel = this.injected.expectSelector;
+        throw new WrapperTransportError(
+          'INJECTED_EXPECT_SELECTOR_UNMET',
+          sel
+            ? `The injected runtime settled at its cap without the expected control ` +
+                `(selector '${sel}') appearing — ${state.elementCount} element(s) were ` +
+                `registered, but none matched. The control may mount slower than the ` +
+                `settle cap (raise options.settleTimeoutMs), the selector may be wrong, ` +
+                `or the inject failed. Treat as BLOCKED/UNVERIFIED, not a clean page.`
+            : `The injected runtime settled at its cap with an empty registry ` +
+                `(0 elements). The page never rendered interactive content within ` +
+                `the settle cap, or the inject failed. Raise options.settleTimeoutMs ` +
+                `for a slow page; otherwise treat as BLOCKED/UNVERIFIED.`,
+          { retryable: true }
         );
       }
     }
@@ -259,29 +334,42 @@ export class InjectedTransport extends HeadlessTransport {
         [action, payload] as [string, unknown]
       ) as Promise<T>;
 
-    const settleState = (): Promise<{ settled: boolean; elementCount: number }> =>
+    const settleState = (): Promise<InjectedSettleState> =>
       page.evaluate(() => {
         const api = (
           window as unknown as {
-            __uiBridgeInjected?: { settled?: boolean; elementCount?: number };
+            __uiBridgeInjected?: {
+              settled?: boolean;
+              elementCount?: number;
+              settledByTimeout?: boolean;
+              expectSatisfied?: boolean;
+            };
           }
         ).__uiBridgeInjected;
-        return { settled: api?.settled === true, elementCount: api?.elementCount ?? 0 };
+        return {
+          settled: api?.settled === true,
+          elementCount: api?.elementCount ?? 0,
+          settledByTimeout: api?.settledByTimeout === true,
+          expectSatisfied: api?.expectSatisfied === true,
+        };
       });
 
-    const whenSettled = (
-      timeoutMs?: number
-    ): Promise<{ settled: boolean; elementCount: number }> =>
+    const whenSettled = (timeoutMs?: number): Promise<InjectedSettleState> =>
       page.evaluate(
         (ms: number | null) => {
           const api = (
             window as unknown as {
               __uiBridgeInjected?: {
-                whenSettled?: (
-                  t?: number
-                ) => Promise<{ settled: boolean; elementCount: number }>;
+                whenSettled?: (t?: number) => Promise<{
+                  settled: boolean;
+                  elementCount: number;
+                  settledByTimeout: boolean;
+                  expectSatisfied: boolean;
+                }>;
                 settled?: boolean;
                 elementCount?: number;
+                settledByTimeout?: boolean;
+                expectSatisfied?: boolean;
               };
             }
           ).__uiBridgeInjected;
@@ -289,6 +377,8 @@ export class InjectedTransport extends HeadlessTransport {
           return Promise.resolve({
             settled: api?.settled === true,
             elementCount: api?.elementCount ?? 0,
+            settledByTimeout: api?.settledByTimeout === true,
+            expectSatisfied: api?.expectSatisfied === true,
           });
         },
         (timeoutMs ?? null) as number | null

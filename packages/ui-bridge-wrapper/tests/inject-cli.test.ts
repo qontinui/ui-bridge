@@ -250,4 +250,17 @@ describe('settle flags', () => {
   it('--settle-timeout rejects non-positive values', () => {
     expect(() => parseArgs([...base, '--settle-timeout', '0'])).toThrow(InjectCliArgError);
   });
+
+  it('--expect-selector maps to options.expectSelector', () => {
+    const opts = buildTransportOptions(parseArgs([...base, '--expect-selector', '#login']));
+    expect(opts.expectSelector).toBe('#login');
+  });
+
+  it('--expect-selector rejects an empty value', () => {
+    expect(() => parseArgs([...base, '--expect-selector', ''])).toThrow(InjectCliArgError);
+  });
+
+  it('omits expectSelector when not given', () => {
+    expect(buildTransportOptions(parseArgs([...base])).expectSelector).toBeUndefined();
+  });
 });
