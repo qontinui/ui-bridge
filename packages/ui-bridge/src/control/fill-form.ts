@@ -8,6 +8,7 @@
 
 import type { FillResult, FillFieldResult } from '../core/types';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { applyValueMutation } from './value-mutation';
 
 /**
  * Options for fillFormFields
@@ -107,7 +108,10 @@ export function fillFormFields(
 export function fillSingleField(
   element: HTMLElement,
   value: string | boolean | string[],
-  clearFirst: boolean
+  // fill always replaces the full value, so the clear-first flag is a no-op for
+  // the input/textarea branch and unused by the checkbox/radio/select branches.
+  // Kept in the signature for call-site stability; prefixed `_` to satisfy lint.
+  _clearFirst: boolean
 ): void {
   // Handle checkboxes and radios with boolean values
   if (
@@ -146,40 +150,12 @@ export function fillSingleField(
     return;
   }
 
-  // Handle input and textarea elements with string values
+  // Handle input and textarea elements with string values.
+  // fill's contract sets the full value (it does not append), so this is always
+  // a replace — route through the shared helper. `blur: true` preserves fill's
+  // focus → input → change → blur lifecycle.
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    const strValue = String(value);
-
-    // Use native value setter to work with React controlled inputs.
-    // React overrides the value property; setting .value directly doesn't
-    // trigger onChange. The native setter + dispatched 'input' event does.
-    const proto =
-      element instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-
-    element.focus();
-    element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-
-    if (clearFirst) {
-      if (nativeSetter) {
-        nativeSetter.call(element, '');
-      } else {
-        element.value = '';
-      }
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
-    if (nativeSetter) {
-      nativeSetter.call(element, strValue);
-    } else {
-      element.value = strValue;
-    }
-
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+    applyValueMutation(element, { value: String(value), mode: 'replace', blur: true });
     return;
   }
 

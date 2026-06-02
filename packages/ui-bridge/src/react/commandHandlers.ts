@@ -23,6 +23,7 @@ import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type { SemanticSnapshot } from '../ai/types';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { hasNestedQuantifiers } from '../control/action-executor';
+import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
@@ -1204,55 +1205,12 @@ export async function executeCommand(
             break;
           case 'type': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const proto =
-                dom instanceof HTMLTextAreaElement
-                  ? HTMLTextAreaElement.prototype
-                  : HTMLInputElement.prototype;
-              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
               const text = (request.params?.text as string) || request.text || '';
-
-              // React 17+ stores props on the DOM node under __reactProps$<key>.
-              // In embedded WebViews (e.g. Tauri), React's event delegation may not
-              // receive bubbled events — call onChange directly as a reliable fallback.
-              const domEl = dom as unknown as Record<string, unknown>;
-              const rPropsKey = Object.keys(domEl).find((k) => k.startsWith('__reactProps$'));
-              const rProps = rPropsKey
-                ? (domEl[rPropsKey] as Record<string, unknown> | undefined)
-                : undefined;
-
-              // Notify React of a value change: reset _valueTracker, dispatch input
-              // event, and also invoke __reactProps$.onChange directly for WebViews.
-              const notifyReactType = (oldValue: string) => {
-                const tracker = (
-                  dom as unknown as { _valueTracker?: { setValue(v: string): void } }
-                )._valueTracker;
-                if (tracker) tracker.setValue(oldValue);
-                dom.dispatchEvent(new Event('input', { bubbles: true }));
-                if (rProps?.onChange && typeof rProps.onChange === 'function') {
-                  (rProps.onChange as (e: unknown) => void)({
-                    target: dom,
-                    currentTarget: dom,
-                    type: 'change',
-                    bubbles: true,
-                    preventDefault: () => {},
-                    stopPropagation: () => {},
-                    nativeEvent: new Event('input'),
-                  });
-                }
-              };
-
-              if (request.params?.clear || request.clear) {
-                const prevClear = dom.value;
-                if (setter) setter.call(dom, '');
-                else dom.value = '';
-                notifyReactType(prevClear);
-              }
-              dom.focus();
-              const cur = dom.value;
-              if (setter) setter.call(dom, cur + text);
-              else dom.value = cur + text;
-              notifyReactType(cur);
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
+              applyValueMutation(dom, {
+                value: text,
+                mode: request.params?.clear || request.clear ? 'clear-then-append' : 'append',
+                blur: false,
+              });
             } else
               return createActionFailure(
                 id,
@@ -1264,37 +1222,7 @@ export async function executeCommand(
           }
           case 'clear': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const prevClr = dom.value;
-              const proto =
-                dom instanceof HTMLTextAreaElement
-                  ? HTMLTextAreaElement.prototype
-                  : HTMLInputElement.prototype;
-              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-              if (setter) setter.call(dom, '');
-              else dom.value = '';
-              // Reset _valueTracker so React detects old !== new
-              const vtClr = (dom as unknown as { _valueTracker?: { setValue(v: string): void } })
-                ._valueTracker;
-              if (vtClr) vtClr.setValue(prevClr);
-              dom.dispatchEvent(new Event('input', { bubbles: true }));
-              // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
-              const domElClr = dom as unknown as Record<string, unknown>;
-              const rPropsKeyClr = Object.keys(domElClr).find((k) => k.startsWith('__reactProps$'));
-              const rPropsClr = rPropsKeyClr
-                ? (domElClr[rPropsKeyClr] as Record<string, unknown> | undefined)
-                : undefined;
-              if (rPropsClr?.onChange && typeof rPropsClr.onChange === 'function') {
-                (rPropsClr.onChange as (e: unknown) => void)({
-                  target: dom,
-                  currentTarget: dom,
-                  type: 'change',
-                  bubbles: true,
-                  preventDefault: () => {},
-                  stopPropagation: () => {},
-                  nativeEvent: new Event('input'),
-                });
-              }
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
+              applyValueMutation(dom, { value: '', mode: 'clear', blur: false });
             } else
               return createActionFailure(
                 id,
@@ -1306,38 +1234,8 @@ export async function executeCommand(
           }
           case 'setValue': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const prevSv = dom.value;
-              const proto =
-                dom instanceof HTMLTextAreaElement
-                  ? HTMLTextAreaElement.prototype
-                  : HTMLInputElement.prototype;
-              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
               const val = request.value || (request.params?.value as string) || '';
-              if (setter) setter.call(dom, val);
-              else dom.value = val;
-              // Reset _valueTracker so React detects old !== new
-              const vtSv = (dom as unknown as { _valueTracker?: { setValue(v: string): void } })
-                ._valueTracker;
-              if (vtSv) vtSv.setValue(prevSv);
-              dom.dispatchEvent(new Event('input', { bubbles: true }));
-              // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
-              const domElSv = dom as unknown as Record<string, unknown>;
-              const rPropsKeySv = Object.keys(domElSv).find((k) => k.startsWith('__reactProps$'));
-              const rPropsSv = rPropsKeySv
-                ? (domElSv[rPropsKeySv] as Record<string, unknown> | undefined)
-                : undefined;
-              if (rPropsSv?.onChange && typeof rPropsSv.onChange === 'function') {
-                (rPropsSv.onChange as (e: unknown) => void)({
-                  target: dom,
-                  currentTarget: dom,
-                  type: 'change',
-                  bubbles: true,
-                  preventDefault: () => {},
-                  stopPropagation: () => {},
-                  nativeEvent: new Event('input'),
-                });
-              }
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
+              applyValueMutation(dom, { value: val, mode: 'replace', blur: false });
             } else
               return createActionFailure(
                 id,
@@ -2166,15 +2064,7 @@ export async function executeCommand(
             break;
           case 'type':
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
-              const proto =
-                dom instanceof HTMLTextAreaElement
-                  ? HTMLTextAreaElement.prototype
-                  : HTMLInputElement.prototype;
-              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-              if (setter) setter.call(dom, parsed.value || '');
-              else dom.value = parsed.value || '';
-              dom.dispatchEvent(new Event('input', { bubbles: true }));
-              dom.dispatchEvent(new Event('change', { bubbles: true }));
+              applyValueMutation(dom, { value: parsed.value || '', mode: 'replace', blur: false });
             }
             break;
           case 'select':

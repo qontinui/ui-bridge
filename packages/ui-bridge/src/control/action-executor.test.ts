@@ -553,3 +553,102 @@ describe('DefaultActionExecutor - waitOptions precondition', () => {
     expect(elapsed).toBeLessThan(800);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Value-mutation lifecycle — `type` / `setValue` / `clear` now route through
+// the shared `applyValueMutation` helper, so every one of them must emit
+// focus BEFORE input (so focus-gated inputs react) and, by default, NO
+// trailing blur (the element stays focused). Pre-fix these paths set the
+// value without ever focusing, so a focus-gated dropdown never opened.
+// ---------------------------------------------------------------------------
+
+describe('DefaultActionExecutor - value mutation focus lifecycle', () => {
+  let registry: UIBridgeRegistry;
+  let executor: DefaultActionExecutor;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    executor = new DefaultActionExecutor(registry);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  function registerInput(
+    id: string,
+    initial = '',
+    el: HTMLInputElement | HTMLTextAreaElement = document.createElement('input')
+  ): { el: HTMLInputElement | HTMLTextAreaElement; events: string[] } {
+    el.value = initial;
+    container.appendChild(el);
+    registry.registerElement(id, el, { type: 'input', label: id });
+    const events: string[] = [];
+    for (const t of ['focus', 'input', 'change', 'blur']) {
+      el.addEventListener(t, () => events.push(t));
+    }
+    return { el, events };
+  }
+
+  it("`type` dispatches focus before input with no trailing blur", async () => {
+    const { el, events } = registerInput('type-input');
+
+    const result = await executor.executeAction('type-input', {
+      action: 'type',
+      params: { text: 'hello' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(el.value).toBe('hello');
+    expect(events).toContain('focus');
+    expect(events).toContain('input');
+    expect(events.indexOf('focus')).toBeLessThan(events.indexOf('input'));
+    expect(events).not.toContain('blur');
+  });
+
+  it("`setValue` dispatches focus before input with no trailing blur", async () => {
+    const { el, events } = registerInput('setvalue-input', 'old');
+
+    const result = await executor.executeAction('setvalue-input', {
+      action: 'setValue',
+      params: { value: 'fresh' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(el.value).toBe('fresh');
+    expect(events.indexOf('focus')).toBeLessThan(events.indexOf('input'));
+    expect(events).not.toContain('blur');
+  });
+
+  it("`clear` dispatches focus before input with no trailing blur", async () => {
+    const { el, events } = registerInput('clear-input', 'remove me');
+
+    const result = await executor.executeAction('clear-input', { action: 'clear' });
+
+    expect(result.success).toBe(true);
+    expect(el.value).toBe('');
+    expect(events.indexOf('focus')).toBeLessThan(events.indexOf('input'));
+    expect(events).not.toContain('blur');
+  });
+
+  it("`type` into a <textarea> also focuses before input", async () => {
+    const { el, events } = registerInput(
+      'type-textarea',
+      '',
+      document.createElement('textarea')
+    );
+
+    const result = await executor.executeAction('type-textarea', {
+      action: 'type',
+      params: { text: 'area' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(el.value).toBe('area');
+    expect(events.indexOf('focus')).toBeLessThan(events.indexOf('input'));
+    expect(events).not.toContain('blur');
+  });
+});
