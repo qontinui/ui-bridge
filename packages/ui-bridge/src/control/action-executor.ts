@@ -62,6 +62,7 @@ import type { BrowserEventCapture } from '../debug/browser-capture';
 import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { fillSingleField } from './fill-form';
+import { applyValueMutation } from './value-mutation';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
@@ -1964,93 +1965,15 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
     }
 
-    // Use the native value setter to bypass React's synthetic event system.
-    // React overrides the value property; setting .value directly doesn't
-    // trigger onChange. The native setter + dispatched 'input' event does.
-    const proto =
-      element instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-
-    // React 17+ stores props directly on the DOM node under __reactProps$<key>.
-    // In embedded WebViews (e.g. Tauri), React's event delegation may not receive
-    // bubbled synthetic events because the React root is mounted differently.
-    // Directly invoking the onChange prop is the most reliable way to notify
-    // React of value changes in these environments.
-    const el = element as unknown as Record<string, unknown>;
-    const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
-    const reactProps = reactPropsKey
-      ? (el[reactPropsKey] as Record<string, unknown> | undefined)
-      : undefined;
-
-    /**
-     * Notify React of a value change on the element.
-     * Strategy:
-     * 1. Reset _valueTracker so React detects old !== new when it processes
-     *    the event (React skips onChange when tracker value === new value).
-     * 2. Dispatch a native 'input' event — React's event delegation picks this
-     *    up in normal browser contexts.
-     * 3. Also call __reactProps$.onChange directly — this is the reliable path
-     *    in embedded WebViews (Tauri) where event delegation may be bypassed.
-     */
-    const notifyReact = (oldValue: string) => {
-      // Step 1: Reset _valueTracker to the old value so React detects the change
-      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
-        ._valueTracker;
-      if (tracker) tracker.setValue(oldValue);
-
-      // Step 2: Dispatch native input event (works in standard browser contexts)
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-
-      // Step 3: Directly invoke React's onChange prop if available (Tauri WebView fix)
-      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
-        const syntheticEvent = {
-          target: element,
-          currentTarget: element,
-          type: 'change',
-          bubbles: true,
-          preventDefault: () => {},
-          stopPropagation: () => {},
-          nativeEvent: new Event('input'),
-        };
-        (reactProps.onChange as (e: unknown) => void)(syntheticEvent);
-      }
-    };
-
-    element.focus();
-
-    if (options?.clear) {
-      const prevClear = element.value;
-      if (nativeSetter) {
-        nativeSetter.call(element, '');
-      } else {
-        element.value = '';
-      }
-      notifyReact(prevClear);
-    }
-
-    const text = options?.text || '';
-    const delay = options?.delay || 0;
-
-    for (const char of text) {
-      const current = element.value;
-      if (nativeSetter) {
-        nativeSetter.call(element, current + char);
-      } else {
-        element.value = current + char;
-      }
-      if (options?.triggerEvents !== false) {
-        notifyReact(current);
-      }
-      if (delay > 0) {
-        await sleep(delay);
-      }
-    }
-
-    if (options?.triggerEvents !== false) {
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+    // Route through the single shared value-mutation helper so the full focus →
+    // input → onChange → change lifecycle is emitted consistently across every
+    // executor surface. `clear` appends after emptying; otherwise we append to
+    // the existing value (preserving the prior per-char-append end state).
+    applyValueMutation(element, {
+      value: options.text,
+      mode: options.clear ? 'clear-then-append' : 'append',
+      blur: false,
+    });
   }
 
   /**
@@ -2210,45 +2133,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private performClear(element: HTMLElement): void {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      const previousValue = element.value;
-
-      const proto =
-        element instanceof HTMLTextAreaElement
-          ? HTMLTextAreaElement.prototype
-          : HTMLInputElement.prototype;
-      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (nativeSetter) {
-        nativeSetter.call(element, '');
-      } else {
-        element.value = '';
-      }
-
-      // Reset _valueTracker so React detects old !== new
-      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
-        ._valueTracker;
-      if (tracker) tracker.setValue(previousValue);
-
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-
-      // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
-      const el = element as unknown as Record<string, unknown>;
-      const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
-      const reactProps = reactPropsKey
-        ? (el[reactPropsKey] as Record<string, unknown> | undefined)
-        : undefined;
-      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
-        (reactProps.onChange as (e: unknown) => void)({
-          target: element,
-          currentTarget: element,
-          type: 'change',
-          bubbles: true,
-          preventDefault: () => {},
-          stopPropagation: () => {},
-          nativeEvent: new Event('input'),
-        });
-      }
-
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      applyValueMutation(element, { value: '', mode: 'clear', blur: false });
     }
   }
 
@@ -2762,47 +2647,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       throw new Error('setValue requires a "value" parameter');
     }
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      const previousValue = element.value;
-
-      // Use native setter to work with React controlled inputs
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        element instanceof HTMLTextAreaElement
-          ? HTMLTextAreaElement.prototype
-          : HTMLInputElement.prototype,
-        'value'
-      )?.set;
-      if (nativeSetter) {
-        nativeSetter.call(element, value);
-      } else {
-        element.value = value;
-      }
-
-      // Reset _valueTracker so React detects old !== new
-      const tracker = (element as unknown as { _valueTracker?: { setValue(v: string): void } })
-        ._valueTracker;
-      if (tracker) tracker.setValue(previousValue);
-
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-
-      // Also invoke __reactProps$.onChange directly for embedded WebViews (Tauri)
-      const el = element as unknown as Record<string, unknown>;
-      const reactPropsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
-      const reactProps = reactPropsKey
-        ? (el[reactPropsKey] as Record<string, unknown> | undefined)
-        : undefined;
-      if (reactProps?.onChange && typeof reactProps.onChange === 'function') {
-        (reactProps.onChange as (e: unknown) => void)({
-          target: element,
-          currentTarget: element,
-          type: 'change',
-          bubbles: true,
-          preventDefault: () => {},
-          stopPropagation: () => {},
-          nativeEvent: new Event('input'),
-        });
-      }
-
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      applyValueMutation(element, { value, mode: 'replace', blur: false });
     } else if (element instanceof HTMLSelectElement) {
       element.value = value;
       element.dispatchEvent(new Event('change', { bubbles: true }));
