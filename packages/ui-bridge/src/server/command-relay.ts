@@ -937,7 +937,19 @@ export class CommandRelay {
             targetTabId,
             senderUserId,
           });
-          resolve({ success: true, fireAndForget: true, action, timestamp: Date.now() } as T);
+          // Cross-instance fire-and-forget: the command is published to the bus
+          // for the holding instance to deliver; we cannot observe its execution
+          // from here, so report `delivered` without claiming `executed` — same
+          // envelope shape the local path returns so the audit's execution-status
+          // field stays consistent across single- and multi-instance topologies.
+          resolve({
+            success: true,
+            fireAndForget: true,
+            delivered: true,
+            executed: false,
+            action,
+            timestamp: Date.now(),
+          } as T);
         } else {
           this.dispatchViaBus<T>(
             commandId,
@@ -966,13 +978,87 @@ export class CommandRelay {
         return;
       }
 
-      // Fire-and-forget: resolve immediately after delivery
+      // Fire-and-forget: a navigation/refresh command unloads the page, so the
+      // browser may never POST its execution result before the SSE/WS transport
+      // tears down. We therefore resolve the HTTP caller as soon as the command
+      // is DELIVERED rather than blocking on a response that may never arrive.
+      //
+      // Two co-pilot remediations vs. the previous implementation:
+      //
+      //   (1) Delivery verification. The old code discarded the
+      //       `broadcastToListeners` notified count and ALWAYS resolved
+      //       `{success:true}`. A `pageNavigate` routed to a `targetTabId` with
+      //       no registered SSE listener therefore reached ZERO tabs yet was
+      //       reported to the caller as HTTP 200 success — the page never
+      //       navigated (acked-but-never-delivered). We now reject when nothing
+      //       accepted the command.
+      //
+      //   (2) Honest execution-status envelope + a non-dropping result sink.
+      //       We resolve with `delivered:true, executed:false` (NOT a bare
+      //       `success:true` that implies the page ran the command) so the web
+      //       audit's execution-status field can distinguish "delivered to the
+      //       tab" from "the tab confirmed it executed". The browser still POSTs
+      //       its real execution outcome back via POST /commands; previously
+      //       that landed in `resolveCommand` with NO pending entry and was
+      //       silently dropped. We register a short-lived recorder entry so the
+      //       outcome is accepted — updating per-tab success health and (when a
+      //       bus is configured) forwarded — instead of discarded.
       if (fireAndForget) {
+        let notified = sentViaWebSocket ? 1 : 0;
         if (!sentViaWebSocket && this.tabListeners.size > 0) {
           const command: QueuedCommand = { commandId, action, payload, timestamp: Date.now() };
-          this.broadcastToListeners(command, targetTabId);
+          notified = this.broadcastToListeners(command, targetTabId);
         }
-        resolve({ success: true, fireAndForget: true, action, timestamp: Date.now() } as T);
+
+        // Delivery verification — the primary co-pilot "navigate acked 200 but
+        // route never changed" root cause: `targetTabId` pointed at a tab with
+        // no live listener, so `broadcastToListeners` returned 0 and the
+        // navigation was silently dropped while the relay still returned success.
+        if (notified === 0) {
+          reject(
+            new Error(
+              `No active UI Bridge SDK client received the ${action} command. ` +
+                `${this.tabListeners.size} SSE listener(s) registered but none accepted the command` +
+                `${targetTabId ? ` (target tab "${targetTabId}" has no live listener)` : ''}. ` +
+                'Ensure the web app is open in a browser tab with the UI Bridge SDK loaded.'
+            )
+          );
+          return;
+        }
+
+        // Non-dropping result sink: register a brief recorder so the browser's
+        // execution POST (resolveCommand/rejectCommand) is accepted rather than
+        // dropped. The recorder does NOT settle the caller's promise (already
+        // resolved on delivery below) — it only lets the relay observe the
+        // real outcome (per-tab success tracking / bus forwarding). Auto-evicts
+        // after a short window since a hard navigation never reports back.
+        const recorderTtlMs = Math.min(this.sseTimeoutMs, 2000);
+        const recorderTimeout = setTimeout(() => {
+          this.pendingCommands.delete(commandId);
+        }, recorderTtlMs);
+        this.pendingCommands.set(commandId, {
+          resolve: () => {
+            /* execution outcome recorded by resolveCommand bookkeeping; the
+               fire-and-forget caller was already resolved on delivery */
+          },
+          reject: () => {
+            /* execution failure surfaces on the browser side + the audit's
+               execution-status field; nothing to settle here */
+          },
+          timeout: recorderTimeout,
+          tabsNotified: notified,
+          errorResponseCount: 0,
+        });
+
+        resolve({
+          success: true,
+          fireAndForget: true,
+          delivered: true,
+          executed: false,
+          tabsNotified: notified,
+          action,
+          timestamp: Date.now(),
+        } as T);
         return;
       }
 
