@@ -61,6 +61,17 @@ export {
 } from './core/registry';
 
 export {
+  projectVisionFields,
+  deriveInteractable,
+  deriveText,
+  roleForType,
+  parseColorToRgb,
+  parseFontSizePx,
+  type VisionRgb,
+  type VisionElementFields,
+} from './core/vision-fields';
+
+export {
   createNativeElementIdentifier,
   findElementByIdentifier,
   findAllByPattern,

@@ -21,6 +21,7 @@ import {
   matchesCurrentRoute,
   projectBbox,
 } from '../core/registry';
+import { projectVisionFields } from '../core/vision-fields';
 import type {
   NativeElementType,
   NativeLayout,
@@ -462,6 +463,13 @@ export function createServerHandlers(
             ? 'visible'
             : 'likely-visible';
         const bbox = projectBbox(state, visibility, registry.getPixelRatio());
+        const vision = projectVisionFields({
+          type: e.type,
+          label: e.label,
+          actions: e.actions,
+          state,
+          flatStyle: e.flatStyle,
+        });
         return {
           id: e.id,
           type: e.type,
@@ -474,6 +482,7 @@ export function createServerHandlers(
           registrationRoute: e.registrationRoute,
           visibility,
           ...(bbox ? { bbox } : {}),
+          ...vision,
         };
       });
 

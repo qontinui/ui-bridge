@@ -461,6 +461,57 @@ export interface NativeBridgeSnapshot {
      * routes) can't overflow the runner's frame and poison region checks.
      */
     bbox?: NativeElementBbox;
+    /**
+     * True when the element accepts pointer/key input (has a press/click-type
+     * action or is an interactive type). Drives the runner's elements analyzer
+     * (interactive coverage) + layout analyzer (WCAG target size). Emitted for
+     * ALL elements (not just visible ones) so coverage counts are accurate —
+     * mirrors the web SDK's per-element `interactable` signal. Snake_case +
+     * always present: deserializes straight into `qontinui_vision_core::Element`
+     * (serde default `false`). See {@link projectVisionFields}.
+     */
+    interactable?: boolean;
+    /**
+     * Human-visible text (`state.value` / `state.textContent` / `label`).
+     * Runner's elements analyzer (`no_text`) + color analyzer (contrast gate)
+     * read this. Omitted when the element carries no text. Snake_case shape
+     * matches the Rust `Element.text: Option<String>`.
+     */
+    text?: string;
+    /**
+     * ARIA-ish role mapped from `type` (button/textbox/switch/...). Matches the
+     * web SDK's role vocabulary the runner's analyzer expects. Omitted for
+     * generic containers (scroll/view/custom). Snake-compatible top-level
+     * `role` → `Element.role: Option<String>`.
+     */
+    role?: string;
+    /**
+     * Foreground (text/icon) color as `{r,g,b}`, parsed from
+     * `flatStyle.color`. Present only when the host wired styles via
+     * `captureStyle`/`updateElementStyle` AND the value parsed. Feeds the
+     * runner's color analyzer (WCAG contrast). RN has no `getComputedStyle`,
+     * so this is the declared style color, not a resolved-up-the-tree value.
+     */
+    fg_color?: { r: number; g: number; b: number };
+    /**
+     * Background color as `{r,g,b}`, parsed from `flatStyle.backgroundColor`.
+     * Same source/limits as {@link fg_color}. RN does NOT resolve the effective
+     * opaque ancestor background — a transparent/absent backgroundColor is
+     * omitted, and the color analyzer soft-skips (or samples pixels under the
+     * bbox) when either color is missing.
+     */
+    bg_color?: { r: number; g: number; b: number };
+    /**
+     * Computed font size in px, from `flatStyle.fontSize` (RN number is already
+     * dp/px). Feeds the runner's typography analyzer (size drift). Omitted when
+     * no fontSize was declared on the element's style.
+     */
+    font_size_px?: number;
+    /**
+     * Font family from `flatStyle.fontFamily`. Feeds the typography analyzer
+     * (family drift). Omitted when no fontFamily was declared.
+     */
+    font_family?: string;
   }>;
   /** All registered components */
   components: Array<{

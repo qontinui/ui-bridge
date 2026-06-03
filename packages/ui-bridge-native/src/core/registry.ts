@@ -26,6 +26,7 @@ import type {
   BridgeEventType,
   BridgeEventListener,
 } from './types';
+import { projectVisionFields } from './vision-fields';
 
 /**
  * Options for registering an element
@@ -1022,6 +1023,13 @@ export class NativeUIBridgeRegistry {
             ? 'visible'
             : 'likely-visible';
         const bbox = projectBbox(state, visibility, this.pixelRatio);
+        const vision = projectVisionFields({
+          type: e.type,
+          label: e.label,
+          actions: e.actions,
+          state,
+          flatStyle: e.flatStyle,
+        });
         return {
           id: e.id,
           type: e.type,
@@ -1034,6 +1042,7 @@ export class NativeUIBridgeRegistry {
           registrationRoute: e.registrationRoute,
           visibility,
           ...(bbox ? { bbox } : {}),
+          ...vision,
         };
       }),
       components: this.getAllComponents().map((c) => ({
