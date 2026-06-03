@@ -14,6 +14,7 @@ import type {
   NativeCustomAction,
   NativeAppInfo,
   NativeBridgeSnapshot,
+  NativeElementBbox,
   NativeElementIdentifier,
   NativeElementRef,
   NativeRegistrationCoverage,
@@ -25,6 +26,7 @@ import type {
   BridgeEventType,
   BridgeEventListener,
 } from './types';
+import { projectVisionFields } from './vision-fields';
 
 /**
  * Options for registering an element
@@ -114,6 +116,73 @@ export function matchesCurrentRoute(
 }
 
 /**
+ * Project an element's runtime state into a runner-native pixel-space `bbox`.
+ *
+ * Returns `{x, y, w, h}` in PHYSICAL pixels (RN `state.layout` is logical dp;
+ * we multiply by `pixelRatio` — `PixelRatio.get()`, injected via
+ * `registry.setPixelRatio` — so the box aligns with the runner's adb screencap
+ * frame). See {@link NativeElementBbox} for why the shape is `{x,y,w,h}` and
+ * not the web SDK's `{x,y,width,height}`.
+ *
+ * `pixelRatio` is INJECTED rather than read from `react-native` here: this is a
+ * non-React core module, and a static `import { PixelRatio } from 'react-native'`
+ * breaks both the vitest suite ("Flow is not supported") and risks the
+ * Metro/Hermes `unknownModuleError` that bit `design-handlers`/`page-health`.
+ * The provider wires the real ratio via `setPixelRatio`; callers/tests that
+ * never wire it get the `1` default (dp ≈ px, still a usable box).
+ *
+ * Gating (avoid poisoning the snapshot — the flat registry mixes routes and
+ * some elements carry stale off-screen coords):
+ *   - returns `undefined` unless `visibility === 'visible'` (visible + measured)
+ *   - returns `undefined` when `state.layout` is null/absent
+ * Clamps every component to a non-negative integer.
+ *
+ * Uses `measureInWindow`'s absolute `pageX`/`pageY` for the origin. Falls back
+ * to the layout-relative `x`/`y` only when `pageX`/`pageY` weren't measured
+ * (rare; keeps a best-effort box rather than dropping the element).
+ */
+export function projectBbox(
+  state: NativeElementState,
+  visibility: 'visible' | 'likely-visible' | 'hidden',
+  pixelRatio = 1
+): NativeElementBbox | undefined {
+  if (visibility !== 'visible') return undefined;
+  const layout = state.layout;
+  if (!layout) return undefined;
+
+  const ratio = pixelRatio > 0 && Number.isFinite(pixelRatio) ? pixelRatio : 1;
+  const toPx = (v: number): number => Math.max(0, Math.round(v * ratio));
+
+  const hasPage =
+    typeof layout.pageX === 'number' &&
+    typeof layout.pageY === 'number' &&
+    Number.isFinite(layout.pageX) &&
+    Number.isFinite(layout.pageY);
+  const originX = hasPage ? layout.pageX : layout.x;
+  const originY = hasPage ? layout.pageY : layout.y;
+
+  if (
+    typeof originX !== 'number' ||
+    typeof originY !== 'number' ||
+    typeof layout.width !== 'number' ||
+    typeof layout.height !== 'number' ||
+    !Number.isFinite(originX) ||
+    !Number.isFinite(originY) ||
+    !Number.isFinite(layout.width) ||
+    !Number.isFinite(layout.height)
+  ) {
+    return undefined;
+  }
+
+  return {
+    x: toPx(originX),
+    y: toPx(originY),
+    w: toPx(layout.width),
+    h: toPx(layout.height),
+  };
+}
+
+/**
  * Infer available actions based on element type
  */
 function inferActions(type: NativeElementType): NativeStandardAction[] {
@@ -188,6 +257,15 @@ export class NativeUIBridgeRegistry {
    */
   private routeProvider: NativeRouteProviderLike | null = null;
   /**
+   * Device pixel ratio used to project `state.layout` (logical dp) into the
+   * physical-pixel `bbox` emitted on each snapshot element. Defaults to `1`
+   * (dp ≈ px) so callers/tests that never inject a ratio still get a usable
+   * box; the React provider wires the real `PixelRatio.get()` via
+   * {@link setPixelRatio}. Read from a non-React core module on purpose — see
+   * the `projectBbox` doc comment for why we don't import `react-native` here.
+   */
+  private pixelRatio = 1;
+  /**
    * Sticky flag: flips `true` the first time any element is registered and
    * stays `true` even after elements are unregistered. Lets agents distinguish
    * "this route never wired any elements" from "this route registered then
@@ -230,6 +308,23 @@ export class NativeUIBridgeRegistry {
   /** Read-only accessor for the registered route provider, if any. */
   getRouteProvider(): NativeRouteProviderLike | null {
     return this.routeProvider;
+  }
+
+  /**
+   * Set the device pixel ratio used to project per-element `bbox` geometry
+   * into physical pixels. The React provider passes `PixelRatio.get()` here
+   * once at startup. Ignores non-finite / non-positive values (keeps the
+   * previous ratio) so a bad call can't zero out every bbox.
+   */
+  setPixelRatio(ratio: number): void {
+    if (typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0) {
+      this.pixelRatio = ratio;
+    }
+  }
+
+  /** Read-only accessor for the device pixel ratio used for bbox projection. */
+  getPixelRatio(): number {
+    return this.pixelRatio;
   }
 
   // ============================================================================
@@ -927,6 +1022,18 @@ export class NativeUIBridgeRegistry {
           : state.layout !== null
             ? 'visible'
             : 'likely-visible';
+        const bbox = projectBbox(state, visibility, this.pixelRatio);
+        const vision = projectVisionFields({
+          type: e.type,
+          label: e.label,
+          // Real interactivity signal: the names of props that are actually
+          // functions (onPress/onChangeText/...). NOT `e.actions`, which
+          // `inferActions` synthesizes press/click onto for every element —
+          // using it would mark plain text/view nodes interactable.
+          handlerNames: handlers,
+          state,
+          flatStyle: e.flatStyle,
+        });
         return {
           id: e.id,
           type: e.type,
@@ -938,6 +1045,8 @@ export class NativeUIBridgeRegistry {
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
+          ...(bbox ? { bbox } : {}),
+          ...vision,
         };
       }),
       components: this.getAllComponents().map((c) => ({

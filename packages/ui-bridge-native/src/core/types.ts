@@ -381,6 +381,38 @@ export interface NativeAppInfo {
 }
 
 /**
+ * Per-element pixel-space bounding box projected into a snapshot.
+ *
+ * SHAPE IS DELIBERATELY `{x, y, w, h}` (not the web SDK's
+ * `{x, y, width, height}`). The runner's vision pipeline
+ * (`POST /ui-bridge/vision/{analyze,assert}`) deserializes a snapshot's
+ * `elements[].bbox` straight into the Rust `qontinui_vision_core::Region`
+ * struct, which is `{x, y, w, h}: u32` with NO `width`/`height` serde alias.
+ * Emitting `{width, height}` returns a 422 "missing field `w`". This was
+ * verified empirically against a live runner (2026-06-03):
+ *   - `{x,y,w,h}`           → HTTP 200 (analyzers run)
+ *   - `{x,y,width,height}`  → 422 "missing field `w`"
+ * So the mobile bridge emits the runner-native shape directly, letting a
+ * visual-audit caller post the snapshot through with no transform. The web
+ * SDK keeps its `{width,height}` shape because its consumers project before
+ * posting; mobile skips that projection layer.
+ *
+ * Units are PHYSICAL pixels (RN `state.layout` is logical dp; we multiply by
+ * `PixelRatio.get()`) so the box aligns with the runner's adb screencap frame.
+ * Values are clamped to non-negative integers.
+ */
+export interface NativeElementBbox {
+  /** Absolute left edge in physical pixels. */
+  x: number;
+  /** Absolute top edge in physical pixels. */
+  y: number;
+  /** Width in physical pixels. */
+  w: number;
+  /** Height in physical pixels. */
+  h: number;
+}
+
+/**
  * Snapshot of the entire native UI bridge state
  */
 export interface NativeBridgeSnapshot {
@@ -417,6 +449,69 @@ export interface NativeBridgeSnapshot {
      * `state.layout !== null`.
      */
     visibility?: 'visible' | 'likely-visible' | 'hidden';
+    /**
+     * Pixel-space bounding box, runner-native `{x, y, w, h}` shape (see
+     * {@link NativeElementBbox}). Projected from `state.layout` (logical dp)
+     * × `PixelRatio.get()`.
+     *
+     * Emitted ONLY for elements that are both `visibility: 'visible'` AND have
+     * a measured `state.layout` — i.e. we have a real, current-route rect to
+     * trust. Omitted for `hidden` / `likely-visible` / unmeasured elements so
+     * stale off-screen coords from other routes (the flat registry mixes
+     * routes) can't overflow the runner's frame and poison region checks.
+     */
+    bbox?: NativeElementBbox;
+    /**
+     * True when the element accepts pointer/key input (has a press/click-type
+     * action or is an interactive type). Drives the runner's elements analyzer
+     * (interactive coverage) + layout analyzer (WCAG target size). Emitted for
+     * ALL elements (not just visible ones) so coverage counts are accurate —
+     * mirrors the web SDK's per-element `interactable` signal. Snake_case +
+     * always present: deserializes straight into `qontinui_vision_core::Element`
+     * (serde default `false`). See {@link projectVisionFields}.
+     */
+    interactable?: boolean;
+    /**
+     * Human-visible text (`state.value` / `state.textContent` / `label`).
+     * Runner's elements analyzer (`no_text`) + color analyzer (contrast gate)
+     * read this. Omitted when the element carries no text. Snake_case shape
+     * matches the Rust `Element.text: Option<String>`.
+     */
+    text?: string;
+    /**
+     * ARIA-ish role mapped from `type` (button/textbox/switch/...). Matches the
+     * web SDK's role vocabulary the runner's analyzer expects. Omitted for
+     * generic containers (scroll/view/custom). Snake-compatible top-level
+     * `role` → `Element.role: Option<String>`.
+     */
+    role?: string;
+    /**
+     * Foreground (text/icon) color as `{r,g,b}`, parsed from
+     * `flatStyle.color`. Present only when the host wired styles via
+     * `captureStyle`/`updateElementStyle` AND the value parsed. Feeds the
+     * runner's color analyzer (WCAG contrast). RN has no `getComputedStyle`,
+     * so this is the declared style color, not a resolved-up-the-tree value.
+     */
+    fg_color?: { r: number; g: number; b: number };
+    /**
+     * Background color as `{r,g,b}`, parsed from `flatStyle.backgroundColor`.
+     * Same source/limits as {@link fg_color}. RN does NOT resolve the effective
+     * opaque ancestor background — a transparent/absent backgroundColor is
+     * omitted, and the color analyzer soft-skips (or samples pixels under the
+     * bbox) when either color is missing.
+     */
+    bg_color?: { r: number; g: number; b: number };
+    /**
+     * Computed font size in px, from `flatStyle.fontSize` (RN number is already
+     * dp/px). Feeds the runner's typography analyzer (size drift). Omitted when
+     * no fontSize was declared on the element's style.
+     */
+    font_size_px?: number;
+    /**
+     * Font family from `flatStyle.fontFamily`. Feeds the typography analyzer
+     * (family drift). Omitted when no fontFamily was declared.
+     */
+    font_family?: string;
   }>;
   /** All registered components */
   components: Array<{

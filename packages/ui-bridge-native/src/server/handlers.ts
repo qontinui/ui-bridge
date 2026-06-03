@@ -19,7 +19,9 @@ import {
   type NativeUIBridgeRegistry,
   extractHandlerNames,
   matchesCurrentRoute,
+  projectBbox,
 } from '../core/registry';
+import { projectVisionFields } from '../core/vision-fields';
 import type {
   NativeElementType,
   NativeLayout,
@@ -460,6 +462,16 @@ export function createServerHandlers(
           : state.layout !== null
             ? 'visible'
             : 'likely-visible';
+        const bbox = projectBbox(state, visibility, registry.getPixelRatio());
+        const vision = projectVisionFields({
+          type: e.type,
+          label: e.label,
+          // Real handler names (onPress/...), NOT inferred actions which
+          // synthesize press/click onto every element. See projectVisionFields.
+          handlerNames: handlers,
+          state,
+          flatStyle: e.flatStyle,
+        });
         return {
           id: e.id,
           type: e.type,
@@ -471,6 +483,8 @@ export function createServerHandlers(
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
+          ...(bbox ? { bbox } : {}),
+          ...vision,
         };
       });
 

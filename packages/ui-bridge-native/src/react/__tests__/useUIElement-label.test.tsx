@@ -10,6 +10,9 @@ vi.mock('react-native', () => ({
   StyleSheet: {
     flatten: (style: unknown) => style ?? undefined,
   },
+  PixelRatio: {
+    get: () => 1,
+  },
 }));
 
 import { useUIElement } from '../useUIElement';
