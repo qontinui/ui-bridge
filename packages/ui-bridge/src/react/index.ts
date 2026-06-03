@@ -43,6 +43,14 @@ export {
   type UIBridgeComponentScopeProps,
 } from './UIBridgeComponentScope';
 
+// Window scope — multi-window hosts declare each window's label once at its
+// React root so child `useUIElement` registrations bucket per window.
+export {
+  UIBridgeWindowProvider,
+  useUIBridgeWindowLabel,
+  type UIBridgeWindowProviderProps,
+} from './UIBridgeWindowContext';
+
 // Bridge hook
 export { useUIBridge, useUIBridgeRequired, type UseUIBridgeReturn } from './useUIBridge';
 
