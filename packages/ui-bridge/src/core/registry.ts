@@ -212,6 +212,10 @@ export function serializeRegisteredElement(
     // so consumers can cross-check `registration.byRoute` against individual
     // entries without a second call.
     route: el.route,
+    // Window the element is registered under — undefined for default-window
+    // elements (drops out of JSON, keeping single-window snapshots
+    // byte-identical) and the real webview label for multi-window hosts.
+    windowLabel: el.windowLabel,
     // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
     // can answer "which control unhides element X" without grepping source.
     reveals: el.reveals,
@@ -768,7 +772,20 @@ export class UIBridgeRegistry {
    */
   public readonly __instanceTag: string;
 
-  private elements = new Map<string, RegisteredElement>();
+  /**
+   * Default window label. Single-window hosts (web, mobile, the runner's
+   * main window) and any caller that omits `windowLabel` register under this
+   * bucket, so every merged accessor returns the exact pre-window-aware
+   * result. See plan `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
+   */
+  private static readonly DEFAULT_WINDOW_LABEL = 'main';
+
+  // Element store partitioned by window label: windowLabel -> (id -> element).
+  // A single-window host only ever populates the `"main"` bucket, so the
+  // merged accessors below (allElements / elementCount / findElement) behave
+  // byte-identically to the old flat `Map<id, element>`. Two windows can
+  // register the SAME id without collision because each has its own inner Map.
+  private elementsByWindow = new Map<string, Map<string, RegisteredElement>>();
   private components = new Map<string, RegisteredComponent>();
   private workflows = new Map<string, Workflow>();
   private eventListeners = new Map<BridgeEventType, Set<BridgeEventListener>>();
@@ -794,19 +811,15 @@ export class UIBridgeRegistry {
   // happened but are all unmounted now". Never reset except on `clear()`.
   private everHadRegistrationsFlag = false;
 
-  // Per-route tally of currently-registered elements. Mirrors
-  // `elements.size` partitioned by `RegisteredElement.route`. Incremented on
-  // register, decremented on unregister, and a zero count is dropped from
-  // the map so `byRoute` never emits `{ "/foo": 0 }`. Elements registered
-  // without a route (non-DOM environment) are tracked under the empty-string
-  // key `""` — snapshot serialization filters that bucket out.
-  private routeCounts = new Map<string, number>();
-
-  // Per-route element-id sets — paired with `routeCounts` so the snapshot
-  // can expose `byRoute[route].ids` alongside `byRoute[route].count`. Same
-  // empty-string convention for undefined-route elements; same drop-on-empty
-  // semantics so a route with no live elements doesn't linger as `{ ids: [] }`.
-  private routeIds = new Map<string, Set<string>>();
+  // Per-window, per-route element-id sets: windowLabel -> route -> Set<id>.
+  // Single source of truth for BOTH the merged `byRoute` view (union across
+  // windows — unchanged top-level semantics) AND the per-window
+  // `byRoutePerWindow` view. Within a window `count === ids.size` always
+  // holds. Elements registered without a route (non-DOM environment) are
+  // tracked under the empty-string key `""`, which serialization filters out.
+  // Drop-on-empty semantics keep a route/window with no live elements from
+  // lingering. Replaces the pre-window-aware flat `routeCounts`/`routeIds`.
+  private routeIdsByWindow = new Map<string, Map<string, Set<string>>>();
 
   // External store pattern for useSyncExternalStore
   private storeVersion = 0;
@@ -886,7 +899,7 @@ export class UIBridgeRegistry {
   getSnapshot(): RegistrySnapshot {
     if (!this.cachedSnapshot || this.cachedSnapshot.version !== this.storeVersion) {
       this.cachedSnapshot = {
-        elements: Array.from(this.elements.values()),
+        elements: this.allElements(),
         components: Array.from(this.components.values()),
         workflows: Array.from(this.workflows.values()),
         version: this.storeVersion,
@@ -987,6 +1000,77 @@ export class UIBridgeRegistry {
   /**
    * Register an element
    */
+  // ── Windowed element store helpers ─────────────────────────────────────────
+  // These keep the multi-window store transparent to every existing accessor:
+  // a single-window registry has exactly one ("main") bucket, so each merged
+  // helper returns the same result the old flat `Map<id, element>` did.
+
+  /** Get (creating if absent) the element bucket for a window label. */
+  private windowBucket(label: string): Map<string, RegisteredElement> {
+    let bucket = this.elementsByWindow.get(label);
+    if (!bucket) {
+      bucket = new Map();
+      this.elementsByWindow.set(label, bucket);
+    }
+    return bucket;
+  }
+
+  /** All registered elements across every window (merged union). */
+  private allElements(): RegisteredElement[] {
+    // Fast path: the single-window common case allocates exactly like the
+    // pre-window-aware code (one `Array.from` over the sole bucket).
+    if (this.elementsByWindow.size === 1) {
+      const only = this.elementsByWindow.values().next().value;
+      return only ? Array.from(only.values()) : [];
+    }
+    const out: RegisteredElement[] = [];
+    for (const bucket of this.elementsByWindow.values()) {
+      for (const el of bucket.values()) out.push(el);
+    }
+    return out;
+  }
+
+  /** Total registered element count across all windows. */
+  private elementCount(): number {
+    let n = 0;
+    for (const bucket of this.elementsByWindow.values()) n += bucket.size;
+    return n;
+  }
+
+  /**
+   * Look up an element by id. When `windowLabel` is given the lookup is scoped
+   * to that window; otherwise the default ("main") window is resolved first so
+   * single-window behavior is identical, falling back to other windows only
+   * when the id isn't in the default bucket. Multi-window hosts pass an
+   * explicit `windowLabel` to avoid the cross-window ambiguity entirely.
+   */
+  private findElement(id: string, windowLabel?: string): RegisteredElement | undefined {
+    if (windowLabel !== undefined) {
+      return this.elementsByWindow.get(windowLabel)?.get(id);
+    }
+    const def = this.elementsByWindow.get(UIBridgeRegistry.DEFAULT_WINDOW_LABEL);
+    const hit = def?.get(id);
+    if (hit) return hit;
+    for (const [label, bucket] of this.elementsByWindow) {
+      if (label === UIBridgeRegistry.DEFAULT_WINDOW_LABEL) continue;
+      const e = bucket.get(id);
+      if (e) return e;
+    }
+    return undefined;
+  }
+
+  /**
+   * True when any element is registered under a non-default window. Gates the
+   * optional `byRoutePerWindow` snapshot field so single-window hosts keep
+   * emitting the byte-identical pre-window-aware registration shape.
+   */
+  private hasNonDefaultWindow(): boolean {
+    for (const [label, bucket] of this.elementsByWindow) {
+      if (label !== UIBridgeRegistry.DEFAULT_WINDOW_LABEL && bucket.size > 0) return true;
+    }
+    return false;
+  }
+
   /**
    * Update a registered element's metadata/options in place.
    * See `updateComponent` for rationale. Does not replace the DOM element
@@ -1014,7 +1098,7 @@ export class UIBridgeRegistry {
       reveals?: string[];
     }
   ): boolean {
-    const existing = this.elements.get(id);
+    const existing = this.findElement(id);
     if (!existing) return false;
     if (options.type !== undefined) existing.type = options.type;
     if (options.label !== undefined) existing.label = options.label;
@@ -1046,7 +1130,7 @@ export class UIBridgeRegistry {
     bbox: { x: number; y: number; width: number; height: number } | undefined,
     visible: boolean | undefined
   ): boolean {
-    const existing = this.elements.get(id);
+    const existing = this.findElement(id);
     if (!existing) return false;
     existing.bbox = bbox;
     existing.visible = visible;
@@ -1071,7 +1155,7 @@ export class UIBridgeRegistry {
    * Returns `false` if `id` is not registered.
    */
   refreshElement(id: string, updates: Partial<ElementState> | undefined): boolean {
-    const existing = this.elements.get(id) as
+    const existing = this.findElement(id) as
       | (RegisteredElement & {
           __stateOverridesRef?: { value: Partial<ElementState> | undefined };
         })
@@ -1155,10 +1239,25 @@ export class UIBridgeRegistry {
        * `RegisteredElement.reveals`.
        */
       reveals?: string[];
+      /**
+       * Window this element belongs to (multi-window hosts only). Defaults to
+       * `"main"`. A non-default label is the real Tauri webview label
+       * (`getCurrentWindow().label`) and isolates this element's bucket so two
+       * windows can register the same id without collision. Omit (or pass
+       * `"main"`) for single-window hosts — the registry then stores the
+       * element with `RegisteredElement.windowLabel` left undefined and the
+       * snapshot stays byte-identical to the pre-window-aware shape.
+       */
+      windowLabel?: string;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
     const actions = options.actions ?? inferActions(type);
+
+    // Resolve the owning window. Default ("main") elements leave the
+    // serialized `windowLabel` undefined so single-window snapshots are
+    // byte-identical; non-default elements carry the real webview label.
+    const windowLabel = options.windowLabel ?? UIBridgeRegistry.DEFAULT_WINDOW_LABEL;
 
     // Elements are identified through the internal bridge registry, not DOM attributes
     let actualId = id;
@@ -1251,6 +1350,10 @@ export class UIBridgeRegistry {
       color: options.color,
       contextPath: options.contextPath,
       route,
+      // Undefined for default-window elements (keeps single-window snapshots
+      // byte-identical); the real webview label for multi-window hosts.
+      windowLabel:
+        windowLabel === UIBridgeRegistry.DEFAULT_WINDOW_LABEL ? undefined : windowLabel,
       // Content/role fields for data-ui-bridge-content semantic elements.
       // Undefined for interactive elements and for content registered via
       // the heading/paragraph/table-cell content-discovery path.
@@ -1271,49 +1374,55 @@ export class UIBridgeRegistry {
       configurable: true,
     });
 
-    // If this id is already registered, reverse the previous entry's
-    // route bookkeeping so we don't double-count an overwrite.
-    const prior = this.elements.get(actualId);
+    // If this id is already registered IN THE SAME WINDOW, reverse the
+    // previous entry's route bookkeeping so we don't double-count an
+    // overwrite. The same id in a different window is a distinct entry.
+    const bucket = this.windowBucket(windowLabel);
+    const prior = bucket.get(actualId);
     if (prior) {
-      this.decrementRouteCount(prior.route, actualId);
+      this.decrementRouteCount(windowLabel, prior.route, actualId);
     }
-    this.elements.set(actualId, registered);
-    // F3: sticky latch + per-route tally
+    bucket.set(actualId, registered);
+    // F3: sticky latch + per-window/per-route tally
     this.everHadRegistrationsFlag = true;
-    this.incrementRouteCount(route, actualId);
+    this.incrementRouteCount(windowLabel, route, actualId);
     this.emit('element:registered', { id: actualId, type, label: options.label });
 
     return registered;
   }
 
-  private incrementRouteCount(route: string | undefined, id: string): void {
-    // Use `""` as the key for undefined-route elements so the map stays
-    // typed as `Map<string, number>`; snapshot serialization filters this
-    // bucket out.
+  private incrementRouteCount(windowLabel: string, route: string | undefined, id: string): void {
+    // Use `""` as the key for undefined-route elements so the inner map stays
+    // typed as `Map<string, Set<string>>`; snapshot serialization filters
+    // this bucket out. Per-window `count` is derived as the set's size.
     const key = route ?? '';
-    this.routeCounts.set(key, (this.routeCounts.get(key) ?? 0) + 1);
-    let ids = this.routeIds.get(key);
+    let byRoute = this.routeIdsByWindow.get(windowLabel);
+    if (!byRoute) {
+      byRoute = new Map();
+      this.routeIdsByWindow.set(windowLabel, byRoute);
+    }
+    let ids = byRoute.get(key);
     if (!ids) {
       ids = new Set();
-      this.routeIds.set(key, ids);
+      byRoute.set(key, ids);
     }
     ids.add(id);
   }
 
-  private decrementRouteCount(route: string | undefined, id: string): void {
+  private decrementRouteCount(windowLabel: string, route: string | undefined, id: string): void {
     const key = route ?? '';
-    const next = (this.routeCounts.get(key) ?? 0) - 1;
-    if (next <= 0) {
-      this.routeCounts.delete(key);
-    } else {
-      this.routeCounts.set(key, next);
-    }
-    const ids = this.routeIds.get(key);
+    const byRoute = this.routeIdsByWindow.get(windowLabel);
+    if (!byRoute) return;
+    const ids = byRoute.get(key);
     if (ids) {
       ids.delete(id);
       if (ids.size === 0) {
-        this.routeIds.delete(key);
+        byRoute.delete(key);
       }
+    }
+    // Drop an empty window so it doesn't linger in `byRoutePerWindow`.
+    if (byRoute.size === 0) {
+      this.routeIdsByWindow.delete(windowLabel);
     }
   }
 
@@ -1354,7 +1463,7 @@ export class UIBridgeRegistry {
    * Get all content (non-interactive) elements
    */
   getAllContentElements(): RegisteredElement[] {
-    return Array.from(this.elements.values()).filter((el) => el.category === 'content');
+    return this.allElements().filter((el) => el.category === 'content');
   }
 
   /**
@@ -1404,7 +1513,7 @@ export class UIBridgeRegistry {
    * Get all interactive elements
    */
   getAllInteractiveElements(): RegisteredElement[] {
-    return Array.from(this.elements.values()).filter(
+    return this.allElements().filter(
       (el) => el.category !== 'content' && el.category !== 'media'
     );
   }
@@ -1413,15 +1522,41 @@ export class UIBridgeRegistry {
    * Get all media elements
    */
   getAllMediaElements(): RegisteredElement[] {
-    return Array.from(this.elements.values()).filter((el) => el.category === 'media');
+    return this.allElements().filter((el) => el.category === 'media');
   }
 
   /**
-   * Unregister an element
+   * Unregister an element.
+   *
+   * `windowLabel` scopes the removal to one window; when omitted the default
+   * ("main") window is resolved first, falling back to whichever window holds
+   * the id (so single-window callers — `useUIElement`'s cleanup — behave
+   * exactly as before).
    */
-  unregisterElement(id: string): boolean {
-    const registered = this.elements.get(id);
-    if (registered) {
+  unregisterElement(id: string, windowLabel?: string): boolean {
+    // Resolve which window's bucket owns this id.
+    let ownerLabel: string | undefined;
+    let bucket: Map<string, RegisteredElement> | undefined;
+    if (windowLabel !== undefined) {
+      bucket = this.elementsByWindow.get(windowLabel);
+      if (bucket?.has(id)) ownerLabel = windowLabel;
+    } else {
+      const def = this.elementsByWindow.get(UIBridgeRegistry.DEFAULT_WINDOW_LABEL);
+      if (def?.has(id)) {
+        ownerLabel = UIBridgeRegistry.DEFAULT_WINDOW_LABEL;
+        bucket = def;
+      } else {
+        for (const [label, b] of this.elementsByWindow) {
+          if (b.has(id)) {
+            ownerLabel = label;
+            bucket = b;
+            break;
+          }
+        }
+      }
+    }
+    const registered = ownerLabel !== undefined ? bucket?.get(id) : undefined;
+    if (registered && ownerLabel !== undefined && bucket) {
       // Track recently removed for remount ID preservation
       if (this.options.preserveIdAcrossRemount && registered.element) {
         const fp = computeElementFingerprint(registered.element).hash;
@@ -1435,12 +1570,12 @@ export class UIBridgeRegistry {
         }
       }
       registered.mounted = false;
-      this.elements.delete(id);
-      // F3: drop this element from the per-route tally. Note we do NOT
-      // clear `everHadRegistrationsFlag` — it's a one-way latch that stays
+      bucket.delete(id);
+      // F3: drop this element from the per-window/per-route tally. Note we do
+      // NOT clear `everHadRegistrationsFlag` — it's a one-way latch that stays
       // true for the rest of the registry's lifetime so callers can tell
       // "had coverage, all unmounted" from "never had coverage".
-      this.decrementRouteCount(registered.route, id);
+      this.decrementRouteCount(ownerLabel, registered.route, id);
       this.emit('element:unregistered', { id });
       this.options.elementEventLog?.removeElement(id);
       return true;
@@ -1452,21 +1587,21 @@ export class UIBridgeRegistry {
    * Get a registered element
    */
   getElement(id: string): RegisteredElement | undefined {
-    return this.elements.get(id);
+    return this.findElement(id);
   }
 
   /**
    * Get all registered elements
    */
   getAllElements(): RegisteredElement[] {
-    return Array.from(this.elements.values());
+    return this.allElements();
   }
 
   /**
    * Find element by DOM element reference
    */
   findByDOMElement(element: HTMLElement): RegisteredElement | undefined {
-    for (const registered of this.elements.values()) {
+    for (const registered of this.allElements()) {
       if (registered.element === element) {
         return registered;
       }
@@ -1502,7 +1637,7 @@ export class UIBridgeRegistry {
     const results: SearchResult[] = [];
     const threshold = criteria.fuzzyThreshold ?? 0.7;
 
-    for (const element of this.elements.values()) {
+    for (const element of this.allElements()) {
       if (!element.mounted) continue;
 
       const state = element.getState();
@@ -1681,7 +1816,7 @@ export class UIBridgeRegistry {
   findByText(text: string, fuzzy: boolean = true): RegisteredElement | undefined {
     const results = this.searchElements({ text, fuzzy, fuzzyThreshold: fuzzy ? 0.7 : 1.0 });
     if (results.length > 0) {
-      return this.elements.get(results[0].element.id);
+      return this.findElement(results[0].element.id);
     }
     return undefined;
   }
@@ -1692,7 +1827,7 @@ export class UIBridgeRegistry {
   findByAccessibleName(name: string): RegisteredElement | undefined {
     const results = this.searchElements({ accessibleName: name, fuzzy: true });
     if (results.length > 0) {
-      return this.elements.get(results[0].element.id);
+      return this.findElement(results[0].element.id);
     }
     return undefined;
   }
@@ -2399,16 +2534,53 @@ export class UIBridgeRegistry {
    * snapshot time. Phase 1.2 — see plan dated 2026-05-03.
    */
   getCountsByRoute(): Record<string, { count: number; ids: string[] }> {
-    const out: Record<string, { count: number; ids: string[] }> = {};
-    for (const [route, count] of this.routeCounts) {
-      // Empty-string key = undefined-route bucket — exclude from the
-      // user-visible map so it never shows up as `"": { ... }`.
-      if (route === '') continue;
-      if (count > 0) {
-        const idSet = this.routeIds.get(route);
-        const ids = idSet ? Array.from(idSet) : [];
-        out[route] = { count, ids };
+    // Merge across windows: `count` is the SUM of per-window counts, `ids` is
+    // their UNION. For a single (default) window this is byte-identical to the
+    // pre-window-aware output — one bucket, count === ids.length, same
+    // route-insertion and id-insertion order. With multiple windows the same
+    // id can appear in two windows, so `count` may exceed `ids.length`.
+    const counts = new Map<string, number>();
+    const idsByRoute = new Map<string, Set<string>>();
+    for (const byRoute of this.routeIdsByWindow.values()) {
+      for (const [route, idSet] of byRoute) {
+        // Empty-string key = undefined-route bucket — exclude from the
+        // user-visible map so it never shows up as `"": { ... }`.
+        if (route === '') continue;
+        counts.set(route, (counts.get(route) ?? 0) + idSet.size);
+        let merged = idsByRoute.get(route);
+        if (!merged) {
+          merged = new Set();
+          idsByRoute.set(route, merged);
+        }
+        for (const id of idSet) merged.add(id);
       }
+    }
+    const out: Record<string, { count: number; ids: string[] }> = {};
+    for (const [route, count] of counts) {
+      if (count > 0) {
+        out[route] = { count, ids: Array.from(idsByRoute.get(route) ?? []) };
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Per-window breakdown of {@link getCountsByRoute}, keyed first by
+   * `windowLabel` then by route. Within each window `count === ids.length`.
+   * The empty-string (undefined-route) bucket and any window with no routed
+   * elements are omitted. Backs `BridgeSnapshot.registration.byRoutePerWindow`.
+   */
+  getCountsByRoutePerWindow(): Record<string, Record<string, { count: number; ids: string[] }>> {
+    const out: Record<string, Record<string, { count: number; ids: string[] }>> = {};
+    for (const [windowLabel, byRoute] of this.routeIdsByWindow) {
+      const routes: Record<string, { count: number; ids: string[] }> = {};
+      for (const [route, idSet] of byRoute) {
+        if (route === '') continue;
+        if (idSet.size > 0) {
+          routes[route] = { count: idSet.size, ids: Array.from(idSet) };
+        }
+      }
+      if (Object.keys(routes).length > 0) out[windowLabel] = routes;
     }
     return out;
   }
@@ -2422,12 +2594,25 @@ export class UIBridgeRegistry {
     totalRegistered: number;
     everHadRegistrations: boolean;
     byRoute: Record<string, { count: number; ids: string[] }>;
+    byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
   } {
-    return {
-      totalRegistered: this.elements.size,
+    const meta: {
+      totalRegistered: number;
+      everHadRegistrations: boolean;
+      byRoute: Record<string, { count: number; ids: string[] }>;
+      byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+    } = {
+      totalRegistered: this.elementCount(),
       everHadRegistrations: this.everHadRegistrationsFlag,
       byRoute: this.getCountsByRoute(),
     };
+    // Only attach the per-window breakdown when a non-default window is in
+    // play, so single-window hosts keep emitting the byte-identical
+    // pre-window-aware registration shape (no extra key).
+    if (this.hasNonDefaultWindow()) {
+      meta.byRoutePerWindow = this.getCountsByRoutePerWindow();
+    }
+    return meta;
   }
 
   /**
@@ -2600,6 +2785,12 @@ export class UIBridgeRegistry {
        * undefined.
        */
       getActiveTab?: () => string | null | undefined;
+      /**
+       * The focused window's label for multi-window hosts. ADDITIVE — when
+       * provided it is emitted as `BridgeSnapshot.activeWindowLabel`; omitted
+       * entirely otherwise so single-window snapshots stay byte-identical.
+       */
+      activeWindowLabel?: string;
     } = {}
   ): BridgeSnapshot {
     const takenAt = Date.now();
@@ -2610,6 +2801,9 @@ export class UIBridgeRegistry {
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
       ...(activeTab !== undefined ? { activeTab } : {}),
+      ...(options.activeWindowLabel !== undefined
+        ? { activeWindowLabel: options.activeWindowLabel }
+        : {}),
       ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
@@ -2654,6 +2848,11 @@ export class UIBridgeRegistry {
        * registration metadata.
        */
       getActiveTab?: () => string | null | undefined;
+      /**
+       * The focused window's label for multi-window hosts. ADDITIVE — see
+       * {@link createSnapshot}. Omitted entirely when not provided.
+       */
+      activeWindowLabel?: string;
     } = {}
   ): Promise<BridgeSnapshot> {
     const allElements = this.getAllElements();
@@ -2681,6 +2880,9 @@ export class UIBridgeRegistry {
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
       ...(activeTab !== undefined ? { activeTab } : {}),
+      ...(options.activeWindowLabel !== undefined
+        ? { activeWindowLabel: options.activeWindowLabel }
+        : {}),
       ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: elementSnapshots,
@@ -2712,7 +2914,7 @@ export class UIBridgeRegistry {
    * Clear all registrations
    */
   clear(): void {
-    this.elements.clear();
+    this.elementsByWindow.clear();
     this.components.clear();
     this.workflows.clear();
     this.eventListeners.clear();
@@ -2723,8 +2925,7 @@ export class UIBridgeRegistry {
     // F3: a full `clear()` is an explicit teardown — unlike per-element
     // unregister it resets the route tally AND the sticky latch, matching
     // the lifetime semantics expected after `resetGlobalRegistry()`.
-    this.routeCounts.clear();
-    this.routeIds.clear();
+    this.routeIdsByWindow.clear();
     this.everHadRegistrationsFlag = false;
   }
 

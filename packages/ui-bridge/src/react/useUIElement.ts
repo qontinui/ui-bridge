@@ -19,6 +19,7 @@ import type {
 import type { RelationshipType } from '../relationships/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import { useOwningComponent } from './UIBridgeComponentScope';
+import { useUIBridgeWindowLabel } from './UIBridgeWindowContext';
 import { pollForTaggedElement, trackElementBbox, UI_BRIDGE_ID_ATTR } from './bbox-tracker';
 import { UI_BRIDGE_PERSIST_ATTR } from './useAutoRegister';
 
@@ -106,6 +107,18 @@ export interface UseUIElementOptions {
    * matched against a glob entry, or a glob matched against concrete entries.
    */
   reveals?: string[];
+
+  /**
+   * Window this element registers under (multi-window hosts only). When
+   * omitted, the hook falls back to the nearest `UIBridgeWindowProvider`
+   * context, and finally to the registry's default `"main"` window — so
+   * single-window callers (web, mobile) that pass neither behave exactly as
+   * before. A non-default value is the real Tauri webview label
+   * (`getCurrentWindow().label`); it isolates this element's registry bucket
+   * so two windows can register the same id without collision. See plan
+   * `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
+   */
+  windowLabel?: string;
 }
 
 /**
@@ -161,6 +174,7 @@ export interface UseUIElementReturn {
 export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const bridge = useUIBridgeOptional();
   const ownedByComponent = useOwningComponent();
+  const contextWindowLabel = useUIBridgeWindowLabel();
   const elementRef = useRef<HTMLElement | null>(null);
   const registeredRef = useRef(false);
 
@@ -180,6 +194,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     persistWhileMounted,
     reveals,
   } = options;
+
+  // Explicit option wins; otherwise inherit the nearest window provider; the
+  // registry resolves `undefined` to its default "main" window. Single-window
+  // callers pass neither, so this stays `undefined` (byte-identical behavior).
+  const windowLabel = options.windowLabel ?? contextWindowLabel;
 
   // See useUIState for rationale on capturing id at register time.
   const registeredElementIdRef = useRef<string | null>(null);
@@ -238,6 +257,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       color,
       contextPath,
       reveals,
+      windowLabel,
     });
     registeredRef.current = true;
     registeredElementIdRef.current = id;
@@ -263,6 +283,7 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
     color,
     contextPath,
     reveals,
+    windowLabel,
     startBboxTracking,
   ]);
 
@@ -270,11 +291,11 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(registeredElementIdRef.current ?? id);
+    bridge.registry.unregisterElement(registeredElementIdRef.current ?? id, windowLabel);
     registeredRef.current = false;
     registeredElementIdRef.current = null;
     stopBboxTracking();
-  }, [bridge, id, stopBboxTracking]);
+  }, [bridge, id, windowLabel, stopBboxTracking]);
 
   // Keep latest register/unregister in refs so the ref callback doesn't
   // churn identity when consumers pass inline `actions`/`customActions`

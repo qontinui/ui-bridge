@@ -566,6 +566,20 @@ export interface RegisteredElement {
   route?: string;
 
   /**
+   * The window this element is registered under (multi-window hosts only).
+   *
+   * Default/sole window is `"main"`; the registry stores default-window
+   * elements with this field left `undefined` so single-window snapshots
+   * stay byte-identical to the pre-window-aware shape. A non-default value
+   * is the real Tauri webview label (`getCurrentWindow().label`) supplied
+   * via `useUIElement({ windowLabel })` or the `UIBridgeWindowProvider`
+   * context. Used to scope UI Bridge request targeting and the per-window
+   * registration view (`registration.byRoutePerWindow`). See plan
+   * `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
+   */
+  windowLabel?: string;
+
+  /**
    * Action-driven cached state overlays.
    *
    * After a mutation action (`type`, `clear`, `setValue`, `check`, `uncheck`,
@@ -1167,6 +1181,23 @@ export interface SnapshotRegistrationMetadata {
    */
   byRoute: Record<string, { count: number; ids: string[] }>;
   /**
+   * Per-window breakdown of `byRoute`, keyed first by `windowLabel` then by
+   * route. ADDITIVE and OPTIONAL — present only when at least one element is
+   * registered under a non-default (`!== "main"`) window, so single-window
+   * hosts (web, mobile, the runner's main window today) keep emitting the
+   * exact pre-window-aware shape with this field absent.
+   *
+   * The top-level `byRoute` remains the MERGED union across all windows
+   * (unchanged semantics); `byRoutePerWindow` partitions that union so a
+   * multi-window host can confirm which window registered which route's
+   * elements. Note: a route's merged `count` is the sum of per-window
+   * counts, so when the same element id is registered in two windows the
+   * merged `count` can exceed `ids.length` (the union dedupes ids). Within a
+   * single window `count === ids.length` always holds. See plan
+   * `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
+   */
+  byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+  /**
    * Mirror of the snapshot's top-level `activeTab`. The runner's
    * `/ui-bridge/control/snapshot` handler copies this in so callers reading
    * `registration.activeTab` see the same value `/ui-bridge/control/tabs`
@@ -1218,6 +1249,14 @@ export interface BridgeSnapshot {
    * See {@link SnapshotRegistrationMetadata}.
    */
   registration: SnapshotRegistrationMetadata;
+  /**
+   * The window this snapshot describes as "active", when the caller supplies
+   * one via `createSnapshot({ activeWindowLabel })`. ADDITIVE and OPTIONAL —
+   * omitted entirely when not provided, so single-window snapshots are
+   * byte-identical to the pre-window-aware shape. Multi-window hosts (the
+   * runner) set this to the focused window's `getCurrentWindow().label`.
+   */
+  activeWindowLabel?: string;
   /**
    * Document visibility at snapshot time. Mirrors `document.hidden` /
    * `document.visibilityState`. Components that gate work on visibility
@@ -1356,6 +1395,14 @@ export interface BridgeSnapshot {
      * environments.
      */
     route?: string;
+    /**
+     * The window this element is registered under. ADDITIVE — emitted only
+     * for elements registered under a non-default (`!== "main"`) window, so
+     * single-window snapshots stay byte-identical. Matches the keys of
+     * `BridgeSnapshot.registration.byRoutePerWindow` and the focused
+     * `activeWindowLabel`.
+     */
+    windowLabel?: string;
     /**
      * Phase 3.2: element ids (or `*`-glob patterns) this control unhides.
      * Echoed verbatim from `useUIElement({ reveals: [...] })`. Powers
