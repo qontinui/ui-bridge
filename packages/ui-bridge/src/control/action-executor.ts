@@ -987,7 +987,13 @@ export class DefaultActionExecutor implements ActionExecutor {
       // genuine action failure propagates to the catch below.
       let result: unknown;
       let effectVerification: EffectVerification | undefined;
-      const signature = this.effectVerificationEnabled
+      // Verify when the executor-wide flag is on OR the caller opted in for this
+      // single request via `verifyEffect: true`. The per-request override lets a
+      // consumer (e.g. the runner's `effect_check` step) request a verified
+      // outcome without flipping a server-wide switch.
+      const wantEffectVerification =
+        this.effectVerificationEnabled || request.verifyEffect === true;
+      const signature = wantEffectVerification
         ? this.signatureRegistry.resolve(
             request.action,
             { id: elementId, reveals: registered?.reveals },
