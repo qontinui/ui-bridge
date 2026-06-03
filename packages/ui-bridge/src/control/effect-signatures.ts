@@ -14,6 +14,7 @@ import type {
   PredictedDelta,
   ActionParams,
 } from './effect-types';
+import type { InferredSignatureTable, InferredSignatureEntry } from './effect-inference';
 
 /**
  * The element shape the registry needs to resolve a signature. `reveals` is the
@@ -216,4 +217,121 @@ export function resolveSignature(
   element: SignatureLookupElement | undefined,
 ): EffectSignature | undefined {
   return createDefaultSignatureRegistry().resolve(params.action, element, params.params);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — declared-first, inferred-fallback registry
+// ---------------------------------------------------------------------------
+
+export interface InferredRegistryOptions {
+  /**
+   * Resolve a live element id → its recording fingerprint, if known. Lets the
+   * inferred table be looked up per-target; when absent (or returning
+   * `undefined`), the registry falls back to an action-level aggregate when one
+   * exists unambiguously.
+   */
+  fingerprintOf?: (elementId: string) => string | undefined;
+}
+
+/**
+ * Build a static {@link EffectSignature} from an inferred table entry. The
+ * `predicts` callback ignores the live pre-snapshot: an inferred entry is a
+ * *static aggregate* (a measured tendency), not a per-snapshot computation. That
+ * is honest — the prediction is "this consequence tends to follow this action",
+ * and the live snapshot is what verification compares it against, not what
+ * shapes it.
+ */
+function signatureFromInferredEntry(entry: InferredSignatureEntry): EffectSignature | undefined {
+  if (entry.facts.length === 0) return undefined;
+
+  const elementsAppear = entry.facts.filter((f) => f.kind === 'appear').map((f) => f.criteria);
+  const elementsDisappear = entry.facts
+    .filter((f) => f.kind === 'disappear')
+    .map((f) => f.criteria);
+
+  const delta: PredictedDelta = {};
+  if (elementsAppear.length > 0) delta.elementsAppear = elementsAppear;
+  if (elementsDisappear.length > 0) delta.elementsDisappear = elementsDisappear;
+
+  const meanConfidence =
+    entry.facts.reduce((sum, f) => sum + f.confidence, 0) / entry.facts.length;
+
+  // Scope: id-scope only when EVERY kept criterion carries an id (rare for
+  // inferred facts, which are role/text-based). Otherwise whole-page so the
+  // role/text consequences remain in the captured observation window.
+  const allHaveIds =
+    entry.facts.length > 0 && entry.facts.every((f) => f.criteria.id !== undefined);
+  const scope = allHaveIds
+    ? { elementIds: entry.facts.map((f) => f.criteria.id as string) }
+    : {};
+
+  return {
+    predicts: (): PredictedDelta => delta,
+    scope,
+    reversibility: 'reversible',
+    provenance: 'inferred',
+    confidence: meanConfidence,
+  };
+}
+
+class InferredSignatureRegistry implements SignatureLookup {
+  constructor(
+    private readonly table: InferredSignatureTable,
+    private readonly base: SignatureLookup,
+    private readonly options: InferredRegistryOptions | undefined,
+  ) {}
+
+  resolve(
+    action: string,
+    element: SignatureLookupElement | undefined,
+    params?: Record<string, unknown>,
+  ): EffectSignature | undefined {
+    // 1. Declared-first: a hand-authored signature always wins.
+    const declared = this.base.resolve(action, element, params);
+    if (declared) return declared;
+
+    // 2. Per-target inferred lookup: map the live element id → its recording
+    //    fingerprint (when known) and key the table by it.
+    const fingerprint = this.options?.fingerprintOf?.(element?.id ?? '') ?? null;
+    const perTargetKey = this.table.keyFor(action, fingerprint);
+    const perTarget = this.table.bySignatureKey.get(perTargetKey);
+    if (perTarget) {
+      return signatureFromInferredEntry(perTarget);
+    }
+
+    // 3. Action-level fallback: when the per-target lookup misses (no
+    //    fingerprint mapping, or the recorded target differs), use an
+    //    action-level aggregate ONLY when exactly one inferred entry exists for
+    //    this action. Ambiguity (multiple targets recorded for the action) is
+    //    resolved to no inference rather than guessing which target applies.
+    const actionEntries: InferredSignatureEntry[] = [];
+    for (const entry of this.table.bySignatureKey.values()) {
+      if (entry.action === action) actionEntries.push(entry);
+    }
+    if (actionEntries.length === 1) {
+      return signatureFromInferredEntry(actionEntries[0]);
+    }
+
+    // 4. No declared signature and no unambiguous inferred entry → undefined.
+    return undefined;
+  }
+}
+
+/**
+ * Declared-first, inferred-fallback registry. `resolve()` returns the
+ * hand-authored signature when one exists; otherwise an inferred signature
+ * (`provenance: 'inferred'`, `confidence` set) synthesized from `table`;
+ * otherwise `undefined`.
+ *
+ * Action-level fallback (step 3 in {@link InferredSignatureRegistry.resolve}):
+ * when no per-target entry is found, an action-level aggregate is used *only* if
+ * exactly one inferred entry exists for that action — this keeps the fallback
+ * honest (no guessing among multiple recorded targets).
+ */
+export function createInferredSignatureRegistry(
+  table: InferredSignatureTable,
+  base?: SignatureLookup,
+  options?: InferredRegistryOptions,
+): SignatureLookup {
+  return new InferredSignatureRegistry(table, base ?? createDefaultSignatureRegistry(), options);
 }

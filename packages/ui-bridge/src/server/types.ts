@@ -21,6 +21,7 @@ import type {
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
+  EffectRecordEntry,
 } from '../control';
 import type { FillResult } from '../core/types';
 import type { PageHealthReport } from './page-health';
@@ -590,6 +591,13 @@ export interface UIBridgeServerHandlers {
     limit?: number,
     context?: HandlerContext
   ) => Promise<APIResponse<unknown[]>>;
+  // D3 Effect Calculus (Phase 2) — read-only recent predict-then-verify
+  // cycles from the process-global effect store. Newest-first; `limit` caps
+  // the slice (omitted = all retained, default ring-buffer cap 100).
+  getRecentEffects: (
+    options?: { limit?: number },
+    context?: HandlerContext
+  ) => Promise<APIResponse<EffectRecordEntry[]>>;
   getMetrics: () => Promise<APIResponse<unknown>>;
   highlightElement: (id: string, context?: HandlerContext) => Promise<APIResponse<void>>;
   getElementTree: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
@@ -1648,6 +1656,8 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Debug
   { method: 'GET', path: '/debug/action-history', handler: 'getActionHistory' },
+  // D3 Effect Calculus (Phase 2) — read-only recent predict-then-verify cycles.
+  { method: 'GET', path: '/effects/recent', handler: 'getRecentEffects' },
   { method: 'GET', path: '/debug/metrics', handler: 'getMetrics' },
   { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
   { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },

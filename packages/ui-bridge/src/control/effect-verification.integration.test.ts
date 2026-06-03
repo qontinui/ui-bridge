@@ -10,6 +10,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
+import {
+  getGlobalActionWindowRegistry,
+  resetGlobalActionWindowRegistry,
+} from './action-window-registry';
+import { resetGlobalEffectStore, getGlobalEffectStore } from './effect-store';
 
 describe('DefaultActionExecutor — D3 effect verification wiring', () => {
   let registry: UIBridgeRegistry;
@@ -19,10 +24,15 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     registry = new UIBridgeRegistry();
     container = document.createElement('div');
     document.body.appendChild(container);
+    // Phase 2 globals — isolate per test.
+    resetGlobalActionWindowRegistry();
+    resetGlobalEffectStore();
   });
 
   afterEach(() => {
     document.body.removeChild(container);
+    resetGlobalActionWindowRegistry();
+    resetGlobalEffectStore();
   });
 
   function makeButton(id: string): HTMLButtonElement {
@@ -124,5 +134,110 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     executor.setEffectVerificationEnabled(true);
     const on = await executor.executeAction('menu-btn', { action: 'click' });
     expect(on.effectVerification).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2 — settle-window cause attribution
+  // -------------------------------------------------------------------------
+
+  it("cause: 'causal' for a clean Confirmed (no concurrent observation)", async () => {
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      enableEffectVerification: true,
+    });
+    const btn = makeButton('menu-btn');
+    registry.registerElement('menu-btn', btn, {
+      type: 'button',
+      label: 'Menu',
+      reveals: ['user-menu'],
+    });
+    btn.addEventListener('click', () => {
+      const menu = document.createElement('div');
+      menu.setAttribute('data-testid', 'user-menu');
+      container.appendChild(menu);
+      registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
+    });
+
+    const res = await executor.executeAction('menu-btn', { action: 'click' });
+
+    expect(res.effectVerification?.outcome).toBe('Confirmed');
+    expect(res.effectVerification?.cause).toBe('causal');
+  });
+
+  it("cause: 'mixed' downgrades Confirmed → Surprise when a concurrent observation lands in the window", async () => {
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      enableEffectVerification: true,
+    });
+    const btn = makeButton('menu-btn');
+    registry.registerElement('menu-btn', btn, {
+      type: 'button',
+      label: 'Menu',
+      reveals: ['user-menu'],
+    });
+
+    // The click reveals the predicted element (would be Confirmed) AND
+    // simulates the BackgroundObserver flagging a concurrent significant change
+    // inside the open settle window → the verifier reports cause: 'mixed' and
+    // computeVerification downgrades Confirmed → Surprise.
+    btn.addEventListener('click', () => {
+      const menu = document.createElement('div');
+      menu.setAttribute('data-testid', 'user-menu');
+      container.appendChild(menu);
+      registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
+      getGlobalActionWindowRegistry().recordConcurrentObservation(Date.now());
+    });
+
+    const res = await executor.executeAction('menu-btn', {
+      action: 'click',
+      requestId: 'req-mixed-1',
+    });
+
+    expect(res.effectVerification?.cause).toBe('mixed');
+    expect(res.effectVerification?.outcome).toBe('Surprise');
+    // The underlying containment still holds (P ⊆ O ∧ O ⊆ P) — only the
+    // terminal outcome was downgraded by the mixed cause.
+    expect(res.effectVerification?.containment.predictedSubsetObserved).toBe(true);
+    expect(res.effectVerification?.containment.observedSubsetPredicted).toBe(true);
+  });
+
+  it('records each verified cycle into the global effect store (newest-first)', async () => {
+    const executor = new DefaultActionExecutor(registry, undefined, {
+      enableEffectVerification: true,
+    });
+    const btn = makeButton('menu-btn');
+    registry.registerElement('menu-btn', btn, {
+      type: 'button',
+      label: 'Menu',
+      reveals: ['user-menu'],
+    });
+    btn.addEventListener('click', () => {
+      const menu = document.createElement('div');
+      menu.setAttribute('data-testid', 'user-menu');
+      container.appendChild(menu);
+      registry.registerElement('user-menu', menu, { type: 'menu', label: 'User Menu' });
+    });
+
+    await executor.executeAction('menu-btn', { action: 'click', requestId: 'req-store-1' });
+
+    const recent = getGlobalEffectStore().getRecent();
+    expect(recent.length).toBe(1);
+    expect(recent[0].action).toBe('click');
+    expect(recent[0].elementId).toBe('menu-btn');
+    expect(recent[0].requestId).toBe('req-store-1');
+    expect(recent[0].outcome).toBe('Confirmed');
+    expect(recent[0].cause).toBe('causal');
+  });
+
+  it('does NOT record into the effect store when verification is disabled', async () => {
+    const executor = new DefaultActionExecutor(registry);
+    const btn = makeButton('menu-btn');
+    registry.registerElement('menu-btn', btn, {
+      type: 'button',
+      label: 'Menu',
+      reveals: ['user-menu'],
+    });
+
+    await executor.executeAction('menu-btn', { action: 'click' });
+
+    expect(getGlobalEffectStore().getRecent().length).toBe(0);
   });
 });

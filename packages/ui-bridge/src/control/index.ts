@@ -45,3 +45,40 @@ export type { SignatureLookup, SignatureLookupElement } from './effect-signature
 export { EffectVerifier } from './effect-verifier';
 export type { EffectVerifierDeps } from './effect-verifier';
 export { assertSignatureEffectConsistency } from './effect-authoring';
+// D3 Effect Calculus — Phase 2 (settle-window attribution + effect store)
+export {
+  ActionWindowRegistry,
+  getGlobalActionWindowRegistry,
+  setGlobalActionWindowRegistry,
+  resetGlobalActionWindowRegistry,
+} from './action-window-registry';
+export type { ActionWindow } from './action-window-registry';
+export {
+  EffectStore,
+  getGlobalEffectStore,
+  setGlobalEffectStore,
+  resetGlobalEffectStore,
+} from './effect-store';
+export type { EffectRecordEntry } from './effect-store';
+// D3 Effect Calculus — Phase 3b (workflow composition)
+export { composeSignatures } from './effect-composition';
+export type {
+  CompositionStep,
+  ComposedPrediction,
+} from './effect-composition';
+export type { WorkflowEngineOptions } from './workflow-engine';
+// D3 Effect Calculus — Phase 4 (signature inference from recording history)
+export {
+  cooccurrenceToEffectRecords,
+  inferSignatures,
+  fingerprintToCriteria,
+} from './effect-inference';
+export type {
+  EffectRecord,
+  InferenceOptions,
+  InferredFact,
+  InferredSignatureEntry,
+  InferredSignatureTable,
+} from './effect-inference';
+export { createInferredSignatureRegistry } from './effect-signatures';
+export type { InferredRegistryOptions } from './effect-signatures';
