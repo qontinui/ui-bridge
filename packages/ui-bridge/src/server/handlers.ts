@@ -36,7 +36,9 @@ import type {
   ElementFieldChange,
   BatchActionRequest,
   BatchActionResponse,
+  EffectRecordEntry,
 } from '../control';
+import { getGlobalEffectStore } from '../control/effect-store';
 import { diagnosePageHealth } from './page-health';
 import {
   scanDOMForInteractiveElements,
@@ -2307,6 +2309,28 @@ export function createHandlers(
         return success(limited);
       } catch (err) {
         return error((err as Error).message, 'ACTION_HISTORY_ERROR');
+      }
+    },
+
+    // D3 Effect Calculus (Phase 2) — read-only recent predict-then-verify
+    // cycles from the process-global effect store. Newest-first.
+    getRecentEffects: async (options?: {
+      limit?: number;
+    }): Promise<APIResponse<EffectRecordEntry[]>> => {
+      try {
+        // The GET adapter passes query values as strings; coerce `limit`.
+        const rawLimit: unknown = options?.limit;
+        let limit: number | undefined;
+        if (typeof rawLimit === 'number' && Number.isFinite(rawLimit)) {
+          limit = rawLimit;
+        } else if (typeof rawLimit === 'string' && rawLimit.trim() !== '') {
+          const parsed = Number(rawLimit);
+          if (Number.isFinite(parsed)) limit = parsed;
+        }
+        const recent = getGlobalEffectStore().getRecent(limit);
+        return success(recent);
+      } catch (err) {
+        return error((err as Error).message, 'RECENT_EFFECTS_ERROR');
       }
     },
 

@@ -69,6 +69,7 @@ import { classString } from '../core/class-name';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
+import { getGlobalEffectStore } from './effect-store';
 import { createDefaultSignatureRegistry } from './effect-signatures';
 import { createSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
@@ -997,6 +998,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           action: request.action,
           elementId,
           params: actionParams as Record<string, unknown> | undefined,
+          requestId: request.requestId,
         };
         const verified = await this.getEffectVerifier().verifyAction(
           effectParams,
@@ -1005,6 +1007,17 @@ export class DefaultActionExecutor implements ActionExecutor {
         );
         result = verified.result;
         effectVerification = verified.verification;
+        // Phase 2: record the verified cycle into the process-global effect
+        // store so the read-only `GET /effects/recent` endpoint can surface it.
+        getGlobalEffectStore().record({
+          requestId: request.requestId,
+          action: request.action,
+          elementId,
+          outcome: effectVerification.outcome,
+          cause: effectVerification.cause,
+          verification: effectVerification,
+          timestamp: Date.now(),
+        });
       } else {
         result = await this.performAction(element, request.action, actionParams);
       }

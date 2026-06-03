@@ -27,6 +27,7 @@ import { computeDiff, hasSignificantChanges } from './semantic-diff';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { ControlSnapshot } from '../control/types';
 import type { SemanticSnapshot } from './types';
+import { getGlobalActionWindowRegistry } from '../control/action-window-registry';
 
 /**
  * Payload emitted when a background capture detects meaningful changes.
@@ -51,6 +52,18 @@ export interface TimelineCapturePayload {
   elementCount: number;
   /** Metadata JSON (page type, form count, modal count, change summary). */
   metadataJson: string;
+  /**
+   * D3 Effect Calculus (Phase 2) attribution of this background capture.
+   *
+   * - `'observational'` — the change happened with no action settle window
+   *   open: pure background activity, not caused by any verified action.
+   * - `'concurrent'` — the change landed inside at least one open action
+   *   settle window: it is concurrent with an action under verification, and
+   *   the verifier will report that action's cause as `'mixed'`.
+   *
+   * Additive and optional so existing `onCapture` consumers are unaffected.
+   */
+  cause?: 'observational' | 'concurrent';
 }
 
 export interface BackgroundObserverConfig {
@@ -139,12 +152,24 @@ export class BackgroundObserver {
 
       // Check for significant changes
       let isSignificant = false;
+      let isRealChange = false;
       if (this.lastSnapshot) {
         const diff = computeDiff(this.lastSnapshot, snapshot);
         isSignificant = hasSignificantChanges(diff);
+        isRealChange = isSignificant;
       } else {
-        // First snapshot is always significant
+        // First snapshot is always significant (bootstrap), but it is NOT a
+        // real diff-detected change, so it must not flag action windows.
         isSignificant = true;
+      }
+
+      // D3 Effect Calculus (Phase 2): a genuine significant background change
+      // flags every currently-open action settle window as having concurrent
+      // background activity. The verifier reads that flag to report the
+      // action's cause as 'mixed'. Only real diff-detected changes count — the
+      // bootstrap snapshot is excluded.
+      if (isRealChange) {
+        getGlobalActionWindowRegistry().recordConcurrentObservation(now);
       }
 
       if (!isSignificant && !forceCapture) {
@@ -177,6 +202,11 @@ export class BackgroundObserver {
           elementCounts: snapshot.elementCounts,
           snapshotId: snapshot.snapshotId,
         }),
+        // D3 attribution: 'concurrent' when this capture overlaps an open
+        // action settle window, else 'observational' (pure background noise).
+        cause: getGlobalActionWindowRegistry().isWithinAnyWindow(now)
+          ? 'concurrent'
+          : 'observational',
       };
 
       // Emit

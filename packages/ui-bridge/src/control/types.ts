@@ -21,6 +21,7 @@ import type { SnapshotToastContext } from '../toast/types';
 import type { SnapshotRelationshipContext } from '../relationships/types';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
+import type { EffectVerification } from './effect-types';
 
 /**
  * Extended action request with additional options
@@ -147,6 +148,13 @@ export interface WorkflowStepResult {
    * `UiBridgeErrorCode`; `suggestedActions` is `RecoverySuggestion[]` (D6).
    */
   failureDetails?: ActionFailureDetails;
+  /**
+   * D3 per-step effect verification, threaded from the step's underlying action
+   * response (`ControlActionResponse.effectVerification`). Present only when the
+   * executor has effect verification enabled AND the step's action resolved a
+   * signature. Read-only passthrough — the workflow engine never computes it.
+   */
+  effectVerification?: EffectVerification;
   /** Duration in milliseconds */
   durationMs: number;
   /** Timestamp when completed */
@@ -184,6 +192,14 @@ export interface WorkflowRunResponse {
   completedAt?: number;
   /** Total duration */
   durationMs?: number;
+  /**
+   * D3 workflow-level effect verification: composed-prediction vs end-to-end
+   * observed delta. Present only when effect composition is enabled AND at
+   * least one step had a signature.
+   * Catches "every step Confirmed individually but the workflow as a whole
+   * drifted".
+   */
+  compositionVerification?: EffectVerification;
 }
 
 /**

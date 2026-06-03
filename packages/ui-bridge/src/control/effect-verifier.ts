@@ -20,13 +20,18 @@ import { computeDiff } from '../ai/semantic-diff';
 import type { SemanticSnapshot, ElementChange } from '../ai/types';
 import { computeVerification } from './effect-containment';
 import { settleMsForAction } from './settle-windows';
+import { getGlobalActionWindowRegistry } from './action-window-registry';
 import type {
   ActionParams,
+  EffectCause,
   EffectSignature,
   EffectVerification,
   ObservabilityScope,
   ObservedDelta,
 } from './effect-types';
+
+/** Monotonic counter for synthesizing a window id when no requestId is given. */
+let synthSeq = 0;
 
 /**
  * Dependencies the verifier needs from the host (supplied by the executor).
@@ -72,44 +77,68 @@ export class EffectVerifier {
   ): Promise<{ result: T; verification: EffectVerification }> {
     const startTime = Date.now();
 
+    // Settle window length (override → per-action band → fallback). Resolved up
+    // front so the window's `endMs` matches the actual settle we await.
+    const settleMs = settleMsForAction(params.action, signature.settleMs);
+
     // 1. Scoped pre-snapshot.
     const pre = await this.deps.captureSnapshot(signature.scope);
 
     // 2. Prediction.
     const predicted = signature.predicts(params, pre);
 
-    // 3. Execute the real action (errors propagate by design).
-    const result = await executeFn();
+    // 3. Open the settle window so concurrent background observations (flagged
+    //    by the BackgroundObserver) can be attributed to this action. The
+    //    window opens just before execution and closes after the post-snapshot.
+    const registry = getGlobalActionWindowRegistry();
+    const windowId = params.requestId ?? `effect-${Date.now()}-${synthSeq++}`;
+    registry.begin(windowId, params.action, Date.now(), settleMs);
 
-    // 4. Settle window (override → per-action band → fallback).
-    const settleMs = settleMsForAction(params.action, signature.settleMs);
-    await this.deps.settle(settleMs);
+    try {
+      // 4. Execute the real action (errors propagate by design — but we still
+      //    close the window in `finally` so a thrown action never leaks a
+      //    perpetually-open window into the registry).
+      const result = await executeFn();
 
-    // 5. Post-snapshot.
-    const post = await this.deps.captureSnapshot(signature.scope);
+      // 5. Settle window.
+      await this.deps.settle(settleMs);
 
-    // 6. Observed delta via the existing diff engine (reused, not reimplemented).
-    const diff = computeDiff(pre, post);
-    const observed: ObservedDelta = {
-      appeared: diff.changes.appeared,
-      disappeared: diff.changes.disappeared,
-      modified: diff.changes.modified,
-      navigatedTo: deriveNavigatedTo(pre, post),
-      errorsAppeared: diff.changes.appeared.filter(isErrorChange).length,
-    };
+      // 6. Post-snapshot.
+      const post = await this.deps.captureSnapshot(signature.scope);
 
-    // 7. Classify. Phase 1 single-action path attributes the delta as 'causal';
-    // the field is plumbed for Phase 2's settle-window attribution.
-    const durationMs = Date.now() - startTime;
-    const verification = computeVerification(
-      predicted,
-      observed,
-      pre,
-      signature.scope,
-      'causal',
-      durationMs,
-    );
+      // 7. Attribution: if a significant background change landed in this
+      //    window, the cause is 'mixed' (concurrent observational change
+      //    alongside the causal one); otherwise it is 'causal'. Read the flag
+      //    BEFORE ending the window.
+      const cause: EffectCause = registry.hadConcurrentObservation(windowId)
+        ? 'mixed'
+        : 'causal';
 
-    return { result, verification };
+      // 8. Observed delta via the existing diff engine (reused, not reimplemented).
+      const diff = computeDiff(pre, post);
+      const observed: ObservedDelta = {
+        appeared: diff.changes.appeared,
+        disappeared: diff.changes.disappeared,
+        modified: diff.changes.modified,
+        navigatedTo: deriveNavigatedTo(pre, post),
+        errorsAppeared: diff.changes.appeared.filter(isErrorChange).length,
+      };
+
+      // 9. Classify. `cause === 'mixed'` downgrades a clean Confirmed → Surprise
+      //    inside computeVerification.
+      const durationMs = Date.now() - startTime;
+      const verification = computeVerification(
+        predicted,
+        observed,
+        pre,
+        signature.scope,
+        cause,
+        durationMs,
+      );
+
+      return { result, verification };
+    } finally {
+      registry.end(windowId);
+    }
   }
 }

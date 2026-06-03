@@ -13,9 +13,75 @@ import type {
   WorkflowRunStatus,
   WorkflowEngine,
   ActionExecutor,
+  ControlActionResponse,
 } from './types';
 import type { UiBridgeErrorCode } from '../diagnostics';
 import { buildActionFailureDetails } from '../diagnostics';
+import {
+  SemanticSnapshotManager,
+  createSnapshotManager,
+} from '../ai/semantic-snapshot';
+import { computeDiff } from '../ai/semantic-diff';
+import type { SemanticSnapshot, ElementChange } from '../ai/types';
+import { computeVerification } from './effect-containment';
+import { composeSignatures } from './effect-composition';
+import type { CompositionStep } from './effect-composition';
+import type { SignatureLookup } from './effect-signatures';
+import { createDefaultSignatureRegistry } from './effect-signatures';
+import type { EffectVerification, ObservedDelta } from './effect-types';
+
+/**
+ * Options controlling the workflow engine's D3 effect-composition behaviour.
+ */
+export interface WorkflowEngineOptions {
+  /**
+   * Enable workflow-level effect composition (Phase 3b). Default OFF — when
+   * off the engine is byte-identical to its pre-D3 behaviour: no snapshots are
+   * captured and no `compositionVerification` is produced. Mirrors the
+   * executor's `enableEffectVerification` opt-in.
+   */
+  enableEffectComposition?: boolean;
+  /** Signature registry for composition. Defaults to the Phase 1 registry. */
+  signatureRegistry?: SignatureLookup;
+}
+
+/** An appeared element is "error-like" by the same heuristic the diff uses. */
+function isErrorChange(change: ElementChange): boolean {
+  return change.semanticType?.includes('error') === true || change.type === 'alert';
+}
+
+/**
+ * Derive the navigated-to route from the pre/post page context (mirrors the
+ * verifier's `deriveNavigatedTo`). Returns the post route only when it differs.
+ */
+function deriveNavigatedTo(
+  pre: SemanticSnapshot,
+  post: SemanticSnapshot,
+): string | undefined {
+  const preRoute = pre.page.pathname ?? pre.page.url;
+  const postRoute = post.page.pathname ?? post.page.url;
+  if (postRoute !== undefined && postRoute !== preRoute) return postRoute;
+  return undefined;
+}
+
+/**
+ * Build an {@link ObservedDelta} from a pre/post snapshot pair using the same
+ * construction the per-action verifier uses (`effect-verifier.ts`):
+ * appeared/disappeared/modified/navigatedTo/errorsAppeared from `computeDiff`.
+ */
+function observedFromSnapshots(
+  pre: SemanticSnapshot,
+  post: SemanticSnapshot,
+): ObservedDelta {
+  const diff = computeDiff(pre, post);
+  return {
+    appeared: diff.changes.appeared,
+    disappeared: diff.changes.disappeared,
+    modified: diff.changes.modified,
+    navigatedTo: deriveNavigatedTo(pre, post),
+    errorsAppeared: diff.changes.appeared.filter(isErrorChange).length,
+  };
+}
 
 /**
  * Classify a thrown workflow-step error into a canonical diagnostic code.
@@ -31,6 +97,21 @@ function classifyStepError(message: string): UiBridgeErrorCode {
 }
 
 /**
+ * Read a per-step `effectVerification` off a step's action result, if present.
+ * `executeStepInternal` returns the raw `ControlActionResponse` for
+ * element/component actions; when the executor has effect verification enabled
+ * and a signature resolved, that response carries `effectVerification`. Purely
+ * read-only — returns undefined for any non-action result shape.
+ */
+function extractStepEffectVerification(result: unknown): EffectVerification | undefined {
+  if (result && typeof result === 'object' && 'effectVerification' in result) {
+    const v = (result as Partial<ControlActionResponse>).effectVerification;
+    return v ?? undefined;
+  }
+  return undefined;
+}
+
+/**
  * Generate a unique run ID
  */
 function generateRunId(): string {
@@ -43,10 +124,43 @@ function generateRunId(): string {
 export class DefaultWorkflowEngine implements WorkflowEngine {
   private activeRuns = new Map<string, WorkflowRunState>();
 
+  /** D3 Phase 3b: workflow-level effect composition. Default OFF. */
+  private effectCompositionEnabled: boolean;
+  private signatureRegistry: SignatureLookup;
+  /** Lazily-constructed snapshot manager (only built when composition runs). */
+  private snapshotManager?: SemanticSnapshotManager;
+
   constructor(
     private registry: UIBridgeRegistry,
-    private executor: ActionExecutor
-  ) {}
+    private executor: ActionExecutor,
+    options: WorkflowEngineOptions = {}
+  ) {
+    this.effectCompositionEnabled = options.enableEffectComposition ?? false;
+    this.signatureRegistry = options.signatureRegistry ?? createDefaultSignatureRegistry();
+  }
+
+  /**
+   * Toggle workflow-level effect composition at runtime. When disabled the
+   * engine behaves exactly as it did pre-D3 (no snapshots, no
+   * `compositionVerification`).
+   */
+  setEffectCompositionEnabled(enabled: boolean): void {
+    this.effectCompositionEnabled = enabled;
+  }
+
+  /** Lazy snapshot manager — built on first use so the off-path stays cheap. */
+  private getSnapshotManager(): SemanticSnapshotManager {
+    if (!this.snapshotManager) {
+      this.snapshotManager = createSnapshotManager();
+    }
+    return this.snapshotManager;
+  }
+
+  /** Capture a workflow-level semantic snapshot of the current control state. */
+  private async captureSnapshot(): Promise<SemanticSnapshot> {
+    const controlSnapshot = await this.executor.getSnapshot();
+    return this.getSnapshotManager().createSnapshot(controlSnapshot);
+  }
 
   /**
    * Run a workflow
@@ -157,6 +271,17 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       if (idx >= 0) stopIndex = idx + 1;
     }
 
+    // D3 Phase 3b: capture ONE workflow-level pre-snapshot before the first
+    // step (only when composition is enabled). §6.4 — a single pre/post pair
+    // for the whole run is the hot-loop mitigation vs N per-step captures.
+    const compositionEnabled = this.effectCompositionEnabled;
+    let preSnapshot: SemanticSnapshot | undefined;
+    let compositionStartedAt = 0;
+    if (compositionEnabled) {
+      preSnapshot = await this.captureSnapshot();
+      compositionStartedAt = Date.now();
+    }
+
     // Execute steps
     for (let i = startIndex; i < stopIndex; i++) {
       // Check for cancellation
@@ -172,11 +297,99 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       if (!stepResult.success) {
         state.status = 'failed';
         state.error = stepResult.error;
+        // Still attempt composition verification on the partial run so a drift
+        // that caused the failure is surfaced.
+        if (compositionEnabled && preSnapshot) {
+          await this.verifyComposition(
+            state,
+            workflow.steps.slice(startIndex, i + 1),
+            params,
+            preSnapshot,
+            compositionStartedAt,
+          );
+        }
         return;
       }
     }
 
     state.status = 'completed';
+
+    // D3 Phase 3b: capture the post-snapshot AFTER the last step and verify the
+    // composed prediction against the end-to-end observed delta.
+    if (compositionEnabled && preSnapshot) {
+      await this.verifyComposition(
+        state,
+        workflow.steps.slice(startIndex, stopIndex),
+        params,
+        preSnapshot,
+        compositionStartedAt,
+      );
+    }
+  }
+
+  /**
+   * D3 Phase 3b: compose the executed steps' signatures into one workflow-level
+   * prediction and verify it against the end-to-end observed delta. Stores the
+   * result on `state.compositionVerification`. Skips entirely when no step
+   * contributed a signature (composition is a no-op). Never throws.
+   */
+  private async verifyComposition(
+    state: WorkflowRunState,
+    executedSteps: WorkflowStep[],
+    params: Record<string, unknown>,
+    preSnapshot: SemanticSnapshot,
+    startedAt: number,
+  ): Promise<void> {
+    const compositionSteps = this.toCompositionSteps(executedSteps, params);
+    const composed = composeSignatures(compositionSteps, preSnapshot, this.signatureRegistry);
+
+    // 0 signatures → composition is a no-op; leave compositionVerification unset.
+    if (composed.stepsWithSignatures === 0) return;
+
+    const post = await this.captureSnapshot();
+    const observed = observedFromSnapshots(preSnapshot, post);
+    const durationMs = Date.now() - startedAt;
+
+    state.compositionVerification = computeVerification(
+      composed.predicted,
+      observed,
+      preSnapshot,
+      composed.scope,
+      'causal',
+      durationMs,
+    );
+  }
+
+  /**
+   * Map workflow steps to the `{ action, element, params }` shape
+   * {@link composeSignatures} consumes. Only ACTION steps contribute — a step
+   * is an action iff it has a `step.action` AND its type is an action-dispatch
+   * type (`element-action` / `component-action`). The action name + params +
+   * target element id are read exactly as `executeStepInternal` reads them when
+   * dispatching to `executor.executeAction`. The element's `reveals` glob list
+   * is read from the registry (the same source the executor's signature
+   * resolution uses), so a click whose target declares `reveals` predicts those
+   * appearances; a click without `reveals` resolves no signature (correct).
+   */
+  private toCompositionSteps(
+    steps: WorkflowStep[],
+    workflowParams: Record<string, unknown>,
+  ): CompositionStep[] {
+    const out: CompositionStep[] = [];
+    for (const step of steps) {
+      if (step.type !== 'element-action' && step.type !== 'component-action') continue;
+      if (!step.action) continue;
+      const resolvedParams = this.interpolateParams(step.params || {}, workflowParams);
+      const registered = step.target ? this.registry.getElement(step.target) : undefined;
+      out.push({
+        action: step.action,
+        element: step.target
+          ? { id: step.target, reveals: registered?.reveals }
+          : undefined,
+        params: resolvedParams,
+      });
+    }
+    return out;
   }
 
   /**
@@ -203,11 +416,17 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
         ? await Promise.race([executePromise, timeoutPromise])
         : await executePromise;
 
+      // D3: thread a per-step effect verification from the underlying action
+      // response, if the executor produced one (read-only — the engine never
+      // computes it; it only surfaces what `executeAction` already returned).
+      const effectVerification = extractStepEffectVerification(result);
+
       return {
         stepId: step.id,
         stepType: step.type,
         success: true,
         result,
+        ...(effectVerification ? { effectVerification } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
       };
@@ -355,6 +574,9 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       startedAt: state.startedAt,
       completedAt: state.completedAt,
       durationMs: state.durationMs,
+      ...(state.compositionVerification
+        ? { compositionVerification: state.compositionVerification }
+        : {}),
     };
   }
 }
@@ -375,6 +597,8 @@ interface WorkflowRunState {
   durationMs?: number;
   success?: boolean;
   error?: string;
+  /** D3 Phase 3b workflow-level composition verification, when enabled. */
+  compositionVerification?: EffectVerification;
 }
 
 /**
@@ -382,7 +606,8 @@ interface WorkflowRunState {
  */
 export function createWorkflowEngine(
   registry: UIBridgeRegistry,
-  executor: ActionExecutor
+  executor: ActionExecutor,
+  options?: WorkflowEngineOptions
 ): WorkflowEngine {
-  return new DefaultWorkflowEngine(registry, executor);
+  return new DefaultWorkflowEngine(registry, executor, options);
 }

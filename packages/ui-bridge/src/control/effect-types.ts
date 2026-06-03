@@ -122,6 +122,13 @@ export interface ActionParams {
   elementId?: string;
   /** Free-form parameter bag (text, value, url, state, …). */
   params?: Record<string, unknown>;
+  /**
+   * The originating action request id (Phase 2). Threads through to the
+   * settle-window registry so concurrent background observations can be
+   * attributed to this specific action window. When omitted, the verifier
+   * synthesizes a transient id.
+   */
+  requestId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +147,10 @@ export interface EffectSignature {
   settleMs?: number;
   /** Reversibility classification of the effect. */
   reversibility: ReversibilityKind;
-  /** `'declared'` for hand-authored (Phase 1); `'inferred'` reserved for Phase 4. */
+  /** `'declared'` for hand-authored (Phase 1); `'inferred'` for Phase 4. */
   provenance?: 'declared' | 'inferred';
+  /** For inferred signatures: mean measured confidence across kept consequences, 0..1. */
+  confidence?: number;
 }
 
 // ---------------------------------------------------------------------------

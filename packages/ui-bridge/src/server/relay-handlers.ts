@@ -26,6 +26,7 @@ import type {
   FallbackScreenshot,
   ComponentActionRequest,
   FindResponse,
+  EffectRecordEntry,
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { diagnosePageHealth } from './page-health';
@@ -1115,6 +1116,17 @@ export function createRelayHandlers(
 
     async getActionHistory(limit, context) {
       return relayWithFallback('getActionHistory', { limit }, [] as unknown[], context);
+    },
+
+    // D3 Effect Calculus (Phase 2) — recent predict-then-verify cycles live in
+    // the browser-side effect store (where actions execute), so relay through.
+    async getRecentEffects(options, context) {
+      return relayWithFallback(
+        'getRecentEffects',
+        { limit: options?.limit },
+        [] as EffectRecordEntry[],
+        context
+      );
     },
 
     async getMetrics() {
