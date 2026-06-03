@@ -50,6 +50,16 @@ export interface ControlActionRequest extends ActionRequest {
   waitAfterTimeout?: number;
   /** Minimum stable time for waitAfter in ms (default: 300) */
   waitAfterMinStable?: number;
+  /**
+   * D3 effect-calculus: opt into predict-then-verify for THIS action, even when
+   * the executor's global `enableEffectVerification` flag is off. When `true`
+   * and a handler effect signature resolves for the `(action, element)`, the
+   * response carries `effectVerification`. The executor-wide flag still forces
+   * verification on for every action when set; this is the per-request override
+   * that lets a caller (e.g. the runner's `effect_check` step) request a
+   * verified outcome without flipping a server-wide switch.
+   */
+  verifyEffect?: boolean;
 }
 
 /**

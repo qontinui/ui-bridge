@@ -57,6 +57,37 @@ describe('DefaultActionExecutor — D3 effect verification wiring', () => {
     expect(res.effectVerification).toBeUndefined();
   });
 
+  it('per-request verifyEffect: true verifies a single action with the global flag OFF', async () => {
+    // Executor verification is OFF (default) — the per-request flag opts in.
+    const executor = new DefaultActionExecutor(registry);
+
+    // Helper: a button that reveals `revealId` (registered on click).
+    const wireReveal = (btnId: string, revealId: string) => {
+      const btn = makeButton(btnId);
+      registry.registerElement(btnId, btn, { type: 'button', label: btnId, reveals: [revealId] });
+      btn.addEventListener('click', () => {
+        const el = document.createElement('div');
+        el.setAttribute('data-testid', revealId);
+        container.appendChild(el);
+        registry.registerElement(revealId, el, { type: 'menu', label: revealId });
+      });
+    };
+
+    // Distinct buttons/reveals so each click is a clean first appearance.
+    wireReveal('btn-a', 'menu-a');
+    wireReveal('btn-b', 'menu-b');
+
+    // Without the flag: no verification (proves it's genuinely off globally).
+    const off = await executor.executeAction('btn-a', { action: 'click' });
+    expect(off.success).toBe(true);
+    expect(off.effectVerification).toBeUndefined();
+
+    // With verifyEffect: true on the request: this single action is verified.
+    const on = await executor.executeAction('btn-b', { action: 'click', verifyEffect: true });
+    expect(on.effectVerification).toBeDefined();
+    expect(on.effectVerification?.outcome).toBe('Confirmed');
+  });
+
   it('Confirmed: a click that reveals its predicted element', async () => {
     const executor = new DefaultActionExecutor(registry, undefined, {
       enableEffectVerification: true,
