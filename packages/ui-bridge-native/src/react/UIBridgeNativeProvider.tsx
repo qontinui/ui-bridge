@@ -13,7 +13,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Dimensions } from 'react-native';
+import { Dimensions, PixelRatio } from 'react-native';
 import type {
   NativeUIBridgeFeatures,
   NativeUIBridgeConfig,
@@ -195,6 +195,12 @@ export function UIBridgeNativeProvider({
       verbose: config.verbose,
       onEvent,
     });
+    // Inject the device pixel ratio so `createSnapshot` can project each
+    // element's `state.layout` (logical dp) into a physical-pixel `bbox` the
+    // runner's vision pipeline accepts. Done here (a React file that already
+    // imports react-native) rather than inside the core registry, which must
+    // stay free of react-native imports — see the `projectBbox` doc comment.
+    registryRef.current.setPixelRatio(PixelRatio.get());
     setGlobalRegistry(registryRef.current);
   }
 

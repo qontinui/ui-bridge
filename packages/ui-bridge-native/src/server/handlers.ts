@@ -19,6 +19,7 @@ import {
   type NativeUIBridgeRegistry,
   extractHandlerNames,
   matchesCurrentRoute,
+  projectBbox,
 } from '../core/registry';
 import type {
   NativeElementType,
@@ -460,6 +461,7 @@ export function createServerHandlers(
           : state.layout !== null
             ? 'visible'
             : 'likely-visible';
+        const bbox = projectBbox(state, visibility, registry.getPixelRatio());
         return {
           id: e.id,
           type: e.type,
@@ -471,6 +473,7 @@ export function createServerHandlers(
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
+          ...(bbox ? { bbox } : {}),
         };
       });
 

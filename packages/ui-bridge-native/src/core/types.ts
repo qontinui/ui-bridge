@@ -381,6 +381,38 @@ export interface NativeAppInfo {
 }
 
 /**
+ * Per-element pixel-space bounding box projected into a snapshot.
+ *
+ * SHAPE IS DELIBERATELY `{x, y, w, h}` (not the web SDK's
+ * `{x, y, width, height}`). The runner's vision pipeline
+ * (`POST /ui-bridge/vision/{analyze,assert}`) deserializes a snapshot's
+ * `elements[].bbox` straight into the Rust `qontinui_vision_core::Region`
+ * struct, which is `{x, y, w, h}: u32` with NO `width`/`height` serde alias.
+ * Emitting `{width, height}` returns a 422 "missing field `w`". This was
+ * verified empirically against a live runner (2026-06-03):
+ *   - `{x,y,w,h}`           → HTTP 200 (analyzers run)
+ *   - `{x,y,width,height}`  → 422 "missing field `w`"
+ * So the mobile bridge emits the runner-native shape directly, letting a
+ * visual-audit caller post the snapshot through with no transform. The web
+ * SDK keeps its `{width,height}` shape because its consumers project before
+ * posting; mobile skips that projection layer.
+ *
+ * Units are PHYSICAL pixels (RN `state.layout` is logical dp; we multiply by
+ * `PixelRatio.get()`) so the box aligns with the runner's adb screencap frame.
+ * Values are clamped to non-negative integers.
+ */
+export interface NativeElementBbox {
+  /** Absolute left edge in physical pixels. */
+  x: number;
+  /** Absolute top edge in physical pixels. */
+  y: number;
+  /** Width in physical pixels. */
+  w: number;
+  /** Height in physical pixels. */
+  h: number;
+}
+
+/**
  * Snapshot of the entire native UI bridge state
  */
 export interface NativeBridgeSnapshot {
@@ -417,6 +449,18 @@ export interface NativeBridgeSnapshot {
      * `state.layout !== null`.
      */
     visibility?: 'visible' | 'likely-visible' | 'hidden';
+    /**
+     * Pixel-space bounding box, runner-native `{x, y, w, h}` shape (see
+     * {@link NativeElementBbox}). Projected from `state.layout` (logical dp)
+     * × `PixelRatio.get()`.
+     *
+     * Emitted ONLY for elements that are both `visibility: 'visible'` AND have
+     * a measured `state.layout` — i.e. we have a real, current-route rect to
+     * trust. Omitted for `hidden` / `likely-visible` / unmeasured elements so
+     * stale off-screen coords from other routes (the flat registry mixes
+     * routes) can't overflow the runner's frame and poison region checks.
+     */
+    bbox?: NativeElementBbox;
   }>;
   /** All registered components */
   components: Array<{
