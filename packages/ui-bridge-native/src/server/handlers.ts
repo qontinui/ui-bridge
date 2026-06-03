@@ -466,7 +466,9 @@ export function createServerHandlers(
         const vision = projectVisionFields({
           type: e.type,
           label: e.label,
-          actions: e.actions,
+          // Real handler names (onPress/...), NOT inferred actions which
+          // synthesize press/click onto every element. See projectVisionFields.
+          handlerNames: handlers,
           state,
           flatStyle: e.flatStyle,
         });

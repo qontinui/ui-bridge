@@ -38,11 +38,7 @@
  * rationale as `bbox` emitting `{x,y,w,h}` (see {@link NativeElementBbox}).
  */
 
-import type {
-  NativeElementState,
-  NativeElementType,
-  NativeStandardAction,
-} from './types';
+import type { NativeElementState, NativeElementType } from './types';
 
 /** Linear RGB triple, runner-native shape (`qontinui_vision_core::Rgb`). */
 export interface VisionRgb {
@@ -69,30 +65,39 @@ export interface VisionElementFields {
 }
 
 /**
- * Standard actions that imply the element accepts pointer/key input. Mirrors
- * the web SDK's "has a click-type handler" interactable signal. `focus`/`blur`
- * are deliberately EXCLUDED — every element infers them (see
- * `inferActions`), so counting them would mark every view interactive.
+ * Real React Native handler prop names that imply the element accepts
+ * pointer/key input. This is the GENUINE interactivity signal — a prop the host
+ * actually wired to a function (surfaced by `extractHandlerNames(props)` as the
+ * snapshot's `registeredHandlers`). Mirrors the web SDK's "has a real
+ * click-type event handler" interactable signal.
+ *
+ * Deliberately NOT derived from the element's `actions` array: `inferActions`
+ * synthesizes `click`/`press` for EVERY element (even plain `text`/`view`/
+ * `custom`), so an action-based check marks every node interactive. The real
+ * handler names below are only present when the app source actually attached
+ * `onPress` (etc.) to that element.
  */
-const INTERACTIVE_ACTIONS: ReadonlySet<NativeStandardAction> = new Set([
-  'press',
-  'click',
-  'longPress',
-  'doubleTap',
-  'type',
-  'setValue',
-  'clear',
-  'toggle',
-  'swipe',
+const INTERACTIVE_HANDLER_NAMES: ReadonlySet<string> = new Set([
+  'onPress',
+  'onPressIn',
+  'onPressOut',
+  'onLongPress',
+  'onChangeText',
+  'onValueChange',
+  'onChange',
+  'onSubmitEditing',
+  'onClick',
+  'onTouchStart',
+  'onTouchEnd',
 ]);
 
 /**
  * Element types that are inherently interactive regardless of which actions
  * were inferred/declared. Mirrors web treating `<button>/<a>/<input>/<select>`
  * as interactive by tag. `text`/`view`/`image` are intentionally absent — a
- * plain Text/View is only interactive if it carries a press action (handled by
- * the action check above), matching web's "div is interactive only with a
- * handler".
+ * plain Text/View is only interactive if it carries a REAL press handler
+ * (handled by the handler check), matching web's "div is interactive only with
+ * a handler".
  */
 const INTERACTIVE_TYPES: ReadonlySet<NativeElementType> = new Set<NativeElementType>([
   'button',
@@ -143,18 +148,28 @@ export function roleForType(type: NativeElementType): string | undefined {
 }
 
 /**
- * Derive whether an element accepts input. True when it carries an interactive
- * action OR is an inherently-interactive type. Matches web's
- * "has click-type handler OR interactive tag".
+ * Derive whether an element accepts input. True when it is an
+ * inherently-interactive `type` (button/input/switch/...) OR the host wired a
+ * REAL interactive handler to it (`onPress`/`onChangeText`/...). Matches web's
+ * "has a real click-type handler OR is an interactive tag".
+ *
+ * The `handlerNames` come from `extractHandlerNames(props)` — the names of the
+ * element's props whose values are actually functions (the snapshot's
+ * `registeredHandlers`). This is the genuine interactivity signal. The
+ * element's inferred `actions` array is deliberately NOT consulted:
+ * `inferActions` synthesizes `click`/`press` for plain `text`/`view`/`custom`,
+ * so an action-based check would mark every node interactive (the very
+ * over-count this function exists to avoid). A plain `text`/`view`/`heading`
+ * with no real handler is therefore `interactable: false`, mirroring web.
  */
 export function deriveInteractable(
   type: NativeElementType,
-  actions: readonly NativeStandardAction[] | undefined
+  handlerNames: readonly string[] | undefined
 ): boolean {
   if (INTERACTIVE_TYPES.has(type)) return true;
-  if (actions) {
-    for (const a of actions) {
-      if (INTERACTIVE_ACTIONS.has(a)) return true;
+  if (handlerNames) {
+    for (const name of handlerNames) {
+      if (INTERACTIVE_HANDLER_NAMES.has(name)) return true;
     }
   }
   return false;
@@ -307,14 +322,20 @@ export function parseFontSizePx(input: unknown): number | undefined {
 export function projectVisionFields(args: {
   type: NativeElementType;
   label: string | undefined;
-  actions: readonly NativeStandardAction[] | undefined;
+  /**
+   * Names of the element's props that are real functions (from
+   * `extractHandlerNames(props)` — the snapshot's `registeredHandlers`). The
+   * genuine interactivity signal; the inferred `actions` array is NOT used here
+   * because `inferActions` synthesizes press/click for every element.
+   */
+  handlerNames: readonly string[] | undefined;
   state: Pick<NativeElementState, 'value' | 'textContent'>;
   flatStyle: Record<string, unknown> | undefined;
 }): VisionElementFields {
-  const { type, label, actions, state, flatStyle } = args;
+  const { type, label, handlerNames, state, flatStyle } = args;
 
   const fields: VisionElementFields = {
-    interactable: deriveInteractable(type, actions),
+    interactable: deriveInteractable(type, handlerNames),
   };
 
   const text = deriveText(state, label);

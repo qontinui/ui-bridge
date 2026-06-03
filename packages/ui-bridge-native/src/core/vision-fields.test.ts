@@ -15,23 +15,34 @@ function makeRef(): React.RefObject<NativeElementRef> {
 }
 
 describe('deriveInteractable', () => {
-  it('is true for interactive types regardless of actions', () => {
+  it('is true for interactive types regardless of handlers', () => {
     expect(deriveInteractable('button', [])).toBe(true);
-    expect(deriveInteractable('input', ['focus', 'blur'])).toBe(true);
+    expect(deriveInteractable('input', [])).toBe(true);
     expect(deriveInteractable('switch', undefined)).toBe(true);
     expect(deriveInteractable('listItem', [])).toBe(true);
+    expect(deriveInteractable('checkbox', undefined)).toBe(true);
+    expect(deriveInteractable('radio', undefined)).toBe(true);
+    expect(deriveInteractable('touchable', [])).toBe(true);
+    expect(deriveInteractable('pressable', [])).toBe(true);
   });
 
-  it('is true when a press/click-type action is present', () => {
-    expect(deriveInteractable('view', ['focus', 'press'])).toBe(true);
-    expect(deriveInteractable('text', ['click'])).toBe(true);
-    expect(deriveInteractable('image', ['longPress'])).toBe(true);
+  it('is true when a real interactive handler is wired on a plain type', () => {
+    expect(deriveInteractable('view', ['onPress'])).toBe(true);
+    expect(deriveInteractable('text', ['onLongPress'])).toBe(true);
+    expect(deriveInteractable('image', ['onPress', 'onLayout'])).toBe(true);
+    expect(deriveInteractable('view', ['onChangeText'])).toBe(true);
   });
 
-  it('is false for a plain view/text with only focus/blur', () => {
-    expect(deriveInteractable('view', ['focus', 'blur'])).toBe(false);
-    expect(deriveInteractable('text', ['focus', 'blur'])).toBe(false);
+  it('is false for a plain view/text/heading with no real handler', () => {
+    // Even though inferActions would synthesize press/click onto these types,
+    // deriveInteractable does NOT consult actions — only real handler names.
+    expect(deriveInteractable('view', [])).toBe(false);
+    expect(deriveInteractable('text', [])).toBe(false);
+    expect(deriveInteractable('text', undefined)).toBe(false);
     expect(deriveInteractable('custom', undefined)).toBe(false);
+    expect(deriveInteractable('scroll', [])).toBe(false);
+    // Non-interactive handler props (layout/measurement) must not count.
+    expect(deriveInteractable('view', ['onLayout', 'onScroll'])).toBe(false);
   });
 });
 
@@ -130,7 +141,7 @@ describe('projectVisionFields', () => {
     const fields = projectVisionFields({
       type: 'text',
       label: 'Hello',
-      actions: ['focus', 'blur'],
+      handlerNames: undefined,
       state: {},
       flatStyle: {
         color: '#000000',
@@ -154,7 +165,7 @@ describe('projectVisionFields', () => {
     const fields = projectVisionFields({
       type: 'button',
       label: 'Save',
-      actions: ['press'],
+      handlerNames: ['onPress'],
       state: {},
       flatStyle: undefined,
     });
@@ -205,6 +216,50 @@ describe('createSnapshot emits analyzer fields', () => {
     const el = snapshot.elements.find((e) => e.id === 'container');
     expect(el!.interactable).toBe(false);
     expect(el!.role).toBeUndefined();
+  });
+
+  it('a plain view/text with inferred actions but NO real handler is non-interactable', () => {
+    // Regression: registering without explicit `actions` makes the registry
+    // default to `inferActions(type)`, which synthesizes press/click onto
+    // text/view. The element must STILL be interactable:false because no real
+    // onPress handler was wired — matching web's plain text node.
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('content-paragraph', makeRef(), {
+      type: 'text',
+      label: 'A long paragraph of body copy.',
+      // no actions, no props → inferActions adds click/press, but no handler
+    });
+    registry.registerElement('layout-row', makeRef(), {
+      type: 'view',
+      // no actions, no props → inferActions adds click/press, but no handler
+    });
+    const snapshot = registry.createSnapshot();
+    const para = snapshot.elements.find((e) => e.id === 'content-paragraph');
+    const row = snapshot.elements.find((e) => e.id === 'layout-row');
+    expect(para!.interactable).toBe(false);
+    expect(row!.interactable).toBe(false);
+  });
+
+  it('a plain view with a real onPress handler IS interactable', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('tappable-card', makeRef(), {
+      type: 'view',
+      label: 'Tap me',
+      props: { onPress: () => {}, onLayout: () => {} },
+    });
+    const snapshot = registry.createSnapshot();
+    const el = snapshot.elements.find((e) => e.id === 'tappable-card');
+    expect(el!.registeredHandlers).toContain('onPress');
+    expect(el!.interactable).toBe(true);
+  });
+
+  it('a listItem and an input are interactable by type', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('row-0', makeRef(), { type: 'listItem', label: 'Row' });
+    registry.registerElement('email', makeRef(), { type: 'input', label: 'Email' });
+    const snapshot = registry.createSnapshot();
+    expect(snapshot.elements.find((e) => e.id === 'row-0')!.interactable).toBe(true);
+    expect(snapshot.elements.find((e) => e.id === 'email')!.interactable).toBe(true);
   });
 
   it('a text element surfaces its label as text', () => {

@@ -1026,7 +1026,11 @@ export class NativeUIBridgeRegistry {
         const vision = projectVisionFields({
           type: e.type,
           label: e.label,
-          actions: e.actions,
+          // Real interactivity signal: the names of props that are actually
+          // functions (onPress/onChangeText/...). NOT `e.actions`, which
+          // `inferActions` synthesizes press/click onto for every element —
+          // using it would mark plain text/view nodes interactable.
+          handlerNames: handlers,
           state,
           flatStyle: e.flatStyle,
         });
