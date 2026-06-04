@@ -1,0 +1,125 @@
+#!/usr/bin/env node
+/**
+ * capture-coord-specs.cjs — log into qontinui-web (injected transport) and
+ * capture live getControlSnapshots of the admin coord pages, in-process.
+ * Extends login-web.cjs: same Variant-A injected login (drives the Cognito
+ * OAuth chain), then `ctx.page.goto`s each target authed page and snapshots the
+ * re-injected runtime. Writes one snapshot JSON per page (input for spec authoring).
+ *
+ * Run from the ui-bridge repo root; creds via env UIB_LOGIN_EMAIL/PASSWORD or --email/--password.
+ *   node packages/ui-bridge-wrapper/scripts/capture-coord-specs.cjs --out D:/qontinui-root/spec-capture
+ */
+const fs = require('fs');
+const path = require('path');
+const { createTransport } = require('../dist/index.cjs');
+
+const argv = process.argv.slice(2);
+const arg = (n, d) => { const i = argv.indexOf(n); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d; };
+const EMAIL = arg('--email', process.env.UIB_LOGIN_EMAIL);
+const PASSWORD = arg('--password', process.env.UIB_LOGIN_PASSWORD);
+const OUT = arg('--out', 'D:/qontinui-root/spec-capture');
+const ORIGIN = arg('--origin', 'https://qontinui.io');
+const DEVICE = arg('--device', 'c79a07d5-7e40-49b4-87fa-554c749f9644'); // spaceship: gives the trees page real cards
+const TIMEOUT = parseInt(arg('--timeout', '70000'), 10);
+const log = (m) => process.stderr.write(`[capture] ${m}\n`);
+
+if (!EMAIL || !PASSWORD) { process.stderr.write('need creds (UIB_LOGIN_EMAIL/PASSWORD)\n'); process.exit(2); }
+
+// Pages to capture. Default = the two admin coord pages, but any authed page
+// set can be supplied via `--pages "slug=path,slug=path"` (paths are joined to
+// --origin; absolute http(s) URLs are used verbatim). This makes the script a
+// general "log in + snapshot these authed pages" capture tool, not coord-only.
+function parsePages(spec) {
+  return spec
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const slug = pair.slice(0, eq).trim();
+      const ref = pair.slice(eq + 1).trim();
+      const url = /^https?:\/\//i.test(ref) ? ref : `${ORIGIN}${ref.startsWith('/') ? '' : '/'}${ref}`;
+      return { slug, url };
+    });
+}
+const PAGES_ARG = arg('--pages', null);
+const TARGETS = PAGES_ARG
+  ? parsePages(PAGES_ARG)
+  : [
+      { slug: 'admin-coord-trees', url: `${ORIGIN}/admin/coord/trees?device_id=${DEVICE}` },
+      { slug: 'admin-coord-pull-decisions', url: `${ORIGIN}/admin/coord/pull-decisions` },
+    ];
+
+const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\/|\/login\?/i.test(u);
+
+async function fillVisible(page, sels, val, what) {
+  for (const s of sels) {
+    const loc = page.locator(s); const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < n; i++) { const el = loc.nth(i); if (await el.isVisible().catch(() => false)) { await el.fill(val, { timeout: 10000 }); return; } }
+  }
+  throw new Error(`Cognito ${what} field not found`);
+}
+
+(async () => {
+  const transport = createTransport({
+    kind: 'injected',
+    options: { targetUrl: `${ORIGIN}/login`, waitForSettle: false, readyTimeoutMs: 45000 },
+  });
+
+  transport.register('run', async (_p, ctx) => {
+    const page = ctx.page;
+    // --- login (same flow as login-web.cjs) ---
+    log(`login: ${page.url()}`);
+    await page.getByRole('button', { name: /continue with email/i }).or(page.getByText(/continue with email/i)).first()
+      .click({ timeout: 20000 });
+    await page.waitForURL((u) => isCognito(u.toString()) || u.toString().includes('/dashboard') || u.toString().includes('/build'), { timeout: TIMEOUT });
+    if (isCognito(page.url())) {
+      await page.waitForLoadState('domcontentloaded');
+      await fillVisible(page, ['#signInFormUsername', 'input[name="username"]', 'input[type="email"]'], EMAIL, 'email');
+      await fillVisible(page, ['#signInFormPassword', 'input[name="password"]', 'input[type="password"]'], PASSWORD, 'password');
+      const sub = page.locator('input[name="signInSubmitButton"], button[type="submit"], input[type="submit"]');
+      const sn = await sub.count(); let done = false;
+      for (let i = 0; i < sn; i++) { if (await sub.nth(i).isVisible().catch(() => false)) { await sub.nth(i).click(); done = true; break; } }
+      if (!done) await page.getByRole('button', { name: /sign in|continue/i }).first().click();
+      await page.waitForURL((u) => !isCognito(u.toString()), { timeout: TIMEOUT });
+    }
+    await page.waitForLoadState('networkidle').catch(() => {});
+    log(`authed: ${page.url()}`);
+
+    // --- capture each coord page ---
+    const out = [];
+    for (const t of TARGETS) {
+      log(`navigate ${t.url}`);
+      await page.goto(t.url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+      await page.waitForFunction(() => window.__uiBridgeInjected?.ready === true, { timeout: 20000 }).catch(() => {});
+      // give the page's 10s poll + data fetch time to populate, then settle
+      await ctx.whenSettled(12000).catch(() => {});
+      await page.waitForTimeout(2500); // let the coord data-fetch + render land
+      let snap = null, err = null;
+      try { snap = await ctx.snapshot(); } catch (e) { err = e && e.message ? e.message : String(e); }
+      const finalUrl = page.url();
+      const onLogin = /\/login(\b|\/|\?|$)/.test(finalUrl) && !isCognito(finalUrl);
+      out.push({ slug: t.slug, requestedUrl: t.url, finalUrl, onLogin, error: err,
+        route: snap?.route ?? null, totalRegistered: snap?.registration?.totalRegistered ?? null, snapshot: snap });
+      log(`  -> route=${snap?.route} registered=${snap?.registration?.totalRegistered} onLogin=${onLogin}`);
+    }
+    return out;
+  });
+
+  let result, code = 0;
+  try { await transport.ready(); result = await transport.dispatch('run'); }
+  catch (e) { result = { error: e && e.message ? e.message : String(e) }; code = 1; }
+  finally { await transport.close().catch(() => {}); }
+
+  if (Array.isArray(result)) {
+    fs.mkdirSync(OUT, { recursive: true });
+    for (const r of result) {
+      const f = path.join(OUT, `${r.slug}.snapshot.json`);
+      fs.writeFileSync(f, JSON.stringify(r.snapshot ?? { error: r.error }, null, 2));
+      process.stdout.write(JSON.stringify({ slug: r.slug, finalUrl: r.finalUrl, route: r.route, totalRegistered: r.totalRegistered, onLogin: r.onLogin, file: f }) + '\n');
+    }
+  } else {
+    process.stdout.write(JSON.stringify(result) + '\n');
+  }
+  process.exit(code);
+})();
