@@ -63,7 +63,7 @@ or a global/dev install:
 | Bin | What it does |
 | --- | --- |
 | `ui-bridge-inject` | Drive the injected transport against a UI-Bridge-free page (exec one-shot actions, or register as a relay tab). |
-| `ui-bridge-login-web` | Automated web login via the injected transport — drives the full Cognito OAuth redirect chain in one headless tab. Prints one JSON result line; exit 0 = login confirmed. |
+| `ui-bridge-login-web` | Automated web login via the injected transport — drives the full Cognito OAuth redirect chain in one headless tab. Optionally asserts on-page text (`--expect-text`) and screenshots the authed landing (`--screenshot`/`--scroll-to`). Prints one JSON result line; exit 0 = login confirmed AND all expected text present. |
 | `ui-bridge-capture-specs` | Log in (same flow) then `goto` + snapshot a set of authed pages, writing one `<slug>.snapshot.json` per page. |
 
 Each bin supports `--help`.
@@ -90,6 +90,32 @@ ui-bridge-login-web \
   --url "https://qontinui.io/login?next=%2Fbuild%2Fworkflows" \
   --success /build/workflows
 
+# log in, land on /operations, assert the gates panel rendered, screenshot it
+ui-bridge-login-web \
+  --url "https://qontinui.io/login?next=%2Foperations" \
+  --success /operations \
+  --expect-text "option2-actions-outage-drill,metric_threshold" \
+  --screenshot out.png
+
 # capture the default admin coord pages
 ui-bridge-capture-specs --out ./spec-capture
+```
+
+#### Sourcing credentials from SSM (qontinui operators)
+
+The bins read credentials from env / flags only — they intentionally do **not**
+embed any SSM lookup, since `@qontinui/ui-bridge-wrapper` is a general-purpose
+package. Operators with access to the operator parameters can populate the env
+vars before invoking a bin. On this fleet `aws` resolves under PowerShell (the
+git-bash profile diverges), so prefer the PowerShell form:
+
+```powershell
+$env:UIB_LOGIN_EMAIL    = (aws ssm get-parameter --name /qontinui/operator/email    --with-decryption --region eu-central-1 --query Parameter.Value --output text)
+$env:UIB_LOGIN_PASSWORD = (aws ssm get-parameter --name /qontinui/operator/password --with-decryption --region eu-central-1 --query Parameter.Value --output text)
+```
+
+```bash
+# bash equivalent (only where `aws` is on PATH for this shell)
+export UIB_LOGIN_EMAIL="$(aws ssm get-parameter --name /qontinui/operator/email --with-decryption --region eu-central-1 --query Parameter.Value --output text)"
+export UIB_LOGIN_PASSWORD="$(aws ssm get-parameter --name /qontinui/operator/password --with-decryption --region eu-central-1 --query Parameter.Value --output text)"
 ```
