@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
+import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import { isAppLoginPath, loginDrive } from './login-drive.js';
 
@@ -43,6 +44,8 @@ Options:
                                  the two admin coord pages.
   --device <id>                  device_id query for the default trees page.
   --timeout <ms>                 Per-hop wait budget (default 70000).
+  --quiet                        Suppress human-readable stderr logs (the per-page
+                                 JSON lines still print).
   --help, -h                     Print this help and exit.
 
 Prerequisites (packaged bin): the optional @qontinui/ui-bridge-headless peer must
@@ -73,6 +76,8 @@ export interface CaptureCliArgs {
   timeoutMs: number;
   /** Explicit page set from --pages, or null to use the default coord pages. */
   pages: PageTarget[] | null;
+  /** Suppress human-readable stderr logs (the per-page JSON lines still print). */
+  quiet: boolean;
   help: boolean;
 }
 
@@ -151,17 +156,12 @@ export function computeLoginUrl(
  * UIB_LOGIN_EMAIL / UIB_LOGIN_PASSWORD.
  */
 export function parseArgs(argv: string[]): CaptureCliArgs {
-  const valueOf = (name: string): string | null => {
-    const i = argv.indexOf(name);
-    return i >= 0 && i + 1 < argv.length ? (argv[i + 1] ?? null) : null;
-  };
-  const has = (name: string): boolean => argv.includes(name);
-
-  for (const arg of argv) {
-    if (arg.startsWith('--') && !KNOWN_FLAGS.has(arg)) {
-      throw new CaptureCliArgError(`Unknown flag: ${arg}`);
-    }
-  }
+  const mkError = (m: string): CaptureCliArgError => new CaptureCliArgError(m);
+  // Rejects unknown flags up front AND rejects a flag-shaped value for any
+  // value-flag (so `--pages --device` no longer swallows `--device`).
+  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError);
+  const valueOf = (name: string): string | null => reader.value(name);
+  const has = (name: string): boolean => reader.has(name);
 
   const help = has('--help') || has('-h');
   const origin = valueOf('--origin') ?? DEFAULT_ORIGIN;
@@ -172,6 +172,20 @@ export function parseArgs(argv: string[]): CaptureCliArgs {
     throw new CaptureCliArgError(`--timeout expects a positive integer (got ${timeoutRaw})`);
   }
   const pagesSpec = valueOf('--pages');
+  // A truly ABSENT --pages (null) falls through to defaultTargets. A PRESENT
+  // but empty/whitespace --pages parses to [], which would otherwise make the
+  // capture loop run zero times and exit 0 with an empty --out dir — exactly the
+  // false-success class #83 exists to kill. Reject it as bad input (exit 2).
+  let pages: PageTarget[] | null = null;
+  if (pagesSpec !== null) {
+    pages = parsePages(pagesSpec, origin);
+    if (pages.length === 0) {
+      throw new CaptureCliArgError(
+        `--pages was given but parsed to zero targets (got '${pagesSpec}'); ` +
+          `omit --pages for the default pages, or pass 'slug=path[,slug=path]'`
+      );
+    }
+  }
 
   const args: CaptureCliArgs = {
     email: valueOf('--email') ?? process.env.UIB_LOGIN_EMAIL ?? '',
@@ -180,7 +194,8 @@ export function parseArgs(argv: string[]): CaptureCliArgs {
     origin,
     device,
     timeoutMs,
-    pages: pagesSpec ? parsePages(pagesSpec, origin) : null,
+    pages,
+    quiet: has('--quiet'),
     help,
   };
 
@@ -196,8 +211,7 @@ const KNOWN_FLAGS = new Set([
   '--pages',
   '--device',
   '--timeout',
-  '--help',
-  '-h',
+  ...COMMON_FLAGS,
 ]);
 
 /** Validate cross-flag invariants. `--help` short-circuits (always valid). */
@@ -225,10 +239,6 @@ interface CaptureRow {
   snapshot: unknown;
 }
 
-function log(m: string): void {
-  process.stderr.write(`[capture] ${m}\n`);
-}
-
 async function main(): Promise<void> {
   let args: CaptureCliArgs;
   try {
@@ -247,6 +257,7 @@ async function main(): Promise<void> {
   }
 
   const { email, password, out, origin, device, timeoutMs } = args;
+  const log = makeLogger('[capture]', args.quiet);
   const targets = args.pages ?? defaultTargets(origin, device);
   const { loginUrl } = computeLoginUrl(targets, origin);
 

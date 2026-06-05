@@ -87,6 +87,27 @@ describe('parseArgs', () => {
     expect(() => parseArgs([...CREDS, '--bogus'])).toThrow(/Unknown flag/);
   });
 
+  // Finding 3.2 — the confirmed value-swallow: `--success --headed` used to set
+  // success = "--headed" (an unmatchable target → ok:false on a GOOD login).
+  // It must now reject the flag-shaped value rather than swallow it.
+  it('does NOT swallow a following flag as --success value (--success --headed)', () => {
+    expect(() => parseArgs([...CREDS, '--success', '--headed'])).toThrow(LoginCliArgError);
+    expect(() => parseArgs([...CREDS, '--success', '--headed'])).toThrow(
+      /--success expects a value but got the flag '--headed'/
+    );
+  });
+
+  it('still parses --success when its value is a real path followed by --headed', () => {
+    const args = parseArgs([...CREDS, '--success', '/build/workflows', '--headed']);
+    expect(args.success).toBe('/build/workflows');
+    expect(args.headed).toBe(true);
+  });
+
+  it('parses --quiet', () => {
+    expect(parseArgs([...CREDS, '--quiet']).quiet).toBe(true);
+    expect(parseArgs([...CREDS]).quiet).toBe(false);
+  });
+
   it('throws when creds are missing', () => {
     expect(() => parseArgs([])).toThrow(LoginCliArgError);
     expect(() => parseArgs([])).toThrow(/need --email\/--password/);

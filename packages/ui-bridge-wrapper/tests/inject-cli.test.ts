@@ -207,6 +207,21 @@ describe('validation error paths', () => {
     expect(() => parseArgs(['--url', 'https://example.com', '--bogus'])).toThrow(/Unknown flag/);
   });
 
+  // Finding 3.2 — the switch parser's `argv[++i]` had the same flag-shaped
+  // swallow: `--url --headed` captured `--headed` as the url. It must now error.
+  it('does NOT swallow a following flag as a string value-flag value (--url --headed)', () => {
+    expect(() => parseArgs(['--url', '--headed', '--exec', 'find {}'])).toThrow(InjectCliArgError);
+    expect(() => parseArgs(['--url', '--headed', '--exec', 'find {}'])).toThrow(
+      /--url expects a value but got the flag '--headed'/
+    );
+  });
+
+  it('rejects a flag-shaped --relay value', () => {
+    expect(() => parseArgs(['--url', 'https://x', '--relay', '--headed'])).toThrow(
+      /--relay expects a value but got the flag '--headed'/
+    );
+  });
+
   it('treats --help as always valid (short-circuits validation)', () => {
     const args = parseArgs(['--help']);
     expect(args.help).toBe(true);

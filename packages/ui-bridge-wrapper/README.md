@@ -79,6 +79,26 @@ standalone you must therefore also:
 2. Run `npx playwright install chromium` once (or point `PLAYWRIGHT_BROWSERS_PATH`
    at an existing Chromium download).
 
+> **A bare `npx @qontinui/ui-bridge-wrapper …` does NOT install peers** — it
+> fetches only the wrapper, so the dynamic `import('@qontinui/ui-bridge-headless')`
+> dies with `ERR_MODULE_NOT_FOUND`. For a zero-install one-off, name every package
+> with `-p` so npx stages them together:
+>
+> ```bash
+> npx -y \
+>   -p @qontinui/ui-bridge-wrapper \
+>   -p @qontinui/ui-bridge \
+>   -p @qontinui/ui-bridge-headless \
+>   -p playwright \
+>   ui-bridge-login-web \
+>   --url "https://qontinui.io/login?next=%2Fbuild%2Fworkflows" \
+>   --success /build/workflows
+> ```
+>
+> (Still run `npx playwright install chromium` once for the browser binary.) The
+> bare-bin examples below assume a local/global/dev install where the peer is
+> already on the module path.
+
 Credentials for the login/capture bins come from `--email`/`--password` or the
 env vars `UIB_LOGIN_EMAIL` / `UIB_LOGIN_PASSWORD`. Git Bash callers should
 prefix `MSYS_NO_PATHCONV=1` so a leading-slash `--success` / path value is not

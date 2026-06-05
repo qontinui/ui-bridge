@@ -24,6 +24,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
+import { consumeValue } from './cli-args.js';
 import { WrapperTransportError } from './types.js';
 
 export const USAGE = `ui-bridge-inject — drive UI Bridge's injected transport against a UI-Bridge-free page
@@ -177,6 +178,8 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     help: false,
   };
 
+  const mkError = (m: string): InjectCliArgError => new InjectCliArgError(m);
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
@@ -193,23 +196,25 @@ export function parseArgs(argv: string[]): InjectCliArgs {
       case '--exec-stdin':
         args.execStdin = true;
         break;
+      // String value-flags: guard each consumed value against the flag-shaped
+      // swallow (`--url --headed` must error, not capture `--headed` as the url).
       case '--url':
-        args.url = argv[++i] ?? '';
+        args.url = consumeValue('--url', argv[++i], mkError) ?? '';
         break;
       case '--relay':
-        args.relay = argv[++i] ?? null;
+        args.relay = consumeValue('--relay', argv[++i], mkError);
         break;
       case '--auth-token':
-        args.authToken = argv[++i] ?? null;
+        args.authToken = consumeValue('--auth-token', argv[++i], mkError);
         break;
       case '--app-id':
-        args.appId = argv[++i] ?? null;
+        args.appId = consumeValue('--app-id', argv[++i], mkError);
         break;
       case '--app-name':
-        args.appName = argv[++i] ?? null;
+        args.appName = consumeValue('--app-name', argv[++i], mkError);
         break;
       case '--tab-id':
-        args.tabId = argv[++i] ?? null;
+        args.tabId = consumeValue('--tab-id', argv[++i], mkError);
         break;
       case '--exec': {
         const raw = argv[++i];
