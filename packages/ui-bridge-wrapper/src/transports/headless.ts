@@ -110,11 +110,28 @@ export class HeadlessTransport extends BaseTransport {
   }
 
   protected async onReady(): Promise<void> {
-    // Lazy-import so api-only wrappers that never build the headless
-    // transport don't pay the Playwright resolution cost. Headless is a
-    // hard dep, so the import is always resolvable — but deferring it
-    // keeps startup snappy.
-    const { launchHeadlessTab } = await import('@qontinui/ui-bridge-headless');
+    // Lazy-import so api-only wrappers that never build the headless transport
+    // don't pay the Playwright resolution cost. `@qontinui/ui-bridge-headless`
+    // is an OPTIONAL peer (package.json peerDependenciesMeta), so the import is
+    // NOT guaranteed resolvable — a bare `npx @qontinui/ui-bridge-wrapper …`
+    // does not install peers. Catch the resolution failure and surface an
+    // actionable install hint instead of a raw ERR_MODULE_NOT_FOUND.
+    let launchHeadlessTab: typeof import('@qontinui/ui-bridge-headless')['launchHeadlessTab'];
+    try {
+      ({ launchHeadlessTab } = await import('@qontinui/ui-bridge-headless'));
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new WrapperTransportError(
+        'INVALID_CONFIG',
+        `Transport kind '${this.kind}' needs the optional '@qontinui/ui-bridge-headless' ` +
+          `peer, which is not installed. Install it and the Chromium browser:\n` +
+          `  npm i @qontinui/ui-bridge-headless && npx playwright install chromium\n` +
+          `(bare \`npx @qontinui/ui-bridge-wrapper …\` does NOT install peers — pass each ` +
+          `peer with \`-p\`, e.g.\n` +
+          `  npx -y -p @qontinui/ui-bridge-wrapper -p @qontinui/ui-bridge -p @qontinui/ui-bridge-headless -p playwright ui-bridge-login-web …)\n` +
+          `Underlying import error: ${cause}`
+      );
+    }
 
     // Subclasses (injected) supply init-scripts to run before first paint.
     const initScripts = await this.buildInitScripts();

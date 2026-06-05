@@ -53,6 +53,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
+import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import {
   isCognito,
@@ -92,6 +93,8 @@ Options:
                                  a failing assertion still leaves a diagnostic image).
   --keep-open                    On success, park the authed session until SIGINT/
                                  SIGTERM instead of closing the browser.
+  --quiet                        Suppress human-readable stderr logs (the JSON
+                                 result line still prints).
   --help, -h                     Print this help and exit.
 
 Prerequisites (packaged bin): the optional @qontinui/ui-bridge-headless peer must
@@ -127,6 +130,8 @@ export interface LoginCliArgs {
   /** Optional path to write a full-page screenshot of the authed landing. */
   screenshotPath: string | null;
   keepOpen: boolean;
+  /** Suppress human-readable stderr logs (the JSON result line still prints). */
+  quiet: boolean;
   help: boolean;
 }
 
@@ -147,18 +152,12 @@ export class LoginCliArgError extends Error {
  * Credentials fall back to env UIB_LOGIN_EMAIL / UIB_LOGIN_PASSWORD.
  */
 export function parseArgs(argv: string[]): LoginCliArgs {
-  const valueOf = (name: string): string | null => {
-    const i = argv.indexOf(name);
-    return i >= 0 && i + 1 < argv.length ? (argv[i + 1] ?? null) : null;
-  };
-  const has = (name: string): boolean => argv.includes(name);
-
-  // Reject unknown flags up front (mirrors inject-cli).
-  for (const arg of argv) {
-    if (arg.startsWith('--') && !KNOWN_FLAGS.has(arg)) {
-      throw new LoginCliArgError(`Unknown flag: ${arg}`);
-    }
-  }
+  const mkError = (m: string): LoginCliArgError => new LoginCliArgError(m);
+  // Rejects unknown flags up front AND rejects a flag-shaped value for any
+  // value-flag (so `--success --headed` no longer swallows `--headed`).
+  const reader = new ArgReader(argv, KNOWN_FLAGS, mkError);
+  const valueOf = (name: string): string | null => reader.value(name);
+  const has = (name: string): boolean => reader.has(name);
 
   const help = has('--help') || has('-h');
   const timeoutRaw = valueOf('--timeout');
@@ -182,6 +181,7 @@ export function parseArgs(argv: string[]): LoginCliArgs {
     scrollToText: valueOf('--scroll-to'),
     screenshotPath: valueOf('--screenshot'),
     keepOpen: has('--keep-open'),
+    quiet: has('--quiet'),
     help,
   };
 
@@ -201,8 +201,7 @@ const KNOWN_FLAGS = new Set([
   '--scroll-to',
   '--screenshot',
   '--keep-open',
-  '--help',
-  '-h',
+  ...COMMON_FLAGS,
 ]);
 
 /** Validate cross-flag invariants. `--help` short-circuits (always valid). */
@@ -244,10 +243,6 @@ export interface LoginResult {
   error?: string;
 }
 
-function log(m: string): void {
-  process.stderr.write(`[login-web] ${m}\n`);
-}
-
 async function main(): Promise<void> {
   let args: LoginCliArgs;
   try {
@@ -267,6 +262,7 @@ async function main(): Promise<void> {
 
   const { url, email, password, success, timeoutMs, headed, postClick, expectText, scrollToText, screenshotPath } =
     args;
+  const log = makeLogger('[login-web]', args.quiet);
 
   const transport = createTransport({
     kind: 'injected',
@@ -316,7 +312,13 @@ async function main(): Promise<void> {
     // client-side redirect past it — trust it only while the URL is unchanged.
     const landingPath =
       uiBridgeRoute ?? (finalUrl === r.finalUrl ? r.landingPath : pathOf(finalUrl));
-    const ok = !isAppLoginPath(finalUrl) && !isCognito(finalUrl) && landingPath.includes(success);
+    // Derive the two URL classifications ONCE and reuse them for both the `ok`
+    // verdict and the emitted result, so the success decision is structurally
+    // single-sourced (they read the same finalUrl, so they could never disagree
+    // — but compute-once makes that a guarantee, not a coincidence).
+    const onAppLoginPage = isAppLoginPath(finalUrl);
+    const stillOnCognito = isCognito(finalUrl);
+    const ok = !onAppLoginPage && !stillOnCognito && landingPath.includes(success);
 
     // On failure, surface any visible error card so the result is
     // self-diagnosing. Prefer the helper's scrape; re-scrape here only if the
@@ -385,8 +387,8 @@ async function main(): Promise<void> {
       ok: finalOk,
       finalUrl,
       landingPath,
-      onAppLoginPage: isAppLoginPath(finalUrl),
-      stillOnCognito: isCognito(finalUrl),
+      onAppLoginPage,
+      stillOnCognito,
       errorText,
       uiBridgeRoute,
       uiBridgeRegistered: snap?.registration?.totalRegistered ?? null,

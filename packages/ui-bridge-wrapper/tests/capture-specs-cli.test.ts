@@ -51,6 +51,33 @@ describe('parseArgs', () => {
     expect(() => parseArgs([...CREDS, '--timeout', '0'])).toThrow(CaptureCliArgError);
   });
 
+  // Finding 3.3 — a PRESENT-but-empty --pages parses to [] and used to exit 0
+  // with an empty --out dir (the false-success class #83). It must now error.
+  it('rejects a present-but-empty --pages spec (whitespace) with exit-2 error', () => {
+    expect(() => parseArgs([...CREDS, '--pages', '  '])).toThrow(CaptureCliArgError);
+    expect(() => parseArgs([...CREDS, '--pages', '  '])).toThrow(/parsed to zero targets/);
+  });
+
+  it('rejects an empty-string --pages spec', () => {
+    expect(() => parseArgs([...CREDS, '--pages', ''])).toThrow(/parsed to zero targets/);
+  });
+
+  it('keeps an ABSENT --pages as null (defaultTargets path, not an error)', () => {
+    expect(parseArgs([...CREDS]).pages).toBeNull();
+  });
+
+  // Finding 3.2 — a value-flag must not swallow a following flag as its value.
+  it('rejects a flag-shaped value for --pages (swallow fix)', () => {
+    expect(() => parseArgs([...CREDS, '--pages', '--device'])).toThrow(
+      /--pages expects a value but got the flag '--device'/
+    );
+  });
+
+  it('parses --quiet', () => {
+    expect(parseArgs([...CREDS, '--quiet']).quiet).toBe(true);
+    expect(parseArgs([...CREDS]).quiet).toBe(false);
+  });
+
   it('treats --help as always valid', () => {
     const args = parseArgs(['--help']);
     expect(args.help).toBe(true);
