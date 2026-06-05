@@ -5,9 +5,6 @@ import {
   parsePages,
   defaultTargets,
   computeLoginUrl,
-  isCognito,
-  pathOf,
-  isLoginPath,
   CaptureCliArgError,
   USAGE,
 } from '../src/capture-specs-cli.js';
@@ -106,17 +103,7 @@ describe('computeLoginUrl (deep-link via ?next=)', () => {
   });
 });
 
-describe('isCognito / isLoginPath (host-based classification)', () => {
-  it('isCognito does not match the app own /login?next= page', () => {
-    expect(isCognito(`${ORIGIN}/login?next=%2Fadmin`)).toBe(false);
-    expect(isCognito('https://auth.qontinui.io/login')).toBe(true);
-  });
-  it('isLoginPath true for the app own login bounce, false for authed page', () => {
-    expect(isLoginPath(`${ORIGIN}/login?next=%2Fadmin`)).toBe(true);
-    expect(isLoginPath(`${ORIGIN}/admin/coord/trees`)).toBe(false);
-    expect(isLoginPath('https://auth.qontinui.io/login')).toBe(false);
-  });
-  it('pathOf strips the query', () => {
-    expect(pathOf(`${ORIGIN}/admin/coord/trees?device_id=d`)).toBe('/admin/coord/trees');
-  });
-});
+// URL classifiers (isCognito / isAppLoginPath / pathOf) moved to
+// tests/login-drive.test.ts — single home for URL classification. The cases
+// that used to live here (isCognito on /login?next=, the isLoginPath→
+// isAppLoginPath bounce/authed cases, pathOf query-strip) are folded in there.

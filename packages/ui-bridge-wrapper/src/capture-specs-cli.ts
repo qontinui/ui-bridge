@@ -24,9 +24,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Page } from 'playwright';
 import { createTransport } from './create-transport.js';
 import type { InjectedContext } from './transports/injected.js';
+import { isAppLoginPath, loginDrive } from './login-drive.js';
 
 export const USAGE = `ui-bridge-capture-specs — log in and snapshot authed pages via the injected transport
 
@@ -118,33 +118,6 @@ export function defaultTargets(origin: string, device: string): PageTarget[] {
     { slug: 'admin-coord-pull-decisions', url: `${origin}/admin/coord/pull-decisions` },
   ];
 }
-
-/**
- * Cognito is identified by HOST (custom domain / raw Cognito domain) or the
- * /oauth2/ endpoints — never by a bare `/login?` path match: the app's own
- * login URL now legitimately carries a query (`/login?next=…`), and a path
- * match would misclassify it as Cognito, silently disabling the
- * bounced-back-to-login detection below.
- */
-export const isCognito = (u: string): boolean =>
-  /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\//i.test(u);
-
-/** Extract a URL's pathname; '' for an unparseable value. */
-export const pathOf = (u: string): string => {
-  try {
-    return new URL(u).pathname;
-  } catch {
-    return '';
-  }
-};
-
-/**
- * Strict URL checks compare PATHNAMES, never the whole URL — a query param
- * echoing a path (state=…%2Fco-pilot) must not fake a match. Same fix as
- * login-web (#81). True when the URL is the app's OWN /login page.
- */
-export const isLoginPath = (u: string): boolean =>
-  /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(u);
 
 /**
  * Deep-link the login through the first same-origin target (`?next=`) so the
@@ -256,21 +229,6 @@ function log(m: string): void {
   process.stderr.write(`[capture] ${m}\n`);
 }
 
-async function fillVisible(page: Page, sels: string[], val: string, what: string): Promise<void> {
-  for (const s of sels) {
-    const loc = page.locator(s);
-    const n = await loc.count().catch(() => 0);
-    for (let i = 0; i < n; i++) {
-      const el = loc.nth(i);
-      if (await el.isVisible().catch(() => false)) {
-        await el.fill(val, { timeout: 10000 });
-        return;
-      }
-    }
-  }
-  throw new Error(`Cognito ${what} field not found`);
-}
-
 async function main(): Promise<void> {
   let args: CaptureCliArgs;
   try {
@@ -290,14 +248,7 @@ async function main(): Promise<void> {
 
   const { email, password, out, origin, device, timeoutMs } = args;
   const targets = args.pages ?? defaultTargets(origin, device);
-  const { loginUrl, firstNext } = computeLoginUrl(targets, origin);
-
-  // What the post-login landing should look like: the first target's pathname
-  // when deep-linking, else the app's situational /dashboard-or-/build pick.
-  const landedAuthed = (u: string): boolean =>
-    firstNext
-      ? pathOf(u) === pathOf(`${origin}${firstNext}`)
-      : pathOf(u).includes('/dashboard') || pathOf(u).includes('/build');
+  const { loginUrl } = computeLoginUrl(targets, origin);
 
   const transport = createTransport({
     kind: 'injected',
@@ -306,77 +257,13 @@ async function main(): Promise<void> {
 
   transport.register<unknown, CaptureRow[], InjectedContext>('run', async (_p, ctx) => {
     const page = ctx.page;
-    // --- login (same flow as login-web) ---
+    // --- login (shared Cognito drive) ---
     log(`login: ${page.url()}`);
-    await page
-      .getByRole('button', { name: /continue with email/i })
-      .or(page.getByText(/continue with email/i))
-      .first()
-      .click({ timeout: 20000 });
-    await page.waitForURL((u) => isCognito(u.toString()) || landedAuthed(u.toString()), {
-      timeout: timeoutMs,
-    });
-    if (isCognito(page.url())) {
-      await page.waitForLoadState('domcontentloaded');
-      await fillVisible(
-        page,
-        ['#signInFormUsername', 'input[name="username"]', 'input[type="email"]'],
-        email,
-        'email'
-      );
-      await fillVisible(
-        page,
-        ['#signInFormPassword', 'input[name="password"]', 'input[type="password"]'],
-        password,
-        'password'
-      );
-      const sub = page.locator(
-        'input[name="signInSubmitButton"], button[type="submit"], input[type="submit"]'
-      );
-      const sn = await sub.count();
-      let done = false;
-      for (let i = 0; i < sn; i++) {
-        if (await sub.nth(i).isVisible().catch(() => false)) {
-          await sub.nth(i).click();
-          done = true;
-          break;
-        }
-      }
-      if (!done) await page.getByRole('button', { name: /sign in|continue/i }).first().click();
-      // "Not on Cognito anymore" is NOT authed — /auth/callback can be stuck
-      // on an error card (the 2026-06-04 state-mismatch false positive). Wait
-      // for the redirect chain to LEAVE the callback; on timeout, surface the
-      // visible error card so the failure is self-diagnosing.
-      try {
-        await page.waitForURL(
-          (u) => !isCognito(u.toString()) && !/^\/auth\/callback/.test(pathOf(u.toString())),
-          { timeout: timeoutMs }
-        );
-      } catch {
-        let errorText: string | null = null;
-        try {
-          const alerts = page.locator(
-            '[role="alert"], #loginErrorMessage, .error-message, [class*="error" i], [data-testid*="error" i]'
-          );
-          const an = await alerts.count();
-          for (let i = 0; i < an && !errorText; i++) {
-            const el = alerts.nth(i);
-            if (await el.isVisible().catch(() => false)) {
-              const t = (await el.innerText().catch(() => '')).trim();
-              if (t) errorText = t.slice(0, 500);
-            }
-          }
-        } catch {
-          /* best-effort */
-        }
-        throw new Error(
-          `login stalled on ${pathOf(page.url())}${errorText ? ` — ${errorText}` : ''}`
-        );
-      }
-    }
-    await page.waitForLoadState('networkidle').catch(() => {});
-    if (isLoginPath(page.url())) {
-      throw new Error(`login failed — bounced back to ${pathOf(page.url())}`);
+    const r = await loginDrive(page, { email, password, timeoutMs, log });
+    // The helper reports ok:false for BOTH a stalled callback and a bounce back
+    // to the app login page (isAppLoginPath), so one throw covers both.
+    if (!r.ok) {
+      throw new Error(`login stalled on ${r.landingPath}${r.errorText ? ` — ${r.errorText}` : ''}`);
     }
     log(`authed: ${page.url()}`);
 
@@ -402,7 +289,7 @@ async function main(): Promise<void> {
         err = e instanceof Error ? e.message : String(e);
       }
       const finalUrl = page.url();
-      const onLogin = isLoginPath(finalUrl);
+      const onLogin = isAppLoginPath(finalUrl);
       out.push({
         slug: t.slug,
         requestedUrl: t.url,
