@@ -1,0 +1,122 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  parseArgs,
+  validateArgs,
+  parsePages,
+  defaultTargets,
+  computeLoginUrl,
+  isCognito,
+  pathOf,
+  isLoginPath,
+  CaptureCliArgError,
+  USAGE,
+} from '../src/capture-specs-cli.js';
+
+const CREDS = ['--email', 'a@b.c', '--password', 'pw'];
+const ORIGIN = 'https://qontinui.io';
+
+afterEach(() => {
+  delete process.env.UIB_LOGIN_EMAIL;
+  delete process.env.UIB_LOGIN_PASSWORD;
+});
+
+describe('parseArgs', () => {
+  it('defaults out/origin/timeout and parses creds', () => {
+    const args = parseArgs([...CREDS]);
+    expect(args.out).toBe('D:/qontinui-root/spec-capture');
+    expect(args.origin).toBe(ORIGIN);
+    expect(args.timeoutMs).toBe(70000);
+    expect(args.pages).toBeNull();
+  });
+
+  it('reads creds from env when flags absent', () => {
+    process.env.UIB_LOGIN_EMAIL = 'env@b.c';
+    process.env.UIB_LOGIN_PASSWORD = 'envpw';
+    const args = parseArgs([]);
+    expect(args.email).toBe('env@b.c');
+    expect(args.password).toBe('envpw');
+  });
+
+  it('parses --pages into targets joined to origin', () => {
+    const args = parseArgs([...CREDS, '--pages', 'a=/x, b=/y']);
+    expect(args.pages).toEqual([
+      { slug: 'a', url: `${ORIGIN}/x` },
+      { slug: 'b', url: `${ORIGIN}/y` },
+    ]);
+  });
+
+  it('throws on missing creds and unknown flags', () => {
+    expect(() => parseArgs([])).toThrow(CaptureCliArgError);
+    expect(() => parseArgs([...CREDS, '--bogus'])).toThrow(/Unknown flag/);
+  });
+
+  it('rejects a non-positive --timeout', () => {
+    expect(() => parseArgs([...CREDS, '--timeout', '0'])).toThrow(CaptureCliArgError);
+  });
+
+  it('treats --help as always valid', () => {
+    const args = parseArgs(['--help']);
+    expect(args.help).toBe(true);
+    expect(() => validateArgs(args)).not.toThrow();
+  });
+
+  it('exports a non-empty USAGE', () => {
+    expect(USAGE).toContain('--pages');
+    expect(USAGE).toContain('--out');
+  });
+});
+
+describe('parsePages', () => {
+  it('uses absolute http(s) URLs verbatim', () => {
+    expect(parsePages('ext=https://other.io/z', ORIGIN)).toEqual([
+      { slug: 'ext', url: 'https://other.io/z' },
+    ]);
+  });
+  it('joins a leading-slash-less path correctly', () => {
+    expect(parsePages('a=x', ORIGIN)).toEqual([{ slug: 'a', url: `${ORIGIN}/x` }]);
+  });
+  it('throws on a malformed entry (no =)', () => {
+    expect(() => parsePages('bogus', ORIGIN)).toThrow(CaptureCliArgError);
+  });
+});
+
+describe('defaultTargets', () => {
+  it('builds the two admin coord pages with the device id', () => {
+    const t = defaultTargets(ORIGIN, 'dev-1');
+    expect(t[0]).toEqual({ slug: 'admin-coord-trees', url: `${ORIGIN}/admin/coord/trees?device_id=dev-1` });
+    expect(t[1]!.slug).toBe('admin-coord-pull-decisions');
+  });
+});
+
+describe('computeLoginUrl (deep-link via ?next=)', () => {
+  it('deep-links through the first same-origin target', () => {
+    const targets = [{ slug: 't', url: `${ORIGIN}/admin/coord/trees?device_id=d` }];
+    const { loginUrl, firstNext } = computeLoginUrl(targets, ORIGIN);
+    expect(firstNext).toBe('/admin/coord/trees?device_id=d');
+    expect(loginUrl).toBe(
+      `${ORIGIN}/login?next=${encodeURIComponent('/admin/coord/trees?device_id=d')}`
+    );
+  });
+
+  it('falls back to bare /login for a cross-origin first target', () => {
+    const targets = [{ slug: 't', url: 'https://other.io/z' }];
+    const { loginUrl, firstNext } = computeLoginUrl(targets, ORIGIN);
+    expect(firstNext).toBeNull();
+    expect(loginUrl).toBe(`${ORIGIN}/login`);
+  });
+});
+
+describe('isCognito / isLoginPath (host-based classification)', () => {
+  it('isCognito does not match the app own /login?next= page', () => {
+    expect(isCognito(`${ORIGIN}/login?next=%2Fadmin`)).toBe(false);
+    expect(isCognito('https://auth.qontinui.io/login')).toBe(true);
+  });
+  it('isLoginPath true for the app own login bounce, false for authed page', () => {
+    expect(isLoginPath(`${ORIGIN}/login?next=%2Fadmin`)).toBe(true);
+    expect(isLoginPath(`${ORIGIN}/admin/coord/trees`)).toBe(false);
+    expect(isLoginPath('https://auth.qontinui.io/login')).toBe(false);
+  });
+  it('pathOf strips the query', () => {
+    expect(pathOf(`${ORIGIN}/admin/coord/trees?device_id=d`)).toBe('/admin/coord/trees');
+  });
+});

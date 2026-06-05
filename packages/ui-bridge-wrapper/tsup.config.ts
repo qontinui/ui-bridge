@@ -30,11 +30,15 @@ export default defineConfig([
     external: EXTERNAL,
   },
   {
-    // `ui-bridge-inject` CLI binary. CJS-only with a shebang banner so it runs
-    // as an executable; DTS not needed for a bin. Does NOT set `clean` — only
-    // the main config cleans, and it runs first.
+    // CLI binaries. CJS-only with a shebang banner so they run as executables;
+    // DTS not needed for a bin. Does NOT set `clean` — only the main config
+    // cleans, and it runs first. All three bins resolve the engine bundle from
+    // the wrapper package's own module tree (injected transport's
+    // createRequire(import.meta.url)), so they run from any CWD once installed.
     entry: {
       'inject-cli': 'src/inject-cli.ts',
+      'login-web-cli': 'src/login-web-cli.ts',
+      'capture-specs-cli': 'src/capture-specs-cli.ts',
     },
     format: ['cjs'],
     dts: false,
