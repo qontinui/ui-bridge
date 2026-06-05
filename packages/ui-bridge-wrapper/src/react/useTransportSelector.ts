@@ -38,16 +38,16 @@ export function useTransportSelector(
 ): UseTransportSelectorReturn {
   const allowed = options.allowedKinds ?? DEFAULT_ALLOWED;
   const initial = options.initialKind ?? allowed[0] ?? 'api';
-  const [kind, setKindState] = useState<WrapperTransportKind>(initial);
+  const [kind, setKind] = useState<WrapperTransportKind>(initial);
 
-  const setKind = useCallback(
+  const selectKind = useCallback(
     (next: WrapperTransportKind) => {
       if (!allowed.includes(next)) return;
-      setKindState(next);
+      setKind(next);
       options.onChange?.(next);
     },
     [allowed, options]
   );
 
-  return { kind, setKind, allowedKinds: allowed };
+  return { kind, setKind: selectKind, allowedKinds: allowed };
 }

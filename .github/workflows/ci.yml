@@ -41,21 +41,8 @@ jobs:
         run: npm run lint
 
       - name: Build
-        # Build packages in topological dep order so each workspace's
-        # tsc step can resolve sibling-workspace types from their dist/.
-        # npm workspaces uses filesystem-alphabetical order by default,
-        # which doesn't respect internal dep graphs. The graph today:
-        #   ui-bridge-headless         — leaf
-        #   ui-bridge                  — imports headless types
-        #   ui-bridge-server           — imports ui-bridge types
-        #   ui-bridge-wrapper          — imports headless types (dynamic)
-        # Build the deps explicitly first; the catch-all `--workspaces`
-        # picks up everything else (and re-runs the leaves as no-ops or
-        # cheap second-builds — acceptable cost for a one-shot CI step).
-        run: |
-          npm run build --workspace=packages/ui-bridge-headless --if-present
-          npm run build --workspace=packages/ui-bridge --if-present
-          npm run build --workspaces --if-present
+        # Topological build order lives in the root build script — see README "Development".
+        run: npm run build
 
       - name: Type check
         run: npm run typecheck

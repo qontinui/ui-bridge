@@ -269,5 +269,6 @@ describe('loginDrive', () => {
     await loginDrive(page, { email: 'e@x.io', password: 'pw', timeoutMs: 1000, log });
     expect(log).toHaveBeenCalled();
     expect(log.mock.calls.some((c) => String(c[0]).startsWith('landed'))).toBe(true);
+    expect(log.mock.calls.filter((c) => String(c[0]).startsWith('authed ')).length).toBe(1);
   });
 });

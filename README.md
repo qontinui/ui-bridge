@@ -476,6 +476,31 @@ Three layers enforce the canonical path mechanically:
 
 Driver: 2026-05-17 publish-history investigation (`@qontinui/ui-bridge-native` had 11 of 12 versions published manually from operator laptops, producing both silent source/registry drift and an org-wide ETARGET break when an expected manual publish never happened). Architectural decision codified in `qontinui-dev-notes/project-strategy/architectural-decisions.md` § "Publishing discipline — OIDC-only canonical path."
 
+## Development
+
+Fresh checkout setup:
+
+```bash
+npm install && npm run build
+```
+
+`npm run build` builds packages in topological dep order so each workspace's
+`tsc` step can resolve sibling-workspace types from their `dist/`. npm
+workspaces uses filesystem-alphabetical order by default, which doesn't
+respect internal dep graphs. The graph today:
+
+```
+ui-bridge-headless         — leaf
+ui-bridge                  — imports headless types
+ui-bridge-server           — imports ui-bridge types
+ui-bridge-wrapper          — imports headless types (dynamic)
+```
+
+The root `build` script builds the deps explicitly first, then the catch-all
+`--workspaces` picks up everything else. After building, run per-package
+checks, e.g. `npm run typecheck -w @qontinui/ui-bridge-wrapper` and
+`npm test -w @qontinui/ui-bridge-wrapper`.
+
 ## Contributing
 
 Contributions are welcome! Please read our contributing guidelines before submitting a pull request.
