@@ -1,14 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  parseArgs,
-  validateArgs,
-  isCognito,
-  pathOf,
-  isSuccessPath,
-  isAppLoginPath,
-  LoginCliArgError,
-  USAGE,
-} from '../src/login-web-cli.js';
+import { parseArgs, validateArgs, LoginCliArgError, USAGE } from '../src/login-web-cli.js';
 
 // Importing the module MUST NOT spawn a browser or call main() — the isMain
 // guard keys off process.argv[1] === this module's URL, which is false under
@@ -125,46 +116,5 @@ describe('parseArgs', () => {
   });
 });
 
-// The #85 diagnostic fix: Cognito is host/oauth2-based, NEVER a bare /login? path.
-describe('isCognito (host-based, not path-based — #85)', () => {
-  it('matches the Cognito custom domain and raw cognito domain', () => {
-    expect(isCognito('https://auth.qontinui.io/login?foo=1')).toBe(true);
-    expect(isCognito('https://x.auth.eu-central-1.amazoncognito.com/login')).toBe(true);
-  });
-  it('matches /oauth2/ endpoints', () => {
-    expect(isCognito('https://qontinui.io/oauth2/authorize')).toBe(true);
-  });
-  it('does NOT match the app own /login?next= page', () => {
-    expect(isCognito('https://qontinui.io/login?next=%2Fbuild%2Fworkflows')).toBe(false);
-  });
-});
-
-describe('pathOf', () => {
-  it('returns the pathname only, never the query', () => {
-    expect(pathOf('https://qontinui.io/build/workflows?x=1#h')).toBe('/build/workflows');
-  });
-  it('returns empty string for an unparseable value', () => {
-    expect(pathOf('not a url')).toBe('');
-  });
-});
-
-describe('isSuccessPath (pathname-only — query cannot fake success, #81)', () => {
-  it('matches when the pathname contains the success substring', () => {
-    expect(isSuccessPath('https://qontinui.io/build/workflows', '/build/workflows')).toBe(true);
-  });
-  it('does NOT match a query param echoing the path on a stuck callback', () => {
-    expect(isSuccessPath('https://qontinui.io/auth/callback?state=%2Fbuild', '/build')).toBe(false);
-  });
-});
-
-describe('isAppLoginPath (own login page, not Cognito)', () => {
-  it('true for the app own /login?next= page (failure bounce)', () => {
-    expect(isAppLoginPath('https://qontinui.io/login?next=%2Fbuild')).toBe(true);
-  });
-  it('false for the Cognito hosted UI', () => {
-    expect(isAppLoginPath('https://auth.qontinui.io/login')).toBe(false);
-  });
-  it('false for an authed landing', () => {
-    expect(isAppLoginPath('https://qontinui.io/build/workflows')).toBe(false);
-  });
-});
+// URL classifiers (isCognito/pathOf/isSuccessPath/isAppLoginPath) moved to
+// tests/login-drive.test.ts — single home for URL classification.

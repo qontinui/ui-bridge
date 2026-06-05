@@ -54,6 +54,14 @@
 import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
 import type { InjectedContext } from './transports/injected.js';
+import {
+  isCognito,
+  pathOf,
+  isSuccessPath,
+  isAppLoginPath,
+  loginDrive,
+  scrapeErrorCard,
+} from './login-drive.js';
 
 export const USAGE = `ui-bridge-login-web — automated web login via the UI Bridge injected transport
 
@@ -132,39 +140,6 @@ export class LoginCliArgError extends Error {
     this.name = 'LoginCliArgError';
   }
 }
-
-/**
- * Cognito is identified by HOST (custom domain / raw Cognito domain) or the
- * /oauth2/ endpoints — never by a bare `/login?` path match: the app's own
- * login URL legitimately carries a query now (`--url …/login?next=%2Fco-pilot`
- * is the recommended deterministic-landing form since web #439), and a path
- * match would (a) misreport a bounced-back-to-login failure as `stillOnCognito`
- * instead of `onAppLoginPage`, and (b) let the step-2 waitForURL instant-match
- * the app's own login page instead of waiting for the real hosted-UI hop.
- */
-export const isCognito = (u: string): boolean =>
-  /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\//i.test(u);
-
-/** Extract a URL's pathname; '' for an unparseable value. */
-export const pathOf = (u: string): string => {
-  try {
-    return new URL(u).pathname;
-  } catch {
-    return '';
-  }
-};
-
-/**
- * Strict success check: compare `success` against the URL's PATHNAME only.
- * Matching the whole URL let query params fake success (e.g. `state=…/co-pilot`
- * on a stuck /auth/callback) — see the 2026-06-04 false positive.
- */
-export const isSuccessPath = (u: string, success: string): boolean =>
-  pathOf(u).includes(success);
-
-/** True when the URL is the app's OWN /login page (not the Cognito hosted UI). */
-export const isAppLoginPath = (u: string): boolean =>
-  /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(u);
 
 /**
  * Parse `argv` (already sliced past `node script`) into validated args.
@@ -301,100 +276,23 @@ async function main(): Promise<void> {
   transport.register<unknown, LoginResult, InjectedContext>('drive', async (_p, ctx) => {
     const page = ctx.page;
 
-    // 1) App login landing (qontinui.io/login). Buttons aren't SDK-registered,
-    //    so locate by visible text via Playwright (the injected bundle is present
-    //    but `getControlSnapshot` is empty on this page).
-    log(`landed ${page.url()}`);
-    const emailBtn = page
-      .getByRole('button', { name: /continue with email/i })
-      .or(page.getByText(/continue with email/i));
-    await emailBtn.first().waitFor({ state: 'visible', timeout: 15000 });
-    await emailBtn.first().click();
+    // 1) Drive the shared Cognito login flow up to a generic authed landing.
+    const r = await loginDrive(page, { email, password, timeoutMs, log });
 
-    // 2) Wait for EITHER the Cognito hosted UI (form to fill) OR an already-authed
-    //    landing (live Cognito SSO session can skip the form).
-    await page.waitForURL((u) => isCognito(u.toString()) || isSuccessPath(u.toString(), success), {
-      timeout: timeoutMs,
-    });
-
-    if (isCognito(page.url())) {
-      await page.waitForLoadState('domcontentloaded');
-      log(`cognito ${page.url()}`);
-      // 3) Fill the Cognito hosted-UI form. Try classic + managed-login selectors.
-      // Classic Cognito hosted UI renders a hidden duplicate of the form (an
-      // inline copy + a modal copy); pick the VISIBLE match, not just .first().
-      const fillFirst = async (sels: string[], val: string, what: string): Promise<void> => {
-        for (const s of sels) {
-          const loc = page.locator(s);
-          const n = await loc.count().catch(() => 0);
-          for (let i = 0; i < n; i++) {
-            const el = loc.nth(i);
-            if (await el.isVisible().catch(() => false)) {
-              await el.fill(val, { timeout: 10000 });
-              log(`filled ${what} via ${s} [visible #${i}]`);
-              return;
-            }
-          }
-        }
-        throw new Error(`Cognito ${what} field (visible) not found (selectors: ${sels.join(', ')})`);
-      };
-      await fillFirst(
-        [
-          '#signInFormUsername',
-          'input[name="username"]',
-          'input[type="email"]',
-          'input[autocomplete="username"]',
-        ],
-        email,
-        'email'
-      );
-      await fillFirst(
-        [
-          '#signInFormPassword',
-          'input[name="password"]',
-          'input[type="password"]',
-          'input[autocomplete="current-password"]',
-        ],
-        password,
-        'password'
-      );
-      // Click the VISIBLE submit (same hidden-duplicate caveat).
-      const submitLoc = page.locator(
-        'input[name="signInSubmitButton"], button[type="submit"], input[type="submit"], [name="signInSubmitButton"]'
-      );
-      let clicked = false;
-      const sn = await submitLoc.count().catch(() => 0);
-      for (let i = 0; i < sn; i++) {
-        const el = submitLoc.nth(i);
-        if (await el.isVisible().catch(() => false)) {
-          await el.click();
-          clicked = true;
-          log(`clicked submit [visible #${i}]`);
-          break;
-        }
-      }
-      if (!clicked) {
-        await page.getByRole('button', { name: /sign in|log in|continue|submit/i }).first().click();
-        log('clicked submit [role fallback]');
-      }
-
-      // 4) Cognito -> /auth/callback (PKCE exchange) -> SUCCESS landing.
-      await page.waitForURL(
-        (u) => isSuccessPath(u.toString(), success) || /\/auth\/callback/.test(u.toString()),
-        { timeout: timeoutMs }
-      );
-      if (/\/auth\/callback/.test(page.url())) {
-        await page
-          .waitForURL((u) => isSuccessPath(u.toString(), success), { timeout: timeoutMs })
-          .catch(() => {});
-      }
+    // 2) Bounded caller-side success wait BEFORE the strict assertion. The shared
+    //    helper lands on a *generic* authed page; this CLI's --success demands a
+    //    SPECIFIC pathname, which may only resolve after a client-side redirect.
+    //    Without this the strict check can sample the URL mid-redirect.
+    if (r.ok && !isSuccessPath(page.url(), success)) {
+      await page
+        .waitForURL((u) => isSuccessPath(u.toString(), success), { timeout: 10000 })
+        .catch(() => {});
     }
 
-    await page.waitForLoadState('networkidle').catch(() => {});
     const finalUrl = page.url();
     log(`final ${finalUrl}`);
 
-    // 5) Confirm via the UI Bridge runtime on the authed page (re-injected there).
+    // 3) Confirm via the UI Bridge runtime on the authed page (re-injected there).
     await page
       .waitForFunction(() => (window as { __uiBridgeInjected?: { ready?: boolean } }).__uiBridgeInjected?.ready === true, {
         timeout: 15000,
@@ -410,33 +308,23 @@ async function main(): Promise<void> {
     // Strict success: the landing PATHNAME must match --success. Prefer the
     // injected bridge's route report (window.location.pathname captured
     // in-page by getControlSnapshot — proves the bridge runtime executed on
-    // the landing page); fall back to the raw URL's pathname. "Not on Cognito
-    // anymore" is NOT success — the old `|| !isCognito(finalUrl)` disjunct
-    // reported ok:true for a flow stuck on /auth/callback (2026-06-04).
+    // the landing page); fall back to the helper's landingPath, then the raw
+    // URL's pathname. "Not on Cognito anymore" is NOT success — see the
+    // 2026-06-04 /auth/callback false positive.
     const uiBridgeRoute = snap?.route ?? null;
-    const landingPath = uiBridgeRoute ?? pathOf(finalUrl);
+    // The helper's landingPath is stale if the bounded wait above rode a
+    // client-side redirect past it — trust it only while the URL is unchanged.
+    const landingPath =
+      uiBridgeRoute ?? (finalUrl === r.finalUrl ? r.landingPath : pathOf(finalUrl));
     const ok = !isAppLoginPath(finalUrl) && !isCognito(finalUrl) && landingPath.includes(success);
 
     // On failure, surface any visible error card so the result is
-    // self-diagnosing (the oauth-state-mismatch repro required a separate
-    // page read just to learn WHY the flow stalled).
-    let errorText: string | null = null;
-    if (!ok) {
-      try {
-        const alerts = page.locator(
-          '[role="alert"], #loginErrorMessage, .error-message, [class*="error" i], [data-testid*="error" i]'
-        );
-        const an = await alerts.count();
-        for (let i = 0; i < an && !errorText; i++) {
-          const el = alerts.nth(i);
-          if (await el.isVisible().catch(() => false)) {
-            const t = (await el.innerText().catch(() => '')).trim();
-            if (t) errorText = t.slice(0, 500);
-          }
-        }
-      } catch {
-        /* best-effort */
-      }
+    // self-diagnosing. Prefer the helper's scrape; re-scrape here only if the
+    // success assertion flipped ok false after the helper reported a clean
+    // landing (so r.errorText is null but we now need a diagnostic).
+    let errorText: string | null = r.errorText;
+    if (!ok && !errorText) {
+      errorText = await scrapeErrorCard(page);
     }
 
     // 6) Optional post-login click (--post-login-click). Runs only on a
