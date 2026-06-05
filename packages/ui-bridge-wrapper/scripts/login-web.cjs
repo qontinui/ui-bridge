@@ -17,7 +17,11 @@
  *   node packages/ui-bridge-wrapper/scripts/login-web.cjs \
  *     --url https://qontinui.io/login \
  *     [--email <e> --password <p>]   (or env UIB_LOGIN_EMAIL / UIB_LOGIN_PASSWORD) \
- *     [--success /dashboard] [--headed] [--timeout 60000] [--keep-open]
+ *     [--success /dashboard] [--headed] [--timeout 60000] [--keep-open] \
+ *     [--post-login-click "<css>"]   (click once on the authed landing — e.g. the
+ *       co-pilot consent button [data-testid='co-pilot-consent-allow'], which
+ *       mounts the CommandRelayListener so the tab registers with the
+ *       same-origin relay; pair with --keep-open for relay-driven sessions)
  *
  * `--success` matches against the landing page PATHNAME only (preferring the
  * injected bridge's route report over the raw URL) — never the query/fragment.
@@ -48,6 +52,14 @@ const PASSWORD = arg('--password', process.env.UIB_LOGIN_PASSWORD);
 const SUCCESS = arg('--success', '/dashboard'); // pathname substring the authed landing must contain (strict — query/fragment excluded)
 const TIMEOUT = parseInt(arg('--timeout', '60000'), 10);
 const HEADED = flag('--headed');
+// Optional CSS selector to click ONCE on the authed landing page, e.g. the
+// co-pilot session-consent button `[data-testid='co-pilot-consent-allow']` —
+// granting that consent is what mounts the app's CommandRelayListener, so the
+// tab registers with the SAME-ORIGIN relay (combine with --keep-open to hold
+// the registered session for relay-driven /control/* calls). Non-fatal when
+// the target never appears (consent already granted this session, account
+// pref off) — the caller's relay connectedTabs poll is the real gate.
+const POST_CLICK = arg('--post-login-click', null);
 
 const log = (m) => process.stderr.write(`[login-web] ${m}\n`);
 
@@ -202,6 +214,23 @@ const isAppLogin = (u) => /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(u);
       }
     }
 
+    // 6) Optional post-login click (--post-login-click). Runs only on a
+    //    confirmed-authed landing. `true` = clicked, `false` = target never
+    //    became visible (non-fatal — see the flag comment), `null` = not asked.
+    let postLoginClicked = null;
+    if (ok && POST_CLICK) {
+      postLoginClicked = false;
+      try {
+        const target = page.locator(POST_CLICK).first();
+        await target.waitFor({ state: 'visible', timeout: 20000 });
+        await target.click();
+        postLoginClicked = true;
+        log(`post-login click: ${POST_CLICK}`);
+      } catch {
+        log(`post-login click target never visible (non-fatal): ${POST_CLICK}`);
+      }
+    }
+
     return {
       ok,
       finalUrl,
@@ -211,6 +240,7 @@ const isAppLogin = (u) => /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(u);
       errorText,
       uiBridgeRoute,
       uiBridgeRegistered: snap?.registration?.totalRegistered ?? null,
+      postLoginClicked,
     };
   });
 
