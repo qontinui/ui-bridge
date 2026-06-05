@@ -10,11 +10,11 @@
     "e2e"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w packages/ui-bridge-headless --if-present && npm run build -w packages/ui-bridge --if-present && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:e2e": "npm run test -w e2e",
-    "lint": "eslint packages/ui-bridge/src packages/ui-bridge-extension/src packages/ui-bridge-native/src packages/ui-bridge-server/src",
-    "lint:fix": "eslint packages/ui-bridge/src packages/ui-bridge-extension/src packages/ui-bridge-native/src packages/ui-bridge-server/src --fix",
+    "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
+    "lint:fix": "eslint \"packages/*/src/**/*.{ts,tsx}\" --fix",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx}\"",
     "typecheck": "npm run typecheck --workspaces --if-present",

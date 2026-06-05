@@ -206,7 +206,7 @@ export async function loginDrive(
     } catch {
       const errorText = await scrapeErrorCard(page);
       const finalUrl = page.url();
-      log(`final ${finalUrl} (stalled)`);
+      log(`stalled ${finalUrl}`);
       return { ok: false, finalUrl, landingPath: pathOf(finalUrl), errorText };
     }
   }
@@ -222,7 +222,6 @@ export async function loginDrive(
     .catch(() => {});
 
   const finalUrl = page.url();
-  log(`final ${finalUrl}`);
   const landingPath = await page
     .evaluate(() => location.pathname)
     .catch(() => pathOf(finalUrl));
@@ -231,6 +230,10 @@ export async function loginDrive(
     !isAppLoginPath(finalUrl) &&
     !isCognito(finalUrl) &&
     !/\/auth\/callback/.test(pathOf(finalUrl));
+
+  // Log the OUTCOME, not an assumption — a bounce back to the app login page
+  // reaches this point too and must not read "authed".
+  log(ok ? `authed ${finalUrl}` : `stalled ${finalUrl}`);
 
   const errorText = ok ? null : await scrapeErrorCard(page);
   return { ok, finalUrl, landingPath, errorText };
