@@ -19,7 +19,16 @@
  *     [--email <e> --password <p>]   (or env UIB_LOGIN_EMAIL / UIB_LOGIN_PASSWORD) \
  *     [--success /dashboard] [--headed] [--timeout 60000] [--keep-open]
  *
- * Prints ONE JSON result line to stdout: {ok, finalUrl, route, ...}. Exit 0 = login confirmed.
+ * `--success` matches against the landing page PATHNAME only (preferring the
+ * injected bridge's route report over the raw URL) — never the query/fragment.
+ * (Git Bash callers: run with MSYS_NO_PATHCONV=1 or the shell rewrites
+ * `--success /build` into a Windows path before the script ever sees it.)
+ * A `state=`/`next=` query param echoing the target path can NOT fake success
+ * (the 2026-06-04 oauth-state-mismatch repro false-positived exactly that way:
+ * stuck on /auth/callback with ok:true because the old check accepted any
+ * non-Cognito URL).
+ *
+ * Prints ONE JSON result line to stdout: {ok, finalUrl, uiBridgeRoute, errorText, ...}. Exit 0 = login confirmed.
  * With --keep-open it does NOT close the browser and instead prints the result then
  * parks until SIGTERM (so a caller can keep driving the authed session in-process —
  * extend `drive` for that). Default closes after confirming the authed landing.
@@ -36,7 +45,7 @@ const flag = (name) => argv.includes(name);
 const URL_ = arg('--url', 'https://qontinui.io/login');
 const EMAIL = arg('--email', process.env.UIB_LOGIN_EMAIL);
 const PASSWORD = arg('--password', process.env.UIB_LOGIN_PASSWORD);
-const SUCCESS = arg('--success', '/dashboard'); // substring the authed final URL should contain
+const SUCCESS = arg('--success', '/dashboard'); // pathname substring the authed landing must contain (strict — query/fragment excluded)
 const TIMEOUT = parseInt(arg('--timeout', '60000'), 10);
 const HEADED = flag('--headed');
 
@@ -48,8 +57,18 @@ if (!EMAIL || !PASSWORD) {
 }
 
 const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\/|\/login\?/i.test(u);
-const isSuccess = (u) => u.includes(SUCCESS);
-const isAppLogin = (u) => /\/login(\b|\/|\?|$)/.test(u) && !isCognito(u);
+// Strict success check: compare --success against the URL's PATHNAME only.
+// Matching the whole URL let query params fake success (e.g. `state=…/co-pilot`
+// on a stuck /auth/callback) — see the 2026-06-04 false positive.
+const pathOf = (u) => {
+  try {
+    return new URL(typeof u === 'string' ? u : u.toString()).pathname;
+  } catch {
+    return '';
+  }
+};
+const isSuccess = (u) => pathOf(u).includes(SUCCESS);
+const isAppLogin = (u) => /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(u);
 
 (async () => {
   const transport = createTransport({
@@ -151,13 +170,46 @@ const isAppLogin = (u) => /\/login(\b|\/|\?|$)/.test(u) && !isCognito(u);
       /* registry may be empty on some pages */
     }
 
-    const ok = !isAppLogin(finalUrl) && (isSuccess(finalUrl) || !isCognito(finalUrl));
+    // Strict success: the landing PATHNAME must match --success. Prefer the
+    // injected bridge's route report (window.location.pathname captured
+    // in-page by getControlSnapshot — proves the bridge runtime executed on
+    // the landing page); fall back to the raw URL's pathname. "Not on Cognito
+    // anymore" is NOT success — the old `|| !isCognito(finalUrl)` disjunct
+    // reported ok:true for a flow stuck on /auth/callback (2026-06-04).
+    const uiBridgeRoute = snap?.route ?? null;
+    const landingPath = uiBridgeRoute ?? pathOf(finalUrl);
+    const ok = !isAppLogin(finalUrl) && !isCognito(finalUrl) && landingPath.includes(SUCCESS);
+
+    // On failure, surface any visible error card so the result is
+    // self-diagnosing (the oauth-state-mismatch repro required a separate
+    // page read just to learn WHY the flow stalled).
+    let errorText = null;
+    if (!ok) {
+      try {
+        const alerts = page.locator(
+          '[role="alert"], #loginErrorMessage, .error-message, [class*="error" i], [data-testid*="error" i]'
+        );
+        const an = await alerts.count();
+        for (let i = 0; i < an && !errorText; i++) {
+          const el = alerts.nth(i);
+          if (await el.isVisible().catch(() => false)) {
+            const t = (await el.innerText().catch(() => '')).trim();
+            if (t) errorText = t.slice(0, 500);
+          }
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+
     return {
       ok,
       finalUrl,
+      landingPath,
       onAppLoginPage: isAppLogin(finalUrl),
       stillOnCognito: isCognito(finalUrl),
-      uiBridgeRoute: snap?.route ?? null,
+      errorText,
+      uiBridgeRoute,
       uiBridgeRegistered: snap?.registration?.totalRegistered ?? null,
     };
   });
