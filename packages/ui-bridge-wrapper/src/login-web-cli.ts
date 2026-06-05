@@ -73,6 +73,15 @@ Options:
   --post-login-click <css>       Click this selector ONCE on the authed landing
                                  (e.g. [data-testid='co-pilot-consent-allow']).
                                  Non-fatal when the target never appears.
+  --expect-text <comma-list>     Assert the authed page's body text contains EVERY
+                                 comma-separated entry. Missing entries fail the
+                                 exit code; the result JSON lists expectFound /
+                                 expectMissing. Matched case-sensitively.
+  --scroll-to <text>             Before screenshotting, scroll the first element
+                                 containing this text into view (non-fatal if absent).
+  --screenshot <path>            Write a full-page PNG of the authed landing to
+                                 <path> (captured BEFORE the --expect-text check, so
+                                 a failing assertion still leaves a diagnostic image).
   --keep-open                    On success, park the authed session until SIGINT/
                                  SIGTERM instead of closing the browser.
   --help, -h                     Print this help and exit.
@@ -87,6 +96,9 @@ Examples:
     --success /build/workflows
   ui-bridge-login-web --url "https://qontinui.io/login?next=%2Fco-pilot" \\
     --success /co-pilot --post-login-click "[data-testid='co-pilot-consent-allow']" --keep-open
+  ui-bridge-login-web --url "https://qontinui.io/login?next=%2Foperations" \\
+    --success /operations --expect-text "option2-actions-outage-drill,metric_threshold" \\
+    --screenshot out.png
 `;
 
 /** Parsed, validated CLI arguments. */
@@ -100,6 +112,12 @@ export interface LoginCliArgs {
   headed: boolean;
   /** Optional CSS selector clicked once on the authed landing (non-fatal). */
   postClick: string | null;
+  /** Tokens (parsed from a comma-list) the authed page's body text must all contain; `[]` when not asked. */
+  expectText: string[];
+  /** Optional text to scroll into view before screenshotting (non-fatal if absent). */
+  scrollToText: string | null;
+  /** Optional path to write a full-page screenshot of the authed landing. */
+  screenshotPath: string | null;
   keepOpen: boolean;
   help: boolean;
 }
@@ -182,6 +200,12 @@ export function parseArgs(argv: string[]): LoginCliArgs {
     timeoutMs,
     headed: has('--headed'),
     postClick: valueOf('--post-login-click'),
+    expectText: (valueOf('--expect-text') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+    scrollToText: valueOf('--scroll-to'),
+    screenshotPath: valueOf('--screenshot'),
     keepOpen: has('--keep-open'),
     help,
   };
@@ -198,6 +222,9 @@ const KNOWN_FLAGS = new Set([
   '--timeout',
   '--headed',
   '--post-login-click',
+  '--expect-text',
+  '--scroll-to',
+  '--screenshot',
   '--keep-open',
   '--help',
   '-h',
@@ -233,6 +260,12 @@ export interface LoginResult {
   uiBridgeRoute?: string | null;
   uiBridgeRegistered?: number | null;
   postLoginClicked?: boolean | null;
+  /** --expect-text tokens found in the authed page body (present only when --expect-text was given). */
+  expectFound?: string[];
+  /** --expect-text tokens NOT found (non-empty ⇒ ok:false / exit 1). */
+  expectMissing?: string[];
+  /** Path the screenshot was written to, or null (present only when --screenshot was given). */
+  screenshotPath?: string | null;
   error?: string;
 }
 
@@ -257,7 +290,8 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const { url, email, password, success, timeoutMs, headed, postClick } = args;
+  const { url, email, password, success, timeoutMs, headed, postClick, expectText, scrollToText, screenshotPath } =
+    args;
 
   const transport = createTransport({
     kind: 'injected',
@@ -422,8 +456,45 @@ async function main(): Promise<void> {
       }
     }
 
+    // 7) Optional screenshot (--screenshot, + --scroll-to). Runs on a
+    //    confirmed-authed landing, BEFORE the --expect-text assertion so a
+    //    failing assertion still leaves a diagnostic image. Scroll is
+    //    best-effort: a missing scroll target must not abort the capture.
+    let screenshotWritten: string | null = null;
+    if (ok && screenshotPath) {
+      try {
+        if (scrollToText) {
+          await page
+            .getByText(scrollToText)
+            .first()
+            .scrollIntoViewIfNeeded({ timeout: 5000 })
+            .catch(() => log(`scroll-to target not found (non-fatal): ${scrollToText}`));
+        }
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        screenshotWritten = screenshotPath;
+        log(`screenshot written: ${screenshotPath}`);
+      } catch (err) {
+        log(`screenshot failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // 8) Optional on-page text assertion (--expect-text). Runs on a
+    //    confirmed-authed landing; a missing token flips the final ok to false
+    //    so the exit code is a usable CI gate. Case-sensitive substring match —
+    //    phase names / metric keys are exact tokens.
+    let expectFound: string[] | undefined;
+    let expectMissing: string[] | undefined;
+    if (ok && expectText.length > 0) {
+      const body = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+      expectFound = expectText.filter((t) => body.includes(t));
+      expectMissing = expectText.filter((t) => !body.includes(t));
+      if (expectMissing.length > 0) log(`expect-text missing: ${expectMissing.join(', ')}`);
+    }
+
+    const finalOk = ok && (expectMissing?.length ?? 0) === 0;
+
     return {
-      ok,
+      ok: finalOk,
       finalUrl,
       landingPath,
       onAppLoginPage: isAppLoginPath(finalUrl),
@@ -432,6 +503,9 @@ async function main(): Promise<void> {
       uiBridgeRoute,
       uiBridgeRegistered: snap?.registration?.totalRegistered ?? null,
       postLoginClicked,
+      expectFound,
+      expectMissing,
+      screenshotPath: screenshotPath ? screenshotWritten : undefined,
     };
   });
 

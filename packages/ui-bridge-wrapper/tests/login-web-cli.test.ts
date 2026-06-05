@@ -70,6 +70,28 @@ describe('parseArgs', () => {
     expect(args.postClick).toBe("[data-testid='co-pilot-consent-allow']");
   });
 
+  it('defaults the drive-harness flags (expectText empty, scroll/screenshot null)', () => {
+    const args = parseArgs([...CREDS]);
+    expect(args.expectText).toEqual([]);
+    expect(args.scrollToText).toBeNull();
+    expect(args.screenshotPath).toBeNull();
+  });
+
+  it('parses --expect-text into trimmed, non-empty tokens', () => {
+    const args = parseArgs([...CREDS, '--expect-text', 'option2-actions-outage-drill, metric_threshold ,, ,fleet-gates']);
+    expect(args.expectText).toEqual([
+      'option2-actions-outage-drill',
+      'metric_threshold',
+      'fleet-gates',
+    ]);
+  });
+
+  it('parses --scroll-to and --screenshot', () => {
+    const args = parseArgs([...CREDS, '--scroll-to', 'Gates', '--screenshot', 'out.png']);
+    expect(args.scrollToText).toBe('Gates');
+    expect(args.screenshotPath).toBe('out.png');
+  });
+
   it('throws on an unknown flag', () => {
     expect(() => parseArgs([...CREDS, '--bogus'])).toThrow(/Unknown flag/);
   });
@@ -97,6 +119,9 @@ describe('parseArgs', () => {
     expect(USAGE).toContain('--url');
     expect(USAGE).toContain('--success');
     expect(USAGE).toContain('--post-login-click');
+    expect(USAGE).toContain('--expect-text');
+    expect(USAGE).toContain('--scroll-to');
+    expect(USAGE).toContain('--screenshot');
   });
 });
 
