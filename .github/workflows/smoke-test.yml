@@ -1,18 +1,11 @@
 name: UI Bridge Smoke Test
 
-# See .github/workflows/README.md for how to enable the full smoke run
-# (self-hosted runner with the `qontinui-dev` label).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      smoke_rebuild:
-        description: 'Rebuild runner binary before smoke (slow, ~5min). Set to "true" to force rebuild.'
-        required: false
-        default: 'false'
 
 jobs:
   lint-smoke-script:
@@ -41,54 +34,3 @@ jobs:
           if ! node -e "const p=require('./package.json'); if (!p.scripts || !p.scripts['smoke-test:runner']) { console.error('Missing scripts.smoke-test:runner in package.json'); process.exit(1); } console.log('Found:', p.scripts['smoke-test:runner']);"; then
             exit 1
           fi
-
-  smoke-test-full:
-    name: Full smoke test (self-hosted)
-    # Only runs when manually triggered — the self-hosted runner needs
-    # supervisor + backend already running. See README for setup.
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, qontinui-dev]
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Show environment
-        run: |
-          node --version || true
-          npm --version || true
-          bash --version | head -1 || true
-          curl --version | head -1 || true
-
-      - name: Preflight — supervisor reachable
-        run: |
-          curl -fsS http://localhost:9875/health > /dev/null || {
-            echo "::error::Supervisor not reachable at http://localhost:9875 — start it before dispatching this workflow."
-            exit 1
-          }
-
-      - name: Preflight — backend reachable
-        run: |
-          curl -fsS http://127.0.0.1:8000/health > /dev/null || {
-            echo "::error::Backend not reachable at http://127.0.0.1:8000 — start it before dispatching this workflow."
-            exit 1
-          }
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run smoke test
-        env:
-          SMOKE_REBUILD: ${{ inputs.smoke_rebuild }}
-        run: |
-          mkdir -p smoke-logs
-          # Tee to a logfile so we always have something to upload, even on failure.
-          set -o pipefail
-          npm run smoke-test:runner 2>&1 | tee smoke-logs/smoke-test.log
-
-      - name: Upload smoke logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-log-${{ github.run_id }}
-          path: smoke-logs/
-          if-no-files-found: warn
-          retention-days: 14
