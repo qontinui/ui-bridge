@@ -15,13 +15,19 @@
  * bundle) resolves:
  *   cd D:/qontinui-root/ui-bridge
  *   node packages/ui-bridge-wrapper/scripts/login-web.cjs \
- *     --url https://qontinui.io/login \
+ *     --url "https://qontinui.io/login?next=%2Fbuild%2Fworkflows" \
  *     [--email <e> --password <p>]   (or env UIB_LOGIN_EMAIL / UIB_LOGIN_PASSWORD) \
  *     [--success /dashboard] [--headed] [--timeout 60000] [--keep-open] \
  *     [--post-login-click "<css>"]   (click once on the authed landing — e.g. the
  *       co-pilot consent button [data-testid='co-pilot-consent-allow'], which
  *       mounts the CommandRelayListener so the tab registers with the
  *       same-origin relay; pair with --keep-open for relay-driven sessions)
+ *
+ * Prefer a `?next=<urlencoded-path>`-bearing --url: the authed landing is then
+ * DETERMINISTIC (the app honors `next` instead of situationally picking
+ * /dashboard or /build/workflows), so --success can assert the exact page.
+ * Safe since web #439 (`311dd963`) base64url-packed the OAuth state — pre-#439
+ * any `%xx`-bearing state failed "OAuth state mismatch" on the email return.
  *
  * `--success` matches against the landing page PATHNAME only (preferring the
  * injected bridge's route report over the raw URL) — never the query/fragment.
@@ -68,7 +74,15 @@ if (!EMAIL || !PASSWORD) {
   process.exit(2);
 }
 
-const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\/|\/login\?/i.test(u);
+// Cognito is identified by HOST (custom domain / raw Cognito domain) or the
+// /oauth2/ endpoints — never by a bare `/login?` path match: the app's own
+// login URL legitimately carries a query now (`--url …/login?next=%2Fco-pilot`
+// is the recommended deterministic-landing form since web #439), and a path
+// match would (a) misreport a bounced-back-to-login failure as
+// `stillOnCognito` instead of `onAppLoginPage`, and (b) let the step-2
+// waitForURL instant-match the app's own login page instead of waiting for
+// the real hosted-UI hop.
+const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\//i.test(String(u));
 // Strict success check: compare --success against the URL's PATHNAME only.
 // Matching the whole URL let query params fake success (e.g. `state=…/co-pilot`
 // on a stuck /auth/callback) — see the 2026-06-04 false positive.

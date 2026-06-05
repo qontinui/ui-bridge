@@ -6,6 +6,12 @@
  * OAuth chain), then `ctx.page.goto`s each target authed page and snapshots the
  * re-injected runtime. Writes one snapshot JSON per page (input for spec authoring).
  *
+ * The login deep-links through the FIRST same-origin target via `?next=`, so
+ * the authed landing is deterministic (that target itself) instead of the
+ * app's situational /dashboard-vs-/build pick. Safe since web #439
+ * (`311dd963`) base64url-packed the OAuth state — pre-#439, any `%xx`-bearing
+ * state failed "OAuth state mismatch" on the email return path.
+ *
  * Run from the ui-bridge repo root; creds via env UIB_LOGIN_EMAIL/PASSWORD or --email/--password.
  *   node packages/ui-bridge-wrapper/scripts/capture-coord-specs.cjs --out D:/qontinui-root/spec-capture
  */
@@ -50,7 +56,12 @@ const TARGETS = PAGES_ARG
       { slug: 'admin-coord-pull-decisions', url: `${ORIGIN}/admin/coord/pull-decisions` },
     ];
 
-const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\/|\/login\?/i.test(u);
+// Cognito is identified by HOST (custom domain / raw Cognito domain) or the
+// /oauth2/ endpoints — never by a bare `/login?` path match: the app's own
+// login URL now legitimately carries a query (`/login?next=…`), and a path
+// match would misclassify it as Cognito, silently disabling the
+// bounced-back-to-login detection below.
+const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\//i.test(String(u));
 // Strict URL checks compare PATHNAMES, never the whole URL — a query param
 // echoing a path (state=…%2Fco-pilot) must not fake a match. Same fix as
 // login-web.cjs (#81).
@@ -71,10 +82,28 @@ async function fillVisible(page, sels, val, what) {
   throw new Error(`Cognito ${what} field not found`);
 }
 
+// Deep-link the login through the first same-origin target (`?next=`) so the
+// post-login landing is the target itself. Cross-origin first targets
+// (absolute --pages URLs) can't ride `next` — the callback's open-redirect
+// guard only honors same-origin "/" paths — so those fall back to bare /login.
+const firstNext = (() => {
+  try {
+    const u = new URL(TARGETS[0].url);
+    if (u.origin === new URL(ORIGIN).origin) return u.pathname + u.search;
+  } catch { /* fall through to bare /login */ }
+  return null;
+})();
+const LOGIN_URL = firstNext ? `${ORIGIN}/login?next=${encodeURIComponent(firstNext)}` : `${ORIGIN}/login`;
+// What the post-login landing should look like: the first target's pathname
+// when deep-linking, else the app's situational /dashboard-or-/build pick.
+const landedAuthed = (u) => (firstNext
+  ? pathOf(u) === pathOf(`${ORIGIN}${firstNext}`)
+  : (pathOf(u).includes('/dashboard') || pathOf(u).includes('/build')));
+
 (async () => {
   const transport = createTransport({
     kind: 'injected',
-    options: { targetUrl: `${ORIGIN}/login`, waitForSettle: false, readyTimeoutMs: 45000 },
+    options: { targetUrl: LOGIN_URL, waitForSettle: false, readyTimeoutMs: 45000 },
   });
 
   transport.register('run', async (_p, ctx) => {
@@ -83,7 +112,7 @@ async function fillVisible(page, sels, val, what) {
     log(`login: ${page.url()}`);
     await page.getByRole('button', { name: /continue with email/i }).or(page.getByText(/continue with email/i)).first()
       .click({ timeout: 20000 });
-    await page.waitForURL((u) => isCognito(u.toString()) || pathOf(u).includes('/dashboard') || pathOf(u).includes('/build'), { timeout: TIMEOUT });
+    await page.waitForURL((u) => isCognito(u.toString()) || landedAuthed(u), { timeout: TIMEOUT });
     if (isCognito(page.url())) {
       await page.waitForLoadState('domcontentloaded');
       await fillVisible(page, ['#signInFormUsername', 'input[name="username"]', 'input[type="email"]'], EMAIL, 'email');
