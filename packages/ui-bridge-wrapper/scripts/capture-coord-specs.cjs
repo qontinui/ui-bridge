@@ -51,6 +51,17 @@ const TARGETS = PAGES_ARG
     ];
 
 const isCognito = (u) => /auth\.qontinui\.io|amazoncognito\.com|\/oauth2\/|\/login\?/i.test(u);
+// Strict URL checks compare PATHNAMES, never the whole URL — a query param
+// echoing a path (state=…%2Fco-pilot) must not fake a match. Same fix as
+// login-web.cjs (#81).
+const pathOf = (u) => {
+  try {
+    return new URL(typeof u === 'string' ? u : u.toString()).pathname;
+  } catch {
+    return '';
+  }
+};
+const isLoginPath = (u) => /\/login(\b|\/|$)/.test(pathOf(u)) && !isCognito(typeof u === 'string' ? u : u.toString());
 
 async function fillVisible(page, sels, val, what) {
   for (const s of sels) {
@@ -72,7 +83,7 @@ async function fillVisible(page, sels, val, what) {
     log(`login: ${page.url()}`);
     await page.getByRole('button', { name: /continue with email/i }).or(page.getByText(/continue with email/i)).first()
       .click({ timeout: 20000 });
-    await page.waitForURL((u) => isCognito(u.toString()) || u.toString().includes('/dashboard') || u.toString().includes('/build'), { timeout: TIMEOUT });
+    await page.waitForURL((u) => isCognito(u.toString()) || pathOf(u).includes('/dashboard') || pathOf(u).includes('/build'), { timeout: TIMEOUT });
     if (isCognito(page.url())) {
       await page.waitForLoadState('domcontentloaded');
       await fillVisible(page, ['#signInFormUsername', 'input[name="username"]', 'input[type="email"]'], EMAIL, 'email');
@@ -81,9 +92,41 @@ async function fillVisible(page, sels, val, what) {
       const sn = await sub.count(); let done = false;
       for (let i = 0; i < sn; i++) { if (await sub.nth(i).isVisible().catch(() => false)) { await sub.nth(i).click(); done = true; break; } }
       if (!done) await page.getByRole('button', { name: /sign in|continue/i }).first().click();
-      await page.waitForURL((u) => !isCognito(u.toString()), { timeout: TIMEOUT });
+      // "Not on Cognito anymore" is NOT authed — /auth/callback can be stuck
+      // on an error card (the 2026-06-04 state-mismatch false positive). Wait
+      // for the redirect chain to LEAVE the callback; on timeout, surface the
+      // visible error card so the failure is self-diagnosing.
+      try {
+        await page.waitForURL(
+          (u) => !isCognito(u.toString()) && !/^\/auth\/callback/.test(pathOf(u)),
+          { timeout: TIMEOUT }
+        );
+      } catch (e) {
+        let errorText = null;
+        try {
+          const alerts = page.locator(
+            '[role="alert"], #loginErrorMessage, .error-message, [class*="error" i], [data-testid*="error" i]'
+          );
+          const an = await alerts.count();
+          for (let i = 0; i < an && !errorText; i++) {
+            const el = alerts.nth(i);
+            if (await el.isVisible().catch(() => false)) {
+              const t = (await el.innerText().catch(() => '')).trim();
+              if (t) errorText = t.slice(0, 500);
+            }
+          }
+        } catch {
+          /* best-effort */
+        }
+        throw new Error(
+          `login stalled on ${pathOf(page.url())}${errorText ? ` — ${errorText}` : ''}`
+        );
+      }
     }
     await page.waitForLoadState('networkidle').catch(() => {});
+    if (isLoginPath(page.url())) {
+      throw new Error(`login failed — bounced back to ${pathOf(page.url())}`);
+    }
     log(`authed: ${page.url()}`);
 
     // --- capture each coord page ---
@@ -98,7 +141,7 @@ async function fillVisible(page, sels, val, what) {
       let snap = null, err = null;
       try { snap = await ctx.snapshot(); } catch (e) { err = e && e.message ? e.message : String(e); }
       const finalUrl = page.url();
-      const onLogin = /\/login(\b|\/|\?|$)/.test(finalUrl) && !isCognito(finalUrl);
+      const onLogin = isLoginPath(finalUrl);
       out.push({ slug: t.slug, requestedUrl: t.url, finalUrl, onLogin, error: err,
         route: snap?.route ?? null, totalRegistered: snap?.registration?.totalRegistered ?? null, snapshot: snap });
       log(`  -> route=${snap?.route} registered=${snap?.registration?.totalRegistered} onLogin=${onLogin}`);
@@ -118,6 +161,10 @@ async function fillVisible(page, sels, val, what) {
       fs.writeFileSync(f, JSON.stringify(r.snapshot ?? { error: r.error }, null, 2));
       process.stdout.write(JSON.stringify({ slug: r.slug, finalUrl: r.finalUrl, route: r.route, totalRegistered: r.totalRegistered, onLogin: r.onLogin, file: f }) + '\n');
     }
+    // Exit non-zero if any capture failed — a snapshot of a login bounce or
+    // an errored page is not a capture. (Previously a fully failed run could
+    // still exit 0 with garbage snapshot files.)
+    if (result.some((r) => r.onLogin || r.error)) code = 1;
   } else {
     process.stdout.write(JSON.stringify(result) + '\n');
   }
