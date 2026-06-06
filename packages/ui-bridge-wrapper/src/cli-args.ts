@@ -56,6 +56,26 @@ export function consumeValue(
 }
 
 /**
+ * Reject a present-but-empty value (`--success ''`). An empty value on a
+ * matching/target flag is never intended — e.g. an empty `--success` makes
+ * `landingPath.includes('')` true on ANY landing page, turning a stuck login
+ * into a false success (the exact exit-code-trust failure #83 exists to
+ * prevent). `null` (flag absent — caller defaults it) passes through.
+ */
+export function rejectEmptyValue(
+  flag: string,
+  value: string | null,
+  error: ArgErrorFactory
+): string | null {
+  if (value !== null && value.trim() === '') {
+    throw error(
+      `${flag} was given an empty value — omit the flag to use its default, or pass a non-empty value`
+    );
+  }
+  return value;
+}
+
+/**
  * An `indexOf`-based reader for the browser bins' flat arg lists. Rejects unknown
  * `--flags` up front (matching each bin's prior behavior) and rejects flag-shaped
  * values for value-flags (the swallow fix).
@@ -87,18 +107,14 @@ export class ArgReader {
   /**
    * Value following the value-flag `name`, or `null` when the flag is absent OR
    * has no following token (the caller defaults it). Throws when the following
-   * token is flag-shaped — the swallow this kit exists to kill.
+   * token is flag-shaped — the swallow this kit exists to kill. Delegates to
+   * {@link consumeValue} so the guard (and its message) live in exactly one
+   * place for both the indexOf-style and switch-style parsers.
    */
   value(name: string): string | null {
     const i = this.argv.indexOf(name);
     if (i < 0 || i + 1 >= this.argv.length) return null;
-    const raw = this.argv[i + 1]!;
-    if (isFlagShaped(raw)) {
-      throw this.error(
-        `${name} expects a value but got the flag '${raw}' — did you omit ${name}'s argument?`
-      );
-    }
-    return raw;
+    return consumeValue(name, this.argv[i + 1], this.error);
   }
 }
 

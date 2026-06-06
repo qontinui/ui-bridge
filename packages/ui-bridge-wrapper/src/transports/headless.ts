@@ -121,32 +121,64 @@ export class HeadlessTransport extends BaseTransport {
       ({ launchHeadlessTab } = await import('@qontinui/ui-bridge-headless'));
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      // Only a genuine resolution failure means "the peer is not installed".
+      // Anything else (a broken install, a missing TRANSITIVE dep, version
+      // skew making the module throw on evaluation) must NOT tell the user to
+      // install a package they already have.
+      if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+        throw new WrapperTransportError(
+          'INVALID_CONFIG',
+          `Transport kind '${this.kind}' needs the optional '@qontinui/ui-bridge-headless' ` +
+            `peer, which is not installed. Install it and the Chromium browser:\n` +
+            `  npm i @qontinui/ui-bridge-headless && npx playwright install chromium\n` +
+            `(bare \`npx @qontinui/ui-bridge-wrapper …\` does NOT install peers — pass each ` +
+            `peer with \`-p\`, e.g.\n` +
+            `  npx -y -p @qontinui/ui-bridge-wrapper -p @qontinui/ui-bridge -p @qontinui/ui-bridge-headless -p playwright ui-bridge-login-web …)\n` +
+            `Underlying import error: ${cause}`
+        );
+      }
       throw new WrapperTransportError(
         'INVALID_CONFIG',
-        `Transport kind '${this.kind}' needs the optional '@qontinui/ui-bridge-headless' ` +
-          `peer, which is not installed. Install it and the Chromium browser:\n` +
-          `  npm i @qontinui/ui-bridge-headless && npx playwright install chromium\n` +
-          `(bare \`npx @qontinui/ui-bridge-wrapper …\` does NOT install peers — pass each ` +
-          `peer with \`-p\`, e.g.\n` +
-          `  npx -y -p @qontinui/ui-bridge-wrapper -p @qontinui/ui-bridge -p @qontinui/ui-bridge-headless -p playwright ui-bridge-login-web …)\n` +
-          `Underlying import error: ${cause}`
+        `'@qontinui/ui-bridge-headless' is installed but failed to load — this is a ` +
+          `broken install (missing transitive dependency or version skew), not a ` +
+          `missing peer. Try reinstalling it. Underlying error: ${cause}`
       );
     }
 
     // Subclasses (injected) supply init-scripts to run before first paint.
     const initScripts = await this.buildInitScripts();
 
-    const tab = await launchHeadlessTab({
-      url: this.options.targetUrl,
-      headless: this.headless,
-      uiBridgeBase: this.options.uiBridgeBase,
-      waitForUiBridgeMs: this.options.waitForUiBridgeMs,
-      viewportWidth: this.options.viewportWidth,
-      viewportHeight: this.options.viewportHeight,
-      userAgent: this.options.userAgent,
-      forwardConsole: this.options.forwardConsole,
-      initScripts: initScripts.length > 0 ? initScripts : undefined,
-    });
+    let tab: Awaited<ReturnType<typeof launchHeadlessTab>>;
+    try {
+      tab = await launchHeadlessTab({
+        url: this.options.targetUrl,
+        headless: this.headless,
+        uiBridgeBase: this.options.uiBridgeBase,
+        waitForUiBridgeMs: this.options.waitForUiBridgeMs,
+        viewportWidth: this.options.viewportWidth,
+        viewportHeight: this.options.viewportHeight,
+        userAgent: this.options.userAgent,
+        forwardConsole: this.options.forwardConsole,
+        initScripts: initScripts.length > 0 ? initScripts : undefined,
+      });
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      // The other half of the first-run story: the peer resolved but the
+      // Chromium binary was never installed. Playwright's raw "Executable
+      // doesn't exist at <path>" surfaces several frames deep — translate it
+      // into the same actionable shape as the missing-peer error above.
+      if (/Executable doesn't exist|browserType\.launch/i.test(cause)) {
+        throw new WrapperTransportError(
+          'INVALID_CONFIG',
+          `Playwright's Chromium browser is not installed (the ` +
+            `'@qontinui/ui-bridge-headless' peer itself loaded fine). Run:\n` +
+            `  npx playwright install chromium\n` +
+            `Underlying launch error: ${cause}`
+        );
+      }
+      throw err;
+    }
 
     this.tab = {
       browser: tab.browser,

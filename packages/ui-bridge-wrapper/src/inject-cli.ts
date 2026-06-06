@@ -217,16 +217,18 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.tabId = consumeValue('--tab-id', argv[++i], mkError);
         break;
       case '--exec': {
-        const raw = argv[++i];
-        if (raw === undefined) {
+        // consumeValue: `--exec --headed` must error, not dispatch a bogus
+        // action literally named '--headed'.
+        const raw = consumeValue('--exec', argv[++i], mkError);
+        if (raw === null) {
           throw new InjectCliArgError(`--exec expects '<action> <json-payload>' (got <missing>)`);
         }
         args.execActions.push(parseExecValue(raw));
         break;
       }
       case '--registration-metadata': {
-        const raw = argv[++i];
-        if (raw === undefined) {
+        const raw = consumeValue('--registration-metadata', argv[++i], mkError);
+        if (raw === null) {
           throw new InjectCliArgError(
             `--registration-metadata expects JSON {"userId","sessionId"} (got <missing>)`
           );
@@ -253,8 +255,8 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         break;
       }
       case '--ready-timeout': {
-        const raw = argv[++i];
-        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        const raw = consumeValue('--ready-timeout', argv[++i], mkError);
+        const n = raw === null ? NaN : Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n <= 0) {
           throw new InjectCliArgError(
             `--ready-timeout expects a positive integer (got ${raw ?? '<missing>'})`
@@ -267,8 +269,10 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.waitForSettle = false;
         break;
       case '--settle-quiet': {
-        const raw = argv[++i];
-        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        // NOTE: consumeValue treats single-dash tokens (`-1`) as values, so
+        // negative numerics still reach the range check below.
+        const raw = consumeValue('--settle-quiet', argv[++i], mkError);
+        const n = raw === null ? NaN : Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 0) {
           throw new InjectCliArgError(
             `--settle-quiet expects a non-negative integer (got ${raw ?? '<missing>'})`
@@ -278,8 +282,8 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         break;
       }
       case '--settle-timeout': {
-        const raw = argv[++i];
-        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        const raw = consumeValue('--settle-timeout', argv[++i], mkError);
+        const n = raw === null ? NaN : Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n <= 0) {
           throw new InjectCliArgError(
             `--settle-timeout expects a positive integer (got ${raw ?? '<missing>'})`
@@ -289,15 +293,16 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         break;
       }
       case '--expect-selector': {
-        const raw = argv[++i];
-        if (raw === undefined || raw.length === 0) {
+        // consumeValue: '--headed' must not be accepted as a CSS selector.
+        const raw = consumeValue('--expect-selector', argv[++i], mkError);
+        if (raw === null || raw.length === 0) {
           throw new InjectCliArgError(`--expect-selector expects a CSS selector (got <missing>)`);
         }
         args.expectSelector = raw;
         break;
       }
       case '--viewport': {
-        const raw = argv[++i];
+        const raw = consumeValue('--viewport', argv[++i], mkError);
         const match = raw?.match(/^(\d+)x(\d+)$/);
         if (!match) {
           throw new InjectCliArgError(`--viewport expects WxH (got ${raw ?? '<missing>'})`);

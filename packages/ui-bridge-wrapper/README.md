@@ -68,6 +68,14 @@ or a global/dev install:
 
 Each bin supports `--help`.
 
+> **Version floor:** the bins exist only at `@qontinui/ui-bridge-wrapper` **>= 0.4.0**
+> (the `scripts/` predecessors were deleted in the same release). A pin or cached
+> npx resolution below that yields `command not found: ui-bridge-login-web` —
+> upgrade rather than hunting for the bin. Also note: since 0.4.1 an explicit but
+> EMPTY `--pages` errors (exit 2) instead of silently capturing the default page
+> set, and (0.4.2) an empty `--success`/`--url` value is rejected rather than
+> matching every landing page.
+
 ### Prerequisites for the browser-driving bins
 
 `ui-bridge-login-web` and `ui-bridge-capture-specs` launch Chromium via the

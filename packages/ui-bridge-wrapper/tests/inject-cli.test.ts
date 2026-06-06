@@ -222,6 +222,36 @@ describe('validation error paths', () => {
     );
   });
 
+  // Round-2 completion: the swallow guard now also covers the non-string
+  // value-flags the first pass missed. `--exec --headed` used to parse an exec
+  // action literally named '--headed' (failing far downstream at dispatch);
+  // `--expect-selector --headed` accepted '--headed' as a CSS selector.
+  it('does NOT swallow a following flag as the --exec value', () => {
+    expect(() => parseArgs(['--url', 'https://x', '--exec', '--headed'])).toThrow(
+      /--exec expects a value but got the flag '--headed'/
+    );
+  });
+
+  it('does NOT swallow a following flag as the --expect-selector value', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://x', '--exec', 'find {}', '--expect-selector', '--headed'])
+    ).toThrow(/--expect-selector expects a value but got the flag '--headed'/);
+  });
+
+  it('does NOT swallow a following flag as a numeric flag value (--ready-timeout --headed)', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://x', '--exec', 'find {}', '--ready-timeout', '--headed'])
+    ).toThrow(/--ready-timeout expects a value but got the flag '--headed'/);
+  });
+
+  it('still accepts a negative numeric token as a value (single dash is not flag-shaped)', () => {
+    // -1 fails the range check, NOT the swallow guard — proving single-dash
+    // tokens still read as values.
+    expect(() =>
+      parseArgs(['--url', 'https://x', '--exec', 'find {}', '--settle-timeout', '-1'])
+    ).toThrow(/--settle-timeout expects a positive integer/);
+  });
+
   it('treats --help as always valid (short-circuits validation)', () => {
     const args = parseArgs(['--help']);
     expect(args.help).toBe(true);

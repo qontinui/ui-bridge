@@ -53,7 +53,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
-import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
+import { ArgReader, COMMON_FLAGS, makeLogger, rejectEmptyValue } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import {
   isCognito,
@@ -167,10 +167,12 @@ export function parseArgs(argv: string[]): LoginCliArgs {
   }
 
   const args: LoginCliArgs = {
-    url: valueOf('--url') ?? 'https://qontinui.io/login',
+    url: rejectEmptyValue('--url', valueOf('--url'), mkError) ?? 'https://qontinui.io/login',
     email: valueOf('--email') ?? process.env.UIB_LOGIN_EMAIL ?? '',
     password: valueOf('--password') ?? process.env.UIB_LOGIN_PASSWORD ?? '',
-    success: valueOf('--success') ?? '/dashboard',
+    // An EMPTY --success would make `landingPath.includes('')` true on any
+    // landing — ok:true while parked on the login page. Reject it.
+    success: rejectEmptyValue('--success', valueOf('--success'), mkError) ?? '/dashboard',
     timeoutMs,
     headed: has('--headed'),
     postClick: valueOf('--post-login-click'),
