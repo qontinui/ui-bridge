@@ -201,9 +201,19 @@ export function UIBridgeInspector({
   const [showInspector, setShowInspector] = useState(visible);
   const [selectedElement, setSelectedElement] = useState<RegisteredNativeElement | null>(null);
 
-  const elements = useMemo(() => (bridge ? bridge.getElements() : []), [bridge, showInspector]);
+  // Recompute when the inspector opens — the registry mutates outside React,
+  // so a [bridge]-only memo would show stale lists on reopen. Referencing
+  // showInspector in the body keeps the refresh-on-toggle honest (and skips
+  // the work entirely while hidden).
+  const elements = useMemo(
+    () => (bridge && showInspector ? bridge.getElements() : []),
+    [bridge, showInspector]
+  );
 
-  const components = useMemo(() => (bridge ? bridge.getComponents() : []), [bridge, showInspector]);
+  const components = useMemo(
+    () => (bridge && showInspector ? bridge.getComponents() : []),
+    [bridge, showInspector]
+  );
 
   const handleToggle = useCallback(() => {
     setShowInspector((prev) => !prev);

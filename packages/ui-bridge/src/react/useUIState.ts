@@ -383,7 +383,7 @@ export function useUIState(options: UseUIStateOptions): UseUIStateReturn {
   const state = useMemo(() => {
     if (!bridge) return undefined;
     return bridge.registry.getState(id);
-  }, [bridge, id, registered]);
+  }, [bridge, id]);
 
   return {
     registered,
@@ -527,7 +527,7 @@ export function useUIStateGroup(options: UseUIStateGroupOptions): UseUIStateGrou
   const group = useMemo(() => {
     if (!bridge) return undefined;
     return bridge.registry.getStateGroup(id);
-  }, [bridge, id, registered]);
+  }, [bridge, id]);
 
   return {
     registered,

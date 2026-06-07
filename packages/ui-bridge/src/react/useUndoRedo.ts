@@ -49,17 +49,21 @@ export function useUndoRedo(options: DeclaredUndoState): void {
     };
   }, [bridge]);
 
-  // Update declared state when options change
+  // Update declared state when options change. Read the latest options
+  // from the ref (not the closed-over `options`) so the effect body and
+  // its dependency array stay consistent: the primitive fields below are
+  // the re-fire triggers, while optionsRef.current carries the full,
+  // up-to-date object — including undoStack/redoStack/onUndo/onRedo,
+  // which are intentionally omitted from the deps to avoid excessive
+  // re-runs.
   useEffect(() => {
     if (!bridge?.undoTracker) return;
-    bridge.undoTracker.setDeclaredState(options);
+    bridge.undoTracker.setDeclaredState(optionsRef.current);
   }, [
     bridge,
     options.canUndo,
     options.canRedo,
     options.undoDescription,
     options.redoDescription,
-    // Intentionally not including undoStack/redoStack/onUndo/onRedo
-    // to avoid excessive re-renders — the ref captures them
   ]);
 }

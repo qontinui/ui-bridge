@@ -24,6 +24,7 @@ import { ChangeObserver } from './core/change-observer';
 import type { DOMChangeEvent } from './core/change-observer';
 
 import type { NormalizedRect } from './core/types';
+import type { UIBridgeRegistry } from './core/registry';
 
 import { computeHash } from './artifacts/hash';
 
@@ -658,7 +659,7 @@ describe('Poco: UIQuery DSL', () => {
       { el: btn2, mounted: true },
     ]);
 
-    const original = UIQuery.from(registry as any);
+    const original = UIQuery.from(registry as unknown as UIBridgeRegistry);
     const filtered = original.withText('Submit');
 
     // The filtered query should be a different instance
@@ -693,7 +694,7 @@ describe('Poco: UIQuery DSL', () => {
       { el: heading, mounted: true },
     ]);
 
-    const query = UIQuery.from(registry as any);
+    const query = UIQuery.from(registry as unknown as UIBridgeRegistry);
     const buttons = query.withRole('button').allDom();
     const headings = query.withRole('heading').allDom();
 

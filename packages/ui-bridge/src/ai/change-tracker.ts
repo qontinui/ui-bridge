@@ -1700,8 +1700,8 @@ export function analyzeStructuredChanges(
   const listChanges: ListChangeAnalysis[] = [];
 
   // Detect tables in before/after
-  const beforeTable = detectTable(before.elements as any);
-  const afterTable = detectTable(after.elements as any);
+  const beforeTable = detectTable(before.elements);
+  const afterTable = detectTable(after.elements);
 
   if (beforeTable || afterTable) {
     const analysis = diffTables(beforeTable, afterTable);
@@ -1711,8 +1711,8 @@ export function analyzeStructuredChanges(
   }
 
   // Detect lists in before/after
-  const beforeList = detectList(before.elements as any);
-  const afterList = detectList(after.elements as any);
+  const beforeList = detectList(before.elements);
+  const afterList = detectList(after.elements);
 
   if (beforeList || afterList) {
     const analysis = diffLists(beforeList, afterList);

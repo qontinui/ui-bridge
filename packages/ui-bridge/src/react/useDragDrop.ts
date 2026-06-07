@@ -17,7 +17,7 @@
  * ```
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { UseDragSourceOptions, UseDropZoneOptions } from '../drag-drop/types';
 
@@ -30,27 +30,31 @@ import type { UseDragSourceOptions, UseDropZoneOptions } from '../drag-drop/type
  */
 export function useDragSource(elementId: string, options?: UseDragSourceOptions): void {
   const context = useUIBridgeOptional();
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  // Serialize metadata so the effect re-runs on deep changes without
+  // re-running on every render (object identity churn). The primitive
+  // fields and this key are the re-fire triggers; the latest option
+  // values are read from optionsRef inside the effect.
+  const dataType = options?.dataType;
+  const label = options?.label;
+  const metadataKey = options?.metadata ? JSON.stringify(options.metadata) : '';
 
   useEffect(() => {
     if (!context?.dragDropDetector) return;
 
+    const opts = optionsRef.current;
     context.dragDropDetector.declareDragSource(elementId, {
-      dataType: options?.dataType,
-      label: options?.label,
-      metadata: options?.metadata,
+      dataType: opts?.dataType,
+      label: opts?.label,
+      metadata: opts?.metadata,
     });
 
     return () => {
       context.dragDropDetector.undeclareDragSource(elementId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    context,
-    elementId,
-    options?.dataType,
-    options?.label,
-    options?.metadata ? JSON.stringify(options.metadata) : '',
-  ]);
+  }, [context, elementId, dataType, label, metadataKey]);
 }
 
 /**
@@ -62,27 +66,31 @@ export function useDragSource(elementId: string, options?: UseDragSourceOptions)
  */
 export function useDropZone(elementId: string, options?: UseDropZoneOptions): void {
   const context = useUIBridgeOptional();
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  // Serialize accepts/metadata so the effect re-runs on deep changes
+  // without re-running on every render. These keys plus the primitive
+  // fields are the re-fire triggers; latest values are read from
+  // optionsRef inside the effect.
+  const acceptsKey = options?.accepts ? JSON.stringify(options.accepts) : '';
+  const effect = options?.effect;
+  const label = options?.label;
+  const metadataKey = options?.metadata ? JSON.stringify(options.metadata) : '';
 
   useEffect(() => {
     if (!context?.dragDropDetector) return;
 
+    const opts = optionsRef.current;
     context.dragDropDetector.declareDropZone(elementId, {
-      accepts: options?.accepts,
-      effect: options?.effect,
-      label: options?.label,
-      metadata: options?.metadata,
+      accepts: opts?.accepts,
+      effect: opts?.effect,
+      label: opts?.label,
+      metadata: opts?.metadata,
     });
 
     return () => {
       context.dragDropDetector.undeclareDropZone(elementId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    context,
-    elementId,
-    options?.accepts ? JSON.stringify(options.accepts) : '',
-    options?.effect,
-    options?.label,
-    options?.metadata ? JSON.stringify(options.metadata) : '',
-  ]);
+  }, [context, elementId, acceptsKey, effect, label, metadataKey]);
 }

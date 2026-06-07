@@ -112,7 +112,7 @@ function detectViteOverlay(): DetectedErrorOverlay | null {
   if (style.display === 'none' || style.visibility === 'hidden') return null;
 
   // Extract error details from shadow DOM
-  const shadow = (overlay as any).shadowRoot as ShadowRoot | null;
+  const shadow: ShadowRoot | null = overlay.shadowRoot;
   let message: string | undefined;
   let title: string | undefined;
   let file: string | undefined;

@@ -1604,6 +1604,13 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
 
     const rootElement = root || document.body;
 
+    // Capture the bbox-untracker map identity up front so the cleanup
+    // function uses a stable reference rather than re-reading the ref's
+    // `.current` at teardown time (react-hooks/exhaustive-deps). The map
+    // is mutated in place (set/delete/clear) and never reassigned, so
+    // this local always points at the same Map the effect body uses.
+    const bboxUntrackers = bboxUntrackersRef.current;
+
     // Initial scan
     scanAndRegister(rootElement);
 
@@ -1705,7 +1712,6 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // effect run) calls `pruneDisconnectedEntries` up front to catch
       // that leak the moment a new consumer attaches; and the scan
       // path naturally drops disconnected entries on subsequent walks.
-      const bboxUntrackers = bboxUntrackersRef.current;
       const unregisterIfDisconnected = (ref: React.MutableRefObject<Map<HTMLElement, string>>) => {
         const stillAlive = new Map<HTMLElement, string>();
         ref.current.forEach((id, element) => {

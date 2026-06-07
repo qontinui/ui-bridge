@@ -9,6 +9,10 @@ import type {
   ControlSnapshot,
   DiscoveredElement,
   ActionExecutor,
+  ControlActionResponse,
+  ComponentActionResponse,
+  FindResponse,
+  WorkflowRunResponse,
 } from '@qontinui/ui-bridge/control';
 import { diagnosePageHealth } from './page-health';
 import type { PageHealthReport } from './page-health';
@@ -506,7 +510,7 @@ export function createHandlers(
     executeElementAction: async (
       id: string,
       request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
-    ): Promise<APIResponse<any>> => {
+    ): Promise<APIResponse<ControlActionResponse>> => {
       const startTime = Date.now();
       try {
         // Check if element exists first
@@ -530,7 +534,7 @@ export function createHandlers(
               durationMs: Date.now() - startTime,
             },
             timestamp: Date.now(),
-          } as APIResponse<unknown>;
+          } as APIResponse<ControlActionResponse>;
         }
 
         const result = await actionExecutor.executeAction(id, {
@@ -579,10 +583,10 @@ export function createHandlers(
             code: errorCode,
             data: { ...actionResult, failureDetails },
             timestamp: Date.now(),
-          } as APIResponse<unknown>;
+          } as APIResponse<ControlActionResponse>;
         }
 
-        return success(result) as APIResponse<unknown>;
+        return success(result) as APIResponse<ControlActionResponse>;
       } catch (err) {
         const errorMessage = (err as Error).message;
         let errorCode: UiBridgeErrorCode = 'UB-UNKNOWN-ERROR';
@@ -609,7 +613,7 @@ export function createHandlers(
             durationMs: Date.now() - startTime,
           },
           timestamp: Date.now(),
-        } as APIResponse<unknown>;
+        } as APIResponse<ControlActionResponse>;
       }
     },
 
@@ -681,13 +685,13 @@ export function createHandlers(
     executeComponentAction: async (
       id: string,
       request: { action: string; params?: Record<string, unknown> }
-    ): Promise<APIResponse<any>> => {
+    ): Promise<APIResponse<ComponentActionResponse>> => {
       try {
         const result = await actionExecutor.executeComponentAction(id, {
           action: request.action,
           params: request.params,
         });
-        return success(result) as APIResponse<unknown>;
+        return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
       }
@@ -697,13 +701,13 @@ export function createHandlers(
     // Find/Discovery Handlers
     // =========================================================================
 
-    find: async (request?: unknown): Promise<APIResponse<any>> => {
+    find: async (request?: unknown): Promise<APIResponse<FindResponse>> => {
       try {
         // Use actionExecutor.find() when available — it supports text, role,
         // and other filters that registry.findElements() doesn't handle
         if (actionExecutor.find) {
           const result = await actionExecutor.find(request);
-          return success(result) as APIResponse<unknown>;
+          return success(result) as APIResponse<FindResponse>;
         }
         // Fallback to registry
         const findRequest = request as
@@ -715,18 +719,18 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<unknown>;
+        }) as APIResponse<FindResponse>;
       } catch (err) {
         return error((err as Error).message, 'FIND_ERROR');
       }
     },
 
-    discover: async (request?: unknown): Promise<APIResponse<any>> => {
+    discover: async (request?: unknown): Promise<APIResponse<FindResponse>> => {
       try {
         // Use actionExecutor.find() when available for proper filtering
         if (actionExecutor.find) {
           const result = await actionExecutor.find(request);
-          return success(result) as APIResponse<unknown>;
+          return success(result) as APIResponse<FindResponse>;
         }
         // Fallback to registry
         const findRequest = request as
@@ -738,7 +742,7 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<unknown>;
+        }) as APIResponse<FindResponse>;
       } catch (err) {
         return error((err as Error).message, 'DISCOVER_ERROR');
       }
@@ -766,7 +770,7 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (id: string, request?: unknown): Promise<APIResponse<any>> => {
+    runWorkflow: async (id: string, request?: unknown): Promise<APIResponse<WorkflowRunResponse>> => {
       try {
         const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
         const runnerUrl = `http://localhost:${runnerPort}`;
@@ -781,26 +785,26 @@ export function createHandlers(
             }
           );
         } catch (fetchErr) {
-          return error(
+          return error<WorkflowRunResponse>(
             `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
             'RUNNER_UNAVAILABLE'
-          ) as APIResponse<unknown>;
+          );
         }
         if (!response.ok) {
           const body = await response.text().catch(() => '');
-          return error(
+          return error<WorkflowRunResponse>(
             `Runner returned ${response.status}: ${body}`,
             'RUNNER_ERROR'
-          ) as APIResponse<unknown>;
+          );
         }
         const data = (await response.json()) as unknown;
-        return success(data) as APIResponse<unknown>;
+        return success(data) as APIResponse<WorkflowRunResponse>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_ERROR');
       }
     },
 
-    getWorkflowStatus: async (runId: string): Promise<APIResponse<any>> => {
+    getWorkflowStatus: async (runId: string): Promise<APIResponse<WorkflowRunResponse>> => {
       try {
         const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
         const runnerUrl = `http://localhost:${runnerPort}`;
@@ -808,20 +812,20 @@ export function createHandlers(
         try {
           response = await fetch(`${runnerUrl}/api/task-runs/${encodeURIComponent(runId)}`);
         } catch (fetchErr) {
-          return error(
+          return error<WorkflowRunResponse>(
             `Failed to reach runner at ${runnerUrl}: ${(fetchErr as Error).message}`,
             'RUNNER_UNAVAILABLE'
-          ) as APIResponse<unknown>;
+          );
         }
         if (!response.ok) {
           const body = await response.text().catch(() => '');
-          return error(
+          return error<WorkflowRunResponse>(
             `Runner returned ${response.status}: ${body}`,
             'RUNNER_ERROR'
-          ) as APIResponse<unknown>;
+          );
         }
         const data = (await response.json()) as unknown;
-        return success(data) as APIResponse<unknown>;
+        return success(data) as APIResponse<WorkflowRunResponse>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');
       }
@@ -1002,11 +1006,14 @@ export function createHandlers(
                 'function'
                 ? (el as DiscoveredElement & { getState: () => Record<string, unknown> }).getState()
                 : el.state;
-            const textContent = String((state as any)?.textContent || '');
+            const textContent = String(
+              (state as { textContent?: unknown } | null | undefined)?.textContent || ''
+            );
             const label = el.label || '';
             const accessibleName = el.accessibleName || '';
-            const placeholder = (el as any).placeholder || '';
-            const title = (el as any).title || '';
+            const elExtra = el as DiscoveredElement & { placeholder?: string; title?: string };
+            const placeholder = elExtra.placeholder || '';
+            const title = elExtra.title || '';
 
             if (label) textParts.push(label);
             if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
@@ -1200,7 +1207,7 @@ export function createHandlers(
           : (allElements as unknown[]);
         return success({ elements, count: elements.length });
       } catch (err) {
-        return error((err as Error).message, 'QUERY_ERROR') as any;
+        return error<{ elements: unknown[]; count: number }>((err as Error).message, 'QUERY_ERROR');
       }
     },
 
@@ -1233,50 +1240,64 @@ export function createHandlers(
         }
         return success({ found: false, waitedMs: Date.now() - start });
       } catch (err) {
-        return error((err as Error).message, 'WAIT_ERROR') as any;
+        return error<{ found: boolean; element?: unknown; waitedMs: number }>(
+          (err as Error).message,
+          'WAIT_ERROR'
+        );
       }
     },
 
     // App-agnostic convenience endpoints (stubs — browser context required)
-    clickByText: async () => {
+    clickByText: async (): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       return {
         success: false,
         error: 'clickByText requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
-    clickBySelector: async () => {
+    clickBySelector: async (): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       return {
         success: false,
         error: 'clickBySelector requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
-    typeInto: async () => {
+    typeInto: async (): Promise<APIResponse<{ typed: boolean; element?: unknown }>> => {
       return {
         success: false,
         error: 'typeInto requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
-    readValue: async () => {
+    readValue: async (): Promise<APIResponse<{ value: string | null; length: number }>> => {
       return {
         success: false,
         error: 'readValue requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
-    findByText: async () => {
+    findByText: async (): Promise<
+      APIResponse<
+        Array<{
+          index: number;
+          tag: string;
+          text: string;
+          rect: { x: number; y: number; width: number; height: number };
+          disabled: boolean;
+          visible: boolean;
+        }>
+      >
+    > => {
       return {
         success: false,
         error: 'findByText requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
 
     // Diagnostics
@@ -1295,7 +1316,7 @@ export function createHandlers(
         providers_mounted: [],
         last_discover_at: null,
         capabilities: ['control', 'find', 'ai'],
-      }) as any;
+      });
     },
 
     // Diagnostic catalog (plan Phase 2). Read-only; backed by the single
@@ -1304,7 +1325,7 @@ export function createHandlers(
     // description, commonCauses, recoveryTemplate }.
     getDiagnosticsCatalog: async () => {
       const codes = UI_BRIDGE_ERROR_CODES.map((code) => catalogEntry(code));
-      return success({ codes, count: codes.length }) as any;
+      return success({ codes, count: codes.length });
     },
     getDiagnosticCode: async (code: string) => {
       if (!(code in DIAGNOSTICS)) {
@@ -1314,22 +1335,24 @@ export function createHandlers(
           `Unknown diagnostic code: ${code}. ` +
             `See GET /diagnostics/catalog for the full catalog.`,
           'NOT_FOUND'
-        ) as any;
+        );
       }
-      return success(catalogEntry(code as UiBridgeErrorCode)) as any;
+      return success(catalogEntry(code as UiBridgeErrorCode));
     },
 
     // Navigation adapter (stubs)
-    getRoutes: async () => {
-      return success([]) as any;
+    getRoutes: async (): Promise<APIResponse<Array<{ name: string; path: string }>>> => {
+      return success<Array<{ name: string; path: string }>>([]);
     },
-    navigateByAdapter: async () => {
+    navigateByAdapter: async (): Promise<
+      APIResponse<{ navigated: boolean; route: { name: string; path: string } }>
+    > => {
       return {
         success: false,
         error: 'navigateByAdapter requires browser context',
         code: 'UB-UNSUPPORTED-ACTION',
         timestamp: Date.now(),
-      } as any;
+      };
     },
   };
 }

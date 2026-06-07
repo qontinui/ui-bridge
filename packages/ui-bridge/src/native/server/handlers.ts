@@ -5,8 +5,9 @@
  */
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
-import type { WorkflowStep } from '../core/types';
-import type { NativeActionExecutor } from '../control/types';
+import type { WorkflowStep, NativeElementType } from '../core/types';
+import type { NativeActionExecutor, ControlActionResponse } from '../control/types';
+import type { WaitOptions } from '../core/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
 
 /**
@@ -322,7 +323,7 @@ export function createServerHandlers(
       const body = ctx.body as {
         action: string;
         params?: Record<string, unknown>;
-        waitOptions?: Record<string, unknown>;
+        waitOptions?: WaitOptions;
       };
 
       if (!body?.action) {
@@ -332,7 +333,7 @@ export function createServerHandlers(
       const response = await executor.executeAction(id, {
         action: body.action,
         params: body.params,
-        waitOptions: body.waitOptions as any,
+        waitOptions: body.waitOptions,
       });
 
       if (!response.success) {
@@ -362,7 +363,7 @@ export function createServerHandlers(
         index: number;
         label?: string;
         elementId: string;
-        response: any;
+        response: ControlActionResponse | { success: false; error: string };
       }> = [];
       let succeededCount = 0;
       let failedCount = 0;
@@ -396,7 +397,7 @@ export function createServerHandlers(
           response,
         });
 
-        if ((response as any).success) {
+        if (response.success) {
           succeededCount++;
         } else {
           failedCount++;
@@ -470,7 +471,7 @@ export function createServerHandlers(
     // Discovery
     find: async (ctx: HandlerContext) => {
       const body = ctx.body as {
-        types?: string[];
+        types?: NativeElementType[];
         testIdPattern?: string;
         accessibilityLabelPattern?: string;
         visibleOnly?: boolean;
@@ -478,7 +479,7 @@ export function createServerHandlers(
       };
 
       const response = await executor.find({
-        types: body?.types as any,
+        types: body?.types,
         testIdPattern: body?.testIdPattern,
         accessibilityLabelPattern: body?.accessibilityLabelPattern,
         visibleOnly: body?.visibleOnly,

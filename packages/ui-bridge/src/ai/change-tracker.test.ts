@@ -7,6 +7,8 @@ import { ChangeTracker, analyzeStructuredChanges } from './change-tracker';
 import type { ChangeTrackerDeps } from './change-tracker';
 import type { SemanticSnapshot, SemanticDiff } from './types';
 import type { ControlSnapshot } from '../control/types';
+import type { SemanticSnapshotManager } from './semantic-snapshot';
+import type { CompositeIdleDetector } from '../idle';
 import { __resetGlobalBookmarkStoreForTest } from './bookmarks';
 
 // ============================================================================
@@ -87,7 +89,7 @@ function createMockDeps(overrides?: Partial<ChangeTrackerDeps>): ChangeTrackerDe
   return {
     snapshotManager: {
       createSnapshot: vi.fn().mockReturnValue(mockSnapshot),
-    } as any,
+    } as unknown as SemanticSnapshotManager,
     idleDetector: null,
     createControlSnapshot: vi.fn().mockReturnValue({} as ControlSnapshot),
     executeNLAction: vi.fn().mockResolvedValue({ success: true, executedAction: 'clicked' }),
@@ -338,7 +340,7 @@ describe('ChangeTracker', () => {
     it('should diff from bookmark', () => {
       // First snapshot: element exists
       const snapshot1 = createMockSnapshot([{ id: 'btn-1', description: 'Save button' }]);
-      (deps.snapshotManager.createSnapshot as any).mockReturnValueOnce(snapshot1);
+      vi.mocked(deps.snapshotManager.createSnapshot).mockReturnValueOnce(snapshot1);
       tracker.saveBookmark('start');
 
       // Second snapshot: element changed + new element appeared
@@ -346,7 +348,7 @@ describe('ChangeTracker', () => {
         { id: 'btn-1', description: 'Save button' },
         { id: 'btn-2', description: 'Cancel button' },
       ]);
-      (deps.snapshotManager.createSnapshot as any).mockReturnValueOnce(snapshot2);
+      vi.mocked(deps.snapshotManager.createSnapshot).mockReturnValueOnce(snapshot2);
 
       const diff = tracker.diffFromBookmark('start');
       expect(diff).not.toBeNull();
@@ -416,10 +418,10 @@ describe('ChangeTracker', () => {
       const _snap4 = createMockSnapshot([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]);
 
       // Save 3 bookmarks, diff from each triggers buffer append
-      (deps.snapshotManager.createSnapshot as any).mockReturnValueOnce(snap1);
+      vi.mocked(deps.snapshotManager.createSnapshot).mockReturnValueOnce(snap1);
       smallTracker.saveBookmark('s1');
 
-      (deps.snapshotManager.createSnapshot as any).mockReturnValueOnce(snap2);
+      vi.mocked(deps.snapshotManager.createSnapshot).mockReturnValueOnce(snap2);
       smallTracker.diffFromBookmark('s1'); // appends nothing since buffer internal
 
       // The buffer is only populated by executeWithDiff and waitForChange
@@ -658,7 +660,7 @@ describe('ChangeTracker', () => {
 
       const testTracker = new ChangeTracker({
         ...deps,
-        snapshotManager: mockSnapshotManager as any,
+        snapshotManager: mockSnapshotManager as unknown as SemanticSnapshotManager,
       });
 
       const result = await testTracker.executeWithDiff({
@@ -697,7 +699,7 @@ describe('ChangeTracker', () => {
           callCount++;
           return callCount <= 1 ? snap1 : snap2;
         }),
-      } as any;
+      } as unknown as SemanticSnapshotManager;
 
       const testTracker = new ChangeTracker(deps);
       const result = await testTracker.executeWithDiff({
@@ -718,7 +720,7 @@ describe('ChangeTracker', () => {
 
       const testTracker = new ChangeTracker({
         ...deps,
-        idleDetector: mockIdleDetector as any,
+        idleDetector: mockIdleDetector as unknown as CompositeIdleDetector,
       });
 
       await testTracker.executeWithDiff({
@@ -740,7 +742,7 @@ describe('ChangeTracker', () => {
 
       const testTracker = new ChangeTracker({
         ...deps,
-        idleDetector: mockIdleDetector as any,
+        idleDetector: mockIdleDetector as unknown as CompositeIdleDetector,
       });
 
       const result = await testTracker.executeWithDiff({
@@ -768,7 +770,7 @@ describe('ChangeTracker', () => {
           callCount++;
           return callCount <= 1 ? snap1 : snap2;
         }),
-      } as any;
+      } as unknown as SemanticSnapshotManager;
 
       const testTracker = new ChangeTracker(deps);
       const result = await testTracker.executeWithDiff({
@@ -795,7 +797,7 @@ describe('ChangeTracker', () => {
           callCount++;
           return callCount <= 1 ? snap1 : snap2;
         }),
-      } as any;
+      } as unknown as SemanticSnapshotManager;
 
       const testTracker = new ChangeTracker(deps);
       const result = await testTracker.executeWithDiff({
@@ -820,7 +822,7 @@ describe('ChangeTracker', () => {
           callCount++;
           return callCount <= 1 ? snap1 : snap2;
         }),
-      } as any;
+      } as unknown as SemanticSnapshotManager;
 
       const testTracker = new ChangeTracker(deps);
       const result = await testTracker.executeWithDiff({
@@ -1059,7 +1061,7 @@ describe('ChangeTracker', () => {
             callCount++;
             return callCount <= 1 ? snap1 : snap2;
           }),
-        } as any,
+        } as unknown as SemanticSnapshotManager,
       });
 
       const result = await testTracker.executeWithDiff({
@@ -1111,7 +1113,7 @@ describe('ChangeTracker', () => {
             if (callCount <= 2) return snap2;
             return snap3; // Stable (same as snap2)
           }),
-        } as any,
+        } as unknown as SemanticSnapshotManager,
       });
 
       const result = await testTracker.executeWithDiff({
@@ -1174,7 +1176,7 @@ describe('ChangeTracker', () => {
 
       const pushDeps = createMockDeps({
         subscribeChanges,
-        snapshotManager: snapshotManager as any,
+        snapshotManager: snapshotManager as unknown as SemanticSnapshotManager,
       });
 
       const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 3000 });
@@ -1207,7 +1209,7 @@ describe('ChangeTracker', () => {
 
       const pollDeps = createMockDeps({
         subscribeChanges: undefined, // No push support
-        snapshotManager: snapshotManager as any,
+        snapshotManager: snapshotManager as unknown as SemanticSnapshotManager,
       });
 
       const pollTracker = new ChangeTracker(pollDeps, {
@@ -1237,7 +1239,7 @@ describe('ChangeTracker', () => {
 
       const pushDeps = createMockDeps({
         subscribeChanges,
-        snapshotManager: snapshotManager as any,
+        snapshotManager: snapshotManager as unknown as SemanticSnapshotManager,
       });
 
       const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 100 });
@@ -1267,7 +1269,7 @@ describe('ChangeTracker', () => {
 
       const pushDeps = createMockDeps({
         subscribeChanges,
-        snapshotManager: snapshotManager as any,
+        snapshotManager: snapshotManager as unknown as SemanticSnapshotManager,
       });
 
       const pushTracker = new ChangeTracker(pushDeps, { defaultWaitTimeout: 3000 });
@@ -1289,7 +1291,18 @@ describe('ChangeTracker', () => {
       const mockControl: ControlSnapshot = {
         timestamp: Date.now(),
         elements: [
-          { id: 'btn-1', type: 'button', label: 'Save', actions: ['click'], state: {} as any },
+          {
+            id: 'btn-1',
+            type: 'button',
+            label: 'Save',
+            actions: ['click'],
+            state: {
+              visible: true,
+              enabled: true,
+              focused: false,
+              rect: { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 },
+            },
+          },
         ],
         components: [],
         workflows: [],
