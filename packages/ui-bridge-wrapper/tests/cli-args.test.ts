@@ -3,6 +3,7 @@ import {
   ArgReader,
   consumeValue,
   makeLogger,
+  rejectEmptyValue,
   COMMON_FLAGS,
   type ArgErrorFactory,
 } from '../src/cli-args.js';
@@ -84,6 +85,27 @@ describe('consumeValue (switch-parser guard)', () => {
 
   it('does NOT treat a single-dash / negative value as flag-shaped', () => {
     expect(consumeValue('--n', '-1', mkError)).toBe('-1');
+  });
+});
+
+describe('rejectEmptyValue (present-but-empty guard)', () => {
+  it('passes a non-empty value through', () => {
+    expect(rejectEmptyValue('--success', '/dashboard', mkError)).toBe('/dashboard');
+  });
+
+  it('passes null (flag absent — caller defaults) through', () => {
+    expect(rejectEmptyValue('--success', null, mkError)).toBeNull();
+  });
+
+  it('THROWS on an empty value (the false-success hole)', () => {
+    expect(() => rejectEmptyValue('--success', '', mkError)).toThrow(TestArgError);
+    expect(() => rejectEmptyValue('--success', '', mkError)).toThrow(
+      /--success was given an empty value/
+    );
+  });
+
+  it('THROWS on a whitespace-only value', () => {
+    expect(() => rejectEmptyValue('--success', '   ', mkError)).toThrow(TestArgError);
   });
 });
 

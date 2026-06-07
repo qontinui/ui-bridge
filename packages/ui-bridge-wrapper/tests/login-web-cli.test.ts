@@ -103,6 +103,23 @@ describe('parseArgs', () => {
     expect(args.headed).toBe(true);
   });
 
+  // An EMPTY --success makes `landingPath.includes('')` true on ANY landing —
+  // ok:true while parked on the login page (a false success, e.g. from
+  // `--success "$VAR"` with $VAR unset). Present-but-empty must be rejected;
+  // an ABSENT --success still gets the /dashboard default.
+  it('rejects a present-but-empty --success value', () => {
+    expect(() => parseArgs([...CREDS, '--success', ''])).toThrow(LoginCliArgError);
+    expect(() => parseArgs([...CREDS, '--success', '  '])).toThrow(
+      /--success was given an empty value/
+    );
+  });
+
+  it('rejects a present-but-empty --url value', () => {
+    expect(() => parseArgs([...CREDS, '--url', ''])).toThrow(
+      /--url was given an empty value/
+    );
+  });
+
   it('parses --quiet', () => {
     expect(parseArgs([...CREDS, '--quiet']).quiet).toBe(true);
     expect(parseArgs([...CREDS]).quiet).toBe(false);
