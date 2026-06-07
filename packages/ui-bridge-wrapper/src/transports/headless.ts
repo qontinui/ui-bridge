@@ -40,6 +40,45 @@ export interface HeadlessTransportOptions {
   forwardConsole?: boolean;
 }
 
+/**
+ * Local structural type for `@qontinui/ui-bridge-headless`'s `launchHeadlessTab`,
+ * declared here so the wrapper's `tsc` build does NOT depend on the headless
+ * package's declaration files.
+ *
+ * Headless is an OPTIONAL peer (package.json `peerDependenciesMeta`): a clean
+ * checkout that only ever uses the api/relay transports never installs it, so a
+ * `typeof import('@qontinui/ui-bridge-headless')` type reference would make the
+ * build fail to resolve the module. It is also brittle against dist/source skew
+ * in the workspace link (a stale headless `dist/*.d.ts` would fail the wrapper
+ * build even though the runtime `await import()` resolves the up-to-date impl).
+ *
+ * Only the call shape the wrapper actually uses is modelled. The runtime import
+ * stays lazy (`await import(...)`) and is the single source of truth for the
+ * real implementation.
+ */
+interface LaunchHeadlessTabArgs {
+  url: string;
+  headless: boolean;
+  uiBridgeBase?: string;
+  waitForUiBridgeMs?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  userAgent?: string;
+  forwardConsole?: boolean;
+  initScripts?: string[];
+}
+
+interface LaunchedHeadlessTab {
+  browser: Browser;
+  context: BrowserContext;
+  page: Page;
+  uiBridgeRegistered: boolean;
+  tabId: string | null;
+  close: () => Promise<void>;
+}
+
+type LaunchHeadlessTabFn = (args: LaunchHeadlessTabArgs) => Promise<LaunchedHeadlessTab>;
+
 /** Context shape delivered to each headless/headed handler. */
 export interface HeadlessContext {
   readonly kind: 'headless' | 'headed' | 'injected';
@@ -116,9 +155,17 @@ export class HeadlessTransport extends BaseTransport {
     // NOT guaranteed resolvable — a bare `npx @qontinui/ui-bridge-wrapper …`
     // does not install peers. Catch the resolution failure and surface an
     // actionable install hint instead of a raw ERR_MODULE_NOT_FOUND.
-    let launchHeadlessTab: typeof import('@qontinui/ui-bridge-headless')['launchHeadlessTab'];
+    // Typed via the local `LaunchHeadlessTabFn` (see above) rather than a
+    // `typeof import(...)` reference, so this build never needs the optional
+    // peer's declaration files. The specifier is split out of the literal so
+    // bundlers/`tsc` cannot eagerly resolve the optional peer at build time.
+    let launchHeadlessTab: LaunchHeadlessTabFn;
+    const headlessSpecifier = '@qontinui/ui-bridge-headless';
     try {
-      ({ launchHeadlessTab } = await import('@qontinui/ui-bridge-headless'));
+      const mod = (await import(headlessSpecifier)) as {
+        launchHeadlessTab: LaunchHeadlessTabFn;
+      };
+      ({ launchHeadlessTab } = mod);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       const code = (err as NodeJS.ErrnoException | undefined)?.code;

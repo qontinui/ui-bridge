@@ -78,10 +78,10 @@ Each bin supports `--help`.
 
 ### Prerequisites for the browser-driving bins
 
-`ui-bridge-login-web` and `ui-bridge-capture-specs` launch Chromium via the
-injected transport, which dynamically imports `@qontinui/ui-bridge-headless`
-(it carries `playwright` as a real dependency). When installing the wrapper
-standalone you must therefore also:
+`ui-bridge-inject`, `ui-bridge-login-web`, and `ui-bridge-capture-specs` all
+launch Chromium via the injected transport, which dynamically imports
+`@qontinui/ui-bridge-headless` (it carries `playwright` as a real dependency).
+When installing the wrapper standalone you must therefore also:
 
 1. Install the optional `@qontinui/ui-bridge-headless` peer alongside it, and
 2. Run `npx playwright install chromium` once (or point `PLAYWRIGHT_BROWSERS_PATH`
