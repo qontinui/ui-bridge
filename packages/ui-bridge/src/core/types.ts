@@ -345,6 +345,7 @@ export interface MediaMetadata {
  */
 export type StandardAction =
   | 'click'
+  | 'hoverClick'
   | 'doubleClick'
   | 'rightClick'
   | 'middleClick'

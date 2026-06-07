@@ -632,33 +632,37 @@ function isElementDisabled(element: HTMLElement): boolean {
 function inferActions(type: ElementType): StandardAction[] {
   const baseActions: StandardAction[] = ['focus', 'blur', 'hover', 'scroll', 'scrollIntoView'];
 
+  // `hoverClick` rides alongside `click` on every clickable type: a control
+  // hidden behind a `group-hover:pointer-events-auto` rule (e.g. the runner's
+  // `ZoneHoverActions` toolbar) becomes drivable in a single dispatch instead
+  // of via a page/evaluate `.click()` workaround.
   switch (type) {
     case 'button':
-      return [...baseActions, 'click', 'doubleClick', 'rightClick', 'middleClick'];
+      return [...baseActions, 'click', 'hoverClick', 'doubleClick', 'rightClick', 'middleClick'];
     case 'input':
-      return [...baseActions, 'click', 'type', 'clear'];
+      return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
     case 'textarea':
-      return [...baseActions, 'click', 'type', 'clear'];
+      return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
     case 'select':
-      return [...baseActions, 'click', 'select'];
+      return [...baseActions, 'click', 'hoverClick', 'select'];
     case 'checkbox':
-      return [...baseActions, 'click', 'check', 'uncheck', 'toggle'];
+      return [...baseActions, 'click', 'hoverClick', 'check', 'uncheck', 'toggle'];
     case 'radio':
-      return [...baseActions, 'click', 'check'];
+      return [...baseActions, 'click', 'hoverClick', 'check'];
     case 'link':
-      return [...baseActions, 'click'];
+      return [...baseActions, 'click', 'hoverClick'];
     case 'form':
       return ['focus', 'blur'];
     case 'menu':
     case 'menuitem':
-      return [...baseActions, 'click'];
+      return [...baseActions, 'click', 'hoverClick'];
     case 'tab':
-      return [...baseActions, 'click', 'middleClick'];
+      return [...baseActions, 'click', 'hoverClick', 'middleClick'];
     case 'dialog':
       return ['focus', 'blur'];
     case 'custom':
     default:
-      return [...baseActions, 'click'];
+      return [...baseActions, 'click', 'hoverClick'];
   }
 }
 
