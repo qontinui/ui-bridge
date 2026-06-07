@@ -2,13 +2,25 @@
  * Registry Tests
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import {
   UIBridgeRegistry,
   setGlobalRegistry,
   getGlobalRegistry,
   resetGlobalRegistry,
 } from './registry';
+
+// jsdom doesn't ship `document.elementFromPoint`; the registry's visibility
+// hit-test calls it for elements with non-zero rects (which the snapshot-time
+// bbox re-measure tests mock). Same stub as handlers.phase1-2.test.ts.
+beforeAll(() => {
+  if (typeof document !== 'undefined' && !document.elementFromPoint) {
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: () => null,
+    });
+  }
+});
 
 describe('UIBridgeRegistry', () => {
   let registry: UIBridgeRegistry;
@@ -178,7 +190,65 @@ describe('UIBridgeRegistry', () => {
       const serialized = snapshot.elements.find((e) => e.id === 'btn-1');
 
       expect(serialized).toBeDefined();
+      // jsdom's getBoundingClientRect returns a zero rect (no fresh
+      // signal), so the snapshot serves the tracker-cached value.
       expect(serialized!.bbox).toEqual({ x: 5, y: 6, width: 7, height: 8 });
+      expect(serialized!.visible).toBe(true);
+    });
+
+    it('re-measures bbox at snapshot time, overriding a stale cached value (#186)', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn, { type: 'button', label: 'Go' });
+      // Stale cache: the tab's last ResizeObserver measurement said w=260,
+      // but the element has since been flex-shrunk/translated to w=214 —
+      // a translation-only move fires no ResizeObserver, so the cache
+      // never caught up (qontinui-runner#186).
+      registry.updateElementBbox('btn-1', { x: 410, y: 0, width: 260, height: 37 }, true);
+      Object.defineProperty(btn, 'getBoundingClientRect', {
+        value: () => ({ x: 410, y: 0, width: 214, height: 37, top: 0, left: 410, right: 624, bottom: 37 }),
+        configurable: true,
+      });
+
+      const snapshot = registry.createSnapshot();
+      const serialized = snapshot.elements.find((e) => e.id === 'btn-1');
+
+      expect(serialized!.bbox).toEqual({ x: 410, y: 0, width: 214, height: 37 });
+      expect(serialized!.visible).toBe(true);
+    });
+
+    it('falls back to the cached bbox when the fresh rect is zero-size (hidden element)', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn, { type: 'button', label: 'Go' });
+      registry.updateElementBbox('btn-1', { x: 1, y: 2, width: 30, height: 40 }, false);
+      // jsdom default rect is already 0x0 — make the intent explicit.
+      Object.defineProperty(btn, 'getBoundingClientRect', {
+        value: () => ({ x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }),
+        configurable: true,
+      });
+
+      const snapshot = registry.createSnapshot();
+      const serialized = snapshot.elements.find((e) => e.id === 'btn-1');
+
+      expect(serialized!.bbox).toEqual({ x: 1, y: 2, width: 30, height: 40 });
+      expect(serialized!.visible).toBe(false);
+    });
+
+    it('serves a fresh bbox for never-tracked elements once they render', () => {
+      const btn = document.createElement('button');
+      container.appendChild(btn);
+      registry.registerElement('btn-1', btn, { type: 'button', label: 'Go' });
+      // No updateElementBbox call — cache is empty (bbox/visible undefined).
+      Object.defineProperty(btn, 'getBoundingClientRect', {
+        value: () => ({ x: 10, y: 20, width: 120, height: 32, top: 20, left: 10, right: 130, bottom: 52 }),
+        configurable: true,
+      });
+
+      const snapshot = registry.createSnapshot();
+      const serialized = snapshot.elements.find((e) => e.id === 'btn-1');
+
+      expect(serialized!.bbox).toEqual({ x: 10, y: 20, width: 120, height: 32 });
       expect(serialized!.visible).toBe(true);
     });
 

@@ -33,6 +33,7 @@ import type {
   ElementLogEntry,
   SnapshotEnrichers,
   SnapshotEnricher,
+  ElementBbox,
 } from './types';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
@@ -110,6 +111,37 @@ export function isBridgeInvisible(el: HTMLElement): boolean {
 }
 
 /**
+ * Re-measure an element's bounding box at snapshot time. The cached
+ * `el.bbox` maintained by the bbox tracker can go stale between
+ * measurements: a `ResizeObserver` only fires for the element that
+ * resized, so a sibling that merely *translates* (flex re-layout when a
+ * neighbor grows/shrinks, tab reorder, …) keeps its old `x`/`width` in the
+ * registry — which is how a `no_overlap` audit once saw three terminal
+ * tabs report `w=260` (the CSS `max-width`) while their real flex-shrunk
+ * pitch was ~214px (qontinui-runner#186). Snapshots are the trust boundary
+ * for audits, so they must reflect the DOM *now*, not at last observation.
+ *
+ * Returns `null` when there is no fresh signal — element detached, no
+ * `getBoundingClientRect` (non-DOM env), or a zero-size rect (hidden
+ * element, or jsdom's stub rect in tests). Callers fall back to the cached
+ * tracker value in that case, preserving the lazy-tracking contract that
+ * off-screen elements retain their last-known bbox.
+ */
+export function measureFreshBbox(
+  element: HTMLElement | undefined
+): { bbox: ElementBbox; visible: true } | null {
+  if (!element?.isConnected || typeof element.getBoundingClientRect !== 'function') {
+    return null;
+  }
+  const rect = element.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return null;
+  return {
+    bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    visible: true,
+  };
+}
+
+/**
  * Single source of truth for serializing a `RegisteredElement` to a snapshot
  * entry. Used by `createSnapshot`/`createSnapshotAsync` here AND by the
  * runner's `serializeElement` helper so the two paths cannot drift. When you
@@ -158,6 +190,9 @@ export function serializeRegisteredElement(
   const ariaLabel = computeAriaLabel(el.element);
   const accessibleName = computeAccessibleNameSafe(el.element);
   const visibleText = computeVisibleText(el.element);
+  // Snapshot-time bbox refresh — see `measureFreshBbox`. Falls back to the
+  // tracker's cached value when there's no fresh signal.
+  const freshBbox = measureFreshBbox(el.element);
   return {
     id: el.id,
     ...(uiBridgeId !== undefined ? { uiBridgeId } : {}),
@@ -181,11 +216,12 @@ export function serializeRegisteredElement(
     componentActionBasePath: el.ownedByComponent
       ? `${componentBasePath}/${el.ownedByComponent}`
       : undefined,
-    // Live bbox/visibility maintained by `useUIElement`. Present for elements
-    // whose hook attached a ref (or that matched via `[data-ui-bridge-id]`).
+    // Bbox/visibility: re-measured from the live DOM at snapshot time when
+    // possible (audits need *current* geometry — qontinui-runner#186), with
+    // the tracker-maintained cache as fallback for detached/hidden elements.
     // Runners use this to dispatch clicks via DOM coords without VLM grounding.
-    bbox: el.bbox,
-    visible: el.visible,
+    bbox: freshBbox?.bbox ?? el.bbox,
+    visible: freshBbox?.visible ?? el.visible,
     // `'hook'` for explicit useUIElement registrations, `'auto'` for
     // DOM-walker entries from useAutoRegister. Snapshot consumers that care
     // about developer-instrumented vs. scanner-discovered elements filter here.

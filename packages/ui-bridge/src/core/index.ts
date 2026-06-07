@@ -24,6 +24,7 @@ export {
   UIBridgeRegistry,
   getGlobalRegistry,
   serializeRegisteredElement,
+  measureFreshBbox,
   DEFAULT_REMOUNT_CACHE_WINDOW_MS,
 } from './registry';
 
