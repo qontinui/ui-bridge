@@ -184,6 +184,28 @@ export interface APIResponse<T = unknown> {
 /**
  * Render log query parameters
  */
+/**
+ * Request body for `POST /control/page/evaluate` (`pageEvaluate`).
+ *
+ * The body is forwarded verbatim to the runner, so any additional fields are
+ * preserved (index signature); the two known fields are typed for
+ * discoverability.
+ */
+export interface PageEvaluateRequest {
+  /** JavaScript expression to evaluate in the target window. */
+  expression: string;
+  /**
+   * Target a runner pop-out window discoverable via `listWindows()`;
+   * omit → the main window. The runner reads this from the request body
+   * (`EvaluateQuery.window_label`) or the `?windowLabel=` query, **query
+   * wins** (`resolve_evaluate_window`); unknown labels yield a structured
+   * error naming the missing window.
+   */
+  windowLabel?: string;
+  /** Forward-compatible: extra fields are forwarded to the runner verbatim. */
+  [key: string]: unknown;
+}
+
 export interface RenderLogQuery {
   /** Filter by entry type */
   type?: RenderLogEntryType;
@@ -395,6 +417,14 @@ export interface UIBridgeServerHandlers {
        * `*`-glob matching concrete entries.
        */
       revealsAny?: string;
+      /**
+       * Target a runner pop-out window discoverable via `listWindows()`;
+       * omit → the main window. Serialized as the `?windowLabel=` query
+       * parameter (the runner reads it from the query on `GET
+       * /control/elements`); unknown labels yield a structured error naming
+       * the missing window.
+       */
+      windowLabel?: string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['elements']>>;
@@ -831,7 +861,10 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<PageNavigationResponse>>;
   pageGoBack: (context?: HandlerContext) => Promise<APIResponse<PageNavigationResponse>>;
   pageGoForward: (context?: HandlerContext) => Promise<APIResponse<PageNavigationResponse>>;
-  pageEvaluate: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  pageEvaluate: (
+    request: PageEvaluateRequest,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
   pageScroll: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
   // Clipboard endpoints (browser gesture-based)

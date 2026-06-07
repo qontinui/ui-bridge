@@ -399,8 +399,10 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       async GET(request: NextRequest): Promise<Response> {
         // Phase 3.2: forward filter query params (`title`, `aria_label`,
         // `text`, `revealsAny`) so the handler-level matcher can apply them.
-        // Empty strings are dropped so callers can omit fields without
-        // tripping the "selector has at least one field" check.
+        // `windowLabel` targets a runner pop-out window (the runner reads it
+        // off the `?windowLabel=` query). Empty strings are dropped so callers
+        // can omit fields without tripping the "selector has at least one
+        // field" check.
         const sp = request.nextUrl.searchParams;
         const pick = (key: string): string | undefined => {
           const raw = sp.get(key);
@@ -413,6 +415,7 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
           aria_label: pick('aria_label'),
           text: pick('text'),
           revealsAny: pick('revealsAny'),
+          windowLabel: pick('windowLabel'),
         });
         return jsonResponse(result);
       },

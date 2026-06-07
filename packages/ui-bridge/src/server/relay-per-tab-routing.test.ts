@@ -177,6 +177,33 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     expect(request?.targetTabId).toBeUndefined();
   });
 
+  it('preserves windowLabel in the relayed payload while stripping tabId (Phase 1 window targeting)', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ id: 'foo' } as unknown);
+    const handlers = createRelayHandlers(relay);
+
+    await handlers.executeElementAction!('foo', {
+      action: 'click',
+      tabId: 'tab-a',
+      windowLabel: 'term-2',
+    } as unknown as Parameters<typeof handlers.executeElementAction>[1]);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [, payload, opts] = spy.mock.calls[0]!;
+    // tabId is consumed as routing and stripped from the payload...
+    expect(opts).toEqual({ targetTabId: 'tab-a' });
+    const request = (payload as Record<string, unknown>)?.request as
+      | Record<string, unknown>
+      | undefined;
+    expect(request?.tabId).toBeUndefined();
+    expect(request?.targetTabId).toBeUndefined();
+    // ...but windowLabel must SURVIVE — extractTabRouting strips only the
+    // tab-routing keys, so a verbatim action body keeps its window target for
+    // the direct-HTTP / runner-proxy path that reaches pop-out windows.
+    expect(request?.windowLabel).toBe('term-2');
+  });
+
   it('honors targetTabId alias in payload (internal spelling)', async () => {
     const relay = freshRelay();
     registerTab(relay, 'tab-a');

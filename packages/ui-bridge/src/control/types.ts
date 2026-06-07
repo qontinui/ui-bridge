@@ -27,6 +27,18 @@ import type { EffectVerification } from './effect-types';
  * Extended action request with additional options
  */
 export interface ControlActionRequest extends ActionRequest {
+  /**
+   * Target a runner pop-out window for this action; omit → the main window.
+   *
+   * Discover live window labels via `listWindows()` (the runner returns a
+   * structured error naming the missing window if the label is unknown). The
+   * runner resolves the target from the `?windowLabel=` **query parameter** on
+   * `POST /control/element/:id/action` (`ActionQueryParams.window_label`), so a
+   * caller issuing the HTTP request directly must append `?windowLabel=<label>`
+   * to the action URL — this typed field documents the option and carries it for
+   * transports that forward the request bag verbatim.
+   */
+  windowLabel?: string;
   /** Unique request ID for tracking */
   requestId?: string;
   /** Capture snapshot after action */
