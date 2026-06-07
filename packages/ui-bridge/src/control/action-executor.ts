@@ -586,7 +586,7 @@ function createPointerEvent(
  */
 const MAX_HOVER_ANCESTOR_DEPTH = 12;
 
-function findHoverableAncestor(element: HTMLElement): HTMLElement | null {
+export function findHoverableAncestor(element: HTMLElement): HTMLElement | null {
   let pointerNoneCandidate: HTMLElement | null = null;
   let current = element.parentElement;
   let depth = 0;
@@ -619,11 +619,29 @@ function findHoverableAncestor(element: HTMLElement): HTMLElement | null {
 }
 
 /**
+ * Fire the hover-enter event quartet on a single element. Pointer events are
+ * dispatched alongside their mouse counterparts so both pointer-only
+ * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers react.
+ * `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover` do —
+ * dispatching both covers handlers attached either way.
+ *
+ * Exported so the React IPC command-handler path
+ * (`react/commandHandlers.ts`) reuses the exact hover synthesis the HTTP
+ * action-executor path uses for `hoverClick`, instead of duplicating it.
+ */
+export function dispatchHoverEnter(element: HTMLElement): void {
+  element.dispatchEvent(createPointerEvent('pointerover', element));
+  element.dispatchEvent(createMouseEvent('mouseover', element));
+  element.dispatchEvent(createPointerEvent('pointerenter', element));
+  element.dispatchEvent(createMouseEvent('mouseenter', element));
+}
+
+/**
  * Resolve after the next animation frame so a hover-driven style/layout
  * recomputation is applied before the subsequent action. Falls back to a 0ms
  * timeout where `requestAnimationFrame` is unavailable (jsdom / SSR).
  */
-function nextAnimationFrame(): Promise<void> {
+export function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(() => resolve());
@@ -2093,10 +2111,7 @@ export class DefaultActionExecutor implements ActionExecutor {
    * do — dispatching both covers handlers attached either way.
    */
   private dispatchHoverEnter(element: HTMLElement): void {
-    element.dispatchEvent(createPointerEvent('pointerover', element));
-    element.dispatchEvent(createMouseEvent('mouseover', element));
-    element.dispatchEvent(createPointerEvent('pointerenter', element));
-    element.dispatchEvent(createMouseEvent('mouseenter', element));
+    dispatchHoverEnter(element);
   }
 
   private performDoubleClick(element: HTMLElement, options?: MouseAction): void {
