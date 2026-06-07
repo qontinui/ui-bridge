@@ -64,6 +64,7 @@ import {
   computeRoleSafe,
   computeVisibleText,
 } from '../core/a11y';
+import { measureFreshBbox } from '../core/registry';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
@@ -276,6 +277,10 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
     const ariaLabel = el.element ? computeAriaLabel(el.element) : undefined;
     const accessibleName = el.element ? computeAccessibleNameSafe(el.element) : undefined;
     const visibleText = el.element ? computeVisibleText(el.element) : undefined;
+    // Snapshot-time bbox refresh, same contract as the primary serializer
+    // (`serializeRegisteredElement`) — cached tracker bboxes go stale on
+    // translation-only moves (qontinui-runner#186). Cache is the fallback.
+    const freshBbox = measureFreshBbox(el.element);
     return {
       id: el.id,
       type: el.type,
@@ -293,10 +298,11 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       category: el.category,
       contentMetadata: el.contentMetadata,
       mediaMetadata: el.mediaMetadata,
-      // Live bbox/visibility maintained by `useUIElement`. Present for
-      // SDK-registered elements; absent for DOM-fallback scans.
-      bbox: el.bbox,
-      visible: el.visible,
+      // Bbox/visibility: fresh DOM measurement when available (see above),
+      // else the tracker-maintained cache for SDK-registered elements;
+      // absent entirely for detached DOM-fallback scans.
+      bbox: freshBbox?.bbox ?? el.bbox,
+      visible: freshBbox?.visible ?? el.visible,
     };
   }) as ControlSnapshot['elements'];
 }
