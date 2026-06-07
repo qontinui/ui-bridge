@@ -118,7 +118,10 @@ export function getExtendedComputedStyles(el: HTMLElement): ExtendedComputedStyl
 
   for (const prop of DESIGN_PROPERTIES) {
     // CSSStyleDeclaration uses camelCase property access
-    styles[prop] = computed.getPropertyValue(camelToKebab(prop)) || computed[prop as any] || '';
+    styles[prop] =
+      computed.getPropertyValue(camelToKebab(prop)) ||
+      (computed as unknown as Record<string, string>)[prop] ||
+      '';
   }
 
   return styles;
@@ -435,9 +438,12 @@ function getPseudoElementStyles(
 
   const styles: Partial<ExtendedComputedStyles> = {};
   for (const prop of DESIGN_PROPERTIES) {
-    const val = computed.getPropertyValue(camelToKebab(prop)) || (computed as any)[prop] || '';
+    const val =
+      computed.getPropertyValue(camelToKebab(prop)) ||
+      (computed as unknown as Record<string, string>)[prop] ||
+      '';
     if (val) {
-      (styles as any)[prop] = val;
+      styles[prop] = val;
     }
   }
 

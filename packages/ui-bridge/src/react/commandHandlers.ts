@@ -3601,9 +3601,9 @@ export async function executeCommand(
         since,
         limit,
       } = payload as { type?: string; since?: number; limit?: number };
-      let results = [...(resolvedEntries as unknown[])];
-      if (filterType) results = results.filter((e: any) => e.type === filterType);
-      if (since) results = results.filter((e: any) => e.timestamp >= since);
+      let results = [...(resolvedEntries as Array<{ type?: string; timestamp: number }>)];
+      if (filterType) results = results.filter((e) => e.type === filterType);
+      if (since) results = results.filter((e) => e.timestamp >= since);
       if (limit) results = results.slice(-limit);
       return { count: results.length, entries: results };
     }

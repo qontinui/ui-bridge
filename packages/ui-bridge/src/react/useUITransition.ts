@@ -280,7 +280,7 @@ export function useUITransition(options: UseUITransitionOptions): UseUITransitio
   const transition = useMemo(() => {
     if (!bridge) return undefined;
     return bridge.registry.getTransition(id);
-  }, [bridge, id, registered]);
+  }, [bridge, id]);
 
   return {
     registered,

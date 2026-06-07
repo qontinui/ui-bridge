@@ -331,7 +331,7 @@ describe('validateContractConfig', () => {
 
   it('should reject wrong version', () => {
     const config = makeValidConfig();
-    (config as any).version = '2.0.0';
+    (config as { version: string }).version = '2.0.0';
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path === 'version')).toBe(true);
@@ -346,7 +346,7 @@ describe('validateContractConfig', () => {
 
   it('should reject contract with missing id', () => {
     const config = makeValidConfig();
-    delete (config.contracts[0] as any).id;
+    delete (config.contracts[0] as Record<string, unknown>).id;
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('.id'))).toBe(true);
@@ -354,7 +354,7 @@ describe('validateContractConfig', () => {
 
   it('should reject contract with missing name', () => {
     const config = makeValidConfig();
-    delete (config.contracts[0] as any).name;
+    delete (config.contracts[0] as Record<string, unknown>).name;
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('.name'))).toBe(true);
@@ -362,7 +362,7 @@ describe('validateContractConfig', () => {
 
   it('should reject invalid verification type', () => {
     const config = makeValidConfig();
-    (config.contracts[0] as any).verification = { type: 'invalid' };
+    (config.contracts[0] as Record<string, unknown>).verification = { type: 'invalid' };
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('verification.type'))).toBe(true);
@@ -370,7 +370,7 @@ describe('validateContractConfig', () => {
 
   it('should reject invalid check type in condition', () => {
     const config = makeValidConfig();
-    (config.contracts[0].preconditions[0] as any).check = { type: 'invalid' };
+    (config.contracts[0].preconditions[0] as Record<string, unknown>).check = { type: 'invalid' };
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('check.type'))).toBe(true);
@@ -378,7 +378,7 @@ describe('validateContractConfig', () => {
 
   it('should reject invalid onFailure value', () => {
     const config = makeValidConfig();
-    (config.contracts[0].preconditions[0] as any).onFailure = 'invalid';
+    (config.contracts[0].preconditions[0] as Record<string, unknown>).onFailure = 'invalid';
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('onFailure'))).toBe(true);
@@ -386,7 +386,7 @@ describe('validateContractConfig', () => {
 
   it('should reject api check with missing endpoint', () => {
     const config = makeValidConfig();
-    delete (config.contracts[0].preconditions[0].check as any).endpoint;
+    delete (config.contracts[0].preconditions[0].check as Record<string, unknown>).endpoint;
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('endpoint'))).toBe(true);
@@ -394,7 +394,7 @@ describe('validateContractConfig', () => {
 
   it('should reject api check with invalid method', () => {
     const config = makeValidConfig();
-    (config.contracts[0].preconditions[0].check as any).method = 'PATCH';
+    (config.contracts[0].preconditions[0].check as Record<string, unknown>).method = 'PATCH';
     const result = validateContractConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes('method'))).toBe(true);

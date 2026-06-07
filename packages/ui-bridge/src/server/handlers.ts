@@ -26,9 +26,15 @@ import type {
   SpawnHeadlessResponse,
 } from './types';
 import type {
+  ActionExecutor,
+  ControlActionResponse,
+  ComponentActionResponse,
   ControlSnapshot,
   DiscoveredElement,
   FindRequest,
+  FindResponse,
+  WorkflowRunResponse,
+  WorkflowRunStatus,
   PageNavigateRequest,
   PageNavigationResponse,
   FillFormRequest,
@@ -185,7 +191,11 @@ import { BrowserEventStream } from '../debug/ws-streaming';
 import { CompositeIdleDetector } from '../idle';
 import type { CompositeIdleConfig } from '../idle';
 import { NetworkRequestTracker } from '../network';
-import type { NetworkRequestFilter, NetworkTrackerConfig } from '../network';
+import type {
+  NetworkRequestFilter,
+  NetworkRequestStatus,
+  NetworkTrackerConfig,
+} from '../network';
 import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
@@ -377,6 +387,46 @@ export interface BrowserEventCaptureLike extends ConsoleCapturelike {
   getRecent(n?: number): AnyCapturedEvent[];
   getByType(type: BrowserEventType): AnyCapturedEvent[];
   getFrameworkOverlays?(): import('../debug/captures/framework-overlays').DetectedErrorOverlay[];
+}
+
+/**
+ * Structural shape consumed by `applyFindFilters` — the union of fields it
+ * reads off either a registry `RegisteredElement`/`DiscoveredElement` or a
+ * DOM-fallback element. All optional so both shapes (and snapshot-format
+ * elements) flow through without per-call casts. Glue-only; not a wire type.
+ */
+interface FindFilterElement {
+  type?: string;
+  role?: string;
+  label?: string;
+  accessibleName?: string;
+  textContent?: string;
+  testId?: string;
+  kind?: string;
+  actions?: string[];
+  state?: { textContent?: string };
+  identifiers?: { testId?: string };
+}
+
+/**
+ * Structural read-view over a registry/DOM element used by the design-review
+ * and semantic-search glue. All optional; covers the union of fields those
+ * handlers read off a `RegisteredElement` (which exposes `.element` /
+ * `.getState()`) or a snapshot/DOM-fallback element. Glue-only; not a wire type.
+ */
+interface RegistryElementView {
+  id: string;
+  type?: string;
+  label?: string;
+  tagName?: string;
+  role?: string;
+  accessibleName?: string;
+  placeholder?: string;
+  title?: string;
+  actions?: string[];
+  state?: { textContent?: string } & Record<string, unknown>;
+  element?: unknown;
+  getState?: () => ({ textContent?: string } & Record<string, unknown>) | undefined;
 }
 
 /**
@@ -800,11 +850,11 @@ export function createHandlers(
   if (
     consoleCapture &&
     'setOnEvent' in consoleCapture &&
-    typeof (consoleCapture as any).setOnEvent === 'function'
+    typeof (consoleCapture as { setOnEvent?: unknown }).setOnEvent === 'function'
   ) {
     const emitBrowserEvent = config.onBrowserEvent;
 
-    (consoleCapture as any).setOnEvent((event: AnyCapturedEvent) => {
+    (consoleCapture as { setOnEvent: (cb: (event: AnyCapturedEvent) => void) => void }).setOnEvent((event: AnyCapturedEvent) => {
       // Feed error session manager
       errorSessionManager.recordEvent(event);
 
@@ -916,8 +966,11 @@ export function createHandlers(
   }
 
   // Wire idle detector to action executor for waitAfter support
-  if (idleDetector && typeof (actionExecutor as any).setIdleDetector === 'function') {
-    (actionExecutor as any).setIdleDetector(idleDetector);
+  const actionExecutorWithIdle = actionExecutor as {
+    setIdleDetector?: (detector: typeof idleDetector) => void;
+  };
+  if (idleDetector && typeof actionExecutorWithIdle.setIdleDetector === 'function') {
+    actionExecutorWithIdle.setIdleDetector(idleDetector);
   }
 
   async function awaitDOMSettled(timeout = 500): Promise<void> {
@@ -975,7 +1028,7 @@ export function createHandlers(
     createControlSnapshot: () => registry.createSnapshot(),
     executeNLAction: async (instruction: string) => {
       refreshElements();
-      return nlExecutor.execute({ instruction }) as Promise<any>;
+      return nlExecutor.execute({ instruction });
     },
     executeElementAction: async (elementId: string, request) => {
       return actionExecutor.executeAction(elementId, request);
@@ -1091,16 +1144,19 @@ export function createHandlers(
         elements = domElements;
       }
     }
-    searchEngine.updateElements(elements as any[]);
-    nlExecutor.updateElements(elements as any[]);
-    nlExecutor.setActionExecutor(actionExecutor as any);
-    assertionExecutor.updateElements(elements as any[]);
+    searchEngine.updateElements(elements as Array<DiscoveredElement | RegisteredElement>);
+    nlExecutor.updateElements(elements as Array<DiscoveredElement | RegisteredElement>);
+    nlExecutor.setActionExecutor(actionExecutor as unknown as ActionExecutor);
+    assertionExecutor.updateElements(elements as Array<DiscoveredElement | AIDiscoveredElement>);
   }
 
-  function applyFindFilters(elements: any[], request: FindRequest): any[] {
-    return elements.filter((el: any) => {
+  function applyFindFilters(
+    elements: FindFilterElement[],
+    request: FindRequest
+  ): FindFilterElement[] {
+    return elements.filter((el) => {
       // Filter by interactiveOnly (support both camelCase and snake_case)
-      if (request.interactiveOnly || (request as any).interactive_only) {
+      if (request.interactiveOnly || (request as { interactive_only?: boolean }).interactive_only) {
         // Item 1: drop `kind: "content"` entries up front — they're the
         // semantic card/badge/pill elements authors opt into via
         // `data-ui-bridge-content`, not interactive elements.
@@ -1119,7 +1175,8 @@ export function createHandlers(
           'menuitem',
         ]);
         const isInteractive =
-          interactiveTypes.has(el.type) || (el.actions && el.actions.length > 0);
+          (el.type !== undefined && interactiveTypes.has(el.type)) ||
+          (el.actions && el.actions.length > 0);
         if (!isInteractive) return false;
       }
       if (request.types && el.type && !request.types.includes(el.type)) return false;
@@ -1349,7 +1406,7 @@ export function createHandlers(
             success: false,
             error: `Element not found: ${id}`,
             code: 'UB-ELEM-NOT-FOUND',
-            data: { failureDetails } as any,
+            data: { failureDetails } as unknown as ControlSnapshot['elements'][0],
             timestamp: Date.now(),
           };
         }
@@ -1506,7 +1563,7 @@ export function createHandlers(
           return success({
             ...actionResult,
             failureDetails,
-          }) as APIResponse<any>;
+          }) as unknown as APIResponse<ControlActionResponse>;
         }
 
         // Compute changes diff when captureAfter was requested
@@ -1553,7 +1610,7 @@ export function createHandlers(
           (result as Record<string, unknown>).changes = changes;
         }
 
-        return success(result) as APIResponse<any>;
+        return success(result) as APIResponse<ControlActionResponse>;
       } catch (err) {
         const errorMessage = (err as Error).message;
         let errorCode: UiBridgeErrorCode = 'UB-UNKNOWN-ERROR';
@@ -1583,7 +1640,7 @@ export function createHandlers(
             timestamp: Date.now(),
           },
           timestamp: Date.now(),
-        } as APIResponse<any>;
+        } as unknown as APIResponse<ControlActionResponse>;
       }
     },
 
@@ -1701,10 +1758,10 @@ export function createHandlers(
             index: i,
             label: step.label,
             elementId: step.elementId,
-            response: response as any,
+            response: response as ControlActionResponse,
           });
 
-          if ((response as any).success) {
+          if ((response as ControlActionResponse).success) {
             succeededCount++;
           } else {
             failedCount++;
@@ -1806,7 +1863,7 @@ export function createHandlers(
           action: request.action,
           params: request.params,
         });
-        return success(result) as APIResponse<any>;
+        return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
       }
@@ -1826,7 +1883,7 @@ export function createHandlers(
 
         // Always apply filters — registry.findElements may not handle all filter types
         if (findRequest) {
-          elements = applyFindFilters(elements as any[], findRequest) as unknown[];
+          elements = applyFindFilters(elements as FindFilterElement[], findRequest) as unknown[];
         }
 
         // DOM fallback: when registry returns 0 elements, scan the DOM directly
@@ -1834,7 +1891,7 @@ export function createHandlers(
           const domElements = scanDOMForInteractiveElements();
           if (domElements.length > 0) {
             elements = findRequest
-              ? (applyFindFilters(domElements as any[], findRequest) as unknown[])
+              ? (applyFindFilters(domElements as FindFilterElement[], findRequest) as unknown[])
               : domElements;
           }
         }
@@ -1844,7 +1901,7 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<any>;
+        }) as APIResponse<FindResponse>;
       } catch (err) {
         return error((err as Error).message, 'FIND_ERROR');
       }
@@ -1858,42 +1915,42 @@ export function createHandlers(
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionAnnotate: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionDiff: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionRaw: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionCacheStream: async (_sha256: string) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionHealth: async () => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     // Phase 4 — text-bearing outputs.
@@ -1901,14 +1958,14 @@ export function createHandlers(
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionDescribe: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     // Phase 6 — analyzers + assertion DSL + baselines.
@@ -1916,35 +1973,35 @@ export function createHandlers(
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionAssert: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionBaseline: async (_request?: Record<string, unknown>) => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionBaselinesList: async () => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     visionMutationOccurred: async () => {
       return error(
         'route is runner-direct, mount the runner',
         'RUNNER_REQUIRED'
-      ) as APIResponse<any>;
+      );
     },
 
     discover: async (request?: unknown) => {
@@ -1958,7 +2015,7 @@ export function createHandlers(
 
         // Always apply filters — registry.findElements may not handle all filter types
         if (findRequest) {
-          elements = applyFindFilters(elements as any[], findRequest) as unknown[];
+          elements = applyFindFilters(elements as FindFilterElement[], findRequest) as unknown[];
         }
 
         // DOM fallback: when registry returns 0 elements, scan the DOM directly
@@ -1966,7 +2023,7 @@ export function createHandlers(
           const domElements = scanDOMForInteractiveElements();
           if (domElements.length > 0) {
             elements = findRequest
-              ? (applyFindFilters(domElements as any[], findRequest) as unknown[])
+              ? (applyFindFilters(domElements as FindFilterElement[], findRequest) as unknown[])
               : domElements;
           }
         }
@@ -1976,7 +2033,7 @@ export function createHandlers(
           timestamp: Date.now(),
           total: (elements as unknown[]).length,
           durationMs: 0,
-        }) as APIResponse<any>;
+        }) as APIResponse<FindResponse>;
       } catch (err) {
         return error((err as Error).message, 'DISCOVER_ERROR');
       }
@@ -2062,7 +2119,7 @@ export function createHandlers(
         if (snapshot.elements.length === 0) {
           const domElements = scanDOMForInteractiveElements();
           if (domElements.length > 0) {
-            snapshot.elements = domElements as any[];
+            snapshot.elements = domElements as unknown as ControlSnapshot['elements'];
           }
         }
 
@@ -2241,7 +2298,7 @@ export function createHandlers(
           startedAt: Date.now(),
           steps: [],
           totalSteps: 0,
-        }) as APIResponse<any>;
+        }) as APIResponse<WorkflowRunResponse>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_ERROR');
       }
@@ -2279,7 +2336,7 @@ export function createHandlers(
         return success({
           runId,
           workflowId: data.workflow_id || data.workflowId || '',
-          status: (statusMap[data.status] || 'pending') as any,
+          status: (statusMap[data.status] || 'pending') as WorkflowRunStatus,
           steps: data.steps || [],
           totalSteps: data.total_steps || data.totalSteps || 0,
           currentStep: data.current_step || data.currentStep,
@@ -2292,7 +2349,7 @@ export function createHandlers(
             ? data.status === 'completed' || data.status === 'success'
             : undefined,
           error: data.error,
-        }) as APIResponse<any>;
+        }) as APIResponse<WorkflowRunResponse>;
       } catch (err) {
         return error((err as Error).message, 'WORKFLOW_STATUS_ERROR');
       }
@@ -2608,8 +2665,8 @@ export function createHandlers(
         // Support callers that pass { query: "..." } instead of structured SearchCriteria.
         // Map the query field to text so the search engine can match against it.
         const resolved: SearchCriteria = { ...criteria };
-        if (!resolved.text && (criteria as any).query) {
-          resolved.text = (criteria as any).query;
+        if (!resolved.text && (criteria as { query?: string }).query) {
+          resolved.text = (criteria as { query?: string }).query;
           if (resolved.fuzzy === undefined) {
             resolved.fuzzy = true;
           }
@@ -2702,24 +2759,32 @@ export function createHandlers(
         // settles inside `executeWithDiff`; for the plain path here we
         // settle once up front so the search engine sees the same element
         // set as `/control/snapshot` and `/ai/find`.
-        const reqAny = request as { skipSettle?: boolean; settleTimeout?: number };
-        if (!reqAny.skipSettle && !(request as any).withDiff) {
-          await awaitDOMSettled(reqAny.settleTimeout);
+        const reqExtra = request as NLActionRequest & {
+          skipSettle?: boolean;
+          settleTimeout?: number;
+          settleMinStable?: number;
+          scope?: string;
+          withDiff?: boolean;
+          summaryBudget?: number;
+          analyzeStructured?: boolean;
+        };
+        if (!reqExtra.skipSettle && !reqExtra.withDiff) {
+          await awaitDOMSettled(reqExtra.settleTimeout);
         }
 
         // Refresh elements before execution
         refreshElements();
 
         // If withDiff requested, use change tracker for integrated diffing
-        if ((request as any).withDiff) {
+        if (reqExtra.withDiff) {
           const diffResult = await changeTracker.executeWithDiff({
             instruction: request.instruction,
-            settleTimeout: (request as any).settleTimeout,
-            settleMinStable: (request as any).settleMinStable,
-            scope: (request as any).scope,
+            settleTimeout: reqExtra.settleTimeout,
+            settleMinStable: reqExtra.settleMinStable,
+            scope: reqExtra.scope,
             categorize: true,
-            summaryBudget: (request as any).summaryBudget,
-            analyzeStructured: (request as any).analyzeStructured,
+            summaryBudget: reqExtra.summaryBudget,
+            analyzeStructured: reqExtra.analyzeStructured,
           });
 
           // Merge NL action response with diff result
@@ -2732,7 +2797,7 @@ export function createHandlers(
             structuredChanges: diffResult.structuredChanges,
             settleTimedOut: diffResult.settleTimedOut,
             timeline: diffResult.timeline,
-          } as any);
+          } as unknown as NLActionResponse);
         }
 
         const result = await nlExecutor.execute(request);
@@ -2847,7 +2912,7 @@ export function createHandlers(
           tagName: el.type,
           accessibleName: el.label,
           registered: true,
-        })) as any[];
+        })) as unknown as AIDiscoveredElement[];
 
         // DOM fallback: when registry has no elements, scan the DOM
         if (elements.length === 0) {
@@ -2859,7 +2924,7 @@ export function createHandlers(
             suggestedActions: el.actions.map((a: string) => ({ action: a })),
             accessibleName: el.label,
             registered: false,
-          })) as any[];
+          })) as unknown as AIDiscoveredElement[];
         }
 
         const summary = generatePageSummary(elements);
@@ -3070,7 +3135,18 @@ export function createHandlers(
       try {
         const registeredCount = registry.getAllElements().length;
         const domCount = countDOMInteractiveElements();
-        const globalBridge = typeof window !== 'undefined' ? (window as any).__UI_BRIDGE__ : null;
+        const globalBridge =
+          typeof window !== 'undefined'
+            ? (
+                window as unknown as {
+                  __UI_BRIDGE__?: {
+                    autoRegisterActive?: boolean;
+                    mutationObserverActive?: boolean;
+                    providers?: string[];
+                  };
+                }
+              ).__UI_BRIDGE__
+            : null;
 
         return success({
           sdk_initialized: !!globalBridge,
@@ -3575,7 +3651,7 @@ export function createHandlers(
         refreshElements();
 
         // Get all elements
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
 
         // Convert to AI discovered elements for semantic search
         const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(
@@ -3584,7 +3660,7 @@ export function createHandlers(
             const textParts: string[] = [];
 
             // Prioritize description and accessible name for semantic matching
-            const state = 'getState' in el ? (el as any).getState() : el.state;
+            const state = 'getState' in el && el.getState ? el.getState() : el.state;
             const textContent = state?.textContent || '';
             const label = el.label || '';
             const accessibleName = el.accessibleName || '';
@@ -3615,7 +3691,7 @@ export function createHandlers(
                 description: label || el.id,
                 aliases: [],
                 suggestedActions: [],
-              } as AIDiscoveredElement,
+              } as unknown as AIDiscoveredElement,
               text: combinedText,
             };
           }
@@ -4546,7 +4622,7 @@ export function createHandlers(
         if (!rawElement) {
           return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
         }
-        const el = rawElement as any;
+        const el = rawElement as unknown as RegistryElementView;
         if (!el.element || !(el.element instanceof HTMLElement)) {
           return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
         }
@@ -4571,7 +4647,7 @@ export function createHandlers(
         if (!rawElement) {
           return error(`Element not found: ${id}`, 'ELEMENT_NOT_FOUND');
         }
-        const el = rawElement as any;
+        const el = rawElement as unknown as RegistryElementView;
         if (!el.element || !(el.element instanceof HTMLElement)) {
           return error('Element does not have a DOM reference', 'NO_DOM_REFERENCE');
         }
@@ -4587,9 +4663,9 @@ export function createHandlers(
       includePseudoElements?: boolean;
     }): Promise<APIResponse<{ elements: ElementDesignData[]; timestamp: number }>> => {
       try {
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const elements = request?.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const designData: ElementDesignData[] = [];
@@ -4620,19 +4696,19 @@ export function createHandlers(
         const viewports = request.viewports || DEFAULT_VIEWPORTS;
 
         // Create a minimal registry adapter that filters by elementIds if specified
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const filteredElements = request.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const registryAdapter = {
           getAllElements: () =>
             filteredElements
-              .filter((el: any) => el.element instanceof HTMLElement)
-              .map((el: any) => ({
+              .filter((el) => el.element instanceof HTMLElement)
+              .map((el) => ({
                 id: el.id,
-                element: el.element,
-                type: el.type,
+                element: el.element as HTMLElement,
+                type: el.type as string,
                 label: el.label,
               })),
         };
@@ -4687,9 +4763,9 @@ export function createHandlers(
           return error('No style guide loaded or provided', 'NO_STYLE_GUIDE');
         }
 
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const elements = request?.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const designData: ElementDesignData[] = [];
@@ -4738,9 +4814,9 @@ export function createHandlers(
       request?: EvaluateRequest
     ): Promise<APIResponse<QualityEvaluationReport>> => {
       try {
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const elements = request?.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const designData: ElementDesignData[] = [];
@@ -4785,9 +4861,9 @@ export function createHandlers(
       elementIds?: string[];
     }): Promise<APIResponse<{ saved: boolean; elementCount: number }>> => {
       try {
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const elements = request?.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const designData: ElementDesignData[] = [];
@@ -4823,9 +4899,9 @@ export function createHandlers(
           return error('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
         }
 
-        const allElements = registry.getAllElements() as any[];
+        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
         const elements = request?.elementIds
-          ? allElements.filter((el: any) => request.elementIds!.includes(el.id))
+          ? allElements.filter((el) => request.elementIds!.includes(el.id))
           : allElements;
 
         const designData: ElementDesignData[] = [];
@@ -4975,7 +5051,7 @@ export function createHandlers(
         return error('Network monitoring is disabled', 'NETWORK_MONITORING_DISABLED');
       }
       const filter: NetworkRequestFilter = {};
-      if (params?.status) filter.status = params.status as any;
+      if (params?.status) filter.status = params.status as NetworkRequestStatus;
       if (params?.method) filter.method = params.method;
       if (params?.urlPattern) filter.urlPattern = params.urlPattern;
       if (params?.failuresOnly) filter.failuresOnly = params.failuresOnly;
@@ -6884,10 +6960,10 @@ export function createAIHandlers(
         elements = domElements;
       }
     }
-    searchEngine.updateElements(elements as any[]);
-    nlExecutor.updateElements(elements as any[]);
-    nlExecutor.setActionExecutor(actionExecutor as any);
-    assertionExecutor.updateElements(elements as any[]);
+    searchEngine.updateElements(elements as Array<DiscoveredElement | RegisteredElement>);
+    nlExecutor.updateElements(elements as Array<DiscoveredElement | RegisteredElement>);
+    nlExecutor.setActionExecutor(actionExecutor as unknown as ActionExecutor);
+    assertionExecutor.updateElements(elements as Array<DiscoveredElement | AIDiscoveredElement>);
   }
 
   return {
@@ -6896,8 +6972,8 @@ export function createAIHandlers(
         refreshElements();
         // Support callers that pass { query: "..." } instead of structured SearchCriteria.
         const resolved: SearchCriteria = { ...criteria };
-        if (!resolved.text && (criteria as any).query) {
-          resolved.text = (criteria as any).query;
+        if (!resolved.text && (criteria as { query?: string }).query) {
+          resolved.text = (criteria as { query?: string }).query;
           if (resolved.fuzzy === undefined) {
             resolved.fuzzy = true;
           }
@@ -7042,7 +7118,7 @@ export function createAIHandlers(
           tagName: el.type,
           accessibleName: el.label,
           registered: true,
-        })) as any[];
+        })) as unknown as AIDiscoveredElement[];
         const summary = generatePageSummary(elements);
         return { success: true, data: summary, timestamp: Date.now() };
       } catch (err) {

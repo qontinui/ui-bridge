@@ -39,7 +39,7 @@
  *   }
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { RouteInfo } from '../navigation/types';
 
@@ -50,22 +50,24 @@ import type { RouteInfo } from '../navigation/types';
  */
 export function useRouteAwareness(info: RouteInfo): void {
   const bridge = useUIBridgeOptional();
+  const infoRef = useRef(info);
+  infoRef.current = info;
+
+  // Serialize for dependency comparison. These derived values are the
+  // effect re-fire triggers; the latest info object is read from
+  // infoRef inside the effect.
+  const pattern = info.pattern;
+  const paramsKey = info.params ? JSON.stringify(info.params) : '';
+  const queryParamsKey = info.queryParams ? JSON.stringify(info.queryParams) : '';
+  const routeStackKey = info.routeStack?.join(',');
 
   useEffect(() => {
     if (!bridge) return;
 
-    bridge.navigationTracker.setRouteInfo(info);
+    bridge.navigationTracker.setRouteInfo(infoRef.current);
 
     return () => {
       bridge.navigationTracker.setRouteInfo(undefined);
     };
-    // Serialize for dependency comparison
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    bridge,
-    info.pattern,
-    info.params ? JSON.stringify(info.params) : '',
-    info.queryParams ? JSON.stringify(info.queryParams) : '',
-    info.routeStack?.join(','),
-  ]);
+  }, [bridge, pattern, paramsKey, queryParamsKey, routeStackKey]);
 }
