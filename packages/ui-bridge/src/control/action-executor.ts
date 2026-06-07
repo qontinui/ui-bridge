@@ -120,6 +120,7 @@ export function hasNestedQuantifiers(pattern: string): boolean {
  */
 const SUPPORTED_ACTIONS = new Set<string>([
   'click',
+  'hoverClick',
   'doubleClick',
   'rightClick',
   'middleClick',
@@ -362,6 +363,7 @@ function getClickDisabledSignals(element: HTMLElement): ClickDisabledSignals | n
  */
 const CLICK_LIKE_ACTIONS = new Set<string>([
   'click',
+  'hoverClick',
   'doubleClick',
   'rightClick',
   'middleClick',
@@ -369,6 +371,18 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
   'uncheck',
   'toggle',
 ]);
+
+/**
+ * Click-like actions for which a base-state `pointer-events: none` is NOT a
+ * blocking signal. `hoverClick` exists specifically to drive a control whose
+ * `pointer-events` are gated behind a CSS `:hover`/`group-hover` rule
+ * (e.g. the runner's `ZoneHoverActions` toolbar buttons): it synthesizes the
+ * hover that flips `pointer-events` to `auto` and only then clicks. Refusing
+ * it on the un-hovered `pointer-events: none` reading would defeat its whole
+ * purpose. A genuine `aria-disabled`/native `disabled` still blocks it — only
+ * the pointer-events discriminator is waived.
+ */
+const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
 
 /**
  * Error subclass used to carry structured disabled-state details out through
@@ -550,6 +564,72 @@ function createPointerEvent(
     button,
     clientX: rect.left + x,
     clientY: rect.top + y,
+  });
+}
+
+/**
+ * Resolve the nearest hover-revealing ancestor of a control so a `hoverClick`
+ * can activate the CSS rule that flips the control interactive.
+ *
+ * Strategy, in priority order:
+ *   1. The nearest ancestor that carries the Tailwind `group` marker class
+ *      (`group`, `group/<name>`) — `group-hover:` utilities are scoped to it.
+ *      This is exactly the `ZoneHoverActions` pattern.
+ *   2. Otherwise the nearest ancestor whose own computed style declares
+ *      `pointer-events: none` (a hover-gated container that re-enables itself
+ *      on `:hover`), which is the non-Tailwind equivalent.
+ *
+ * Walks at most `MAX_HOVER_ANCESTOR_DEPTH` levels so a deeply-nested control
+ * never triggers an unbounded climb. Returns `null` when no hoverable
+ * container is found (the target is then hovered directly, which still
+ * activates a `:hover` rule on the element itself).
+ */
+const MAX_HOVER_ANCESTOR_DEPTH = 12;
+
+function findHoverableAncestor(element: HTMLElement): HTMLElement | null {
+  let pointerNoneCandidate: HTMLElement | null = null;
+  let current = element.parentElement;
+  let depth = 0;
+
+  while (current && depth < MAX_HOVER_ANCESTOR_DEPTH) {
+    // Tailwind `group` / `group/<name>` marker — the highest-signal match.
+    const cls = current.classList;
+    for (const token of cls) {
+      if (token === 'group' || token.startsWith('group/')) {
+        return current;
+      }
+    }
+
+    // Remember the first pointer-events:none ancestor as a fallback.
+    if (!pointerNoneCandidate) {
+      try {
+        if (window.getComputedStyle(current).pointerEvents === 'none') {
+          pointerNoneCandidate = current;
+        }
+      } catch {
+        // getComputedStyle can throw in degraded environments — ignore.
+      }
+    }
+
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return pointerNoneCandidate;
+}
+
+/**
+ * Resolve after the next animation frame so a hover-driven style/layout
+ * recomputation is applied before the subsequent action. Falls back to a 0ms
+ * timeout where `requestAnimationFrame` is unavailable (jsdom / SSR).
+ */
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
   });
 }
 
@@ -1784,15 +1864,37 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
       const signals = getClickDisabledSignals(element);
       if (signals) {
-        const reasons: string[] = [];
-        if (signals.ariaDisabled) reasons.push('aria-disabled=true');
-        if (signals.nativeDisabled) reasons.push('disabled property');
-        if (signals.pointerEvents === 'none') reasons.push('pointer-events:none');
-        throw new ElementDisabledError(
-          `element is disabled (${reasons.join(', ')}); click was not dispatched`,
-          signals
-        );
+        // For pointer-events-tolerant actions (`hoverClick`), a base-state
+        // `pointer-events: none` is the very condition the action is built to
+        // overcome — don't treat it as a blocker. We still block on a real
+        // `aria-disabled`/native `disabled`, both of which survive hover.
+        const pointerTolerant = POINTER_EVENTS_TOLERANT_ACTIONS.has(action);
+        const blockingDisabled =
+          signals.ariaDisabled ||
+          signals.nativeDisabled ||
+          (!pointerTolerant && signals.pointerEvents === 'none');
+        if (blockingDisabled) {
+          const reasons: string[] = [];
+          if (signals.ariaDisabled) reasons.push('aria-disabled=true');
+          if (signals.nativeDisabled) reasons.push('disabled property');
+          if (!pointerTolerant && signals.pointerEvents === 'none') {
+            reasons.push('pointer-events:none');
+          }
+          throw new ElementDisabledError(
+            `element is disabled (${reasons.join(', ')}); click was not dispatched`,
+            signals
+          );
+        }
       }
+    }
+
+    // `hoverClick` is a SDK-native composite action (hover-reveal → click).
+    // It is intentionally handled here, BEFORE delegating to ui-bridge-auto:
+    // ui-bridge-auto's `performAction` has no `hoverClick` case and would throw
+    // "Unknown action". Keeping it inline guarantees the behavior regardless of
+    // whether the optional auto package is installed.
+    if (action === 'hoverClick') {
+      return this.performHoverClick(element, params as MouseAction);
     }
 
     // Delegate to ui-bridge-auto's canonical action implementation if available.
@@ -1825,6 +1927,8 @@ export class DefaultActionExecutor implements ActionExecutor {
     switch (action as StandardAction) {
       case 'click':
         return this.performClick(element, params as MouseAction);
+      case 'hoverClick':
+        return this.performHoverClick(element, params as MouseAction);
       case 'doubleClick':
         return this.performDoubleClick(element, params as MouseAction);
       case 'rightClick':
@@ -1931,6 +2035,68 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (anchor && anchor !== element && anchor.hasAttribute('href')) {
       anchor.click();
     }
+  }
+
+  /**
+   * Hover-reveal click: a single-dispatch composite that drives a control
+   * whose interactivity is gated behind a CSS `:hover` / Tailwind
+   * `group-hover` rule.
+   *
+   * Many toolbars keep their buttons `pointer-events: none` (and often
+   * `opacity: 0`) in the rest state and only flip them to
+   * `pointer-events: auto` when a `.group` ancestor is hovered — the runner's
+   * `ZoneHoverActions` (maximize / export / close / "send terminal to a
+   * window") is the canonical example. A normal `click` is refused on the
+   * un-hovered `pointer-events: none` reading, and a separate one-shot `hover`
+   * action doesn't help because the synthetic `:hover` doesn't persist across
+   * the next HTTP `click` call.
+   *
+   * `performHoverClick` resolves that in one call:
+   *   1. Synthesize `pointerenter`/`mouseenter`/`pointerover`/`mouseover` on
+   *      the target AND its nearest hoverable ancestor (the `.group` /
+   *      hover-revealing container), so a `group-hover:pointer-events-auto`
+   *      rule activates.
+   *   2. Wait one animation frame so the style/layout flip is applied.
+   *   3. Perform the normal click dispatch chain.
+   *
+   * The hover is left in place (no matching `mouseleave`) so the control stays
+   * interactive for the duration of the click — mirroring how a real pointer
+   * would still be over the toolbar at click time.
+   */
+  private async performHoverClick(
+    element: HTMLElement,
+    options?: MouseAction
+  ): Promise<void> {
+    // Hover the nearest hoverable ancestor first (outermost → innermost is
+    // irrelevant for `:hover` activation, but ancestor-then-target matches the
+    // natural pointer-enter order and lets a `group-hover` rule on the
+    // ancestor flip the descendant's pointer-events before we touch it).
+    const ancestor = findHoverableAncestor(element);
+    if (ancestor && ancestor !== element) {
+      this.dispatchHoverEnter(ancestor);
+    }
+    this.dispatchHoverEnter(element);
+
+    // Wait one animation frame so the browser applies the hover-driven style
+    // recomputation (pointer-events / opacity) before we click. Fall back to a
+    // microtask-ish 0ms timeout in environments without rAF (e.g. jsdom).
+    await nextAnimationFrame();
+
+    this.performClick(element, options);
+  }
+
+  /**
+   * Fire the hover-enter event quartet on a single element. Pointer events are
+   * dispatched alongside their mouse counterparts so both pointer-only
+   * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers
+   * react. `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover`
+   * do — dispatching both covers handlers attached either way.
+   */
+  private dispatchHoverEnter(element: HTMLElement): void {
+    element.dispatchEvent(createPointerEvent('pointerover', element));
+    element.dispatchEvent(createMouseEvent('mouseover', element));
+    element.dispatchEvent(createPointerEvent('pointerenter', element));
+    element.dispatchEvent(createMouseEvent('mouseenter', element));
   }
 
   private performDoubleClick(element: HTMLElement, options?: MouseAction): void {
@@ -2990,27 +3156,30 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private inferActions(element: HTMLElement): string[] {
     const type = this.inferElementType(element);
+    // `hoverClick` is advertised alongside `click` on every clickable type so a
+    // hover-gated control (pointer-events:none until group-hover) is drivable
+    // in one call without a page/evaluate workaround.
     const baseActions = ['focus', 'blur', 'hover', 'sendKeys', 'scroll', 'scrollIntoView'];
 
     switch (type) {
       case 'button':
-        return [...baseActions, 'click', 'doubleClick', 'rightClick', 'middleClick'];
+        return [...baseActions, 'click', 'hoverClick', 'doubleClick', 'rightClick', 'middleClick'];
       case 'input':
-        return [...baseActions, 'click', 'type', 'clear'];
+        return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
       case 'textarea':
-        return [...baseActions, 'click', 'type', 'clear'];
+        return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
       case 'select':
-        return [...baseActions, 'click', 'select'];
+        return [...baseActions, 'click', 'hoverClick', 'select'];
       case 'checkbox':
-        return [...baseActions, 'click', 'check', 'uncheck', 'toggle'];
+        return [...baseActions, 'click', 'hoverClick', 'check', 'uncheck', 'toggle'];
       case 'radio':
-        return [...baseActions, 'click', 'check'];
+        return [...baseActions, 'click', 'hoverClick', 'check'];
       case 'link':
-        return [...baseActions, 'click'];
+        return [...baseActions, 'click', 'hoverClick'];
       case 'tab':
-        return [...baseActions, 'click', 'middleClick'];
+        return [...baseActions, 'click', 'hoverClick', 'middleClick'];
       default:
-        return [...baseActions, 'click'];
+        return [...baseActions, 'click', 'hoverClick'];
     }
   }
 
