@@ -22,7 +22,12 @@ import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type { SemanticSnapshot } from '../ai/types';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
-import { hasNestedQuantifiers } from '../control/action-executor';
+import {
+  hasNestedQuantifiers,
+  findHoverableAncestor,
+  dispatchHoverEnter,
+  nextAnimationFrame,
+} from '../control/action-executor';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -1054,6 +1059,33 @@ export async function executeCommand(
           case 'click':
             dispatchRealClick(dom);
             break;
+          case 'hoverClick': {
+            // Composite reveal-then-click for a control whose interactivity is
+            // gated behind a CSS `:hover` / Tailwind `group-hover` rule (the
+            // runner's `ZoneHoverActions` toolbar is the canonical case: its
+            // buttons are `pointer-events:none` until a `.group` ancestor is
+            // hovered). Reuse the exact hover helpers the HTTP action-executor
+            // path uses (`findHoverableAncestor` + `dispatchHoverEnter` +
+            // `nextAnimationFrame`) so both dispatch paths share one
+            // implementation. Hover the nearest hoverable ancestor first so a
+            // `group-hover:pointer-events-auto` rule flips the target
+            // interactive, then the target itself, then yield one animation
+            // frame for the style recomputation before clicking. The hover is
+            // intentionally left in place (no `mouseleave`) so the control
+            // stays interactive through the click.
+            const ancestor = findHoverableAncestor(dom);
+            if (ancestor && ancestor !== dom) {
+              dispatchHoverEnter(ancestor);
+            }
+            dispatchHoverEnter(dom);
+            await nextAnimationFrame();
+            // `dispatchRealClick` ends with a native `dom.click()`, which fires
+            // even while the element computes to `pointer-events:none` in jsdom
+            // (no real hit-test) — mirroring `performHoverClick` in the HTTP
+            // path, so behavior matches regardless of how the CSS recalc lands.
+            dispatchRealClick(dom);
+            break;
+          }
           case 'focus':
             dom.focus();
             break;
@@ -2058,6 +2090,11 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       try {
+        // No `hoverClick` case here: this switch dispatches `parsed.action`
+        // from `parseNLInstruction`, whose `ParsedAction['action']` union
+        // (ai/types.ts) does not include `hoverClick`, so it is unreachable on
+        // this NL-instruction path. `hoverClick` is an explicit element-action
+        // verb handled in the `executeElementAction` switch above.
         switch (parsed.action) {
           case 'click':
             dispatchRealClick(dom);
