@@ -719,6 +719,16 @@ export function createRelayHandlers(
       );
     },
 
+    async listWindows() {
+      // Runner-only: the relay dispatches to a connected browser tab, which has
+      // no Tauri runner windows. Discover runner windows via direct HTTP to the
+      // runner (GET /control/runner-windows), not over the browser-tab relay.
+      return error(
+        'listWindows is runner-only — query the qontinui-runner directly (GET /control/runner-windows), not the browser-tab relay',
+        'NOT_IMPLEMENTED'
+      );
+    },
+
     async getElement(id, options, context) {
       // Try relay first for live element data when browser is connected
       try {
