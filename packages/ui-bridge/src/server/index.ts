@@ -83,6 +83,9 @@ export {
 // Relay handlers
 export { createRelayHandlers, type RelayHandlersOptions } from './relay-handlers';
 
+// Window-scoped client facade (Phase 3 — sugar over the per-call windowLabel option)
+export { windowScope, type WindowScopedBridge } from './window-scope';
+
 // CDP tab discovery
 export { CDPTabDiscovery, type CDPTarget, type CDPTabsConfig } from './cdp-tabs';
 
