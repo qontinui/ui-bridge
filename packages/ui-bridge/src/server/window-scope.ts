@@ -21,9 +21,10 @@
  * targetable methods are exposed — you cannot call a non-targetable method on a
  * window scope and get a silent no-op.
  *
- * The read/convenience family (`readValue`/`typeInto`/`clickByText`/…) is
- * intentionally absent until the runner honors `windowLabel` on those routes
- * (Phase 4) — exposing it here would be a dishonest no-op.
+ * The read/convenience family (`readValue`/`typeInto`/`clickByText`/
+ * `clickBySelector`/`findByText`) is included as of Phase 4 — the runner now
+ * honors `windowLabel` (read from the body) on those routes, so scoping them is
+ * honest end-to-end.
  */
 
 import type { ControlActionRequest } from '../control/types';
@@ -78,6 +79,36 @@ export interface WindowScopedBridge {
     request: Omit<ControlActionRequest, 'windowLabel'>,
     context?: HandlerContext
   ): ReturnType<UIBridgeServerHandlers['executeElementAction']>;
+
+  /** Read an element's value in the bound window. Delegates to `readValue`. */
+  readValue(
+    request: Omit<Parameters<UIBridgeServerHandlers['readValue']>[0], 'windowLabel'>,
+    context?: HandlerContext
+  ): ReturnType<UIBridgeServerHandlers['readValue']>;
+
+  /** Type text into an element in the bound window. Delegates to `typeInto`. */
+  typeInto(
+    request: Omit<Parameters<UIBridgeServerHandlers['typeInto']>[0], 'windowLabel'>,
+    context?: HandlerContext
+  ): ReturnType<UIBridgeServerHandlers['typeInto']>;
+
+  /** Click an element by visible text in the bound window. Delegates to `clickByText`. */
+  clickByText(
+    request: Omit<Parameters<UIBridgeServerHandlers['clickByText']>[0], 'windowLabel'>,
+    context?: HandlerContext
+  ): ReturnType<UIBridgeServerHandlers['clickByText']>;
+
+  /** Click an element by CSS selector in the bound window. Delegates to `clickBySelector`. */
+  clickBySelector(
+    request: Omit<Parameters<UIBridgeServerHandlers['clickBySelector']>[0], 'windowLabel'>,
+    context?: HandlerContext
+  ): ReturnType<UIBridgeServerHandlers['clickBySelector']>;
+
+  /** Find elements by visible text in the bound window. Delegates to `findByText`. */
+  findByText(
+    request: Omit<Parameters<UIBridgeServerHandlers['findByText']>[0], 'windowLabel'>,
+    context?: HandlerContext
+  ): ReturnType<UIBridgeServerHandlers['findByText']>;
 }
 
 /**
@@ -99,5 +130,15 @@ export function windowScope(
       handlers.getElements({ ...options, windowLabel }, context),
     executeAction: (id, request, context) =>
       handlers.executeElementAction(id, { ...request, windowLabel }, context),
+    readValue: (request, context) =>
+      handlers.readValue({ ...request, windowLabel }, context),
+    typeInto: (request, context) =>
+      handlers.typeInto({ ...request, windowLabel }, context),
+    clickByText: (request, context) =>
+      handlers.clickByText({ ...request, windowLabel }, context),
+    clickBySelector: (request, context) =>
+      handlers.clickBySelector({ ...request, windowLabel }, context),
+    findByText: (request, context) =>
+      handlers.findByText({ ...request, windowLabel }, context),
   };
 }

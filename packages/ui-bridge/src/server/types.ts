@@ -1314,6 +1314,8 @@ export interface UIBridgeServerHandlers {
       text: string;
       tag?: string;
       exact?: boolean;
+      /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
+      windowLabel?: string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
@@ -1322,6 +1324,8 @@ export interface UIBridgeServerHandlers {
     request: {
       selector: string;
       index?: number;
+      /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
+      windowLabel?: string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<{ clicked: boolean; element?: unknown }>>;
@@ -1332,6 +1336,8 @@ export interface UIBridgeServerHandlers {
       label?: string;
       text: string;
       clear?: boolean;
+      /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
+      windowLabel?: string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<{ typed: boolean; element?: unknown }>>;
@@ -1340,12 +1346,14 @@ export interface UIBridgeServerHandlers {
     request: {
       selector: string;
       index?: number;
+      /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
+      windowLabel?: string;
     },
     context?: HandlerContext
   ) => Promise<APIResponse<{ value: string | null; length: number }>>;
 
   findByText: (
-    request: { text: string; tag?: string; exact?: boolean },
+    request: { text: string; tag?: string; exact?: boolean; windowLabel?: string },
     context?: HandlerContext
   ) => Promise<
     APIResponse<
