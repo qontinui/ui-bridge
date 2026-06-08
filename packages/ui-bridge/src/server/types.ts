@@ -185,6 +185,30 @@ export interface APIResponse<T = unknown> {
  * Render log query parameters
  */
 /**
+ * One runner-owned webview window, as returned by `listWindows()`
+ * (`GET /control/runner-windows`). The wire shape mirrors the runner's
+ * `ui_bridge_list_runner_windows_handler` exactly — no field remapping.
+ */
+export interface RunnerWindow {
+  /** The window's Tauri label — the value to pass as `windowLabel`. */
+  label: string;
+  /** `'main'` for the runner's primary window, `'secondary'` for a pop-out. */
+  kind: 'main' | 'secondary';
+  /** The window's title, or `null` if unavailable. */
+  title: string | null;
+}
+
+/**
+ * Response payload of `listWindows()` (`GET /control/runner-windows`).
+ */
+export interface RunnerWindowsList {
+  /** Number of windows returned. */
+  count: number;
+  /** The runner process's own webview windows, sorted by `label`. */
+  windows: RunnerWindow[];
+}
+
+/**
  * Request body for `POST /control/page/evaluate` (`pageEvaluate`).
  *
  * The body is forwarded verbatim to the runner, so any additional fields are
@@ -428,6 +452,19 @@ export interface UIBridgeServerHandlers {
     },
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot['elements']>>;
+  /**
+   * Enumerate the runner process's OWN webview windows — the main window plus
+   * any pop-out terminal windows — so callers can discover valid `windowLabel`
+   * targets before issuing a window-scoped command. Maps to
+   * `GET /control/runner-windows`.
+   *
+   * **Runner-only.** This is answered by the qontinui-runner, which owns the
+   * Tauri webviews. Non-runner server contexts (a plain React-app server, the
+   * relay's browser-tab path) host no runner windows and return a
+   * `NOT_IMPLEMENTED` error — discover windows via direct HTTP to the runner.
+   * Distinct from `/control/windows`, which enumerates OS desktop windows.
+   */
+  listWindows: (context?: HandlerContext) => Promise<APIResponse<RunnerWindowsList>>;
   getElement: (
     id: string,
     options?: { recency?: string },
@@ -1589,6 +1626,11 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
 
   // Control - Elements
   { method: 'GET', path: '/control/elements', handler: 'getElements' },
+  // Discover the runner process's own webview windows (main + pop-outs) so
+  // callers can resolve a `windowLabel` target. Runner-owned; promoted out of
+  // the runner_only_baseline allow-list once the SDK declared it here (plan
+  // 2026-06-07-multi-window-sdk-automation, Phase 2).
+  { method: 'GET', path: '/control/runner-windows', handler: 'listWindows' },
   { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
   { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
   {

@@ -24,6 +24,7 @@ import type {
   ElementExpectResponse,
   SpawnHeadlessRequest,
   SpawnHeadlessResponse,
+  RunnerWindowsList,
 } from './types';
 import type {
   ActionExecutor,
@@ -1394,6 +1395,15 @@ export function createHandlers(
       } catch (err) {
         return error((err as Error).message, 'RANK_ELEMENTS_ERROR');
       }
+    },
+
+    listWindows: async (): Promise<APIResponse<RunnerWindowsList>> => {
+      // Runner-only: enumerating Tauri webview windows is the qontinui-runner's
+      // job. A plain React-app server context hosts no runner windows.
+      return error<RunnerWindowsList>(
+        'listWindows is runner-only — query the qontinui-runner directly (GET /control/runner-windows)',
+        'NOT_IMPLEMENTED'
+      );
     },
 
     getElement: async (id: string): Promise<APIResponse<ControlSnapshot['elements'][0]>> => {
