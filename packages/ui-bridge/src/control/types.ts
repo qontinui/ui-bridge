@@ -323,6 +323,26 @@ export interface FindRequest {
 }
 
 /**
+ * F3 registration-diagnostics metadata — the registry's readiness signal.
+ *
+ * `everHadRegistrations` is a one-way latch: `false` means the page has not
+ * hydrated/registered anything yet (caller should poll/wait), while `true`
+ * with an empty element list means the page is genuinely empty. Surfaced on
+ * snapshots AND find/discover responses so pollers get a typed not-ready
+ * signal instead of a bare `elements: []`.
+ */
+export interface SnapshotRegistrationStats {
+  /** Elements currently registered. */
+  totalRegistered: number;
+  /** One-way latch: true once ANY element has ever registered on this page. */
+  everHadRegistrations: boolean;
+  /** Per-route registration counts and ids. */
+  byRoute: Record<string, { count: number; ids: string[] }>;
+  /** Per-window breakdown (only present when a non-default window exists). */
+  byRoutePerWindow?: Record<string, Record<string, { count: number; ids: string[] }>>;
+}
+
+/**
  * Find response
  *
  * Response from finding/discovering controllable elements.
@@ -336,6 +356,13 @@ export interface FindResponse {
   durationMs: number;
   /** Timestamp */
   timestamp: number;
+  /**
+   * Registry readiness signal (F3). `everHadRegistrations: false` + empty
+   * `elements` ⇒ the page has not hydrated/registered yet — poll again;
+   * `true` + empty ⇒ the page is genuinely empty. Optional because older
+   * browser-side SDKs don't emit it.
+   */
+  registration?: SnapshotRegistrationStats;
 }
 
 /**
@@ -544,6 +571,13 @@ export interface ControlSnapshot {
   undoRedo?: SnapshotUndoContext;
   /** Fallback screenshot when the browser is unresponsive (populated by relay handlers) */
   fallbackScreenshot?: FallbackScreenshot;
+  /**
+   * Registry readiness signal (F3) — emitted by the browser-side
+   * `getControlSnapshot` handler. See {@link SnapshotRegistrationStats}.
+   */
+  registration?: SnapshotRegistrationStats;
+  /** Current page route (pathname) at snapshot time, when available. */
+  route?: string;
 }
 
 /**

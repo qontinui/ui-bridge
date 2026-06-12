@@ -666,35 +666,53 @@ export function createRelayHandlers(
     // Control — Elements
     // ========================================================================
 
-    async getElements(options, _context) {
-      const recency = resolveRecency(options);
+    async getElements(options, context) {
+      const { targetTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+      const opts = (cleaned ?? {}) as NonNullable<typeof options> & { revealsAny?: string };
+
+      // Apply substring filters via the shared matcher. The relay works
+      // against snapshot data (no live DOM), so the matcher's accessible-name
+      // fallback chain (label → id) is what actually fires here.
+      // Phase 3.2 adds the `revealsAny` filter which acts on each element's
+      // `reveals` array — passed through verbatim by `serializeRegisteredElement`.
+      const applyFilters = (
+        elements: ControlSnapshot['elements']
+      ): ControlSnapshot['elements'] => {
+        if (!(opts.title || opts.aria_label || opts.text || opts.revealsAny)) return elements;
+        return elements.filter((el) =>
+          matchesElementSelector(el as unknown as MatchableElement, {
+            title: opts.title as string | undefined,
+            aria_label: opts.aria_label as string | undefined,
+            text: opts.text as string | undefined,
+            revealsAny: opts.revealsAny,
+          })
+        );
+      };
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never be served from
+      // the shared cross-tab cache — dispatch a live snapshot to that tab and
+      // propagate routing errors instead of another tab's elements.
+      if (targetTabId !== undefined) {
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const live = await relayCommand<ControlSnapshot>(
+          'getControlSnapshot',
+          {},
+          {
+            targetTabId,
+            ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
+          }
+        );
+        if (!live.success || !live.data) {
+          return live as unknown as APIResponse<ControlSnapshot['elements']>;
+        }
+        return success(applyFilters(live.data.elements), { stale: false, cacheAgeMs: 0 });
+      }
+
+      const recency = resolveRecency(opts);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const _meta = staleMeta();
 
-      let elements = latestControlSnapshot.elements;
-
-      // Apply substring filters via the shared matcher. The relay works
-      // against the cached snapshot (no live DOM), so the matcher's
-      // accessible-name fallback chain (label → id) is what actually fires here.
-      // Phase 3.2 adds the `revealsAny` filter which acts on each element's
-      // `reveals` array — passed through verbatim by `serializeRegisteredElement`.
-      if (
-        options?.title ||
-        options?.aria_label ||
-        options?.text ||
-        (options as { revealsAny?: string } | undefined)?.revealsAny
-      ) {
-        elements = elements.filter((el) =>
-          matchesElementSelector(el as unknown as MatchableElement, {
-            title: options?.title as string | undefined,
-            aria_label: options?.aria_label as string | undefined,
-            text: options?.text as string | undefined,
-            revealsAny: (options as { revealsAny?: string } | undefined)?.revealsAny,
-          })
-        );
-      }
-
-      return success(elements, _meta);
+      return success(applyFilters(latestControlSnapshot.elements), _meta);
     },
 
     async rankElements(request, _context) {
@@ -730,10 +748,37 @@ export function createRelayHandlers(
     },
 
     async getElement(id, options, context) {
+      const { targetTabId, callerUserId } = extractTabRouting(options ?? {});
+      const effectiveUserId = callerUserId ?? context?.callerUserId;
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
+      // the shared cross-tab cache — propagate the routing/timeout error.
+      if (targetTabId !== undefined) {
+        const live = await relayCommand<ControlSnapshot['elements'][0] | null>(
+          'getElement',
+          { id },
+          {
+            targetTabId,
+            ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
+          }
+        );
+        if (!live.success) {
+          return live as unknown as APIResponse<ControlSnapshot['elements'][0]>;
+        }
+        if (live.data) return success(live.data);
+        return error(
+          `Element "${id}" not found on tab "${targetTabId}". Use find() or getControlSnapshot() with the same tabId to see that tab's elements.`,
+          'ELEMENT_NOT_FOUND',
+          [
+            'Use find() with the same tabId to search that tab',
+            'GET /tabs?activeOnly=true to discover currently live tabs',
+            'The element may not be rendered yet — wait for the page to fully load',
+          ]
+        );
+      }
+
       // Try relay first for live element data when browser is connected
       try {
-        const { callerUserId } = extractTabRouting(options ?? {});
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
         const liveOpts = effectiveUserId
           ? { ownerCheck: { userId: effectiveUserId } }
           : undefined;
@@ -847,8 +892,31 @@ export function createRelayHandlers(
     // Control — Components
     // ========================================================================
 
-    async getComponents(options, _context) {
-      const recency = resolveRecency(options);
+    async getComponents(options, context) {
+      const { targetTabId, callerUserId, cleaned } = extractTabRouting(options ?? {});
+
+      // P0 (plan 2026-06-12 item 1): a PINNED read must never be served from
+      // the shared cross-tab cache — dispatch a live snapshot to that tab and
+      // propagate routing errors instead of another tab's components.
+      if (targetTabId !== undefined) {
+        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const live = await relayCommand<ControlSnapshot>(
+          'getControlSnapshot',
+          {},
+          {
+            targetTabId,
+            ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
+          }
+        );
+        if (!live.success || !live.data) {
+          return live as unknown as APIResponse<{
+            components: ControlSnapshot['components'];
+          }>;
+        }
+        return success({ components: live.data.components }, { stale: false, cacheAgeMs: 0 });
+      }
+
+      const recency = resolveRecency(cleaned as typeof options);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.components.length === 0);
       const _meta = staleMeta();
       // F2 (Direction B): wrap the array in `{components: [...]}` so the
@@ -939,9 +1007,24 @@ export function createRelayHandlers(
         recency: recencyParam,
         ...payload
       } = (request as Record<string, unknown> & { targetTabId?: string; recency?: string }) || {};
+      // P0 (plan 2026-06-12 item 1): detect explicit tab pinning across BOTH
+      // spellings — the destructured internal `targetTabId` and the public
+      // `tabId` the adapters splice into the body (relayCommand extracts and
+      // strips the latter via extractTabRouting).
+      const pinnedTabId =
+        targetTabId ??
+        (typeof (payload as { tabId?: unknown }).tabId === 'string'
+          ? ((payload as { tabId: string }).tabId as string)
+          : undefined);
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
-      // Relay failed — fall back to filtering cached snapshot elements
+      // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
+      // the shared `latestControlSnapshot` cache — that cache is last-writer-
+      // wins across ALL tabs, so serving it would silently return another
+      // tab's elements as `success: true`. Propagate the routing/timeout
+      // error envelope (TAB_NOT_FOUND / TAB_STALE / TIMEOUT / ...) instead.
+      if (pinnedTabId !== undefined) return result;
+      // Unpinned relay failure — fall back to filtering cached snapshot elements
       const recency = parseRecency(recencyParam);
       await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
       const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
@@ -952,6 +1035,13 @@ export function createRelayHandlers(
           total: filtered.length,
           durationMs: 0,
           timestamp: Date.now(),
+          // F3 readiness signal (item 5): carry the cached snapshot's
+          // registration block so a caller polling through the post-reload
+          // dead window sees a typed not-ready (`everHadRegistrations:
+          // false`) instead of a bare empty result.
+          ...(latestControlSnapshot.registration
+            ? { registration: latestControlSnapshot.registration }
+            : {}),
         },
         _meta
       ) as APIResponse<FindResponse>;
@@ -1026,6 +1116,30 @@ export function createRelayHandlers(
 
     async getControlSnapshot(request, context) {
       const recency = parseRecency(request?.recency);
+      const { targetTabId, callerUserId } = extractTabRouting(request ?? {});
+      const effectiveUserId = callerUserId ?? context?.callerUserId;
+
+      // Item 3 (plan 2026-06-12): an explicitly PINNED snapshot read (either
+      // spelling — public `?tabId=`/body `tabId` or internal `targetTabId`)
+      // must NEVER be answered from the shared `latestControlSnapshot` cache:
+      // the cache is last-writer-wins across ALL tabs, so a per-tab read from
+      // it is structurally impossible. Bypass every cache fast path and
+      // dispatch live to that tab; on failure propagate the routing error
+      // (TAB_NOT_FOUND / TAB_STALE / TIMEOUT) instead of another tab's data.
+      // The pinned result deliberately does NOT overwrite the shared cache —
+      // that would re-introduce the cross-tab pollution this fixes.
+      if (targetTabId !== undefined) {
+        const result = await relayCommand<ControlSnapshot>(
+          'getControlSnapshot',
+          {},
+          {
+            targetTabId,
+            ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
+          }
+        );
+        if (!result.success || !result.data) return result;
+        return success(result.data, { stale: false, cacheAgeMs: 0 });
+      }
 
       // Fast path: Recency.Any returns cached snapshot immediately
       if (recency.kind === 'any' && latestControlSnapshot.elements.length > 0) {
@@ -1059,10 +1173,7 @@ export function createRelayHandlers(
       }
 
       try {
-        const { callerUserId } = extractTabRouting(request ?? {});
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
-        const queueOpts: { targetTabId?: string; ownerCheck?: { userId: string } } = {};
-        if (request?.targetTabId) queueOpts.targetTabId = request.targetTabId;
+        const queueOpts: { ownerCheck?: { userId: string } } = {};
         if (effectiveUserId) queueOpts.ownerCheck = { userId: effectiveUserId };
         const result = await relay.queueCommand<ControlSnapshot>(
           'getControlSnapshot',

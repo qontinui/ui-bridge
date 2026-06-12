@@ -1751,11 +1751,36 @@ export async function executeCommand(
           (e) => (e.element as HTMLElement).getAttribute('data-testid') === filterTestId
         );
       }
+      // F3 readiness signal (plan 2026-06-12 item 5): mirror the snapshot's
+      // `registration` block on find/discover so pollers can distinguish
+      // "page not hydrated/registered yet" (`everHadRegistrations: false`)
+      // from "genuinely zero matches" (`true` + empty). Degrades gracefully
+      // to the conservative default if the registry probe throws.
+      let registration: {
+        totalRegistered: number;
+        everHadRegistrations: boolean;
+        byRoute: Record<string, { count: number; ids: string[] }>;
+      } = {
+        totalRegistered: elements.length,
+        everHadRegistrations: false,
+        byRoute: {},
+      };
+      try {
+        const reg = getGlobalRegistry();
+        registration = {
+          totalRegistered: elements.length,
+          everHadRegistrations: reg.hasEverHadRegistrations(),
+          byRoute: reg.getCountsByRoute(),
+        };
+      } catch {
+        // Fall back to the conservative default above.
+      }
       return {
         elements: filtered.map(elementToFindResult),
         total: filtered.length,
         durationMs: 0,
         timestamp: Date.now(),
+        registration,
       };
     }
 

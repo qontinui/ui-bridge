@@ -74,6 +74,20 @@ export interface LaunchHeadlessTabOptions {
    * behavior is unchanged.
    */
   initScripts?: string[];
+
+  /**
+   * Extra Chromium command-line arguments passed to `chromium.launch({ args })`.
+   *
+   * The motivating case (plan 2026-06-12 item 2): Chromium's Local Network
+   * Access checks block `fetch` from an https page to a loopback relay
+   * (`https://example.com` → `http://127.0.0.1:9877`), so a driver that needs
+   * that combination must pass
+   * `--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults`.
+   *
+   * Backward-compatible: when unset or empty, no extra args are passed and
+   * behavior is unchanged.
+   */
+  launchArgs?: string[];
 }
 
 export interface HeadlessTab {
@@ -149,9 +163,13 @@ export async function launchHeadlessTab(
     forwardConsole = true,
     onPageUrl,
     initScripts,
+    launchArgs,
   } = options;
 
-  const browser = await chromium.launch({ headless });
+  const browser = await chromium.launch({
+    headless,
+    ...(launchArgs && launchArgs.length > 0 ? { args: launchArgs } : {}),
+  });
   const context = await browser.newContext({
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent,
