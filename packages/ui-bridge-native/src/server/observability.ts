@@ -6,9 +6,10 @@
  * global on `install()` and restores the original on `uninstall()`, so they
  * can be installed/torn-down with the server's lifecycle.
  *
- * Both buffers are gated behind `features.testHooks` by the caller (see
- * NativeUIBridgeServer). Production builds default to `testHooks: false`,
- * so these patches never run on real users' devices.
+ * Both buffers are gated behind `features.observability` by the caller (see
+ * NativeUIBridgeServer), which defaults to the `features.testHooks` value.
+ * Builds with both flags off never run these patches; release builds can
+ * opt in with `observability: true` without enabling testHooks.
  *
  * Implementation notes:
  *   - Buffers default to capacity 100 entries and drop oldest on overflow.

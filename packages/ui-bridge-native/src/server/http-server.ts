@@ -476,10 +476,21 @@ export class NativeUIBridgeServer {
    * Observability ring buffers backing `/control/console-errors` and
    * `/sdk/network-requests`. Allocated unconditionally so the handler can
    * always read them, but the global patches (`install()`) only fire on
-   * `start()` when `testHooks` is set — production builds don't monkey-patch.
+   * `start()` when observability is enabled (the dedicated `observability`
+   * flag, defaulting to `testHooks`) — builds with both off don't
+   * monkey-patch.
    */
   private consoleErrorBuffer: ConsoleErrorBuffer;
   private networkRequestBuffer: NetworkRequestBuffer;
+
+  /**
+   * Whether the console/network capture should be installed. The dedicated
+   * `observability` flag wins when set; otherwise falls back to `testHooks`
+   * so consumers predating the flag keep their exact behavior.
+   */
+  private observabilityEnabled(): boolean {
+    return this.config.observability ?? this.config.testHooks === true;
+  }
 
   constructor(
     private registry: NativeUIBridgeRegistry,
@@ -769,8 +780,11 @@ export class NativeUIBridgeServer {
     }
 
     // Install observability patches before binding the port — gated behind
-    // `testHooks` so production builds don't monkey-patch console/fetch.
-    if (this.config.testHooks === true) {
+    // the dedicated `observability` flag, which defaults to `testHooks` so
+    // existing consumers are unchanged. Decoupling the two lets release
+    // builds capture console/network evidence without also exposing the
+    // testHooks-gated control surface (`control/modal/*` etc.).
+    if (this.observabilityEnabled()) {
       this.consoleErrorBuffer.install();
       this.networkRequestBuffer.install();
     }

@@ -355,7 +355,6 @@ export function useUIElement<T extends NativeElementType = NativeElementType>(
 // narrow public sig with a structural cast.
 export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseUIElementReturn {
   const bridge = useUIBridgeNativeOptional();
-  const ref = useRef<NativeElementRef>(null);
   const [registered, setRegistered] = useState(false);
   const [_layout, setLayout] = useState<NativeLayout | null>(null);
   const propsRef = useRef<Record<string, unknown>>({});
@@ -365,6 +364,63 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // creates a cleanup/run feedback loop past React's 50-update ceiling.
   const registeredRef = useRef(false);
   const registeredIdRef = useRef<string | null>(null);
+
+  // Latest bridge for the ref interceptor below. React attaches/detaches
+  // refs during the commit phase — outside any effect closure — so the
+  // interceptor reads the live bridge through this ref.
+  const bridgeRef = useRef(bridge);
+  bridgeRef.current = bridge;
+
+  // Element ref with attach/detach interception.
+  //
+  // The registry seeds `visible: true` at registration (see
+  // `registerElement`) so unmeasured-but-mounted elements still appear in
+  // `visibleOnly` snapshots. That seed is wrong for refs that DETACH after
+  // render: conditional branches (e.g. a status element rendered only in an
+  // error branch) leave stale `visible: true` + layout in the registry when
+  // the branch unmounts, because RN fires no event on detach. React's only
+  // detach signal for object refs is the `ref.current = null` write it
+  // performs on unmount — so instead of a plain `useRef`, we hand consumers
+  // a stable RefObject whose `current` setter mirrors attach/detach into the
+  // registry's `visible` flag:
+  //   - detach (node → null) while registered  ⇒ `visible: false`
+  //   - (re)attach (null → node) while registered ⇒ `visible: true`
+  //     (restores the registration seed; onLayout / measureInWindow refine
+  //     it with real dimensions as usual)
+  // Reads (`ref.current`) behave exactly like a normal ref.
+  const nodeRef = useRef<NativeElementRef>(null);
+  const refInterceptorRef = useRef<React.RefObject<NativeElementRef> | null>(null);
+  if (refInterceptorRef.current === null) {
+    refInterceptorRef.current = {
+      get current(): NativeElementRef {
+        return nodeRef.current;
+      },
+      set current(node: NativeElementRef) {
+        const prev = nodeRef.current;
+        nodeRef.current = node;
+        const liveBridge = bridgeRef.current;
+        const registeredId = registeredIdRef.current;
+        if (!liveBridge || !registeredRef.current || registeredId === null) return;
+        if (node == null && prev != null) {
+          // Detached after render — the element left the tree while the hook
+          // (and its registration) stayed mounted. Without this write the
+          // registry keeps reporting the registration-seeded `visible: true`.
+          const state = liveBridge.registry.getElement(registeredId)?.getState();
+          if (state && state.visible !== false) {
+            liveBridge.registry.updateElementState(registeredId, { visible: false });
+          }
+        } else if (node != null && prev == null) {
+          // (Re)attached — restore the seed's "mounted, should be visible"
+          // optimism; layout measurement refines it from here.
+          const state = liveBridge.registry.getElement(registeredId)?.getState();
+          if (state && state.visible !== true) {
+            liveBridge.registry.updateElementState(registeredId, { visible: true });
+          }
+        }
+      },
+    } as React.RefObject<NativeElementRef>;
+  }
+  const ref = refInterceptorRef.current;
 
   const {
     id,
@@ -429,7 +485,10 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     // using `useUIElementWithProps` + `captureProps({ onPress })` from the
     // render body still pass.
     scheduleDeadButtonWarning(bridge, id, type);
-  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp, valueProp]);
+    // `ref` (the interceptor object) is created exactly once per hook
+    // instance, so listing it is identity-stable — included to satisfy
+    // exhaustive-deps now that it isn't a direct useRef result.
+  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp, valueProp, ref]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -493,7 +552,8 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         writeLayout({ x, y, width, height, pageX: x, pageY: y });
       }
     },
-    [bridge, id]
+    // `ref` is the once-per-hook interceptor object — identity-stable.
+    [bridge, id, ref]
   );
 
   // Keep latest register/unregister in refs so the auto-register effect does
@@ -548,7 +608,23 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
           ) => void;
         })
       | null;
-    if (!node || typeof node.measureInWindow !== 'function') return;
+    if (!node) {
+      // Never attached: the hook registered the element but no rendered node
+      // ever received the ref (refs attach during commit, BEFORE effects run
+      // — so a null ref here means the element isn't in the tree, e.g. a
+      // status element only rendered in an error branch). The registration
+      // seed optimistically reports `visible: true`; correct it so snapshots
+      // don't claim never-rendered elements are on screen. Mounted nodes
+      // that merely haven't measured yet keep the seeded `true` (the
+      // lazy-tab rationale above), and the ref interceptor flips this back
+      // to `true` if the element attaches later.
+      const seeded = bridge.registry.getElement(id)?.getState();
+      if (seeded && seeded.visible !== false) {
+        bridge.registry.updateElementState(id, { visible: false });
+      }
+      return;
+    }
+    if (typeof node.measureInWindow !== 'function') return;
 
     let cancelled = false;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -591,7 +667,8 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       cancelled = true;
       if (pendingTimer != null) clearTimeout(pendingTimer);
     };
-  }, [bridge, registered, id]);
+    // `ref` is the once-per-hook interceptor object — identity-stable.
+  }, [bridge, registered, id, ref]);
 
   // Auto-register handler props (onPress, onChangeText, etc.) when provided.
   // We use a ref to track which keys were last registered so we can clear

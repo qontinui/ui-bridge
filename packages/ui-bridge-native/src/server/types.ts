@@ -89,6 +89,16 @@ export interface NativeServerConfig extends NativeUIBridgeConfig {
    */
   testHooks?: boolean;
   /**
+   * Enable the read-only observability capture (console.error/warn +
+   * fetch/XHR ring buffers backing `GET /control/console-errors` and
+   * `GET /sdk/network-requests`). When omitted, falls back to the
+   * `testHooks` value so existing consumers are unchanged; set explicitly
+   * to decouple release-build capture from the testHooks-gated control
+   * surface. The React provider mirrors `features.observability` into
+   * this slot.
+   */
+  observability?: boolean;
+  /**
    * Viewport getter for `POST /control/page-health`.
    *
    * Injected by `UIBridgeNativeProvider` from `Dimensions.get('window')`.
