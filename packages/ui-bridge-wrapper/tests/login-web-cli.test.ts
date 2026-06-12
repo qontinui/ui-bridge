@@ -1,5 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { parseArgs, validateArgs, LoginCliArgError, USAGE } from '../src/login-web-cli.js';
+import {
+  parseArgs,
+  validateArgs,
+  LoginCliArgError,
+  USAGE,
+  waitForPostClickSettle,
+  POST_CLICK_SETTLE_TIMEOUT_MS,
+  type PostClickSettlePage,
+} from '../src/login-web-cli.js';
 
 // Importing the module MUST NOT spawn a browser or call main() — the isMain
 // guard keys off process.argv[1] === this module's URL, which is false under
@@ -151,6 +159,66 @@ describe('parseArgs', () => {
     expect(USAGE).toContain('--expect-text');
     expect(USAGE).toContain('--scroll-to');
     expect(USAGE).toContain('--screenshot');
+  });
+});
+
+// Post-click settle wait — runs only after a SUCCESSFUL --post-login-click so
+// the screenshot doesn't capture the dismissed dialog mid-fade. Exercised via
+// the exported helper with a structural fake page (no browser).
+describe('waitForPostClickSettle', () => {
+  const SELECTOR = "[data-testid='co-pilot-consent-not-now']";
+
+  /** Fake page whose locator(...).first().waitFor resolves/rejects per `outcome`, recording the call. */
+  function fakePage(outcome: 'hidden' | 'timeout'): {
+    page: PostClickSettlePage;
+    calls: Array<{ selector: string; state: string; timeout: number }>;
+  } {
+    const calls: Array<{ selector: string; state: string; timeout: number }> = [];
+    const page: PostClickSettlePage = {
+      locator: (selector: string) => ({
+        first: () => ({
+          waitFor: (opts: { state: 'hidden'; timeout: number }) => {
+            calls.push({ selector, state: opts.state, timeout: opts.timeout });
+            return outcome === 'hidden'
+              ? Promise.resolve()
+              : Promise.reject(new Error(`Timeout ${opts.timeout}ms exceeded`));
+          },
+        }),
+      }),
+    };
+    return { page, calls };
+  }
+
+  it('resolves true when the clicked element is dismissed (modal detaches/hides)', async () => {
+    const { page, calls } = fakePage('hidden');
+    const logs: string[] = [];
+    await expect(waitForPostClickSettle(page, SELECTOR, (m) => logs.push(m))).resolves.toBe(true);
+    // Waited on the CLICKED selector for the 'hidden' state with the bounded default budget.
+    expect(calls).toEqual([
+      { selector: SELECTOR, state: 'hidden', timeout: POST_CLICK_SETTLE_TIMEOUT_MS },
+    ]);
+    // Clean settle logs nothing — the wait is invisible on the happy path.
+    expect(logs).toEqual([]);
+  });
+
+  it('is non-fatal on timeout (modal never detaches): resolves false, logs one line', async () => {
+    const { page } = fakePage('timeout');
+    const logs: string[] = [];
+    // Must RESOLVE (false), never reject — the caller proceeds to the screenshot.
+    await expect(waitForPostClickSettle(page, SELECTOR, (m) => logs.push(m))).resolves.toBe(false);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('non-fatal');
+    expect(logs[0]).toContain(SELECTOR);
+  });
+
+  it('honors an explicit timeout override (bounded wait)', async () => {
+    const { page, calls } = fakePage('hidden');
+    await waitForPostClickSettle(page, SELECTOR, () => {}, 500);
+    expect(calls[0]?.timeout).toBe(500);
+  });
+
+  it('defaults to a ~2s bound (never an unbounded wait before the screenshot)', () => {
+    expect(POST_CLICK_SETTLE_TIMEOUT_MS).toBe(2000);
   });
 });
 

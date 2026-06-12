@@ -81,7 +81,10 @@ Options:
   --headed                       Launch a visible window (default headless).
   --post-login-click <css>       Click this selector ONCE on the authed landing
                                  (e.g. [data-testid='co-pilot-consent-allow']).
-                                 Non-fatal when the target never appears.
+                                 Non-fatal when the target never appears. After a
+                                 successful click, waits up to 2s for the clicked
+                                 element to be dismissed (dialog fade-out) before
+                                 --scroll-to/--screenshot run (also non-fatal).
   --expect-text <comma-list>     Assert the authed page's body text contains EVERY
                                  comma-separated entry. Missing entries fail the
                                  exit code; the result JSON lists expectFound /
@@ -245,6 +248,43 @@ export interface LoginResult {
   error?: string;
 }
 
+/** Bounded budget for the post-click settle wait (dialog dismissal). */
+export const POST_CLICK_SETTLE_TIMEOUT_MS = 2000;
+
+/** Minimal structural slice of a Playwright Page used by {@link waitForPostClickSettle} (unit-testable without a browser). */
+export interface PostClickSettlePage {
+  locator(selector: string): {
+    first(): { waitFor(opts: { state: 'hidden'; timeout: number }): Promise<void> };
+  };
+}
+
+/**
+ * After a SUCCESSFUL --post-login-click, wait (bounded) for the clicked
+ * element to be dismissed. A consent-style click unmounts its dialog with a
+ * fade-out; without this wait the full-page screenshot fires mid-fade and the
+ * diagnostic image shows a translucent modal overlaying the content under
+ * test. Playwright's 'hidden' state covers both "detached from the DOM" and
+ * "attached but no longer visible" — and the clicked element lives inside the
+ * dialog, so its dismissal proxies the dialog's. Non-fatal, same spirit as
+ * the click itself: on timeout it logs one line and the caller proceeds to
+ * the screenshot anyway. Returns true when the element settled, false on
+ * timeout.
+ */
+export async function waitForPostClickSettle(
+  page: PostClickSettlePage,
+  selector: string,
+  log: (msg: string) => void,
+  timeoutMs: number = POST_CLICK_SETTLE_TIMEOUT_MS
+): Promise<boolean> {
+  try {
+    await page.locator(selector).first().waitFor({ state: 'hidden', timeout: timeoutMs });
+    return true;
+  } catch {
+    log(`post-login click target still visible after ${timeoutMs}ms (non-fatal): ${selector}`);
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   let args: LoginCliArgs;
   try {
@@ -345,6 +385,12 @@ async function main(): Promise<void> {
         log(`post-login click: ${postClick}`);
       } catch {
         log(`post-login click target never visible (non-fatal): ${postClick}`);
+      }
+      // 6b) Settle wait — only after a SUCCESSFUL click: let the dismissed
+      //     dialog finish fading out so step 7's screenshot doesn't capture a
+      //     translucent mid-fade overlay. Bounded + non-fatal (see helper).
+      if (postLoginClicked) {
+        await waitForPostClickSettle(page, postClick, log);
       }
     }
 
