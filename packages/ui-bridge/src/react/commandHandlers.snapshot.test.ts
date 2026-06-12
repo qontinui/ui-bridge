@@ -815,3 +815,81 @@ describe('executeCommand · getControlSnapshot · enrichment', () => {
     expect(snap2.runnerTabs).toBeUndefined();
   });
 });
+
+describe("executeCommand · find/discover · F3 registration readiness (plan 2026-06-12 item 5)", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    window.history.pushState(null, '', '/');
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+    resetGlobalRegistry();
+    vi.restoreAllMocks();
+  });
+
+  type FindResult = {
+    elements: unknown[];
+    total: number;
+    registration: {
+      totalRegistered: number;
+      everHadRegistrations: boolean;
+      byRoute: Record<string, { count: number; ids: string[] }>;
+    };
+  };
+
+  it('empty registry → find carries the typed not-ready signal (everHadRegistrations: false)', async () => {
+    const result = (await executeCommand(
+      'find',
+      { include_hidden: true },
+      emptyBridge
+    )) as FindResult;
+
+    // The post-reload dead window: empty result, but TYPED as "not hydrated
+    // yet" rather than a bare empty list.
+    expect(result.elements).toEqual([]);
+    expect(result.registration).toBeDefined();
+    expect(result.registration.everHadRegistrations).toBe(false);
+    expect(result.registration.totalRegistered).toBe(0);
+  });
+
+  it('after registration → find carries everHadRegistrations: true (and stays true after teardown)', async () => {
+    const registry = getGlobalRegistry();
+    const btn = document.createElement('button');
+    container.appendChild(btn);
+    registry.registerElement('btn-1', btn, { route: '/home' });
+
+    const populated = (await executeCommand(
+      'find',
+      { include_hidden: true },
+      emptyBridge
+    )) as FindResult;
+    expect(populated.registration.everHadRegistrations).toBe(true);
+    expect(populated.registration.totalRegistered).toBe(1);
+
+    // Teardown: latch sticks → "genuinely empty", not "not ready".
+    registry.unregisterElement('btn-1');
+    const empty = (await executeCommand(
+      'find',
+      { include_hidden: true },
+      emptyBridge
+    )) as FindResult;
+    expect(empty.elements).toEqual([]);
+    expect(empty.registration.everHadRegistrations).toBe(true);
+    expect(empty.registration.totalRegistered).toBe(0);
+  });
+
+  it('discover alias carries the same registration block', async () => {
+    const result = (await executeCommand(
+      'discover',
+      { include_hidden: true },
+      emptyBridge
+    )) as FindResult;
+    expect(result.registration).toBeDefined();
+    expect(result.registration.everHadRegistrations).toBe(false);
+  });
+});

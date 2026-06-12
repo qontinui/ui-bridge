@@ -66,6 +66,13 @@ Optional:
                                before --settle-timeout, ready() fails with a BLOCKED error
                                instead of returning a control-less page.
   --viewport <WxH>             Viewport size, e.g. 1280x720
+  --launch-arg <arg>           Extra Chromium command-line argument (repeatable),
+                               passed through to chromium.launch({ args }).
+                               NOTE: when --url is https and --relay resolves to a
+                               loopback host, the LNA-disable flags
+                               (--disable-features=LocalNetworkAccessChecks,...) are
+                               auto-appended — Chromium otherwise blocks the
+                               https-page → loopback-relay fetch (Local Network Access).
   --quiet                      Suppress human-readable logs (JSON results still print)
   --help, -h                   Print this help and exit
 
@@ -107,6 +114,8 @@ export interface InjectCliArgs {
   tabId: string | null;
   viewportWidth: number | null;
   viewportHeight: number | null;
+  /** Extra Chromium launch args collected from --launch-arg flags (in order). */
+  launchArgs: string[];
   /** Variant-A actions collected from --exec flags (in order). */
   execActions: ExecAction[];
   /** True if --exec-stdin was given (read NDJSON from stdin in Variant A). */
@@ -172,6 +181,7 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     tabId: null,
     viewportWidth: null,
     viewportHeight: null,
+    launchArgs: [],
     execActions: [],
     execStdin: false,
     quiet: false,
@@ -216,6 +226,18 @@ export function parseArgs(argv: string[]): InjectCliArgs {
       case '--tab-id':
         args.tabId = consumeValue('--tab-id', argv[++i], mkError);
         break;
+      case '--launch-arg': {
+        // consumeValue treats single-dash tokens as values but rejects
+        // double-dash flag-shaped tokens — Chromium args ARE double-dash
+        // tokens, so read the raw next token instead and only reject a
+        // genuinely missing value.
+        const raw = argv[++i];
+        if (raw === undefined || raw.length === 0) {
+          throw new InjectCliArgError(`--launch-arg expects a Chromium argument (got <missing>)`);
+        }
+        args.launchArgs.push(raw);
+        break;
+      }
       case '--exec': {
         // consumeValue: `--exec --headed` must error, not dispatch a bogus
         // action literally named '--headed'.
@@ -352,12 +374,83 @@ export function selectMode(args: InjectCliArgs): 'exec' | 'relay' {
 }
 
 /**
+ * Chromium feature flags that must be DISABLED for an https page to fetch a
+ * loopback (local-network) relay. Chromium's Local Network Access checks
+ * otherwise block `https://example.com` → `http://127.0.0.1:<port>` with
+ * "Permission was denied for this request to access the 'loopback' address
+ * space" (plan 2026-06-12 item 2).
+ */
+export const LNA_DISABLE_FEATURES = [
+  'LocalNetworkAccessChecks',
+  'PrivateNetworkAccessSendPreflights',
+  'PrivateNetworkAccessRespectPreflightResults',
+] as const;
+
+/** True when a URL hostname is a loopback address (localhost / 127/8 / ::1). */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    h.startsWith('127.') ||
+    h === '::1' ||
+    h === '[::1]'
+  );
+}
+
+/**
+ * Compute the effective Chromium launch args: the user's `--launch-arg`
+ * values, plus the LNA-disable features auto-appended when the target page
+ * is https AND the relay resolves to a loopback host (the combination
+ * Chromium's Local Network Access checks block). If the user already passed
+ * a `--disable-features=` arg, the missing LNA features are merged into it
+ * (Chromium does not union repeated `--disable-features` flags).
+ *
+ * Pure — exported for unit tests.
+ */
+export function buildLaunchArgs(
+  args: Pick<InjectCliArgs, 'url' | 'relay' | 'launchArgs'>
+): { launchArgs: string[]; lnaAutoAppended: boolean } {
+  const launchArgs = [...args.launchArgs];
+  let lnaAutoAppended = false;
+
+  let relayIsLoopback = false;
+  if (args.relay) {
+    try {
+      relayIsLoopback = isLoopbackHost(new URL(args.relay).hostname);
+    } catch {
+      relayIsLoopback = false;
+    }
+  }
+
+  if (/^https:\/\//i.test(args.url) && relayIsLoopback) {
+    const prefix = '--disable-features=';
+    const existingIdx = launchArgs.findIndex((a) => a.startsWith(prefix));
+    if (existingIdx === -1) {
+      launchArgs.push(`${prefix}${LNA_DISABLE_FEATURES.join(',')}`);
+      lnaAutoAppended = true;
+    } else {
+      const existing = launchArgs[existingIdx]!.slice(prefix.length).split(',').filter(Boolean);
+      const missing = LNA_DISABLE_FEATURES.filter((f) => !existing.includes(f));
+      if (missing.length > 0) {
+        launchArgs[existingIdx] = `${prefix}${[...existing, ...missing].join(',')}`;
+        lnaAutoAppended = true;
+      }
+    }
+  }
+
+  return { launchArgs, lnaAutoAppended };
+}
+
+/**
  * Build the `options` object for `createTransport({ kind: 'injected', options })`.
  * Only includes keys the user provided; `targetUrl` is always present.
  */
 export function buildTransportOptions(args: InjectCliArgs): Record<string, unknown> {
   const options: Record<string, unknown> = { targetUrl: args.url };
   if (args.relay) options.uiBridgeBase = args.relay;
+  const { launchArgs } = buildLaunchArgs(args);
+  if (launchArgs.length > 0) options.launchArgs = launchArgs;
   if (args.authToken) options.authToken = args.authToken;
   if (args.registrationMetadata) options.registrationMetadata = args.registrationMetadata;
   if (args.headed) options.headed = true;
@@ -437,6 +530,16 @@ async function main(): Promise<void> {
   }
 
   const mode = selectMode(args);
+  const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
+  if (lnaAutoAppended) {
+    log(
+      args.quiet,
+      `[ui-bridge-inject] https page + loopback relay detected — auto-appending Chromium ` +
+        `LNA-disable flags so the page can fetch the relay: ` +
+        `--disable-features=${LNA_DISABLE_FEATURES.join(',')} ` +
+        `(effective launch args: ${JSON.stringify(launchArgs)})`
+    );
+  }
   const transport = createTransport({ kind: 'injected', options: buildTransportOptions(args) });
 
   // The public-surface way to reach the InjectedContext (tabId / registration

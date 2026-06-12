@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   parseArgs,
   buildTransportOptions,
+  buildLaunchArgs,
+  isLoopbackHost,
+  LNA_DISABLE_FEATURES,
   selectMode,
   InjectCliArgError,
   USAGE,
@@ -307,5 +310,137 @@ describe('settle flags', () => {
 
   it('omits expectSelector when not given', () => {
     expect(buildTransportOptions(parseArgs([...base])).expectSelector).toBeUndefined();
+  });
+});
+
+describe('Chromium launch args + LNA auto-disable (plan 2026-06-12 item 2)', () => {
+  const LNA_FLAG =
+    '--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults';
+
+  it('exports the three LNA feature names', () => {
+    expect([...LNA_DISABLE_FEATURES]).toEqual([
+      'LocalNetworkAccessChecks',
+      'PrivateNetworkAccessSendPreflights',
+      'PrivateNetworkAccessRespectPreflightResults',
+    ]);
+  });
+
+  it('https url + 127.0.0.1 loopback relay → auto-appends the LNA disable flags', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://127.0.0.1:9877/ui-bridge',
+    ]);
+    const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
+    expect(lnaAutoAppended).toBe(true);
+    expect(launchArgs).toEqual([LNA_FLAG]);
+    expect(buildTransportOptions(args).launchArgs).toEqual([LNA_FLAG]);
+  });
+
+  it('https url + localhost relay → auto-appends', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://localhost:3001/api/ui-bridge',
+    ]);
+    expect(buildLaunchArgs(args).lnaAutoAppended).toBe(true);
+  });
+
+  it('https url + [::1] relay → auto-appends', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://[::1]:9877/ui-bridge',
+    ]);
+    expect(buildLaunchArgs(args).lnaAutoAppended).toBe(true);
+  });
+
+  it('http (non-https) url + loopback relay → NOT appended (no LNA block applies)', () => {
+    const args = parseArgs([
+      '--url',
+      'http://localhost:3000/login',
+      '--relay',
+      'http://127.0.0.1:9877/ui-bridge',
+    ]);
+    const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
+    expect(lnaAutoAppended).toBe(false);
+    expect(launchArgs).toEqual([]);
+    expect('launchArgs' in buildTransportOptions(args)).toBe(false);
+  });
+
+  it('https url + non-loopback relay → NOT appended', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'https://qontinui.io/api/ui-bridge',
+    ]);
+    expect(buildLaunchArgs(args).lnaAutoAppended).toBe(false);
+  });
+
+  it('--launch-arg values pass through (order preserved) and combine with the auto-append', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://127.0.0.1:9877/ui-bridge',
+      '--launch-arg',
+      '--no-sandbox',
+      '--launch-arg',
+      '--lang=en-US',
+    ]);
+    expect(args.launchArgs).toEqual(['--no-sandbox', '--lang=en-US']);
+    const { launchArgs } = buildLaunchArgs(args);
+    expect(launchArgs).toEqual(['--no-sandbox', '--lang=en-US', LNA_FLAG]);
+  });
+
+  it('merges the LNA features into a user-supplied --disable-features instead of duplicating the flag', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://127.0.0.1:9877/ui-bridge',
+      '--launch-arg',
+      '--disable-features=Translate',
+    ]);
+    const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
+    expect(lnaAutoAppended).toBe(true);
+    expect(launchArgs).toEqual([
+      '--disable-features=Translate,LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults',
+    ]);
+  });
+
+  it('does not re-append when the user already disabled the LNA features', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/login',
+      '--relay',
+      'http://127.0.0.1:9877/ui-bridge',
+      '--launch-arg',
+      LNA_FLAG,
+    ]);
+    const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
+    expect(lnaAutoAppended).toBe(false);
+    expect(launchArgs).toEqual([LNA_FLAG]);
+  });
+
+  it('--launch-arg without a value errors', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://x.io', '--exec', 'find {}', '--launch-arg'])
+    ).toThrow(InjectCliArgError);
+  });
+
+  it('isLoopbackHost classifies hosts correctly', () => {
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('app.localhost')).toBe(true);
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('127.1.2.3')).toBe(true);
+    expect(isLoopbackHost('::1')).toBe(true);
+    expect(isLoopbackHost('[::1]')).toBe(true);
+    expect(isLoopbackHost('qontinui.io')).toBe(false);
+    expect(isLoopbackHost('192.168.1.10')).toBe(false);
   });
 });

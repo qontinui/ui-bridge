@@ -38,6 +38,12 @@ export interface HeadlessTransportOptions {
   userAgent?: string;
   /** Forward browser console/page errors to the Node process stderr. */
   forwardConsole?: boolean;
+  /**
+   * Extra Chromium command-line arguments passed through to
+   * `chromium.launch({ args })` (e.g. the LNA-disable flags needed to fetch
+   * a loopback relay from an https page). Plan 2026-06-12 item 2.
+   */
+  launchArgs?: string[];
 }
 
 /**
@@ -66,6 +72,7 @@ interface LaunchHeadlessTabArgs {
   userAgent?: string;
   forwardConsole?: boolean;
   initScripts?: string[];
+  launchArgs?: string[];
 }
 
 interface LaunchedHeadlessTab {
@@ -145,6 +152,11 @@ export class HeadlessTransport extends BaseTransport {
       userAgent: typeof raw['userAgent'] === 'string' ? (raw['userAgent'] as string) : undefined,
       forwardConsole:
         typeof raw['forwardConsole'] === 'boolean' ? (raw['forwardConsole'] as boolean) : undefined,
+      launchArgs:
+        Array.isArray(raw['launchArgs']) &&
+        (raw['launchArgs'] as unknown[]).every((a) => typeof a === 'string')
+          ? (raw['launchArgs'] as string[])
+          : undefined,
     };
   }
 
@@ -208,6 +220,10 @@ export class HeadlessTransport extends BaseTransport {
         userAgent: this.options.userAgent,
         forwardConsole: this.options.forwardConsole,
         initScripts: initScripts.length > 0 ? initScripts : undefined,
+        launchArgs:
+          this.options.launchArgs && this.options.launchArgs.length > 0
+            ? this.options.launchArgs
+            : undefined,
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);

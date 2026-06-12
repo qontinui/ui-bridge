@@ -482,3 +482,235 @@ describe('relay · Item #15 — stale-tab pruning', () => {
     expect(relay.getTransportDiagnostics().activeTabs).toEqual([]);
   });
 });
+
+// ============================================================================
+// P0 — pinned reads must NEVER be served from the shared snapshot cache
+// (plan 2026-06-12 co-pilot remediation, item 1) + per-tab snapshot reads
+// (item 3) + F3 registration readiness on find responses (item 5).
+// ============================================================================
+
+/** Minimal ControlSnapshot-shaped payload for seeding the relay cache. */
+function snapshotWith(
+  elements: Array<{ id: string; type: string; label?: string }>,
+  registration?: {
+    totalRegistered: number;
+    everHadRegistrations: boolean;
+    byRoute: Record<string, { count: number; ids: string[] }>;
+  }
+): Record<string, unknown> {
+  return {
+    timestamp: Date.now(),
+    elements: elements.map((e) => ({ ...e, actions: ['click'], state: {} })),
+    components: [],
+    workflows: [],
+    activeRuns: [],
+    ...(registration ? { registration } : {}),
+  };
+}
+
+/**
+ * Register a tab that RESPONDS to relayed commands: each delivered command is
+ * resolved (next tick) with `makeResult(action)`, attributed to this tab.
+ */
+function registerRespondingTab(
+  relay: CommandRelay,
+  tabId: string,
+  makeResult: (action: string) => unknown
+): void {
+  relay.subscribeToCommands((cmd) => {
+    setTimeout(() => {
+      relay.resolveCommand(cmd.commandId, makeResult(cmd.action), tabId);
+    }, 0);
+  }, tabId);
+}
+
+describe('relay-handlers · pinned reads never serve the shared snapshot cache (item 1, P0)', () => {
+  /** Seed `latestControlSnapshot` through the public handler surface. */
+  async function seedCache(
+    relay: CommandRelay,
+    handlers: ReturnType<typeof createRelayHandlers>,
+    snapshot: Record<string, unknown>
+  ): Promise<void> {
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue(snapshot as never);
+    const seeded = await handlers.getControlSnapshot!({ recency: 'current' });
+    expect(seeded.success).toBe(true);
+    spy.mockRestore();
+  }
+
+  it('pinned find to an unknown tab returns TAB_NOT_FOUND — never the cached elements', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    await seedCache(relay, handlers, snapshotWith([{ id: 'cached-el', type: 'button' }]));
+
+    const result = await handlers.find!({ tabId: 'tab-zombie' } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TAB_NOT_FOUND');
+    // The cached element from the OTHER tab must not leak into the response.
+    expect(JSON.stringify(result)).not.toContain('cached-el');
+  });
+
+  it('pinned find whose relay leg times out propagates TIMEOUT — never the cached elements', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    await seedCache(relay, handlers, snapshotWith([{ id: 'cached-el', type: 'button' }]));
+
+    vi.spyOn(relay, 'queueCommand').mockRejectedValue(
+      new Error('Timeout waiting for browser response')
+    );
+    const result = await handlers.find!({ tabId: 'tab-a' } as never);
+
+    expect(result.success).toBe(false);
+    // `mapInternalErrorCode` canonicalizes TIMEOUT to the UB diagnostic code.
+    expect(result.code).toBe('UB-ACTION-TIMEOUT');
+    expect(JSON.stringify(result)).not.toContain('cached-el');
+  });
+
+  it('pinned find via internal targetTabId spelling also propagates the routing error', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    await seedCache(relay, handlers, snapshotWith([{ id: 'cached-el', type: 'button' }]));
+
+    const result = await handlers.find!({ targetTabId: 'tab-zombie' } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TAB_NOT_FOUND');
+    expect(JSON.stringify(result)).not.toContain('cached-el');
+  });
+
+  it('UNPINNED find keeps the cache fallback (back-compat) and carries the F3 registration readiness block (item 5)', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    await seedCache(
+      relay,
+      handlers,
+      snapshotWith([], { totalRegistered: 0, everHadRegistrations: false, byRoute: {} })
+    );
+
+    vi.spyOn(relay, 'queueCommand').mockRejectedValue(
+      new Error('Timeout waiting for browser response')
+    );
+    const result = await handlers.find!({} as never);
+
+    // Unpinned reads keep the cached fallback...
+    expect(result.success).toBe(true);
+    // ...and a poller can now distinguish "not hydrated yet" from "empty":
+    const data = result.data as {
+      elements: unknown[];
+      registration?: { everHadRegistrations: boolean };
+    };
+    expect(data.elements).toEqual([]);
+    expect(data.registration).toBeDefined();
+    expect(data.registration!.everHadRegistrations).toBe(false);
+  });
+
+  it('2-tab pinned find hits the pinned tab 10/10 (never the other tab)', async () => {
+    const relay = freshRelay();
+    registerRespondingTab(relay, 'tab-a', () => ({
+      elements: [{ id: 'el-from-tab-a', type: 'button' }],
+      total: 1,
+      durationMs: 0,
+      timestamp: Date.now(),
+    }));
+    registerRespondingTab(relay, 'tab-b', () => ({
+      elements: [{ id: 'el-from-tab-b', type: 'button' }],
+      total: 1,
+      durationMs: 0,
+      timestamp: Date.now(),
+    }));
+    const handlers = createRelayHandlers(relay);
+
+    for (let i = 0; i < 10; i++) {
+      const result = await handlers.find!({ tabId: 'tab-a' } as never);
+      expect(result.success).toBe(true);
+      const data = result.data as { elements: Array<{ id: string }> };
+      expect(data.elements.map((e) => e.id)).toEqual(['el-from-tab-a']);
+    }
+    for (let i = 0; i < 10; i++) {
+      const result = await handlers.find!({ tabId: 'tab-b' } as never);
+      expect(result.success).toBe(true);
+      const data = result.data as { elements: Array<{ id: string }> };
+      expect(data.elements.map((e) => e.id)).toEqual(['el-from-tab-b']);
+    }
+  });
+
+  it('pinned getElements / getComponents / getElement propagate routing errors instead of cache', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+    await seedCache(relay, handlers, snapshotWith([{ id: 'cached-el', type: 'button' }]));
+
+    const elements = await handlers.getElements!({ tabId: 'tab-zombie' } as never);
+    expect(elements.success).toBe(false);
+    expect(elements.code).toBe('TAB_NOT_FOUND');
+
+    const components = await handlers.getComponents!({ tabId: 'tab-zombie' } as never);
+    expect(components.success).toBe(false);
+    expect(components.code).toBe('TAB_NOT_FOUND');
+
+    const element = await handlers.getElement!('cached-el', { tabId: 'tab-zombie' } as never);
+    expect(element.success).toBe(false);
+    expect(element.code).toBe('TAB_NOT_FOUND');
+  });
+});
+
+describe('relay-handlers · getControlSnapshot per-tab pinning (item 3)', () => {
+  it('pinned snapshot read bypasses the warm cache and dispatches live to the pinned tab', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    registerTab(relay, 'tab-b');
+    const handlers = createRelayHandlers(relay);
+
+    // Warm the shared cache with tab-a's data (recency 'any' would serve it).
+    const seedSpy = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValue(snapshotWith([{ id: 'el-from-tab-a', type: 'button' }]) as never);
+    await handlers.getControlSnapshot!({ recency: 'current' });
+    seedSpy.mockRestore();
+
+    // Pinned read (public `tabId` spelling) must dispatch live to tab-b...
+    const liveSpy = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValue(snapshotWith([{ id: 'el-from-tab-b', type: 'button' }]) as never);
+    const result = await handlers.getControlSnapshot!({
+      tabId: 'tab-b',
+      recency: 'any',
+    } as never);
+
+    expect(liveSpy).toHaveBeenCalledTimes(1);
+    const [action, , opts] = liveSpy.mock.calls[0]!;
+    expect(action).toBe('getControlSnapshot');
+    expect((opts as { targetTabId?: string })?.targetTabId).toBe('tab-b');
+
+    // ...and return tab-b's data, not the cached tab-a snapshot.
+    expect(result.success).toBe(true);
+    const data = result.data as { elements: Array<{ id: string }> };
+    expect(data.elements.map((e) => e.id)).toEqual(['el-from-tab-b']);
+  });
+
+  it('pinned snapshot read to an unknown tab returns TAB_NOT_FOUND even with a warm cache', async () => {
+    const relay = freshRelay();
+    registerTab(relay, 'tab-a');
+    const handlers = createRelayHandlers(relay);
+
+    const seedSpy = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValue(snapshotWith([{ id: 'cached-el', type: 'button' }]) as never);
+    await handlers.getControlSnapshot!({ recency: 'current' });
+    seedSpy.mockRestore();
+
+    const result = await handlers.getControlSnapshot!({
+      tabId: 'tab-zombie',
+      recency: 'any',
+    } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TAB_NOT_FOUND');
+    expect((result as { httpStatus?: number }).httpStatus).toBe(404);
+    expect(JSON.stringify(result)).not.toContain('cached-el');
+  });
+});
