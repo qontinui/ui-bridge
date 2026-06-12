@@ -248,6 +248,10 @@ export function UIBridgeNativeProvider({
       cors: true,
       appInfo: config.appInfo,
       testHooks: features.testHooks === true,
+      // Dedicated console/network-capture flag; the server defaults it to
+      // the `testHooks` value when undefined, so passing it through verbatim
+      // keeps existing consumers unchanged.
+      observability: features.observability,
       // Injected device-viewport getter for POST /control/page-health. The
       // server doesn't import `react-native` itself — the require/import
       // pattern there crashed the host RN app in 0.6.3/0.6.4 (Metro/Hermes
@@ -340,6 +344,7 @@ export function UIBridgeNativeProvider({
   }, [
     features.server,
     features.testHooks,
+    features.observability,
     config.serverPort,
     config.appInfo,
     registry,
@@ -395,6 +400,7 @@ export function UIBridgeNativeProvider({
             cors: true,
             appInfo: config.appInfo,
             testHooks: features.testHooks === true,
+            observability: features.observability,
             viewportProvider: () => {
               const win = Dimensions.get('window');
               return { width: win.width, height: win.height };

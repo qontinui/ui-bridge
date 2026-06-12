@@ -705,6 +705,18 @@ export interface NativeUIBridgeFeatures {
    * (typically gated on `__DEV__`) when running automated tests.
    */
   testHooks?: boolean;
+  /**
+   * Enable the read-only observability capture (console.error/warn +
+   * fetch/XHR ring buffers backing `GET /control/console-errors` and
+   * `GET /sdk/network-requests`).
+   *
+   * Defaults to the `testHooks` value so existing consumers are unchanged,
+   * but can be set independently: `observability: true` with
+   * `testHooks: false` enables release-build capture WITHOUT exposing the
+   * testHooks-gated control surface (`control/modal/*` etc.). Setting it to
+   * `false` explicitly disables capture even when `testHooks` is on.
+   */
+  observability?: boolean;
 }
 
 /**

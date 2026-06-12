@@ -416,4 +416,108 @@ describe('NativeUIBridgeServer — observability endpoints', () => {
     expect(paths).toContain('/ui-bridge/control/console-errors');
     expect(paths).toContain('/ui-bridge/sdk/network-requests');
   });
+
+  // ── `observability` flag decoupled from `testHooks` ───────────────────────
+
+  it('installs capture with observability:true even when testHooks is off (installed:true)', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    const server = new NativeUIBridgeServer(registry, executor, {
+      testHooks: false,
+      observability: true,
+    });
+
+    const adapter = makeStubAdapter();
+    server.setAdapter(adapter);
+
+    globalThis.fetch = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as
+      typeof fetch;
+
+    await server.start();
+
+    console.error('release-build boom');
+    await fetch('https://example.test/usage');
+
+    const consoleRes = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/control/console-errors',
+      headers: {},
+      query: {},
+    });
+    expect(consoleRes.status).toBe(200);
+    const consoleParsed = JSON.parse(consoleRes.body) as ParsedResponse<ConsoleErrorsResponse>;
+    expect(consoleParsed.success).toBe(true);
+    expect(consoleParsed.data?.installed).toBe(true);
+    expect(
+      consoleParsed.data?.entries.some((e) => e.message.includes('release-build boom'))
+    ).toBe(true);
+
+    const networkRes = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/sdk/network-requests',
+      headers: {},
+      query: {},
+    });
+    const networkParsed = JSON.parse(networkRes.body) as ParsedResponse<NetworkRequestsResponse>;
+    expect(networkParsed.data?.installed).toBe(true);
+    expect(networkParsed.data?.entries.some((e) => e.url.includes('/usage'))).toBe(true);
+
+    await server.stop();
+  });
+
+  it('does NOT expose testHooks-gated routes when only observability is on', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    const server = new NativeUIBridgeServer(registry, executor, {
+      testHooks: false,
+      observability: true,
+    });
+
+    const adapter = makeStubAdapter();
+    server.setAdapter(adapter);
+    await server.start();
+
+    const response = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/_routes',
+      headers: {},
+      query: {},
+    });
+    const parsed = JSON.parse(response.body) as {
+      data: { routes: Array<{ method: string; path: string }> };
+    };
+    const paths = parsed.data.routes.map((r) => r.path);
+    // Observability endpoints stay advertised...
+    expect(paths).toContain('/ui-bridge/control/console-errors');
+    // ...but the testHooks control surface stays hidden.
+    expect(paths.some((p) => p.includes('control/modal'))).toBe(false);
+
+    await server.stop();
+  });
+
+  it('explicit observability:false disables capture even when testHooks is on', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const executor = new DefaultNativeActionExecutor(registry);
+    const server = new NativeUIBridgeServer(registry, executor, {
+      testHooks: true,
+      observability: false,
+    });
+
+    const adapter = makeStubAdapter();
+    server.setAdapter(adapter);
+    await server.start();
+
+    const response = await server.handleRequest({
+      method: 'GET',
+      path: '/ui-bridge/control/console-errors',
+      headers: {},
+      query: {},
+    });
+    const parsed = JSON.parse(response.body) as ParsedResponse<ConsoleErrorsResponse>;
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.installed).toBe(false);
+    expect(parsed.data?.entries).toEqual([]);
+
+    await server.stop();
+  });
 });
