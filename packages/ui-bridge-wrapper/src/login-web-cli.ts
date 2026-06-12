@@ -343,6 +343,16 @@ async function main(): Promise<void> {
         await target.click();
         postLoginClicked = true;
         log(`post-login click: ${postClick}`);
+        // The click typically dismisses a dialog/modal that fades out; a
+        // screenshot taken immediately races that fade. Wait (bounded) for the
+        // clicked element to detach or become hidden — Playwright's 'hidden'
+        // state covers both — before the scroll-to/screenshot steps. Timeout
+        // is non-fatal: proceed with a warning.
+        await target
+          .waitFor({ state: 'hidden', timeout: 2000 })
+          .catch(() =>
+            log(`post-login click target still visible after 2s (non-fatal): ${postClick}`)
+          );
       } catch {
         log(`post-login click target never visible (non-fatal): ${postClick}`);
       }
