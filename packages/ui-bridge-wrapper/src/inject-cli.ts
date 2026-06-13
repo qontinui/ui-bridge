@@ -52,6 +52,12 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
                                {"action":"...","payload":{...}}
 
 Optional:
+  --storage-state <path>       Seed the browser context from a Playwright storageState
+                               JSON file (cookies + localStorage) produced by
+                               'ui-bridge-login-web --storage-state-out <path>'. This
+                               carries a saved authenticated session past a login wall,
+                               so you can drive a login-walled page (e.g. an /admin
+                               wizard) WITHOUT re-driving the hosted-UI login each run.
   --headed                     Launch with a visible window (default: headless)
   --ready-timeout <ms>         Max wait for the injected runtime ready/settle gate (default 30000)
   --no-settle                  Gate ready on the runtime being live only, NOT on the DOM
@@ -88,6 +94,12 @@ Examples:
   # Variant A: find a control and act on it
   ui-bridge-inject --url https://example.com/login \\
     --exec 'find {"text":"Sign in"}'
+
+  # Reuse a saved login: drive a login-walled page with a captured auth artifact
+  ui-bridge-login-web --url "https://qontinui.io/login?next=%2Fadmin" \\
+    --success /admin --storage-state-out auth.json
+  ui-bridge-inject --url https://qontinui.io/admin \\
+    --storage-state auth.json --exec 'getControlSnapshot {}'
 `;
 
 /** A single Variant-A action to execute. */
@@ -114,6 +126,8 @@ export interface InjectCliArgs {
   tabId: string | null;
   viewportWidth: number | null;
   viewportHeight: number | null;
+  /** Path to a Playwright storageState JSON file to seed the context (from --storage-state). */
+  storageState: string | null;
   /** Extra Chromium launch args collected from --launch-arg flags (in order). */
   launchArgs: string[];
   /** Variant-A actions collected from --exec flags (in order). */
@@ -181,6 +195,7 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     tabId: null,
     viewportWidth: null,
     viewportHeight: null,
+    storageState: null,
     launchArgs: [],
     execActions: [],
     execStdin: false,
@@ -226,6 +241,16 @@ export function parseArgs(argv: string[]): InjectCliArgs {
       case '--tab-id':
         args.tabId = consumeValue('--tab-id', argv[++i], mkError);
         break;
+      case '--storage-state': {
+        const raw = consumeValue('--storage-state', argv[++i], mkError);
+        if (raw === null || raw.length === 0) {
+          throw new InjectCliArgError(
+            `--storage-state expects a path to a storageState JSON file (got <missing>)`
+          );
+        }
+        args.storageState = raw;
+        break;
+      }
       case '--launch-arg': {
         // consumeValue treats single-dash tokens as values but rejects
         // double-dash flag-shaped tokens — Chromium args ARE double-dash
@@ -464,6 +489,7 @@ export function buildTransportOptions(args: InjectCliArgs): Record<string, unkno
   if (args.tabId) options.tabId = args.tabId;
   if (args.viewportWidth !== null) options.viewportWidth = args.viewportWidth;
   if (args.viewportHeight !== null) options.viewportHeight = args.viewportHeight;
+  if (args.storageState) options.storageStatePath = args.storageState;
   return options;
 }
 

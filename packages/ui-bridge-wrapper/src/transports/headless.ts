@@ -44,6 +44,16 @@ export interface HeadlessTransportOptions {
    * a loopback relay from an https page). Plan 2026-06-12 item 2.
    */
   launchArgs?: string[];
+  /**
+   * Path to a Playwright `storageState` JSON file (cookies + localStorage)
+   * to seed the browser context with before the first navigation. Lets a
+   * previously-captured authenticated session (e.g. from
+   * `ui-bridge-login-web --storage-state-out`) carry past a login wall so an
+   * autonomous loop can drive a login-walled page repeatedly without
+   * re-driving the hosted-UI login. Threaded to `launchHeadlessTab`'s
+   * `storageStatePath`.
+   */
+  storageStatePath?: string;
 }
 
 /**
@@ -73,6 +83,7 @@ interface LaunchHeadlessTabArgs {
   forwardConsole?: boolean;
   initScripts?: string[];
   launchArgs?: string[];
+  storageStatePath?: string;
 }
 
 interface LaunchedHeadlessTab {
@@ -157,6 +168,10 @@ export class HeadlessTransport extends BaseTransport {
         (raw['launchArgs'] as unknown[]).every((a) => typeof a === 'string')
           ? (raw['launchArgs'] as string[])
           : undefined,
+      storageStatePath:
+        typeof raw['storageStatePath'] === 'string'
+          ? (raw['storageStatePath'] as string)
+          : undefined,
     };
   }
 
@@ -224,6 +239,7 @@ export class HeadlessTransport extends BaseTransport {
           this.options.launchArgs && this.options.launchArgs.length > 0
             ? this.options.launchArgs
             : undefined,
+        storageStatePath: this.options.storageStatePath,
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
