@@ -1621,6 +1621,181 @@ Quick smoke-test:
 curl -s -N -m 3 http://localhost:9875/health/stream | head -5
 ```
 
+## Driving the auth-gated web relay
+
+The runner endpoints above hit a runner directly on `localhost:9876`. The
+**production web relay** at `https://qontinui.io/api/ui-bridge/*` is a
+different surface: it proxies commands into a browser tab (the operator
+co-pilot, the workflow builder, etc.) via the SDK's CommandRelay, and it
+is **auth-gated**. An unauthenticated call returns:
+
+```json
+// HTTP 401
+{ "success": false, "code": "UNAUTHENTICATED",
+  "message": "UI Bridge relay requires a valid session token" }
+```
+
+(The gate is `frontend/src/app/api/ui-bridge/[...path]/_auth.ts` in
+qontinui-web; it is active when `UI_BRIDGE_REQUIRE_AUTH=1`.) This section
+is the repeatable recipe for driving that relay — it replaces the tribal
+knowledge of hand-minting a JWT and guessing which tab is live.
+
+### 1. Mint a session bearer (Cognito USER_PASSWORD_AUTH)
+
+The relay accepts an `Authorization: Bearer <jwt>` whose token is verified
+along one of two disjoint paths in `_auth.ts`:
+
+- a **Cognito operator bearer** — verified via the backend
+  `GET /api/v1/auth/users/me`; resolves a `kind:"user"` principal. **This
+  is the path the recipe below uses.**
+- a **coord device-JWT** — verified via `GET /api/v1/devices/me`; resolves
+  a `kind:"device"` principal scoped to the paired operator's tabs.
+
+Mint the operator bearer with Cognito `USER_PASSWORD_AUTH` in
+**`us-east-1`**, using the runner/CI app-client id and the operator
+credentials stored in SSM:
+
+| Parameter | Value / source |
+|---|---|
+| Region | `us-east-1` |
+| Cognito app-client id | `67f2a1a0cmgileob23lniud5t7` (the runner/CI client named in the auth-pairing plan) |
+| Auth flow | `USER_PASSWORD_AUTH` |
+| Username | SSM SecureString `/qontinui/operator/email` |
+| Password | SSM SecureString `/qontinui/operator/password` |
+
+> **Git Bash note.** SSM parameter names start with `/`, which MSYS will
+> rewrite into a Windows path. Prefix the command with `MSYS_NO_PATHCONV=1`
+> so the leading slash survives:
+>
+> ```bash
+> MSYS_NO_PATHCONV=1 aws ssm get-parameter \
+>   --name /qontinui/operator/email \
+>   --with-decryption --query Parameter.Value --output text --region us-east-1
+> ```
+
+Inline boto3 helper — reads the creds from SSM and prints a bearer to
+stdout. The relay's user path verifies against `/auth/users/me`, which
+accepts the Cognito **access token**; print whichever token your backend's
+`users/me` accepts (access by default, swap to `IdToken` if your deployment
+verifies the id token):
+
+```python
+# mint-web-relay-token.py — prints a Cognito bearer for the UI Bridge relay.
+#   python mint-web-relay-token.py            # -> AccessToken
+# Requires: boto3, AWS creds with ssm:GetParameter + cognito-idp:InitiateAuth.
+import boto3
+
+REGION = "us-east-1"
+CLIENT_ID = "67f2a1a0cmgileob23lniud5t7"  # runner/CI app-client (per auth-pairing plan)
+
+ssm = boto3.client("ssm", region_name=REGION)
+def ssm_get(name):
+    return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+
+email = ssm_get("/qontinui/operator/email")
+password = ssm_get("/qontinui/operator/password")
+
+idp = boto3.client("cognito-idp", region_name=REGION)
+resp = idp.initiate_auth(
+    ClientId=CLIENT_ID,
+    AuthFlow="USER_PASSWORD_AUTH",
+    AuthParameters={"USERNAME": email, "PASSWORD": password},
+)
+print(resp["AuthenticationResult"]["AccessToken"])
+```
+
+```bash
+TOKEN="$(python mint-web-relay-token.py)"
+```
+
+> **Do not hard-code the client id from this doc into a tenant-specific
+> script without confirming it.** The id above is the value recorded in the
+> `2026-06-13-copilot-manual-test-harness-auth-pairing` plan for the
+> runner/CI client in `us-east-1`. If a deploy rotates it, read the current
+> value from your environment rather than trusting this literal.
+
+### 2. Send `Authorization: Bearer` on every call
+
+Every `/api/ui-bridge/*` request — reads and writes — must carry the
+bearer. The gate runs **before** route resolution, so a missing or invalid
+token yields the same 401 regardless of the path (no route-existence
+signal to an anonymous caller).
+
+```bash
+BASE="https://qontinui.io/api/ui-bridge"
+AUTH="Authorization: Bearer $TOKEN"
+```
+
+### 3. `GET /tabs` to find a live co-pilot tab
+
+```bash
+curl -s -H "$AUTH" "$BASE/tabs?detailed=true&activeOnly=true" | jq .
+```
+
+Response shape (`success:true`, tabs under `data.tabs`):
+
+```json
+{
+  "success": true,
+  "data": {
+    "tabs": [
+      {
+        "tabId": "a78b8a0a-…",
+        "url": "https://qontinui.io/co-pilot",
+        "pathname": "/co-pilot",
+        "title": "Co-Pilot",
+        "lastHeartbeat": 1718200000000,
+        "isPrimary": true,
+        "isDemoted": false,
+        "isActive": true
+      }
+    ],
+    "staleHeartbeatMs": 30000
+  },
+  "timestamp": 1718200000123
+}
+```
+
+- `?detailed=true` issues a per-tab round-trip so each entry carries the
+  live `url` / `pathname` / `title` — that's how you identify the co-pilot
+  tab (`pathname` of `/co-pilot`) rather than guessing by id.
+- `?activeOnly=true` drops tabs whose heartbeat has gone stale, so you pin
+  a tab that won't be swept out from under the next command.
+- **Per-user scoping caveat.** The relay filters `/tabs` to the tabs
+  *owned by the authenticated principal* (`X-Caller-User-Id`, spliced by
+  the gate from the verified identity). The minted operator MUST be the
+  same operator whose browser session opened the co-pilot tab — otherwise
+  `data.tabs` comes back empty even though the gate accepted the token and
+  a tab is live for a different user.
+
+### 4. Pin the tab with `?tabId=` on subsequent control calls
+
+Carry the discovered `tabId` on every command so the relay routes it to
+that exact tab (not the relay's primary-tab fallback):
+
+```bash
+TAB="a78b8a0a-…"   # data.tabs[].tabId from step 3
+
+# Read the co-pilot tab's snapshot
+curl -s -H "$AUTH" "$BASE/control/snapshot?tabId=$TAB" | jq '.data.route'
+
+# Drive it — e.g. submit the co-pilot prompt
+curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+  "$BASE/control/component/co-pilot-submit/action/click?tabId=$TAB" \
+  -d '{}'
+```
+
+`tabId` may be supplied as the `?tabId=` query param (shown), an
+`X-UI-Bridge-Tab-Id` header, or a `tabId` body field. An unknown id is
+rejected with `code:"TAB_NOT_FOUND"`; a registered-but-stale tab returns
+`code:"TAB_STALE"` — re-run step 3 with `activeOnly=true` to refresh.
+
+> **Note on deployed-web restrictions.** Some powerful runner endpoints
+> (notably `POST /control/page/evaluate`) are hard-rejected on the deployed
+> web surface (`web-forbidden-routes.ts`). Use component actions
+> (`/control/component/:id/action/:name`) and `/ai/find` to drive the tab,
+> not raw `page/evaluate`.
+
 ## Multi-instance registry
 
 Endpoints for the runner's view of every other runner that's been
