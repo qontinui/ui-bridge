@@ -88,6 +88,22 @@ export interface LaunchHeadlessTabOptions {
    * behavior is unchanged.
    */
   launchArgs?: string[];
+
+  /**
+   * Path to a Playwright `storageState` JSON file (cookies + localStorage +
+   * sessionStorage) to seed the browser context with before the first
+   * navigation. Produced by `BrowserContext.storageState({ path })` after an
+   * authenticated drive (e.g. `ui-bridge-login-web --storage-state-out`).
+   *
+   * Seeding this lets an autonomous loop log in ONCE and then drive a
+   * login-walled page MANY times without re-driving the hosted-UI login each
+   * time — the saved session carries the auth past the login wall.
+   *
+   * Backward-compatible: when unset, the context is created with no auth
+   * seeding and behavior is unchanged. Passed straight to
+   * `BrowserContext`'s `storageState` option (Playwright accepts a file path).
+   */
+  storageStatePath?: string;
 }
 
 export interface HeadlessTab {
@@ -164,6 +180,7 @@ export async function launchHeadlessTab(
     onPageUrl,
     initScripts,
     launchArgs,
+    storageStatePath,
   } = options;
 
   const browser = await chromium.launch({
@@ -173,6 +190,7 @@ export async function launchHeadlessTab(
   const context = await browser.newContext({
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent,
+    ...(storageStatePath ? { storageState: storageStatePath } : {}),
   });
 
   // Register init scripts before the first page is created so they run in

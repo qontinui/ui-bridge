@@ -164,6 +164,36 @@ describe('parseArgs / buildTransportOptions', () => {
       tabId: 'tab-1',
     });
   });
+
+  it('maps --storage-state to options.storageStatePath', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/admin',
+      '--exec',
+      'getControlSnapshot {}',
+      '--storage-state',
+      'auth.json',
+    ]);
+    expect(args.storageState).toBe('auth.json');
+    expect(buildTransportOptions(args).storageStatePath).toBe('auth.json');
+  });
+
+  it('omits storageStatePath when --storage-state is not given', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/admin',
+      '--exec',
+      'getControlSnapshot {}',
+    ]);
+    expect(args.storageState).toBeNull();
+    expect('storageStatePath' in buildTransportOptions(args)).toBe(false);
+  });
+
+  it('rejects --storage-state with a flag-shaped value', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://qontinui.io/admin', '--storage-state', '--headed'])
+    ).toThrow(/--storage-state expects a value/);
+  });
 });
 
 describe('selectMode', () => {

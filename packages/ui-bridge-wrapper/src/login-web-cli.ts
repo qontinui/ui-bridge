@@ -91,6 +91,11 @@ Options:
   --screenshot <path>            Write a full-page PNG of the authed landing to
                                  <path> (captured BEFORE the --expect-text check, so
                                  a failing assertion still leaves a diagnostic image).
+  --storage-state-out <path>     On a confirmed-authed landing, write a Playwright
+                                 storageState JSON (cookies + localStorage) to <path>.
+                                 Feed it to 'ui-bridge-inject --storage-state <path>'
+                                 to drive a login-walled page MANY times without
+                                 re-driving the hosted-UI login each run.
   --keep-open                    On success, park the authed session until SIGINT/
                                  SIGTERM instead of closing the browser.
   --quiet                        Suppress human-readable stderr logs (the JSON
@@ -110,6 +115,11 @@ Examples:
   ui-bridge-login-web --url "https://qontinui.io/login?next=%2Foperations" \\
     --success /operations --expect-text "option2-actions-outage-drill,metric_threshold" \\
     --screenshot out.png
+  # Capture a reusable auth artifact, then drive a login-walled page with it:
+  ui-bridge-login-web --url "https://qontinui.io/login?next=%2Fadmin%2Fcoord%2Fonboarding" \\
+    --success /admin/coord/onboarding --storage-state-out auth.json
+  ui-bridge-inject --url https://qontinui.io/admin/coord/onboarding \\
+    --storage-state auth.json --exec 'getControlSnapshot {}'
 `;
 
 /** Parsed, validated CLI arguments. */
@@ -129,6 +139,8 @@ export interface LoginCliArgs {
   scrollToText: string | null;
   /** Optional path to write a full-page screenshot of the authed landing. */
   screenshotPath: string | null;
+  /** Optional path to write a Playwright storageState JSON of the authed context. */
+  storageStateOut: string | null;
   keepOpen: boolean;
   /** Suppress human-readable stderr logs (the JSON result line still prints). */
   quiet: boolean;
@@ -182,6 +194,7 @@ export function parseArgs(argv: string[]): LoginCliArgs {
       .filter((s) => s.length > 0),
     scrollToText: valueOf('--scroll-to'),
     screenshotPath: valueOf('--screenshot'),
+    storageStateOut: valueOf('--storage-state-out'),
     keepOpen: has('--keep-open'),
     quiet: has('--quiet'),
     help,
@@ -202,6 +215,7 @@ const KNOWN_FLAGS = new Set([
   '--expect-text',
   '--scroll-to',
   '--screenshot',
+  '--storage-state-out',
   '--keep-open',
   ...COMMON_FLAGS,
 ]);
@@ -242,6 +256,8 @@ export interface LoginResult {
   expectMissing?: string[];
   /** Path the screenshot was written to, or null (present only when --screenshot was given). */
   screenshotPath?: string | null;
+  /** Path the storageState artifact was written to, or null (present only when --storage-state-out was given). */
+  storageStatePath?: string | null;
   error?: string;
 }
 
@@ -262,7 +278,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const { url, email, password, success, timeoutMs, headed, postClick, expectText, scrollToText, screenshotPath } =
+  const { url, email, password, success, timeoutMs, headed, postClick, expectText, scrollToText, screenshotPath, storageStateOut } =
     args;
   const log = makeLogger('[login-web]', args.quiet);
 
@@ -380,6 +396,25 @@ async function main(): Promise<void> {
       }
     }
 
+    // 7.5) Optional storageState export (--storage-state-out). Runs on a
+    //    confirmed-authed landing: serialize the authed context's cookies +
+    //    localStorage to a JSON artifact that `ui-bridge-inject --storage-state`
+    //    can replay to drive a login-walled page WITHOUT re-driving the
+    //    hosted-UI login. Best-effort: a write failure is non-fatal (it must not
+    //    flip an otherwise-good login to ok:false) but is surfaced in the log.
+    let storageStateWritten: string | null = null;
+    if (ok && storageStateOut) {
+      try {
+        await ctx.browserContext.storageState({ path: storageStateOut });
+        storageStateWritten = storageStateOut;
+        log(`storage-state written: ${storageStateOut}`);
+      } catch (err) {
+        log(
+          `storage-state export failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     // 8) Optional on-page text assertion (--expect-text). Runs on a
     //    confirmed-authed landing; a missing token flips the final ok to false
     //    so the exit code is a usable CI gate. Case-sensitive substring match —
@@ -408,6 +443,7 @@ async function main(): Promise<void> {
       expectFound,
       expectMissing,
       screenshotPath: screenshotPath ? screenshotWritten : undefined,
+      storageStatePath: storageStateOut ? storageStateWritten : undefined,
     };
   });
 
