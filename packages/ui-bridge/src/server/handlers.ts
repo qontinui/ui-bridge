@@ -213,6 +213,32 @@ import {
 import type { RegisteredElement } from '../core/types';
 
 /**
+ * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
+ * peer, covering only the `launchHeadlessTab` surface the spawn-headless
+ * handler uses. Declared locally (rather than via
+ * `typeof import('@qontinui/ui-bridge-headless')`) so the engine's .d.ts
+ * rollup does NOT have to resolve the optional peer's compiled declarations
+ * at build time — that resolution fails (TS2307) whenever headless hasn't
+ * been built yet, coupling the engine's declaration build to a sibling
+ * workspace's build order. The peer is optional and the import is dynamic +
+ * caught, so the engine's emitted types stay self-contained.
+ */
+interface HeadlessLauncherModule {
+  launchHeadlessTab(options: {
+    url: string;
+    headless?: boolean;
+    waitForUiBridgeMs?: number;
+    viewportWidth?: number;
+    viewportHeight?: number;
+  }): Promise<{
+    close(): Promise<void>;
+    finalUrl: string;
+    uiBridgeRegistered: boolean;
+    tabId: string | null;
+  }>;
+}
+
+/**
  * Parse a natural language assertion into a structured AssertionRequest.
  * Delegates to the shared NL assertion parser and merges result back into the request.
  */
@@ -6803,9 +6829,16 @@ export function createHandlers(
       // package isn't installed (or fails to load — e.g. Playwright's
       // browser binaries weren't fetched), surface 503 with the
       // underlying error so operators know exactly what's missing.
-      let launcher: typeof import('@qontinui/ui-bridge-headless');
+      // The dynamic import's specifier resolves to the real peer when it's
+      // built, and to the ambient fallback in `headless-peer-ambient.d.ts`
+      // when it isn't (keeping the .d.ts rollup self-contained). The result
+      // is cast to the local structural `HeadlessLauncherModule` either way,
+      // so the engine never depends on the peer's real exported types.
+      let launcher: HeadlessLauncherModule;
       try {
-        launcher = await import('@qontinui/ui-bridge-headless');
+        launcher = (await import(
+          '@qontinui/ui-bridge-headless'
+        )) as unknown as HeadlessLauncherModule;
       } catch (importErr) {
         return {
           success: false,
