@@ -7,7 +7,13 @@
  * so debugging failures doesn't require opening the visible browser.
  */
 
+import { readFileSync } from 'node:fs';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import {
+  restoreSessionStorageInitScript,
+  splitSessionStorageArtifact,
+  type StorageStateArtifact,
+} from './storage-state.js';
 
 export interface LaunchHeadlessTabOptions {
   /** URL the browser tab should navigate to. Required. */
@@ -100,8 +106,19 @@ export interface LaunchHeadlessTabOptions {
    * time — the saved session carries the auth past the login wall.
    *
    * Backward-compatible: when unset, the context is created with no auth
-   * seeding and behavior is unchanged. Passed straight to
-   * `BrowserContext`'s `storageState` option (Playwright accepts a file path).
+   * seeding and behavior is unchanged.
+   *
+   * sessionStorage parity: Playwright's native `storageState` carries only
+   * cookies + localStorage. If the artifact was produced by
+   * `ui-bridge-login-web --storage-state-out` it also carries a custom
+   * `__sessionStorage` key (origin → key/value map). When present, this launcher
+   * (1) STRIPS that custom key before handing the object to
+   * `newContext({ storageState })` — Playwright validates the schema and rejects
+   * unknown top-level keys — and (2) registers an `addInitScript` that
+   * repopulates sessionStorage per-origin on every navigation, so an app that
+   * reads its bearer token from sessionStorage (qontinui-web) lands
+   * authenticated. A legacy artifact WITHOUT `__sessionStorage` is read + passed
+   * through unchanged.
    */
   storageStatePath?: string;
 }
@@ -187,11 +204,38 @@ export async function launchHeadlessTab(
     headless,
     ...(launchArgs && launchArgs.length > 0 ? { args: launchArgs } : {}),
   });
+
+  // Resolve the storageState seed. When a path is given we READ the file here
+  // (rather than handing the path to Playwright) so we can split off the custom
+  // `__sessionStorage` key: Playwright validates the storageState schema and
+  // rejects unknown top-level keys, and passing the path would re-read the file
+  // WITH the custom key. After splitting, the cleaned object is schema-valid and
+  // the sessionStorage map (if any) drives an addInitScript restore below. A
+  // legacy artifact without `__sessionStorage` round-trips to an equivalent
+  // cleaned object → behavior is unchanged.
+  let storageStateSeed: Record<string, unknown> | undefined;
+  let sessionStorageMap: Record<string, Record<string, string>> | null = null;
+  if (storageStatePath) {
+    const parsed = JSON.parse(readFileSync(storageStatePath, 'utf8')) as StorageStateArtifact;
+    const split = splitSessionStorageArtifact(parsed);
+    storageStateSeed = split.storageState;
+    sessionStorageMap = split.sessionStorage;
+  }
+
   const context = await browser.newContext({
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent,
-    ...(storageStatePath ? { storageState: storageStatePath } : {}),
+    ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
   });
+
+  // sessionStorage restore (Playwright's storageState can't carry it). The
+  // init-script runs in the page realm before any page script on EVERY
+  // navigation — exactly when the app first reads its token — and repopulates
+  // sessionStorage for the matching origin. Registered before the first page so
+  // it covers the initial navigation too.
+  if (sessionStorageMap && Object.keys(sessionStorageMap).length > 0) {
+    await context.addInitScript(restoreSessionStorageInitScript, sessionStorageMap);
+  }
 
   // Register init scripts before the first page is created so they run in
   // the page realm before any of the target's own scripts execute. Order is

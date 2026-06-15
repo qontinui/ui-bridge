@@ -52,7 +52,9 @@
  */
 
 import { fileURLToPath } from 'node:url';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createTransport } from './create-transport.js';
+import { mergeSessionStorageIntoArtifact } from './session-storage-capture.js';
 import { ArgReader, COMMON_FLAGS, makeLogger, rejectEmptyValue } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import {
@@ -92,7 +94,10 @@ Options:
                                  <path> (captured BEFORE the --expect-text check, so
                                  a failing assertion still leaves a diagnostic image).
   --storage-state-out <path>     On a confirmed-authed landing, write a Playwright
-                                 storageState JSON (cookies + localStorage) to <path>.
+                                 storageState JSON (cookies + localStorage) to <path>,
+                                 PLUS a custom __sessionStorage key (origin → kv) so
+                                 cold replays land authed on apps that keep their
+                                 token in sessionStorage (e.g. qontinui-web).
                                  Feed it to 'ui-bridge-inject --storage-state <path>'
                                  to drive a login-walled page MANY times without
                                  re-driving the hosted-UI login each run.
@@ -278,8 +283,19 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const { url, email, password, success, timeoutMs, headed, postClick, expectText, scrollToText, screenshotPath, storageStateOut } =
-    args;
+  const {
+    url,
+    email,
+    password,
+    success,
+    timeoutMs,
+    headed,
+    postClick,
+    expectText,
+    scrollToText,
+    screenshotPath,
+    storageStateOut,
+  } = args;
   const log = makeLogger('[login-web]', args.quiet);
 
   const transport = createTransport({
@@ -308,9 +324,14 @@ async function main(): Promise<void> {
 
     // 3) Confirm via the UI Bridge runtime on the authed page (re-injected there).
     await page
-      .waitForFunction(() => (window as { __uiBridgeInjected?: { ready?: boolean } }).__uiBridgeInjected?.ready === true, {
-        timeout: 15000,
-      })
+      .waitForFunction(
+        () =>
+          (window as { __uiBridgeInjected?: { ready?: boolean } }).__uiBridgeInjected?.ready ===
+          true,
+        {
+          timeout: 15000,
+        }
+      )
       .catch(() => {});
     let snap: DriveSnapshot | null = null;
     try {
@@ -408,6 +429,34 @@ async function main(): Promise<void> {
         await ctx.browserContext.storageState({ path: storageStateOut });
         storageStateWritten = storageStateOut;
         log(`storage-state written: ${storageStateOut}`);
+
+        // sessionStorage parity. Playwright's storageState above carries ONLY
+        // cookies + localStorage — never sessionStorage. Apps that keep their
+        // bearer in sessionStorage (qontinui-web: `auth_bearer_access_token`)
+        // would replay tokenless on a cold inject and bounce to /login. So
+        // capture the authed page's sessionStorage and fold it into the artifact
+        // under the custom `__sessionStorage` key (origin → kv); the launcher
+        // strips that key before newContext and replays it via an init-script.
+        // Best-effort: a failure here must not flip an otherwise-good login.
+        try {
+          const captured = await page.evaluate(() => {
+            const o: Record<string, string> = {};
+            for (let i = 0; i < sessionStorage.length; i++) {
+              const k = sessionStorage.key(i);
+              if (k !== null) o[k] = sessionStorage.getItem(k) ?? '';
+            }
+            return o;
+          });
+          const pageOrigin = new URL(page.url()).origin;
+          const artifact = JSON.parse(readFileSync(storageStateOut, 'utf8'));
+          mergeSessionStorageIntoArtifact(artifact, pageOrigin, captured);
+          writeFileSync(storageStateOut, JSON.stringify(artifact));
+          log(`sessionStorage captured for ${pageOrigin}: ${Object.keys(captured).length} key(s)`);
+        } catch (err) {
+          log(
+            `sessionStorage capture failed (non-fatal, storageState still written): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       } catch (err) {
         log(
           `storage-state export failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`

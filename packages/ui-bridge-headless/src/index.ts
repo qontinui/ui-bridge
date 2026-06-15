@@ -33,3 +33,13 @@ export {
   type LaunchHeadlessTabOptions,
   type LaunchHeadlessTabResult,
 } from './launcher.js';
+
+export {
+  SESSION_STORAGE_KEY,
+  mergeSessionStorageIntoArtifact,
+  splitSessionStorageArtifact,
+  restoreSessionStorageInitScript,
+  type SessionStorageKV,
+  type SessionStorageMap,
+  type StorageStateArtifact,
+} from './storage-state.js';
