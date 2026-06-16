@@ -54,7 +54,11 @@
 import { fileURLToPath } from 'node:url';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createTransport } from './create-transport.js';
-import { mergeSessionStorageIntoArtifact } from './session-storage-capture.js';
+import {
+  buildMultiOriginSessionStorageMap,
+  mergeMultiOriginSessionStorageIntoArtifact,
+  type FrameSessionStorage,
+} from './session-storage-capture.js';
 import { ArgReader, COMMON_FLAGS, makeLogger, rejectEmptyValue } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import {
@@ -430,28 +434,46 @@ async function main(): Promise<void> {
         storageStateWritten = storageStateOut;
         log(`storage-state written: ${storageStateOut}`);
 
-        // sessionStorage parity. Playwright's storageState above carries ONLY
-        // cookies + localStorage — never sessionStorage. Apps that keep their
-        // bearer in sessionStorage (qontinui-web: `auth_bearer_access_token`)
-        // would replay tokenless on a cold inject and bounce to /login. So
-        // capture the authed page's sessionStorage and fold it into the artifact
-        // under the custom `__sessionStorage` key (origin → kv); the launcher
-        // strips that key before newContext and replays it via an init-script.
-        // Best-effort: a failure here must not flip an otherwise-good login.
+        // sessionStorage parity, multi-origin. Playwright's storageState above
+        // carries ONLY cookies + localStorage — never sessionStorage. Apps that
+        // keep their bearer in sessionStorage (qontinui-web:
+        // `auth_bearer_access_token`) would replay tokenless on a cold inject and
+        // bounce to /login. So capture sessionStorage from ALL frames of the
+        // authed page (main frame + iframes), each keyed by its OWN origin, and
+        // fold the multi-origin `{ origin -> kv }` map into the artifact under the
+        // custom `__sessionStorage` key; the launcher strips that key before
+        // newContext and replays each origin's map per-frame via an init-script.
+        // Per-frame try/catch: cross-origin / sandboxed frames throw on
+        // sessionStorage access and are skipped gracefully. Best-effort overall:
+        // a failure here must not flip an otherwise-good login.
         try {
-          const captured = await page.evaluate(() => {
-            const o: Record<string, string> = {};
-            for (let i = 0; i < sessionStorage.length; i++) {
-              const k = sessionStorage.key(i);
-              if (k !== null) o[k] = sessionStorage.getItem(k) ?? '';
+          const frames: FrameSessionStorage[] = [];
+          for (const frame of page.frames()) {
+            let kv: Record<string, string> | null = null;
+            try {
+              kv = await frame.evaluate(() => {
+                const o: Record<string, string> = {};
+                for (let i = 0; i < sessionStorage.length; i++) {
+                  const k = sessionStorage.key(i);
+                  if (k !== null) o[k] = sessionStorage.getItem(k) ?? '';
+                }
+                return o;
+              });
+            } catch {
+              // cross-origin / restricted / detached frame — skip its capture.
+              kv = null;
             }
-            return o;
-          });
-          const pageOrigin = new URL(page.url()).origin;
+            frames.push({ url: frame.url(), kv });
+          }
+          const map = buildMultiOriginSessionStorageMap(frames);
           const artifact = JSON.parse(readFileSync(storageStateOut, 'utf8'));
-          mergeSessionStorageIntoArtifact(artifact, pageOrigin, captured);
+          mergeMultiOriginSessionStorageIntoArtifact(artifact, map);
           writeFileSync(storageStateOut, JSON.stringify(artifact));
-          log(`sessionStorage captured for ${pageOrigin}: ${Object.keys(captured).length} key(s)`);
+          const origins = Object.keys(map);
+          const keyCount = origins.reduce((n, o) => n + Object.keys(map[o]).length, 0);
+          log(
+            `sessionStorage captured across ${origins.length} origin(s) [${origins.join(', ')}]: ${keyCount} key(s) total`
+          );
         } catch (err) {
           log(
             `sessionStorage capture failed (non-fatal, storageState still written): ${err instanceof Error ? err.message : String(err)}`
