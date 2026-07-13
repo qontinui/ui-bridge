@@ -768,13 +768,36 @@ function handleRelayRoute(
   }
 
   // GET /health (also served at /status) — transport diagnostics + heartbeat freshness + discovery metadata
+  //
+  // Per-user tab scoping (§4.2): `/health` spreads the FULL transport
+  // diagnostics, so it must be scoped by exactly the same mechanism as
+  // `/tabs` — when the request carries `X-Caller-User-Id`, the diagnostics
+  // are filtered to tabs owned by that user (tab ids, urls/titles,
+  // ownership records, and in-flight command ids all included). Without
+  // the header (trusted server-side / admin callers, and the localhost
+  // discovery scanner) the unfiltered view is returned, as before.
+  //
+  // Prior to this, `/health` returned the global registry to EVERY
+  // authenticated caller while `/tabs` scoped correctly — a cross-user
+  // tab-id (and url/sessionId) enumeration leak that simply routed around
+  // the `/tabs` gate.
   if (method === 'GET' && (path === '/health' || path === '/status')) {
-    const diagnostics = relay.getTransportDiagnostics();
+    const healthCallerUserId =
+      request.headers.get('x-caller-user-id') ??
+      request.headers.get('X-Caller-User-Id') ??
+      null;
+    const diagnostics = relay.getTransportDiagnostics(
+      healthCallerUserId ? { ownerCheck: { userId: healthCallerUserId } } : undefined
+    );
     const response: Record<string, unknown> = {
       success: true,
       data: {
-        responsive: relay.isAppResponsive(),
-        lastHeartbeat: relay.getLastHeartbeat(),
+        responsive: healthCallerUserId
+          ? relay.isAppResponsive({ ownerCheck: { userId: healthCallerUserId } })
+          : relay.isAppResponsive(),
+        lastHeartbeat: healthCallerUserId
+          ? relay.getLastHeartbeat({ ownerCheck: { userId: healthCallerUserId } })
+          : relay.getLastHeartbeat(),
         ...diagnostics,
       },
       timestamp: Date.now(),

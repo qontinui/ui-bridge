@@ -1647,10 +1647,16 @@ export class CommandRelay {
   /**
    * Check if the browser app is responsive based on heartbeat freshness.
    * Returns true if ANY tab has a heartbeat within the stale threshold.
+   *
+   * Per-user tab scoping (§4.2): with `options.ownerCheck = {userId}`,
+   * only the caller's OWN tabs are considered — otherwise a user with no
+   * live tab would read `responsive: true` off a stranger's heartbeat.
    */
-  isAppResponsive(): boolean {
+  isAppResponsive(options?: { ownerCheck?: { userId: string } }): boolean {
+    const userId = options?.ownerCheck?.userId;
     const now = Date.now();
-    for (const lastBeat of this.tabHeartbeats.values()) {
+    for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
+      if (userId && !this.isOwnedBy(tabId, userId)) continue;
       if (now - lastBeat < this.heartbeatStaleMs) return true;
     }
     return false;
@@ -1658,10 +1664,17 @@ export class CommandRelay {
 
   /**
    * Get the last heartbeat timestamp (max across all tabs).
+   *
+   * Per-user tab scoping (§4.2): with `options.ownerCheck = {userId}`,
+   * the max is taken over the caller's OWN tabs only — a stranger's
+   * heartbeat timestamp is a (weak) activity signal and must not bleed
+   * into another user's `/health`.
    */
-  getLastHeartbeat(): number {
+  getLastHeartbeat(options?: { ownerCheck?: { userId: string } }): number {
+    const userId = options?.ownerCheck?.userId;
     let max = 0;
-    for (const lastBeat of this.tabHeartbeats.values()) {
+    for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
+      if (userId && !this.isOwnedBy(tabId, userId)) continue;
       if (lastBeat > max) max = lastBeat;
     }
     return max;
@@ -1715,6 +1728,22 @@ export class CommandRelay {
   }
 
   /**
+   * THE per-user scoping predicate (§4.2). A tab is visible to `userId`
+   * only when the ownership registry holds an entry for it AND that
+   * entry's `userId` matches. Strict mode: a tab with no ownership entry
+   * is "not yours" for every caller.
+   *
+   * Every scoping path in the relay — `listOwnedTabs` (live transports),
+   * `getTransportDiagnostics({ownerCheck})` (the `/health` view), and
+   * `assertOwnership` (dispatch) — funnels through this one predicate so
+   * there is exactly one definition of "owned".
+   */
+  private isOwnedBy(tabId: string, userId: string): boolean {
+    const owner = this.tabOwnership.get(tabId);
+    return !!owner && owner.userId === userId;
+  }
+
+  /**
    * Return connected tab ids whose stored ownership matches `userId`.
    * Tabs without an ownership entry are NOT included — strict mode
    * makes "unregistered" the same as "not yours". Used by `/tabs` and
@@ -1729,8 +1758,7 @@ export class CommandRelay {
     const consider = (id: string): void => {
       if (seen.has(id)) return;
       seen.add(id);
-      const owner = this.tabOwnership.get(id);
-      if (owner && owner.userId === userId) owned.push(id);
+      if (this.isOwnedBy(id, userId)) owned.push(id);
     };
     for (const id of this.tabListeners.keys()) consider(id);
     for (const [id, entry] of this.wsClients.entries()) {
@@ -1794,9 +1822,26 @@ export class CommandRelay {
 
   /**
    * Get internal transport state for debugging.
+   *
+   * Per-user tab scoping (§4.2): pass `options.ownerCheck = {userId}` to
+   * get the per-user view — every tab-identifying field is filtered
+   * through {@link isOwnedBy}, the same predicate `/tabs` uses via
+   * `listOwnedTabs`. This is what `GET /health` (and `/status`) MUST use
+   * whenever the request carries an `X-Caller-User-Id`: without it the
+   * endpoint hands every authenticated caller the FULL registry —
+   * other users' tab ids, their urls/titles (`tabMetadata`), their
+   * `{userId, sessionId}` (`tabOwnership`), and their in-flight
+   * `pendingCommandIds` (a response-injection vector, since `POST
+   * /commands` settles a command by id).
+   *
+   * Without `ownerCheck` the unfiltered admin/trusted-server view is
+   * returned, exactly as `/tabs` behaves with no `X-Caller-User-Id`
+   * header. Callers that legitimately need the global view (the stale-tab
+   * sweep, the heartbeat handler's `tabRegistered` echo, `/tabs`' own
+   * pre-filter base list) keep calling it with no argument.
    */
-  getTransportDiagnostics(): TransportDiagnostics {
-    return {
+  getTransportDiagnostics(options?: { ownerCheck?: { userId: string } }): TransportDiagnostics {
+    const full: TransportDiagnostics = {
       pendingCommandCount: this.pendingCommands.size,
       pendingCommandIds: Array.from(this.pendingCommands.keys()),
       commandListenerCount: this.tabListeners.size,
@@ -1812,6 +1857,45 @@ export class CommandRelay {
       tabMetadata: Object.fromEntries(this.tabMetadata),
       tabOwnership: Object.fromEntries(this.tabOwnership),
       staleHeartbeatMs: this.staleHeartbeatMs,
+    };
+
+    const userId = options?.ownerCheck?.userId;
+    if (!userId) return full;
+
+    const owns = (tabId: string): boolean => this.isOwnedBy(tabId, userId);
+    const pickOwned = <V>(record: Record<string, V>): Record<string, V> =>
+      Object.fromEntries(Object.entries(record).filter(([tabId]) => owns(tabId)));
+
+    const connectedTabs = full.connectedTabs.filter(owns);
+    const wsClientIds = full.wsClientIds.filter(owns);
+
+    return {
+      // Aggregates that name no tab and no user. A bare count of the
+      // relay's in-flight work leaks nothing identifying, and ops
+      // dashboards read it — keep it global.
+      pendingCommandCount: full.pendingCommandCount,
+      commandQueueLength: full.commandQueueLength,
+      buildId: full.buildId,
+      staleHeartbeatMs: full.staleHeartbeatMs,
+
+      // Command ids are NOT attributable to a tab/owner, so they cannot be
+      // filtered — and handing them to a foreign caller lets them settle
+      // someone else's command via `POST /commands`. Withheld entirely
+      // from the per-user view.
+      pendingCommandIds: [],
+
+      // Per-user view: tab-identifying fields, filtered through isOwnedBy.
+      connectedTabs,
+      activeTabs: full.activeTabs.filter(owns),
+      demotedTabs: full.demotedTabs.filter(owns),
+      wsClientIds,
+      commandListenerCount: connectedTabs.length,
+      wsClientCount: wsClientIds.length,
+      primaryTabId:
+        full.primaryTabId && owns(full.primaryTabId) ? full.primaryTabId : null,
+      tabHeartbeats: pickOwned(full.tabHeartbeats),
+      tabMetadata: pickOwned(full.tabMetadata),
+      tabOwnership: pickOwned(full.tabOwnership),
     };
   }
 

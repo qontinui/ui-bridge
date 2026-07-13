@@ -193,8 +193,14 @@ export class InjectedTransport extends HeadlessTransport {
         cfg.registrationMetadata = this.injected.registrationMetadata;
       if (this.injected.appId) cfg.appId = this.injected.appId;
       if (this.injected.appName) cfg.appName = this.injected.appName;
-      if (this.injected.tabId) cfg.tabId = this.injected.tabId;
     }
+    // A `--tab-id` pin is caller-owned and belongs on EVERY document, relay
+    // base or not: it is the only thing that carries the id across an origin
+    // change (sessionStorage is partitioned per-origin, so it cannot). The
+    // page-side `resolveTabId()` reads it back on each document. Deliberately
+    // OUTSIDE the `if (base)` block so the pin also reaches an app that embeds
+    // the SDK itself (Variant A) — which resolves its own tab id.
+    if (this.injected.tabId) cfg.tabId = this.injected.tabId;
     if (this.injected.settleQuietMs !== undefined)
       cfg.settleQuietMs = this.injected.settleQuietMs;
     if (this.injected.settleTimeoutMs !== undefined)
@@ -202,6 +208,21 @@ export class InjectedTransport extends HeadlessTransport {
     if (this.injected.expectSelector !== undefined)
       cfg.expectSelector = this.injected.expectSelector;
     return Object.keys(cfg).length > 0 ? cfg : null;
+  }
+
+  /**
+   * The relay credentials the Node-side registration poll needs. Same bearer the
+   * page-side client gets via `__uiBridgeInjectedConfig.authToken`; without it
+   * the poll against a gated relay 401s and the CLI reports `tabId: null` on a
+   * launch that actually registered.
+   */
+  protected override relayAuth(): { authToken?: string; callerUserId?: string } {
+    return {
+      ...(this.injected.authToken ? { authToken: this.injected.authToken } : {}),
+      ...(this.injected.registrationMetadata?.userId
+        ? { callerUserId: this.injected.registrationMetadata.userId }
+        : {}),
+    };
   }
 
   protected override async buildInitScripts(): Promise<string[]> {

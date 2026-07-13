@@ -44,6 +44,28 @@ export interface LaunchHeadlessTabOptions {
    */
   waitForUiBridgeMs?: number;
 
+  /**
+   * Bearer token for an auth-gated relay. Sent as `Authorization: Bearer
+   * <token>` on the `<uiBridgeBase>/tabs` registration poll.
+   *
+   * REQUIRED against a gated relay: without it the poll is answered with 401,
+   * which is indistinguishable from "no tab yet" — the launcher would spin to
+   * `waitForUiBridgeMs` and report `tabId: null` even though the page-side
+   * client (which HAS the token) registered fine.
+   *
+   * Backward-compatible: when unset, the poll is anonymous, as before.
+   */
+  authToken?: string;
+
+  /**
+   * Authenticated user id for the relay's per-user tab scoping (§4.2). Sent as
+   * `X-Caller-User-Id` on the registration poll so `/tabs` returns THIS
+   * driver's tab instead of an arbitrary entry from the global list. Normally
+   * the `userId` from the same `registrationMetadata` the page-side client
+   * heartbeats with.
+   */
+  callerUserId?: string;
+
   /** Viewport width (px). Default 1280. */
   viewportWidth?: number;
 
@@ -150,16 +172,39 @@ export interface LaunchHeadlessTabResult extends HeadlessTab {
   tabId: string | null;
 }
 
-/** Poll `<uiBridgeBase>/tabs` until it reports at least one connected tab. */
-async function waitForUiBridgeRegistration(
+/**
+ * Poll `<uiBridgeBase>/tabs` until it reports at least one connected tab.
+ *
+ * `authToken` is the SAME bearer the page-side relay client uses. Without it,
+ * an auth-gated relay answers this poll with 401 — which the loop below cannot
+ * distinguish from "not registered yet", so it spins to the deadline and
+ * reports `tabId: null`. The tab HAD registered; only the poll was anonymous,
+ * making a perfectly healthy launch look like a broken one.
+ *
+ * `callerUserId` is forwarded as `X-Caller-User-Id` when the driver supplied
+ * registration metadata, so the relay's per-user tab scoping (§4.2) returns the
+ * driver's OWN tab rather than an arbitrary first entry from the global list.
+ *
+ * @internal Exported for tests; not part of the package's public surface.
+ */
+export async function waitForUiBridgeRegistration(
   uiBridgeBase: string,
-  timeoutMs: number
+  timeoutMs: number,
+  auth?: { authToken?: string; callerUserId?: string }
 ): Promise<{ tabId: string | null; ok: boolean }> {
   const deadline = Date.now() + timeoutMs;
   const url = `${uiBridgeBase.replace(/\/$/, '')}/tabs`;
+  const headers: Record<string, string> = {};
+  if (auth?.authToken) headers.Authorization = `Bearer ${auth.authToken}`;
+  if (auth?.callerUserId) headers['X-Caller-User-Id'] = auth.callerUserId;
+  let lastStatus: number | null = null;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url, { method: 'GET' });
+      const res = await fetch(url, {
+        method: 'GET',
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      });
+      lastStatus = res.status;
       if (res.ok) {
         const body = (await res.json()) as {
           data?: { tabs?: Array<{ tabId?: string }> };
@@ -173,6 +218,15 @@ async function waitForUiBridgeRegistration(
       // ignore — relay may not be ready yet
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  // Surface the auth failure rather than letting it masquerade as "no tab
+  // ever registered" — the single most confusing failure this CLI can emit.
+  if (lastStatus === 401 || lastStatus === 403) {
+    process.stderr.write(
+      `[ui-bridge] relay ${url} returned HTTP ${lastStatus} for the registration poll` +
+        `${auth?.authToken ? ' (the supplied auth token was rejected)' : ' — the relay is auth-gated but no auth token was supplied (pass --auth-token)'}` +
+        `. The tab may well have registered; the POLL could not read it.\n`
+    );
   }
   return { tabId: null, ok: false };
 }
@@ -198,6 +252,8 @@ export async function launchHeadlessTab(
     initScripts,
     launchArgs,
     storageStatePath,
+    authToken,
+    callerUserId,
   } = options;
 
   const browser = await chromium.launch({
@@ -277,7 +333,10 @@ export async function launchHeadlessTab(
   let uiBridgeRegistered = false;
   let tabId: string | null = null;
   if (uiBridgeBase) {
-    const result = await waitForUiBridgeRegistration(uiBridgeBase, waitForUiBridgeMs);
+    const result = await waitForUiBridgeRegistration(uiBridgeBase, waitForUiBridgeMs, {
+      authToken,
+      callerUserId,
+    });
     uiBridgeRegistered = result.ok;
     tabId = result.tabId;
   }

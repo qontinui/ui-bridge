@@ -23,6 +23,7 @@ interface CliArgs {
   viewportWidth: number;
   viewportHeight: number;
   userAgent: string | undefined;
+  authToken: string | undefined;
   quiet: boolean;
   help: boolean;
 }
@@ -36,6 +37,10 @@ Optional:
   --headless                   Launch without a visible window (default: visible)
   --ui-bridge <base>           Poll this UI Bridge base until a tab registers.
                                Example: http://localhost:3001/api/ui-bridge
+  --auth-token <T>             Bearer token for an auth-gated relay. REQUIRED when
+                               --ui-bridge points at a gated relay: without it the
+                               registration poll is answered 401 and the tab id is
+                               reported as unknown even though the tab registered.
   --wait-ms <ms>               Max wait for UI Bridge registration (default 30000)
   --keep-alive <secs>          Auto-close after this many seconds (default: until SIGINT)
   --viewport <WxH>             Viewport size, e.g. 1280x720 (default 1280x720)
@@ -61,6 +66,7 @@ function parseArgs(argv: string[]): CliArgs {
     viewportWidth: 1280,
     viewportHeight: 720,
     userAgent: undefined,
+    authToken: undefined,
     quiet: false,
     help: false,
   };
@@ -113,6 +119,9 @@ function parseArgs(argv: string[]): CliArgs {
       case '--user-agent':
         args.userAgent = argv[++i];
         break;
+      case '--auth-token':
+        args.authToken = argv[++i];
+        break;
       default:
         if (arg !== undefined && arg.startsWith('--')) {
           die(`Unknown flag: ${arg}\n\n${USAGE}`);
@@ -159,6 +168,7 @@ async function main(): Promise<void> {
       viewportWidth: args.viewportWidth,
       viewportHeight: args.viewportHeight,
       userAgent: args.userAgent,
+      authToken: args.authToken,
       forwardConsole: !args.quiet,
       onPageUrl: args.quiet
         ? undefined

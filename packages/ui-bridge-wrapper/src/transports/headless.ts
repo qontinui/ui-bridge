@@ -223,6 +223,13 @@ export class HeadlessTransport extends BaseTransport {
     // Subclasses (injected) supply init-scripts to run before first paint.
     const initScripts = await this.buildInitScripts();
 
+    // Subclasses (injected) supply the relay credentials. The launcher's
+    // `<uiBridgeBase>/tabs` registration poll runs in NODE, not the page, so it
+    // needs the bearer separately from the page-side client — against a gated
+    // relay an anonymous poll 401s and reports `tabId: null` on a launch that
+    // actually succeeded.
+    const relayAuth = this.relayAuth();
+
     let tab: Awaited<ReturnType<typeof launchHeadlessTab>>;
     try {
       tab = await launchHeadlessTab({
@@ -240,6 +247,8 @@ export class HeadlessTransport extends BaseTransport {
             ? this.options.launchArgs
             : undefined,
         storageStatePath: this.options.storageStatePath,
+        ...(relayAuth.authToken ? { authToken: relayAuth.authToken } : {}),
+        ...(relayAuth.callerUserId ? { callerUserId: relayAuth.callerUserId } : {}),
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
@@ -280,6 +289,16 @@ export class HeadlessTransport extends BaseTransport {
    */
   protected async buildInitScripts(): Promise<string[]> {
     return [];
+  }
+
+  /**
+   * Subclass hook: credentials for the launcher's Node-side relay registration
+   * poll (`<uiBridgeBase>/tabs`). Default: none (anonymous poll — correct for an
+   * ungated relay). Injected mode overrides this with the `--auth-token` bearer
+   * and the `--registration-metadata` userId.
+   */
+  protected relayAuth(): { authToken?: string; callerUserId?: string } {
+    return {};
   }
 
   /**

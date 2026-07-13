@@ -139,14 +139,73 @@ export function resolveRegistrationMetadata(
   }
 }
 
+/** Write the resolved tab id to `sessionStorage`, best-effort. */
+function persistTabId(tabId: string): void {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(TAB_ID_STORAGE_KEY, tabId);
+    }
+  } catch {
+    /* SSR or quota */
+  }
+}
+
 /**
- * Resolve a stable per-tab id. Reuses the `sessionStorage` entry the hook
- * established (so an embedded app and a relay client in the same tab agree on
- * the id), generating + persisting a fresh `crypto.randomUUID()` when absent.
- * Falls back to a non-persisted uuid when `sessionStorage` is unavailable
- * (SSR / quota / sandboxed contexts).
+ * Read the CALLER-OWNED tab-id pin published on THIS document, if any.
+ *
+ * Two publication points, both re-evaluated per document:
+ *   - `window.__uiBridgeTabId` — the framework-agnostic pin.
+ *   - `window.__uiBridgeInjectedConfig.tabId` — what `ui-bridge-inject
+ *     --tab-id <id>` sets (the wrapper registers it via Playwright's
+ *     `BrowserContext.addInitScript`, which re-runs on EVERY navigation in
+ *     the context, cross-origin ones included).
+ *
+ * This is what makes a pin survive an origin change: `sessionStorage` is
+ * partitioned per-origin, so it CANNOT carry an id across an OAuth hop —
+ * the pin, republished on each document, can.
+ */
+function readPinnedTabId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const w = window as unknown as {
+      __uiBridgeTabId?: unknown;
+      __uiBridgeInjectedConfig?: { tabId?: unknown };
+    };
+    const explicit = w.__uiBridgeTabId;
+    if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+    const injected = w.__uiBridgeInjectedConfig?.tabId;
+    if (typeof injected === 'string' && injected.length > 0) return injected;
+  } catch {
+    /* hostile global / cross-realm access */
+  }
+  return null;
+}
+
+/**
+ * Resolve a stable per-tab id. Precedence:
+ *
+ *   1. A caller-owned pin published on this document ({@link readPinnedTabId}).
+ *      Checked FIRST and on every document, so a pinned id survives a
+ *      cross-origin navigation (an OAuth hop) instead of being silently
+ *      replaced by a freshly minted per-origin uuid — which invalidated the
+ *      id the caller had been handed and was addressing the tab by.
+ *   2. The `sessionStorage` entry (per-origin, per-tab) — so an embedded app
+ *      and a relay client in the same document agree on the id.
+ *   3. A fresh `crypto.randomUUID()`, persisted for (2).
+ *
+ * The resolved id is written back to `sessionStorage` in all three cases, so
+ * everything in the document converges on it. Falls back to a non-persisted
+ * uuid when `sessionStorage` is unavailable (SSR / quota / sandboxed contexts).
  */
 export function resolveTabId(): string {
+  const pinned = readPinnedTabId();
+  if (pinned) {
+    // Republish the caller's pin into this origin's sessionStorage so a
+    // late-starting embedded hook in the same document adopts it too.
+    persistTabId(pinned);
+    return pinned;
+  }
+
   let stored: string | null = null;
   try {
     if (typeof sessionStorage !== 'undefined') {
@@ -157,13 +216,7 @@ export function resolveTabId(): string {
   }
   if (stored) return stored;
   const fresh = crypto.randomUUID();
-  try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(TAB_ID_STORAGE_KEY, fresh);
-    }
-  } catch {
-    /* SSR or quota */
-  }
+  persistTabId(fresh);
   return fresh;
 }
 
@@ -247,7 +300,11 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     version,
     onError = (message: string, error?: unknown) => console.error(message, error),
   } = config;
+  // An explicit `config.tabId` IS a caller-owned pin — persist it so an
+  // embedded hook that later calls `resolveTabId()` in this same document
+  // adopts it rather than minting a competing id.
   const tabId = config.tabId ?? resolveTabId();
+  if (config.tabId) persistTabId(config.tabId);
 
   let stopped = false;
   let abortController: AbortController | null = null;

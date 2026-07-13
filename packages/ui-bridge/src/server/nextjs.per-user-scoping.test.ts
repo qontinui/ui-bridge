@@ -181,3 +181,154 @@ describe('Next.js · GET /tabs filters by X-Caller-User-Id (§4.2)', () => {
     expect(json.data.tabs).toEqual([]);
   });
 });
+
+/**
+ * REGRESSION (U2, P1 security): `/health` spreads the FULL transport
+ * diagnostics. It was authenticated but NOT scoped, while `/tabs` next to it
+ * scoped correctly — so any authenticated user could route around the `/tabs`
+ * gate and enumerate every other user's tab ids (plus their urls/titles via
+ * `tabMetadata`, their `{userId, sessionId}` via `tabOwnership`, and their
+ * in-flight `pendingCommandIds`, which `POST /commands` settles by id).
+ *
+ * `/health` must now scope by `X-Caller-User-Id` through the same mechanism
+ * `/tabs` uses. No-header (admin / discovery-scanner) callers still get the
+ * full view.
+ */
+describe('Next.js · GET /health is scoped per-user (§4.2 · U2 regression)', () => {
+  let relay: CommandRelay;
+  let routes: ReturnType<typeof createNextRouteHandlers>;
+
+  interface HealthData {
+    responsive: boolean;
+    lastHeartbeat: number;
+    connectedTabs: string[];
+    activeTabs: string[];
+    demotedTabs: string[];
+    wsClientIds: string[];
+    commandListenerCount: number;
+    wsClientCount: number;
+    primaryTabId: string | null;
+    pendingCommandIds: string[];
+    pendingCommandCount: number;
+    tabHeartbeats: Record<string, number>;
+    tabMetadata: Record<string, unknown>;
+    tabOwnership: Record<string, { userId: string; sessionId: string }>;
+  }
+
+  async function getHealth(path: 'health' | 'status', userId?: string): Promise<HealthData> {
+    const req = makeRequest('GET', `/${path}`, {
+      headers: userId ? { 'X-Caller-User-Id': userId } : undefined,
+    });
+    const res = await routes.GET(req, { params: { path: [path] } });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: HealthData };
+    return json.data;
+  }
+
+  beforeEach(() => {
+    relay = freshRelay();
+    routes = createNextRouteHandlers({}, { relay });
+    relay.subscribeToCommands(() => {}, 'tab-alice');
+    relay.recordRegistration('tab-alice', { userId: 'alice', sessionId: 'sess-alice' });
+    relay.receiveHeartbeat('tab-alice', {
+      url: 'https://app.local/alice',
+      title: "Alice's page",
+      visibility: 'visible',
+    });
+    relay.subscribeToCommands(() => {}, 'tab-bob');
+    relay.recordRegistration('tab-bob', { userId: 'bob', sessionId: 'sess-bob' });
+    relay.receiveHeartbeat('tab-bob', {
+      url: 'https://app.local/bobs-secret-workspace',
+      title: "Bob's page",
+      visibility: 'visible',
+    });
+  });
+
+  afterEach(() => {
+    relay.destroy();
+  });
+
+  it("THE LEAK: bob's tab id is ABSENT from alice's /health", async () => {
+    const data = await getHealth('health', 'alice');
+
+    // Every tab-id-bearing field: alice's tab only, bob's nowhere.
+    expect(data.connectedTabs).toEqual(['tab-alice']);
+    expect(data.connectedTabs).not.toContain('tab-bob');
+    expect(data.activeTabs).not.toContain('tab-bob');
+    expect(data.demotedTabs).not.toContain('tab-bob');
+    expect(data.wsClientIds).not.toContain('tab-bob');
+    expect(Object.keys(data.tabHeartbeats)).toEqual(['tab-alice']);
+    expect(Object.keys(data.tabMetadata)).toEqual(['tab-alice']);
+    expect(Object.keys(data.tabOwnership)).toEqual(['tab-alice']);
+
+    // Nothing of bob's anywhere in the serialized body — id, url, or session.
+    const serialized = JSON.stringify(data);
+    expect(serialized).not.toContain('tab-bob');
+    expect(serialized).not.toContain('sess-bob');
+    expect(serialized).not.toContain('bobs-secret-workspace');
+  });
+
+  it('/status (the /health alias) is scoped identically', async () => {
+    const data = await getHealth('status', 'alice');
+    expect(data.connectedTabs).toEqual(['tab-alice']);
+    expect(JSON.stringify(data)).not.toContain('tab-bob');
+  });
+
+  it('eve (authenticated, zero tabs) can enumerate nothing', async () => {
+    const data = await getHealth('health', 'eve');
+    expect(data.connectedTabs).toEqual([]);
+    expect(data.activeTabs).toEqual([]);
+    expect(data.wsClientIds).toEqual([]);
+    expect(data.tabHeartbeats).toEqual({});
+    expect(data.tabMetadata).toEqual({});
+    expect(data.tabOwnership).toEqual({});
+    expect(data.primaryTabId).toBeNull();
+    expect(data.commandListenerCount).toBe(0);
+    expect(data.wsClientCount).toBe(0);
+    // ...and no liveness bleed from someone else's heartbeat.
+    expect(data.responsive).toBe(false);
+    expect(data.lastHeartbeat).toBe(0);
+    const serialized = JSON.stringify(data);
+    expect(serialized).not.toContain('tab-alice');
+    expect(serialized).not.toContain('tab-bob');
+  });
+
+  it('primaryTabId is nulled for a caller who does not own the primary', async () => {
+    // Whichever tab the relay elected primary, only its OWNER may see its id —
+    // `primaryTabId` is a tab id like any other.
+    const primary = relay.getTransportDiagnostics().primaryTabId;
+    expect(primary).not.toBeNull();
+    const owner = relay.getOwnership(primary!)!.userId;
+    const other = owner === 'alice' ? 'bob' : 'alice';
+
+    expect((await getHealth('health', owner)).primaryTabId).toBe(primary);
+    expect((await getHealth('health', other)).primaryTabId).toBeNull();
+    expect((await getHealth('health', 'eve')).primaryTabId).toBeNull();
+  });
+
+  it('pendingCommandIds are withheld from a scoped view (POST /commands settles by id)', async () => {
+    // In-flight command, never resolved — a pending entry exists.
+    void relay.queueCommand('snapshot', {}, { targetTabId: 'tab-bob' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(relay.getTransportDiagnostics().pendingCommandIds.length).toBeGreaterThan(0);
+
+    const alice = await getHealth('health', 'alice');
+    expect(alice.pendingCommandIds).toEqual([]);
+    // The bare count is a non-identifying aggregate — still reported.
+    expect(alice.pendingCommandCount).toBeGreaterThan(0);
+  });
+
+  it('WITHOUT the header, /health keeps the full admin view (discovery scanner)', async () => {
+    const data = await getHealth('health');
+    expect(data.connectedTabs.sort()).toEqual(['tab-alice', 'tab-bob']);
+    expect(Object.keys(data.tabOwnership).sort()).toEqual(['tab-alice', 'tab-bob']);
+    expect(data.responsive).toBe(true);
+  });
+
+  it("a foreign user cannot see another's tab even when they own one themselves", async () => {
+    const bob = await getHealth('health', 'bob');
+    expect(bob.connectedTabs).toEqual(['tab-bob']);
+    expect(JSON.stringify(bob)).not.toContain('tab-alice');
+    expect(JSON.stringify(bob)).not.toContain('sess-alice');
+  });
+});

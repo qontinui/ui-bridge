@@ -150,6 +150,55 @@ describe('§4.2 · CommandRelay ownership registry', () => {
     expect(relay.adminListAllTabs().sort()).toEqual(['tab-a', 'tab-b', 'tab-c']);
   });
 
+  // U2 (P1 security): `getTransportDiagnostics` is what `GET /health` spreads.
+  // Unscoped it hands EVERY authenticated caller the whole registry — the
+  // cross-user tab-id enumeration leak that routed around the `/tabs` gate.
+  it('getTransportDiagnostics({ownerCheck}) filters every tab-identifying field', () => {
+    const relay = freshRelay();
+    registerOwnedTab(relay, 'tab-a', 'alice');
+    registerOwnedTab(relay, 'tab-b', 'bob');
+    relay.subscribeToCommands(() => {}, 'tab-c'); // unregistered → nobody's
+    relay.receiveHeartbeat('tab-a', { url: 'https://a', title: 'A', visibility: 'visible' });
+    relay.receiveHeartbeat('tab-b', { url: 'https://b', title: 'B', visibility: 'visible' });
+
+    const scoped = relay.getTransportDiagnostics({ ownerCheck: { userId: 'alice' } });
+    expect(scoped.connectedTabs).toEqual(['tab-a']);
+    expect(scoped.activeTabs).toEqual(['tab-a']);
+    expect(Object.keys(scoped.tabHeartbeats)).toEqual(['tab-a']);
+    expect(Object.keys(scoped.tabMetadata)).toEqual(['tab-a']);
+    expect(Object.keys(scoped.tabOwnership)).toEqual(['tab-a']);
+    expect(scoped.commandListenerCount).toBe(1);
+    expect(scoped.pendingCommandIds).toEqual([]);
+    // Strict mode: an unregistered tab belongs to nobody, not to everybody.
+    expect(JSON.stringify(scoped)).not.toContain('tab-c');
+    expect(JSON.stringify(scoped)).not.toContain('tab-b');
+
+    // A caller with no tabs enumerates nothing.
+    const eve = relay.getTransportDiagnostics({ ownerCheck: { userId: 'eve' } });
+    expect(eve.connectedTabs).toEqual([]);
+    expect(eve.tabOwnership).toEqual({});
+    expect(eve.primaryTabId).toBeNull();
+
+    // No ownerCheck → the unchanged admin view.
+    const admin = relay.getTransportDiagnostics();
+    expect(admin.connectedTabs.sort()).toEqual(['tab-a', 'tab-b', 'tab-c']);
+    expect(Object.keys(admin.tabOwnership).sort()).toEqual(['tab-a', 'tab-b']);
+  });
+
+  it('isAppResponsive/getLastHeartbeat({ownerCheck}) do not bleed another user liveness', () => {
+    const relay = freshRelay();
+    registerOwnedTab(relay, 'tab-b', 'bob');
+    relay.receiveHeartbeat('tab-b', { url: 'https://b', title: 'B', visibility: 'visible' });
+
+    expect(relay.isAppResponsive()).toBe(true);
+    expect(relay.getLastHeartbeat()).toBeGreaterThan(0);
+
+    // Alice owns nothing — bob's heartbeat is not hers to read.
+    expect(relay.isAppResponsive({ ownerCheck: { userId: 'alice' } })).toBe(false);
+    expect(relay.getLastHeartbeat({ ownerCheck: { userId: 'alice' } })).toBe(0);
+    expect(relay.isAppResponsive({ ownerCheck: { userId: 'bob' } })).toBe(true);
+  });
+
   it('SSE unsubscribe drops the ownership record', () => {
     const relay = freshRelay();
     const tab = registerOwnedTab(relay, 'tab-a', 'alice');
