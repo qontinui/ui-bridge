@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-headless",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Playwright-backed headless browser launcher for UI Bridge — spin up a real Chromium tab so web apps can be driven through UI Bridge without a visible browser open.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
