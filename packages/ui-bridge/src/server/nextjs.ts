@@ -745,7 +745,24 @@ function handleRelayRoute(
         );
       }
 
-      relay.recordRegistration(heartbeatTabId, { userId, sessionId });
+      // Per-user tab scoping (§4.2): ownership may only be claimed/
+      // transferred under an AUTH-PROVEN identity. `X-Caller-User-Id` is
+      // injected by the consumer's auth gate from the authenticated
+      // session (never a browser value); the body's `registrationMetadata
+      // .userId` is caller-asserted. When the proven identity is present
+      // it must match the claimed userId, otherwise the transfer is
+      // refused and the prior owner stands — closing the "know a tabId,
+      // steal the tab" takeover primitive while still allowing a genuine
+      // re-login (which carries the new user's proven identity).
+      const callerUserId =
+        request.headers.get('x-caller-user-id') ??
+        request.headers.get('X-Caller-User-Id') ??
+        undefined;
+      const registration = relay.recordRegistration(
+        heartbeatTabId,
+        { userId, sessionId },
+        { callerUserId }
+      );
       relay.receiveHeartbeat(heartbeatTabId, {
         url: typeof body?.url === 'string' ? (body.url as string) : undefined,
         title: typeof body?.title === 'string' ? (body.title as string) : undefined,
@@ -761,7 +778,17 @@ function handleRelayRoute(
       const tabRegistered = diag.connectedTabs.includes(heartbeatTabId);
       return jsonResponse({
         success: true,
-        data: { received: true, tabRegistered },
+        data: {
+          received: true,
+          tabRegistered,
+          // Observability: signals an ownership claim/transfer was refused
+          // because the claimed userId was not auth-proven. Not a fatal
+          // heartbeat error — the loop continues; the tab simply keeps its
+          // prior (or no) owner. Absent when ownership was assigned.
+          ...(registration.ownershipAssigned
+            ? {}
+            : { ownershipAssigned: false, ownerChangeRejected: registration.rejectedReason }),
+        },
         timestamp: Date.now(),
       });
     })();

@@ -1694,27 +1694,81 @@ export class CommandRelay {
    * has been called for it. `listOwnedTabs`, `assertOwnership`, and the
    * bus-envelope receiver check all key off this map.
    *
-   * Re-registration under a DIFFERENT `userId` is permitted (e.g. a tab
-   * survives a re-login) — the entry is overwritten in place. This is
-   * the safe path: the alternative (reject + force a reconnect) would
-   * leave the tab unaddressable until the SSE stream re-establishes,
-   * which is strictly worse for the operator UX. The new ownership
-   * takes effect on the next dispatch.
+   * Re-registration under a DIFFERENT `userId` (e.g. a tab survives a
+   * re-login) is permitted ONLY when the new user is AUTH-PROVEN, not
+   * merely asserted. `metadata.userId` rides in the (browser-supplied)
+   * heartbeat body and is therefore untrusted on its own: without a
+   * proof gate, anyone who learns a victim's `tabId` could POST a
+   * heartbeat claiming any `userId` and silently seize ownership of the
+   * tab (and with it the ability to drive it / settle its commands).
+   *
+   * `options.callerUserId` is the identity the consumer's auth gate
+   * proved and injected as `X-Caller-User-Id` (never a browser value).
+   * The rule:
+   *
+   *   - Same-owner heartbeat (existing owner === claimed userId): always
+   *     a refresh — `sessionId`/`lastSeen` updated in place. No proof
+   *     needed; you already hold the tab and the claim matches.
+   *   - TRANSFER (a DIFFERENT user already owns the tab): the claimed
+   *     `userId` MUST be auth-proven and equal to `callerUserId`. An
+   *     unauthenticated (`callerUserId` absent) or mismatched claim is
+   *     REFUSED and the prior owner is left untouched — this is the
+   *     takeover primitive being closed. A genuine re-login carries the
+   *     new user's proven identity and therefore still transfers.
+   *   - First CLAIM (tab has no owner yet — bootstrap): honored, so a
+   *     header-less / single-trust-domain deployment can still register
+   *     tabs. A *present* proven identity must still match the claimed
+   *     `userId` (you cannot bootstrap a tab under an identity you
+   *     cannot back).
+   *
+   * Returns whether ownership was (re)assigned so the HTTP layer can
+   * surface the refusal without bricking the heartbeat loop.
    */
-  recordRegistration(tabId: string, metadata: { userId: string; sessionId: string }): void {
+  recordRegistration(
+    tabId: string,
+    metadata: { userId: string; sessionId: string },
+    options?: { callerUserId?: string | null }
+  ): { ownershipAssigned: boolean; rejectedReason?: 'OWNER_CHANGE_UNVERIFIED' } {
     const now = Date.now();
+    const proven = options?.callerUserId;
+
+    // Proof-vs-claim: the browser-asserted `metadata.userId` may never
+    // differ from the auth-proven caller. This is checked FIRST so it also
+    // covers a same-owner "refresh" spoof — an attacker proving `mallory`
+    // but claiming `userId: alice` (the current owner) to overwrite her
+    // session must not slip through the refresh branch below. Absent proof
+    // (header-less deployment) skips this — see the transfer guard.
+    if (proven != null && proven !== metadata.userId) {
+      return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
+    }
+
     const existing = this.tabOwnership.get(tabId);
     if (existing && existing.userId === metadata.userId) {
       existing.sessionId = metadata.sessionId;
       existing.lastSeen = now;
-      return;
+      return { ownershipAssigned: true };
     }
+
+    if (existing) {
+      // TRANSFER of an already-owned tab. Given the proof-vs-claim check
+      // above, a present proof already equals the claimed userId; the only
+      // remaining refusal is an UNAUTHENTICATED transfer (no proof at all),
+      // which is the takeover primitive — refuse, prior owner stands.
+      if (proven == null) {
+        return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
+      }
+    }
+    // First claim / bootstrap: allowed (a present proof already backs the
+    // claimed userId via the check above; absent proof bootstraps a tab in
+    // a header-less deployment).
+
     this.tabOwnership.set(tabId, {
       userId: metadata.userId,
       sessionId: metadata.sessionId,
       firstSeen: existing?.firstSeen ?? now,
       lastSeen: now,
     });
+    return { ownershipAssigned: true };
   }
 
   /**

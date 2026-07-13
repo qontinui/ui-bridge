@@ -137,6 +137,126 @@ describe('Next.js · POST /heartbeat strict mode (§4.2)', () => {
   });
 });
 
+// U4 (P1 security): POST /heartbeat is the ONLY write path into the
+// ownership registry. The claimed userId rides in the browser-supplied
+// body; the auth-proven identity rides in `X-Caller-User-Id` (injected
+// server-side, never a browser value). Ownership can only transfer to the
+// proven identity — closing "know a victim's tabId → steal their tab".
+describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () => {
+  let relay: CommandRelay;
+  let routes: ReturnType<typeof createNextRouteHandlers>;
+
+  beforeEach(() => {
+    relay = freshRelay();
+    routes = createNextRouteHandlers({}, { relay });
+  });
+
+  afterEach(() => {
+    relay.destroy();
+  });
+
+  /** Alice legitimately owns `victim-tab` (proven identity == claimed). */
+  async function seedAlice(): Promise<void> {
+    const req = makeRequest('POST', '/heartbeat', {
+      headers: { 'X-Caller-User-Id': 'alice' },
+      body: {
+        tabId: 'victim-tab',
+        registrationMetadata: { userId: 'alice', sessionId: 'alice-s1' },
+      },
+    });
+    const res = await routes.POST(req, { params: { path: ['heartbeat'] } });
+    expect(res.status).toBe(200);
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+  }
+
+  it('attacker who knows the tabId but proves no matching identity CANNOT take it over', async () => {
+    await seedAlice();
+
+    // Attacker (proven `mallory`) POSTs a heartbeat for alice's tab. Even if
+    // they assert `userId: alice` in the body to fool a naive body-only
+    // check, the proven identity is `mallory` ≠ alice → refused.
+    const attack = makeRequest('POST', '/heartbeat', {
+      headers: { 'X-Caller-User-Id': 'mallory' },
+      body: {
+        tabId: 'victim-tab',
+        registrationMetadata: { userId: 'alice', sessionId: 'attacker-session' },
+      },
+    });
+    const res = await routes.POST(attack, { params: { path: ['heartbeat'] } });
+    // Heartbeat is not bricked (200) but ownership did NOT move.
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
+    };
+    expect(json.data.ownershipAssigned).toBe(false);
+    expect(json.data.ownerChangeRejected).toBe('OWNER_CHANGE_UNVERIFIED');
+    // Alice keeps her tab, session untouched.
+    expect(relay.getOwnership('victim-tab')).toMatchObject({
+      userId: 'alice',
+      sessionId: 'alice-s1',
+    });
+  });
+
+  it('unauthenticated takeover (no X-Caller-User-Id at all) is refused', async () => {
+    await seedAlice();
+
+    const attack = makeRequest('POST', '/heartbeat', {
+      body: {
+        tabId: 'victim-tab',
+        registrationMetadata: { userId: 'mallory', sessionId: 'm-s1' },
+      },
+    });
+    const res = await routes.POST(attack, { params: { path: ['heartbeat'] } });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
+    expect(json.data.ownershipAssigned).toBe(false);
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+  });
+
+  it('genuine re-login (auth-proven new identity, same tab) STILL transfers ownership', async () => {
+    await seedAlice();
+
+    // Same physical tab; operator logs out of alice, into bob. The gate now
+    // proves `bob` and the body claims `bob` → transfer authorized.
+    const relogin = makeRequest('POST', '/heartbeat', {
+      headers: { 'X-Caller-User-Id': 'bob' },
+      body: {
+        tabId: 'victim-tab',
+        registrationMetadata: { userId: 'bob', sessionId: 'bob-s1' },
+      },
+    });
+    const res = await routes.POST(relogin, { params: { path: ['heartbeat'] } });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
+    // No rejection flag present when ownership was assigned.
+    expect(json.data.ownershipAssigned).toBeUndefined();
+    expect(relay.getOwnership('victim-tab')).toMatchObject({
+      userId: 'bob',
+      sessionId: 'bob-s1',
+    });
+  });
+
+  it('current owner heartbeat (proven identity matches) refreshes normally', async () => {
+    await seedAlice();
+
+    const beat = makeRequest('POST', '/heartbeat', {
+      headers: { 'X-Caller-User-Id': 'alice' },
+      body: {
+        tabId: 'victim-tab',
+        registrationMetadata: { userId: 'alice', sessionId: 'alice-s2' },
+      },
+    });
+    const res = await routes.POST(beat, { params: { path: ['heartbeat'] } });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
+    expect(json.data.ownershipAssigned).toBeUndefined();
+    expect(relay.getOwnership('victim-tab')).toMatchObject({
+      userId: 'alice',
+      sessionId: 'alice-s2',
+    });
+  });
+});
+
 describe('Next.js · GET /tabs filters by X-Caller-User-Id (§4.2)', () => {
   let relay: CommandRelay;
   let routes: ReturnType<typeof createNextRouteHandlers>;

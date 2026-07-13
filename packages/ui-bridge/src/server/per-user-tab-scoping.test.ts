@@ -208,6 +208,134 @@ describe('§4.2 · CommandRelay ownership registry', () => {
   });
 });
 
+// U4 (P1 security): `recordRegistration` is the ONLY place tab ownership
+// is written. The claimed `userId` rides in the (browser-supplied)
+// heartbeat body, so on its own it is untrusted: without a proof gate,
+// anyone who learns a victim's `tabId` could POST a heartbeat asserting
+// any `userId` and silently seize the tab. Ownership may only be
+// claimed/transferred under an AUTH-PROVEN identity (`X-Caller-User-Id`,
+// injected server-side by the consumer's auth gate) that matches the
+// claimed userId. A genuine re-login carries the new user's proof and
+// still transfers; a self-asserted claim is refused, prior owner intact.
+describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
+  it('refuses an ownership takeover asserted without a matching proven identity', () => {
+    const relay = freshRelay();
+    // Alice legitimately owns her tab (proven identity == claimed userId).
+    const claimed = relay.recordRegistration(
+      'victim-tab',
+      { userId: 'alice', sessionId: 'alice-s1' },
+      { callerUserId: 'alice' },
+    );
+    expect(claimed.ownershipAssigned).toBe(true);
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+
+    // Attacker knows `victim-tab` and asserts a userId in the body, but the
+    // auth gate proved they are `mallory` — the claim is NOT theirs to make.
+    // Attacker cannot prove they are alice: they supply no proven identity
+    // (unauthenticated / no X-Caller-User-Id) yet assert `mallory` in the
+    // body to grab the tab. Refused — an unproven claim never transfers.
+    const stolen = relay.recordRegistration(
+      'victim-tab',
+      { userId: 'mallory', sessionId: 'mallory-s1' },
+      { callerUserId: undefined },
+    );
+    expect(stolen.ownershipAssigned).toBe(false);
+    expect(stolen.rejectedReason).toBe('OWNER_CHANGE_UNVERIFIED');
+
+    // Ownership is unchanged: still alice's tab.
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+  });
+
+  it('refuses a body-asserted userId that the proven caller cannot back', () => {
+    const relay = freshRelay();
+    relay.recordRegistration(
+      'victim-tab',
+      { userId: 'alice', sessionId: 'alice-s1' },
+      { callerUserId: 'alice' },
+    );
+
+    // Classic exploit: attacker (proven `mallory`) POSTs a heartbeat that
+    // *claims* to be alice in the body to pass any naive body-only check.
+    const res = relay.recordRegistration(
+      'victim-tab',
+      { userId: 'alice', sessionId: 'attacker-session' },
+      { callerUserId: 'mallory' },
+    );
+    expect(res.ownershipAssigned).toBe(false);
+    expect(res.rejectedReason).toBe('OWNER_CHANGE_UNVERIFIED');
+    // sessionId was NOT overwritten by the attacker.
+    expect(relay.getOwnership('victim-tab')).toMatchObject({
+      userId: 'alice',
+      sessionId: 'alice-s1',
+    });
+  });
+
+  it('allows a genuine re-login: proven new identity, same tab, ownership transfers', () => {
+    const relay = freshRelay();
+    relay.recordRegistration(
+      'shared-tab',
+      { userId: 'alice', sessionId: 'alice-s1' },
+      { callerUserId: 'alice' },
+    );
+    expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
+
+    // Same physical browser tab; the operator logs out of alice and into
+    // bob. The auth gate now proves `bob`, and the heartbeat body claims
+    // `bob` — the transfer is authorized.
+    const relogin = relay.recordRegistration(
+      'shared-tab',
+      { userId: 'bob', sessionId: 'bob-s1' },
+      { callerUserId: 'bob' },
+    );
+    expect(relogin.ownershipAssigned).toBe(true);
+    expect(relay.getOwnership('shared-tab')).toMatchObject({
+      userId: 'bob',
+      sessionId: 'bob-s1',
+    });
+  });
+
+  it('leaves the current owner heartbeat path unchanged (same-owner refresh, no proof needed)', () => {
+    const relay = freshRelay();
+    relay.recordRegistration(
+      'my-tab',
+      { userId: 'alice', sessionId: 'alice-s1' },
+      { callerUserId: 'alice' },
+    );
+    const first = relay.getOwnership('my-tab');
+
+    // Ordinary heartbeat refresh from the current owner: sessionId updates,
+    // firstSeen sticks, ownership assigned.
+    const refresh = relay.recordRegistration(
+      'my-tab',
+      { userId: 'alice', sessionId: 'alice-s2' },
+      { callerUserId: 'alice' },
+    );
+    expect(refresh.ownershipAssigned).toBe(true);
+    const after = relay.getOwnership('my-tab');
+    expect(after).toMatchObject({ userId: 'alice', sessionId: 'alice-s2' });
+    expect(after!.firstSeen).toBe(first!.firstSeen);
+  });
+
+  it('header-less: first claim + same-owner refresh work; a no-proof TRANSFER is refused', () => {
+    // Header-less deployment (no per-user boundary). A single-user app never
+    // changes userId, so it only ever hits the first-claim + refresh paths,
+    // which stay working. But an unauthenticated TRANSFER to a different
+    // user is exactly the takeover the fix closes — refuse it, fail closed.
+    const relay = freshRelay();
+    const claim = relay.recordRegistration('tab-x', { userId: 'alice', sessionId: 's1' });
+    expect(claim.ownershipAssigned).toBe(true);
+
+    const refresh = relay.recordRegistration('tab-x', { userId: 'alice', sessionId: 's2' });
+    expect(refresh.ownershipAssigned).toBe(true);
+    expect(relay.getOwnership('tab-x')).toMatchObject({ userId: 'alice', sessionId: 's2' });
+
+    const transfer = relay.recordRegistration('tab-x', { userId: 'bob', sessionId: 's3' });
+    expect(transfer.ownershipAssigned).toBe(false);
+    expect(transfer.rejectedReason).toBe('OWNER_CHANGE_UNVERIFIED');
+    expect(relay.getOwnership('tab-x')).toMatchObject({ userId: 'alice' });
+  });
+});
+
 describe('§4.2 · targetTabId dispatch with ownerCheck', () => {
   it('dispatch on a tab the caller owns resolves normally', async () => {
     const relay = freshRelay();
