@@ -50,7 +50,18 @@ jobs:
         # Trusted Publishers requires 11.5.1+. Without this, the publish
         # step sends an empty auth header and gets 404 even when the
         # OIDC + provenance flow succeeds.
-        run: npm install --global npm@latest
+        #
+        # Pin to the 11.x line rather than `@latest`. `@latest` is a moving
+        # target and it silently broke this workflow: npm 12 shipped with
+        # `engines.node = ^22.22.2 || ^24.15.0 || >=26.0.0`, so on the node@20
+        # pinned above it aborts with EBADENGINE and the release never
+        # publishes (the 0.21.0 / 0.3.0 / 0.6.0 tags all failed exactly here,
+        # while the identical 0.20.0 release had passed weeks earlier — the
+        # only thing that changed was what `@latest` resolved to).
+        # `npm@^11` supports node ^20.17.0 and is comfortably above the
+        # 11.5.1 trusted-publishing floor, so it satisfies both constraints
+        # and cannot drift out from under us again.
+        run: npm install --global npm@^11
 
       - name: Derive package name from tag
         id: pkg
