@@ -498,9 +498,9 @@ async function awaitDOMSettledRelay(timeout = 500): Promise<void> {
  * Each event is `{ bubbles, cancelable, composed }` with primary-pointer /
  * left-button coordinates so capturing listeners on ancestors (Radix uses
  * capture-phase + bubbling) and `composed` shadow-DOM boundaries both see
- * it. We keep a final native `.click()` as a fallback for plain
- * `<button>`/anchor controls and environments without `PointerEvent`
- * (older jsdom), so existing plain-React behavior is preserved.
+ * it. A native `.click()` runs ONLY when the synthetic sequence could not
+ * be dispatched (environments without event constructors): exactly one
+ * `click` event ever reaches the element per relay click, never two.
  */
 function dispatchRealClick(el: HTMLElement): void {
   try {
@@ -556,22 +556,33 @@ function dispatchRealClick(el: HTMLElement): void {
   };
   const makeMouse = (type: string): Event => new MouseEvent(type, mouseInit);
 
+  let sequenceDispatched = false;
   try {
     el.dispatchEvent(makePointer('pointerdown'));
     el.dispatchEvent(makeMouse('mousedown'));
     el.dispatchEvent(makePointer('pointerup'));
     el.dispatchEvent(makeMouse('mouseup'));
     el.dispatchEvent(makeMouse('click'));
+    sequenceDispatched = true;
   } catch {
     /* event construction unsupported — fall back to native click below */
   }
 
-  // Fallback for plain controls (and label/checkbox semantics the synthetic
-  // `click` MouseEvent above does not replicate, e.g. default form actions).
-  try {
-    el.click();
-  } catch {
-    /* native click unavailable — the dispatched sequence above stands in */
+  // Native-click FALLBACK — only when the synthetic sequence could not be
+  // dispatched. Running it unconditionally delivered a SECOND `click` event
+  // on every relay click (the synthetic one above + this native one), which
+  // double-fired React onClick handlers: non-idempotent submits POSTed twice
+  // (duplicate coord policy rows ~8ms apart) and checkbox/switch controls
+  // double-toggled back to their original state, reading as "the click did
+  // nothing". A dispatched untrusted `click` runs standard activation
+  // behavior (form submit, checkbox toggle, label forwarding), so the plain
+  // controls the fallback was guarding keep working without it.
+  if (!sequenceDispatched) {
+    try {
+      el.click();
+    } catch {
+      /* native click unavailable — nothing more we can do */
+    }
   }
 }
 

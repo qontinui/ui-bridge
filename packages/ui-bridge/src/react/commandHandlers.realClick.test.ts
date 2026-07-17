@@ -8,10 +8,14 @@
  * and the Spec-CI transition's `waitAfter` timed out.
  *
  * Fix: `dispatchRealClick` dispatches the full
- * `pointerdown → mousedown → pointerup → mouseup → click` sequence (with a
- * final native `.click()` fallback). These tests assert that the relay
- * `executeElementAction`/`clickByText`/`clickBySelector` cases dispatch that
- * sequence so a pointer-event listener fires.
+ * `pointerdown → mousedown → pointerup → mouseup → click` sequence (native
+ * `.click()` runs only when the synthetic dispatch is unavailable — an
+ * unconditional fallback delivered TWO click events per relay click, which
+ * double-fired React onClick handlers: duplicate non-idempotent submits and
+ * switches that double-toggled back to their original state). These tests
+ * assert that the relay `executeElementAction`/`clickByText`/`clickBySelector`
+ * cases dispatch that sequence so a pointer-event listener fires, and that
+ * exactly ONE `click` event reaches the element.
  */
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
@@ -70,7 +74,27 @@ describe('relay click → real pointer sequence', () => {
     expect(seen).toContain('click');
     // Ordering: pointerdown precedes pointerup precedes click.
     expect(seen.indexOf('pointerdown')).toBeLessThan(seen.indexOf('pointerup'));
-    expect(seen.indexOf('pointerup')).toBeLessThan(seen.lastIndexOf('click'));
+    expect(seen.indexOf('pointerup')).toBeLessThan(seen.indexOf('click'));
+    // Exactly ONE click event — the unconditional native-click fallback used
+    // to deliver a second one, double-firing onClick handlers.
+    expect(seen.filter((t) => t === 'click')).toHaveLength(1);
+  });
+
+  it('a click reaches the element exactly once (no double-activation)', async () => {
+    getGlobalRegistry().registerElement('el-once', host, { type: 'button' });
+
+    let clicks = 0;
+    host.addEventListener('click', () => {
+      clicks += 1;
+    });
+
+    await executeCommand(
+      'executeElementAction',
+      { id: 'el-once', request: { action: 'click' } },
+      emptyBridge,
+    );
+
+    expect(clicks).toBe(1);
   });
 
   it('a pointerdown-only listener (Radix-style) fires — bare click() would have missed it', async () => {
