@@ -1,24 +1,16 @@
 {
-  "name": "@qontinui/ui-bridge-headless",
-  "version": "0.3.1",
-  "description": "Playwright-backed headless browser launcher for UI Bridge — spin up a real Chromium tab so web apps can be driven through UI Bridge without a visible browser open.",
+  "name": "@qontinui/ui-bridge-cli-args",
+  "version": "0.1.0",
+  "description": "Shared CLI argument primitives for the UI Bridge package bins — the single home for the flag-shaped-value swallow guard, unknown-flag rejection, and the shared --quiet/--help kit.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
-  "bin": {
-    "ui-bridge-tab": "./dist/cli.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./cli": {
-      "types": "./dist/cli.d.ts",
-      "import": "./dist/cli.js",
-      "require": "./dist/cli.cjs"
     }
   },
   "files": [
@@ -35,30 +27,26 @@
   },
   "keywords": [
     "ui-bridge",
-    "playwright",
-    "chromium",
-    "headless",
-    "testing",
-    "automation"
+    "cli",
+    "argv",
+    "argument-parsing"
   ],
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "https://github.com/qontinui/ui-bridge.git",
-    "directory": "packages/ui-bridge-headless"
+    "directory": "packages/ui-bridge-cli-args"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@qontinui/ui-bridge-cli-args": "^0.1.0",
-    "playwright": "^1.48.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.10.0",
     "rimraf": "^5.0.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -8,6 +8,9 @@ name: Publish to npm
 #
 # Supported packages (must match a directory under `packages/`):
 #   - ui-bridge
+#   - ui-bridge-cli-args (added 2026-07-18 — zero-dep leaf holding the shared
+#     CLI flag-guard primitives; the bottom of the build graph, so it builds
+#     FIRST. First publish needs its npm trusted-publisher OIDC policy set up.)
 #   - ui-bridge-eslint-plugin
 #   - ui-bridge-wrapper
 #   - ui-bridge-headless
@@ -22,6 +25,7 @@ on:
   push:
     tags:
       - 'ui-bridge-v*'
+      - 'ui-bridge-cli-args-v*'
       - 'ui-bridge-eslint-plugin-v*'
       - 'ui-bridge-wrapper-v*'
       - 'ui-bridge-headless-v*'
@@ -88,14 +92,16 @@ jobs:
         # tsc step can resolve sibling-workspace types from their dist/.
         # npm workspaces uses filesystem-alphabetical order by default,
         # which doesn't respect internal dep graphs. The graph today:
-        #   ui-bridge-headless         — leaf
+        #   ui-bridge-cli-args         — leaf (zero deps; CLI flag-guard kit)
+        #   ui-bridge-headless         — imports cli-args types
         #   ui-bridge                  — imports headless types
         #   ui-bridge-server           — imports ui-bridge types
-        #   ui-bridge-wrapper          — imports headless types (dynamic)
+        #   ui-bridge-wrapper          — imports headless types (dynamic) + cli-args
         # Other packages have no internal deps, so building the target
         # last is sufficient. Examples/e2e are intentionally not built
         # here — they're not publishable and have their own concerns.
         run: |
+          npm run build --workspace=packages/ui-bridge-cli-args --if-present
           npm run build --workspace=packages/ui-bridge-headless --if-present
           npm run build --workspace=packages/ui-bridge --if-present
           npm run build --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
