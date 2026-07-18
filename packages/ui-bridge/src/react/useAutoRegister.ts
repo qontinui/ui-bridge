@@ -519,8 +519,51 @@ function inferIconAction(element: HTMLElement): string | undefined {
  *   close icon inside "Terminal 1" tab                → "button-close-terminal-1"
  *   icon-only button inside "File" menu item          → "button-action-file"
  */
+/**
+ * Stable, text-independent id for an element inside a `UIBridgeComponentScope`
+ * (marked with `data-ui-bridge-component=<componentId>`). Derives the id from
+ * the owning component id + element type + a component-scoped same-type index,
+ * so a control whose visible text is dynamic (e.g. a live count) never bakes
+ * that mutable text into its id (the "button-5-sessions froze while the text
+ * said 6" defect). The index is computed over same-type descendants of the
+ * scope root — collision-free within the component, unlike the per-parent
+ * `getSiblingIndex`. Returns undefined when the element is not component-owned,
+ * so un-scoped elements keep the readable text-derived id below.
+ */
+function getComponentScopeId(element: HTMLElement): string | undefined {
+  let scope: HTMLElement | null = element.parentElement;
+  let componentId: string | null = null;
+  let depth = 0;
+  while (scope && depth < 12) {
+    const cid = scope.getAttribute('data-ui-bridge-component');
+    if (cid) {
+      componentId = cid;
+      break;
+    }
+    scope = scope.parentElement;
+    depth++;
+  }
+  if (!componentId || !scope) return undefined;
+
+  const type = inferElementType(element);
+  const sameType = Array.from(scope.querySelectorAll<HTMLElement>('*')).filter(
+    (el) => inferElementType(el) === type
+  );
+  const idx = sameType.indexOf(element);
+  return idx > 0 ? `${componentId}-${type}-${idx}` : `${componentId}-${type}`;
+}
+
 function generateSemanticId(element: HTMLElement): string {
   const type = inferElementType(element);
+
+  // Component-owned elements get a stable structural key (component id + type)
+  // instead of a text-derived one — the plan's "ids should derive from stable
+  // keys (component id + role), with text only in accessibleName". Text still
+  // flows to `accessibleName`/`text` in the snapshot; only the *id* stops
+  // tracking mutable text.
+  const scopeId = getComponentScopeId(element);
+  if (scopeId) return scopeId;
+
   const label = getAccessibleLabel(element);
 
   if (label) {

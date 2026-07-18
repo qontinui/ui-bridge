@@ -943,11 +943,20 @@ export function createRelayHandlers(
       let normalizedRequest: ComponentActionRequest;
       let context: HandlerContext | undefined;
       if (typeof request === 'string') {
-        // Express path: request is actually the actionId string, body is the 3rd argument
+        // Express path: request is actually the actionId string, body is the 3rd argument.
+        // Accept BOTH the wrapped shape `{"params":{...}}` and the bare shape the
+        // action's `paramSchema` advertises (`{"layoutId":"single"}`): flat top-level
+        // body keys are merged into params, with an explicit `params` winning on
+        // collision — parity with the runner's UIBridgeComponentActionRequest merge
+        // and the element-action route's flat-format handling.
         const body = bodyOrContext as Record<string, unknown> | undefined;
+        const explicitParams = body?.params as Record<string, unknown> | undefined;
+        const flatKeys = body
+          ? Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'params'))
+          : {};
         normalizedRequest = {
           action: request,
-          params: body?.params as Record<string, unknown>,
+          params: { ...flatKeys, ...(explicitParams ?? {}) },
         };
         // Express never threads HandlerContext through this path.
         context = undefined;
