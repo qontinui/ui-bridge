@@ -6,7 +6,7 @@ import {
   rejectEmptyValue,
   COMMON_FLAGS,
   type ArgErrorFactory,
-} from '../src/cli-args.js';
+} from './index.js';
 
 // A bin's domain error is constructed via a factory so thrown errors keep the
 // bin's specific type. The tests use a plain Error factory.

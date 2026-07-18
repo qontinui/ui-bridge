@@ -12,9 +12,23 @@
  * or `--keep-alive <seconds>` elapses. On exit, the browser is closed.
  */
 
+import { fileURLToPath } from 'node:url';
+import { consumeValue, type ArgErrorFactory } from '@qontinui/ui-bridge-cli-args';
 import { launchHeadlessTab, type LaunchHeadlessTabResult } from './launcher.js';
 
-interface CliArgs {
+/**
+ * Error raised by {@link parseArgs} on bad CLI input. `parseArgs` throws this
+ * instead of calling `process.exit`, so it stays unit-testable without spawning
+ * a browser; `main()` catches it and maps it to a stderr message + exit code 2.
+ */
+export class HeadlessCliArgError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HeadlessCliArgError';
+  }
+}
+
+export interface CliArgs {
   url: string;
   headless: boolean;
   uiBridgeBase: string | null;
@@ -56,7 +70,7 @@ Examples:
     --ui-bridge http://localhost:9876/ui-bridge --keep-alive 120
 `;
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     url: '',
     headless: false,
@@ -70,6 +84,12 @@ function parseArgs(argv: string[]): CliArgs {
     quiet: false,
     help: false,
   };
+
+  // Every value-flag reads through `consumeValue`, which rejects a flag-shaped
+  // next token (`--ui-bridge --headless` must not silently set the base to
+  // '--headless'). A single-dash token (`--keep-alive -1`) is NOT flag-shaped,
+  // so negative numerics still read as values and fail their own range check.
+  const mkError: ArgErrorFactory = (m) => new HeadlessCliArgError(m);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -85,63 +105,58 @@ function parseArgs(argv: string[]): CliArgs {
         args.quiet = true;
         break;
       case '--url':
-        args.url = argv[++i] ?? '';
+        args.url = consumeValue('--url', argv[++i], mkError) ?? '';
         break;
       case '--ui-bridge':
-        args.uiBridgeBase = argv[++i] ?? null;
+        args.uiBridgeBase = consumeValue('--ui-bridge', argv[++i], mkError);
         break;
       case '--wait-ms': {
-        const raw = argv[++i];
-        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        const raw = consumeValue('--wait-ms', argv[++i], mkError);
+        const n = raw === null ? NaN : Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n <= 0) {
-          die(`--wait-ms expects a positive integer (got ${raw ?? '<missing>'})`);
+          throw mkError(`--wait-ms expects a positive integer (got ${raw ?? '<missing>'})`);
         }
         args.waitForUiBridgeMs = n;
         break;
       }
       case '--keep-alive': {
-        const raw = argv[++i];
-        const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+        const raw = consumeValue('--keep-alive', argv[++i], mkError);
+        const n = raw === null ? NaN : Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n <= 0) {
-          die(`--keep-alive expects a positive integer (got ${raw ?? '<missing>'})`);
+          throw mkError(`--keep-alive expects a positive integer (got ${raw ?? '<missing>'})`);
         }
         args.keepAliveSecs = n;
         break;
       }
       case '--viewport': {
-        const raw = argv[++i];
+        const raw = consumeValue('--viewport', argv[++i], mkError);
         const match = raw?.match(/^(\d+)x(\d+)$/);
-        if (!match) die(`--viewport expects WxH (got ${raw ?? '<missing>'})`);
-        args.viewportWidth = Number.parseInt(match![1]!, 10);
-        args.viewportHeight = Number.parseInt(match![2]!, 10);
+        if (!match) throw mkError(`--viewport expects WxH (got ${raw ?? '<missing>'})`);
+        args.viewportWidth = Number.parseInt(match[1]!, 10);
+        args.viewportHeight = Number.parseInt(match[2]!, 10);
         break;
       }
       case '--user-agent':
-        args.userAgent = argv[++i];
+        args.userAgent = consumeValue('--user-agent', argv[++i], mkError) ?? undefined;
         break;
       case '--auth-token':
-        args.authToken = argv[++i];
+        args.authToken = consumeValue('--auth-token', argv[++i], mkError) ?? undefined;
         break;
       default:
         if (arg !== undefined && arg.startsWith('--')) {
-          die(`Unknown flag: ${arg}\n\n${USAGE}`);
+          throw mkError(`Unknown flag: ${arg}\n\n${USAGE}`);
         }
         break;
     }
   }
 
   if (!args.help && !args.url) {
-    die(`--url is required\n\n${USAGE}`);
+    throw mkError(`--url is required\n\n${USAGE}`);
   }
   if (!args.help && !/^https?:\/\//i.test(args.url)) {
-    die(`--url must start with http:// or https:// (got ${args.url})`);
+    throw mkError(`--url must start with http:// or https:// (got ${args.url})`);
   }
   return args;
-}
-
-function die(msg: string): never {
-  process.stderr.write(`${msg}\n`);
-  process.exit(2);
 }
 
 function log(quiet: boolean, msg: string) {
@@ -149,7 +164,16 @@ function log(quiet: boolean, msg: string) {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  let args: CliArgs;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    if (err instanceof HeadlessCliArgError) {
+      process.stderr.write(`${err.message}\n`);
+      process.exit(2);
+    }
+    throw err;
+  }
   if (args.help) {
     process.stdout.write(USAGE);
     process.exit(0);
@@ -221,4 +245,16 @@ async function main(): Promise<void> {
   // process and signal listeners.
 }
 
-void main();
+// Only run when invoked as the bin — importing this module (e.g. from a unit
+// test that exercises `parseArgs`) must NOT launch a browser.
+const isMain = (() => {
+  try {
+    return process.argv[1] === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
+  void main();
+}
