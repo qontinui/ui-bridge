@@ -8,7 +8,9 @@ import type {
   ActionRequest,
   ActionResponse,
   ActionFailureDetails,
+  ElementIdentifier,
   ElementState,
+  SerializedComponentAction,
   WaitOptions,
   ContentMetadata,
   MediaMetadata,
@@ -461,7 +463,28 @@ export interface ControlSnapshot {
     type: string;
     label?: string;
     actions: string[];
+    /**
+     * Custom (application-defined) action ids. Since 0.22.0 the executor
+     * path emits the canonical shape, which keeps custom actions here
+     * rather than merged into `actions` (the registry paths always did).
+     */
+    customActions?: string[];
     state: ElementState;
+    /**
+     * Identifier bundle for locating the element (xpath/selector always
+     * present). Emitted by both the registry serializer and the DOM-fallback
+     * materializer; optional here because pre-0.22.0 servers omitted it on
+     * the fallback path.
+     */
+    identifier?: ElementIdentifier;
+    /**
+     * Unix-epoch ms timestamp when the element was registered (canonical
+     * `UIBridgeElement` requires it). Synthesized as materialization time
+     * for DOM-fallback scans.
+     */
+    registeredAt: number;
+    /** Whether the element is currently mounted (true for DOM-fallback scans). */
+    mounted: boolean;
     category?: 'interactive' | 'content' | 'media';
     /**
      * High-level element kind — `"interactive"` for clickable/typeable/etc.
@@ -549,7 +572,20 @@ export interface ControlSnapshot {
   components: Array<{
     id: string;
     name: string;
-    actions: string[];
+    description?: string;
+    /**
+     * Canonical `ComponentActionInfo` objects (`{ id, label?, description? }`).
+     * Was `string[]` of bare action ids before 0.22.0.
+     */
+    actions: SerializedComponentAction[];
+    /** URL template for invoking an action — substitute `{actionId}`. */
+    actionInvocationPath?: string;
+    elementIds?: string[];
+    /** Unix-epoch ms registration timestamp (canonical UIBridgeComponent requires it). */
+    registeredAt: number;
+    /** Whether the component is currently mounted. */
+    mounted: boolean;
+    scope?: 'global' | 'route';
   }>;
   /** Available workflows */
   workflows: Array<{

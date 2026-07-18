@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ui-bridge-python"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for UI Bridge Framework"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

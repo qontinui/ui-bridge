@@ -463,7 +463,7 @@ export function createHandlers(
     getElements: async (): Promise<APIResponse<ControlSnapshot['elements']>> => {
       try {
         const elements = registry.getAllElements();
-        return success(elements as ControlSnapshot['elements']);
+        return success(elements as unknown as ControlSnapshot['elements']);
       } catch (err) {
         return error((err as Error).message, 'ELEMENTS_ERROR');
       }
@@ -489,7 +489,7 @@ export function createHandlers(
             timestamp: Date.now(),
           };
         }
-        return success(element as ControlSnapshot['elements'][0]);
+        return success(element as unknown as ControlSnapshot['elements'][0]);
       } catch (err) {
         return error((err as Error).message, 'ELEMENT_ERROR');
       }

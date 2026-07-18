@@ -148,8 +148,10 @@ export function measureFreshBbox(
  * add a field to `RegisteredElement` that should appear in serialized form,
  * add it here only.
  *
- * Returns the snapshot-shape (no `registeredAt`/`mounted`/`element`). Wrappers
- * that need additional fields can spread and extend.
+ * Returns the snapshot-shape (no `element`). Wrappers that need additional
+ * fields can spread and extend. `registeredAt`/`mounted` are emitted so the
+ * wire shape is a strict superset of the canonical
+ * `qontinui-types::ui_bridge::UIBridgeElement` (which requires both).
  *
  * @param options.componentBasePath  Prefix for `componentActionBasePath`. Defaults
  *   to `/control/component` (correct for the standalone ui-bridge server).
@@ -201,6 +203,10 @@ export function serializeRegisteredElement(
     label: el.label,
     identifier: el.getIdentifier(),
     state: el.getState(),
+    // Lifecycle fields — required by the canonical UIBridgeElement shape
+    // consumed by qontinui-spec-check's strict parse.
+    registeredAt: el.registeredAt,
+    mounted: el.mounted,
     actions: el.actions,
     customActions: el.customActions ? Object.keys(el.customActions) : undefined,
     category: el.category,
@@ -255,6 +261,44 @@ export function serializeRegisteredElement(
     // Phase 3.2: ids/globs this control reveals. Echoed verbatim so clients
     // can answer "which control unhides element X" without grepping source.
     reveals: el.reveals,
+  };
+}
+
+/**
+ * Single source of truth for serializing a `RegisteredComponent` to a
+ * snapshot entry — used by `createSnapshot`/`createSnapshotAsync` and the
+ * relay's `getControlSnapshot` handler so the three paths cannot drift.
+ *
+ * `actions` is emitted as `{ id, label?, description? }` objects (the
+ * canonical `ComponentActionInfo` shape) rather than bare id strings, and
+ * `registeredAt`/`mounted` are included — both required by the canonical
+ * `qontinui-types::ui_bridge::UIBridgeComponent` consumed by
+ * qontinui-spec-check's strict parse. The action `handler`/`paramSchema`
+ * never reach the wire.
+ */
+export function serializeRegisteredComponent(
+  comp: RegisteredComponent,
+  options: { componentBasePath?: string } = {}
+): BridgeSnapshot['components'][number] {
+  const componentBasePath = options.componentBasePath ?? '/control/component';
+  return {
+    id: comp.id,
+    name: comp.name,
+    description: comp.description,
+    actions: comp.actions.map((a) => ({
+      id: a.id,
+      label: a.label,
+      description: a.description,
+    })),
+    // Tell the caller exactly how to invoke any action on this component
+    // without having to grep docs or guess the route shape.
+    actionInvocationPath: `${componentBasePath}/${comp.id}/action/{actionId}`,
+    elementIds: comp.elementIds,
+    registeredAt: comp.registeredAt,
+    mounted: comp.mounted,
+    // Phase 3.1: discoverability scope. Pass through verbatim — undefined
+    // is the documented default ("route").
+    scope: comp.scope,
   };
 }
 
@@ -2852,19 +2896,9 @@ export class UIBridgeRegistry {
       ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: this.getAllElements().map((el) => serializeRegisteredElement(el, options)),
-      components: this.getAllComponents().map((comp) => ({
-        id: comp.id,
-        name: comp.name,
-        description: comp.description,
-        actions: comp.actions.map((a) => a.id),
-        // Tell the caller exactly how to invoke any action on this component
-        // without having to grep docs or guess the route shape.
-        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds,
-        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
-        // is the documented default ("route").
-        scope: comp.scope,
-      })),
+      components: this.getAllComponents().map((comp) =>
+        serializeRegisteredComponent(comp, options)
+      ),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
         name: wf.name,
@@ -2931,19 +2965,9 @@ export class UIBridgeRegistry {
       ...(visibility !== undefined ? { visibility } : {}),
       registration: this.buildRegistrationMetadata(),
       elements: elementSnapshots,
-      components: this.getAllComponents().map((comp) => ({
-        id: comp.id,
-        name: comp.name,
-        description: comp.description,
-        actions: comp.actions.map((a) => a.id),
-        // Tell the caller exactly how to invoke any action on this component
-        // without having to grep docs or guess the route shape.
-        actionInvocationPath: `/control/component/${comp.id}/action/{actionId}`,
-        elementIds: comp.elementIds,
-        // Phase 3.1: discoverability scope. Pass through verbatim — undefined
-        // is the documented default ("route").
-        scope: comp.scope,
-      })),
+      components: this.getAllComponents().map((comp) =>
+        serializeRegisteredComponent(comp, options)
+      ),
       workflows: this.getAllWorkflows().map((wf) => ({
         id: wf.id,
         name: wf.name,

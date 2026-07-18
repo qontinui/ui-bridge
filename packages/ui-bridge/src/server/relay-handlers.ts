@@ -1907,7 +1907,7 @@ export function createRelayHandlers(
     async pageHealth() {
       try {
         const snapshot = latestControlSnapshot as ControlSnapshot;
-        const elements = (snapshot?.elements ?? []) as Parameters<
+        const elements = (snapshot?.elements ?? []) as unknown as Parameters<
           typeof diagnosePageHealth
         >[0];
         const report = diagnosePageHealth(elements);

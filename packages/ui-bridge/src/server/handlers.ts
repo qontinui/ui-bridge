@@ -282,7 +282,11 @@ function normalizeBatchAssertions(
  * objects from registry.getAllElements() have a getState() method that must
  * be called to populate these fields — without this mapping, rects are null.
  */
-function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'] {
+export function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'] {
+  // One timestamp per materialization pass: synthesized `registeredAt`
+  // values must be identical across the batch (and not churn per element)
+  // so snapshot diffing doesn't see spurious per-element deltas.
+  const materializedAt = Date.now();
   return rawElements.map((raw) => {
     const el = raw as {
       id: string;
@@ -298,6 +302,8 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       getIdentifier?: () => unknown;
       bbox?: { x: number; y: number; width: number; height: number };
       visible?: boolean;
+      registeredAt?: number;
+      mounted?: boolean;
     };
     // Capture title from the live DOM element for explicit attribute-level
     // filtering (Tier 1.2). `ariaLabel`, `accessibleName`, `text`, and
@@ -324,6 +330,12 @@ function materializeElements(rawElements: unknown[]): ControlSnapshot['elements'
       title: titleAttr || undefined,
       identifier: el.getIdentifier?.(),
       state: el.getState?.(),
+      // Canonical lifecycle fields (UIBridgeElement requires both). Registry
+      // entries carry real values; DOM-fallback scans synthesize them —
+      // materialization time for `registeredAt`, and `mounted: true` since a
+      // DOM-scanned element is by definition attached.
+      registeredAt: el.registeredAt ?? materializedAt,
+      mounted: el.mounted ?? true,
       actions: el.actions,
       customActions: el.customActions ? Object.keys(el.customActions) : undefined,
       category: el.category,
@@ -1258,7 +1270,7 @@ export function createHandlers(
         timestamp: Date.now(),
         total: elements.length,
         durationMs: 0,
-      }) as APIResponse<FindResponse>;
+      }) as unknown as APIResponse<FindResponse>;
     } catch (err) {
       return error((err as Error).message, 'FIND_ERROR');
     }
@@ -2062,11 +2074,16 @@ export function createHandlers(
         }
 
         // DOM fallback: when both the snapshot and registry have no elements,
-        // populate from a live DOM scan.
+        // populate from a live DOM scan. Route through materializeElements
+        // (same as the find/discover handlers) so scanned entries carry the
+        // computed state/identifier plus the synthesized canonical
+        // registeredAt/mounted fields — a raw scan result would break the
+        // canonical-superset contract on exactly the zero-registration case
+        // the fallback exists for.
         if (snapshot.elements.length === 0) {
           const domElements = scanDOMForInteractiveElements();
           if (domElements.length > 0) {
-            snapshot.elements = domElements as unknown as ControlSnapshot['elements'];
+            snapshot.elements = materializeElements(domElements as unknown[]);
           }
         }
 
@@ -5247,7 +5264,7 @@ export function createHandlers(
       try {
         const snapshot = registry.createSnapshot();
         const report = diagnosePageHealth(
-          (snapshot.elements ?? []) as DiscoveredElement[]
+          (snapshot.elements ?? []) as unknown as DiscoveredElement[]
         );
         return success(report);
       } catch (err) {

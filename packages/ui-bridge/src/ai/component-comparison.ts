@@ -87,11 +87,16 @@ export function compareComponents(
     const missingKeys = src.stateKeys.filter((k) => !tgtKeys.has(k));
     const extraKeys = tgt.stateKeys.filter((k) => !srcKeys.has(k));
 
-    // Compute action diff
-    const srcActions = new Set(src.actions.map((a) => a.toLowerCase()));
-    const tgtActions = new Set(tgt.actions.map((a) => a.toLowerCase()));
-    const missingActions = src.actions.filter((a) => !tgtActions.has(a.toLowerCase()));
-    const extraActions = tgt.actions.filter((a) => !srcActions.has(a.toLowerCase()));
+    // Compute action diff. Entries may be bare id strings (pre-0.22.0 wire)
+    // or canonical ComponentActionInfo objects — normalize to the id.
+    const actionId = (a: ComponentInfo['actions'][number]): string =>
+      typeof a === 'string' ? a : a.id;
+    const srcActionIds = src.actions.map(actionId);
+    const tgtActionIds = tgt.actions.map(actionId);
+    const srcActions = new Set(srcActionIds.map((a) => a.toLowerCase()));
+    const tgtActions = new Set(tgtActionIds.map((a) => a.toLowerCase()));
+    const missingActions = srcActionIds.filter((a) => !tgtActions.has(a.toLowerCase()));
+    const extraActions = tgtActionIds.filter((a) => !srcActions.has(a.toLowerCase()));
 
     matches.push({
       source: src,

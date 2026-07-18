@@ -1762,8 +1762,12 @@ export interface ComponentInfo {
   type: string;
   /** State keys */
   stateKeys: string[];
-  /** Action names */
-  actions: string[];
+  /**
+   * Actions — bare action-id strings (pre-0.22.0 wire) or canonical
+   * `ComponentActionInfo` objects (`{ id, label?, description? }`, the
+   * 0.22.0 canonical-shape wire). Comparison code normalizes to the id.
+   */
+  actions: Array<string | { id: string; label?: string; description?: string }>;
 }
 
 /** A matched pair of components */

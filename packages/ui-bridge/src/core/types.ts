@@ -634,6 +634,20 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
 }
 
 /**
+ * Wire-serializable subset of a {@link ComponentAction} — the canonical
+ * `qontinui-types::ui_bridge::ComponentActionInfo` shape emitted on
+ * snapshots. `handler`/`paramSchema` are runtime-only and never serialized.
+ */
+export interface SerializedComponentAction {
+  /** Action identifier */
+  id: string;
+  /** Human-readable label */
+  label?: string;
+  /** Description of what the action does */
+  description?: string;
+}
+
+/**
  * A component registered with the bridge (higher-level than elements)
  */
 export interface RegisteredComponent {
@@ -1298,6 +1312,14 @@ export interface BridgeSnapshot {
     label?: string;
     identifier: ElementIdentifier;
     state: ElementState;
+    /**
+     * Unix-epoch millisecond timestamp when the element was registered.
+     * Required by the canonical `qontinui-types::ui_bridge::UIBridgeElement`
+     * shape consumed by spec-check's strict parse.
+     */
+    registeredAt: number;
+    /** Whether the element's React component is currently mounted. */
+    mounted: boolean;
     actions: StandardAction[];
     customActions?: string[];
     category?: 'interactive' | 'content' | 'media';
@@ -1427,8 +1449,28 @@ export interface BridgeSnapshot {
     id: string;
     name: string;
     description?: string;
-    actions: string[];
+    /**
+     * Actions exposed by this component, in the canonical
+     * `ComponentActionInfo` shape (`{ id, label?, description? }`) required
+     * by `qontinui-types::ui_bridge::UIBridgeComponent`. The registration's
+     * `handler`/`paramSchema` never reach the wire. (Was `string[]` of bare
+     * action ids before 0.22.0.)
+     */
+    actions: SerializedComponentAction[];
+    /**
+     * URL template for invoking any of this component's actions —
+     * substitute `{actionId}`. Honours the snapshot caller's
+     * `componentBasePath` (the runner mounts under `/ui-bridge/...`).
+     */
+    actionInvocationPath?: string;
     elementIds?: string[];
+    /**
+     * Unix-epoch millisecond timestamp when the component was registered.
+     * Required by the canonical UIBridgeComponent shape.
+     */
+    registeredAt: number;
+    /** Whether the component's React component is currently mounted. */
+    mounted: boolean;
     /**
      * Phase 3.1 discoverability scope (plan 2026-05-03). Echoed verbatim from
      * the registration. Undefined ≡ `'route'` (the historical default —

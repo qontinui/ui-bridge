@@ -48,6 +48,7 @@ function getCanonicalPerformAction(): PerformActionFn | null {
 }
 
 import type { UIBridgeRegistry } from '../core/registry';
+import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
 import type {
   WaitOptions,
   ElementState,
@@ -1687,21 +1688,18 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     return {
       timestamp: Date.now(),
-      elements: elements.map((el) => ({
-        id: el.id,
-        type: el.type,
-        label: el.label,
-        actions: [...el.actions, ...(el.customActions ? Object.keys(el.customActions) : [])],
-        state: el.getState(),
-        category: el.category,
-        contentMetadata: el.contentMetadata,
-        mediaMetadata: el.mediaMetadata,
-      })),
-      components: components.map((comp) => ({
-        id: comp.id,
-        name: comp.name,
-        actions: comp.actions.map((a) => a.id),
-      })),
+      // Delegate to the canonical serializers so this fourth snapshot path
+      // (client-side executor) emits the same canonical-superset shape as
+      // the registry, server-fallback, and relay paths. The legacy inline
+      // map here merged customActions into `actions`; the canonical shape
+      // keeps them in the separate `customActions` field.
+      elements: elements.map(
+        (el) => serializeRegisteredElement(el) as unknown as ControlSnapshot['elements'][number]
+      ),
+      components: components.map(
+        (comp) =>
+          serializeRegisteredComponent(comp) as unknown as ControlSnapshot['components'][number]
+      ),
       workflows: workflows.map((wf) => ({
         id: wf.id,
         name: wf.name,

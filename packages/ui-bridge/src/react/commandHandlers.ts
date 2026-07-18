@@ -16,6 +16,7 @@ import {
   captureDocumentVisibility,
   getGlobalRegistry,
   serializeRegisteredElement,
+  serializeRegisteredComponent,
 } from '../core/registry';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
@@ -945,20 +946,15 @@ export async function executeCommand(
         ...(visibility !== undefined ? { visibility } : {}),
         registration,
         elements: elements.map((el) => serializeRegisteredElement(el, serializeOpts)),
+        // Delegate to the canonical `serializeRegisteredComponent` so the
+        // relay emits the same shape as `createSnapshot()` — canonical
+        // `ComponentActionInfo` action objects (the previous inline map
+        // leaked raw `ComponentAction` objects including `handler`),
+        // `registeredAt`/`mounted`, and a `componentBasePath`-aware
+        // `actionInvocationPath`. The relay-only `state` extra is preserved.
         components: components.map((c) => ({
-          id: c.id,
-          name: c.name,
-          description: c.description,
-          actions: c.actions,
-          elementIds: c.elementIds,
+          ...serializeRegisteredComponent(c, serializeOpts),
           state: c.getState?.() ?? {},
-          // Mirror `createSnapshot`: tell callers exactly how to invoke any
-          // action on this component without grepping docs. Honours the
-          // caller-provided `componentBasePath` when present so relay
-          // consumers behind a mount prefix (the runner) get usable paths.
-          actionInvocationPath: `${componentBasePath ?? '/control/component'}/${c.id}/action/{actionId}`,
-          // Phase 3.1: pass scope through verbatim. Undefined ≡ "route".
-          scope: c.scope,
         })),
         // Relay handler keeps the legacy `steps` array (not `stepCount`)
         // alongside `activeRuns: []` because existing relay-driven callers
@@ -2152,7 +2148,10 @@ export async function executeCommand(
         workflows: [],
         activeRuns: [],
       };
-      return mgr.createSnapshot(snap);
+      // The semantic-snapshot manager only reads id/type/label/state off the
+      // elements; the minimal shape here intentionally omits the canonical
+      // lifecycle fields the full ControlSnapshot type now requires.
+      return mgr.createSnapshot(snap as unknown as import('../control/types').ControlSnapshot);
     }
 
     case 'getSemanticDiff':

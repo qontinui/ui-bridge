@@ -69,8 +69,8 @@ function makeDragDropContext(): SnapshotDragDropContext {
 
 function makeUndoContext(): SnapshotUndoContext {
   return {
-    undoAvailable: true,
-    redoAvailable: false,
+    canUndo: true,
+    canRedo: false,
     undoDescription: 'Typing',
     summary: 'Can undo (Typing).',
   };
@@ -167,7 +167,7 @@ describe.each([['createSnapshot', 'sync'] as const, ['createSnapshotAsync', 'asy
       expect(snap.toasts?.totalCaptured).toBe(7);
       expect(snap.relationships?.count).toBe(2);
       expect(snap.dragDrop?.count).toEqual({ dragSources: 0, dropZones: 0 });
-      expect(snap.undoRedo?.undoAvailable).toBe(true);
+      expect(snap.undoRedo?.canUndo).toBe(true);
       expect(snap.undoRedo?.summary).toContain('Typing');
       expect(snap.shortcuts?.lastScanTimestamp).toBe(1000);
     });

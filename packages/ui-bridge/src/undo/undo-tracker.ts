@@ -265,8 +265,8 @@ export class UndoTracker {
   getSnapshotUndoContext(): SnapshotUndoContext {
     const state = this.getState();
     return {
-      undoAvailable: state.undoAvailable,
-      redoAvailable: state.redoAvailable,
+      canUndo: state.undoAvailable,
+      canRedo: state.redoAvailable,
       undoDescription: state.undoDescription,
       redoDescription: state.redoDescription,
       undoDepth: state.undoDepth,

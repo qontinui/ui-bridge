@@ -250,8 +250,8 @@ describe('UndoTracker', () => {
     it('returns proper structure', () => {
       const ctx = tracker.getSnapshotUndoContext();
 
-      expect(ctx).toHaveProperty('undoAvailable');
-      expect(ctx).toHaveProperty('redoAvailable');
+      expect(ctx).toHaveProperty('canUndo');
+      expect(ctx).toHaveProperty('canRedo');
       expect(ctx).toHaveProperty('summary');
       expect(typeof ctx.summary).toBe('string');
     });
@@ -266,7 +266,7 @@ describe('UndoTracker', () => {
 
       const ctx = tracker.getSnapshotUndoContext();
 
-      expect(ctx.undoAvailable).toBe(true);
+      expect(ctx.canUndo).toBe(true);
       expect(ctx.undoDescription).toBe('Delete row');
       expect(ctx.summary).toContain('Delete row');
       expect(ctx.summary).toContain('Undo available');
@@ -275,7 +275,7 @@ describe('UndoTracker', () => {
     it('reports unavailable in summary', () => {
       const ctx = tracker.getSnapshotUndoContext();
 
-      expect(ctx.undoAvailable).toBe(false);
+      expect(ctx.canUndo).toBe(false);
       expect(ctx.summary).toContain('not available');
     });
 

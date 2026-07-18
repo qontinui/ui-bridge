@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class ElementRect(BaseModel):
@@ -436,8 +436,20 @@ class RegisteredElement(BaseModel):
     # Hierarchical semantic path — e.g.
     # "settings-modal > theme-section > accent-color".
     context_path: str | None = Field(None, alias="contextPath")
+    # Canonical lifecycle fields (emitted from ui-bridge 0.22.0; optional so
+    # snapshots from older servers still validate).
+    registered_at: int | None = Field(None, alias="registeredAt")
+    mounted: bool | None = None
 
     model_config = {"populate_by_name": True}
+
+
+class ComponentActionInfo(BaseModel):
+    """A single action exposed by a component (canonical ComponentActionInfo)."""
+
+    id: str
+    label: str | None = None
+    description: str | None = None
 
 
 class RegisteredComponent(BaseModel):
@@ -445,7 +457,25 @@ class RegisteredComponent(BaseModel):
 
     id: str
     name: str
-    actions: list[str]
+    description: str | None = None
+    # Canonical `ComponentActionInfo` objects from ui-bridge 0.22.0. Older
+    # servers sent bare action-id strings — coerced for compatibility.
+    actions: list[ComponentActionInfo]
+    action_invocation_path: str | None = Field(None, alias="actionInvocationPath")
+    element_ids: list[str] | None = Field(None, alias="elementIds")
+    registered_at: int | None = Field(None, alias="registeredAt")
+    mounted: bool | None = None
+    scope: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def _coerce_action_ids(cls, v: Any) -> Any:
+        """Accept pre-0.22.0 wire shape: a list of bare action-id strings."""
+        if isinstance(v, list):
+            return [{"id": a} if isinstance(a, str) else a for a in v]
+        return v
 
 
 class RegisteredWorkflow(BaseModel):
@@ -646,10 +676,21 @@ class SnapshotRelationshipContext(BaseModel):
 
 
 class SnapshotUndoContext(BaseModel):
-    """Undo/redo availability context included in ControlSnapshot.undoRedo."""
+    """Undo/redo availability context included in ControlSnapshot.undoRedo.
 
-    undo_available: bool = Field(alias="undoAvailable")
-    redo_available: bool = Field(alias="redoAvailable")
+    Canonical wire names are ``canUndo``/``canRedo`` (ui-bridge 0.22.0,
+    matching qontinui-types and the native SDK); the pre-0.22.0 web names
+    ``undoAvailable``/``redoAvailable`` are accepted for compatibility.
+    """
+
+    can_undo: bool = Field(
+        validation_alias=AliasChoices("canUndo", "undoAvailable", "can_undo"),
+        serialization_alias="canUndo",
+    )
+    can_redo: bool = Field(
+        validation_alias=AliasChoices("canRedo", "redoAvailable", "can_redo"),
+        serialization_alias="canRedo",
+    )
     undo_description: str | None = Field(None, alias="undoDescription")
     redo_description: str | None = Field(None, alias="redoDescription")
     undo_depth: int | None = Field(None, alias="undoDepth")
@@ -1001,14 +1042,20 @@ class AccessibilityIssue(BaseModel):
         description="The WCAG success criterion this issue relates to",
     )
     severity: AccessibilitySeverity = Field(description="How severe this issue is")
-    level: WCAGLevel = Field(description="WCAG conformance level this criterion belongs to")
+    level: WCAGLevel = Field(
+        description="WCAG conformance level this criterion belongs to"
+    )
     message: str = Field(description="Human-readable description of the issue")
-    element_id: str = Field(alias="elementId", description="ID of the element with the issue")
+    element_id: str = Field(
+        alias="elementId", description="ID of the element with the issue"
+    )
     element_selector: str | None = Field(
         None, alias="elementSelector", description="Selector to find the element"
     )
     suggestion: str = Field(description="Suggested fix for the issue")
-    rule_id: str = Field(alias="ruleId", description="The rule ID that detected this issue")
+    rule_id: str = Field(
+        alias="ruleId", description="The rule ID that detected this issue"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -1024,8 +1071,12 @@ class AccessibilityReport(BaseModel):
     issues: list[AccessibilityIssue] = Field(
         default_factory=list, description="All issues found during validation"
     )
-    passed_count: int = Field(alias="passedCount", description="Number of checks that passed")
-    failed_count: int = Field(alias="failedCount", description="Number of checks that failed")
+    passed_count: int = Field(
+        alias="passedCount", description="Number of checks that passed"
+    )
+    failed_count: int = Field(
+        alias="failedCount", description="Number of checks that failed"
+    )
     meets_wcag_a: bool = Field(
         alias="meetsWCAG_A", description="Whether the page meets WCAG 2.1 Level A"
     )

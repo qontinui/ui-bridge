@@ -78,13 +78,18 @@ export interface UndoRedoState {
 }
 
 /**
- * Snapshot context for ControlSnapshot integration
+ * Snapshot context for ControlSnapshot integration.
+ *
+ * Wire names follow the canonical `qontinui-types::ui_bridge::UIBridgeUndoContext`
+ * (`canUndo`/`canRedo`) — the same names the developer declares on
+ * {@link DeclaredUndoState} and that the native SDK already emits. (Web
+ * emitted `undoAvailable`/`redoAvailable` before 0.22.0.)
  */
 export interface SnapshotUndoContext {
   /** Whether undo appears to be available */
-  undoAvailable: boolean;
+  canUndo: boolean;
   /** Whether redo appears to be available */
-  redoAvailable: boolean;
+  canRedo: boolean;
   /** Description of what undo would reverse */
   undoDescription?: string;
   /** Description of what redo would restore */
