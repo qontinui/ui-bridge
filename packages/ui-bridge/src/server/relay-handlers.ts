@@ -35,6 +35,11 @@ import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
+import {
+  applyCanonicalFindFilter,
+  type CanonicalFindCriteria,
+  type FindFilterableElement,
+} from '../core/find-filter';
 
 // ============================================================================
 // Helpers
@@ -446,57 +451,18 @@ export function createRelayHandlers(
   }
 
   // Helper: filter cached snapshot elements using find/discover criteria.
-  // Returns elements with enough fields to satisfy FindResponse shape.
+  // Filtering delegates to the canonical `applyCanonicalFindFilter`
+  // (src/core/find-filter.ts) — shared with the React command handlers and
+  // direct server handlers so the four historical copies cannot drift again.
+  // Only the DiscoveredElement-compatible shape mapping stays relay-specific.
   function filterCachedElements(
     elements: ControlSnapshot['elements'],
     criteria: Record<string, unknown>
   ): Array<Record<string, unknown>> {
-    const interactiveTypes = new Set([
-      'button',
-      'input',
-      'select',
-      'textarea',
-      'link',
-      'checkbox',
-      'radio',
-    ]);
-    let filtered = [...elements];
-
-    if (criteria.interactive_only || criteria.interactiveOnly) {
-      filtered = filtered.filter((e) => {
-        // Item 1: explicit `kind: "content"` wins — those elements always
-        // drop out of `interactiveOnly` responses regardless of whether
-        // they happened to inherit any actions.
-        if ((e as { kind?: string }).kind === 'content') return false;
-        return interactiveTypes.has(e.type) || (e.actions && e.actions.length > 0);
-      });
-    }
-    if (criteria.element_type) {
-      const t = criteria.element_type as string;
-      filtered = filtered.filter((e) => e.type === t);
-    }
-    if (criteria.types && Array.isArray(criteria.types)) {
-      const ts = criteria.types as string[];
-      filtered = filtered.filter((e) => ts.includes(e.type));
-    }
-    if (criteria.text) {
-      const lc = (criteria.text as string).toLowerCase();
-      filtered = filtered.filter(
-        (e) => (e.label ?? '').toLowerCase().includes(lc) || e.id.toLowerCase().includes(lc)
-      );
-    }
-    if (criteria.exact_text) {
-      const lc = (criteria.exact_text as string).toLowerCase();
-      filtered = filtered.filter((e) => (e.label ?? '').toLowerCase() === lc);
-    }
-    if (criteria.role) {
-      const r = (criteria.role as string).toLowerCase();
-      filtered = filtered.filter((e) => e.type.toLowerCase() === r);
-    }
-    if (criteria.label) {
-      const lc = (criteria.label as string).toLowerCase();
-      filtered = filtered.filter((e) => (e.label ?? '').toLowerCase().includes(lc));
-    }
+    const filtered = applyCanonicalFindFilter(
+      elements as unknown as FindFilterableElement[],
+      criteria as CanonicalFindCriteria
+    );
     // Map to DiscoveredElement-compatible shape (add missing fields)
     return filtered.map((e) => ({
       ...e,

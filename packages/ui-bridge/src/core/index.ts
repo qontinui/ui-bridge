@@ -46,6 +46,12 @@ export type { StableElementRef } from './stable-ref';
 export { findElements } from './find';
 export type { FindableElement, ElementQuery, ElementMatch } from './find';
 
+// Canonical find/discover filter — the ONE FindRequest filter implementation
+// shared by the React command handlers, direct server handlers, and relay
+// handlers. Do not re-implement find filtering anywhere else.
+export { applyCanonicalFindFilter, INTERACTIVE_ELEMENT_TYPES } from './find-filter';
+export type { CanonicalFindCriteria, FindFilterableElement } from './find-filter';
+
 // WebSocket client (web-specific)
 export { UIBridgeWSClient, createWSClient } from './websocket-client';
 

@@ -505,16 +505,27 @@ function getElementState(element: HTMLElement): ElementState {
     state.opacityHidden = true;
   }
 
-  // data-content-* attributes — surfaced so agents can address elements
-  // by semantic labels (e.g., data-content-label="save wsv settings")
-  // and verification workflows can match spec assertion targets.
-  const contentLabel = element.getAttribute('data-content-label');
-  if (contentLabel) {
-    (state as unknown as Record<string, unknown>).dataContentLabel = contentLabel;
-  }
-  const contentRole = element.getAttribute('data-content-role');
-  if (contentRole) {
-    (state as unknown as Record<string, unknown>).dataContentRole = contentRole;
+  // All data-* attributes, keyed camelCase per `HTMLElement.dataset`
+  // (data-claude-session-id → claudeSessionId), EXCLUDING the bridge's own
+  // control attributes (any data-bridge-*). Lets agents read semantic
+  // markers (session ids, content labels, routes) without scraping the DOM
+  // via page/evaluate. Omitted entirely inside a §4.6 redaction boundary —
+  // data-* values on redacted subtrees can carry the very secrets the
+  // boundary protects — and when no qualifying attribute exists. Subsumes
+  // the former ad-hoc dataContentLabel / dataContentRole / dataRoute
+  // projections (now dataset.contentLabel / contentRole / route).
+  if (!isRedacted && element.dataset) {
+    const dataset: Record<string, string> = {};
+    for (const key of Object.keys(element.dataset)) {
+      // camelCase form of data-bridge-*: "bridge" or a "bridge" prefix
+      // followed by an uppercase letter (bridgeRedact, bridgeInvisible, …).
+      if (key === 'bridge' || /^bridge[A-Z]/.test(key)) continue;
+      const value = element.dataset[key];
+      if (value !== undefined) dataset[key] = value;
+    }
+    if (Object.keys(dataset).length > 0) {
+      state.dataset = dataset;
+    }
   }
 
   // ARIA state attributes
@@ -587,12 +598,6 @@ function getElementState(element: HTMLElement): ElementState {
   // Capture href for anchor elements
   if (element instanceof HTMLAnchorElement && element.href) {
     state.href = element.href;
-  }
-
-  // Capture data-route for navigation elements
-  const dataRoute = element.getAttribute('data-route');
-  if (dataRoute) {
-    state.dataRoute = dataRoute;
   }
 
   return state;

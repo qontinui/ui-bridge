@@ -46,6 +46,10 @@ import type {
   EffectRecordEntry,
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
+import {
+  applyCanonicalFindFilter,
+  type FindFilterableElement,
+} from '../core/find-filter';
 import { diagnosePageHealth } from './page-health';
 import {
   scanDOMForInteractiveElements,
@@ -420,25 +424,6 @@ export interface BrowserEventCaptureLike extends ConsoleCapturelike {
   getRecent(n?: number): AnyCapturedEvent[];
   getByType(type: BrowserEventType): AnyCapturedEvent[];
   getFrameworkOverlays?(): import('../debug/captures/framework-overlays').DetectedErrorOverlay[];
-}
-
-/**
- * Structural shape consumed by `applyFindFilters` — the union of fields it
- * reads off either a registry `RegisteredElement`/`DiscoveredElement` or a
- * DOM-fallback element. All optional so both shapes (and snapshot-format
- * elements) flow through without per-call casts. Glue-only; not a wire type.
- */
-interface FindFilterElement {
-  type?: string;
-  role?: string;
-  label?: string;
-  accessibleName?: string;
-  textContent?: string;
-  testId?: string;
-  kind?: string;
-  actions?: string[];
-  state?: { textContent?: string };
-  identifiers?: { testId?: string };
 }
 
 /**
@@ -1183,75 +1168,9 @@ export function createHandlers(
     assertionExecutor.updateElements(elements as Array<DiscoveredElement | AIDiscoveredElement>);
   }
 
-  function applyFindFilters(
-    elements: FindFilterElement[],
-    request: FindRequest
-  ): FindFilterElement[] {
-    return elements.filter((el) => {
-      // Filter by interactiveOnly (support both camelCase and snake_case)
-      if (request.interactiveOnly || (request as { interactive_only?: boolean }).interactive_only) {
-        // Item 1: drop `kind: "content"` entries up front — they're the
-        // semantic card/badge/pill elements authors opt into via
-        // `data-ui-bridge-content`, not interactive elements.
-        if ((el as { kind?: string }).kind === 'content') return false;
-        const interactiveTypes = new Set([
-          'button',
-          'input',
-          'select',
-          'textarea',
-          'link',
-          'checkbox',
-          'radio',
-          'switch',
-          'tab',
-          'slider',
-          'menuitem',
-        ]);
-        const isInteractive =
-          (el.type !== undefined && interactiveTypes.has(el.type)) ||
-          (el.actions && el.actions.length > 0);
-        if (!isInteractive) return false;
-      }
-      if (request.types && el.type && !request.types.includes(el.type)) return false;
-      if (request.element_type && el.type && el.type !== request.element_type) return false;
-      if (request.role) {
-        const elRole = (el.role || '').toLowerCase();
-        if (elRole !== request.role.toLowerCase()) return false;
-      }
-      if (request.text) {
-        const searchText = request.text.toLowerCase();
-        const label = (el.label || '').toLowerCase();
-        const textContent = (el.state?.textContent || el.textContent || '').toLowerCase();
-        const accessibleName = (el.accessibleName || '').toLowerCase();
-        if (
-          !label.includes(searchText) &&
-          !textContent.includes(searchText) &&
-          !accessibleName.includes(searchText)
-        ) {
-          return false;
-        }
-      }
-      if (request.exact_text) {
-        const exactLc = request.exact_text.toLowerCase();
-        const elLabel = (el.label || '').toLowerCase();
-        const textContent = (el.state?.textContent || el.textContent || '').trim().toLowerCase();
-        const accessibleName = (el.accessibleName || '').toLowerCase();
-        if (elLabel !== exactLc && textContent !== exactLc && accessibleName !== exactLc) {
-          return false;
-        }
-      }
-      if (request.label) {
-        const labelSearch = request.label.toLowerCase();
-        const elLabel = (el.label || '').toLowerCase();
-        if (!elLabel.includes(labelSearch)) return false;
-      }
-      if (request.testId) {
-        const elTestId = el.testId || el.identifiers?.testId || '';
-        if (elTestId !== request.testId) return false;
-      }
-      return true;
-    });
-  }
+  // Find filtering delegates to the canonical `applyCanonicalFindFilter`
+  // (src/core/find-filter.ts) — shared with the React command handlers and
+  // the relay handlers so the four historical copies cannot drift again.
 
   // Phase 1.1 (plan 2026-05-03) — enriched 404 message for component-detail
   // sites. Pulls a fresh snapshot so `available` and `byRoute` reflect the
@@ -1298,6 +1217,52 @@ export function createHandlers(
     config.enableHeadlessSpawn === true || isHeadlessSpawnEnvEnabled();
   const spawnedHeadlessTabs = new Set<{ close: () => Promise<void> }>();
   registerSpawnedHeadlessTabSet(spawnedHeadlessTabs);
+
+  /**
+   * `/control/find` — the canonical find handler. `/control/discover`
+   * (deprecated) is the SAME function, so the two routes cannot diverge.
+   * Filtering delegates to `applyCanonicalFindFilter` (src/core/find-filter.ts),
+   * which is shared with the React command handlers and relay handlers.
+   * `include_hidden` defaults to TRUE (no visibility filtering), preserving
+   * the invariant that `find {interactive_only: false}` returns a superset
+   * of the registry elements the snapshot returns.
+   */
+  const findHandler = async (request?: unknown): Promise<APIResponse<FindResponse>> => {
+    try {
+      const findRequest = request as FindRequest | undefined;
+      if (!findRequest?.skipSettle) {
+        await awaitDOMSettled(findRequest?.settleTimeout);
+      }
+      let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+
+      // Always apply the canonical filter — registry.findElements may not
+      // handle all filter types. A missing/empty request is a no-op filter.
+      elements = applyCanonicalFindFilter(
+        elements as FindFilterableElement[],
+        findRequest
+      ) as unknown[];
+
+      // DOM fallback: when registry returns 0 elements, scan the DOM directly
+      if (elements.length === 0) {
+        const domElements = scanDOMForInteractiveElements();
+        if (domElements.length > 0) {
+          elements = applyCanonicalFindFilter(
+            domElements as FindFilterableElement[],
+            findRequest
+          ) as unknown[];
+        }
+      }
+
+      return success({
+        elements: materializeElements(elements),
+        timestamp: Date.now(),
+        total: elements.length,
+        durationMs: 0,
+      }) as APIResponse<FindResponse>;
+    } catch (err) {
+      return error((err as Error).message, 'FIND_ERROR');
+    }
+  };
 
   return {
     // =========================================================================
@@ -1915,39 +1880,7 @@ export function createHandlers(
     // Find/Discovery Handlers
     // =========================================================================
 
-    find: async (request?: unknown) => {
-      try {
-        const findRequest = request as FindRequest | undefined;
-        if (!findRequest?.skipSettle) {
-          await awaitDOMSettled(findRequest?.settleTimeout);
-        }
-        let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
-
-        // Always apply filters — registry.findElements may not handle all filter types
-        if (findRequest) {
-          elements = applyFindFilters(elements as FindFilterElement[], findRequest) as unknown[];
-        }
-
-        // DOM fallback: when registry returns 0 elements, scan the DOM directly
-        if ((elements as unknown[]).length === 0) {
-          const domElements = scanDOMForInteractiveElements();
-          if (domElements.length > 0) {
-            elements = findRequest
-              ? (applyFindFilters(domElements as FindFilterElement[], findRequest) as unknown[])
-              : domElements;
-          }
-        }
-
-        return success({
-          elements: materializeElements(elements as unknown[]),
-          timestamp: Date.now(),
-          total: (elements as unknown[]).length,
-          durationMs: 0,
-        }) as APIResponse<FindResponse>;
-      } catch (err) {
-        return error((err as Error).message, 'FIND_ERROR');
-      }
-    },
+    find: findHandler,
 
     // Vision pipeline (Phase 2 of plan 2026-05-13) — direct-mode stubs.
     // Real implementations live in the runner; the SDK exposes the routes
@@ -2046,40 +1979,12 @@ export function createHandlers(
       );
     },
 
-    discover: async (request?: unknown) => {
-      // Deprecated, delegates to find
-      try {
-        const findRequest = request as FindRequest | undefined;
-        if (!findRequest?.skipSettle) {
-          await awaitDOMSettled(findRequest?.settleTimeout);
-        }
-        let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
-
-        // Always apply filters — registry.findElements may not handle all filter types
-        if (findRequest) {
-          elements = applyFindFilters(elements as FindFilterElement[], findRequest) as unknown[];
-        }
-
-        // DOM fallback: when registry returns 0 elements, scan the DOM directly
-        if ((elements as unknown[]).length === 0) {
-          const domElements = scanDOMForInteractiveElements();
-          if (domElements.length > 0) {
-            elements = findRequest
-              ? (applyFindFilters(domElements as FindFilterElement[], findRequest) as unknown[])
-              : domElements;
-          }
-        }
-
-        return success({
-          elements: materializeElements(elements as unknown[]),
-          timestamp: Date.now(),
-          total: (elements as unknown[]).length,
-          durationMs: 0,
-        }) as APIResponse<FindResponse>;
-      } catch (err) {
-        return error((err as Error).message, 'DISCOVER_ERROR');
-      }
-    },
+    /**
+     * @deprecated Use {@link find} instead. `discover` is a back-compat alias
+     * that IS the find handler — same behavior, same error codes.
+     * Will be removed in a future major version.
+     */
+    discover: findHandler,
 
     getControlSnapshot: async (request?: {
       targetTabId?: string;

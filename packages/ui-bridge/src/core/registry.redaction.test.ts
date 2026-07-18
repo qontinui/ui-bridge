@@ -163,6 +163,105 @@ describe('data-bridge-redact on select', () => {
   });
 });
 
+describe('ElementState.dataset — redaction-safe data-* projection', () => {
+  let registry: UIBridgeRegistry;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+  afterEach(() => document.body.removeChild(container));
+
+  it('projects data-* attributes as camelCase keys (data-claude-session-id → claudeSessionId)', () => {
+    const div = document.createElement('div');
+    div.setAttribute('data-claude-session-id', 'abc123');
+    container.appendChild(div);
+    const reg = registry.registerElement('el', div, { type: 'generic' });
+    const state = reg.getState();
+    expect(state.dataset).toBeDefined();
+    expect(state.dataset?.claudeSessionId).toBe('abc123');
+  });
+
+  it('omits dataset entirely inside a data-bridge-redact boundary (whole map, not per-key)', () => {
+    const boundary = document.createElement('div');
+    boundary.setAttribute('data-bridge-redact', 'true');
+    const inner = document.createElement('div');
+    inner.setAttribute('data-user-email', 'joshua@example.com');
+    boundary.appendChild(inner);
+    container.appendChild(boundary);
+    const reg = registry.registerElement('el', inner, { type: 'generic' });
+    const state = reg.getState();
+    expect(state.dataset).toBeUndefined();
+    expect(JSON.stringify(state)).not.toContain('joshua@example.com');
+  });
+
+  it('omits dataset on <input type="password"> even with data-* attributes present', () => {
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.value = 'hunter2';
+    input.setAttribute('data-account-hint', 'primary-vault');
+    container.appendChild(input);
+    const reg = registry.registerElement('pw', input, { type: 'input' });
+    const state = reg.getState();
+    expect(state.dataset).toBeUndefined();
+    expect(JSON.stringify(state)).not.toContain('primary-vault');
+  });
+
+  it('never surfaces the bridge control attributes (data-bridge-*) in any dataset', () => {
+    const div = document.createElement('div');
+    // "false" does NOT activate redaction but must still be excluded from
+    // the projection — data-bridge-* is the bridge's own control namespace.
+    div.setAttribute('data-bridge-redact', 'false');
+    div.setAttribute('data-bridge-invisible', 'false');
+    div.setAttribute('data-bridge-id', 'stamped-id');
+    div.setAttribute('data-session-marker', 'keep-me');
+    container.appendChild(div);
+    const reg = registry.registerElement('el', div, { type: 'generic' });
+    const state = reg.getState();
+    expect(state.dataset).toEqual({ sessionMarker: 'keep-me' });
+    expect(state.dataset).not.toHaveProperty('bridgeRedact');
+    expect(state.dataset).not.toHaveProperty('bridgeInvisible');
+    expect(state.dataset).not.toHaveProperty('bridgeId');
+  });
+
+  it('omits dataset entirely when the element has no data-* attributes (or only bridge ones)', () => {
+    const bare = document.createElement('button');
+    container.appendChild(bare);
+    expect(
+      registry.registerElement('bare', bare, { type: 'button' }).getState().dataset
+    ).toBeUndefined();
+
+    const bridgeOnly = document.createElement('button');
+    bridgeOnly.setAttribute('data-bridge-invisible', 'false');
+    container.appendChild(bridgeOnly);
+    expect(
+      registry.registerElement('bridge-only', bridgeOnly, { type: 'button' }).getState().dataset
+    ).toBeUndefined();
+  });
+
+  it('subsumes the former ad-hoc projections: contentLabel/contentRole/route read from dataset', () => {
+    // dataContentLabel / dataContentRole / dataRoute were deleted from
+    // ElementState in 0.22.0 — the same attributes are now read via
+    // state.dataset.contentLabel / contentRole / route.
+    const div = document.createElement('div');
+    div.setAttribute('data-content-label', 'save wsv settings');
+    div.setAttribute('data-content-role', 'status');
+    div.setAttribute('data-route', '/settings');
+    container.appendChild(div);
+    const reg = registry.registerElement('el', div, { type: 'generic' });
+    const state = reg.getState();
+    expect(state.dataset?.contentLabel).toBe('save wsv settings');
+    expect(state.dataset?.contentRole).toBe('status');
+    expect(state.dataset?.route).toBe('/settings');
+    // The old top-level fields are gone.
+    expect(state).not.toHaveProperty('dataContentLabel');
+    expect(state).not.toHaveProperty('dataContentRole');
+    expect(state).not.toHaveProperty('dataRoute');
+  });
+});
+
 describe('isBridgeInvisible', () => {
   let container: HTMLDivElement;
   beforeEach(() => {

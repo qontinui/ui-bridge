@@ -101,8 +101,19 @@ export interface ElementState {
   innerHTML?: string;
   /** href for anchor elements */
   href?: string;
-  /** Route path from data-route attribute (navigation elements) */
-  dataRoute?: string;
+  /**
+   * All `data-*` attributes of the element, keyed camelCase per
+   * `HTMLElement.dataset` (e.g. `data-claude-session-id` →
+   * `claudeSessionId`), EXCLUDING the bridge's own control attributes
+   * (any `data-bridge-*`). Omitted entirely when the element is inside a
+   * §4.6 redaction boundary (`data-bridge-redact="true"` on the element or
+   * an ancestor, or `<input type="password">`) and when the element has no
+   * qualifying `data-*` attributes. Subsumes the former ad-hoc
+   * `dataContentLabel` / `dataContentRole` / `dataRoute` projections —
+   * read `dataset.contentLabel` / `dataset.contentRole` / `dataset.route`
+   * instead.
+   */
+  dataset?: Record<string, string>;
   /** Whether element has opacity 0 (visually hidden but in DOM) */
   opacityHidden?: boolean;
   /** ARIA selected state (tabs, list items) */

@@ -17,6 +17,7 @@ import {
   getGlobalRegistry,
   serializeRegisteredElement,
 } from '../core/registry';
+import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
@@ -1002,7 +1003,7 @@ export async function executeCommand(
       // Spread the full canonical `ElementState` so callers see every field
       // the SDK populates (role, accessibleName, normalizedRect,
       // selectedOptions, availableOptions, textContent, innerHTML, href,
-      // dataRoute, opacityHidden, ariaCurrent, required, validationState,
+      // dataset, opacityHidden, ariaCurrent, required, validationState,
       // constraints, mediaMetadata, scrollInfo, …). Legacy aliases
       // `isVisible`/`isEnabled`/`text` are preserved for back-compat with
       // existing relay callers that read those names. New code should prefer
@@ -1683,85 +1684,12 @@ export async function executeCommand(
 
     case 'find':
     case 'discover': {
-      const {
-        interactive_only,
-        include_hidden,
-        type: filterTypeLegacy,
-        element_type,
-        types,
-        text: filterText,
-        exact_text,
-        role: filterRole,
-        label: filterLabel,
-        testId: filterTestId,
-      } = payload as {
-        interactive_only?: boolean;
-        include_hidden?: boolean;
-        type?: string;
-        element_type?: string;
-        types?: string[];
-        text?: string;
-        exact_text?: string;
-        role?: string;
-        label?: string;
-        testId?: string;
-      };
-      // Resolve the type filter: element_type takes precedence, then legacy `type`
-      const filterType = element_type ?? filterTypeLegacy;
-      let filtered = elements;
-      if (interactive_only) {
-        const interactiveTypes = new Set([
-          'button',
-          'input',
-          'select',
-          'textarea',
-          'link',
-          'checkbox',
-          'radio',
-        ]);
-        filtered = filtered.filter((e) => interactiveTypes.has(e.type) || e.actions.length > 0);
-      }
-      if (!include_hidden) {
-        filtered = filtered.filter((e) => {
-          const dom = e.element as HTMLElement;
-          return dom.offsetParent !== null || getComputedStyle(dom).position === 'fixed';
-        });
-      }
-      if (filterType) filtered = filtered.filter((e) => e.type === filterType);
-      if (types && types.length > 0) filtered = filtered.filter((e) => types.includes(e.type));
-      if (filterRole) {
-        const roleLc = filterRole.toLowerCase();
-        filtered = filtered.filter((e) => {
-          const domRole = (e.element.getAttribute('role') ?? '').toLowerCase();
-          const inferredRole = e.type.toLowerCase();
-          return domRole === roleLc || inferredRole === roleLc;
-        });
-      }
-      if (filterLabel) {
-        const labelLc = filterLabel.toLowerCase();
-        filtered = filtered.filter((e) => (e.label ?? '').toLowerCase().includes(labelLc));
-      }
-      if (filterText) {
-        const lc = filterText.toLowerCase();
-        filtered = filtered.filter(
-          (e) =>
-            (e.label ?? '').toLowerCase().includes(lc) ||
-            (e.element.textContent ?? '').toLowerCase().includes(lc)
-        );
-      }
-      if (exact_text) {
-        const exactLc = exact_text.toLowerCase();
-        filtered = filtered.filter(
-          (e) =>
-            (e.label ?? '').toLowerCase() === exactLc ||
-            (e.element.textContent ?? '').trim().toLowerCase() === exactLc
-        );
-      }
-      if (filterTestId) {
-        filtered = filtered.filter(
-          (e) => (e.element as HTMLElement).getAttribute('data-testid') === filterTestId
-        );
-      }
+      // Canonical filter (src/core/find-filter.ts) — shared with the direct
+      // server handlers and the relay handlers so the four historical copies
+      // cannot drift again. Handles interactive_only/include_hidden (default
+      // TRUE — hidden elements included unless explicitly excluded),
+      // type/element_type/types, role, label, text, exact_text, testId.
+      const filtered = applyCanonicalFindFilter(elements, payload as CanonicalFindCriteria);
       // F3 readiness signal (plan 2026-06-12 item 5): mirror the snapshot's
       // `registration` block on find/discover so pollers can distinguish
       // "page not hydrated/registered yet" (`everHadRegistrations: false`)

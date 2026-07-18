@@ -276,8 +276,22 @@ export interface FindRequest {
   root?: string;
   /** Only find interactive elements */
   interactiveOnly?: boolean;
-  /** Include hidden elements */
+  /** snake_case wire alias for {@link interactiveOnly}. */
+  interactive_only?: boolean;
+  /**
+   * Include hidden elements.
+   *
+   * **Defaults to TRUE (breaking change in 0.22.0).** Hidden elements are
+   * INCLUDED unless the caller explicitly passes `false` — so
+   * `find/discover {interactive_only: false}` returns a superset of the
+   * registry elements `/control/snapshot` returns. When `false`, elements
+   * failing the live DOM visibility check (`offsetParent !== null ||
+   * position === 'fixed'`; serialized `state.visible !== false` when no DOM
+   * node is available) are filtered out. See `src/core/find-filter.ts`.
+   */
   includeHidden?: boolean;
+  /** snake_case wire alias for {@link includeHidden}. Same TRUE default. */
+  include_hidden?: boolean;
   /** Maximum elements to return */
   limit?: number;
   /** Filter by element type */
