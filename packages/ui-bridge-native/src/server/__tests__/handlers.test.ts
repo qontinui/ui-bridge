@@ -363,3 +363,91 @@ describe('snapshot.currentRoute / segments', () => {
     expect(registry.createSnapshot().currentRoute).toBeNull();
   });
 });
+
+describe('measure-on-snapshot refresh (read-time geometry)', () => {
+  function makeMeasuringRef(
+    impl: (cb: (pageX: number, pageY: number, w: number, h: number) => void) => void
+  ): React.RefObject<NativeElementRef> {
+    return {
+      current: { measureInWindow: impl } as unknown as NativeElementRef,
+    };
+  }
+
+  /** Mount-time layout at pageY 100 — the "stale" position. */
+  const staleLayout = { x: 0, y: 100, width: 100, height: 50, pageX: 0, pageY: 100 };
+
+  it('getSnapshot serves the re-measured bbox, not the stale stored layout', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    // The ref reports the element's CURRENT position (scrolled to pageY 360)
+    // while the registry still stores the mount-time layout (pageY 100).
+    registry.registerElement('cell', makeMeasuringRef((cb) => cb(0, 360, 100, 50)), {
+      type: 'view',
+    });
+    registry.updateElementState('cell', { visible: true, layout: staleLayout });
+
+    const handlers = createServerHandlers(registry, makeStubExecutor());
+    const response = await handlers.getSnapshot({ params: {}, query: {}, body: undefined });
+
+    expect(response.success).toBe(true);
+    const cell = response.data!.elements.find((e) => e.id === 'cell')!;
+    expect(cell.bbox).toEqual({ x: 0, y: 360, w: 100, h: 50 });
+    expect(cell.state.layout).toMatchObject({ pageX: 0, pageY: 360 });
+  });
+
+  it('getElements serves the re-measured layout, not the stale stored layout', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('cell', makeMeasuringRef((cb) => cb(40, 720, 200, 44)), {
+      type: 'view',
+    });
+    registry.updateElementState('cell', { visible: true, layout: staleLayout });
+
+    const handlers = createServerHandlers(registry, makeStubExecutor());
+    const response = await handlers.getElements({ params: {}, query: {}, body: undefined });
+
+    expect(response.success).toBe(true);
+    const data = response.data as {
+      elements: Array<{ id: string; state: { layout: { pageX: number; pageY: number } | null } }>;
+    };
+    const cell = data.elements.find((e) => e.id === 'cell')!;
+    expect(cell.state.layout).toMatchObject({ pageX: 40, pageY: 720, width: 200, height: 44 });
+  });
+
+  it('tapAt hit-tests against the re-measured rect (post-scroll position)', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('retry-btn', makeMeasuringRef((cb) => cb(0, 360, 100, 50)), {
+      type: 'button',
+    });
+    registry.updateElementState('retry-btn', { visible: true, layout: staleLayout });
+
+    const executed: Array<{ elementId: string; action: string }> = [];
+    const executor = {
+      executeAction: async (elementId: string, req: { action: string }) => {
+        executed.push({ elementId, action: req.action });
+        return { success: true, timestamp: Date.now() };
+      },
+      executeComponentAction: () => {
+        throw new Error('not used');
+      },
+      find: () => {
+        throw new Error('not used');
+      },
+      waitForElement: () => {
+        throw new Error('not used');
+      },
+      onActionExecuted: () => () => {},
+    } as unknown as NativeActionExecutor;
+
+    const handlers = createServerHandlers(registry, executor);
+
+    // Tap inside the CURRENT rect (pageY 360..410). With the stale stored
+    // layout (pageY 100..150) this point would miss entirely.
+    const hit = await handlers.tapAt({ params: {}, query: {}, body: { x: 50, y: 380 } });
+    expect(hit.success).toBe(true);
+    expect(hit.data?.elementId).toBe('retry-btn');
+    expect(executed).toEqual([{ elementId: 'retry-btn', action: 'press' }]);
+
+    // The mount-time rect no longer matches — the stale position is gone.
+    const miss = await handlers.tapAt({ params: {}, query: {}, body: { x: 50, y: 120 } });
+    expect(miss.success).toBe(false);
+  });
+});

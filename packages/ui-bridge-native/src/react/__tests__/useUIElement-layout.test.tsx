@@ -215,3 +215,46 @@ describe('useUIElement — layout populated on mount', () => {
     }
   });
 });
+
+describe('useUIElement — re-registers when id changes (recycled list cells)', () => {
+  it('unregisters the old id and registers the new id on an id-change rerender', () => {
+    const { result, rerender } = renderHook(({ id }) => useElementWithRegistry(id), {
+      wrapper: Wrapper,
+      initialProps: { id: 'row-A' },
+    });
+
+    expect(result.current.registry.getElement('row-A')).toBeDefined();
+
+    // Simulate a FlashList cell recycle: same hook instance, new element id.
+    act(() => {
+      rerender({ id: 'row-B' });
+    });
+
+    expect(result.current.registry.getElement('row-A')).toBeUndefined();
+    const rowB = result.current.registry.getElement('row-B');
+    expect(rowB).toBeDefined();
+    expect(rowB!.getState().mounted).toBe(true);
+  });
+
+  it('keeps fresh measurements flowing to the NEW id after a recycle', () => {
+    const { result, rerender } = renderHook(({ id }) => useElementWithRegistry(id), {
+      wrapper: Wrapper,
+      initialProps: { id: 'row-A' },
+    });
+
+    act(() => {
+      rerender({ id: 'row-B' });
+    });
+
+    // onLayout after the recycle must write to the NEW registration.
+    act(() => {
+      result.current.element.onLayout({
+        nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 48 } },
+      });
+    });
+
+    expect(result.current.registry.getElement('row-A')).toBeUndefined();
+    const layout = result.current.registry.getElement('row-B')?.getState().layout;
+    expect(layout).toMatchObject({ width: 320, height: 48 });
+  });
+});

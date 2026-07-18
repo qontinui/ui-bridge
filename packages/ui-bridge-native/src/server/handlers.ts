@@ -430,6 +430,13 @@ export function createServerHandlers(
   return {
     // Elements
     getElements: async (ctx: HandlerContext) => {
+      // Measure-on-read: refresh every mounted-visible element's geometry
+      // from its live ref before serving stored layouts. Without this, the
+      // registry serves mount-time coordinates that go stale on scroll /
+      // recycle / re-render (RN never re-fires onLayout on pure translation).
+      // Bounded by refreshMeasurements' internal timeout; never throws.
+      await registry.refreshMeasurements();
+
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
@@ -725,6 +732,13 @@ export function createServerHandlers(
     },
 
     getSnapshot: async (ctx: HandlerContext) => {
+      // Measure-on-snapshot: re-measure geometry at read time so snapshot
+      // `bbox` values reflect where elements ARE, not where they mounted.
+      // Critical for virtualized lists (FlashList) whose cells move without
+      // re-firing onLayout. `createSnapshot` itself stays sync; the refresh
+      // is bounded by an internal timeout and never throws.
+      await registry.refreshMeasurements();
+
       const visibleOnly =
         ctx.query?.visibleOnly === 'true' ||
         (ctx.body as Record<string, unknown>)?.visibleOnly === true;
@@ -1126,6 +1140,11 @@ export function createServerHandlers(
     // that don't measure (the fallback only matches single-rooted screens but
     // is good enough for the unit suite).
     tapAt: async (ctx: HandlerContext): Promise<APIResponse<TapAtResponse>> => {
+      // Measure-on-read: refresh stored geometry before hit-testing, so taps
+      // land on elements' CURRENT rects (post-scroll/recycle), not their
+      // mount-time positions. Bounded by an internal timeout; never throws.
+      await registry.refreshMeasurements();
+
       const body = ctx.body as Partial<{
         x: number;
         y: number;

@@ -565,7 +565,22 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     unregisterRef.current = unregister;
   }, [register, unregister]);
 
-  // Auto-register on mount
+  // Auto-register on mount, and RE-register when `id` changes.
+  //
+  // `id` is a real dependency even though the effect body never reads it:
+  // recycled virtualized-list cells (FlashList) re-render the same hook
+  // instance with a NEW id. Without `id` in the deps, the effect never
+  // re-ran, so the OLD id stayed registered forever (a stale entry no
+  // re-measure can fix) and the NEW id was never registered at all.
+  //
+  // Ordering on an id-change render: the cleanup runs first and closes over
+  // the PREVIOUS `unregisterRef.current`, whose `unregister` removes
+  // `registeredIdRef.current` — i.e. the OLD id — and resets the guard
+  // flags. The ref-sync effect above is declared before this one, so by the
+  // time this effect's body re-runs, `registerRef.current` is the fresh
+  // closure that registers the NEW id. Invariant: after a rerender that
+  // changes `id` from A to B, the registry has no entry for A and a live
+  // entry for B.
   useEffect(() => {
     if (autoRegister) {
       registerRef.current();
@@ -576,7 +591,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         unregisterRef.current();
       }
     };
-  }, [autoRegister, bridge]);
+  }, [autoRegister, bridge, id]);
 
   // Layout-on-mount fallback with backoff retry.
   //

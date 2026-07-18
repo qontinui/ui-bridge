@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NativeUIBridgeRegistry, matchesCurrentRoute } from './registry';
 import type { NativeElementRef } from './types';
 
@@ -410,5 +410,131 @@ describe('createSnapshot with currentRouteOnly=true (Item 4)', () => {
 
     const snapshot = registry.createSnapshot(undefined, { currentRouteOnly: true });
     expect(snapshot.elements.map((e) => e.id).sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('NativeUIBridgeRegistry.refreshMeasurements', () => {
+  function makeMeasuringRef(
+    impl: (cb: (pageX: number, pageY: number, w: number, h: number) => void) => void
+  ): React.RefObject<NativeElementRef> {
+    return {
+      current: { measureInWindow: impl } as unknown as NativeElementRef,
+    };
+  }
+
+  const staleLayout = { x: 0, y: 100, width: 100, height: 50, pageX: 0, pageY: 100 };
+
+  it('writes fresh coordinates from measureInWindow over a stale stored layout', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    // Element measured at mount (pageY: 100), then "scrolled" to pageY: 360 —
+    // the ref now reports the NEW position while the registry holds the old.
+    registry.registerElement('cell', makeMeasuringRef((cb) => cb(0, 360, 100, 50)), {});
+    registry.updateElementState('cell', { visible: true, layout: staleLayout });
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(counts).toEqual({ measured: 1, cleared: 0, skipped: 0 });
+    const state = registry.getElement('cell')!.getState();
+    expect(state.visible).toBe(true);
+    expect(state.layout).toEqual({
+      x: 0,
+      y: 360,
+      width: 100,
+      height: 50,
+      pageX: 0,
+      pageY: 360,
+    });
+  });
+
+  it('clears to visible:false/layout:null when a previously-measured element reports zero dims', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('gone', makeMeasuringRef((cb) => cb(0, 0, 0, 0)), {});
+    registry.updateElementState('gone', { visible: true, layout: staleLayout });
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(counts).toEqual({ measured: 0, cleared: 1, skipped: 0 });
+    const state = registry.getElement('gone')!.getState();
+    expect(state.visible).toBe(false);
+    expect(state.layout).toBeNull();
+  });
+
+  it('leaves state untouched on zero dims when the element never had a layout', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    // Mount-gap element: registered (seeded visible:true, layout:null) but
+    // its first onLayout hasn't fired. Zero dims must NOT demote it.
+    registry.registerElement('fresh', makeMeasuringRef((cb) => cb(0, 0, 0, 0)), {});
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(counts).toEqual({ measured: 0, cleared: 0, skipped: 1 });
+    const state = registry.getElement('fresh')!.getState();
+    expect(state.visible).toBe(true);
+    expect(state.layout).toBeNull();
+  });
+
+  it('skips elements without a callable measureInWindow and leaves them untouched', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('fixture', makeRef(), {});
+    registry.updateElementState('fixture', { visible: true, layout: staleLayout });
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(counts).toEqual({ measured: 0, cleared: 0, skipped: 1 });
+    expect(registry.getElement('fixture')!.getState().layout).toEqual(staleLayout);
+  });
+
+  it('does not touch elements that are not visible', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const measure = vi.fn((cb: (x: number, y: number, w: number, h: number) => void) =>
+      cb(5, 5, 10, 10)
+    );
+    registry.registerElement('hidden', makeMeasuringRef(measure), {});
+    registry.updateElementState('hidden', { visible: false, layout: null });
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(measure).not.toHaveBeenCalled();
+    expect(counts).toEqual({ measured: 0, cleared: 0, skipped: 0 });
+    expect(registry.getElement('hidden')!.getState().visible).toBe(false);
+  });
+
+  it('resolves at the timeout when a ref never calls back, keeping counts from live refs', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    // Dead ref: measureInWindow accepts the callback and never invokes it.
+    registry.registerElement('dead', makeMeasuringRef(() => {}), {});
+    registry.updateElementState('dead', { visible: true, layout: staleLayout });
+    // Live sibling measures fine and must still be counted.
+    registry.registerElement('live', makeMeasuringRef((cb) => cb(10, 20, 30, 40)), {});
+    registry.updateElementState('live', { visible: true, layout: staleLayout });
+
+    const counts = await registry.refreshMeasurements({ timeoutMs: 25 });
+
+    expect(counts).toEqual({ measured: 1, cleared: 0, skipped: 0 });
+    // The dead element's stale layout is left as-is (no callback ever fired).
+    expect(registry.getElement('dead')!.getState().layout).toEqual(staleLayout);
+    expect(registry.getElement('live')!.getState().layout).toMatchObject({
+      pageX: 10,
+      pageY: 20,
+      width: 30,
+      height: 40,
+    });
+  });
+
+  it('never throws when measureInWindow itself throws', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement(
+      'thrower',
+      makeMeasuringRef(() => {
+        throw new Error('boom');
+      }),
+      {}
+    );
+    registry.updateElementState('thrower', { visible: true, layout: staleLayout });
+
+    const counts = await registry.refreshMeasurements();
+
+    expect(counts).toEqual({ measured: 0, cleared: 0, skipped: 1 });
+    expect(registry.getElement('thrower')!.getState().layout).toEqual(staleLayout);
   });
 });

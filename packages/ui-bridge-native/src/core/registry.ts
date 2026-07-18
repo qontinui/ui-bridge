@@ -602,6 +602,128 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
+   * Re-measure every mounted-visible element's geometry via its stored React
+   * ref and write the fresh coordinates into the registry ("measure-on-
+   * snapshot").
+   *
+   * Why: element geometry is otherwise captured ONCE at mount time
+   * (`onLayout` + `measureInWindow` in `useUIElement`) and RN never re-fires
+   * `onLayout` on pure translation — scrolling a virtualized list
+   * (FlashList), recycling a cell, a keyboard shift or an orientation change
+   * all move elements WITHOUT updating the stored `state.layout`. Snapshot
+   * consumers (vision analyzers hit-testing `bbox`, coord-based tap) then
+   * operate on stale positions. Re-measuring at READ time is correct
+   * regardless of what moved the element and needs zero per-consumer wiring:
+   * every registry entry already stores its ref (see `registerElement`).
+   *
+   * Per-element outcomes:
+   *   - non-zero dims → write a fresh full layout (same state shape as the
+   *     mount-time measure loop in `useUIElement`); counted as `measured`.
+   *   - zero dims AND the element previously had a non-null `state.layout` →
+   *     the view collapsed / left the screen; clear to
+   *     `{ visible: false, layout: null }` (same shape `markRouteOffscreen`
+   *     writes); counted as `cleared`.
+   *   - zero dims and it never had a layout → leave state untouched (element
+   *     in the mount→first-onLayout gap; don't demote `likely-visible`);
+   *     counted as `skipped`.
+   *   - no ref / no callable `measureInWindow` (test fixtures, web) → leave
+   *     untouched; counted as `skipped`.
+   *
+   * The whole sweep races an overall timeout (default 250 ms) so a dead ref
+   * whose `measureInWindow` never calls back can never hang a snapshot: the
+   * returned promise resolves at the deadline with whatever counts have
+   * accumulated. Late callbacks may still write state afterwards — harmless,
+   * freshest data wins. Never throws.
+   *
+   * Non-React core module on purpose — `measureInWindow` is duck-typed off
+   * the stored ref rather than imported from `react-native` (see the
+   * `projectBbox` doc comment for why this file must not import RN).
+   */
+  async refreshMeasurements(options?: {
+    timeoutMs?: number;
+  }): Promise<{ measured: number; cleared: number; skipped: number }> {
+    const timeoutMs =
+      typeof options?.timeoutMs === 'number' &&
+      Number.isFinite(options.timeoutMs) &&
+      options.timeoutMs > 0
+        ? options.timeoutMs
+        : 250;
+
+    const counts = { measured: 0, cleared: 0, skipped: 0 };
+    const pending: Array<Promise<void>> = [];
+
+    for (const element of this.getMountedVisibleElements()) {
+      const node = element.ref?.current as
+        | (NativeElementRef & {
+            measureInWindow?: (
+              callback: (pageX: number, pageY: number, w: number, h: number) => void
+            ) => void;
+          })
+        | null
+        | undefined;
+
+      if (!node || typeof node.measureInWindow !== 'function') {
+        counts.skipped++;
+        continue;
+      }
+
+      const id = element.id;
+      pending.push(
+        new Promise<void>((resolve) => {
+          let settled = false;
+          try {
+            node.measureInWindow!((pageX: number, pageY: number, w: number, h: number) => {
+              if (settled) return;
+              settled = true;
+              try {
+                if (w > 0 && h > 0) {
+                  this.updateElementState(id, {
+                    mounted: true,
+                    visible: true,
+                    enabled: true,
+                    focused: false,
+                    layout: { x: pageX, y: pageY, width: w, height: h, pageX, pageY },
+                  });
+                  counts.measured++;
+                } else if (this.elements.get(id)?.getState().layout != null) {
+                  // Collapsed / off-screen: it HAD a measured rect and now
+                  // reports zeros. Clear it so stale coords can't poison the
+                  // snapshot (same shape as markRouteOffscreen).
+                  this.updateElementState(id, { visible: false, layout: null });
+                  counts.cleared++;
+                } else {
+                  counts.skipped++;
+                }
+              } finally {
+                resolve();
+              }
+            });
+          } catch {
+            // A throwing measureInWindow must never break the sweep.
+            if (!settled) {
+              settled = true;
+              counts.skipped++;
+              resolve();
+            }
+          }
+        })
+      );
+    }
+
+    if (pending.length > 0) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, timeoutMs);
+        void Promise.all(pending).then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+
+    return counts;
+  }
+
+  /**
    * Update element state
    */
   updateElementState(id: string, state: Partial<NativeElementState>): void {
