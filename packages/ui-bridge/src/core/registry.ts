@@ -40,7 +40,11 @@ import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
 import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
-import { isValueRedacted, elementRedaction } from './redaction';
+import { isValueRedacted, elementRedaction, REDACTED_VALUE } from './redaction';
+// Re-export the sentinel so the historical `from './core/registry'` import
+// path keeps resolving; the definition itself lives in the leaf `redaction`
+// module (this file imports it above for its own internal scrubbing).
+export { REDACTED_VALUE } from './redaction';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 import {
@@ -50,16 +54,6 @@ import {
   computeVisibleText,
 } from './a11y';
 
-/**
- * Sentinel value substituted for any input/textarea/select value covered
- * by a `data-bridge-redact="true"` boundary (or the implicit `password`
- * input redaction). Exported so consumers writing assertions can match
- * on this literal — useful for ESLint rules / tests that verify a
- * sensitive site is wrapped.
- *
- * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.6.
- */
-export const REDACTED_VALUE = '[REDACTED]';
 
 /**
  * The attribute that opts an element (and its subtree) out of the

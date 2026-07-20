@@ -20,11 +20,13 @@
  * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.6.
  */
 
-// Re-export the single canonical sentinel so callers of this module never
-// need a second import (and so there is exactly one definition — the one in
-// `core/registry.ts` that consumers already assert on).
-export { REDACTED_VALUE } from './registry';
-import { REDACTED_VALUE } from './registry';
+// The single canonical redaction sentinel. It lives HERE, in the choke-point
+// module, rather than in `core/registry.ts`, so this module is a true leaf:
+// `registry.ts` imports the predicates/minters from here, so the sentinel
+// must not import back from `registry.ts` (that was a cycle). Consumers that
+// assert on the sentinel import it from here (or the package root, which
+// surfaces it via this module).
+export const REDACTED_VALUE = '[REDACTED]';
 import type { ElementState } from './types';
 
 /**
