@@ -7,6 +7,8 @@
  * regardless of how the app integrates the SDK.
  */
 
+import { isContentRedacted, isValueRedacted, REDACTED_VALUE } from '../core/redaction';
+
 /** Selectors for standard interactive DOM elements. */
 const INTERACTIVE_SELECTORS = [
   'a[href]',
@@ -237,16 +239,33 @@ export function scanDOMForInteractiveElementsWithRefs(
     const type = inferType(el);
     const rect = el.getBoundingClientRect();
 
+    // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
+    // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
+    // landed `materializeElements` gate keyed on `el.element instanceof
+    // HTMLElement`, which is ALWAYS false once the ref is dropped, so it
+    // redacted nothing here. Scrub AT THE SOURCE instead: `materializeElements`
+    // then consumes already-safe data. CONTENT axis for text/label/aria-label,
+    // VALUE axis for the entered value.
+    const contentRedacted = isContentRedacted(el);
+    const valueRedacted = isValueRedacted(el);
+
     elements.push({
       id,
       type,
-      label: getLabel(el),
+      label: contentRedacted ? REDACTED_VALUE : getLabel(el),
       actions: inferActions(type),
       visible: isVisible(el),
       tagName: el.tagName.toLowerCase(),
       state: {
-        textContent: (el.textContent?.trim() ?? '').slice(0, 500),
-        value: 'value' in el ? (el as HTMLInputElement).value : undefined,
+        textContent: contentRedacted
+          ? REDACTED_VALUE
+          : (el.textContent?.trim() ?? '').slice(0, 500),
+        value:
+          'value' in el
+            ? valueRedacted
+              ? REDACTED_VALUE
+              : (el as HTMLInputElement).value
+            : undefined,
         checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
         disabled: 'disabled' in el ? (el as HTMLInputElement).disabled : undefined,
         visible: isVisible(el),
@@ -265,7 +284,7 @@ export function scanDOMForInteractiveElementsWithRefs(
       },
       identifiers: {
         testId: el.getAttribute('data-testid') ?? undefined,
-        ariaLabel: el.getAttribute('aria-label') ?? undefined,
+        ariaLabel: contentRedacted ? REDACTED_VALUE : (el.getAttribute('aria-label') ?? undefined),
         htmlId: el.id || undefined,
       },
       _domFallback: true,

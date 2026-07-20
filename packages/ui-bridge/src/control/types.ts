@@ -24,6 +24,7 @@ import type { SnapshotRelationshipContext } from '../relationships/types';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { EffectVerification } from './effect-types';
+import type { Scrubbed } from '../core/redaction';
 
 /**
  * Extended action request with additional options
@@ -234,14 +235,14 @@ export interface DiscoveredElement {
   id: string;
   /** Element type */
   type: string;
-  /** Human-readable label */
-  label?: string;
+  /** Human-readable label. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  label?: Scrubbed<string>;
   /** Tag name */
   tagName: string;
   /** Role attribute */
   role?: string;
-  /** Accessible name */
-  accessibleName?: string;
+  /** Accessible name. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  accessibleName?: Scrubbed<string>;
   /** Available actions */
   actions: string[];
   /** Current state */
@@ -256,8 +257,8 @@ export interface DiscoveredElement {
    * `"interactive"` otherwise. Mirrors `category`.
    */
   kind?: 'interactive' | 'content';
-  /** Normalized text content for data-ui-bridge-content elements */
-  content?: string;
+  /** Normalized text content for data-ui-bridge-content elements. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  content?: Scrubbed<string>;
   /** CSS className attribute */
   className?: string;
   /** CSS class list as array */

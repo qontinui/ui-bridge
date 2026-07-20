@@ -38,6 +38,13 @@
 
 import type { FormFieldState, FormState } from '../ai/types';
 import type { AdapterFieldError, FormFrameworkAdapter } from './types';
+import {
+  verdictOf,
+  verdictFailClosed,
+  scrubContentRequired,
+  scrubValueRequired,
+  scrubContentByVerdict,
+} from '../core/redaction';
 
 /* -------------------------------------------------------------------------- */
 /*  Formik-specific types                                                     */
@@ -328,16 +335,21 @@ export class FormikAdapter implements FormFrameworkAdapter {
 
       const placeholder = domField && 'placeholder' in domField ? domField.placeholder : undefined;
 
+      // §4.6: the value comes from the FORMIK STORE (`stringifyValue`), which no
+      // DOM scrub reaches — gate it here against the field's DOM node. FAIL
+      // CLOSED when `domField` is null (registered-but-unmounted): there is no
+      // element to test, so redact rather than ship a store value un-gated.
+      const verdict = domField ? verdictOf(domField) : verdictFailClosed();
       const fieldState: FormFieldState = {
         id: name,
-        label: this.getFieldLabel(name, domField),
+        label: scrubContentRequired(this.getFieldLabel(name, domField), verdict),
         type: domField?.type || 'text',
-        value: this.stringifyValue(value),
+        value: scrubValueRequired(this.stringifyValue(value), verdict),
         valid: !error,
-        error: error || undefined,
+        error: scrubContentByVerdict(error || undefined, verdict),
         required: domField?.required ?? false,
         touched: isTouched,
-        placeholder: placeholder || undefined,
+        placeholder: scrubContentByVerdict(placeholder || undefined, verdict),
         isDirty,
       };
 
@@ -348,7 +360,9 @@ export class FormikAdapter implements FormFrameworkAdapter {
       }
 
       if (domField instanceof HTMLSelectElement) {
-        fieldState.selectedOptions = Array.from(domField.selectedOptions).map((opt) => opt.value);
+        fieldState.selectedOptions = Array.from(domField.selectedOptions).map((opt) =>
+          scrubValueRequired(opt.value, verdict)
+        );
       }
 
       fields.push(fieldState);

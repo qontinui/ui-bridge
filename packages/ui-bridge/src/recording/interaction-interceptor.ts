@@ -9,6 +9,7 @@
 
 import type { UIBridgeRegistry } from '../core/registry';
 import { findNearestRegisteredElement } from '../core/element-fingerprint';
+import { verdictOf, scrubValueByVerdict } from '../core/redaction';
 import type { InteractionEvent, InteractionActionType } from './types';
 
 export interface InteractionInterceptorConfig {
@@ -112,7 +113,11 @@ export class InteractionInterceptor {
       actionType,
       targetElementId: elementId,
       targetElement: element,
-      value,
+      // §4.6 capture-time gate: `value` is the raw keystroke buffer read off a
+      // live `<input>`. Scrub it HERE — where the element ref exists — so a
+      // password/boundary value is never stored in the recorded interaction or
+      // the derived variable candidate (no later DOM scrub can reach it).
+      value: scrubValueByVerdict(value, verdictOf(element)),
     });
   }
 

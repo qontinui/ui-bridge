@@ -44,6 +44,12 @@ import {
   typeIntoPrimitive,
 } from '../server/page-primitives';
 import {
+  isValueRedacted,
+  isContentRedacted,
+  trustDeveloperContent,
+  REDACTED_VALUE,
+} from '../core/redaction';
+import {
   pollWaitForElement,
   snapshotFromRegisteredElement,
   WAIT_FOR_ELEMENT_STATES,
@@ -2096,13 +2102,15 @@ export async function executeCommand(
       const aiEls = elements.map((e) => ({
         id: e.id,
         type: e.type,
-        label: e.label,
+        // `e.getState()` is scrubbed; label/description/aliases are dev-set.
+        // Brand for the AIDiscoveredElement shape `generatePageSummary` expects.
+        label: trustDeveloperContent(e.label),
         tagName: e.element.tagName.toLowerCase(),
         actions: e.actions as string[],
         state: e.getState(),
         registered: true,
-        description: e.description || e.label || e.id,
-        aliases: e.aliases || [],
+        description: trustDeveloperContent(e.description || e.label || e.id),
+        aliases: (e.aliases || []).map((a: string) => trustDeveloperContent(a)),
         suggestedActions: [],
       }));
       return generatePageSummary(aiEls as Parameters<typeof generatePageSummary>[0]);
@@ -4225,10 +4233,14 @@ export async function executeCommand(
         method: f.method,
         fields: Array.from(f.querySelectorAll('input, select, textarea')).map((inp) => {
           const el = inp as HTMLInputElement;
+          // §4.6: this relay `getForms` walks the raw DOM (NOT deduped with the
+          // server handler — `find`/`getForms` genuinely diverge) and read
+          // `el.value` ungated. Gate the value (VALUE axis — password/boundary)
+          // and the name (CONTENT axis — a boundary hides it).
           return {
-            name: el.name,
+            name: isContentRedacted(el) ? REDACTED_VALUE : el.name,
             type: el.type,
-            value: el.value,
+            value: isValueRedacted(el) ? REDACTED_VALUE : el.value,
             required: el.required,
             disabled: el.disabled,
             id: el.id,
@@ -4276,7 +4288,8 @@ export async function executeCommand(
         >((acc, inp) => {
           const el = inp as HTMLInputElement;
           acc[el.name || el.id || `field-${i}`] = {
-            value: el.value,
+            // §4.6 VALUE axis — same leak class as `getForms` above.
+            value: isValueRedacted(el) ? REDACTED_VALUE : el.value,
             checked: el.checked,
             type: el.type,
           };

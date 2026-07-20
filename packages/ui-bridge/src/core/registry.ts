@@ -40,7 +40,18 @@ import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
 import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
-import { isValueRedacted, elementRedaction, REDACTED_VALUE } from './redaction';
+import {
+  verdictOf,
+  elementRedaction,
+  scrubContentByVerdict,
+  scrubValueByVerdict,
+  scrubValueRequired,
+  scrubContentRequired,
+  scrubMediaMetadata,
+  trustDeveloperContent,
+  REDACTED_VALUE,
+} from './redaction';
+import type { Scrubbed } from './redaction';
 // Re-export the sentinel so the historical `from './core/registry'` import
 // path keeps resolving; the definition itself lives in the leaf `redaction`
 // module (this file imports it above for its own internal scrubbing).
@@ -158,9 +169,17 @@ export function serializeRegisteredElement(
   // the ARIA mapping returns nothing — keeps existing content-element
   // callers working while preferring the canonical W3C role.
   const ariaRole = computeRoleSafe(el.element) ?? el.role;
-  const ariaLabel = computeAriaLabel(el.element);
-  const accessibleName = computeAccessibleNameSafe(el.element);
-  const visibleText = computeVisibleText(el.element);
+  // §4.6: these a11y projections re-derive content STRAIGHT from the raw DOM
+  // (they do not read the already-scrubbed `state`), so they must scrub here
+  // too or a `data-bridge-redact` subtree's secret ships on every snapshot.
+  // CONTENT axis — a bare password keeps its label; a boundary redacts it.
+  const serializeVerdict = verdictOf(el.element);
+  const ariaLabel = scrubContentByVerdict(computeAriaLabel(el.element), serializeVerdict);
+  const accessibleName = scrubContentByVerdict(
+    computeAccessibleNameSafe(el.element),
+    serializeVerdict
+  );
+  const visibleText = scrubContentByVerdict(computeVisibleText(el.element), serializeVerdict);
   // Snapshot-time bbox refresh — see `measureFreshBbox`. Falls back to the
   // tracker's cached value when there's no fresh signal.
   const freshBbox = measureFreshBbox(el.element);
@@ -186,7 +205,10 @@ export function serializeRegisteredElement(
     accessibleName,
     text: visibleText,
     contentMetadata: el.contentMetadata,
-    mediaMetadata: el.mediaMetadata,
+    // §4.6: a media element inside a boundary can carry the rendered secret in
+    // its src/srcset/altText/poster (a `data:` QR code, a token-bearing URL) —
+    // scrub those, keep structural fields for oversize/lazy-load audits.
+    mediaMetadata: scrubMediaMetadata(el.mediaMetadata, serializeVerdict),
     ownedByComponent: el.ownedByComponent,
     componentActionBasePath: el.ownedByComponent
       ? `${componentBasePath}/${el.ownedByComponent}`
@@ -427,16 +449,18 @@ function getElementState(element: HTMLElement): ElementState {
   // sensitive at the OS keystroke level, so making them snapshot-visible
   // would be a strictly weaker contract than the browser's own.
   //
-  // `isValueRedacted` (from the `core/redaction` choke point) IS this exact
-  // predicate — password OR `data-bridge-redact` boundary — moved out of the
-  // registry so there is one authority for §4.6, not a per-projection copy.
-  // Behaviour is identical to the former inline computation.
-  const isRedacted = isValueRedacted(element);
+  // Two-axis §4.6 verdict, computed once. CONTENT scrubs descriptive text
+  // (`accessibleName`, `textContent`); VALUE scrubs the entered value
+  // (`value`, option values/labels) AND is the stricter gate `dataset` rides.
+  // The split keeps a bare `<input type="password">` addressable — its label
+  // is content (kept) while its value is hidden — while a `data-bridge-redact`
+  // boundary redacts both. Every field below is minted through the
+  // `core/redaction` choke point, so an un-scrubbed DOM string cannot be
+  // assigned into the now-branded `ElementState` fields (compile error).
+  const verdict = verdictOf(element);
 
   const roleAttr = element.getAttribute('role') || undefined;
-  const accessibleName = isRedacted
-    ? REDACTED_VALUE
-    : computeAccessibleName(element);
+  const accessibleName = scrubContentByVerdict(computeAccessibleName(element), verdict);
 
   const state: ElementState = {
     visible: isElementVisible(element, rect, computedStyle, inViewport),
@@ -454,7 +478,7 @@ function getElementState(element: HTMLElement): ElementState {
       bottom: rect.bottom,
       left: rect.left,
     },
-    textContent: isRedacted ? REDACTED_VALUE : element.textContent?.trim() || undefined,
+    textContent: scrubContentByVerdict(element.textContent?.trim() || undefined, verdict),
     computedStyles: {
       display: computedStyle.display,
       visibility: computedStyle.visibility,
@@ -517,10 +541,15 @@ function getElementState(element: HTMLElement): ElementState {
     };
   }
 
-  // Fallback for icon-only elements (no textContent but has aria-label/title)
+  // Fallback for icon-only elements (no textContent but has aria-label/title).
+  // §4.6: this fallback re-reads RAW aria-label/title, so inside a boundary it
+  // would RESURRECT the secret the boundary hides — route it through the
+  // content scrub too.
   if (!state.textContent) {
-    state.textContent =
-      element.getAttribute('aria-label') || element.getAttribute('title') || undefined;
+    state.textContent = scrubContentByVerdict(
+      element.getAttribute('aria-label') || element.getAttribute('title') || undefined,
+      verdict
+    );
   }
 
   // Opacity hidden detection
@@ -538,7 +567,7 @@ function getElementState(element: HTMLElement): ElementState {
   // boundary protects — and when no qualifying attribute exists. Subsumes
   // the former ad-hoc dataContentLabel / dataContentRole / dataRoute
   // projections (now dataset.contentLabel / contentRole / route).
-  if (!isRedacted && element.dataset) {
+  if (!verdict.value && element.dataset) {
     const dataset: Record<string, string> = {};
     for (const key of Object.keys(element.dataset)) {
       // camelCase form of data-bridge-*: "bridge" or a "bridge" prefix
@@ -592,28 +621,38 @@ function getElementState(element: HTMLElement): ElementState {
     }
   }
 
-  // Add input-specific state. `isRedacted` was computed at the top of
-  // this function — when set, it ALSO scrubs `accessibleName` +
-  // `textContent` (which can carry secrets via option labels).
+  // Add input-specific state. VALUE axis (`verdict.value`) governs the entered
+  // value + select option values/labels; each is minted through the choke
+  // point so an un-scrubbed value cannot reach the branded field.
   if (element instanceof HTMLInputElement) {
-    state.value = isRedacted ? REDACTED_VALUE : element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
     captureFormControlState(element, state);
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = isRedacted ? REDACTED_VALUE : element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
     captureFormControlState(element, state);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = isRedacted ? REDACTED_VALUE : element.value;
-    state.selectedOptions = isRedacted
-      ? [REDACTED_VALUE]
-      : Array.from(element.selectedOptions).map((opt) => opt.value);
-    state.availableOptions = isRedacted
-      ? [{ value: REDACTED_VALUE, label: REDACTED_VALUE, selected: false }]
+    state.value = scrubValueByVerdict(element.value, verdict);
+    // Collapse to a single synthetic entry when redacted so the option COUNT
+    // itself carries no signal (an env switcher's option list can be sensitive).
+    state.selectedOptions = verdict.value
+      ? [scrubValueRequired(REDACTED_VALUE, verdict)]
+      : (Array.from(element.selectedOptions)
+          .map((opt) => scrubValueByVerdict(opt.value, verdict))
+          .filter((v): v is Scrubbed<string> => v !== undefined));
+    state.availableOptions = verdict.value
+      ? [
+          {
+            value: scrubValueRequired(REDACTED_VALUE, verdict),
+            label: scrubValueRequired(REDACTED_VALUE, verdict),
+            selected: false,
+          },
+        ]
       : Array.from(element.options).map((opt) => ({
-          value: opt.value,
-          label: opt.label || opt.textContent?.trim() || opt.value,
+          value: scrubValueRequired(opt.value, verdict),
+          label: scrubValueRequired(opt.label || opt.textContent?.trim() || opt.value, verdict),
           selected: opt.selected,
         }));
     captureFormControlState(element, state);
@@ -1714,8 +1753,14 @@ export class UIBridgeRegistry {
       // Skip hidden elements if not explicitly requested
       if (!criteria.fuzzy && !state.visible) continue;
 
-      // Build searchable text from element
-      const aliases = element.aliases ?? this.generateElementAliases(element);
+      // §4.6 — this PUBLIC projection matches AND emits DOM-derived content, so
+      // gate both. CONTENT axis. `state.textContent` is already scrubbed by
+      // `getElementState`; the alias/aria-label inputs are gated here so a
+      // redacted element cannot be CONFIRMED by searching its secret (oracle)
+      // nor have its secret EMITTED. Developer-SET `element.aliases`/`.label`
+      // survive as the documented boundary.
+      const redactionVerdict = verdictOf(element.element);
+      const aliases = element.aliases ?? (redactionVerdict.content ? [] : this.generateElementAliases(element));
       const textContent = state.textContent?.trim() || '';
       const label = element.label || '';
 
@@ -1767,7 +1812,11 @@ export class UIBridgeRegistry {
 
       // Accessible name matching
       if (criteria.accessibleName) {
-        const ariaLabel = element.element.getAttribute('aria-label') || '';
+        // §4.6 oracle closure: scrub the DOM aria-label used for MATCHING so a
+        // client cannot confirm the secret name by guessing it. Dev `label`
+        // and already-scrubbed `textContent` are safe.
+        const ariaLabel =
+          scrubContentByVerdict(element.element.getAttribute('aria-label') || undefined, redactionVerdict) || '';
         const accessibleName = ariaLabel || label || textContent;
 
         if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
@@ -1839,26 +1888,40 @@ export class UIBridgeRegistry {
 
       // Add result if above threshold
       if (maxScore >= threshold) {
+        // §4.6 EMISSION gating. `label` is developer-SET (trusted boundary).
+        // `accessibleName` prefers the DOM aria-label (scrubbed) and falls back
+        // to the dev label (trusted). `description` is derived from already-
+        // gated inputs (scrubbed `textContent`, aria-label nulled when
+        // content-redacted) then routed through the required content scrub.
+        const domAriaLabel = element.element.getAttribute('aria-label') || undefined;
+        const emittedAccessibleName = domAriaLabel
+          ? scrubContentByVerdict(domAriaLabel, redactionVerdict)
+          : trustDeveloperContent(element.label);
+        const descriptionText =
+          element.description ||
+          generateDescription({
+            textContent,
+            ariaLabel: redactionVerdict.content ? undefined : domAriaLabel,
+            elementType: element.type,
+            id: element.id,
+            labelText: element.label,
+          });
         const aiElement: AIDiscoveredElement = {
           id: element.id,
           type: element.type,
-          label: element.label,
+          label: trustDeveloperContent(element.label),
           tagName: element.element.tagName.toLowerCase(),
           role: element.element.getAttribute('role') || undefined,
-          accessibleName: element.element.getAttribute('aria-label') || element.label,
+          accessibleName: emittedAccessibleName,
           actions: element.actions,
           state,
           registered: true,
-          description:
-            element.description ||
-            generateDescription({
-              textContent,
-              ariaLabel: element.element.getAttribute('aria-label'),
-              elementType: element.type,
-              id: element.id,
-              labelText: element.label,
-            }),
-          aliases,
+          description: element.description
+            ? trustDeveloperContent(element.description) ?? scrubContentRequired('', redactionVerdict)
+            : scrubContentRequired(descriptionText, redactionVerdict),
+          // Dev-set aliases are trusted; DOM-derived were already emptied above
+          // when content-redacted. Brand each for the wire slot.
+          aliases: aliases.map((a) => trustDeveloperContent(a)!),
           purpose: element.purpose,
           suggestedActions: [],
           semanticType: element.semanticType,

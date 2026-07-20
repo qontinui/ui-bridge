@@ -12,6 +12,12 @@
 import type { ElementState } from '../core/types';
 import type { FormState, FormFieldState, FormsResponse } from './types';
 import { scanValidationErrors } from './validation-scanner';
+import {
+  verdictOf,
+  scrubContentRequired,
+  scrubValueRequired,
+  scrubContentByVerdict,
+} from '../core/redaction';
 
 /**
  * A registered element with DOM access — the minimal shape both the
@@ -191,22 +197,28 @@ function buildFormFields(
     const defaultValue = el.getAttribute('value') ?? '';
     const isDirty = state.value !== undefined && state.value !== defaultValue;
 
+    // §4.6: this projection re-reads raw DOM label/placeholder; `state.value`
+    // is already scrubbed but re-minted for the required branded slot. CONTENT
+    // axis for label/placeholder/error; VALUE axis for value.
+    const verdict = verdictOf(el);
     return {
       id: input.id,
-      label:
+      label: scrubContentRequired(
         el.getAttribute('aria-label') ||
-        input.label ||
-        getLabelText(el) ||
-        el.getAttribute('placeholder') ||
-        input.id,
+          input.label ||
+          getLabelText(el) ||
+          el.getAttribute('placeholder') ||
+          input.id,
+        verdict
+      ),
       type: el instanceof HTMLInputElement ? el.type : input.type,
-      value: state.value ?? '',
+      value: scrubValueRequired(state.value ?? '', verdict),
       valid,
-      error: errorMsg,
+      error: scrubContentByVerdict(errorMsg, verdict),
       errorSource,
       required: state.required ?? false,
       touched: state.focused || (state.value?.length ?? 0) > 0,
-      placeholder: el.getAttribute('placeholder') || undefined,
+      placeholder: scrubContentByVerdict(el.getAttribute('placeholder') || undefined, verdict),
       isDirty,
       checked: state.checked,
       selectedOptions: state.selectedOptions,

@@ -19,6 +19,7 @@ export type { UiBridgeErrorCode, RecoverySuggestion } from '../diagnostics';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
+import type { Scrubbed } from './redaction';
 
 // ============================================================================
 // Core Element Types
@@ -72,8 +73,13 @@ export interface ElementState {
   focused: boolean;
   /** ARIA role attribute value (e.g. "tablist", "tab", "button") */
   role?: string;
-  /** Computed accessible name (aria-label > aria-labelledby > associated label > title > text) */
-  accessibleName?: string;
+  /**
+   * Computed accessible name (aria-label > aria-labelledby > associated label
+   * > title > text). §4.6 CONTENT-bearing — `Scrubbed<string>`: a raw DOM
+   * string cannot be assigned here, only a value routed through the
+   * `core/redaction` minters (`scrubContent`).
+   */
+  accessibleName?: Scrubbed<string>;
   /** Bounding rectangle of the element */
   rect: {
     x: number;
@@ -87,16 +93,20 @@ export interface ElementState {
   };
   /** Resolution-independent bounding rect normalized to 0–1 viewport coordinates */
   normalizedRect?: NormalizedRect;
-  /** Current value for inputs */
-  value?: string;
+  /** Current value for inputs. §4.6 VALUE-bearing — `Scrubbed<string>` (mint via `scrubValue`). */
+  value?: Scrubbed<string>;
   /** Checked state for checkboxes/radios */
   checked?: boolean;
-  /** Selected options for select elements */
-  selectedOptions?: string[];
-  /** Full option list for <select> elements — value/label/selected per option */
-  availableOptions?: Array<{ value: string; label: string; selected: boolean }>;
-  /** Text content of the element */
-  textContent?: string;
+  /** Selected options for select elements. §4.6 VALUE-bearing — `Scrubbed<string>[]`. */
+  selectedOptions?: Scrubbed<string>[];
+  /**
+   * Full option list for <select> elements — value/label/selected per option.
+   * §4.6: option `value` and `label` are VALUE-bearing (an env switcher can
+   * carry token-bearing URLs as option labels), so both are `Scrubbed<string>`.
+   */
+  availableOptions?: Array<{ value: Scrubbed<string>; label: Scrubbed<string>; selected: boolean }>;
+  /** Text content of the element. §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContent`). */
+  textContent?: Scrubbed<string>;
   /** Inner HTML of the element (sanitized) */
   innerHTML?: string;
   /** href for anchor elements */
@@ -1372,23 +1382,26 @@ export interface BridgeSnapshot {
      * resolution as fallback (multiple ids joined by spaces). Distinct from
      * `accessibleName` which runs the full W3C accessible-name algorithm.
      * Source of truth for `IrElementCriteria.aria_label`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContent`).
      */
-    ariaLabel?: string;
+    ariaLabel?: Scrubbed<string>;
     /**
      * W3C accessible-name algorithm output (https://w3c.github.io/accname/).
      * May consult `aria-label`, `aria-labelledby`, associated `<label>`,
      * `title`, or descendant text content depending on the role. Source
      * of truth for `IrElementCriteria.accessible_name`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContent`).
      */
-    accessibleName?: string;
+    accessibleName?: Scrubbed<string>;
     /**
      * Visible text content with whitespace collapsed and trimmed.
      * `innerText`-equivalent on web (respects CSS visibility), falling
      * back to `textContent` when `innerText` isn't available. Source of
      * truth for `IrElementCriteria.text` / `text_contains`. Distinct from
      * `state.textContent` which is a snapshot of the form-control value.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContent`).
      */
-    text?: string;
+    text?: Scrubbed<string>;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /** Component (if any) that owns/renders this element. Prefer component actions for automation. */

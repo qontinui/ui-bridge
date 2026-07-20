@@ -8,6 +8,7 @@
 import type { ElementState, ElementType, ContentMetadata } from '../core/types';
 import type { DiscoveredElement } from '../control/types';
 import type { RecoverySuggestion, UiBridgeErrorCode } from '../diagnostics';
+import type { Scrubbed } from '../core/redaction';
 
 // Canonical recovery suggestion (D6). Re-exported here so existing
 // `from './types'` import sites keep resolving; the single definition lives in
@@ -123,10 +124,10 @@ export interface SearchResponse {
  * Element with AI-generated metadata and descriptions
  */
 export interface AIDiscoveredElement extends DiscoveredElement {
-  /** Human-readable description: "Blue submit button in the form" */
-  description: string;
-  /** Auto-generated aliases for natural language matching */
-  aliases: string[];
+  /** Human-readable description: "Blue submit button in the form". §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContentRequired`). */
+  description: Scrubbed<string>;
+  /** Auto-generated aliases for natural language matching. §4.6: DOM-derived, so a redacted element contributes none (mint via `scrubAliases`). */
+  aliases: Scrubbed<string>[];
   /** Inferred purpose: "Submits the form" */
   purpose?: string;
   /** Parent context identifier */
@@ -583,22 +584,22 @@ export interface FormState {
 export interface FormFieldState {
   /** Field ID */
   id: string;
-  /** Field label */
-  label: string;
+  /** Field label. §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContentRequired`). */
+  label: Scrubbed<string>;
   /** Input type */
   type: string;
-  /** Current value */
-  value: string;
+  /** Current value. §4.6 VALUE-bearing — `Scrubbed<string>` (mint via a value-axis minter). */
+  value: Scrubbed<string>;
   /** Validity */
   valid: boolean;
-  /** Error message */
-  error?: string;
+  /** Error message. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  error?: Scrubbed<string>;
   /** Required flag */
   required: boolean;
   /** Touched flag */
   touched: boolean;
-  /** Placeholder text */
-  placeholder?: string;
+  /** Placeholder text. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  placeholder?: Scrubbed<string>;
   /** Whether the field value differs from the default */
   isDirty?: boolean;
   /** Checked state for checkboxes/radios */

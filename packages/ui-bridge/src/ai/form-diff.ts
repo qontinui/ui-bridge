@@ -7,6 +7,12 @@
  */
 
 import type { FormState, FormFieldState } from './types';
+import {
+  verdictOf,
+  scrubContentRequired,
+  scrubValueRequired,
+  scrubContentByVerdict,
+} from '../core/redaction';
 
 // ============================================================================
 // Types
@@ -441,19 +447,22 @@ function buildFieldStates(inputs: HTMLElement[]): FormFieldState[] {
     const defaultValue = el.getAttribute('value') ?? '';
     const isDirty = value !== defaultValue;
 
+    // §4.6: this producer reads raw `el.value` + DOM label/placeholder. VALUE
+    // axis for value/selectedOptions; CONTENT axis for label/placeholder/error.
+    const verdict = verdictOf(el);
     return {
       id: el.id || el.getAttribute('name') || `field-${Math.random().toString(36).slice(2, 8)}`,
-      label,
+      label: scrubContentRequired(label, verdict),
       type: inputType,
-      value,
+      value: scrubValueRequired(value, verdict),
       valid,
-      error: validationMessage,
+      error: scrubContentByVerdict(validationMessage, verdict),
       required: el.hasAttribute('required'),
       touched: (value?.length ?? 0) > 0,
-      placeholder: el.getAttribute('placeholder') || undefined,
+      placeholder: scrubContentByVerdict(el.getAttribute('placeholder') || undefined, verdict),
       isDirty,
       checked,
-      selectedOptions,
+      selectedOptions: selectedOptions?.map((o) => scrubValueRequired(o, verdict)),
     };
   });
 }

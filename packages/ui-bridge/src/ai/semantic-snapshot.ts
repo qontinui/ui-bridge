@@ -24,6 +24,13 @@ import {
   generateSuggestedActions,
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
+import {
+  verdictFromState,
+  scrubContentByVerdict,
+  scrubContentRequired,
+  scrubValueRequired,
+  trustDeveloperContent,
+} from '../core/redaction';
 import { classifyRegionType } from './region-segmentation';
 
 /**
@@ -204,7 +211,13 @@ export class SemanticSnapshotManager {
   private convertElement(element: ControlSnapshot['elements'][0]): AIDiscoveredElement {
     const isContent = element.category === 'content';
 
-    const aliases = generateAliases({
+    // §4.6: no DOM ref here (ControlSnapshot crosses the wire) — recover the
+    // verdict from the stamped state. A content-redacted element contributes no
+    // DOM-derived aliases.
+    const redactionVerdict = verdictFromState(element.state);
+    const aliases = redactionVerdict.content
+      ? []
+      : generateAliases({
       textContent: element.state.textContent,
       elementType: element.type,
       id: element.id,
@@ -265,15 +278,19 @@ export class SemanticSnapshotManager {
     return {
       id: element.id,
       type: element.type,
-      label: element.label,
+      // Inputs are ControlSnapshot elements already scrubbed by their upstream
+      // producer; brand for the wire slot (dev label passes through). The
+      // `.trim()` on textContent would strip the brand, so read `state.textContent`
+      // (already trimmed + scrubbed) directly.
+      label: trustDeveloperContent(element.label),
       tagName: this.inferTagName(element.type),
       role: this.inferRole(element.type),
-      accessibleName: element.label || element.state.textContent?.trim(),
+      accessibleName: trustDeveloperContent(element.label) ?? element.state.textContent,
       actions: element.actions,
       state: element.state,
       registered: true,
-      description: finalDescription,
-      aliases: finalAliases,
+      description: scrubContentRequired(finalDescription, redactionVerdict),
+      aliases: finalAliases.map((a) => trustDeveloperContent(a)!),
       purpose: finalPurpose,
       suggestedActions,
       semanticType: this.inferSemanticType(element),
@@ -464,13 +481,16 @@ export class SemanticSnapshotManager {
       const valid = input.state.validationState ? input.state.validationState.valid : true;
       const error = input.state.validationState?.validationMessage || undefined;
 
+      // §4.6: `input` is an already-scrubbed AIDiscoveredElement; re-mint the
+      // FormFieldState slots (idempotent) using the stamped verdict.
+      const redactionVerdict = verdictFromState(input.state);
       return {
         id: input.id,
-        label: input.accessibleName || input.label || input.id,
+        label: scrubContentRequired(input.accessibleName || input.label || input.id, redactionVerdict),
         type: input.type,
-        value: input.state.value || '',
+        value: scrubValueRequired(input.state.value || '', redactionVerdict),
         valid,
-        error,
+        error: scrubContentByVerdict(error, redactionVerdict),
         required: input.state.required ?? false,
         touched: input.state.focused || (input.state.value?.length || 0) > 0,
         placeholder: undefined, // Not available from AIDiscoveredElement

@@ -74,7 +74,8 @@ import {
   computeVisibleText,
 } from '../core/a11y';
 import { measureFreshBbox } from '../core/registry';
-import { isContentRedacted } from '../core/redaction';
+import { isContentRedacted, scrubContent, scrubMediaMetadata, verdictOf } from '../core/redaction';
+import type { MediaMetadata } from '../core/types';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
@@ -314,11 +315,22 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     // filtering (Tier 1.2). `ariaLabel`, `accessibleName`, `text`, and
     // `role` come from the canonical a11y helpers so this fallback path
     // emits the same Stream-A A.5 wire fields as the primary serializer.
-    const titleAttr = el.element?.getAttribute?.('title') ?? undefined;
-    const ariaRole = el.element ? computeRoleSafe(el.element) : undefined;
-    const ariaLabel = el.element ? computeAriaLabel(el.element) : undefined;
-    const accessibleName = el.element ? computeAccessibleNameSafe(el.element) : undefined;
-    const visibleText = el.element ? computeVisibleText(el.element) : undefined;
+    // §4.6: this materializer re-derives the a11y fields STRAIGHT from the raw
+    // DOM (it does NOT read the already-scrubbed `state`), so it must scrub them
+    // too — this is the ref-BEARING half of the fix; the ref-LESS DOM-fallback
+    // half is scrubbed upstream in `scanDOMForInteractiveElementsWithRefs` (F5).
+    // Only a genuine `HTMLElement` is passed to the choke point — a malformed
+    // entry (`{}`, `null`) yields `undefined` without a verdict probe (which
+    // would throw on a non-node). CONTENT axis; `role` stays raw (structural).
+    const liveEl = el.element instanceof HTMLElement ? el.element : undefined;
+    const titleAttr = scrubContent(liveEl?.getAttribute('title') ?? undefined, liveEl);
+    const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
+    const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
+    const accessibleName = scrubContent(
+      liveEl ? computeAccessibleNameSafe(liveEl) : undefined,
+      liveEl
+    );
+    const visibleText = scrubContent(liveEl ? computeVisibleText(liveEl) : undefined, liveEl);
     // Snapshot-time bbox refresh, same contract as the primary serializer
     // (`serializeRegisteredElement`) — cached tracker bboxes go stale on
     // translation-only moves (qontinui-runner#186). Cache is the fallback.
@@ -345,7 +357,11 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       customActions: el.customActions ? Object.keys(el.customActions) : undefined,
       category: el.category,
       contentMetadata: el.contentMetadata,
-      mediaMetadata: el.mediaMetadata,
+      // §4.6: a redacted media element's src/srcset/altText/poster ARE the
+      // rendered secret — scrub via the choke point (structural fields survive).
+      mediaMetadata: liveEl
+        ? scrubMediaMetadata(el.mediaMetadata as MediaMetadata | undefined, verdictOf(liveEl))
+        : el.mediaMetadata,
       // Bbox/visibility: fresh DOM measurement when available (see above),
       // else the tracker-maintained cache for SDK-registered elements;
       // absent entirely for detached DOM-fallback scans.

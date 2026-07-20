@@ -8,6 +8,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { RegisteredElement, ElementState, ElementIdentifier } from '../core/types';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { getGlobalAnnotationStore } from '../annotations';
+import { verdictOf, scrubValueByVerdict } from '../core/redaction';
 
 /**
  * Inspector state
@@ -159,7 +160,8 @@ function getElementState(element: HTMLElement): ElementState {
   }
 
   if (element instanceof HTMLInputElement) {
-    state.value = element.value;
+    // §4.6: even the debug inspector must not surface a boundary/password value.
+    state.value = scrubValueByVerdict(element.value, verdictOf(element));
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }

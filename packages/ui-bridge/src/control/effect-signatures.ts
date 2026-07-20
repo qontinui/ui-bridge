@@ -15,6 +15,7 @@ import type {
   ActionParams,
 } from './effect-types';
 import type { InferredSignatureTable, InferredSignatureEntry } from './effect-inference';
+import { trustDeveloperContent } from '../core/redaction';
 
 /**
  * The element shape the registry needs to resolve a signature. `reveals` is the
@@ -107,7 +108,7 @@ function typeSignature(
   if (targetId === undefined) return undefined;
   return {
     predicts: (): PredictedDelta => ({
-      elementsModify: [{ criteria: { id: targetId }, expect: { value: '' } }],
+      elementsModify: [{ criteria: { id: targetId }, expect: { value: trustDeveloperContent('') } }],
     }),
     scope: { elementIds: [targetId] },
     reversibility: 'reversible',
@@ -121,7 +122,7 @@ function selectSignature(element: SignatureLookupElement | undefined): EffectSig
   if (targetId === undefined) return undefined;
   return {
     predicts: (): PredictedDelta => ({
-      elementsModify: [{ criteria: { id: targetId }, expect: { value: '' } }],
+      elementsModify: [{ criteria: { id: targetId }, expect: { value: trustDeveloperContent('') } }],
     }),
     scope: { elementIds: [targetId] },
     reversibility: 'reversible',
@@ -157,7 +158,7 @@ function fillSignature(params: Record<string, unknown> | undefined): EffectSigna
     predicts: (): PredictedDelta => ({
       elementsModify: fieldIds.map((id) => ({
         criteria: { id } as IRElementCriteria,
-        expect: { value: '' },
+        expect: { value: trustDeveloperContent('') },
       })),
     }),
     scope: { elementIds: [...fieldIds] },

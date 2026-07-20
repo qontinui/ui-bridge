@@ -19,6 +19,11 @@ import {
   type ElementFingerprintData,
 } from '../core/element-fingerprint';
 import { InteractionInterceptor } from './interaction-interceptor';
+import {
+  isContentRedacted,
+  trustDeveloperContent,
+  REDACTED_VALUE,
+} from '../core/redaction';
 import type {
   RecordingSessionConfig,
   RecordingSessionResult,
@@ -434,13 +439,19 @@ export class RecordingSessionManager {
       fingerprint,
       elementId: event.targetElementId,
       inputType,
-      enteredValue: event.value,
-      label,
+      // `event.value` is already scrubbed at capture time (interceptor); `label`
+      // is scrubbed inside `getElementLabel`. Both branded for the stored slot.
+      enteredValue: event.value ?? trustDeveloperContent(''),
+      label: trustDeveloperContent(label),
       suggestedParamName: labelToCamelCase(label),
     });
   }
 
   private getElementLabel(el: HTMLElement): string {
+    // §4.6: this scrapes aria-label / <label> text / placeholder — the exact
+    // content a boundary hides. Gate here so neither the stored `label` NOR the
+    // derived `suggestedParamName` smuggles the secret out.
+    if (isContentRedacted(el)) return REDACTED_VALUE;
     // aria-label
     const ariaLabel = el.getAttribute('aria-label');
     if (ariaLabel) return ariaLabel;

@@ -19,6 +19,7 @@ import type {
 import { parseNLInstruction, describeAction, validateParsedAction } from './nl-action-parser';
 import { SearchEngine, type SearchEngineConfig } from './search-engine';
 import { createErrorContext } from './error-context';
+import { trustDeveloperContent } from '../core/redaction';
 import type { UiBridgeErrorCode } from '../diagnostics';
 
 /**
@@ -432,7 +433,7 @@ export class NLActionExecutor {
         rect: { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 },
       },
       registered: false,
-      description: 'Element not found',
+      description: trustDeveloperContent('Element not found'),
       aliases: [],
       suggestedActions: [],
     };

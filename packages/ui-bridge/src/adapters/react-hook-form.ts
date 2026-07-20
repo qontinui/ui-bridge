@@ -39,6 +39,13 @@
 
 import type { FormFieldState, FormState } from '../ai/types';
 import type { AdapterFieldError, FormFrameworkAdapter } from './types';
+import {
+  verdictOf,
+  verdictFailClosed,
+  scrubContentRequired,
+  scrubValueRequired,
+  scrubContentByVerdict,
+} from '../core/redaction';
 
 /* -------------------------------------------------------------------------- */
 /*  Global augmentation for RHF-specific window properties                    */
@@ -337,16 +344,19 @@ export class ReactHookFormAdapter implements FormFrameworkAdapter {
 
       const placeholder = domField && 'placeholder' in domField ? domField.placeholder : undefined;
 
+      // §4.6: value comes from the RHF STORE; gate against the DOM node and FAIL
+      // CLOSED when `domField` is null (registered-but-unmounted).
+      const verdict = domField ? verdictOf(domField) : verdictFailClosed();
       const fieldState: FormFieldState = {
         id: name,
-        label: this.getFieldLabel(name, domField),
+        label: scrubContentRequired(this.getFieldLabel(name, domField), verdict),
         type: domField?.type || 'text',
-        value: this.stringifyValue(value),
+        value: scrubValueRequired(this.stringifyValue(value), verdict),
         valid: !error,
-        error: error?.message || undefined,
+        error: scrubContentByVerdict(error?.message || undefined, verdict),
         required: domField?.required ?? false,
         touched,
-        placeholder: placeholder || undefined,
+        placeholder: scrubContentByVerdict(placeholder || undefined, verdict),
         isDirty: dirty,
       };
 
@@ -357,7 +367,9 @@ export class ReactHookFormAdapter implements FormFrameworkAdapter {
       }
 
       if (domField instanceof HTMLSelectElement) {
-        fieldState.selectedOptions = Array.from(domField.selectedOptions).map((opt) => opt.value);
+        fieldState.selectedOptions = Array.from(domField.selectedOptions).map((opt) =>
+          scrubValueRequired(opt.value, verdict)
+        );
       }
 
       fields.push(fieldState);

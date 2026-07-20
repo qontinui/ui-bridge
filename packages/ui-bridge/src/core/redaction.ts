@@ -27,7 +27,7 @@
 // assert on the sentinel import it from here (or the package root, which
 // surfaces it via this module).
 export const REDACTED_VALUE = '[REDACTED]';
-import type { ElementState } from './types';
+import type { ElementState, MediaMetadata } from './types';
 
 /**
  * The attribute that marks an element (and its subtree) as sensitive. Honored
@@ -130,6 +130,17 @@ function mintVerdict(value: boolean, content: boolean): RedactionVerdict {
 }
 
 /**
+ * A both-axes-redacted verdict for FAIL-CLOSED sites: a form-library adapter
+ * whose `domField` is `null` (field registered in the store but not mounted)
+ * has no element to test, so the framework-store value would otherwise ship
+ * un-gated. Redact instead — over-redacting an invisible field is the accepted
+ * cost of failing closed (plan §"What cannot be guaranteed" #9).
+ */
+export function verdictFailClosed(): RedactionVerdict {
+  return mintVerdict(true, true);
+}
+
+/**
  * Compute the §4.6 verdict for a live element. `value` = password OR boundary
  * (the stricter gate); `content` = boundary only. This is the DOM entry point
  * to every minter.
@@ -193,7 +204,13 @@ export function scrubValueByVerdict(
   raw: string | undefined,
   v: RedactionVerdict
 ): Scrubbed<string> | undefined {
-  if (!raw) return undefined;
+  // VALUE diverges from CONTENT on the empty string: an empty INPUT VALUE is a
+  // MEANINGFUL state (a field cleared to ""), not "absent" — so `''` is
+  // PRESERVED here (only `undefined` maps to `undefined`). CONTENT (alt/label)
+  // keeps the collapse-empty-to-undefined rule (`<img alt="">` → undefined).
+  // An empty value carries no secret, so it is never redacted to the sentinel.
+  if (raw === undefined) return undefined;
+  if (raw === '') return '' as Scrubbed<string>;
   return (v.value ? REDACTED_VALUE : raw) as Scrubbed<string>;
 }
 
@@ -219,6 +236,59 @@ export function scrubContent(
   el: HTMLElement | null | undefined
 ): Scrubbed<string> | undefined {
   return scrubContentByVerdict(raw, verdictOf(el));
+}
+
+/**
+ * Required-string variant of the CONTENT scrub, for a wire field typed as a
+ * NON-optional `Scrubbed<string>` (e.g. `AIDiscoveredElement.description`).
+ * Unlike `scrubContentByVerdict` it never returns `undefined`: an empty input
+ * stays the (branded) empty string rather than collapsing to `undefined`,
+ * because the destination field must always be present. Content-redacted →
+ * the sentinel.
+ */
+export function scrubContentRequired(raw: string, v: RedactionVerdict): Scrubbed<string> {
+  return (v.content ? REDACTED_VALUE : raw) as Scrubbed<string>;
+}
+
+/**
+ * Required-string variant of the VALUE scrub, for a wire field typed as a
+ * NON-optional `Scrubbed<string>` (e.g. `FormFieldState.value`). Value-redacted
+ * (password OR boundary) → the sentinel; otherwise the branded raw string.
+ */
+export function scrubValueRequired(raw: string, v: RedactionVerdict): Scrubbed<string> {
+  return (v.value ? REDACTED_VALUE : raw) as Scrubbed<string>;
+}
+
+/**
+ * Scrub a DOM-DERIVED alias list. §4.6: aliases are generated wholesale from
+ * an element's `aria-label` / `placeholder` / `title` / text, so a
+ * content-redacted element must contribute NONE — the array collapses to `[]`
+ * (mirrors the `redacted ? [] : generateAliases(...)` shape at the choke
+ * point). Non-redacted: the raw list, branded. The brand-cast is confined to
+ * this module. NOTE: developer-SET aliases are a separate, documented boundary
+ * — callers merge those back AFTER this scrub (they are not DOM-derived).
+ */
+export function scrubAliases(aliases: string[], v: RedactionVerdict): Scrubbed<string>[] {
+  return (v.content ? [] : aliases) as Scrubbed<string>[];
+}
+
+/**
+ * Brand a DEVELOPER-AUTHORED string that is a documented §4.6 boundary
+ * exemption — `element.label` / `element.description` / `element.aliases` set
+ * EXPLICITLY on the registration, NOT scraped from the DOM. §4.6 protects
+ * DOM-DERIVED content; a value the developer hand-wrote onto the registration
+ * is their deliberate choice and passes through verbatim (a dev who writes a
+ * secret into `aliases` still ships it — out of scope, by design). This is the
+ * ONE sanctioned brand-without-scrub, and it exists so those trusted fields can
+ * flow into a `Scrubbed<string>` wire slot. It must NEVER wrap a raw DOM read —
+ * that is what `scrubContent`/`scrubValue` are for. The cast is confined here.
+ */
+export function trustDeveloperContent(raw: string): Scrubbed<string>;
+export function trustDeveloperContent(raw: string | undefined): Scrubbed<string> | undefined;
+export function trustDeveloperContent(
+  raw: string | undefined
+): Scrubbed<string> | undefined {
+  return raw as Scrubbed<string> | undefined;
 }
 
 /**
@@ -253,4 +323,43 @@ export function scrubReactProps(
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(props)) out[key] = REDACTED_VALUE;
   return out as Scrubbed<Record<string, unknown>>;
+}
+
+/**
+ * Field-by-field scrub for a `MediaMetadata` payload. CONTENT axis: inside a
+ * content-redaction boundary a media element's URL/text fields ARE the
+ * rendered secret — a `data:image/...;base64,...` URI can be a QR code or a
+ * one-time key, a signed URL carries a token in its query string, and
+ * `altText` describes the sensitive image. Those collapse to the sentinel;
+ * the STRUCTURAL fields (`mediaType`, dimensions, `format`, `sizes`, loading
+ * state, video timing) SURVIVE so oversize / lazy-load / playback audits keep
+ * working inside a redacted subtree.
+ *
+ * `MediaMetadata` is a shared cross-wire interface (registration metadata,
+ * snapshot, discover) so its fields are NOT branded individually — this
+ * container-scrub is applied at each media projection instead. Returns the
+ * input untouched when the content axis does not apply (zero copy on the
+ * common path).
+ */
+export function scrubMediaMetadata(
+  meta: MediaMetadata | undefined,
+  v: RedactionVerdict
+): MediaMetadata | undefined {
+  if (!meta || !v.content) return meta;
+  return {
+    ...meta,
+    src: meta.src ? REDACTED_VALUE : meta.src,
+    altText: meta.altText ? REDACTED_VALUE : meta.altText,
+    srcset: meta.srcset ? REDACTED_VALUE : meta.srcset,
+    sources: meta.sources?.map((s) => ({
+      ...s,
+      srcset: s.srcset ? REDACTED_VALUE : s.srcset,
+    })),
+    videoState: meta.videoState
+      ? {
+          ...meta.videoState,
+          poster: meta.videoState.poster ? REDACTED_VALUE : meta.videoState.poster,
+        }
+      : meta.videoState,
+  };
 }

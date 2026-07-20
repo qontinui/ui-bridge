@@ -68,7 +68,19 @@ import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
-import { elementRedaction } from '../core/redaction';
+import {
+  elementRedaction,
+  verdictOf,
+  scrubContent,
+  scrubContentByVerdict,
+  scrubValueByVerdict,
+  scrubValueRequired,
+  scrubReactProps,
+  scrubMediaMetadata,
+  isContentRedacted,
+  trustDeveloperContent,
+} from '../core/redaction';
+import type { Scrubbed } from '../core/redaction';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
@@ -215,17 +227,25 @@ function getElementState(element: HTMLElement): ElementState {
     };
   }
 
-  // Populate textContent from the element's visible text
+  // §4.6 two-axis verdict, computed once — this control-side builder (#5 in
+  // the plan) now SCRUBS through the choke point, not just stamps.
+  const verdict = verdictOf(element);
+
+  // Populate textContent from the element's visible text (CONTENT axis).
   const rawText = element.textContent?.trim();
   if (rawText) {
     // Collapse whitespace and truncate to avoid storing huge text
-    state.textContent = rawText.replace(/\s+/g, ' ').slice(0, 500);
+    state.textContent = scrubContentByVerdict(rawText.replace(/\s+/g, ' ').slice(0, 500), verdict);
   }
 
-  // Fallback for icon-only elements (no textContent but has aria-label/title)
+  // Fallback for icon-only elements (no textContent but has aria-label/title).
+  // §4.6: re-reads raw aria-label/title — must scrub or the boundary's secret
+  // is resurrected here.
   if (!state.textContent) {
-    state.textContent =
-      element.getAttribute('aria-label') || element.getAttribute('title') || undefined;
+    state.textContent = scrubContentByVerdict(
+      element.getAttribute('aria-label') || element.getAttribute('title') || undefined,
+      verdict
+    );
   }
 
   // Opacity hidden detection
@@ -276,18 +296,20 @@ function getElementState(element: HTMLElement): ElementState {
   }
 
   if (element instanceof HTMLInputElement) {
-    state.value = element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = element.value;
-    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.value = scrubValueByVerdict(element.value, verdict);
+    state.selectedOptions = Array.from(element.selectedOptions)
+      .map((opt) => scrubValueByVerdict(opt.value, verdict))
+      .filter((v): v is Scrubbed<string> => v !== undefined);
     state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: opt.value,
-      label: opt.text,
+      value: scrubValueRequired(opt.value, verdict),
+      label: scrubValueRequired(opt.text, verdict),
       selected: opt.selected,
     }));
   }
@@ -1528,10 +1550,15 @@ export class DefaultActionExecutor implements ActionExecutor {
         elements.push({
           id,
           type: registered?.type || this.inferElementType(el),
-          label: registered?.label || this.getElementLabel(el),
+          // Dev-SET registered label is a trusted §4.6 boundary; a DOM-derived
+          // label (`getElementLabel`, already gated to undefined when redacted)
+          // routes through the content scrub.
+          label: registered?.label
+            ? trustDeveloperContent(registered.label)
+            : scrubContent(this.getElementLabel(el), el),
           tagName: el.tagName.toLowerCase(),
           role: el.getAttribute('role') || undefined,
-          accessibleName: this.getAccessibleName(el),
+          accessibleName: scrubContent(this.getAccessibleName(el), el),
           actions: registered?.actions || this.inferActions(el),
           state,
           registered: !!registered,
@@ -1577,10 +1604,12 @@ export class DefaultActionExecutor implements ActionExecutor {
         elements.push({
           id: el.id,
           type: el.type,
-          label: el.label,
+          // Content elements: scrub against the live node (auto-registered
+          // content labels can be DOM-derived; a boundary redacts them).
+          label: scrubContent(el.label, el.element),
           tagName: el.element.tagName.toLowerCase(),
           role: el.element.getAttribute('role') || undefined,
-          accessibleName: el.label || state.textContent?.trim(),
+          accessibleName: scrubContent(el.label, el.element) ?? state.textContent,
           actions: [],
           state,
           registered: true,
@@ -1657,17 +1686,19 @@ export class DefaultActionExecutor implements ActionExecutor {
         elements.push({
           id: el.id,
           type: el.type,
-          label: el.label,
+          label: scrubContent(el.label, el.element),
           tagName: el.element.tagName.toLowerCase(),
           role: el.element.getAttribute('role') || undefined,
-          accessibleName: el.label || meta?.altText,
+          // altText is CONTENT — a redacted <img>'s alt describes the secret;
+          // its src/srcset/poster ARE the rendered secret (scrubbed below).
+          accessibleName: scrubContent(el.label || meta?.altText, el.element),
           actions: [],
           state,
           registered: true,
           category: 'media',
           className: classString(el.element) || undefined,
           classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
-          mediaMetadata: meta,
+          mediaMetadata: scrubMediaMetadata(meta, verdictOf(el.element)),
         });
       }
     }
@@ -3051,13 +3082,18 @@ export class DefaultActionExecutor implements ActionExecutor {
     const htmlId = element.id;
     if (htmlId && !/^:r[0-9a-z]+:$/i.test(htmlId)) return htmlId;
 
-    // Build a semantic ID from the tag name + accessible label
+    // Build a semantic ID from the tag name + accessible label.
+    // §4.6: the slug is derived from aria-label/title/textContent, so inside a
+    // content-redaction boundary it would smuggle the secret out as an id.
+    // Suppress the label-derived slug there — the element stays addressable by
+    // its structural `tag`(-index) id.
     const tag = element.tagName.toLowerCase();
-    const label =
-      element.getAttribute('aria-label') ||
-      element.getAttribute('title') ||
-      element.textContent?.trim().slice(0, 40) ||
-      '';
+    const label = isContentRedacted(element)
+      ? ''
+      : element.getAttribute('aria-label') ||
+        element.getAttribute('title') ||
+        element.textContent?.trim().slice(0, 40) ||
+        '';
     const slug = label
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
@@ -3076,6 +3112,11 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private getElementLabel(element: HTMLElement): string | undefined {
+    // §4.6 oracle closure: this helper is read RAW by the discover text/label/
+    // exact_text filters, so a content-redacted element must yield no
+    // matchable content. Returning undefined closes the filter oracle AND keeps
+    // the emitted label empty (the push wraps it in `scrubContent` too).
+    if (isContentRedacted(element)) return undefined;
     const ariaLabel = element.getAttribute('aria-label');
     if (ariaLabel) return ariaLabel;
 
@@ -3096,6 +3137,10 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private getAccessibleName(element: HTMLElement): string | undefined {
+    // §4.6 oracle closure — same rationale as `getElementLabel`: read RAW by
+    // the discover `text` filter, so a content-redacted element yields nothing
+    // matchable.
+    if (isContentRedacted(element)) return undefined;
     const ariaLabel = element.getAttribute('aria-label');
     if (ariaLabel) return ariaLabel;
 
@@ -3429,11 +3474,19 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
     return null; // Not a React-managed element
   }
 
+  // §4.6: this projection reads React INTERNALS, not the DOM — for a controlled
+  // `<input type="password">` `props.value` IS the cleartext secret, and the
+  // fiber `memoizedState` can hold it too. VALUE axis: collapse every prop
+  // VALUE to the sentinel (KEYS survive — they are source identifiers the
+  // developer wrote), and drop `fiberState`/`componentName`, while still
+  // reporting the element as React-managed (non-null return) so callers can
+  // tell "redacted" from "not React".
+  const reactVerdict = verdictOf(element);
   // Extract props (replace functions with marker strings)
   const rawProps = reactPropsKey
     ? ((el[reactPropsKey] as Record<string, unknown> | undefined) ?? {})
     : {};
-  const props = safeSerialize(rawProps) as Record<string, unknown>;
+  const props = scrubReactProps(safeSerialize(rawProps) as Record<string, unknown>, reactVerdict);
 
   // Walk the memoizedState linked list to extract useState/useReducer values
   const fiberState: unknown[] = [];
@@ -3469,7 +3522,11 @@ export function extractReactState(element: HTMLElement): ReactStateInfo | null {
     }
   }
 
-  return { props, fiberState, componentName };
+  return {
+    props,
+    fiberState: reactVerdict.value ? [] : fiberState,
+    componentName: reactVerdict.value ? undefined : componentName,
+  };
 }
 
 /**

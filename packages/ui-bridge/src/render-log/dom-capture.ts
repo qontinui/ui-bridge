@@ -5,6 +5,14 @@
  */
 
 import type { ElementIdentifier, ElementState } from '../core/types';
+import type { Scrubbed } from '../core/redaction';
+import {
+  scrubContent,
+  scrubRecord,
+  scrubValueByVerdict,
+  scrubValueRequired,
+  verdictOf,
+} from '../core/redaction';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 
 /**
@@ -19,14 +27,19 @@ export interface CapturedElement {
   tagName: string;
   /** Element role */
   role?: string;
-  /** Accessible name */
-  accessibleName?: string;
-  /** Text content (truncated) */
-  textContent?: string;
+  /** Accessible name. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  accessibleName?: Scrubbed<string>;
+  /** Text content (truncated). §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  textContent?: Scrubbed<string>;
   /** Element state */
   state: ElementState;
-  /** Attributes relevant for automation */
-  attributes: Record<string, string>;
+  /**
+   * Attributes relevant for automation. §4.6: `CAPTURE_ATTRIBUTES` literally
+   * enumerates `value` / `alt` / `title` / `placeholder` / `aria-label`, so
+   * inside a boundary every attribute VALUE must collapse. Branded as a whole
+   * via `scrubRecord` (per-field branding is impossible on a `Record`).
+   */
+  attributes: Scrubbed<Record<string, string>>;
   /** Child element count */
   childCount: number;
   /** Depth in the DOM tree */
@@ -255,20 +268,24 @@ function getElementState(element: HTMLElement): ElementState {
     };
   }
 
-  // Input-specific state
+  // Input-specific state. §4.6 VALUE axis — this render-log capture is a
+  // debugging projection and must not persist a boundary/password value.
+  const verdict = verdictOf(element);
   if (element instanceof HTMLInputElement) {
-    state.value = element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = element.value;
+    state.value = scrubValueByVerdict(element.value, verdict);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = element.value;
-    state.selectedOptions = Array.from(element.selectedOptions).map((opt) => opt.value);
+    state.value = scrubValueByVerdict(element.value, verdict);
+    state.selectedOptions = Array.from(element.selectedOptions)
+      .map((opt) => scrubValueByVerdict(opt.value, verdict))
+      .filter((v): v is Scrubbed<string> => v !== undefined);
     state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: opt.value,
-      label: opt.text,
+      value: scrubValueRequired(opt.value, verdict),
+      label: scrubValueRequired(opt.text, verdict),
       selected: opt.selected,
     }));
   }
@@ -325,15 +342,18 @@ function captureElement(
     textContent = textContent.substring(0, maxTextLength) + '...';
   }
 
+  // §4.6: route the content fields + attribute record through the choke point
+  // (`CAPTURE_ATTRIBUTES` literally lists value/alt/title/placeholder/aria-label).
+  const verdict = verdictOf(element);
   return {
     identifier,
     bestId: getBestIdentifier(element),
     tagName: element.tagName.toLowerCase(),
     role: element.getAttribute('role') || undefined,
-    accessibleName: getAccessibleName(element),
-    textContent,
+    accessibleName: scrubContent(getAccessibleName(element), element),
+    textContent: scrubContent(textContent, element),
     state: getElementState(element),
-    attributes: captureAttributes(element),
+    attributes: scrubRecord(captureAttributes(element), verdict),
     childCount: element.children.length,
     depth,
   };

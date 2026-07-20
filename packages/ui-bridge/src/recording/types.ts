@@ -9,6 +9,7 @@
  */
 
 import type { ElementFingerprintData } from '../core/element-fingerprint';
+import type { Scrubbed } from '../core/redaction';
 
 // ============================================================================
 // Recording Session Configuration
@@ -49,10 +50,10 @@ export interface VariableCandidate {
   elementId: string;
   /** Input type: text, select, checkbox, radio, etc. */
   inputType: string;
-  /** Value the user entered during recording */
-  enteredValue: string;
-  /** Accessible name or label for this field */
-  label: string;
+  /** Value the user entered during recording. §4.6 VALUE-bearing — `Scrubbed<string>`. */
+  enteredValue: Scrubbed<string>;
+  /** Accessible name or label for this field. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+  label: Scrubbed<string>;
   /** Derived parameter name in camelCase */
   suggestedParamName: string;
 }
@@ -78,8 +79,8 @@ export interface RecordedInteraction {
   targetElementId: string | null;
   beforeCaptureId: string;
   afterCaptureId: string;
-  /** For type/select actions, the value entered */
-  value?: string;
+  /** For type/select actions, the value entered. §4.6 VALUE-bearing — `Scrubbed<string>`. */
+  value?: Scrubbed<string>;
 }
 
 // ============================================================================
@@ -91,7 +92,8 @@ export interface InteractionEvent {
   actionType: InteractionActionType;
   targetElementId: string;
   targetElement: HTMLElement;
-  value?: string;
+  /** §4.6 VALUE-bearing — `Scrubbed<string>`; gated where the value enters (interceptor). */
+  value?: Scrubbed<string>;
 }
 
 // ============================================================================

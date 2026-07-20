@@ -24,6 +24,15 @@ import {
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
 import { getGlobalRegistry } from '../core/registry';
+import {
+  verdictOf,
+  verdictFromState,
+  isContentRedacted,
+  scrubContentByVerdict,
+  scrubContentRequired,
+  trustDeveloperContent,
+  type RedactionVerdict,
+} from '../core/redaction';
 
 /**
  * Returns true when the `UI_BRIDGE_DEBUG_FIND` find-diagnostic flag is enabled
@@ -473,18 +482,54 @@ export class SearchEngine {
       }
     }
 
-    // Generate aliases and description
-    let aliases = generateAliases({
-      textContent,
-      ariaLabel,
-      placeholder,
-      title,
-      elementType: element.type,
-      tagName,
-      id: element.id,
-      labelText,
-      value,
-    });
+    // §4.6 SINGLE CHOKE POINT. Every `criteria.*` scoring branch AND
+    // `toAIDiscoveredElement` read from the fields below, so gating them HERE
+    // closes both the EMISSION and the confirmation ORACLE by construction — a
+    // scoring branch added later is safe without touching it. CONTENT axis
+    // nulls descriptive text and skips DOM-derived alias generation; VALUE axis
+    // nulls the entered value. Developer-SET aliases are re-merged below (the
+    // documented boundary). The verdict comes from the live element
+    // (RegisteredElement) or the stamped `state.redaction` (DiscoveredElement
+    // crosses the wire with no DOM ref) — NEVER by sniffing the forgeable
+    // sentinel.
+    const redactionVerdict: RedactionVerdict =
+      'getState' in element && typeof element.getState === 'function'
+        ? verdictOf((element as RegisteredElement).element)
+        : verdictFromState(state);
+    if (redactionVerdict.content) {
+      // `ariaLabel` becomes the accessibleName EMITTED for the element, so a
+      // present name collapses to the SENTINEL (present-but-hidden — consistent
+      // with the serialize/materialize projections), which ALSO can't confirm a
+      // secret guess when matched. The secondary text channels are DROPPED
+      // entirely (the per-site contract), and `textContent`/`name` are nulled so
+      // no DOM-derived alias or score survives.
+      ariaLabel = scrubContentByVerdict(ariaLabel, redactionVerdict);
+      placeholder = undefined;
+      title = undefined;
+      labelText = undefined;
+      name = undefined;
+      textContent = undefined;
+    }
+    if (redactionVerdict.value) {
+      value = undefined;
+    }
+
+    // Generate aliases and description. A content-redacted element contributes
+    // NO DOM-derived aliases (even id/type-derived ones); dev-set aliases merge
+    // back below.
+    let aliases = redactionVerdict.content
+      ? []
+      : generateAliases({
+          textContent,
+          ariaLabel,
+          placeholder,
+          title,
+          elementType: element.type,
+          tagName,
+          id: element.id,
+          labelText,
+          value,
+        });
 
     // Merge pre-computed aliases from RegisteredElement if available
     if ('aliases' in element && Array.isArray(element.aliases) && element.aliases.length > 0) {
@@ -531,8 +576,10 @@ export class SearchEngine {
     // Resolve parent context (nearest semantic container)
     const parentContext = this.resolveParentContext(element);
 
-    // Infer icon meaning for icon-only buttons and add to aliases
-    const iconAliases = this.inferIconAliases(element);
+    // Infer icon meaning for icon-only buttons and add to aliases. Skipped for
+    // a content-redacted element — its nulled text/label would otherwise let
+    // this re-populate `textContent`/`aliases` and re-open the projection.
+    const iconAliases = redactionVerdict.content ? [] : this.inferIconAliases(element);
     if (iconAliases.length > 0 && !textContent && !ariaLabel) {
       const aliasSet = new Set([...aliases, ...iconAliases]);
       aliases = [...aliasSet];
@@ -1603,11 +1650,15 @@ export class SearchEngine {
           tag === 'footer';
 
         if (isContainer) {
-          const label =
-            ancestor.getAttribute('aria-label') ||
-            ancestor.getAttribute('data-testid') ||
-            ancestor.id ||
-            '';
+          // §4.6: `parentContext` is emitted AND scored (`criteria.within`), so
+          // an ancestor label from inside a redaction boundary leaks both ways.
+          // Suppress the label there — the STRUCTURE (role/tag) survives.
+          const label = isContentRedacted(ancestor)
+            ? ''
+            : ancestor.getAttribute('aria-label') ||
+              ancestor.getAttribute('data-testid') ||
+              ancestor.id ||
+              '';
           return label ? `${role || tag}[${label}]` : role || tag;
         }
 
@@ -1733,15 +1784,22 @@ export class SearchEngine {
    * Convert searchable element to AI discovered element
    */
   private toAIDiscoveredElement(searchable: SearchableElement): AIDiscoveredElement {
+    // The searchable fields are ALREADY gated by `toSearchable` (the choke
+    // point). Route them through the branded minters for the wire slot: the
+    // verdict comes from the stamped state (DOM-less-safe). `accessibleName`
+    // (`searchable.ariaLabel`) is content-scrubbed; `label` is developer-SET
+    // (trusted boundary); `aliases` are already gated (dev-set survive,
+    // DOM-derived emptied when redacted) so they are branded wholesale.
+    const verdict = verdictFromState(searchable.state);
     const discoveredBase: DiscoveredElement =
       'getState' in searchable.element
         ? {
             id: searchable.id,
             type: searchable.type,
-            label: (searchable.element as RegisteredElement).label,
+            label: trustDeveloperContent((searchable.element as RegisteredElement).label),
             tagName: searchable.tagName,
             role: searchable.role,
-            accessibleName: searchable.ariaLabel,
+            accessibleName: scrubContentByVerdict(searchable.ariaLabel, verdict),
             actions: (searchable.element as RegisteredElement).actions,
             state: searchable.state,
             registered: true,
@@ -1750,8 +1808,8 @@ export class SearchEngine {
 
     return {
       ...discoveredBase,
-      description: searchable.description,
-      aliases: searchable.aliases,
+      description: scrubContentRequired(searchable.description, verdict),
+      aliases: searchable.aliases.map((a) => trustDeveloperContent(a)!),
       purpose: generatePurpose({
         textContent: searchable.textContent,
         ariaLabel: searchable.ariaLabel,
