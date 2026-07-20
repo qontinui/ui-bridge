@@ -34,6 +34,11 @@ import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
+import {
+  REDACTED_VALUE,
+  isValueRedacted,
+  isContentRedacted,
+} from '../core/redaction';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
 import {
@@ -1579,7 +1584,8 @@ export async function executeCommand(
         clicked: true,
         element: {
           tag: el.tagName.toLowerCase(),
-          text: el.textContent?.trim().slice(0, 200) ?? '',
+          // §4.6: don't echo the text of a boundary-redacted element.
+          text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
           rect: el.getBoundingClientRect(),
         },
       };
@@ -1599,7 +1605,8 @@ export async function executeCommand(
         clicked: true,
         element: {
           tag: el.tagName.toLowerCase(),
-          text: el.textContent?.trim().slice(0, 200) ?? '',
+          // §4.6: don't echo the text of a boundary-redacted element.
+          text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
           rect: el.getBoundingClientRect(),
         },
       };
@@ -1631,8 +1638,13 @@ export async function executeCommand(
         typed: true,
         element: {
           tag: el.tagName.toLowerCase(),
-          value:
-            'value' in el ? (el as HTMLInputElement).value : el.textContent,
+          // §4.6: never echo back the value just typed into a password field
+          // or a redacted input.
+          value: isValueRedacted(el)
+            ? REDACTED_VALUE
+            : 'value' in el
+              ? (el as HTMLInputElement).value
+              : el.textContent,
         },
       };
     }
@@ -1645,6 +1657,12 @@ export async function executeCommand(
       const el = findElementBySelector(selector, index);
       if (!el) {
         return { success: false, error: `No element found for selector "${selector}"` };
+      }
+      // §4.6: an arbitrary caller-supplied selector must not read a sensitive
+      // value in cleartext. Unconditional — password inputs and any element
+      // inside a data-bridge-redact boundary. Element stays addressable.
+      if (isValueRedacted(el)) {
+        return { value: REDACTED_VALUE, length: 0 };
       }
       const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
       return { value, length: value?.length ?? 0 };
@@ -1660,22 +1678,29 @@ export async function executeCommand(
         return { success: false, error: 'text is required and must not be empty' };
       }
       const matches = findElementsByText(text, { tag, exact });
-      return matches.map((el, i) => {
-        const rect = el.getBoundingClientRect();
-        return {
-          index: i,
-          tag: el.tagName.toLowerCase(),
-          text: el.textContent?.trim().slice(0, 200) ?? '',
-          rect: {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-          },
-          disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
-          visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
-        };
-      });
+      // §4.6: findByText is a confirmation oracle (caller supplies the text,
+      // reads the hit count). Exclude boundary-redacted elements from the
+      // result set entirely — a redacted element must not be confirmable by
+      // searching for its content, and the hit count itself must carry no
+      // signal. Scrubbing the emitted `text` alone would not close this.
+      return matches
+        .filter((el) => !isContentRedacted(el))
+        .map((el, i) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            index: i,
+            tag: el.tagName.toLowerCase(),
+            text: el.textContent?.trim().slice(0, 200) ?? '',
+            rect: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            },
+            disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
+            visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
+          };
+        });
     }
 
     case 'find':

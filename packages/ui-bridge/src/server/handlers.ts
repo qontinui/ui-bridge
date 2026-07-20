@@ -70,6 +70,11 @@ import {
   computeVisibleText,
 } from '../core/a11y';
 import { measureFreshBbox } from '../core/registry';
+import {
+  REDACTED_VALUE,
+  isValueRedacted,
+  isContentRedacted,
+} from '../core/redaction';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
@@ -835,7 +840,11 @@ export function createHandlers(
           '[role="alert"], .error, .toast-error, .error-message, [data-error]'
         );
         errorElements.forEach((el) => {
-          const text = (el as HTMLElement).textContent?.trim();
+          const htmlEl = el as HTMLElement;
+          // §4.6: an error/alert element inside a redaction boundary must not
+          // leak its text through the error-snapshot sweep.
+          if (isContentRedacted(htmlEl)) return;
+          const text = htmlEl.textContent?.trim();
           if (text) visibleErrors.push(text.slice(0, 200));
         });
       }
@@ -2924,7 +2933,8 @@ export function createHandlers(
           clicked: true,
           element: {
             tag: el.tagName.toLowerCase(),
-            text: el.textContent?.trim().slice(0, 200) ?? '',
+            // §4.6: don't echo the text of a boundary-redacted element.
+            text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
             rect: el.getBoundingClientRect(),
           },
         });
@@ -2950,7 +2960,8 @@ export function createHandlers(
           clicked: true,
           element: {
             tag: el.tagName.toLowerCase(),
-            text: el.textContent?.trim().slice(0, 200) ?? '',
+            // §4.6: don't echo the text of a boundary-redacted element.
+            text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
             rect: el.getBoundingClientRect(),
           },
         });
@@ -3000,7 +3011,13 @@ export function createHandlers(
           typed: true,
           element: {
             tag: el.tagName.toLowerCase(),
-            value: 'value' in el ? (el as HTMLInputElement).value : el.textContent,
+            // §4.6: never echo back the value just typed into a password field
+            // or a redacted input.
+            value: isValueRedacted(el)
+              ? REDACTED_VALUE
+              : 'value' in el
+                ? (el as HTMLInputElement).value
+                : el.textContent,
           },
         });
       } catch (err) {
@@ -3019,6 +3036,13 @@ export function createHandlers(
         const el = findElementBySelector(request.selector, request.index);
         if (!el) {
           return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
+        }
+        // §4.6: an arbitrary caller-supplied selector must not be able to read
+        // a sensitive value in cleartext. Unconditional — covers password
+        // inputs with no opt-in AND any element inside a data-bridge-redact
+        // boundary. The element stays addressable; only its value is hidden.
+        if (isValueRedacted(el)) {
+          return success({ value: REDACTED_VALUE, length: 0 });
         }
         const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
         return success({
@@ -3054,22 +3078,30 @@ export function createHandlers(
           tag: request.tag,
           exact: request.exact,
         });
-        const results = matches.map((el, i) => {
-          const rect = el.getBoundingClientRect();
-          return {
-            index: i,
-            tag: el.tagName.toLowerCase(),
-            text: el.textContent?.trim().slice(0, 200) ?? '',
-            rect: {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-            },
-            disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
-            visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
-          };
-        });
+        // §4.6: findByText doubles as a confirmation oracle — the caller
+        // supplies the text and reads the hit count. Scrubbing the emitted
+        // `text` is NOT enough: a redacted element must not be CONFIRMABLE by
+        // searching for its content. Exclude boundary-redacted elements from
+        // the result set entirely, before building, so the hit count itself
+        // carries no signal.
+        const results = matches
+          .filter((el) => !isContentRedacted(el))
+          .map((el, i) => {
+            const rect = el.getBoundingClientRect();
+            return {
+              index: i,
+              tag: el.tagName.toLowerCase(),
+              text: el.textContent?.trim().slice(0, 200) ?? '',
+              rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+              disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
+              visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
+            };
+          });
         return success(results);
       } catch (err) {
         return error((err as Error).message, 'FIND_BY_TEXT_ERROR');

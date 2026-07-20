@@ -17,6 +17,34 @@ BASE=http://localhost:9877/ui-bridge
 
 ---
 
+## ⚠️ Sensitive data / `data-bridge-redact` — interim scope note
+
+**`data-bridge-redact` is NOT yet fully enforced across all projections. Do
+not rely on it to keep secrets out of a client until the structural
+enforcement work lands.**
+
+The intended guarantee is that wrapping a subtree in
+`data-bridge-redact="true"` (and every `<input type="password">`
+unconditionally) keeps that content — values and text — from ever reaching an
+AI client. As of this release that guarantee holds only for the specific
+read/echo routes that have been gated (`readValue`, `findByText`,
+`typeInto`/`clickByText`/`clickBySelector` echoes, and the error-snapshot
+sweep). Other element-derived projections (snapshots, `ai/search`, `getForms`,
+render-log capture, recording, and framework-store adapters) may still emit
+redacted content. Treat redaction as **best-effort** for now.
+
+Additional known limits that will remain even after full enforcement: the
+boundary walk follows `parentElement` only (content portalled out of a
+boundary, e.g. React portals / shadow DOM, is not covered — re-declare the
+attribute on the portal root); screenshots and network/console capture are
+out of scope; and `[REDACTED]` is a display convention, **not** a security
+oracle — do not branch on it.
+
+This note is interim and will be superseded by a rewritten §4.6 guarantee once
+the structural work is complete.
+
+---
+
 ## 1. Discover what's on a page
 
 Start here. Before you click anything you need to know what the registry
