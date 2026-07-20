@@ -24,6 +24,8 @@
 // need a second import (and so there is exactly one definition — the one in
 // `core/registry.ts` that consumers already assert on).
 export { REDACTED_VALUE } from './registry';
+import { REDACTED_VALUE } from './registry';
+import type { ElementState } from './types';
 
 /**
  * The attribute that marks an element (and its subtree) as sensitive. Honored
@@ -79,4 +81,174 @@ export function isValueRedacted(el: HTMLElement | null | undefined): boolean {
 export function isContentRedacted(el: HTMLElement | null | undefined): boolean {
   if (!el) return false;
   return closestRedactionBoundary(el) !== null;
+}
+
+// ===========================================================================
+// Structural-enforcement machinery (plan Phase 2)
+// ---------------------------------------------------------------------------
+// Everything below is TYPE-ONLY at runtime except the minters, which return
+// exactly the bytes they always did — the brands erase at compile. No wire
+// shape changes. The value is compile-time: a raw DOM string cannot be assigned
+// into a branded wire field (Phase 3), and a redaction verdict cannot be
+// hand-forged. These symbols are ADDED here; Phase 3/4 wires them into the
+// projection builders. Leaving them uncalled for now is intentional.
+// ===========================================================================
+
+/**
+ * Opaque brand marking a string (or record) that has passed through this
+ * module's §4.6 scrub. A raw `string` is NOT assignable to `Scrubbed<string>`
+ * — that is the whole point: once Phase 3 declares the content-bearing fields
+ * on the wire types as `Scrubbed<string>`, assigning un-scrubbed DOM content
+ * into one becomes a compile error (`TS2322`). The brand can be minted ONLY by
+ * the factories in this module — the branding key is a module-private
+ * `unique symbol`, so it is unforgeable and un-castable from outside.
+ */
+declare const scrubbed: unique symbol;
+export type Scrubbed<T> = T & { readonly [scrubbed]: true };
+
+/**
+ * Opaque §4.6 verdict token. Carries both predicates, but is deliberately NOT
+ * hand-constructible: a caller cannot write `{ value: false, content: false }`
+ * to fake a "not redacted" verdict and slip an unscrubbed value past a
+ * verdict-taking minter (the bare-boolean bypass a plain `{value,content}`
+ * signature would permit). Obtainable ONLY from `verdictOf` (live element) or
+ * `verdictFromState` (the DOM-less wire arms). The `__verdict` key is a
+ * module-private `unique symbol`, so the object can be minted only here.
+ */
+declare const __verdict: unique symbol;
+export interface RedactionVerdict {
+  readonly value: boolean;
+  readonly content: boolean;
+  readonly [__verdict]: true;
+}
+
+/** The sole mint point for a verdict — the cast is confined to this module. */
+function mintVerdict(value: boolean, content: boolean): RedactionVerdict {
+  return { value, content } as RedactionVerdict;
+}
+
+/**
+ * Compute the §4.6 verdict for a live element. `value` = password OR boundary
+ * (the stricter gate); `content` = boundary only. This is the DOM entry point
+ * to every minter.
+ */
+export function verdictOf(el: HTMLElement | null | undefined): RedactionVerdict {
+  return mintVerdict(isValueRedacted(el), isContentRedacted(el));
+}
+
+/**
+ * Recover the verdict from a state blob's `redaction` provenance field, for the
+ * DOM-less wire arms (`DiscoveredElement` crosses the wire with no element
+ * ref, so it cannot recompute the predicate). A state that never stamped
+ * `redaction` reads as "not redacted" on both axes — which is precisely why
+ * every state builder MUST stamp it (see `elementRedaction`): a missing stamp
+ * is indistinguishable from "genuinely not redacted", so the enforcement is
+ * that a DOM-less arm cannot mint a `Scrubbed<string>` without a verdict, and
+ * cannot obtain a verdict without either a live element or a stamped state.
+ */
+export function verdictFromState(state: Pick<ElementState, 'redaction'>): RedactionVerdict {
+  const r = state.redaction;
+  return mintVerdict(r?.value === true, r?.content === true);
+}
+
+/**
+ * Build the `ElementState.redaction` provenance for `el`, or `undefined` when
+ * neither axis applies — so the field is OMITTED (absent === "not redacted"),
+ * never emitted as an empty `{}`. This is the single shared stamper that every
+ * `getElementState`-shaped builder uses, so the provenance is derived one way,
+ * in one place.
+ */
+export function elementRedaction(el: HTMLElement | null | undefined): ElementState['redaction'] {
+  const v = verdictOf(el);
+  if (!v.value && !v.content) return undefined;
+  const out: { content?: true; value?: true } = {};
+  if (v.content) out.content = true;
+  if (v.value) out.value = true;
+  return out;
+}
+
+/**
+ * Presence-preserving scrub — the ONE scrub shape in the package (there must
+ * never be two; a second, divergent scrub is exactly the drift §4.6 keeps
+ * re-growing). Every minter below shares this contract:
+ *
+ *   - falsy in (`undefined` OR `''`) → `undefined` out. The empty string is
+ *     treated as ABSENT, not "present-but-empty": a projection field that is
+ *     `''` and one that is missing are indistinguishable to every downstream
+ *     consumer, so emitting `''` only adds noise. The one accepted consequence
+ *     is `<img alt="">` (a deliberately-empty alt, the valid a11y signal for a
+ *     decorative image) collapses to `undefined` rather than surviving as `''`.
+ *     Accepted: the §4.6 guarantee (no secret leaks) dominates the marginal
+ *     loss of a decorative-image hint, and a consumer that genuinely needs
+ *     "alt present but empty" can read the raw attribute itself.
+ *   - truthy in + redacted (on the relevant axis) → `REDACTED_VALUE`.
+ *   - truthy in + not redacted → the raw string, now BRANDED so it can flow
+ *     into a `Scrubbed<string>` wire field.
+ *
+ * The cast to `Scrubbed<string>` lives ONLY in these two `*ByVerdict` roots.
+ */
+export function scrubValueByVerdict(
+  raw: string | undefined,
+  v: RedactionVerdict
+): Scrubbed<string> | undefined {
+  if (!raw) return undefined;
+  return (v.value ? REDACTED_VALUE : raw) as Scrubbed<string>;
+}
+
+export function scrubContentByVerdict(
+  raw: string | undefined,
+  v: RedactionVerdict
+): Scrubbed<string> | undefined {
+  if (!raw) return undefined;
+  return (v.content ? REDACTED_VALUE : raw) as Scrubbed<string>;
+}
+
+/** Scrub a VALUE-bearing field (input value, echoes) against a live element. */
+export function scrubValue(
+  raw: string | undefined,
+  el: HTMLElement | null | undefined
+): Scrubbed<string> | undefined {
+  return scrubValueByVerdict(raw, verdictOf(el));
+}
+
+/** Scrub a CONTENT-bearing field (text, labels, alt) against a live element. */
+export function scrubContent(
+  raw: string | undefined,
+  el: HTMLElement | null | undefined
+): Scrubbed<string> | undefined {
+  return scrubContentByVerdict(raw, verdictOf(el));
+}
+
+/**
+ * Container brand for a `Record<string, string>` attribute payload (plan
+ * limit 3: fields inside cannot be branded individually, so the whole map is
+ * made constructible only through this factory). CONTENT axis: inside a
+ * content-redaction boundary every attribute VALUE collapses to the sentinel
+ * while KEYS survive (attribute names are developer-authored, not secrets).
+ */
+export function scrubRecord(
+  rec: Record<string, string>,
+  v: RedactionVerdict
+): Scrubbed<Record<string, string>> {
+  if (!v.content) return rec as Scrubbed<Record<string, string>>;
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(rec)) out[key] = REDACTED_VALUE;
+  return out as Scrubbed<Record<string, string>>;
+}
+
+/**
+ * Container brand for a React-fiber prop bag (`extractReactState`). VALUE axis
+ * — a controlled `<input type="password">`'s `props.value` IS the cleartext
+ * secret: inside a value-redaction verdict every prop VALUE collapses to the
+ * sentinel while prop KEYS survive (they are source identifiers the developer
+ * wrote, useful for orientation and not themselves sensitive).
+ */
+export function scrubReactProps(
+  props: Record<string, unknown>,
+  v: RedactionVerdict
+): Scrubbed<Record<string, unknown>> {
+  if (!v.value) return props as Scrubbed<Record<string, unknown>>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(props)) out[key] = REDACTED_VALUE;
+  return out as Scrubbed<Record<string, unknown>>;
 }

@@ -40,6 +40,7 @@ import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
 import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
+import { isValueRedacted, elementRedaction } from './redaction';
 import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 import {
@@ -68,32 +69,6 @@ export const REDACTED_VALUE = '[REDACTED]';
  * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.5.
  */
 const BRIDGE_INVISIBLE_ATTR = 'data-bridge-invisible';
-
-/**
- * The attribute that marks an input value as sensitive — its `state.value`
- * is replaced with `REDACTED_VALUE` in every snapshot. Honored on the
- * element itself OR on any ancestor (so a form can opt its whole subtree
- * in with one attribute).
- *
- * Cross-link: plans/2026-05-28-production-safe-ui-bridge-design.md §4.6.
- */
-const BRIDGE_REDACT_ATTR = 'data-bridge-redact';
-
-/**
- * Walk from `el` up through `parentElement` until we find an ancestor
- * (or el itself) with `data-bridge-redact="true"`. Returns the matched
- * element, or null if none. The truthy check accepts `"true"` exactly —
- * NOT `""` / `"false"` / `"yes"` — so a typo can't accidentally turn
- * redaction off; the attribute must be explicit.
- */
-function closestRedactionBoundary(el: HTMLElement): HTMLElement | null {
-  let cursor: HTMLElement | null = el;
-  while (cursor !== null) {
-    if (cursor.getAttribute(BRIDGE_REDACT_ATTR) === 'true') return cursor;
-    cursor = cursor.parentElement;
-  }
-  return null;
-}
 
 /**
  * Walk from `el` up until we find `data-bridge-invisible="true"`. Returns
@@ -457,9 +432,12 @@ function getElementState(element: HTMLElement): ElementState {
   // unconditionally — every browser already treats password fields as
   // sensitive at the OS keystroke level, so making them snapshot-visible
   // would be a strictly weaker contract than the browser's own.
-  const isRedacted =
-    (element instanceof HTMLInputElement && element.type === 'password') ||
-    closestRedactionBoundary(element) !== null;
+  //
+  // `isValueRedacted` (from the `core/redaction` choke point) IS this exact
+  // predicate — password OR `data-bridge-redact` boundary — moved out of the
+  // registry so there is one authority for §4.6, not a per-projection copy.
+  // Behaviour is identical to the former inline computation.
+  const isRedacted = isValueRedacted(element);
 
   const roleAttr = element.getAttribute('role') || undefined;
   const accessibleName = isRedacted
@@ -508,6 +486,14 @@ function getElementState(element: HTMLElement): ElementState {
     },
     inViewport,
   };
+
+  // §4.6 provenance — stamp the redaction verdict as DATA so DOM-less wire
+  // arms (`DiscoveredElement`, which carries no element ref) can recover it via
+  // `verdictFromState` instead of sniffing the forgeable `REDACTED_VALUE`
+  // sentinel. Behaviour-neutral: an optional field consumers that don't know it
+  // simply ignore; omitted entirely when neither axis applies.
+  const redaction = elementRedaction(element);
+  if (redaction) state.redaction = redaction;
 
   // Normalized 0–1 viewport coordinates for resolution-independent targeting
   const vw = window.innerWidth;

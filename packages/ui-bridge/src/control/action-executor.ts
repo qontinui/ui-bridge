@@ -68,6 +68,7 @@ import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
+import { elementRedaction } from '../core/redaction';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
@@ -290,6 +291,15 @@ function getElementState(element: HTMLElement): ElementState {
       selected: opt.selected,
     }));
   }
+
+  // §4.6 provenance — stamp the redaction verdict as DATA (behaviour-neutral;
+  // an optional field). NOTE: this control-side `getElementState` does not yet
+  // SCRUB `state.value`/`state.textContent` — that is builder #5 in the plan
+  // and is closed in Phase 3. Stamping the verdict now is what lets the Phase-3
+  // brand/`verdictFromState` wiring see this producer at all; it does not
+  // change any wire bytes today.
+  const redaction = elementRedaction(element);
+  if (redaction) state.redaction = redaction;
 
   return state;
 }

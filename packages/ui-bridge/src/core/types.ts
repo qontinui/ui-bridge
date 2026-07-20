@@ -209,6 +209,24 @@ export interface ElementState {
     /** Whether more content exists to the right */
     canScrollRight: boolean;
   };
+  /**
+   * §4.6 redaction verdict, carried as DATA because the wire projections built
+   * from this state (notably `DiscoveredElement`) cross the wire with NO DOM
+   * ref, so a downstream arm cannot recompute the predicate — it reads it here.
+   * Two axes: `content` = the element sits inside a `data-bridge-redact="true"`
+   * boundary; `value` = the stricter gate (a `<input type="password">` OR a
+   * boundary). Only the axes that apply are present, each as the literal
+   * `true`; the field is OMITTED ENTIRELY when neither applies (absent ===
+   * "not redacted"), so it adds zero bytes to the common case.
+   *
+   * This is DATA, not a re-derivable-from-`REDACTED_VALUE` inference on
+   * purpose: `REDACTED_VALUE` is an ordinary string this package EXPORTS for
+   * consumers to assert on and a page can forge, so sniffing the sentinel
+   * misclassifies (a) a UI legitimately rendering the text "[REDACTED]" and
+   * (b) any producer using a different sentinel. Downstream code keys on this
+   * field, never on the sentinel string.
+   */
+  redaction?: { content?: true; value?: true };
 }
 
 /**
