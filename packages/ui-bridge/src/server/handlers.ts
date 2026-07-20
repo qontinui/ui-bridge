@@ -54,12 +54,16 @@ import { diagnosePageHealth } from './page-health';
 import {
   scanDOMForInteractiveElements,
   countDOMInteractiveElements,
-  findElementsByText,
-  findElementBySelector,
-  findElementByLabel,
 } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
+import {
+  readValuePrimitive,
+  findByTextPrimitive,
+  clickByTextPrimitive,
+  clickBySelectorPrimitive,
+  typeIntoPrimitive,
+} from './page-primitives';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
 import { extractReactState } from '../control/action-executor';
@@ -70,11 +74,7 @@ import {
   computeVisibleText,
 } from '../core/a11y';
 import { measureFreshBbox } from '../core/registry';
-import {
-  REDACTED_VALUE,
-  isValueRedacted,
-  isContentRedacted,
-} from '../core/redaction';
+import { isContentRedacted } from '../core/redaction';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
@@ -2911,33 +2911,25 @@ export function createHandlers(
     // App-Agnostic Convenience Endpoints
     // =========================================================================
 
+    // The bodies of clickByText / clickBySelector / typeInto / readValue /
+    // findByText live in `./page-primitives` (browser-safe, zero-dependency)
+    // and are shared verbatim with the React relay dispatcher
+    // (`react/commandHandlers.ts`) so the §4.6 redaction gates — and every
+    // other line — exist exactly once. This dispatcher supplies only its
+    // side-effect adapter (`el.click()`, inline value mutation) and wraps the
+    // neutral primitive result in `success(...)` / `error(...)`.
     clickByText: async (request: {
       text: string;
       tag?: string;
       exact?: boolean;
     }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       try {
-        if (!request.text?.trim()) {
-          return error('text is required and must not be empty', 'INVALID_PARAMS');
-        }
-        const matches = findElementsByText(request.text, {
-          tag: request.tag,
-          exact: request.exact,
-        });
-        if (matches.length === 0) {
-          return error(`No element found with text "${request.text}"`, 'ELEMENT_NOT_FOUND');
-        }
-        const el = matches[0];
-        el.click();
-        return success({
-          clicked: true,
-          element: {
-            tag: el.tagName.toLowerCase(),
-            // §4.6: don't echo the text of a boundary-redacted element.
-            text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
-            rect: el.getBoundingClientRect(),
-          },
-        });
+        const r = clickByTextPrimitive(
+          request.text,
+          { tag: request.tag, exact: request.exact },
+          (el) => el.click()
+        );
+        return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'CLICK_BY_TEXT_ERROR');
       }
@@ -2948,23 +2940,8 @@ export function createHandlers(
       index?: number;
     }): Promise<APIResponse<{ clicked: boolean; element?: unknown }>> => {
       try {
-        if (!request.selector?.trim()) {
-          return error('selector is required and must not be empty', 'INVALID_PARAMS');
-        }
-        const el = findElementBySelector(request.selector, request.index);
-        if (!el) {
-          return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
-        }
-        el.click();
-        return success({
-          clicked: true,
-          element: {
-            tag: el.tagName.toLowerCase(),
-            // §4.6: don't echo the text of a boundary-redacted element.
-            text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
-            rect: el.getBoundingClientRect(),
-          },
-        });
+        const r = clickBySelectorPrimitive(request.selector, request.index, (el) => el.click());
+        return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'CLICK_BY_SELECTOR_ERROR');
       }
@@ -2977,49 +2954,24 @@ export function createHandlers(
       clear?: boolean;
     }): Promise<APIResponse<{ typed: boolean; element?: unknown }>> => {
       try {
-        if (!request.label && !request.selector) {
-          return error('Either label or selector is required', 'INVALID_PARAMS');
-        }
-        let el: HTMLElement | null = null;
-        if (request.label) {
-          el = findElementByLabel(request.label);
-        } else if (request.selector) {
-          el = findElementBySelector(request.selector);
-        }
-        if (!el) {
-          return error(
-            `No input found for ${request.label ? 'label "' + request.label + '"' : 'selector "' + request.selector + '"'}`,
-            'ELEMENT_NOT_FOUND'
-          );
-        }
-        el.focus();
-        if (request.clear) {
-          if ('value' in el) {
-            (el as HTMLInputElement).value = '';
-          } else {
-            el.textContent = '';
+        const r = typeIntoPrimitive(request, (el, text, clear) => {
+          el.focus();
+          if (clear) {
+            if ('value' in el) {
+              (el as HTMLInputElement).value = '';
+            } else {
+              el.textContent = '';
+            }
           }
-        }
-        if ('value' in el) {
-          (el as HTMLInputElement).value += request.text;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        } else if (el.isContentEditable) {
-          document.execCommand('insertText', false, request.text);
-        }
-        return success({
-          typed: true,
-          element: {
-            tag: el.tagName.toLowerCase(),
-            // §4.6: never echo back the value just typed into a password field
-            // or a redacted input.
-            value: isValueRedacted(el)
-              ? REDACTED_VALUE
-              : 'value' in el
-                ? (el as HTMLInputElement).value
-                : el.textContent,
-          },
+          if ('value' in el) {
+            (el as HTMLInputElement).value += text;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (el.isContentEditable) {
+            document.execCommand('insertText', false, text);
+          }
         });
+        return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'TYPE_INTO_ERROR');
       }
@@ -3030,25 +2982,8 @@ export function createHandlers(
       index?: number;
     }): Promise<APIResponse<{ value: string | null; length: number }>> => {
       try {
-        if (!request.selector?.trim()) {
-          return error('selector is required and must not be empty', 'INVALID_PARAMS');
-        }
-        const el = findElementBySelector(request.selector, request.index);
-        if (!el) {
-          return error(`No element found for selector "${request.selector}"`, 'ELEMENT_NOT_FOUND');
-        }
-        // §4.6: an arbitrary caller-supplied selector must not be able to read
-        // a sensitive value in cleartext. Unconditional — covers password
-        // inputs with no opt-in AND any element inside a data-bridge-redact
-        // boundary. The element stays addressable; only its value is hidden.
-        if (isValueRedacted(el)) {
-          return success({ value: REDACTED_VALUE, length: 0 });
-        }
-        const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
-        return success({
-          value,
-          length: value?.length ?? 0,
-        });
+        const r = readValuePrimitive(request.selector, request.index);
+        return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'READ_VALUE_ERROR');
       }
@@ -3071,38 +3006,8 @@ export function createHandlers(
       >
     > => {
       try {
-        if (!request.text?.trim()) {
-          return error('text is required and must not be empty', 'INVALID_PARAMS');
-        }
-        const matches = findElementsByText(request.text, {
-          tag: request.tag,
-          exact: request.exact,
-        });
-        // §4.6: findByText doubles as a confirmation oracle — the caller
-        // supplies the text and reads the hit count. Scrubbing the emitted
-        // `text` is NOT enough: a redacted element must not be CONFIRMABLE by
-        // searching for its content. Exclude boundary-redacted elements from
-        // the result set entirely, before building, so the hit count itself
-        // carries no signal.
-        const results = matches
-          .filter((el) => !isContentRedacted(el))
-          .map((el, i) => {
-            const rect = el.getBoundingClientRect();
-            return {
-              index: i,
-              tag: el.tagName.toLowerCase(),
-              text: el.textContent?.trim().slice(0, 200) ?? '',
-              rect: {
-                x: Math.round(rect.x),
-                y: Math.round(rect.y),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height),
-              },
-              disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
-              visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
-            };
-          });
-        return success(results);
+        const r = findByTextPrimitive(request.text, { tag: request.tag, exact: request.exact });
+        return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'FIND_BY_TEXT_ERROR');
       }

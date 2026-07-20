@@ -34,18 +34,15 @@ import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
-import {
-  REDACTED_VALUE,
-  isValueRedacted,
-  isContentRedacted,
-} from '../core/redaction';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
 import {
-  findElementsByText,
-  findElementBySelector,
-  findElementByLabel,
-} from '../server/dom-fallback';
+  readValuePrimitive,
+  findByTextPrimitive,
+  clickByTextPrimitive,
+  clickBySelectorPrimitive,
+  typeIntoPrimitive,
+} from '../server/page-primitives';
 import {
   pollWaitForElement,
   snapshotFromRegisteredElement,
@@ -1565,51 +1562,27 @@ export async function executeCommand(
     // `relay-handlers.contract.test.ts`.
     // ======================================================================
 
+    // clickByText / clickBySelector / typeInto / readValue / findByText share
+    // their bodies with the standalone server dispatcher (`server/handlers.ts`)
+    // via `server/page-primitives` (browser-safe, zero-dependency), so the
+    // §4.6 redaction gates exist exactly once. This relay path supplies only
+    // its side-effect adapter (`dispatchRealClick`, `reactAwareFill`) and
+    // returns the bare data object (or `{ success: false, error }`) that
+    // `relayCommand` re-wraps.
     case 'clickByText': {
       const { text, tag, exact } = payload as {
         text?: string;
         tag?: string;
         exact?: boolean;
       };
-      if (!text || !text.trim()) {
-        return { success: false, error: 'text is required and must not be empty' };
-      }
-      const matches = findElementsByText(text, { tag, exact });
-      if (matches.length === 0) {
-        return { success: false, error: `No element found with text "${text}"` };
-      }
-      const el = matches[0];
-      dispatchRealClick(el);
-      return {
-        clicked: true,
-        element: {
-          tag: el.tagName.toLowerCase(),
-          // §4.6: don't echo the text of a boundary-redacted element.
-          text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
-          rect: el.getBoundingClientRect(),
-        },
-      };
+      const r = clickByTextPrimitive(text, { tag, exact }, dispatchRealClick);
+      return r.ok ? r.data : { success: false, error: r.error };
     }
 
     case 'clickBySelector': {
       const { selector, index } = payload as { selector?: string; index?: number };
-      if (!selector || !selector.trim()) {
-        return { success: false, error: 'selector is required and must not be empty' };
-      }
-      const el = findElementBySelector(selector, index);
-      if (!el) {
-        return { success: false, error: `No element found for selector "${selector}"` };
-      }
-      dispatchRealClick(el);
-      return {
-        clicked: true,
-        element: {
-          tag: el.tagName.toLowerCase(),
-          // §4.6: don't echo the text of a boundary-redacted element.
-          text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
-          rect: el.getBoundingClientRect(),
-        },
-      };
+      const r = clickBySelectorPrimitive(selector, index, dispatchRealClick);
+      return r.ok ? r.data : { success: false, error: r.error };
     }
 
     case 'typeInto': {
@@ -1619,53 +1592,14 @@ export async function executeCommand(
         text?: string;
         clear?: boolean;
       };
-      if (!label && !selector) {
-        return { success: false, error: 'Either label or selector is required' };
-      }
-      let el: HTMLElement | null = null;
-      if (label) el = findElementByLabel(label);
-      else if (selector) el = findElementBySelector(selector);
-      if (!el) {
-        return {
-          success: false,
-          error: `No input found for ${
-            label ? 'label "' + label + '"' : 'selector "' + selector + '"'
-          }`,
-        };
-      }
-      reactAwareFill(el, text ?? '', clear === true);
-      return {
-        typed: true,
-        element: {
-          tag: el.tagName.toLowerCase(),
-          // §4.6: never echo back the value just typed into a password field
-          // or a redacted input.
-          value: isValueRedacted(el)
-            ? REDACTED_VALUE
-            : 'value' in el
-              ? (el as HTMLInputElement).value
-              : el.textContent,
-        },
-      };
+      const r = typeIntoPrimitive({ selector, label, text, clear }, reactAwareFill);
+      return r.ok ? r.data : { success: false, error: r.error };
     }
 
     case 'readValue': {
       const { selector, index } = payload as { selector?: string; index?: number };
-      if (!selector || !selector.trim()) {
-        return { success: false, error: 'selector is required and must not be empty' };
-      }
-      const el = findElementBySelector(selector, index);
-      if (!el) {
-        return { success: false, error: `No element found for selector "${selector}"` };
-      }
-      // §4.6: an arbitrary caller-supplied selector must not read a sensitive
-      // value in cleartext. Unconditional — password inputs and any element
-      // inside a data-bridge-redact boundary. Element stays addressable.
-      if (isValueRedacted(el)) {
-        return { value: REDACTED_VALUE, length: 0 };
-      }
-      const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
-      return { value, length: value?.length ?? 0 };
+      const r = readValuePrimitive(selector, index);
+      return r.ok ? r.data : { success: false, error: r.error };
     }
 
     case 'findByText': {
@@ -1674,33 +1608,8 @@ export async function executeCommand(
         tag?: string;
         exact?: boolean;
       };
-      if (!text || !text.trim()) {
-        return { success: false, error: 'text is required and must not be empty' };
-      }
-      const matches = findElementsByText(text, { tag, exact });
-      // §4.6: findByText is a confirmation oracle (caller supplies the text,
-      // reads the hit count). Exclude boundary-redacted elements from the
-      // result set entirely — a redacted element must not be confirmable by
-      // searching for its content, and the hit count itself must carry no
-      // signal. Scrubbing the emitted `text` alone would not close this.
-      return matches
-        .filter((el) => !isContentRedacted(el))
-        .map((el, i) => {
-          const rect = el.getBoundingClientRect();
-          return {
-            index: i,
-            tag: el.tagName.toLowerCase(),
-            text: el.textContent?.trim().slice(0, 200) ?? '',
-            rect: {
-              x: Math.round(rect.x),
-              y: Math.round(rect.y),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-            },
-            disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
-            visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
-          };
-        });
+      const r = findByTextPrimitive(text, { tag, exact });
+      return r.ok ? r.data : { success: false, error: r.error };
     }
 
     case 'find':
