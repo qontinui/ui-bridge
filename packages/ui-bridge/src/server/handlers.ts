@@ -72,9 +72,19 @@ import {
   computeAccessibleNameSafe,
   computeRoleSafe,
   computeVisibleText,
+  readAriaLabelAttr,
+  readTitleAttr,
 } from '../core/a11y';
 import { measureFreshBbox } from '../core/registry';
-import { isContentRedacted, scrubContent, scrubMediaMetadata, verdictOf } from '../core/redaction';
+import {
+  isContentRedacted,
+  scrubContent,
+  scrubMediaMetadata,
+  verdictOf,
+  readScrubbedValue,
+  readScrubbedText,
+  REDACTED_VALUE,
+} from '../core/redaction';
 import type { MediaMetadata } from '../core/types';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
@@ -323,7 +333,10 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     // entry (`{}`, `null`) yields `undefined` without a verdict probe (which
     // would throw on a non-node). CONTENT axis; `role` stays raw (structural).
     const liveEl = el.element instanceof HTMLElement ? el.element : undefined;
-    const titleAttr = scrubContent(liveEl?.getAttribute('title') ?? undefined, liveEl);
+    const titleAttr = scrubContent(
+      (liveEl ? readTitleAttr(liveEl) : null) ?? undefined,
+      liveEl
+    );
     const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
     const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
     const accessibleName = scrubContent(
@@ -860,7 +873,7 @@ export function createHandlers(
           // §4.6: an error/alert element inside a redaction boundary must not
           // leak its text through the error-snapshot sweep.
           if (isContentRedacted(htmlEl)) return;
-          const text = htmlEl.textContent?.trim();
+          const text = readScrubbedText(htmlEl);
           if (text) visibleErrors.push(text.slice(0, 200));
         });
       }
@@ -6051,7 +6064,8 @@ export function createHandlers(
             tagName: el.tagName.toLowerCase(),
             id: el.id || undefined,
             className: classString(el) || undefined,
-            textContent: el.textContent?.trim().substring(0, 200) || '',
+            // §4.6: querySelector projection reaches the client — scrub cell text.
+            textContent: readScrubbedText(el, undefined, { maxLen: 200 }) ?? '',
             visible: el.offsetParent !== null,
           };
           if (includeState) {
@@ -6063,17 +6077,22 @@ export function createHandlers(
               height: Math.round(rect.height),
             };
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              info.value = el.value;
+              // §4.6 VALUE axis: password/boundary inputs must not ship cleartext.
+              info.value = readScrubbedValue(el) ?? '';
               info.placeholder = el.placeholder;
               info.disabled = el.disabled;
             }
             if (el instanceof HTMLSelectElement) {
-              info.value = el.value;
-              info.options = Array.from(el.options).map((o) => ({
-                value: o.value,
-                text: o.text,
-                selected: o.selected,
-              }));
+              info.value = readScrubbedValue(el) ?? '';
+              // §4.6: a redacted <select>'s option list (and its cardinality)
+              // can itself be sensitive — collapse it to a single sentinel.
+              info.options = isContentRedacted(el)
+                ? [{ value: REDACTED_VALUE, text: REDACTED_VALUE, selected: false }]
+                : Array.from(el.options).map((o) => ({
+                    value: o.value,
+                    text: o.text,
+                    selected: o.selected,
+                  }));
             }
             if (el instanceof HTMLButtonElement) info.disabled = el.disabled;
             const attrs: Record<string, string> = {};
@@ -6120,7 +6139,7 @@ export function createHandlers(
                 element: {
                   tagName: el.tagName.toLowerCase(),
                   id: el.id,
-                  textContent: el.textContent?.trim().substring(0, 200),
+                  textContent: readScrubbedText(el, undefined, { maxLen: 200 }),
                   visible: true,
                 },
                 waitedMs: waited,
@@ -6216,7 +6235,7 @@ export function createHandlers(
             const label = (typeof el.label === 'string' ? el.label : '').toLowerCase();
             const ariaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
             const title = (typeof el.title === 'string' ? el.title : '').toLowerCase();
-            const textContent = domEl?.textContent?.toLowerCase() ?? '';
+            const textContent = (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
             return (
               label.includes(needle) ||
               ariaLabel.includes(needle) ||
@@ -6530,11 +6549,12 @@ export function createHandlers(
           try {
             const domEl = document.querySelector(predicate.selector) as HTMLElement | null;
             if (domEl) {
+              // Internal synthetic shape for requirementMet only — never emitted.
               const syntheticEl: Record<string, unknown> = {
                 id: domEl.id || `dom-${predicate.selector}`,
-                label: domEl.getAttribute('aria-label') ?? domEl.textContent?.trim() ?? undefined,
+                label: readAriaLabelAttr(domEl) ?? computeVisibleText(domEl) ?? undefined,
                 type: domEl.tagName?.toLowerCase?.(),
-                ariaLabel: domEl.getAttribute('aria-label') ?? undefined,
+                ariaLabel: readAriaLabelAttr(domEl) ?? undefined,
               };
               if (!requirementMet(syntheticEl, domEl)) return null;
               return { element: syntheticEl, domEl };

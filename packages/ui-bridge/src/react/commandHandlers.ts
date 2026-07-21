@@ -44,14 +44,17 @@ import {
   typeIntoPrimitive,
 } from '../server/page-primitives';
 import {
-  isValueRedacted,
   isContentRedacted,
   verdictOf,
   scrubContent,
   scrubContentRequired,
   trustDeveloperContent,
+  readScrubbedValue,
+  readScrubbedText,
   REDACTED_VALUE,
 } from '../core/redaction';
+import { readAriaLabelAttr, readTitleAttr, computeVisibleText } from '../core/a11y';
+import { readLiveValue, readLiveText } from '../control/value-mutation';
 import {
   pollWaitForElement,
   snapshotFromRegisteredElement,
@@ -356,7 +359,9 @@ function elementToFindResult(e: RegisteredElement) {
     label: e.label,
     tagName: e.element.tagName.toLowerCase(),
     role: e.element.getAttribute('role') ?? undefined,
-    accessibleName: e.element.getAttribute('aria-label') ?? e.label,
+    // §4.6: accessibleName reaches the client — scrub the scraped aria-label
+    // (and the label fallback) against the element's boundary.
+    accessibleName: scrubContent(readAriaLabelAttr(e.element) ?? e.label, e.element),
     actions: e.actions,
     state,
     registered: true,
@@ -813,13 +818,13 @@ function reactAwareFill(el: HTMLElement, text: string, clear: boolean): void {
     };
 
     if (clear) {
-      const prevClear = el.value;
+      const prevClear = readLiveValue(el);
       if (setter) setter.call(el, '');
       else el.value = '';
       notifyReact(prevClear);
     }
     el.focus();
-    const cur = el.value;
+    const cur = readLiveValue(el);
     if (setter) setter.call(el, cur + text);
     else el.value = cur + text;
     notifyReact(cur);
@@ -832,7 +837,7 @@ function reactAwareFill(el: HTMLElement, text: string, clear: boolean): void {
   if (el.isContentEditable) {
     document.execCommand('insertText', false, text);
   } else {
-    el.textContent = (el.textContent ?? '') + text;
+    el.textContent = readLiveText(el) + text;
   }
 }
 
@@ -1669,7 +1674,11 @@ export async function executeCommand(
         tree: elements.slice(0, 50).map((e) => ({
           id: e.id,
           tag: e.element.tagName.toLowerCase(),
-          text: (e.label ?? e.element.textContent ?? '').slice(0, 50),
+          // §4.6: inside a boundary, both the scraped label and the textContent
+          // are the boundary's secret — collapse the whole cell.
+          text: isContentRedacted(e.element)
+            ? REDACTED_VALUE
+            : (e.label ?? (readScrubbedText(e.element) ?? '')).slice(0, 50),
         })),
       };
 
@@ -2258,7 +2267,7 @@ export async function executeCommand(
         }
         if (labelNeedle) {
           const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
-          const ariaLabel = domEl?.getAttribute?.('aria-label')?.toLowerCase() ?? '';
+          const ariaLabel = (domEl ? readAriaLabelAttr(domEl) : null)?.toLowerCase() ?? '';
           if (!label.includes(labelNeedle) && !ariaLabel.includes(labelNeedle)) {
             return false;
           }
@@ -2331,14 +2340,13 @@ export async function executeCommand(
           try {
             const domEl = document.querySelector(predicate.selector) as HTMLElement | null;
             if (domEl) {
+              // Internal synthetic shape for requirementMet's interface only —
+              // never emitted. Route the raw reads through the a11y choke point.
               const syntheticEl: Record<string, unknown> = {
                 id: domEl.id || `dom-${predicate.selector}`,
-                label:
-                  domEl.getAttribute('aria-label') ??
-                  domEl.textContent?.trim() ??
-                  undefined,
+                label: readAriaLabelAttr(domEl) ?? computeVisibleText(domEl) ?? undefined,
                 type: domEl.tagName?.toLowerCase?.(),
-                ariaLabel: domEl.getAttribute('aria-label') ?? undefined,
+                ariaLabel: readAriaLabelAttr(domEl) ?? undefined,
               };
               // Build a minimal RegisteredElement-shaped object purely for
               // requirementMet's interface. Visibility/layout checks fall
@@ -2454,8 +2462,8 @@ export async function executeCommand(
         }
         if (selector.id && el.id !== selector.id) return false;
 
-        const ariaLabel = domEl?.getAttribute?.('aria-label') ?? undefined;
-        const title = domEl?.getAttribute?.('title') ?? undefined;
+        const ariaLabel = (domEl ? readAriaLabelAttr(domEl) : null) ?? undefined;
+        const title = (domEl ? readTitleAttr(domEl) : null) ?? undefined;
 
         if (selector.title) {
           const needle = selector.title.toLowerCase();
@@ -2504,9 +2512,9 @@ export async function executeCommand(
             if (!text_match) return true;
             const needle = text_match.toLowerCase();
             const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
-            const ariaLabel = (domEl?.getAttribute?.('aria-label') ?? '').toLowerCase();
-            const title = (domEl?.getAttribute?.('title') ?? '').toLowerCase();
-            const textContent = domEl?.textContent?.toLowerCase() ?? '';
+            const ariaLabel = ((domEl ? readAriaLabelAttr(domEl) : null) ?? '').toLowerCase();
+            const title = ((domEl ? readTitleAttr(domEl) : null) ?? '').toLowerCase();
+            const textContent = (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
             return (
               label.includes(needle) ||
               ariaLabel.includes(needle) ||
@@ -2976,9 +2984,11 @@ export async function executeCommand(
     case 'analyzePageData': {
       const tables: unknown[] = [];
       document.querySelectorAll('table').forEach((t) => {
-        const headers = Array.from(t.querySelectorAll('th')).map((h) => h.textContent?.trim());
+        // §4.6: table cell text is DOM content — scrub each against its cell so
+        // a cell inside a data-bridge-redact boundary ships REDACTED_VALUE.
+        const headers = Array.from(t.querySelectorAll('th')).map((h) => readScrubbedText(h));
         const rows = Array.from(t.querySelectorAll('tbody tr')).map((r) =>
-          Array.from(r.querySelectorAll('td')).map((c) => c.textContent?.trim())
+          Array.from(r.querySelectorAll('td')).map((c) => readScrubbedText(c))
         );
         tables.push({ headers, rowCount: rows.length, rows: rows.slice(0, 10) });
       });
@@ -2986,10 +2996,13 @@ export async function executeCommand(
         id: f.id,
         action: f.action,
         method: f.method,
+        // §4.6 VALUE axis: `input.value` here was the live pre-existing HIGH
+        // leak — it shipped password fields and boundary values in cleartext.
+        // The reader-minter redacts password/boundary values to the sentinel.
         fields: Array.from(f.querySelectorAll('input, select, textarea')).map((i) => ({
           name: (i as HTMLInputElement).name,
           type: (i as HTMLInputElement).type,
-          value: (i as HTMLInputElement).value,
+          value: readScrubbedValue(i as HTMLInputElement) ?? '',
         })),
       }));
       return {
@@ -3017,7 +3030,7 @@ export async function executeCommand(
           regions.push({
             role,
             tag: el.tagName.toLowerCase(),
-            text: (el.textContent ?? '').slice(0, 100),
+            text: readScrubbedText(el, undefined, { maxLen: 100 }) ?? '',
           });
         });
       }
@@ -3032,7 +3045,7 @@ export async function executeCommand(
       for (const [tag, role] of Object.entries(semanticMap)) {
         document.querySelectorAll(tag).forEach((el) => {
           if (!el.getAttribute('role'))
-            regions.push({ role, tag, text: (el.textContent ?? '').slice(0, 100) });
+            regions.push({ role, tag, text: readScrubbedText(el, undefined, { maxLen: 100 }) ?? '' });
         });
       }
       return { regions, timestamp: Date.now() };
@@ -3041,9 +3054,10 @@ export async function executeCommand(
     case 'analyzeStructuredData': {
       const tables: unknown[] = [];
       document.querySelectorAll('table').forEach((t) => {
-        const headers = Array.from(t.querySelectorAll('th')).map((h) => h.textContent?.trim());
+        // §4.6: scrub each cell against its boundary (see analyzePageData).
+        const headers = Array.from(t.querySelectorAll('th')).map((h) => readScrubbedText(h));
         const rows = Array.from(t.querySelectorAll('tbody tr')).map((r) =>
-          Array.from(r.querySelectorAll('td')).map((c) => c.textContent?.trim())
+          Array.from(r.querySelectorAll('td')).map((c) => readScrubbedText(c))
         );
         tables.push({ headers, rowCount: rows.length, rows: rows.slice(0, 20) });
       });
@@ -3051,8 +3065,8 @@ export async function executeCommand(
         .slice(0, 10)
         .map((l) => ({
           type: l.tagName.toLowerCase(),
-          items: Array.from(l.querySelectorAll(':scope > li')).map((li) =>
-            (li.textContent ?? '').slice(0, 100)
+          items: Array.from(l.querySelectorAll(':scope > li')).map(
+            (li) => readScrubbedText(li, undefined, { maxLen: 100 }) ?? ''
           ),
         }));
       return { tables, lists, timestamp: Date.now() };
@@ -3398,7 +3412,8 @@ export async function executeCommand(
         document.body.appendChild(ta);
         ta.focus();
         const execResult = document.execCommand('paste');
-        const pastedText = ta.value;
+        // Temp off-DOM textarea (no boundary/password) — reader passes it through.
+        const pastedText = readScrubbedValue(ta) ?? '';
         document.body.removeChild(ta);
         if (execResult && pastedText) {
           return {
@@ -4249,7 +4264,7 @@ export async function executeCommand(
           return {
             name: isContentRedacted(el) ? REDACTED_VALUE : el.name,
             type: el.type,
-            value: isValueRedacted(el) ? REDACTED_VALUE : el.value,
+            value: readScrubbedValue(el) ?? '',
             required: el.required,
             disabled: el.disabled,
             id: el.id,
@@ -4298,7 +4313,7 @@ export async function executeCommand(
           const el = inp as HTMLInputElement;
           acc[el.name || el.id || `field-${i}`] = {
             // §4.6 VALUE axis — same leak class as `getForms` above.
-            value: isValueRedacted(el) ? REDACTED_VALUE : el.value,
+            value: readScrubbedValue(el) ?? '',
             checked: el.checked,
             type: el.type,
           };
@@ -4513,7 +4528,7 @@ export async function executeCommand(
       // text (exact match)
       if (spec.text !== undefined) {
         checked++;
-        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        const actualText = state.textContent ?? readScrubbedText(htmlEl) ?? '';
         if (actualText !== spec.text) {
           failures.push({ field: 'text', expected: spec.text, actual: actualText, kind: 'exact' });
         }
@@ -4522,7 +4537,7 @@ export async function executeCommand(
       // textContains (substring)
       if (spec.textContains !== undefined) {
         checked++;
-        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        const actualText = state.textContent ?? readScrubbedText(htmlEl) ?? '';
         if (!actualText.includes(spec.textContains)) {
           failures.push({
             field: 'textContains',
@@ -4536,7 +4551,7 @@ export async function executeCommand(
       // textMatches (regex)
       if (spec.textMatches !== undefined) {
         checked++;
-        const actualText = state.textContent ?? htmlEl?.textContent?.trim() ?? '';
+        const actualText = state.textContent ?? readScrubbedText(htmlEl) ?? '';
         // Safety: cap pattern length and check for nested quantifiers to prevent ReDoS
         const rawPattern =
           spec.textMatches.length > 500 ? spec.textMatches.slice(0, 500) : spec.textMatches;

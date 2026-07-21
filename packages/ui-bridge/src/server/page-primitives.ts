@@ -36,7 +36,13 @@
  * (Phase 1 — de-duplicate handlers.ts ↔ commandHandlers.ts).
  */
 
-import { REDACTED_VALUE, isValueRedacted, isContentRedacted } from '../core/redaction';
+import {
+  REDACTED_VALUE,
+  isValueRedacted,
+  isContentRedacted,
+  readScrubbedValue,
+  readScrubbedText,
+} from '../core/redaction';
 import {
   findElementsByText,
   findElementBySelector,
@@ -87,7 +93,9 @@ export interface TypeEcho {
 function buildClickEcho(el: HTMLElement): ClickEcho {
   return {
     tag: el.tagName.toLowerCase(),
-    text: isContentRedacted(el) ? REDACTED_VALUE : (el.textContent?.trim().slice(0, 200) ?? ''),
+    // §4.6: reader-minter reads textContent inside the choke point and scrubs on
+    // the CONTENT axis (boundary → REDACTED_VALUE), so no raw read lives here.
+    text: readScrubbedText(el, undefined, { maxLen: 200 }) ?? '',
     rect: el.getBoundingClientRect(),
   };
 }
@@ -115,7 +123,13 @@ export function readValuePrimitive(
   if (isValueRedacted(el)) {
     return { ok: true, data: { value: REDACTED_VALUE, length: 0 } };
   }
-  const value = 'value' in el ? (el as HTMLInputElement).value : (el.textContent ?? null);
+  // el is proven not value-redacted above (password/boundary already returned),
+  // so the reader-minters pass the raw content through — routing the read
+  // through the choke point instead of touching `.value`/`.textContent` raw.
+  const value =
+    'value' in el
+      ? (readScrubbedValue(el as HTMLInputElement) ?? null)
+      : (readScrubbedText(el) ?? null);
   return { ok: true, data: { value, length: value?.length ?? 0 } };
 }
 
@@ -143,7 +157,9 @@ export function findByTextPrimitive(
       return {
         index: i,
         tag: el.tagName.toLowerCase(),
-        text: el.textContent?.trim().slice(0, 200) ?? '',
+        // Content-redacted elements are already filtered out above; the reader
+        // routes the raw read through the choke point (no-op scrub here).
+        text: readScrubbedText(el, undefined, { maxLen: 200 }) ?? '',
         rect: {
           x: Math.round(rect.x),
           y: Math.round(rect.y),
@@ -239,8 +255,8 @@ export function typeIntoPrimitive(
         value: isValueRedacted(el)
           ? REDACTED_VALUE
           : 'value' in el
-            ? (el as HTMLInputElement).value
-            : el.textContent,
+            ? (readScrubbedValue(el as HTMLInputElement) ?? null)
+            : (readScrubbedText(el) ?? null),
       },
     },
   };

@@ -19,6 +19,12 @@ import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
 import { isContentRedacted } from '../core/redaction';
+import {
+  readAriaLabelAttr,
+  readAriaLabelledbyAttr,
+  readTitleAttr,
+  readInnerText,
+} from '../core/a11y';
 import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
@@ -292,11 +298,11 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
   if (isContentRedacted(element)) return undefined;
 
   // aria-label
-  const ariaLabel = element.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return ariaLabel;
 
   // aria-labelledby
-  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(element);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
     if (labelEl) return labelEl.textContent?.trim();
@@ -309,14 +315,14 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
   }
 
   // Title attribute
-  const title = element.getAttribute('title');
+  const title = readTitleAttr(element);
   if (title) return title;
 
   // Inner text — use innerText which respects visual formatting (adds spaces
   // between block elements and hidden content is excluded), falling back to
   // textContent for elements not in the DOM or where innerText is unavailable.
   // Collapse runs of whitespace so adjacent inline spans get proper separation.
-  const rawText = (element.innerText ?? element.textContent)?.trim();
+  const rawText = (readInnerText(element) ?? element.textContent)?.trim();
   const text = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
   if (text) {
     // For short labels, return as-is
@@ -409,14 +415,14 @@ function getAncestorContext(element: HTMLElement): string | undefined {
       role &&
       ['navigation', 'main', 'banner', 'dialog', 'tabpanel', 'toolbar', 'form'].includes(role)
     ) {
-      const label = current.getAttribute('aria-label');
+      const label = readAriaLabelAttr(current);
       return label ? slugify(`${role}-${label}`, 20) : role;
     }
 
     // Check for landmark tags
     const tag = current.tagName.toLowerCase();
     if (['nav', 'main', 'header', 'footer', 'aside', 'form', 'dialog', 'section'].includes(tag)) {
-      const label = current.getAttribute('aria-label');
+      const label = readAriaLabelAttr(current);
       return label ? slugify(`${tag}-${label}`, 20) : tag;
     }
 
@@ -1095,7 +1101,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // Normalized text: collapse runs of whitespace (including newlines
       // introduced by JSX formatting) so assertions don't need to know
       // exactly how the template wrapped its spans.
-      const rawText = redacted ? '' : (element.innerText ?? element.textContent ?? '').trim();
+      const rawText = redacted ? '' : (readInnerText(element) ?? element.textContent ?? '').trim();
       const content = rawText.replace(/\s+/g, ' ');
 
       // Role hint — `data-ui-bridge-role` wins, DOM `role` is the fallback.

@@ -9,10 +9,12 @@ import type { Scrubbed } from '../core/redaction';
 import {
   scrubContent,
   scrubRecord,
-  scrubValueByVerdict,
   scrubSelectState,
   verdictOf,
+  readScrubbedValue,
+  readScrubbedText,
 } from '../core/redaction';
+import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 
 /**
@@ -167,15 +169,15 @@ function isInteractive(element: HTMLElement): boolean {
  */
 function getAccessibleName(element: HTMLElement): string | undefined {
   // aria-label takes precedence
-  const ariaLabel = element.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return ariaLabel;
 
   // aria-labelledby
-  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(element);
   if (labelledBy) {
     const labels = labelledBy
       .split(' ')
-      .map((id) => document.getElementById(id)?.textContent?.trim())
+      .map((id) => readScrubbedText(document.getElementById(id)))
       .filter(Boolean);
     if (labels.length > 0) return labels.join(' ');
   }
@@ -189,12 +191,12 @@ function getAccessibleName(element: HTMLElement): string | undefined {
     const id = element.id;
     if (id) {
       const label = document.querySelector<HTMLLabelElement>(`label[for="${id}"]`);
-      if (label) return label.textContent?.trim();
+      if (label) return readScrubbedText(label);
     }
   }
 
   // Title attribute
-  const title = element.getAttribute('title');
+  const title = readTitleAttr(element);
   if (title) return title;
 
   // Alt text for images
@@ -204,7 +206,7 @@ function getAccessibleName(element: HTMLElement): string | undefined {
 
   // Button or link text content
   if (element.matches('button, a, [role="button"], [role="link"]')) {
-    return element.textContent?.trim() || undefined;
+    return readScrubbedText(element) || undefined;
   }
 
   return undefined;
@@ -272,12 +274,12 @@ function getElementState(element: HTMLElement): ElementState {
   // debugging projection and must not persist a boundary/password value.
   const verdict = verdictOf(element);
   if (element instanceof HTMLInputElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
+    state.value = readScrubbedValue(element, verdict);
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
+    state.value = readScrubbedValue(element, verdict);
   } else if (element instanceof HTMLSelectElement) {
     // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
     // (was: preserved count + selected index on this render-log path).
@@ -334,7 +336,7 @@ function captureElement(
   maxTextLength: number
 ): CapturedElement {
   const identifier = createElementIdentifier(element);
-  let textContent = element.textContent?.trim();
+  let textContent: string | undefined = readScrubbedText(element);
   if (textContent && textContent.length > maxTextLength) {
     textContent = textContent.substring(0, maxTextLength) + '...';
   }

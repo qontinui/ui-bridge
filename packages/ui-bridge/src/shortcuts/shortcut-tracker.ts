@@ -15,6 +15,7 @@ import type {
   ShortcutTrackerOptions,
   SnapshotShortcutContext,
 } from './types';
+import { readAriaLabelAttr, readTitleAttr } from '../core/a11y';
 
 /** Canonical modifier order for normalization */
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'] as const;
@@ -341,7 +342,7 @@ export class ShortcutTracker {
   private scanTitleHints(): void {
     const elements = document.querySelectorAll('[title]');
     for (const el of elements) {
-      const title = el.getAttribute('title');
+      const title = readTitleAttr(el);
       if (!title) continue;
 
       const hints = extractTitleHints(title);
@@ -371,7 +372,7 @@ export class ShortcutTracker {
 
   private inferDescription(el: HTMLElement): string | undefined {
     // Try aria-label, then textContent, then title (without the shortcut part)
-    const ariaLabel = el.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(el);
     if (ariaLabel) return ariaLabel;
 
     const text = el.textContent?.trim();

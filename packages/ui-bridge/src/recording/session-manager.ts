@@ -23,7 +23,9 @@ import {
   isContentRedacted,
   trustDeveloperContent,
   REDACTED_VALUE,
+  readScrubbedText,
 } from '../core/redaction';
+import { readAriaLabelAttr } from '../core/a11y';
 import type {
   RecordingSessionConfig,
   RecordingSessionResult,
@@ -453,16 +455,18 @@ export class RecordingSessionManager {
     // derived `suggestedParamName` smuggles the secret out.
     if (isContentRedacted(el)) return REDACTED_VALUE;
     // aria-label
-    const ariaLabel = el.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(el);
     if (ariaLabel) return ariaLabel;
 
     // Associated label element
     if (el.id) {
       const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (label?.textContent?.trim()) return label.textContent.trim();
+      const labelText = readScrubbedText(label);
+      if (labelText) return labelText;
     }
     const wrappingLabel = el.closest('label');
-    if (wrappingLabel?.textContent?.trim()) return wrappingLabel.textContent.trim();
+    const wrappingText = readScrubbedText(wrappingLabel);
+    if (wrappingText) return wrappingText;
 
     // Placeholder
     if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {

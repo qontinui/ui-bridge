@@ -63,7 +63,12 @@ import type { BrowserEventCapture } from '../debug/browser-capture';
 import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { fillSingleField } from './fill-form';
-import { applyValueMutation } from './value-mutation';
+import { applyValueMutation, readLiveValue } from './value-mutation';
+import {
+  readAriaLabelAttr,
+  readAriaLabelledbyAttr,
+  readTitleAttr,
+} from '../core/a11y';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
@@ -73,11 +78,12 @@ import {
   verdictOf,
   scrubContent,
   scrubContentByVerdict,
-  scrubValueByVerdict,
   scrubSelectState,
   scrubReactProps,
   scrubMediaMetadata,
   isContentRedacted,
+  readScrubbedValue,
+  readScrubbedText,
 } from '../core/redaction';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
@@ -230,18 +236,16 @@ function getElementState(element: HTMLElement): ElementState {
   const verdict = verdictOf(element);
 
   // Populate textContent from the element's visible text (CONTENT axis).
-  const rawText = element.textContent?.trim();
-  if (rawText) {
-    // Collapse whitespace and truncate to avoid storing huge text
-    state.textContent = scrubContentByVerdict(rawText.replace(/\s+/g, ' ').slice(0, 500), verdict);
-  }
+  // Reads textContent internally, trims, collapses whitespace, truncates to 500,
+  // then scrubs the CONTENT axis through the choke point.
+  state.textContent = readScrubbedText(element, verdict, { normalizeWhitespace: true, maxLen: 500 });
 
   // Fallback for icon-only elements (no textContent but has aria-label/title).
   // §4.6: re-reads raw aria-label/title — must scrub or the boundary's secret
   // is resurrected here.
   if (!state.textContent) {
     state.textContent = scrubContentByVerdict(
-      element.getAttribute('aria-label') || element.getAttribute('title') || undefined,
+      readAriaLabelAttr(element) || readTitleAttr(element) || undefined,
       verdict
     );
   }
@@ -294,12 +298,12 @@ function getElementState(element: HTMLElement): ElementState {
   }
 
   if (element instanceof HTMLInputElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
+    state.value = readScrubbedValue(element, verdict);
     if (element.type === 'checkbox' || element.type === 'radio') {
       state.checked = element.checked;
     }
   } else if (element instanceof HTMLTextAreaElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
+    state.value = readScrubbedValue(element, verdict);
   } else if (element instanceof HTMLSelectElement) {
     // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
     // across all three builders (was: preserved count + selected index here,
@@ -2398,8 +2402,9 @@ export class DefaultActionExecutor implements ActionExecutor {
 
     const values = Array.isArray(options?.value) ? options.value : [options?.value];
 
-    // Save the old value before any changes — needed for React's value tracker
-    const previousValue = element.value;
+    // Save the old value before any changes — needed for React's value tracker.
+    // Raw live read (written back to the tracker, never emitted to a client).
+    const previousValue = readLiveValue(element);
 
     if (!options?.additive) {
       for (const option of element.options) {
@@ -2609,7 +2614,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
 
         // Fallback: check aria-label
-        const ariaLabel = opt.getAttribute('aria-label');
+        const ariaLabel = readAriaLabelAttr(opt);
         if (ariaLabel && ariaLabel.toLowerCase() === targetLower) {
           return opt;
         }
@@ -3087,9 +3092,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     const tag = element.tagName.toLowerCase();
     const label = isContentRedacted(element)
       ? ''
-      : element.getAttribute('aria-label') ||
-        element.getAttribute('title') ||
-        element.textContent?.trim().slice(0, 40) ||
+      : readAriaLabelAttr(element) ||
+        readTitleAttr(element) ||
+        readScrubbedText(element, undefined, { maxLen: 40 }) ||
         '';
     const slug = label
       .toLowerCase()
@@ -3114,22 +3119,22 @@ export class DefaultActionExecutor implements ActionExecutor {
     // matchable content. Returning undefined closes the filter oracle AND keeps
     // the emitted label empty (the push wraps it in `scrubContent` too).
     if (isContentRedacted(element)) return undefined;
-    const ariaLabel = element.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(element);
     if (ariaLabel) return ariaLabel;
 
     // Resolve aria-labelledby
-    const labelledBy = element.getAttribute('aria-labelledby');
+    const labelledBy = readAriaLabelledbyAttr(element);
     if (labelledBy) {
       const resolved = labelledBy
         .split(' ')
-        .map((id) => document.getElementById(id)?.textContent?.trim())
+        .map((id) => readScrubbedText(document.getElementById(id), undefined, {}))
         .filter(Boolean)
         .join(' ');
       if (resolved) return resolved;
     }
 
     return (
-      element.getAttribute('title') || element.textContent?.trim().substring(0, 50) || undefined
+      readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
     );
   }
 
@@ -3138,14 +3143,14 @@ export class DefaultActionExecutor implements ActionExecutor {
     // the discover `text` filter, so a content-redacted element yields nothing
     // matchable.
     if (isContentRedacted(element)) return undefined;
-    const ariaLabel = element.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(element);
     if (ariaLabel) return ariaLabel;
 
-    const labelledBy = element.getAttribute('aria-labelledby');
+    const labelledBy = readAriaLabelledbyAttr(element);
     if (labelledBy) {
       const labels = labelledBy
         .split(' ')
-        .map((id) => document.getElementById(id)?.textContent?.trim())
+        .map((id) => readScrubbedText(document.getElementById(id), undefined, {}))
         .filter(Boolean);
       if (labels.length > 0) return labels.join(' ');
     }
@@ -3157,12 +3162,12 @@ export class DefaultActionExecutor implements ActionExecutor {
     ) {
       if (element.id) {
         const label = document.querySelector<HTMLLabelElement>(`label[for="${element.id}"]`);
-        if (label) return label.textContent?.trim();
+        if (label) return readScrubbedText(label);
       }
     }
 
     return (
-      element.getAttribute('title') || element.textContent?.trim().substring(0, 50) || undefined
+      readTitleAttr(element) || readScrubbedText(element, undefined, { maxLen: 50 }) || undefined
     );
   }
 

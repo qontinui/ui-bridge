@@ -40,6 +40,28 @@ export interface ValueMutationOptions {
 }
 
 /**
+ * Raw live value read for value-mutation/React-tracker mechanics — written back,
+ * never emitted to a client (outside §4.6 projection scope). The React
+ * `_valueTracker` must compare against the ACTUAL previous cleartext value; a
+ * scrubbed read would break selecting/mutating inside a password/boundary field.
+ */
+export function readLiveValue(
+  el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+): string {
+  return el.value;
+}
+
+/**
+ * Raw live `textContent` read for the contenteditable typing mechanic — the
+ * current text is read only to APPEND to it and write it straight back, never
+ * emitted to a client (outside §4.6 projection scope). Scrubbing here would
+ * corrupt what the user is typing into a contenteditable inside a boundary.
+ */
+export function readLiveText(el: HTMLElement): string {
+  return el.textContent ?? '';
+}
+
+/**
  * Apply a value mutation to an input/textarea, emitting the complete focus →
  * input → onChange → change (→ optional blur) lifecycle that both standard
  * browsers and embedded WebViews need.

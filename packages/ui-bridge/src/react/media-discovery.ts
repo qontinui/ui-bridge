@@ -9,6 +9,7 @@
  */
 
 import type { MediaMetadata, MediaType } from '../core/types';
+import { readAriaLabelAttr, readAltAttr, readTitleAttr } from '../core/a11y';
 
 // ============================================================================
 // Configuration
@@ -258,7 +259,7 @@ export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
   if (tag === 'svg') {
     base.svgViewBox = element.getAttribute('viewBox') || undefined;
     base.altText =
-      element.getAttribute('aria-label') ||
+      readAriaLabelAttr(element) ||
       element.querySelector('title')?.textContent ||
       undefined;
     base.isDecorative =
@@ -271,7 +272,7 @@ export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
   if (tag === 'video') {
     const video = element as HTMLVideoElement;
     base.src = video.currentSrc || video.src || undefined;
-    base.altText = video.getAttribute('aria-label') || undefined;
+    base.altText = readAriaLabelAttr(video) || undefined;
     base.naturalWidth = video.videoWidth || undefined;
     base.naturalHeight = video.videoHeight || undefined;
     base.format = inferFormat(base.src);
@@ -295,13 +296,13 @@ export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
     const canvas = element as HTMLCanvasElement;
     base.naturalWidth = canvas.width;
     base.naturalHeight = canvas.height;
-    base.altText = element.getAttribute('aria-label') || element.textContent?.trim() || undefined;
+    base.altText = readAriaLabelAttr(element) || element.textContent?.trim() || undefined;
     base.loadingState = 'loaded';
   }
 
   // Check role="img" on non-standard elements
   if (element.getAttribute('role') === 'img') {
-    base.altText = base.altText || element.getAttribute('aria-label') || undefined;
+    base.altText = base.altText || readAriaLabelAttr(element) || undefined;
     base.isDecorative = !base.altText && element.getAttribute('aria-hidden') === 'true';
   }
 
@@ -460,7 +461,7 @@ function getAncestorContext(element: HTMLElement): string | undefined {
       role &&
       ['main', 'banner', 'navigation', 'dialog', 'tabpanel', 'article', 'section'].includes(role)
     ) {
-      const label = current.getAttribute('aria-label');
+      const label = readAriaLabelAttr(current);
       return label ? slugify(`${role}-${label}`, 20) : role;
     }
 
@@ -502,21 +503,21 @@ export function generateMediaId(element: HTMLElement): string {
   const prefix = tag === 'picture' ? 'picture' : tag;
 
   // Try alt text
-  const alt = element.getAttribute('alt');
+  const alt = readAltAttr(element);
   if (alt && alt.trim()) {
     const slug = slugify(alt.trim());
     if (slug) return `${prefix}-${slug}`;
   }
 
   // Try aria-label
-  const ariaLabel = element.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) {
     const slug = slugify(ariaLabel);
     if (slug) return `${prefix}-${slug}`;
   }
 
   // Try title
-  const title = element.getAttribute('title');
+  const title = readTitleAttr(element);
   if (title) {
     const slug = slugify(title);
     if (slug) return `${prefix}-${slug}`;

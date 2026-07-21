@@ -12,6 +12,7 @@
 
 import type { ModalInfo, ModalStack, SnapshotModalContext, ModalDetectorConfig } from './types';
 import { classString } from '../core/class-name';
+import { readAriaLabelAttr, readAriaLabelledbyAttr } from '../core/a11y';
 
 // ---------------------------------------------------------------------------
 // Default selectors for common modal patterns
@@ -109,11 +110,11 @@ function buildSelector(el: Element): string {
  */
 function extractTitle(el: Element): string | undefined {
   // aria-label
-  const ariaLabel = el.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel;
 
   // aria-labelledby → resolve to element text
-  const labelledBy = el.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
     if (labelEl?.textContent) {
@@ -134,10 +135,10 @@ function extractTitle(el: Element): string | undefined {
  * Resolve aria-label text: direct attribute or via aria-labelledby.
  */
 function resolveAriaLabel(el: Element): string | undefined {
-  const direct = el.getAttribute('aria-label');
+  const direct = readAriaLabelAttr(el);
   if (direct) return direct;
 
-  const labelledBy = el.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
     if (labelEl?.textContent) {

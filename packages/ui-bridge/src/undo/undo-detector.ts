@@ -14,6 +14,7 @@
 
 import type { UndoElementInfo, UndoDetectorConfig } from './types';
 import { classString } from '../core/class-name';
+import { readAriaLabelAttr, readTitleAttr } from '../core/a11y';
 
 // ---------------------------------------------------------------------------
 // Selectors for common undo/redo patterns
@@ -117,10 +118,10 @@ function isDisabled(el: Element): boolean {
  * Extract label text from an element.
  */
 function extractLabel(el: Element): string | undefined {
-  const ariaLabel = el.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel.trim();
 
-  const title = el.getAttribute('title');
+  const title = readTitleAttr(el);
   if (title) return title.trim();
 
   const text = el.textContent?.trim();

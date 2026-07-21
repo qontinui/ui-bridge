@@ -238,6 +238,50 @@ export function scrubContent(
   return scrubContentByVerdict(raw, verdictOf(el));
 }
 
+// ===========================================================================
+// Reader-minters — read raw DOM content AND scrub in one step
+// ---------------------------------------------------------------------------
+// `core/redaction.ts` (with `core/a11y.ts`) is the only module the §4.6 CI
+// guard permits to read `.value` / `.textContent` raw. A projection module that
+// needs a scrubbed input value or element text calls one of these instead of
+// open-coding `scrubValue(el.value, el)` — which would itself trip the guard's
+// raw-`.value`-read ban at the call site. The raw read happens HERE, inside the
+// sanctioned reader, so the call site holds no raw DOM content read at all.
+// ===========================================================================
+
+/**
+ * Read an `<input>`/`<textarea>`/`<select>` VALUE and scrub it (VALUE axis:
+ * password OR boundary). Pass a precomputed `verdict` when the caller already
+ * has one (avoids a second boundary walk); otherwise it is derived from `el`.
+ */
+export function readScrubbedValue(
+  el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null | undefined,
+  verdict?: RedactionVerdict
+): Scrubbed<string> | undefined {
+  if (!el) return undefined;
+  return scrubValueByVerdict(el.value, verdict ?? verdictOf(el));
+}
+
+/**
+ * Read an element's `textContent` and scrub it (CONTENT axis: boundary only).
+ * `opts.normalizeWhitespace` collapses whitespace runs; `opts.maxLen` truncates
+ * — both applied to the RAW text BEFORE scrubbing, so a redacted read collapses
+ * to the sentinel rather than a truncated sentinel. Falsy/empty text → undefined
+ * (the presence-preserving CONTENT contract).
+ */
+export function readScrubbedText(
+  el: Element | null | undefined,
+  verdict?: RedactionVerdict,
+  opts?: { normalizeWhitespace?: boolean; maxLen?: number }
+): Scrubbed<string> | undefined {
+  if (!el) return undefined;
+  let raw = el.textContent?.trim();
+  if (!raw) return undefined;
+  if (opts?.normalizeWhitespace) raw = raw.replace(/\s+/g, ' ');
+  if (opts?.maxLen != null) raw = raw.slice(0, opts.maxLen);
+  return scrubContentByVerdict(raw, verdict ?? verdictOf(el as HTMLElement));
+}
+
 /**
  * Required-string variant of the CONTENT scrub, for a wire field typed as a
  * NON-optional `Scrubbed<string>` (e.g. `AIDiscoveredElement.description`).

@@ -13,6 +13,7 @@
 import type { UIBridgeRegistry } from './registry';
 import type { RegisteredElement } from './types';
 import { classString, classList } from './class-name';
+import { readAriaLabelAttr, readAriaLabelledbyAttr, readPlaceholderAttr } from './a11y';
 
 // ============================================================================
 // Types
@@ -200,11 +201,11 @@ function computeRole(element: HTMLElement): string {
  */
 function computeAccessibleName(element: HTMLElement): string | undefined {
   // aria-label
-  const ariaLabel = element.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return normalizeName(ariaLabel);
 
   // aria-labelledby
-  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(element);
   if (labelledBy) {
     const parts = labelledBy
       .split(/\s+/)
@@ -243,7 +244,7 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
     const wrappingLabel = element.closest('label');
     if (wrappingLabel?.textContent?.trim()) return normalizeName(wrappingLabel.textContent.trim());
     // Placeholder as last resort
-    const placeholder = element.getAttribute('placeholder');
+    const placeholder = readPlaceholderAttr(element);
     if (placeholder) return normalizeName(placeholder);
   }
 
@@ -306,13 +307,13 @@ function computeLandmarkContext(element: HTMLElement): {
     // Explicit landmark role
     const role = current.getAttribute('role');
     if (role && ARIA_LANDMARKS.has(role)) {
-      return { landmark: role, label: current.getAttribute('aria-label') || undefined };
+      return { landmark: role, label: readAriaLabelAttr(current) || undefined };
     }
 
     // Implicit landmark from tag
     const implicitLandmark = IMPLICIT_LANDMARKS[current.tagName];
     if (implicitLandmark) {
-      return { landmark: implicitLandmark, label: current.getAttribute('aria-label') || undefined };
+      return { landmark: implicitLandmark, label: readAriaLabelAttr(current) || undefined };
     }
 
     current = current.parentElement;

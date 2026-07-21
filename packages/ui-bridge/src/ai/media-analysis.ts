@@ -8,6 +8,7 @@
 
 import type { RegisteredElement } from '../core/types';
 import { captureMediaSnapshot } from './media-snapshot';
+import { readAriaLabelAttr } from '../core/a11y';
 
 // ============================================================================
 // Types
@@ -100,7 +101,7 @@ function getParentContext(element: HTMLElement): string | undefined {
 
     // Check for card/section/article patterns
     const role = current.getAttribute('role');
-    const ariaLabel = current.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(current);
     const testId = current.getAttribute('data-testid');
 
     // Find a meaningful label

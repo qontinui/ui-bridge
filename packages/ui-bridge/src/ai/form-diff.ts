@@ -13,6 +13,7 @@ import {
   scrubValueRequired,
   scrubContentByVerdict,
 } from '../core/redaction';
+import { readAriaLabelAttr, readPlaceholderAttr } from '../core/a11y';
 
 // ============================================================================
 // Types
@@ -436,9 +437,9 @@ function buildFieldStates(inputs: HTMLElement[]): FormFieldState[] {
 
     // Label resolution
     const label =
-      el.getAttribute('aria-label') ||
+      readAriaLabelAttr(el) ||
       getLabelTextForElement(el) ||
-      el.getAttribute('placeholder') ||
+      readPlaceholderAttr(el) ||
       el.id ||
       el.getAttribute('name') ||
       '';
@@ -459,7 +460,7 @@ function buildFieldStates(inputs: HTMLElement[]): FormFieldState[] {
       error: scrubContentByVerdict(validationMessage, verdict),
       required: el.hasAttribute('required'),
       touched: (value?.length ?? 0) > 0,
-      placeholder: scrubContentByVerdict(el.getAttribute('placeholder') || undefined, verdict),
+      placeholder: scrubContentByVerdict(readPlaceholderAttr(el) || undefined, verdict),
       isDirty,
       checked,
       selectedOptions: selectedOptions?.map((o) => scrubValueRequired(o, verdict)),

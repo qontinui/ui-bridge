@@ -8,6 +8,7 @@
  */
 
 import { isContentRedacted, isValueRedacted, REDACTED_VALUE } from '../core/redaction';
+import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
 const INTERACTIVE_SELECTORS = [
@@ -95,11 +96,11 @@ function inferActions(type: string): string[] {
 /** Get the accessible label for an element. */
 function getLabel(el: HTMLElement): string {
   // aria-label takes precedence
-  const ariaLabel = el.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(el);
   if (ariaLabel) return ariaLabel;
 
   // aria-labelledby
-  const labelledBy = el.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
     if (labelEl) return labelEl.textContent?.trim() ?? '';
@@ -118,7 +119,7 @@ function getLabel(el: HTMLElement): string {
   }
 
   // title attribute
-  const title = el.getAttribute('title');
+  const title = readTitleAttr(el);
   if (title) return title;
 
   // placeholder for inputs
@@ -284,7 +285,7 @@ export function scanDOMForInteractiveElementsWithRefs(
       },
       identifiers: {
         testId: el.getAttribute('data-testid') ?? undefined,
-        ariaLabel: contentRedacted ? REDACTED_VALUE : (el.getAttribute('aria-label') ?? undefined),
+        ariaLabel: contentRedacted ? REDACTED_VALUE : (readAriaLabelAttr(el) ?? undefined),
         htmlId: el.id || undefined,
       },
       _domFallback: true,

@@ -38,6 +38,12 @@ import type {
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
+import {
+  readAriaLabelAttr,
+  readAriaLabelledbyAttr,
+  readTitleAttr,
+  readPlaceholderAttr,
+} from './a11y';
 import { createStableRef } from './stable-ref';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
@@ -396,10 +402,10 @@ function captureFormControlState(
  * > associated <label for=""> > title attribute > short text content fallback).
  */
 function computeAccessibleName(element: HTMLElement): string | undefined {
-  const ariaLabel = element.getAttribute('aria-label');
+  const ariaLabel = readAriaLabelAttr(element);
   if (ariaLabel) return ariaLabel;
 
-  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledBy = readAriaLabelledbyAttr(element);
   if (labelledBy) {
     const parts = labelledBy
       .split(/\s+/)
@@ -420,7 +426,7 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
     }
   }
 
-  const title = element.getAttribute('title');
+  const title = readTitleAttr(element);
   if (title) return title;
 
   const rawText = element.textContent?.trim();
@@ -553,7 +559,7 @@ function getElementState(element: HTMLElement): ElementState {
   // content scrub too.
   if (!state.textContent) {
     state.textContent = scrubContentByVerdict(
-      element.getAttribute('aria-label') || element.getAttribute('title') || undefined,
+      readAriaLabelAttr(element) || readTitleAttr(element) || undefined,
       verdict
     );
   }
@@ -1817,7 +1823,7 @@ export class UIBridgeRegistry {
         // client cannot confirm the secret name by guessing it. Dev `label`
         // and already-scrubbed `textContent` are safe.
         const ariaLabel =
-          scrubContentByVerdict(element.element.getAttribute('aria-label') || undefined, redactionVerdict) || '';
+          scrubContentByVerdict(readAriaLabelAttr(element.element) || undefined, redactionVerdict) || '';
         const accessibleName = ariaLabel || label || textContent;
 
         if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
@@ -1896,7 +1902,7 @@ export class UIBridgeRegistry {
         // to the sentinel while a bare password field's survives. `description`
         // is derived from already-gated inputs then routed through the required
         // content scrub.
-        const domAriaLabel = element.element.getAttribute('aria-label') || undefined;
+        const domAriaLabel = readAriaLabelAttr(element.element) || undefined;
         const emittedAccessibleName = domAriaLabel
           ? scrubContentByVerdict(domAriaLabel, redactionVerdict)
           : scrubContentByVerdict(element.label, redactionVerdict);
@@ -1977,9 +1983,9 @@ export class UIBridgeRegistry {
     const state = element.getState();
     return generateAliases({
       textContent: state.textContent,
-      ariaLabel: element.element.getAttribute('aria-label'),
-      placeholder: element.element.getAttribute('placeholder'),
-      title: element.element.getAttribute('title'),
+      ariaLabel: readAriaLabelAttr(element.element),
+      placeholder: readPlaceholderAttr(element.element),
+      title: readTitleAttr(element.element),
       elementType: element.type,
       tagName: element.element.tagName.toLowerCase(),
       id: element.id,

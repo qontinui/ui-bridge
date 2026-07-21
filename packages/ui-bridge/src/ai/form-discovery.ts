@@ -18,6 +18,7 @@ import {
   scrubValueRequired,
   scrubContentByVerdict,
 } from '../core/redaction';
+import { readAriaLabelAttr, readPlaceholderAttr } from '../core/a11y';
 
 /**
  * A registered element with DOM access — the minimal shape both the
@@ -204,10 +205,10 @@ function buildFormFields(
     return {
       id: input.id,
       label: scrubContentRequired(
-        el.getAttribute('aria-label') ||
+        readAriaLabelAttr(el) ||
           input.label ||
           getLabelText(el) ||
-          el.getAttribute('placeholder') ||
+          readPlaceholderAttr(el) ||
           input.id,
         verdict
       ),
@@ -218,7 +219,7 @@ function buildFormFields(
       errorSource,
       required: state.required ?? false,
       touched: state.focused || (state.value?.length ?? 0) > 0,
-      placeholder: scrubContentByVerdict(el.getAttribute('placeholder') || undefined, verdict),
+      placeholder: scrubContentByVerdict(readPlaceholderAttr(el) || undefined, verdict),
       isDirty,
       checked: state.checked,
       selectedOptions: state.selectedOptions,
@@ -234,7 +235,7 @@ function inferFormPurpose(fields: FormDiscoveryElement[]): string {
   const labels = fields
     .map((f) =>
       (
-        f.element.getAttribute('aria-label') ||
+        readAriaLabelAttr(f.element) ||
         f.label ||
         f.element.getAttribute('name') ||
         ''

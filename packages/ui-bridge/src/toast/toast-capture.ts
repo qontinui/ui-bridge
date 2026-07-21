@@ -16,6 +16,7 @@ import type {
   SnapshotToastContext,
 } from './types';
 import { classString } from '../core/class-name';
+import { readAriaLabelAttr } from '../core/a11y';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -213,7 +214,7 @@ function detectAction(el: Element): ActionInfo {
     const btn = buttons[i];
     const text = (btn.textContent || '').trim();
     // Skip close/dismiss buttons
-    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const ariaLabel = (readAriaLabelAttr(btn) || '').toLowerCase();
     if (
       ariaLabel === 'close' ||
       ariaLabel === 'dismiss' ||
@@ -242,7 +243,7 @@ function extractMessage(el: Element): string {
   // Remove close buttons and action buttons from clone
   const buttons = clone.querySelectorAll('button, [role="button"]');
   buttons.forEach((btn) => {
-    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const ariaLabel = (readAriaLabelAttr(btn) || '').toLowerCase();
     const text = (btn.textContent || '').trim().toLowerCase();
     if (
       ariaLabel === 'close' ||

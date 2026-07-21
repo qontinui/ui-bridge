@@ -17,6 +17,7 @@ import type {
   DropZoneInfo,
   SnapshotDragDropContext,
 } from './types';
+import { readAriaLabelAttr } from '../core/a11y';
 
 /** Priority order for deduplication: lower index = higher priority */
 const ORIGIN_PRIORITY: Record<DragDropOrigin, number> = {
@@ -363,7 +364,7 @@ export class DragDropDetector {
    */
   private extractLabel(element: Element): string | undefined {
     // Priority: aria-label > aria-labelledby text > data-testid > text content
-    const ariaLabel = element.getAttribute('aria-label');
+    const ariaLabel = readAriaLabelAttr(element);
     if (ariaLabel) return ariaLabel;
 
     const testId = element.getAttribute('data-testid');

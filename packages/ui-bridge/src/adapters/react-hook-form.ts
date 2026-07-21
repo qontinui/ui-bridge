@@ -46,6 +46,7 @@ import {
   scrubValueRequired,
   scrubContentByVerdict,
 } from '../core/redaction';
+import { readAriaLabelAttr } from '../core/a11y';
 
 /* -------------------------------------------------------------------------- */
 /*  Global augmentation for RHF-specific window properties                    */
@@ -411,7 +412,7 @@ export class ReactHookFormAdapter implements FormFrameworkAdapter {
   private getFieldLabel(name: string, domField: HTMLElement | null): string {
     if (domField) {
       // Check for aria-label
-      const ariaLabel = domField.getAttribute('aria-label');
+      const ariaLabel = readAriaLabelAttr(domField);
       if (ariaLabel) return ariaLabel;
 
       // Check for associated <label>

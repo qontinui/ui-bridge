@@ -32,8 +32,11 @@ import {
   scrubContentRequired,
   scrubAliases,
   trustDeveloperContent,
+  readScrubbedValue,
+  readScrubbedText,
   type RedactionVerdict,
 } from '../core/redaction';
+import { readAriaLabelAttr, readPlaceholderAttr, readTitleAttr } from '../core/a11y';
 
 /**
  * Returns true when the `UI_BRIDGE_DEBUG_FIND` find-diagnostic flag is enabled
@@ -416,9 +419,9 @@ export class SearchEngine {
 
       try {
         role = element.element.getAttribute('role') || undefined;
-        ariaLabel = element.element.getAttribute('aria-label') || undefined;
-        placeholder = element.element.getAttribute('placeholder') || undefined;
-        title = element.element.getAttribute('title') || undefined;
+        ariaLabel = readAriaLabelAttr(element.element) || undefined;
+        placeholder = readPlaceholderAttr(element.element) || undefined;
+        title = readTitleAttr(element.element) || undefined;
         name = element.element.getAttribute('name') || undefined;
       } catch {
         // DOM access failed — use fallbacks from RegisteredElement metadata
@@ -432,14 +435,14 @@ export class SearchEngine {
       try {
         if (element.element.id) {
           const labelEl = document.querySelector(`label[for="${element.element.id}"]`);
-          labelText = labelEl?.textContent?.trim() || undefined;
+          labelText = readScrubbedText(labelEl) || undefined;
         }
         // Fall back to a wrapping <label> ancestor if no explicit `for=` match
         if (!labelText) {
           let ancestor: HTMLElement | null = element.element.parentElement;
           while (ancestor) {
             if (ancestor.tagName.toLowerCase() === 'label') {
-              labelText = ancestor.textContent?.trim() || undefined;
+              labelText = readScrubbedText(ancestor) || undefined;
               break;
             }
             ancestor = ancestor.parentElement;
@@ -464,7 +467,7 @@ export class SearchEngine {
           element.element instanceof HTMLTextAreaElement ||
           element.element instanceof HTMLSelectElement
         ) {
-          value = (element.element as HTMLInputElement).value || undefined;
+          value = readScrubbedValue(element.element as HTMLInputElement) || undefined;
         }
       } catch {
         value = state.value || undefined;
@@ -1659,7 +1662,7 @@ export class SearchEngine {
           // Suppress the label there — the STRUCTURE (role/tag) survives.
           const label = isContentRedacted(ancestor)
             ? ''
-            : ancestor.getAttribute('aria-label') ||
+            : readAriaLabelAttr(ancestor) ||
               ancestor.getAttribute('data-testid') ||
               ancestor.id ||
               '';

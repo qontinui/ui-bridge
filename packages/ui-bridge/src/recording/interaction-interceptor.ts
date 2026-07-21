@@ -9,7 +9,7 @@
 
 import type { UIBridgeRegistry } from '../core/registry';
 import { findNearestRegisteredElement } from '../core/element-fingerprint';
-import { verdictOf, scrubValueByVerdict } from '../core/redaction';
+import { verdictOf, scrubValueByVerdict, readScrubbedValue } from '../core/redaction';
 import type { InteractionEvent, InteractionActionType } from './types';
 
 export interface InteractionInterceptorConfig {
@@ -142,13 +142,13 @@ export class InteractionInterceptor {
     // Coalesce keystrokes: buffer input events and flush after a quiet period
     if (this.keystrokeTargetId === target.elementId) {
       // Same target — extend buffer
-      this.keystrokeBuffer = el.value;
+      this.keystrokeBuffer = readScrubbedValue(el) ?? '';
     } else {
       // Different target — flush previous and start new
       this.flushKeystrokeBuffer();
       this.keystrokeTargetId = target.elementId;
       this.keystrokeTargetElement = target.element;
-      this.keystrokeBuffer = el.value;
+      this.keystrokeBuffer = readScrubbedValue(el) ?? '';
     }
 
     // Reset coalescing timer
@@ -181,7 +181,7 @@ export class InteractionInterceptor {
     const el = target.element;
 
     if (el instanceof HTMLSelectElement) {
-      this.emit('select', target.elementId, target.element, el.value);
+      this.emit('select', target.elementId, target.element, readScrubbedValue(el));
     } else if (el instanceof HTMLInputElement) {
       if (el.type === 'checkbox') {
         this.emit(
@@ -191,7 +191,7 @@ export class InteractionInterceptor {
           String(el.checked)
         );
       } else if (el.type === 'radio') {
-        this.emit('check', target.elementId, target.element, el.value);
+        this.emit('check', target.elementId, target.element, readScrubbedValue(el));
       }
     }
   }
