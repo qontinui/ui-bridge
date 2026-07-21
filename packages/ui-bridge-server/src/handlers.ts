@@ -58,7 +58,6 @@ import {
   AssertionExecutor,
   SemanticSnapshotManager,
   SemanticDiffManager,
-  generatePageSummary,
 } from '@qontinui/ui-bridge/ai';
 
 /**
@@ -242,17 +241,11 @@ function buildScreenAnalysis(
   const controlSnapshot = registry.createSnapshot();
   const semanticSnapshot = snapshotManager.createSnapshot(controlSnapshot);
 
-  // Convert snapshot elements to AI elements format for summary
-  const aiElements = controlSnapshot.elements.map((el) => ({
-    ...el,
-    description: el.label || el.id,
-    aliases: [],
-    suggestedActions: [],
-    tagName: el.type,
-    accessibleName: el.label,
-    registered: true,
-  })) as AIDiscoveredElement[];
-  const summary = generatePageSummary(aiElements);
+  // Reuse ui-bridge's canonical summary — `snapshotManager.createSnapshot`
+  // already ran `generatePageSummary` over §4.6-branded elements produced by
+  // its OWN converter (label/description re-scrubbed by verdict). Re-deriving
+  // it here from hand-built plain-string elements would launder `description`.
+  const summary = semanticSnapshot.summary;
 
   // Transform elements into compact grouped format
   const interactive: CompactElement[] = [];
@@ -951,18 +944,11 @@ export function createHandlers(
 
     getPageSummary: async (): Promise<APIResponse<string>> => {
       try {
-        const snapshot = registry.createSnapshot();
-        // Convert snapshot elements to AI elements format for summary
-        const elements = snapshot.elements.map((el) => ({
-          ...el,
-          description: el.label || el.id,
-          aliases: [],
-          suggestedActions: [],
-          tagName: el.type,
-          accessibleName: el.label,
-          registered: true,
-        })) as AIDiscoveredElement[];
-        const summary = generatePageSummary(elements);
+        // Use ui-bridge's canonical §4.6-branded summary rather than
+        // re-deriving it from hand-built plain-string elements (which would
+        // launder `description`). `createSnapshot` runs `generatePageSummary`
+        // internally over elements branded by its own converter.
+        const summary = snapshotManager.createSnapshot(registry.createSnapshot()).summary;
         return success(summary);
       } catch (err) {
         return error((err as Error).message, 'PAGE_SUMMARY_ERROR');
@@ -990,30 +976,26 @@ export function createHandlers(
         // Refresh elements for search
         refreshElements();
 
-        // Get all elements
-        const allElements = registry.getAllElements();
+        // Build a semantic snapshot: its `.elements` are converted to
+        // AIDiscoveredElement by ui-bridge's OWN converter, which applies the
+        // §4.6 brand (label/description re-scrubbed by verdict). Searching over
+        // these already-branded, already-scrubbed elements — rather than
+        // hand-building AIDiscoveredElement-shaped objects from raw registry
+        // reads — is what keeps `element` (re-emitted to the client in
+        // SemanticSearchResult) honestly branded instead of laundering a
+        // plain-string `description`.
+        const semanticSnapshot = snapshotManager.createSnapshot(registry.createSnapshot());
 
-        // Convert to AI discovered elements for semantic search
-        const aiElements: Array<{ element: AIDiscoveredElement; text: string }> = allElements.map(
-          (el) => {
-            // Build searchable text from element properties
+        // Build searchable text per branded element for the fuzzy fallback.
+        // All fields read here are already §4.6-scrubbed at their source.
+        const aiElements: Array<{ element: AIDiscoveredElement; text: string }> =
+          semanticSnapshot.elements.map((element) => {
             const textParts: string[] = [];
-
-            // Prioritize description and accessible name for semantic matching
-            const state =
-              'getState' in el &&
-              typeof (el as DiscoveredElement & { getState?: () => unknown }).getState ===
-                'function'
-                ? (el as DiscoveredElement & { getState: () => Record<string, unknown> }).getState()
-                : el.state;
-            const textContent = String(
-              (state as { textContent?: unknown } | null | undefined)?.textContent || ''
-            );
-            const label = el.label || '';
-            const accessibleName = el.accessibleName || '';
-            const elExtra = el as DiscoveredElement & { placeholder?: string; title?: string };
-            const placeholder = elExtra.placeholder || '';
-            const title = elExtra.title || '';
+            const label = element.label ?? '';
+            const accessibleName = element.accessibleName ?? '';
+            const textContent = element.state?.textContent ?? '';
+            const placeholder = element.placeholder ?? '';
+            const title = element.title ?? '';
 
             if (label) textParts.push(label);
             if (accessibleName && accessibleName !== label) textParts.push(accessibleName);
@@ -1023,27 +1005,10 @@ export function createHandlers(
             if (placeholder) textParts.push(`placeholder: ${placeholder}`);
             if (title) textParts.push(title);
 
-            const combinedText = textParts.join(' ').trim() || el.id;
+            const combinedText = textParts.join(' ').trim() || element.id;
 
-            return {
-              element: {
-                id: el.id,
-                type: el.type,
-                label: el.label,
-                tagName: el.tagName || el.type,
-                role: el.role,
-                accessibleName: el.accessibleName,
-                actions: el.actions || [],
-                state: state || {},
-                registered: true,
-                description: label || el.id,
-                aliases: [],
-                suggestedActions: [],
-              } as AIDiscoveredElement,
-              text: combinedText,
-            };
-          }
-        );
+            return { element, text: combinedText };
+          });
 
         // Apply type/role filters if specified
         let filteredElements = aiElements;
@@ -1489,18 +1454,11 @@ export function createAIHandlers(
 
     getPageSummary: async (): Promise<APIResponse<string>> => {
       try {
-        const snapshot = registry.createSnapshot();
-        // Convert snapshot elements to AI elements format for summary
-        const elements = snapshot.elements.map((el) => ({
-          ...el,
-          description: el.label || el.id,
-          aliases: [],
-          suggestedActions: [],
-          tagName: el.type,
-          accessibleName: el.label,
-          registered: true,
-        })) as AIDiscoveredElement[];
-        const summary = generatePageSummary(elements);
+        // Use ui-bridge's canonical §4.6-branded summary rather than
+        // re-deriving it from hand-built plain-string elements (which would
+        // launder `description`). `createSnapshot` runs `generatePageSummary`
+        // internally over elements branded by its own converter.
+        const summary = snapshotManager.createSnapshot(registry.createSnapshot()).summary;
         return { success: true, data: summary, timestamp: Date.now() };
       } catch (err) {
         return {
