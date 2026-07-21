@@ -29,6 +29,7 @@ import {
   scrubContentByVerdict,
   scrubContentRequired,
   scrubValueRequired,
+  scrubAliases,
   trustDeveloperContent,
 } from '../core/redaction';
 import { classifyRegionType } from './region-segmentation';
@@ -215,14 +216,18 @@ export class SemanticSnapshotManager {
     // verdict from the stamped state. A content-redacted element contributes no
     // DOM-derived aliases.
     const redactionVerdict = verdictFromState(element.state);
-    const aliases = redactionVerdict.content
-      ? []
-      : generateAliases({
-      textContent: element.state.textContent,
-      elementType: element.type,
-      id: element.id,
-      labelText: element.label,
-    });
+    // §4.6 by-construction gate: generated (DOM-derived) aliases route through
+    // `scrubAliases` (→ `[]` when content-redacted), replacing the open-coded
+    // ternary. Annotation tags (dev-set) merge back below.
+    const aliases: string[] = scrubAliases(
+      generateAliases({
+        textContent: element.state.textContent,
+        elementType: element.type,
+        id: element.id,
+        labelText: element.label,
+      }),
+      redactionVerdict
+    );
 
     // Generate content-specific descriptions
     let description: string;
@@ -279,18 +284,24 @@ export class SemanticSnapshotManager {
       id: element.id,
       type: element.type,
       // Inputs are ControlSnapshot elements already scrubbed by their upstream
-      // producer; brand for the wire slot (dev label passes through). The
-      // `.trim()` on textContent would strip the brand, so read `state.textContent`
+      // producer (`serializeRegisteredElement`). Re-scrub `label` on the CONTENT
+      // axis from the stamped verdict (idempotent — already `[REDACTED]` when
+      // redacted) so this DOM-less arm never launders a raw label. The `.trim()`
+      // on textContent would strip the brand, so read `state.textContent`
       // (already trimmed + scrubbed) directly.
-      label: trustDeveloperContent(element.label),
+      label: scrubContentByVerdict(element.label, redactionVerdict),
       tagName: this.inferTagName(element.type),
       role: this.inferRole(element.type),
-      accessibleName: trustDeveloperContent(element.label) ?? element.state.textContent,
+      accessibleName:
+        scrubContentByVerdict(element.label, redactionVerdict) ?? element.state.textContent,
       actions: element.actions,
       state: element.state,
       registered: true,
       description: scrubContentRequired(finalDescription, redactionVerdict),
-      aliases: finalAliases.map((a) => trustDeveloperContent(a)!),
+      // `finalAliases` here contains only (already-scrubbed generated | dev-set
+      // annotation tags) — by construction the generated portion is `[]` when
+      // redacted, so branding the remainder is the reserved-correct use.
+      aliases: finalAliases.map((a) => trustDeveloperContent(a)),
       purpose: finalPurpose,
       suggestedActions,
       semanticType: this.inferSemanticType(element),

@@ -348,8 +348,10 @@ describe('searchElements — AI-discovery projection honors §4.6', () => {
 
   it('emits no raw DOM content on a redacted hit (accessibleName / aliases / description)', () => {
     registerSecretButton();
-    // Reached by the dev-set label, not by the secret.
-    const results = registry.searchElements({ text: 'vault control', fuzzy: true });
+    // Reached by ROLE (a non-content signal), not by the secret NOR by the
+    // dev-set label — inside a boundary the label is scrubbed too (resolved
+    // design), so the matching oracle is closed on both.
+    const results = registry.searchElements({ role: 'button', fuzzy: true });
     const hit = results.find((r) => r.element.id === 'secret-btn');
 
     expect(hit).toBeDefined();
@@ -401,12 +403,15 @@ describe('searchElements — AI-discovery projection honors §4.6', () => {
     expect(hit!.element.aliases.length).toBeGreaterThan(0);
   });
 
-  it('lets a DEVELOPER-SET label through as accessibleName when there is no aria-label', () => {
-    // Boundary consistency: §4.6 covers DOM-DERIVED content. Collapsing the
-    // whole `accessibleName` field to the sentinel also swallowed a
-    // dev-authored `element.label`, which is broader than the documented
-    // boundary AND inconsistent with the sibling `description` branch that
-    // already passes `element.description` through untouched.
+  it('SCRUBS a DEVELOPER-SET label INSIDE a boundary (resolved design: origin cannot be discriminated)', () => {
+    // Supersedes the earlier "dev-label survives a boundary" reading. The
+    // resolved design decision (plan §"Phase 3 two-lens verification"): one
+    // `label` field carries either a scraped or a dev-set value with NO
+    // discriminator, and a developer who WRAPS a subtree in
+    // `data-bridge-redact` intends it hidden — so `label` scrubs on the CONTENT
+    // axis regardless of origin. Searching the dev label must NOT confirm the
+    // element (matching-oracle closed) and its `label`/`accessibleName` must
+    // not carry the value.
     const boundary = document.createElement('div');
     boundary.setAttribute('data-bridge-redact', 'true');
     const btn = document.createElement('button');
@@ -418,9 +423,15 @@ describe('searchElements — AI-discovery projection honors §4.6', () => {
     const results = registry.searchElements({ text: 'vault control', fuzzy: true });
     const hit = results.find((r) => r.element.id === 'dev-label');
 
-    expect(hit).toBeDefined();
-    expect(hit!.element.accessibleName).toBe('vault control');
+    // Oracle closed: the dev label no longer confirms a redacted element.
+    expect(hit?.scores.text ?? 0).toBeLessThan(0.7);
+    // If some other signal surfaced it, the label/accessibleName are scrubbed.
+    if (hit) {
+      expect(hit.element.label ?? REDACTED_VALUE).not.toBe('vault control');
+      expect(hit.element.accessibleName ?? REDACTED_VALUE).not.toBe('vault control');
+    }
     expect(JSON.stringify(results)).not.toContain(SECRET);
+    expect(JSON.stringify(results)).not.toContain('vault control');
   });
 
   it('still scrubs accessibleName when the name IS DOM-derived, even with a dev label present', () => {
@@ -432,12 +443,31 @@ describe('searchElements — AI-discovery projection honors §4.6', () => {
     container.appendChild(boundary);
     registry.registerElement('dom-name', btn, { type: 'button', label: 'vault control' });
 
-    const results = registry.searchElements({ text: 'vault control', fuzzy: true });
+    // Match by role (a non-content signal) so the element is surfaced without
+    // relying on the now-scrubbed label — then assert accessibleName is the
+    // sentinel and the DOM secret never ships.
+    const results = registry.searchElements({ role: 'button', fuzzy: true });
     const hit = results.find((r) => r.element.id === 'dom-name');
 
     expect(hit).toBeDefined();
     expect(hit!.element.accessibleName).toBe(REDACTED_VALUE);
     expect(JSON.stringify(results)).not.toContain(SECRET);
+  });
+
+  it('[negative control] lets a DEVELOPER-SET label through as accessibleName OUTSIDE any boundary', () => {
+    // The other half of the resolved decision: dev-set metadata SURVIVES
+    // outside a `data-bridge-redact` boundary — the addressability guarantee.
+    const btn = document.createElement('button');
+    btn.textContent = 'Open'; // short DOM text, no aria-label
+    container.appendChild(btn);
+    registry.registerElement('dev-label-public', btn, { type: 'button', label: 'vault control' });
+
+    const results = registry.searchElements({ text: 'vault control', fuzzy: true });
+    const hit = results.find((r) => r.element.id === 'dev-label-public');
+
+    expect(hit).toBeDefined();
+    expect(hit!.element.accessibleName).toBe('vault control');
+    expect(hit!.element.label).toBe('vault control');
   });
 
   it('still honors a DEVELOPER-SET alias on a redacted element (documented boundary)', () => {

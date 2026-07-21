@@ -45,13 +45,12 @@ import {
   elementRedaction,
   scrubContentByVerdict,
   scrubValueByVerdict,
-  scrubValueRequired,
   scrubContentRequired,
   scrubMediaMetadata,
+  scrubAliases,
+  scrubSelectState,
   trustDeveloperContent,
-  REDACTED_VALUE,
 } from './redaction';
-import type { Scrubbed } from './redaction';
 // Re-export the sentinel so the historical `from './core/registry'` import
 // path keeps resolving; the definition itself lives in the leaf `redaction`
 // module (this file imports it above for its own internal scrubbing).
@@ -188,7 +187,12 @@ export function serializeRegisteredElement(
     ...(uiBridgeId !== undefined ? { uiBridgeId } : {}),
     type: el.type,
     tagName: el.element.tagName.toLowerCase(),
-    label: el.label,
+    // §4.6: `el.label` is SCRAPED from the DOM on auto-registered elements
+    // (`useAutoRegister.getAccessibleLabel`), so route it through the CONTENT
+    // scrub keyed on this element's verdict — redacted inside a boundary,
+    // passthrough (incl. a bare password field's label) outside one. F7 stops
+    // the scrape at the source too; this is the defense-in-depth emission gate.
+    label: scrubContentByVerdict(el.label, serializeVerdict),
     identifier: el.getIdentifier(),
     state: el.getState(),
     // Lifecycle fields — required by the canonical UIBridgeElement shape
@@ -199,7 +203,9 @@ export function serializeRegisteredElement(
     customActions: el.customActions ? Object.keys(el.customActions) : undefined,
     category: el.category,
     kind,
-    content: el.content,
+    // §4.6: `el.content` is scraped `textContent` on auto-registered content
+    // elements — CONTENT-scrub it (redacted inside a boundary, passthrough out).
+    content: scrubContentByVerdict(el.content, serializeVerdict),
     role: ariaRole,
     ariaLabel,
     accessibleName,
@@ -634,27 +640,12 @@ function getElementState(element: HTMLElement): ElementState {
     state.value = scrubValueByVerdict(element.value, verdict);
     captureFormControlState(element, state);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
-    // Collapse to a single synthetic entry when redacted so the option COUNT
-    // itself carries no signal (an env switcher's option list can be sensitive).
-    state.selectedOptions = verdict.value
-      ? [scrubValueRequired(REDACTED_VALUE, verdict)]
-      : (Array.from(element.selectedOptions)
-          .map((opt) => scrubValueByVerdict(opt.value, verdict))
-          .filter((v): v is Scrubbed<string> => v !== undefined));
-    state.availableOptions = verdict.value
-      ? [
-          {
-            value: scrubValueRequired(REDACTED_VALUE, verdict),
-            label: scrubValueRequired(REDACTED_VALUE, verdict),
-            selected: false,
-          },
-        ]
-      : Array.from(element.options).map((opt) => ({
-          value: scrubValueRequired(opt.value, verdict),
-          label: scrubValueRequired(opt.label || opt.textContent?.trim() || opt.value, verdict),
-          selected: opt.selected,
-        }));
+    // §4.6: single shared option-list scrub — the COUNT-collapse-when-redacted
+    // decision lives in `scrubSelectState` so all three builders cannot diverge.
+    const sel = scrubSelectState(element, verdict);
+    state.value = sel.value;
+    state.selectedOptions = sel.selectedOptions;
+    state.availableOptions = sel.availableOptions;
     captureFormControlState(element, state);
   }
 
@@ -1760,9 +1751,19 @@ export class UIBridgeRegistry {
       // nor have its secret EMITTED. Developer-SET `element.aliases`/`.label`
       // survive as the documented boundary.
       const redactionVerdict = verdictOf(element.element);
-      const aliases = element.aliases ?? (redactionVerdict.content ? [] : this.generateElementAliases(element));
+      // §4.6 by-construction alias gate: the GENERATED (DOM-derived) portion
+      // routes through the `scrubAliases` minter (→ `[]` when content-redacted,
+      // else branded), replacing the open-coded `content ? [] : generate`
+      // ternary that had no compile tripwire. Developer-SET `element.aliases`
+      // are the documented boundary exemption and survive.
+      const aliases: string[] =
+        element.aliases ?? scrubAliases(this.generateElementAliases(element), redactionVerdict);
       const textContent = state.textContent?.trim() || '';
-      const label = element.label || '';
+      // §4.6 matching-ORACLE closure: `element.label` is DOM-scraped on
+      // auto-registered elements, so scoring the raw label lets a client
+      // confirm a redacted element's secret by hit-count. Skip label-matching
+      // entirely when content-redacted (empty string never matches / fuzzes).
+      const label = redactionVerdict.content ? '' : element.label || '';
 
       let maxScore = 0;
       const matchReasons: string[] = [];
@@ -1888,15 +1889,17 @@ export class UIBridgeRegistry {
 
       // Add result if above threshold
       if (maxScore >= threshold) {
-        // §4.6 EMISSION gating. `label` is developer-SET (trusted boundary).
-        // `accessibleName` prefers the DOM aria-label (scrubbed) and falls back
-        // to the dev label (trusted). `description` is derived from already-
-        // gated inputs (scrubbed `textContent`, aria-label nulled when
-        // content-redacted) then routed through the required content scrub.
+        // §4.6 EMISSION gating. Per the resolved design decision, `label`
+        // scrubs on the CONTENT axis regardless of dev-set-vs-scraped origin
+        // (one `label` field cannot discriminate, and a dev who wraps a subtree
+        // intends it hidden) — so a content-redacted element's label collapses
+        // to the sentinel while a bare password field's survives. `description`
+        // is derived from already-gated inputs then routed through the required
+        // content scrub.
         const domAriaLabel = element.element.getAttribute('aria-label') || undefined;
         const emittedAccessibleName = domAriaLabel
           ? scrubContentByVerdict(domAriaLabel, redactionVerdict)
-          : trustDeveloperContent(element.label);
+          : scrubContentByVerdict(element.label, redactionVerdict);
         const descriptionText =
           element.description ||
           generateDescription({
@@ -1909,19 +1912,22 @@ export class UIBridgeRegistry {
         const aiElement: AIDiscoveredElement = {
           id: element.id,
           type: element.type,
-          label: trustDeveloperContent(element.label),
+          label: scrubContentByVerdict(element.label, redactionVerdict),
           tagName: element.element.tagName.toLowerCase(),
           role: element.element.getAttribute('role') || undefined,
           accessibleName: emittedAccessibleName,
           actions: element.actions,
           state,
           registered: true,
+          // `element.description` is developer-SET (never DOM-scraped) — the
+          // documented boundary exemption, so `trustDeveloperContent` is correct.
           description: element.description
             ? trustDeveloperContent(element.description) ?? scrubContentRequired('', redactionVerdict)
             : scrubContentRequired(descriptionText, redactionVerdict),
-          // Dev-set aliases are trusted; DOM-derived were already emptied above
-          // when content-redacted. Brand each for the wire slot.
-          aliases: aliases.map((a) => trustDeveloperContent(a)!),
+          // `aliases` is EITHER dev-set (trusted) OR already gated through
+          // `scrubAliases` above (→ `[]` when content-redacted). Brand each for
+          // the wire slot; the generated tripwire lives in the local above.
+          aliases: aliases.map((a) => trustDeveloperContent(a)),
           purpose: element.purpose,
           suggestedActions: [],
           semanticType: element.semanticType,

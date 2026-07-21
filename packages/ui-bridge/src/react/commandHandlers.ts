@@ -46,6 +46,9 @@ import {
 import {
   isValueRedacted,
   isContentRedacted,
+  verdictOf,
+  scrubContent,
+  scrubContentRequired,
   trustDeveloperContent,
   REDACTED_VALUE,
 } from '../core/redaction';
@@ -2099,20 +2102,26 @@ export async function executeCommand(
 
     case 'getPageSummary': {
       const { generatePageSummary } = await import('../ai');
-      const aiEls = elements.map((e) => ({
-        id: e.id,
-        type: e.type,
-        // `e.getState()` is scrubbed; label/description/aliases are dev-set.
-        // Brand for the AIDiscoveredElement shape `generatePageSummary` expects.
-        label: trustDeveloperContent(e.label),
-        tagName: e.element.tagName.toLowerCase(),
-        actions: e.actions as string[],
-        state: e.getState(),
-        registered: true,
-        description: trustDeveloperContent(e.description || e.label || e.id),
-        aliases: (e.aliases || []).map((a: string) => trustDeveloperContent(a)),
-        suggestedActions: [],
-      }));
+      const aiEls = elements.map((e) => {
+        // §4.6: `e.label` is DOM-scraped on auto-registered elements, and
+        // `description` falls back to it — CONTENT-scrub both against the live
+        // node (redacted inside a boundary, passthrough out). `e.aliases` is
+        // developer-SET on the registration (never scraped), the documented
+        // boundary exemption, so it stays branded via `trustDeveloperContent`.
+        const verdict = verdictOf(e.element);
+        return {
+          id: e.id,
+          type: e.type,
+          label: scrubContent(e.label, e.element),
+          tagName: e.element.tagName.toLowerCase(),
+          actions: e.actions as string[],
+          state: e.getState(),
+          registered: true,
+          description: scrubContentRequired(e.description || e.label || e.id, verdict),
+          aliases: (e.aliases || []).map((a: string) => trustDeveloperContent(a)),
+          suggestedActions: [],
+        };
+      });
       return generatePageSummary(aiEls as Parameters<typeof generatePageSummary>[0]);
     }
 

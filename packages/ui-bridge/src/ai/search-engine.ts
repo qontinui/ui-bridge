@@ -30,6 +30,7 @@ import {
   isContentRedacted,
   scrubContentByVerdict,
   scrubContentRequired,
+  scrubAliases,
   trustDeveloperContent,
   type RedactionVerdict,
 } from '../core/redaction';
@@ -514,22 +515,25 @@ export class SearchEngine {
       value = undefined;
     }
 
-    // Generate aliases and description. A content-redacted element contributes
-    // NO DOM-derived aliases (even id/type-derived ones); dev-set aliases merge
-    // back below.
-    let aliases = redactionVerdict.content
-      ? []
-      : generateAliases({
-          textContent,
-          ariaLabel,
-          placeholder,
-          title,
-          elementType: element.type,
-          tagName,
-          id: element.id,
-          labelText,
-          value,
-        });
+    // Generate aliases and description. §4.6 by-construction gate: the
+    // GENERATED (DOM-derived) portion routes through the `scrubAliases` minter
+    // (→ `[]` when content-redacted, else branded), replacing the open-coded
+    // `content ? [] : generate` ternary that carried no compile tripwire.
+    // Developer-SET aliases merge back below (documented boundary exemption).
+    let aliases: string[] = scrubAliases(
+      generateAliases({
+        textContent,
+        ariaLabel,
+        placeholder,
+        title,
+        elementType: element.type,
+        tagName,
+        id: element.id,
+        labelText,
+        value,
+      }),
+      redactionVerdict
+    );
 
     // Merge pre-computed aliases from RegisteredElement if available
     if ('aliases' in element && Array.isArray(element.aliases) && element.aliases.length > 0) {
@@ -1787,16 +1791,18 @@ export class SearchEngine {
     // The searchable fields are ALREADY gated by `toSearchable` (the choke
     // point). Route them through the branded minters for the wire slot: the
     // verdict comes from the stamped state (DOM-less-safe). `accessibleName`
-    // (`searchable.ariaLabel`) is content-scrubbed; `label` is developer-SET
-    // (trusted boundary); `aliases` are already gated (dev-set survive,
-    // DOM-derived emptied when redacted) so they are branded wholesale.
+    // (`searchable.ariaLabel`) is content-scrubbed; `label` scrubs on the
+    // CONTENT axis regardless of origin (resolved design decision) via
+    // `scrubContentByVerdict`; `aliases` are already gated in `toSearchable`
+    // (generated portion emptied via `scrubAliases` when redacted, dev-set
+    // survive), so what remains is trusted and branded wholesale.
     const verdict = verdictFromState(searchable.state);
     const discoveredBase: DiscoveredElement =
       'getState' in searchable.element
         ? {
             id: searchable.id,
             type: searchable.type,
-            label: trustDeveloperContent((searchable.element as RegisteredElement).label),
+            label: scrubContentByVerdict((searchable.element as RegisteredElement).label, verdict),
             tagName: searchable.tagName,
             role: searchable.role,
             accessibleName: scrubContentByVerdict(searchable.ariaLabel, verdict),
@@ -1809,7 +1815,7 @@ export class SearchEngine {
     return {
       ...discoveredBase,
       description: scrubContentRequired(searchable.description, verdict),
-      aliases: searchable.aliases.map((a) => trustDeveloperContent(a)!),
+      aliases: searchable.aliases.map((a) => trustDeveloperContent(a)),
       purpose: generatePurpose({
         textContent: searchable.textContent,
         ariaLabel: searchable.ariaLabel,

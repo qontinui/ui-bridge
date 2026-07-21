@@ -329,6 +329,29 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
       expect(JSON.stringify(env.state.availableOptions)).not.toContain(SECRET);
     });
 
+    it('COLLAPSES a redacted multi-option select to length 1 (count carries no signal)', async () => {
+      // Uniformity fix: this executor path previously PRESERVED option count +
+      // selected index (under-redacting cardinality); it now shares
+      // `scrubSelectState` with the registry + render-log builders.
+      const sel = document.createElement('select');
+      sel.setAttribute('data-testid', 'multi');
+      sel.setAttribute('data-bridge-redact', 'true');
+      for (const v of ['staging', 'prod', 'dev']) {
+        const opt = document.createElement('option');
+        opt.value = `${v}-${SECRET}`;
+        opt.textContent = `${v} (token: ${SECRET})`;
+        sel.appendChild(opt);
+      }
+      sel.selectedIndex = 2;
+      container.appendChild(sel);
+
+      const res = await executor.find(OPTS);
+      const multi = findById(res.elements, 'multi')!;
+      expect(multi.state.availableOptions).toHaveLength(1);
+      expect(multi.state.availableOptions?.[0]?.selected).toBe(false);
+      expect(JSON.stringify(multi.state)).not.toContain(SECRET);
+    });
+
     it('does not leak the secret anywhere in the serialized response', async () => {
       const res = await executor.find(OPTS);
       expect(JSON.stringify(res)).not.toContain(SECRET);

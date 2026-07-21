@@ -1337,7 +1337,15 @@ export interface BridgeSnapshot {
     uiBridgeId?: string;
     type: ElementType | string;
     tagName: string;
-    label?: string;
+    /**
+     * Human-readable label. §4.6 CONTENT-bearing — `Scrubbed<string>`: on
+     * auto-registered elements this is SCRAPED from `aria-label`/`title`/text
+     * (`useAutoRegister.getAccessibleLabel`), so a raw DOM string cannot be
+     * assigned here — it must route through `scrubContent`/`scrubContentByVerdict`,
+     * which redacts it inside a `data-bridge-redact` boundary while a bare
+     * password field keeps its label (addressability).
+     */
+    label?: Scrubbed<string>;
     identifier: ElementIdentifier;
     state: ElementState;
     /**
@@ -1366,8 +1374,10 @@ export interface BridgeSnapshot {
      * scanner (B1 — manual-test remediation 2026-05-10). Lets snapshot
      * consumers assert on the full text directly without relying on the
      * 50-char `label` truncation. Undefined for interactive elements.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>`: scraped from `textContent`,
+     * so it must route through `scrubContent`/`scrubContentByVerdict`.
      */
-    content?: string;
+    content?: Scrubbed<string>;
     /**
      * Canonical ARIA role per the W3C ARIA-in-HTML mapping. Resolves the
      * explicit `role=` attribute when set, otherwise the implicit role for

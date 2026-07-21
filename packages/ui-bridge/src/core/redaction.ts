@@ -363,3 +363,49 @@ export function scrubMediaMetadata(
       : meta.videoState,
   };
 }
+
+/**
+ * The ONE `<select>` option-list scrub, shared by all three `getElementState`
+ * builders (`core/registry.ts`, `control/action-executor.ts`,
+ * `render-log/dom-capture.ts`) so the shape — crucially the COUNT-collapse
+ * decision — cannot drift between them.
+ *
+ * VALUE axis. When value-redacted (password OR boundary) the whole option list
+ * collapses to a SINGLE synthetic entry, so neither the option COUNT nor the
+ * selected-INDEX carries a signal: an env/tenant switcher's option list, and
+ * its cardinality, can itself be sensitive. When not redacted, every option's
+ * `value`/`label` is minted through the value scrub (a no-op passthrough on the
+ * common path) and the real count + `selected` flags survive.
+ *
+ * Returns the three `ElementState` fields the caller assigns verbatim — there
+ * is no per-builder mapping left to diverge.
+ */
+export function scrubSelectState(
+  el: HTMLSelectElement,
+  v: RedactionVerdict
+): {
+  value: Scrubbed<string> | undefined;
+  selectedOptions: Scrubbed<string>[];
+  availableOptions: Array<{ value: Scrubbed<string>; label: Scrubbed<string>; selected: boolean }>;
+} {
+  const value = scrubValueByVerdict(el.value, v);
+  if (v.value) {
+    const sentinel = scrubValueRequired(REDACTED_VALUE, v);
+    return {
+      value,
+      selectedOptions: [sentinel],
+      availableOptions: [{ value: sentinel, label: sentinel, selected: false }],
+    };
+  }
+  return {
+    value,
+    selectedOptions: Array.from(el.selectedOptions)
+      .map((opt) => scrubValueByVerdict(opt.value, v))
+      .filter((x): x is Scrubbed<string> => x !== undefined),
+    availableOptions: Array.from(el.options).map((opt) => ({
+      value: scrubValueRequired(opt.value, v),
+      label: scrubValueRequired(opt.label || opt.text || opt.value, v),
+      selected: opt.selected,
+    })),
+  };
+}

@@ -10,7 +10,7 @@ import {
   scrubContent,
   scrubRecord,
   scrubValueByVerdict,
-  scrubValueRequired,
+  scrubSelectState,
   verdictOf,
 } from '../core/redaction';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
@@ -279,15 +279,12 @@ function getElementState(element: HTMLElement): ElementState {
   } else if (element instanceof HTMLTextAreaElement) {
     state.value = scrubValueByVerdict(element.value, verdict);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
-    state.selectedOptions = Array.from(element.selectedOptions)
-      .map((opt) => scrubValueByVerdict(opt.value, verdict))
-      .filter((v): v is Scrubbed<string> => v !== undefined);
-    state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: scrubValueRequired(opt.value, verdict),
-      label: scrubValueRequired(opt.text, verdict),
-      selected: opt.selected,
-    }));
+    // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
+    // (was: preserved count + selected index on this render-log path).
+    const sel = scrubSelectState(element, verdict);
+    state.value = sel.value;
+    state.selectedOptions = sel.selectedOptions;
+    state.availableOptions = sel.availableOptions;
   }
 
   return state;

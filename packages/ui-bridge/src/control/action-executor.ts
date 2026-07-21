@@ -74,13 +74,11 @@ import {
   scrubContent,
   scrubContentByVerdict,
   scrubValueByVerdict,
-  scrubValueRequired,
+  scrubSelectState,
   scrubReactProps,
   scrubMediaMetadata,
   isContentRedacted,
-  trustDeveloperContent,
 } from '../core/redaction';
-import type { Scrubbed } from '../core/redaction';
 import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
@@ -303,15 +301,13 @@ function getElementState(element: HTMLElement): ElementState {
   } else if (element instanceof HTMLTextAreaElement) {
     state.value = scrubValueByVerdict(element.value, verdict);
   } else if (element instanceof HTMLSelectElement) {
-    state.value = scrubValueByVerdict(element.value, verdict);
-    state.selectedOptions = Array.from(element.selectedOptions)
-      .map((opt) => scrubValueByVerdict(opt.value, verdict))
-      .filter((v): v is Scrubbed<string> => v !== undefined);
-    state.availableOptions = Array.from(element.options).map((opt) => ({
-      value: scrubValueRequired(opt.value, verdict),
-      label: scrubValueRequired(opt.text, verdict),
-      selected: opt.selected,
-    }));
+    // §4.6: shared option-list scrub — uniform COUNT-collapse-when-redacted
+    // across all three builders (was: preserved count + selected index here,
+    // under-redacting cardinality on the /control/discover path).
+    const sel = scrubSelectState(element, verdict);
+    state.value = sel.value;
+    state.selectedOptions = sel.selectedOptions;
+    state.availableOptions = sel.availableOptions;
   }
 
   // §4.6 provenance — stamp the redaction verdict as DATA (behaviour-neutral;
@@ -1550,12 +1546,11 @@ export class DefaultActionExecutor implements ActionExecutor {
         elements.push({
           id,
           type: registered?.type || this.inferElementType(el),
-          // Dev-SET registered label is a trusted §4.6 boundary; a DOM-derived
-          // label (`getElementLabel`, already gated to undefined when redacted)
-          // routes through the content scrub.
-          label: registered?.label
-            ? trustDeveloperContent(registered.label)
-            : scrubContent(this.getElementLabel(el), el),
+          // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
+          // scraped origin (resolved design decision — one field can't
+          // discriminate, and a dev who wraps a subtree intends it hidden). A
+          // bare password field keeps its label; a boundary redacts it.
+          label: scrubContent(registered?.label ?? this.getElementLabel(el), el),
           tagName: el.tagName.toLowerCase(),
           role: el.getAttribute('role') || undefined,
           accessibleName: scrubContent(this.getAccessibleName(el), el),
@@ -1601,15 +1596,17 @@ export class DefaultActionExecutor implements ActionExecutor {
           if (elLabel !== exactLc && elText !== exactLc) continue;
         }
 
+        // Content elements: scrub the label ONCE against the live node
+        // (auto-registered content labels can be DOM-derived; a boundary
+        // redacts them) and reuse it for `accessibleName`.
+        const scrubbedContentLabel = scrubContent(el.label, el.element);
         elements.push({
           id: el.id,
           type: el.type,
-          // Content elements: scrub against the live node (auto-registered
-          // content labels can be DOM-derived; a boundary redacts them).
-          label: scrubContent(el.label, el.element),
+          label: scrubbedContentLabel,
           tagName: el.element.tagName.toLowerCase(),
           role: el.element.getAttribute('role') || undefined,
-          accessibleName: scrubContent(el.label, el.element) ?? state.textContent,
+          accessibleName: scrubbedContentLabel ?? state.textContent,
           actions: [],
           state,
           registered: true,

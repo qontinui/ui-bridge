@@ -18,6 +18,7 @@ import { useUIBridgeOptional } from './UIBridgeProvider';
 import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
+import { isContentRedacted } from '../core/redaction';
 import type { ElementType, StandardAction, ElementLogLevel } from '../core/types';
 import type { ContentDiscoveryOptions } from './content-discovery';
 import {
@@ -279,6 +280,17 @@ function inferActions(type: ElementType): StandardAction[] {
  * Get accessible label for element
  */
 function getAccessibleLabel(element: HTMLElement): string | undefined {
+  // §4.6 F7 — SOURCE defense-in-depth: never SCRAPE a label out of a
+  // `data-bridge-redact` boundary. This function reads `aria-label` / `title` /
+  // `<label>` text / `innerText` / `placeholder` with no boundary check; every
+  // caller (semantic-id generation, the interactive-registration `label`)
+  // therefore short-circuits to `undefined` inside a boundary, so the secret is
+  // never scraped into `RegisteredElement.label` at all. Content axis only — a
+  // bare `<input type="password">` is NOT content-redacted, so it keeps its
+  // "Password" label (the addressability win). The emission-site scrub in
+  // `serializeRegisteredElement` is the primary closure; this is the second layer.
+  if (isContentRedacted(element)) return undefined;
+
   // aria-label
   const ariaLabel = element.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel;
@@ -1005,12 +1017,19 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // 2026-05-10). Without `content`, consumers couldn't distinguish e.g.
       // `heading-2-recommendations-queue` from its sibling by text alone
       // because the 50-char label can truncate long headings.
-      const rawText = element.textContent?.trim();
+      // §4.6 F7 — SOURCE gate: inside a `data-bridge-redact` boundary do not
+      // scrape `textContent` into `content`/`label` at all (defense-in-depth
+      // beside the emission scrub). `data-content-label` is developer-authored,
+      // so it survives outside the CONTENT boundary but is dropped inside one
+      // (a dev who wraps a subtree intends it hidden).
+      const redacted = isContentRedacted(element);
+      const rawText = redacted ? undefined : element.textContent?.trim();
       const normalizedText = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
-      const label =
-        element.getAttribute('data-content-label') ||
-        normalizedText?.substring(0, 50) ||
-        undefined;
+      const label = redacted
+        ? undefined
+        : element.getAttribute('data-content-label') ||
+          normalizedText?.substring(0, 50) ||
+          undefined;
 
       bridge.registry.registerContentElement(id, element, {
         contentType,
@@ -1069,10 +1088,14 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const existing = bridge.registry.getElement(id);
       if (existing) return;
 
+      // §4.6 F7 — SOURCE gate: inside a `data-bridge-redact` boundary do not
+      // scrape `innerText`/`textContent` into `content`/`label` at all
+      // (defense-in-depth beside the emission scrub).
+      const redacted = isContentRedacted(element);
       // Normalized text: collapse runs of whitespace (including newlines
       // introduced by JSX formatting) so assertions don't need to know
       // exactly how the template wrapped its spans.
-      const rawText = (element.innerText ?? element.textContent ?? '').trim();
+      const rawText = redacted ? '' : (element.innerText ?? element.textContent ?? '').trim();
       const content = rawText.replace(/\s+/g, ' ');
 
       // Role hint — `data-ui-bridge-role` wins, DOM `role` is the fallback.
