@@ -7,8 +7,13 @@
  * regardless of how the app integrates the SDK.
  */
 
-import { isContentRedacted, isValueRedacted, REDACTED_VALUE } from '../core/redaction';
-import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
+import { readScrubbedText, readScrubbedValue, REDACTED_VALUE, verdictOf } from '../core/redaction';
+import {
+  computeVisibleText,
+  readAriaLabelAttr,
+  readAriaLabelledbyAttr,
+  readTitleAttr,
+} from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
 const INTERACTIVE_SELECTORS = [
@@ -103,7 +108,7 @@ function getLabel(el: HTMLElement): string {
   const labelledBy = readAriaLabelledbyAttr(el);
   if (labelledBy) {
     const labelEl = document.getElementById(labelledBy);
-    if (labelEl) return labelEl.textContent?.trim() ?? '';
+    if (labelEl) return computeVisibleText(labelEl) ?? '';
   }
 
   // Associated <label> for form inputs
@@ -114,7 +119,7 @@ function getLabel(el: HTMLElement): string {
   ) {
     if (el.id) {
       const label = document.querySelector<HTMLLabelElement>(`label[for="${CSS.escape(el.id)}"]`);
-      if (label) return label.textContent?.trim() ?? '';
+      if (label) return computeVisibleText(label) ?? '';
     }
   }
 
@@ -128,7 +133,7 @@ function getLabel(el: HTMLElement): string {
   }
 
   // Direct text content (capped for perf)
-  const text = el.textContent?.trim() ?? '';
+  const text = computeVisibleText(el) ?? '';
   return text.length > 200 ? text.slice(0, 200) + '…' : text;
 }
 
@@ -247,26 +252,18 @@ export function scanDOMForInteractiveElementsWithRefs(
     // redacted nothing here. Scrub AT THE SOURCE instead: `materializeElements`
     // then consumes already-safe data. CONTENT axis for text/label/aria-label,
     // VALUE axis for the entered value.
-    const contentRedacted = isContentRedacted(el);
-    const valueRedacted = isValueRedacted(el);
+    const verdict = verdictOf(el);
 
     elements.push({
       id,
       type,
-      label: contentRedacted ? REDACTED_VALUE : getLabel(el),
+      label: verdict.content ? REDACTED_VALUE : getLabel(el),
       actions: inferActions(type),
       visible: isVisible(el),
       tagName: el.tagName.toLowerCase(),
       state: {
-        textContent: contentRedacted
-          ? REDACTED_VALUE
-          : (el.textContent?.trim() ?? '').slice(0, 500),
-        value:
-          'value' in el
-            ? valueRedacted
-              ? REDACTED_VALUE
-              : (el as HTMLInputElement).value
-            : undefined,
+        textContent: readScrubbedText(el, verdict, { maxLen: 500 }) ?? '',
+        value: 'value' in el ? readScrubbedValue(el as HTMLInputElement, verdict) : undefined,
         checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
         disabled: 'disabled' in el ? (el as HTMLInputElement).disabled : undefined,
         visible: isVisible(el),
@@ -285,7 +282,7 @@ export function scanDOMForInteractiveElementsWithRefs(
       },
       identifiers: {
         testId: el.getAttribute('data-testid') ?? undefined,
-        ariaLabel: contentRedacted ? REDACTED_VALUE : (readAriaLabelAttr(el) ?? undefined),
+        ariaLabel: verdict.content ? REDACTED_VALUE : (readAriaLabelAttr(el) ?? undefined),
         htmlId: el.id || undefined,
       },
       _domFallback: true,
@@ -336,7 +333,7 @@ export function findElementsByText(
 
   candidates.forEach((el) => {
     // Use direct text, not deeply nested text for non-leaf nodes
-    const elText = el.textContent?.trim().toLowerCase() ?? '';
+    const elText = computeVisibleText(el)?.toLowerCase() ?? '';
     if (options?.exact ? elText === searchText : elText.includes(searchText)) {
       results.push(el);
     }
@@ -375,7 +372,7 @@ export function findElementByLabel(labelText: string, root?: HTMLElement): HTMLE
   const searchText = labelText.toLowerCase();
 
   for (const label of labels) {
-    const text = label.textContent?.trim().toLowerCase() ?? '';
+    const text = computeVisibleText(label)?.toLowerCase() ?? '';
     if (text.includes(searchText)) {
       // label[for]
       if (label.htmlFor) {

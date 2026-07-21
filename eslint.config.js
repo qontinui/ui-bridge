@@ -153,7 +153,7 @@ export default tseslint.config(
         // password input, props.value IS the cleartext secret. (Today the SDK
         // reaches fiber via computed keys, so this is a forward regression
         // backstop — it flags nothing currently and must stay that way.)
-        selector: "MemberExpression[property.name=/^__react(Props|Fiber)\\$/]",
+        selector: 'MemberExpression[property.name=/^__react(Props|Fiber)\\$/]',
         message:
           '§4.6: reading a React fiber key (__reactProps$/__reactFiber$) can expose a controlled-input cleartext value. Route through extractReactState (gated via scrubReactProps in core/redaction.ts).',
       },
@@ -171,7 +171,7 @@ export default tseslint.config(
     // and their nested `.state.`/`.params.` forms.
     const CARRIER_NAMES =
       'state|searchable|criteria|verdict|reactVerdict|redactionVerdict|options|option|opt|spec|request|params|info|event|capturedEvent|parsed|updates|changes|acc|bv|av|existing|iter|o|sel';
-    const NESTED_CARRIER = "[object.property.name=/^(state|params)$/]";
+    const NESTED_CARRIER = '[object.property.name=/^(state|params)$/]';
     const REDACTION_L2_SELECTORS = [
       {
         selector:
@@ -228,8 +228,14 @@ export default tseslint.config(
       // above for these files, so it must re-declare the package-wide selectors
       // (flat config replaces, does not merge — see NOTE above).
       {
+        // redaction-surface:projection-modules:start
+        // The §4.6 Layer-2 projection surface. This list is mirrored into
+        // packages/ui-bridge/redaction-surface.manifest.json and cross-checked by
+        // scripts/check-redaction-surface.cjs (the Layer-3 ratchet). Keep the two
+        // in sync: after editing this list run `npm run redaction:surface:update`.
         files: [
           'packages/ui-bridge/src/server/handlers.ts',
+          'packages/ui-bridge/src/server/dom-fallback.ts',
           'packages/ui-bridge/src/server/page-primitives.ts',
           'packages/ui-bridge/src/react/commandHandlers.ts',
           'packages/ui-bridge/src/render-log/dom-capture.ts',
@@ -238,6 +244,7 @@ export default tseslint.config(
           'packages/ui-bridge/src/ai/semantic-snapshot.ts',
           'packages/ui-bridge/src/control/action-executor.ts',
         ],
+        // redaction-surface:projection-modules:end
         ignores: [
           'packages/ui-bridge/src/**/__tests__/**',
           'packages/ui-bridge/src/**/*.test.ts',

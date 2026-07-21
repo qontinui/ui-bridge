@@ -37,6 +37,14 @@ jobs:
         # own CI (it is not checked out here).
         run: npm run diagnostics:check
 
+      - name: Redaction surface ratchet
+        # §4.6 Layer-3: fails if the UI Bridge route surface or the Layer-2
+        # projection-module list drifts from redaction-surface.manifest.json —
+        # so a new client-reachable route/projection gets a conscious redaction
+        # decision. Runs before Lint (Layers 1-2) so a surface change is caught
+        # even when the new file has no raw-read lint violation yet.
+        run: npm run redaction:check-surface
+
       - name: Lint
         run: npm run lint
 

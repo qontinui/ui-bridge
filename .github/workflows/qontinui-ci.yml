@@ -12,6 +12,8 @@ jobs:
         run: npm ci || npm install
       - name: Type check
         run: if [ -f tsconfig.json ]; then npx --yes tsc --noEmit; fi
+      - name: Redaction surface ratchet
+        run: npm run redaction:check-surface --if-present
       - name: Lint
         run: npm run lint --if-present
       - name: Build

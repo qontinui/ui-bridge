@@ -20,6 +20,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "diagnostics:generate": "node --experimental-strip-types scripts/gen-diagnostics.ts",
     "diagnostics:check": "node scripts/check-diagnostics.cjs",
+    "redaction:check-surface": "node scripts/check-redaction-surface.cjs",
+    "redaction:surface:update": "node scripts/check-redaction-surface.cjs --update",
     "smoke-test:runner": "bash scripts/smoke-test-runner.sh",
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
   },

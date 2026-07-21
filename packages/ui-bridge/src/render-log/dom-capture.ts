@@ -7,6 +7,7 @@
 import type { ElementIdentifier, ElementState } from '../core/types';
 import type { Scrubbed } from '../core/redaction';
 import {
+  elementRedaction,
   scrubContent,
   scrubRecord,
   scrubSelectState,
@@ -288,6 +289,15 @@ function getElementState(element: HTMLElement): ElementState {
     state.selectedOptions = sel.selectedOptions;
     state.availableOptions = sel.availableOptions;
   }
+
+  // §4.6 provenance stamp — the shared `elementRedaction` marker every
+  // `getElementState`-shaped builder sets (mirrors `core/registry.ts` and
+  // `control/action-executor.ts`). Without it, a DOM-less consumer that later
+  // calls `verdictFromState` on a render-log `state` reads "not redacted" on
+  // both axes even for a boundary/password element. Omitted when neither axis
+  // applies (absent === not redacted).
+  const redaction = elementRedaction(element);
+  if (redaction) state.redaction = redaction;
 
   return state;
 }
