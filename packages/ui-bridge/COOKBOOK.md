@@ -17,31 +17,64 @@ BASE=http://localhost:9877/ui-bridge
 
 ---
 
-## ⚠️ Sensitive data / `data-bridge-redact` — interim scope note
+## Sensitive data — `data-bridge-redact` (§4.6)
 
-**`data-bridge-redact` is NOT yet fully enforced across all projections. Do
-not rely on it to keep secrets out of a client until the structural
-enforcement work lands.**
+Wrap a subtree in `data-bridge-redact="true"` to keep its human-readable
+content out of every AI-client projection. Every `<input type="password">` is
+redacted unconditionally (no attribute needed) — its **value** never ships.
 
-The intended guarantee is that wrapping a subtree in
-`data-bridge-redact="true"` (and every `<input type="password">`
-unconditionally) keeps that content — values and text — from ever reaching an
-AI client. As of this release that guarantee holds only for the specific
-read/echo routes that have been gated (`readValue`, `findByText`,
-`typeInto`/`clickByText`/`clickBySelector` echoes, and the error-snapshot
-sweep). Other element-derived projections (snapshots, `ai/search`, `getForms`,
-render-log capture, recording, and framework-store adapters) may still emit
-redacted content. Treat redaction as **best-effort** for now.
+**What is kept from clients.** For a redacted element, the SDK scrubs its
+value, visible text, `aria-label`, accessible name, `title`, `placeholder`,
+search aliases, the label-derived id slug, and media `alt`/`src`/`srcset`/
+`poster` — across **all** element projections: snapshots (`/control/snapshot`,
+`/control/elements`), search (`/ai/search`, the internal registry search),
+discovery (`/control/find`, `/control/discover`), forms (`/control/forms`,
+`getForms`), the page-analysis family (`/ai/analyze/*`, `/ai/summary`),
+render-log capture, session recording, and the framework-store adapters
+(Formik / React Hook Form) — **and** the arbitrary-selector reads
+(`/control/page/read-value`, `/control/page/find-by-text`). Search/find paths
+also cannot be used as a *confirmation oracle* — a redacted element's secret
+can't be confirmed by matching against it.
 
-Additional known limits that will remain even after full enforcement: the
-boundary walk follows `parentElement` only (content portalled out of a
-boundary, e.g. React portals / shadow DOM, is not covered — re-declare the
-attribute on the portal root); screenshots and network/console capture are
-out of scope; and `[REDACTED]` is a display convention, **not** a security
-oracle — do not branch on it.
+**How it's enforced (not best-effort).** Two mechanisms make omission a build
+failure, not a silent leak:
+- **Typed projections** carry the content on a branded `Scrubbed<T>` wire
+  type; a raw DOM string cannot be assigned into a client-facing field without
+  a compile error.
+- **Inline/untyped projections** are covered by a CI lint guard that bans raw
+  `.value` / `.textContent` / `getAttribute('aria-label'|…)` reads in every
+  projection module — a new ungated read fails `npm run lint`.
 
-This note is interim and will be superseded by a rewritten §4.6 guarantee once
-the structural work is complete.
+**Addressability is preserved.** Redaction hides *content*, not *presence*: a
+redacted element still ships its `id`, `role`, geometry, and `data-testid`, so
+it stays findable and clickable by structural means. A bare password field
+keeps its "Password" label and stays addressable — only its value hides. Match
+redacted elements by `role` / `data-testid` / structural id, not by their
+(now-scrubbed) text.
+
+**What §4.6 does NOT cover** (state these to anyone relying on it):
+- **Shadow DOM / React portals.** The boundary walk follows `parentElement`
+  only; content portalled to `document.body` from inside a boundary has no
+  `data-bridge-redact` ancestor. **Re-declare the attribute on the portal
+  root.**
+- **Screenshots / pixels, network capture, console & application logging** —
+  out of scope; a rendered secret or a logged one is not an element projection.
+- **Existence & geometry** — a redacted element's id/role/bbox/visibility still
+  ship. Content is hidden; presence is not (by design — removing it would break
+  addressability).
+- **Developer-set metadata *outside* a boundary survives** — a `label` /
+  `description` / `aliases` you set explicitly on a non-redacted element is kept
+  (it isn't scraped DOM). *Inside* a boundary, everything content-derived is
+  scrubbed regardless of origin.
+- **`[REDACTED]` is a display convention, not a security oracle** — don't branch
+  on the string; it's page-forgeable. Redaction state travels as structured
+  data on the element, not as this sentinel.
+- **Not an adversarial control.** §4.6 is a developer-declared boundary against
+  *incidental* exposure of sensitive content to an AI client. A hostile page can
+  always read its own DOM; this is not a defense against a malicious page.
+- Media metadata and the `ControlSnapshot` a11y fields are currently scrubbed at
+  runtime (correct today) rather than brand-enforced; a follow-up brings them
+  under the same compile-time guarantee.
 
 ---
 
