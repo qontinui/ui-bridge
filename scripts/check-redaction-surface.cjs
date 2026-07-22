@@ -140,7 +140,11 @@ function liveSentinelList(name) {
   // Strip line comments so prose (backticks, apostrophes, path mentions)
   // cannot be mistaken for — or hide — array entries. Quotes never span
   // lines here ([^'\n]), so an apostrophe in a trailing comment cannot flip
-  // quote parity for later lines.
+  // quote parity for later lines. Deliberately NOT handled (both fail
+  // toward noise, never toward a hidden exemption): /* */ block comments
+  // are not stripped, so a commented-out src path still counts as an entry
+  // (use // comments in these blocks); a trailing // comment containing a
+  // quoted token or `...` throws the shape error below.
   const code = block
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
@@ -185,7 +189,17 @@ function unratchetedSrcRefs() {
   for (const m of src.matchAll(/'([^'\n]*)'/g)) {
     const s = m[1];
     if (!s.includes(SRC_PREFIX)) continue;
-    if (LAYER1_FILES_ALLOWLIST.has(s)) continue;
+    if (LAYER1_FILES_ALLOWLIST.has(s)) {
+      // Allowlisted ONLY at its legitimate home: a `files:` declaration line.
+      // The identical string inside a global `ignores` array would be the
+      // MAXIMAL exemption (every src file, every rule) — position matters,
+      // not value. If prettier ever wraps the Layer-1 `files` array onto
+      // multiple lines this fails loudly; update the check consciously.
+      const lineStart = src.lastIndexOf('\n', m.index) + 1;
+      const lineEnd = src.indexOf('\n', m.index);
+      const line = src.slice(lineStart, lineEnd === -1 ? src.length : lineEnd);
+      if (/^\s*files:\s*\[/.test(line)) continue;
+    }
     const inSentinel = ranges.some(([a, b]) => m.index >= a && m.index < b);
     if (!inSentinel) offenders.push(s);
   }
