@@ -462,7 +462,8 @@ export interface ControlSnapshot {
   elements: Array<{
     id: string;
     type: string;
-    label?: string;
+    /** Human-readable label. §4.6 CONTENT-bearing — `Scrubbed<string>`. */
+    label?: Scrubbed<string>;
     actions: string[];
     /**
      * Custom (application-defined) action ids. Since 0.22.0 the executor
@@ -499,8 +500,9 @@ export interface ControlSnapshot {
      * Normalized text content for semantic content elements tagged with
      * `data-ui-bridge-content` (whitespace-collapsed, trimmed). Lets tests
      * assert on card/badge/pill text without `/control/page/evaluate`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>`.
      */
-    content?: string;
+    content?: Scrubbed<string>;
     /**
      * Canonical ARIA role per W3C ARIA-in-HTML mapping. Resolves the
      * explicit `role=` attribute when set, otherwise the implicit role
@@ -517,18 +519,21 @@ export interface ControlSnapshot {
      * Explicit `aria-label`, with `aria-labelledby` reference resolution
      * fallback. Distinct from `accessibleName`.
      * Source of truth for `IrElementCriteria.aria_label`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>`.
      */
-    ariaLabel?: string;
+    ariaLabel?: Scrubbed<string>;
     /**
      * W3C accessible-name algorithm output. Source of truth for
      * `IrElementCriteria.accessible_name`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>`.
      */
-    accessibleName?: string;
+    accessibleName?: Scrubbed<string>;
     /**
      * Visible text content (innerText-equivalent), whitespace collapsed
      * and trimmed. Source of truth for `IrElementCriteria.text`.
+     * §4.6 CONTENT-bearing — `Scrubbed<string>`.
      */
-    text?: string;
+    text?: Scrubbed<string>;
     contentMetadata?: ContentMetadata;
     mediaMetadata?: MediaMetadata;
     /**
