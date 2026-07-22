@@ -105,11 +105,14 @@ function liveRoutes() {
 }
 
 // --- 2. Live eslint-surface lists from eslint.config.js sentinels ----------
-// Generic sentinel-block extractor: returns the sorted, de-duped set of
-// single-quoted `packages/ui-bridge/src/...` strings between
-// `redaction-surface:<name>:start` and `redaction-surface:<name>:end`.
-function liveSentinelList(name) {
-  const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
+const SENTINEL_NAMES = [
+  'projection-modules',
+  'package-guard-exemptions',
+  'projection-module-ignores',
+];
+const SRC_PREFIX = 'packages/ui-bridge/src/';
+
+function sentinelRange(src, name) {
   const startMarker = `redaction-surface:${name}:start`;
   const endMarker = `redaction-surface:${name}:end`;
   const start = src.indexOf(startMarker);
@@ -119,21 +122,87 @@ function liveSentinelList(name) {
       `Could not find the redaction-surface:${name}:{start,end} sentinels in eslint.config.js`
     );
   }
-  const block = src.slice(start + startMarker.length, end);
-  const globs = [...block.matchAll(/'([^']*packages\/ui-bridge\/src\/[^']*)'/g)].map((m) => m[1]);
-  return [...new Set(globs)].sort();
+  return [start + startMarker.length, end];
+}
+
+// Generic sentinel-block extractor. FAILS CLOSED on any entry shape it does
+// not understand: after stripping `//` comment lines, every single-quoted
+// string in the block must start with `packages/ui-bridge/src/`, and the
+// remaining code must contain no spread / template literal / double-quoted
+// string — otherwise an ignores entry written in another idiomatic shape
+// (`'**/*.stories.ts'`, `...SHARED_GLOBS`, a backtick string) would be an
+// eslint-effective exemption that is INVISIBLE to this ratchet, which is the
+// exact silent-guard-disable the ratchet exists to prevent.
+function liveSentinelList(name) {
+  const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
+  const [start, end] = sentinelRange(src, name);
+  const block = src.slice(start, end);
+  // Strip line comments so prose (backticks, apostrophes, path mentions)
+  // cannot be mistaken for — or hide — array entries. Quotes never span
+  // lines here ([^'\n]), so an apostrophe in a trailing comment cannot flip
+  // quote parity for later lines.
+  const code = block
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const strings = [...code.matchAll(/'([^'\n]*)'/g)].map((m) => m[1]);
+  const bad = strings.filter((s) => !s.startsWith(SRC_PREFIX));
+  if (bad.length) {
+    throw new Error(
+      `redaction-surface:${name}: entries the ratchet cannot track (must be single-quoted ` +
+        `'${SRC_PREFIX}...' literals): ${bad.join(', ')}`
+    );
+  }
+  const residue = code.replace(/'[^'\n]*'/g, '');
+  if (/\.\.\.|`|"/.test(residue)) {
+    throw new Error(
+      `redaction-surface:${name}: the block contains a spread, template literal or ` +
+        `double-quoted string — the ratchet only understands single-quoted ` +
+        `'${SRC_PREFIX}...' literals. Rewrite the entry or extend the parser.`
+    );
+  }
+  return [...new Set(strings)].sort();
 }
 const liveProjectionModules = () => liveSentinelList('projection-modules');
 const livePackageGuardExemptions = () => liveSentinelList('package-guard-exemptions');
 const liveProjectionModuleIgnores = () => liveSentinelList('projection-module-ignores');
 
-// --- 3. Prove each projection-module glob still resolves to a file ---------
+// Layer-0 backstop: every `'packages/ui-bridge/src/...'` string in
+// eslint.config.js must sit INSIDE one of the three ratcheted sentinel blocks,
+// except the Layer-1 `files` pair (allowlisted verbatim, so NARROWING the
+// Layer-1 scope also trips this). Catches the third escape hatch: a src path
+// added to the GLOBAL ignores block (which exempts the file from every rule,
+// §4.6 included — the "generated file → global ignore" path is idiomatic), or
+// a new config block targeting src files outside the ratchet's view.
+const LAYER1_FILES_ALLOWLIST = new Set([
+  'packages/ui-bridge/src/**/*.ts',
+  'packages/ui-bridge/src/**/*.tsx',
+]);
+function unratchetedSrcRefs() {
+  const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
+  const ranges = SENTINEL_NAMES.map((n) => sentinelRange(src, n));
+  const offenders = [];
+  for (const m of src.matchAll(/'([^'\n]*)'/g)) {
+    const s = m[1];
+    if (!s.includes(SRC_PREFIX)) continue;
+    if (LAYER1_FILES_ALLOWLIST.has(s)) continue;
+    const inSentinel = ranges.some(([a, b]) => m.index >= a && m.index < b);
+    if (!inSentinel) offenders.push(s);
+  }
+  return offenders;
+}
+
+// --- 3. Prove each listed path still resolves to a file --------------------
+// Concrete paths get a real existence check (a renamed module or sanctioned
+// reader leaves a dead entry). Glob entries only prove their base dir still
+// contains TS — meaningful for "<dir>/**/*.ts" projection shapes like
+// recording/**; vacuous for package-rooted test globs (dead-pattern detection
+// is not attempted for those).
 function unresolvedModules(modules) {
   const missing = [];
   for (const glob of modules) {
     const abs = path.join(REPO_ROOT, glob);
     if (glob.includes('*')) {
-      // Support the one shape in use: "<dir>/**/*.ts".
       const base = path.join(REPO_ROOT, glob.slice(0, glob.indexOf('*')).replace(/\/$/, ''));
       if (!dirHasTs(base)) missing.push(glob);
     } else if (!fs.existsSync(abs)) {
@@ -168,6 +237,7 @@ function diff(committed, live) {
 
 // --- main ------------------------------------------------------------------
 let surface;
+let unratcheted;
 try {
   surface = {
     $comment:
@@ -180,6 +250,7 @@ try {
     projectionModules: liveProjectionModules(),
     routes: liveRoutes(),
   };
+  unratcheted = unratchetedSrcRefs();
 } catch (e) {
   // Fail closed with an actionable message rather than a raw stack. Reached if
   // UI_BRIDGE_ROUTES changed shape (e.g. shorthand `{ method }`, quoted keys, a
@@ -189,6 +260,27 @@ try {
   console.error(
     '  If the route table style changed, update the parser in scripts/check-redaction-surface.cjs.'
   );
+  process.exit(1);
+}
+
+// The Layer-0 backstop fails BOTH modes — an unratcheted src ref cannot be
+// recorded into the manifest; it must be moved into a sentinel block (or, for
+// a deliberate Layer-1 `files` change, added to LAYER1_FILES_ALLOWLIST here).
+if (unratcheted.length) {
+  console.error('');
+  console.error(
+    "ERROR: eslint.config.js references a 'packages/ui-bridge/src/...' path OUTSIDE the"
+  );
+  console.error(
+    '       ratcheted §4.6 sentinel blocks. A src path in the global ignores (or a new config'
+  );
+  console.error(
+    '       block) can exempt files from every §4.6 rule invisibly to this ratchet. Move the'
+  );
+  console.error(
+    '       entry into a sentinel-tracked list, or update the parser/allowlist consciously.'
+  );
+  for (const s of unratcheted) console.error(`   ! ${s}`);
   process.exit(1);
 }
 
@@ -216,12 +308,11 @@ const routeDiff = diff(committed.routes || [], surface.routes);
 const modDiff = diff(committed.projectionModules || [], surface.projectionModules);
 const exemptDiff = diff(committed.packageGuardExemptions || [], surface.packageGuardExemptions);
 const ignoreDiff = diff(committed.projectionModuleIgnores || [], surface.projectionModuleIgnores);
-// Existence-check both file lists: a projection module OR a sanctioned-reader
-// exemption that no longer resolves is dead coverage / a dead allowlist entry.
-const missing = unresolvedModules([
-  ...surface.projectionModules,
-  ...surface.packageGuardExemptions,
-]);
+// Existence-check both file lists — with opposite dispositions: a projection
+// module that no longer resolves is DEAD GUARD COVERAGE; an exemption that no
+// longer resolves is a DEAD ALLOWLIST ENTRY (a renamed sanctioned reader).
+const missingModules = unresolvedModules(surface.projectionModules);
+const missingExemptions = unresolvedModules(surface.packageGuardExemptions);
 
 let failed = false;
 
@@ -290,13 +381,26 @@ if (ignoreDiff.added.length || ignoreDiff.removed.length) {
   for (const m of ignoreDiff.removed) console.error(`   - (gone from eslint) ${m}`);
 }
 
-if (missing.length) {
+if (missingModules.length) {
   failed = true;
   console.error('');
   console.error(
     'ERROR: a §4.6 projection module no longer resolves to any file — its guard coverage is dead:'
   );
-  for (const m of missing) console.error(`   ! ${m}`);
+  for (const m of missingModules) console.error(`   ! ${m}`);
+}
+
+if (missingExemptions.length) {
+  failed = true;
+  console.error('');
+  console.error(
+    'ERROR: a §4.6 guard-exemption entry no longer resolves to any file — a dead allowlist'
+  );
+  console.error(
+    '       entry (renamed sanctioned reader?). Remove or update it in eslint.config.js, then'
+  );
+  console.error('       run `npm run redaction:surface:update`.');
+  for (const m of missingExemptions) console.error(`   ! ${m}`);
 }
 
 if (failed) process.exit(1);

@@ -45,8 +45,10 @@ describe('§4.6 redaction surface manifest', () => {
     // script diffs the exact list, this asserts the invariant shape.
     expect(manifest.projectionModuleIgnores.length).toBeGreaterThan(0);
     for (const entry of manifest.projectionModuleIgnores) {
+      // Anchored: a `__tests__` path segment or a `.test.ts(x)` suffix —
+      // `foo.test.helpers/reader.ts` must NOT satisfy the invariant.
       expect(entry, `non-test exemption in Layer-2 ignores: ${entry}`).toMatch(
-        /__tests__|\.test\./
+        /\/__tests__\/|\.test\.tsx?$/
       );
     }
   });
