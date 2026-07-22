@@ -16,6 +16,7 @@
  */
 
 import type { Scrubbed, RedactionVerdict } from './redaction';
+import type { ControlSnapshot } from '../control/types';
 
 // A raw string must NOT be assignable to the opaque brand — this is the whole
 // mechanism (Phase 3 declares wire fields as `Scrubbed<string>`).
@@ -27,6 +28,46 @@ const x: Scrubbed<string> = 'secret';
 // @ts-expect-error a verdict cannot be forged from a plain {value, content} literal
 const v: RedactionVerdict = { value: false, content: false };
 
-// Reference both bindings so this stays clean under any future `noUnusedLocals`.
+// `ControlSnapshot.elements[]` is a STRUCTURAL DUPLICATE of the element shape
+// `DiscoveredElement` already brands (`control/types.ts`), and it reaches every
+// snapshot route. Its five content-axis fields carry the same §4.6 obligation,
+// so each must reject a raw string exactly like the brand above. Without these
+// directives the duplicate shape could silently drift back to plain `string`
+// while its branded sibling stayed correct — which is precisely the
+// "parallel builder beside a gated sibling" failure mode that defeated five
+// per-site remediation passes.
+const snap: ControlSnapshot = {
+  timestamp: 0,
+  elements: [
+    {
+      id: 'e1',
+      type: 'button',
+      // @ts-expect-error raw string is not assignable to the branded `label`
+      label: 'secret',
+      actions: [],
+      state: {} as never,
+      registeredAt: 0,
+      mounted: true,
+      // @ts-expect-error raw string is not assignable to the branded `ariaLabel`
+      ariaLabel: 'secret',
+      // @ts-expect-error raw string is not assignable to the branded `accessibleName`
+      accessibleName: 'secret',
+      // @ts-expect-error raw string is not assignable to the branded `text`
+      text: 'secret',
+      // @ts-expect-error raw string is not assignable to the branded `content`
+      content: 'secret',
+    },
+  ],
+  // The other required `ControlSnapshot` fields, supplied empty so this literal
+  // is otherwise structurally complete — the per-field `@ts-expect-error`s above
+  // then isolate exactly the five brand violations rather than leaning on tsc's
+  // error-cascade suppression of an outer TS2739 (missing-property) error.
+  components: [],
+  workflows: [],
+  activeRuns: [],
+};
+
+// Reference the bindings so this stays clean under any future `noUnusedLocals`.
 void x;
 void v;
+void snap;
