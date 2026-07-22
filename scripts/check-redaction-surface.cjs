@@ -9,7 +9,7 @@
 // every surface change (the plan's goal: change the default from "silently
 // leak" to "fail the build").
 //
-// Surface = two committed sets in packages/ui-bridge/redaction-surface.manifest.json:
+// Surface = four committed sets in packages/ui-bridge/redaction-surface.manifest.json:
 //   1. `routes`            — every entry in `UI_BRIDGE_ROUTES` (server/types.ts).
 //                            A new client-reachable route is the way a new leak
 //                            reaches a client; adding one must be a deliberate,
@@ -19,6 +19,16 @@
 //                            sentinels in eslint.config.js). Kept in lockstep so
 //                            the guarded surface is a single committed artifact,
 //                            and each entry is proven to still resolve to a file.
+//   3. `packageGuardExemptions` — the eslint Layer-1 `ignores` list (sentinels
+//                            `redaction-surface:package-guard-exemptions:{start,end}`).
+//                            Every entry is EXEMPT from all §4.6 rules — the
+//                            sanctioned-reader allowlist is the guard's one
+//                            escape hatch, so widening it must trip the ratchet.
+//   4. `projectionModuleIgnores` — the eslint Layer-2 `ignores` list (sentinels
+//                            `redaction-surface:projection-module-ignores:{start,end}`).
+//                            An added entry silently disables the raw-read ban
+//                            for a projection module while the `files` list
+//                            still matches — only test globs belong here.
 //
 // Usage:
 //   node scripts/check-redaction-surface.cjs            # verify (CI, before Lint)
@@ -94,20 +104,28 @@ function liveRoutes() {
   return [...new Set(routes)].sort();
 }
 
-// --- 2. Live projection modules from eslint.config.js sentinels ------------
-function liveProjectionModules() {
+// --- 2. Live eslint-surface lists from eslint.config.js sentinels ----------
+// Generic sentinel-block extractor: returns the sorted, de-duped set of
+// single-quoted `packages/ui-bridge/src/...` strings between
+// `redaction-surface:<name>:start` and `redaction-surface:<name>:end`.
+function liveSentinelList(name) {
   const src = fs.readFileSync(ESLINT_CONFIG, 'utf8');
-  const start = src.indexOf('redaction-surface:projection-modules:start');
-  const end = src.indexOf('redaction-surface:projection-modules:end');
+  const startMarker = `redaction-surface:${name}:start`;
+  const endMarker = `redaction-surface:${name}:end`;
+  const start = src.indexOf(startMarker);
+  const end = src.indexOf(endMarker);
   if (start === -1 || end === -1 || end < start) {
     throw new Error(
-      'Could not find the redaction-surface:projection-modules:{start,end} sentinels in eslint.config.js'
+      `Could not find the redaction-surface:${name}:{start,end} sentinels in eslint.config.js`
     );
   }
-  const block = src.slice(start, end);
+  const block = src.slice(start + startMarker.length, end);
   const globs = [...block.matchAll(/'([^']*packages\/ui-bridge\/src\/[^']*)'/g)].map((m) => m[1]);
   return [...new Set(globs)].sort();
 }
+const liveProjectionModules = () => liveSentinelList('projection-modules');
+const livePackageGuardExemptions = () => liveSentinelList('package-guard-exemptions');
+const liveProjectionModuleIgnores = () => liveSentinelList('projection-module-ignores');
 
 // --- 3. Prove each projection-module glob still resolves to a file ---------
 function unresolvedModules(modules) {
@@ -153,10 +171,12 @@ let surface;
 try {
   surface = {
     $comment:
-      'Committed §4.6 redaction surface (routes + Layer-2 projection modules). ' +
+      'Committed §4.6 redaction surface (routes + Layer-2 projection modules + guard exemption lists). ' +
       'Auto-generated — regenerate with `npm run redaction:surface:update`. ' +
-      'A drift here fails CI so a new route/projection gets a conscious redaction decision. ' +
+      'A drift here fails CI so a new route/projection/exemption gets a conscious redaction decision. ' +
       'Plan: plans/2026-07-20-ui-bridge-structural-redaction-enforcement.md (Layer 3).',
+    packageGuardExemptions: livePackageGuardExemptions(),
+    projectionModuleIgnores: liveProjectionModuleIgnores(),
     projectionModules: liveProjectionModules(),
     routes: liveRoutes(),
   };
@@ -176,7 +196,9 @@ if (UPDATE) {
   fs.writeFileSync(MANIFEST, JSON.stringify(surface, null, 2) + '\n');
   console.log(
     `redaction:surface:update — wrote ${surface.routes.length} routes, ` +
-      `${surface.projectionModules.length} projection modules to redaction-surface.manifest.json`
+      `${surface.projectionModules.length} projection modules, ` +
+      `${surface.packageGuardExemptions.length} guard exemptions, ` +
+      `${surface.projectionModuleIgnores.length} projection ignores to redaction-surface.manifest.json`
   );
   process.exit(0);
 }
@@ -192,7 +214,14 @@ if (!fs.existsSync(MANIFEST)) {
 const committed = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
 const routeDiff = diff(committed.routes || [], surface.routes);
 const modDiff = diff(committed.projectionModules || [], surface.projectionModules);
-const missing = unresolvedModules(surface.projectionModules);
+const exemptDiff = diff(committed.packageGuardExemptions || [], surface.packageGuardExemptions);
+const ignoreDiff = diff(committed.projectionModuleIgnores || [], surface.projectionModuleIgnores);
+// Existence-check both file lists: a projection module OR a sanctioned-reader
+// exemption that no longer resolves is dead coverage / a dead allowlist entry.
+const missing = unresolvedModules([
+  ...surface.projectionModules,
+  ...surface.packageGuardExemptions,
+]);
 
 let failed = false;
 
@@ -224,6 +253,43 @@ if (modDiff.added.length || modDiff.removed.length) {
   for (const m of modDiff.removed) console.error(`   - (gone from eslint) ${m}`);
 }
 
+if (exemptDiff.added.length || exemptDiff.removed.length) {
+  failed = true;
+  console.error('');
+  console.error(
+    'ERROR: the §4.6 Layer-1 guard-exemption list (eslint.config.js ignores) drifted from the'
+  );
+  console.error(
+    '       manifest. An exempted file is OUTSIDE every §4.6 lint rule — adding one beside the'
+  );
+  console.error(
+    '       sanctioned readers (core/redaction.ts, core/a11y.ts) opens a raw-read channel and'
+  );
+  console.error(
+    '       must be a deliberate, reviewed act. Confirm the redaction disposition, then run'
+  );
+  console.error('       `npm run redaction:surface:update` and commit the manifest.');
+  for (const m of exemptDiff.added) console.error(`   + (new in eslint) ${m}`);
+  for (const m of exemptDiff.removed) console.error(`   - (gone from eslint) ${m}`);
+}
+
+if (ignoreDiff.added.length || ignoreDiff.removed.length) {
+  failed = true;
+  console.error('');
+  console.error(
+    'ERROR: the §4.6 Layer-2 ignore list (eslint.config.js) drifted from the manifest. An entry'
+  );
+  console.error(
+    '       here disables the raw-read ban for a projection module while the module list still'
+  );
+  console.error(
+    '       matches — only test globs belong here. Confirm the redaction disposition, then run'
+  );
+  console.error('       `npm run redaction:surface:update` and commit the manifest.');
+  for (const m of ignoreDiff.added) console.error(`   + (new in eslint) ${m}`);
+  for (const m of ignoreDiff.removed) console.error(`   - (gone from eslint) ${m}`);
+}
+
 if (missing.length) {
   failed = true;
   console.error('');
@@ -237,5 +303,7 @@ if (failed) process.exit(1);
 
 console.log(
   `redaction:check-surface OK — ${surface.routes.length} routes, ` +
-    `${surface.projectionModules.length} projection modules match the committed surface`
+    `${surface.projectionModules.length} projection modules, ` +
+    `${surface.packageGuardExemptions.length} guard exemptions, ` +
+    `${surface.projectionModuleIgnores.length} projection ignores match the committed surface`
 );

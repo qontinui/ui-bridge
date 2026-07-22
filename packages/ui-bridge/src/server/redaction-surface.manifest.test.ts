@@ -33,4 +33,21 @@ describe('§4.6 redaction surface manifest', () => {
     expect(manifest.projectionModules.length).toBeGreaterThan(0);
     expect(manifest.projectionModules).toContain('packages/ui-bridge/src/server/dom-fallback.ts');
   });
+
+  it('records the guard exemption lists (the ratchet on the escape hatches)', () => {
+    // Layer-1 `ignores` — everything here sits OUTSIDE every §4.6 lint rule.
+    // The sanctioned readers must be present (they ARE the choke point), and a
+    // stripped list would mean the exemption ratchet is dead.
+    expect(manifest.packageGuardExemptions).toContain('packages/ui-bridge/src/core/redaction.ts');
+    expect(manifest.packageGuardExemptions).toContain('packages/ui-bridge/src/core/a11y.ts');
+    // Layer-2 `ignores` — only test globs may exempt a projection module from
+    // the raw-read ban. A non-test entry here is a silent guard-disable; the
+    // script diffs the exact list, this asserts the invariant shape.
+    expect(manifest.projectionModuleIgnores.length).toBeGreaterThan(0);
+    for (const entry of manifest.projectionModuleIgnores) {
+      expect(entry, `non-test exemption in Layer-2 ignores: ${entry}`).toMatch(
+        /__tests__|\.test\./
+      );
+    }
+  });
 });

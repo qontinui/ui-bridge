@@ -210,6 +210,13 @@ export default tseslint.config(
       // Package-wide (ui-bridge src): SVG safety + redaction Layer 1.
       {
         files: ['packages/ui-bridge/src/**/*.ts', 'packages/ui-bridge/src/**/*.tsx'],
+        // redaction-surface:package-guard-exemptions:start
+        // Every entry here is EXEMPT from all §4.6 Layer-1 rules, so this list
+        // is itself redaction surface: enrolling a file beside the sanctioned
+        // readers would silently open a raw-read channel. Mirrored into
+        // packages/ui-bridge/redaction-surface.manifest.json and drift-checked
+        // by scripts/check-redaction-surface.cjs — after editing, run
+        // `npm run redaction:surface:update`.
         ignores: [
           'packages/ui-bridge/src/**/__tests__/**',
           'packages/ui-bridge/src/**/*.test.ts',
@@ -219,6 +226,7 @@ export default tseslint.config(
           'packages/ui-bridge/src/core/redaction.ts',
           'packages/ui-bridge/src/core/a11y.ts',
         ],
+        // redaction-surface:package-guard-exemptions:end
         rules: {
           'no-restricted-syntax': ['error', ...CLASSNAME_SELECTORS, ...REDACTION_L1_SELECTORS],
         },
@@ -245,11 +253,17 @@ export default tseslint.config(
           'packages/ui-bridge/src/control/action-executor.ts',
         ],
         // redaction-surface:projection-modules:end
+        // redaction-surface:projection-module-ignores:start
+        // An entry here exempts a projection module from the Layer-2 raw-read
+        // ban while the `files` list above still matches the manifest — a
+        // silent guard-disable. Only test globs belong here. Mirrored into the
+        // manifest and drift-checked by scripts/check-redaction-surface.cjs.
         ignores: [
           'packages/ui-bridge/src/**/__tests__/**',
           'packages/ui-bridge/src/**/*.test.ts',
           'packages/ui-bridge/src/**/*.test.tsx',
         ],
+        // redaction-surface:projection-module-ignores:end
         rules: {
           'no-restricted-syntax': [
             'error',

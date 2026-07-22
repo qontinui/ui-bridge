@@ -1,5 +1,18 @@
 {
-  "$comment": "Committed §4.6 redaction surface (routes + Layer-2 projection modules). Auto-generated — regenerate with `npm run redaction:surface:update`. A drift here fails CI so a new route/projection gets a conscious redaction decision. Plan: plans/2026-07-20-ui-bridge-structural-redaction-enforcement.md (Layer 3).",
+  "$comment": "Committed §4.6 redaction surface (routes + Layer-2 projection modules + guard exemption lists). Auto-generated — regenerate with `npm run redaction:surface:update`. A drift here fails CI so a new route/projection/exemption gets a conscious redaction decision. Plan: plans/2026-07-20-ui-bridge-structural-redaction-enforcement.md (Layer 3).",
+  "packageGuardExemptions": [
+    "packages/ui-bridge/src/**/*.test.ts",
+    "packages/ui-bridge/src/**/*.test.tsx",
+    "packages/ui-bridge/src/**/__tests__/**",
+    "packages/ui-bridge/src/core/a11y.ts",
+    "packages/ui-bridge/src/core/class-name.ts",
+    "packages/ui-bridge/src/core/redaction.ts"
+  ],
+  "projectionModuleIgnores": [
+    "packages/ui-bridge/src/**/*.test.ts",
+    "packages/ui-bridge/src/**/*.test.tsx",
+    "packages/ui-bridge/src/**/__tests__/**"
+  ],
   "projectionModules": [
     "packages/ui-bridge/src/ai/search-engine.ts",
     "packages/ui-bridge/src/ai/semantic-snapshot.ts",
