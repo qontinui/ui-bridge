@@ -46,6 +46,24 @@ export interface StorageStateArtifact {
 export const SESSION_STORAGE_KEY = '__sessionStorage';
 
 /**
+ * sessionStorage keys that must NEVER be restored from a storage-state
+ * artifact: a saved *session* must not carry a saved *tab identity*.
+ *
+ * `__uiBridge_tabId` is the relay's stable per-tab identity key (see
+ * `packages/ui-bridge/src/relay/relay-client.ts` `TAB_ID_STORAGE_KEY`). An
+ * artifact captured from the operator's live browser tab may carry it; if the
+ * replayed headless context restores it, the injected tab registers with the
+ * relay under THE SAME tabId as the operator's real tab — and commands aimed
+ * at the headless tab can drive the operator's live browser. The capture side
+ * (`@qontinui/ui-bridge-wrapper` `SESSION_STORAGE_EXCLUDED_KEYS`) filters the
+ * key at write time; this restore-side scrub is defense in depth for artifacts
+ * already in the wild. Duplicated (not imported) because the wrapper's helper
+ * is deliberately local to it — neither package statically depends on the
+ * other for this. Keep both lists in sync.
+ */
+export const SESSION_STORAGE_EXCLUDED_KEYS = ['__uiBridge_tabId'] as const;
+
+/**
  * Capture side. Fold a captured sessionStorage map for `origin` into the parsed
  * storageState `artifact`, returning the SAME object (mutated) for convenience.
  *
@@ -75,6 +93,13 @@ export function mergeSessionStorageIntoArtifact(
  *   - `sessionStorage`: the origin→KV map (or `null` when the artifact carried
  *     none — the legacy case, where the caller keeps its current behavior).
  *
+ * {@link SESSION_STORAGE_EXCLUDED_KEYS} (`__uiBridge_tabId`) are SCRUBBED from
+ * the returned map: a saved session must not carry a saved tab identity, or the
+ * replayed headless tab hijacks the operator's live relay-tab registration.
+ * This scrub is the primary restore-side defense (artifacts already in the wild
+ * carry the key); {@link restoreSessionStorageInitScript} independently skips
+ * the same key for maps that bypass this split.
+ *
  * The input is not mutated; a shallow clone is returned with the key deleted.
  */
 export function splitSessionStorageArtifact(artifact: StorageStateArtifact): {
@@ -82,8 +107,22 @@ export function splitSessionStorageArtifact(artifact: StorageStateArtifact): {
   sessionStorage: SessionStorageMap | null;
 } {
   const raw = artifact.__sessionStorage;
-  const sessionStorage =
-    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as SessionStorageMap) : null;
+  let sessionStorage: SessionStorageMap | null = null;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
+    sessionStorage = {};
+    for (const origin of Object.keys(raw)) {
+      const kv = (raw as SessionStorageMap)[origin];
+      const scrubbed: SessionStorageKV = {};
+      if (kv && typeof kv === 'object') {
+        for (const key of Object.keys(kv)) {
+          if (excluded.includes(key)) continue; // tab identity never restores from a session artifact
+          scrubbed[key] = kv[key];
+        }
+      }
+      sessionStorage[origin] = scrubbed;
+    }
+  }
   const cleaned: Record<string, unknown> = { ...artifact };
   delete cleaned[SESSION_STORAGE_KEY];
   return { storageState: cleaned, sessionStorage };
@@ -96,12 +135,24 @@ export function splitSessionStorageArtifact(artifact: StorageStateArtifact): {
  * navigation — exactly when the app first reads its token. Per-origin because
  * sessionStorage is origin-scoped; idempotent `setItem`; cross-origin / sandboxed
  * frames that throw on `sessionStorage` access are ignored.
+ *
+ * SERIALIZATION CONSTRAINT: this function is serialized into the page realm via
+ * `context.addInitScript(fn, arg)` — its body cannot reference module-scope
+ * imports or constants. The excluded-key literal below is therefore inlined;
+ * keep it in sync with {@link SESSION_STORAGE_EXCLUDED_KEYS} (and the
+ * wrapper-side `SESSION_STORAGE_EXCLUDED_KEYS` in
+ * `@qontinui/ui-bridge-wrapper`'s `session-storage-capture.ts`).
  */
 export function restoreSessionStorageInitScript(map: SessionStorageMap): void {
   try {
     const kv = map[location.origin];
     if (kv) {
       for (const k in kv) {
+        // Never restore the relay tab-identity key — a saved session must not
+        // carry a saved tab identity (belt-and-braces for maps that bypassed
+        // splitSessionStorageArtifact's scrub). Inlined literal: this function
+        // is serialized into the page realm and cannot see module constants.
+        if (k === '__uiBridge_tabId') continue;
         sessionStorage.setItem(k, kv[k]);
       }
     }

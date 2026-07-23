@@ -4,6 +4,7 @@ import {
   buildMultiOriginSessionStorageMap,
   mergeMultiOriginSessionStorageIntoArtifact,
   frameOrigin,
+  SESSION_STORAGE_EXCLUDED_KEYS,
   type FrameSessionStorage,
 } from '../src/session-storage-capture.js';
 import {
@@ -96,6 +97,32 @@ describe('splitSessionStorageArtifact (restore side)', () => {
     expect('__sessionStorage' in storageState).toBe(false);
   });
 
+  it('scrubs __uiBridge_tabId from the returned map while sibling keys survive', () => {
+    // Defense in depth for artifacts already in the wild that captured the
+    // relay tab-identity key: restoring it would register the headless tab
+    // under the operator's live tabId. The capture side now filters it too.
+    const artifact = {
+      cookies: [],
+      __sessionStorage: {
+        'https://qontinui.io': {
+          auth_bearer_access_token: 'TOKEN',
+          __uiBridge_tabId: 'tab_operator_live',
+          other: 'kept',
+        },
+        'https://embed.example': { __uiBridge_tabId: 'tab_iframe' },
+      },
+    };
+    const { sessionStorage } = splitSessionStorageArtifact(artifact);
+    expect(sessionStorage).toEqual({
+      'https://qontinui.io': { auth_bearer_access_token: 'TOKEN', other: 'kept' },
+      'https://embed.example': {},
+    });
+    // The scrub does not mutate the input artifact.
+    expect(artifact.__sessionStorage['https://qontinui.io'].__uiBridge_tabId).toBe(
+      'tab_operator_live'
+    );
+  });
+
   it('round-trips a merge then split for the same origin', () => {
     const artifact: Record<string, unknown> = {
       cookies: [],
@@ -176,6 +203,36 @@ describe('buildMultiOriginSessionStorageMap (capture side, all frames)', () => {
       buildMultiOriginSessionStorageMap([{ url: 'about:blank', kv: { a: '1' } }])
     ).toEqual({});
     expect(buildMultiOriginSessionStorageMap([])).toEqual({});
+  });
+
+  it('drops __uiBridge_tabId (a saved session must not carry a saved tab identity) while sibling keys survive', () => {
+    // Regression: capturing the operator's live tab used to serialize the relay
+    // tab-identity key into the artifact; replaying it made the headless tab
+    // register under the SAME tabId as the operator's real browser tab.
+    const frames: FrameSessionStorage[] = [
+      {
+        url: 'https://qontinui.io/admin',
+        kv: {
+          auth_bearer_access_token: 'TOKEN',
+          __uiBridge_tabId: 'tab_operator_live',
+          other: 'kept',
+        },
+      },
+      { url: 'https://embed.example/widget', kv: { __uiBridge_tabId: 'tab_iframe' } },
+    ];
+    expect(buildMultiOriginSessionStorageMap(frames)).toEqual({
+      'https://qontinui.io': { auth_bearer_access_token: 'TOKEN', other: 'kept' },
+      'https://embed.example': {},
+    });
+  });
+
+  it('every SESSION_STORAGE_EXCLUDED_KEYS entry is dropped', () => {
+    for (const key of SESSION_STORAGE_EXCLUDED_KEYS) {
+      const map = buildMultiOriginSessionStorageMap([
+        { url: 'https://qontinui.io/a', kv: { [key]: 'x', keep: 'y' } },
+      ]);
+      expect(map['https://qontinui.io']).toEqual({ keep: 'y' });
+    }
   });
 });
 
@@ -281,5 +338,17 @@ describe('restoreSessionStorageInitScript picks the right origin per-frame (rest
 
   it('restores nothing for a frame whose origin has no entry in the map', () => {
     expect(runForOrigin(map, 'https://unrelated.example')).toEqual({});
+  });
+
+  it('skips __uiBridge_tabId even when a map bypassed the split scrub (belt-and-braces)', () => {
+    const dirty = {
+      'https://qontinui.io': {
+        auth_bearer_access_token: 'TOKEN',
+        __uiBridge_tabId: 'tab_operator_live',
+      },
+    };
+    expect(runForOrigin(dirty, 'https://qontinui.io')).toEqual({
+      auth_bearer_access_token: 'TOKEN',
+    });
   });
 });

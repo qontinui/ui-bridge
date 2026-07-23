@@ -36,6 +36,7 @@ export {
 
 export {
   SESSION_STORAGE_KEY,
+  SESSION_STORAGE_EXCLUDED_KEYS,
   mergeSessionStorageIntoArtifact,
   splitSessionStorageArtifact,
   restoreSessionStorageInitScript,

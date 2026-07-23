@@ -446,6 +446,12 @@ async function main(): Promise<void> {
         // Per-frame try/catch: cross-origin / sandboxed frames throw on
         // sessionStorage access and are skipped gracefully. Best-effort overall:
         // a failure here must not flip an otherwise-good login.
+        //
+        // NOTE: the raw per-frame read below intentionally captures EVERY key;
+        // `buildMultiOriginSessionStorageMap` is the single choke point that
+        // drops SESSION_STORAGE_EXCLUDED_KEYS (`__uiBridge_tabId` — a saved
+        // session must not carry a saved tab identity, or the replayed headless
+        // tab registers as the operator's live relay tab).
         try {
           const frames: FrameSessionStorage[] = [];
           for (const frame of page.frames()) {

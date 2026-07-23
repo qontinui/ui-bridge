@@ -27,6 +27,25 @@ export type SessionStorageMap = Record<string, SessionStorageKV>;
 /** The custom top-level key under which sessionStorage rides in the artifact. */
 export const SESSION_STORAGE_KEY = '__sessionStorage';
 
+/**
+ * sessionStorage keys that must NEVER be serialized into a storage-state
+ * artifact: a saved *session* must not carry a saved *tab identity*.
+ *
+ * `__uiBridge_tabId` is the relay's stable per-tab identity key (see
+ * `packages/ui-bridge/src/relay/relay-client.ts` `TAB_ID_STORAGE_KEY`). If a
+ * capture from the operator's live browser tab carries it into the artifact,
+ * replaying via `ui-bridge-inject --storage-state` restores it — and the
+ * injected headless tab registers with the relay under THE SAME tabId as the
+ * operator's real tab, so commands aimed at the "headless" tab can drive the
+ * operator's live browser. Filtering here (the capture choke point) is the
+ * primary defense; the restore side (`@qontinui/ui-bridge-headless`
+ * `splitSessionStorageArtifact` / `restoreSessionStorageInitScript`) scrubs the
+ * same key independently for artifacts already in the wild that carry it.
+ * Duplicated (not imported) on the headless side because this wrapper-local
+ * module deliberately has NO static dependency on the optional headless peer.
+ */
+export const SESSION_STORAGE_EXCLUDED_KEYS = ['__uiBridge_tabId'] as const;
+
 /** A Playwright `storageState` artifact, possibly extended with `__sessionStorage`. */
 export interface StorageStateArtifact {
   cookies?: unknown;
@@ -97,18 +116,27 @@ export interface FrameSessionStorage {
  *     key collision (last-write-wins) — same-origin frames share one
  *     sessionStorage partition in the browser, so collisions should carry the
  *     same value anyway; last-write-wins is the deterministic tie-break.
+ *   - Keys in {@link SESSION_STORAGE_EXCLUDED_KEYS} are DROPPED: a saved
+ *     session must not carry a saved tab identity (relay-tab hijack — see the
+ *     constant's doc comment).
  *
  * Pure + browser-free so it is unit-tested directly.
  */
 export function buildMultiOriginSessionStorageMap(
   frames: readonly FrameSessionStorage[]
 ): SessionStorageMap {
+  const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
   const out: SessionStorageMap = {};
   for (const frame of frames) {
     if (frame.kv === null) continue; // capture threw — skip
     const origin = frameOrigin(frame.url);
     if (origin === null) continue; // opaque/about:blank — skip
-    out[origin] = { ...(out[origin] ?? {}), ...frame.kv }; // last-write-wins per key
+    const kv: SessionStorageKV = {};
+    for (const key of Object.keys(frame.kv)) {
+      if (excluded.includes(key)) continue; // tab identity never rides in a session artifact
+      kv[key] = frame.kv[key];
+    }
+    out[origin] = { ...(out[origin] ?? {}), ...kv }; // last-write-wins per key
   }
   return out;
 }
