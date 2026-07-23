@@ -106,11 +106,18 @@ export class WrapperTransportError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly cause?: unknown;
+  /**
+   * Optional structured diagnostic payload (error-code-specific shape) so
+   * programmatic callers can branch on data instead of parsing the message —
+   * e.g. `INJECTED_EXPECT_SELECTOR_UNMET` attaches
+   * `{ registeredElements, elementCount }`.
+   */
+  readonly details?: unknown;
 
   constructor(
     code: string,
     message: string,
-    options: { retryable?: boolean; cause?: unknown } = {}
+    options: { retryable?: boolean; cause?: unknown; details?: unknown } = {}
   ) {
     super(message);
     this.name = 'WrapperTransportError';
@@ -118,6 +125,9 @@ export class WrapperTransportError extends Error {
     this.retryable = options.retryable ?? false;
     if (options.cause !== undefined) {
       this.cause = options.cause;
+    }
+    if (options.details !== undefined) {
+      this.details = options.details;
     }
   }
 }

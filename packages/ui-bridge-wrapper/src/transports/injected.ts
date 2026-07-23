@@ -35,6 +35,23 @@ const require = createRequire(import.meta.url);
 /** Lazily-loaded, cached injected runtime bundle (the IIFE text). */
 let cachedBundle: string | null = null;
 
+/** Max elements included in the UNMET diagnostic digest (keep the error short). */
+const DIGEST_MAX_ELEMENTS = 10;
+
+/** Bound on the best-effort digest snapshot fetch (must never stall the throw). */
+const DIGEST_TIMEOUT_MS = 5_000;
+
+/**
+ * One entry of the `INJECTED_EXPECT_SELECTOR_UNMET` diagnostic digest — the
+ * redaction-safe identity projection of a registered element, taken verbatim
+ * from the control snapshot's element serialization (never from the raw DOM).
+ */
+export interface RegisteredElementDigest {
+  id: string;
+  role?: string;
+  label?: string;
+}
+
 /** Resolve + read `@qontinui/ui-bridge`'s injected runtime IIFE bundle. */
 function loadInjectedBundle(): string {
   if (cachedBundle !== null) return cachedBundle;
@@ -317,21 +334,95 @@ export class InjectedTransport extends HeadlessTransport {
       // caller would mis-read as a clean snapshot.
       if (state.settledByTimeout && !state.expectSatisfied) {
         const sel = this.injected.expectSelector;
+        const baseMessage = sel
+          ? `The injected runtime settled at its cap without the expected control ` +
+            `(selector '${sel}') appearing — ${state.elementCount} element(s) were ` +
+            `registered, but none matched. The control may mount slower than the ` +
+            `settle cap (raise options.settleTimeoutMs), the selector may be wrong, ` +
+            `or the inject failed. Treat as BLOCKED/UNVERIFIED, not a clean page.`
+          : `The injected runtime settled at its cap with an empty registry ` +
+            `(0 elements). The page never rendered interactive content within ` +
+            `the settle cap, or the inject failed. Raise options.settleTimeoutMs ` +
+            `for a slow page; otherwise treat as BLOCKED/UNVERIFIED.`;
+
+        // Best-effort structured digest of WHAT actually registered, so callers
+        // can distinguish "inject failed / page empty" from "page is healthy but
+        // shaped differently than the selector expects". Read through the
+        // in-page dispatcher's control snapshot (action 'getControlSnapshot' —
+        // the same registered handler `InjectedContext.snapshot()` dispatches),
+        // whose per-element projection is already redaction-safe; never read
+        // raw DOM labels here. try/catch + bounded wait: a broken page must
+        // never mask the original UNMET error — on any failure, throw exactly
+        // as before, with no details.
+        const digest = await this.registeredElementDigest(page);
+        if (digest === null) {
+          throw new WrapperTransportError('INJECTED_EXPECT_SELECTOR_UNMET', baseMessage, {
+            retryable: true,
+          });
+        }
+        const summary =
+          digest.length > 0
+            ? ` Registered: ${digest
+                .map((el) => (el.role ? `${el.id} (${el.role})` : el.id))
+                .join(', ')}${state.elementCount > digest.length ? ', …' : ''}`
+            : '';
         throw new WrapperTransportError(
           'INJECTED_EXPECT_SELECTOR_UNMET',
-          sel
-            ? `The injected runtime settled at its cap without the expected control ` +
-                `(selector '${sel}') appearing — ${state.elementCount} element(s) were ` +
-                `registered, but none matched. The control may mount slower than the ` +
-                `settle cap (raise options.settleTimeoutMs), the selector may be wrong, ` +
-                `or the inject failed. Treat as BLOCKED/UNVERIFIED, not a clean page.`
-            : `The injected runtime settled at its cap with an empty registry ` +
-                `(0 elements). The page never rendered interactive content within ` +
-                `the settle cap, or the inject failed. Raise options.settleTimeoutMs ` +
-                `for a slow page; otherwise treat as BLOCKED/UNVERIFIED.`,
-          { retryable: true }
+          `${baseMessage}${summary}`,
+          {
+            retryable: true,
+            details: { registeredElements: digest, elementCount: state.elementCount },
+          }
         );
       }
+    }
+  }
+
+  /**
+   * Best-effort digest of the first {@link DIGEST_MAX_ELEMENTS} registered
+   * interactive elements, read through the in-page dispatcher's
+   * `getControlSnapshot` action (the snapshot's per-element projection is
+   * already redaction-safe — we never read raw DOM labels here). Returns
+   * `null` on ANY failure or timeout: this feeds error diagnostics only, and a
+   * broken page realm must never mask the error being reported.
+   */
+  private async registeredElementDigest(page: Page): Promise<RegisteredElementDigest[] | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const snapshotPromise = page.evaluate(() =>
+        (
+          window as unknown as {
+            __uiBridgeInjected: { execute(a: string, p?: unknown): Promise<unknown> };
+          }
+        ).__uiBridgeInjected.execute('getControlSnapshot', { skipSettle: true })
+      );
+      // Bound the wait: the settle cap has already fired by the time this runs,
+      // so a wedged realm must not stall the UNMET throw indefinitely.
+      const snapshot = await Promise.race([
+        snapshotPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('digest fetch timed out')), DIGEST_TIMEOUT_MS);
+        }),
+      ]);
+      if (!snapshot || typeof snapshot !== 'object') return null;
+      const elements = (snapshot as { elements?: unknown }).elements;
+      if (!Array.isArray(elements)) return null;
+      const digest: RegisteredElementDigest[] = [];
+      for (const el of elements.slice(0, DIGEST_MAX_ELEMENTS)) {
+        if (!el || typeof el !== 'object') continue;
+        const e = el as Record<string, unknown>;
+        if (typeof e.id !== 'string') continue;
+        digest.push({
+          id: e.id,
+          ...(typeof e.role === 'string' ? { role: e.role } : {}),
+          ...(typeof e.label === 'string' ? { label: e.label } : {}),
+        });
+      }
+      return digest;
+    } catch {
+      return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

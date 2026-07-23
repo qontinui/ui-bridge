@@ -218,3 +218,21 @@ describe('paramSchemaOf', () => {
     });
   });
 });
+
+describe('WrapperTransportError', () => {
+  it('exposes structured details when provided', () => {
+    const details = { registeredElements: [{ id: 'btn-1', role: 'button' }], elementCount: 3 };
+    const err = new WrapperTransportError('INJECTED_EXPECT_SELECTOR_UNMET', 'unmet', {
+      retryable: true,
+      details,
+    });
+    expect(err.details).toBe(details);
+    expect(err.retryable).toBe(true);
+    expect(err.code).toBe('INJECTED_EXPECT_SELECTOR_UNMET');
+  });
+
+  it('leaves details undefined when not provided', () => {
+    const err = new WrapperTransportError('X', 'no details');
+    expect(err.details).toBeUndefined();
+  });
+});

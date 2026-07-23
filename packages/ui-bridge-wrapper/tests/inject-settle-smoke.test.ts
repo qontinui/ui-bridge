@@ -299,6 +299,51 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (expectSelector gate
   );
 
   it(
+    'the UNMET error carries a structured registered-element digest when obtainable',
+    async () => {
+      // The chrome-only page DOES register interactive elements (the nav
+      // button) — it just never mounts #login. The error must let callers see
+      // WHAT registered, so "page healthy but shaped differently" is
+      // distinguishable from "inject failed / page empty".
+      const transport = createTransport({
+        kind: 'injected',
+        options: {
+          targetUrl: chromeOnlyUrl,
+          readyTimeoutMs: 30_000,
+          settleQuietMs: 300,
+          settleTimeoutMs: 1_500,
+          expectSelector: '#login',
+        },
+      });
+
+      try {
+        const err = await transport.ready().then(
+          () => null,
+          (e: unknown) => e
+        );
+        expect(err).toMatchObject({ code: 'INJECTED_EXPECT_SELECTOR_UNMET' });
+        const details = (err as { details?: unknown }).details as {
+          registeredElements: Array<{ id: string; role?: string; label?: string }>;
+          elementCount: number;
+        };
+        expect(details).toBeDefined();
+        expect(Array.isArray(details.registeredElements)).toBe(true);
+        expect(details.registeredElements.length).toBeGreaterThanOrEqual(1);
+        expect(details.registeredElements.length).toBeLessThanOrEqual(10);
+        for (const el of details.registeredElements) {
+          expect(typeof el.id).toBe('string');
+        }
+        expect(details.elementCount).toBeGreaterThanOrEqual(1);
+        // The message gains a one-line human-readable summary.
+        expect(String((err as Error).message)).toContain('Registered:');
+      } finally {
+        await transport.close().catch(() => {});
+      }
+    },
+    60_000
+  );
+
+  it(
     'settleState reports settledByTimeout + expectSatisfied=false on the unmet page (no-settle escape)',
     async () => {
       // With waitForSettle=false ready() does not throw, so a driver can still
@@ -359,6 +404,16 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject settle smoke (expectSelector gate
         expect(err).toMatchObject({ code: 'INJECTED_EXPECT_SELECTOR_UNMET' });
         // The no-selector branch names the empty registry, not a selector.
         expect(String((err as Error).message)).toContain('empty registry');
+        // The digest is obtainable (page realm healthy) and confirms the
+        // registry is genuinely empty — no misleading 'Registered:' summary.
+        const details = (err as { details?: unknown }).details as {
+          registeredElements: unknown[];
+          elementCount: number;
+        };
+        expect(details).toBeDefined();
+        expect(details.registeredElements).toEqual([]);
+        expect(details.elementCount).toBe(0);
+        expect(String((err as Error).message)).not.toContain('Registered:');
       } finally {
         await transport.close().catch(() => {});
       }
