@@ -64,13 +64,31 @@ export const SESSION_STORAGE_KEY = '__sessionStorage';
 export const SESSION_STORAGE_EXCLUDED_KEYS = ['__uiBridge_tabId'] as const;
 
 /**
+ * Copy `kv` with {@link SESSION_STORAGE_EXCLUDED_KEYS} dropped — the shared
+ * filter applied at every point a sessionStorage map is written into or read
+ * out of an artifact, so no path serializes or restores a tab identity.
+ */
+function withoutExcludedKeys(kv: SessionStorageKV): SessionStorageKV {
+  const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
+  const out: SessionStorageKV = {};
+  for (const key of Object.keys(kv)) {
+    if (excluded.includes(key)) continue; // tab identity never rides in a session artifact
+    out[key] = kv[key];
+  }
+  return out;
+}
+
+/**
  * Capture side. Fold a captured sessionStorage map for `origin` into the parsed
  * storageState `artifact`, returning the SAME object (mutated) for convenience.
  *
  * Only the supplied origin's entry is set/overwritten; any sessionStorage
- * already recorded for OTHER origins is preserved. An empty `kv` still records
- * the origin (an empty map is a meaningful "this origin had no sessionStorage"
- * — distinct from "we never captured this origin").
+ * already recorded for OTHER origins is preserved. Keys in
+ * {@link SESSION_STORAGE_EXCLUDED_KEYS} are DROPPED from the incoming `kv`:
+ * the merge choke point enforces the never-serialize-a-tab-identity invariant
+ * for every caller. An empty `kv` still records the origin (an empty map is a
+ * meaningful "this origin had no sessionStorage" — distinct from "we never
+ * captured this origin").
  */
 export function mergeSessionStorageIntoArtifact(
   artifact: StorageStateArtifact,
@@ -81,7 +99,7 @@ export function mergeSessionStorageIntoArtifact(
     artifact.__sessionStorage && typeof artifact.__sessionStorage === 'object'
       ? artifact.__sessionStorage
       : {};
-  artifact.__sessionStorage = { ...existing, [origin]: { ...kv } };
+  artifact.__sessionStorage = { ...existing, [origin]: withoutExcludedKeys(kv) };
   return artifact;
 }
 
@@ -109,18 +127,11 @@ export function splitSessionStorageArtifact(artifact: StorageStateArtifact): {
   const raw = artifact.__sessionStorage;
   let sessionStorage: SessionStorageMap | null = null;
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
     sessionStorage = {};
     for (const origin of Object.keys(raw)) {
       const kv = (raw as SessionStorageMap)[origin];
-      const scrubbed: SessionStorageKV = {};
-      if (kv && typeof kv === 'object') {
-        for (const key of Object.keys(kv)) {
-          if (excluded.includes(key)) continue; // tab identity never restores from a session artifact
-          scrubbed[key] = kv[key];
-        }
-      }
-      sessionStorage[origin] = scrubbed;
+      // Tab identity never restores from a session artifact.
+      sessionStorage[origin] = kv && typeof kv === 'object' ? withoutExcludedKeys(kv) : {};
     }
   }
   const cleaned: Record<string, unknown> = { ...artifact };

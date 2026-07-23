@@ -448,10 +448,14 @@ async function main(): Promise<void> {
         // a failure here must not flip an otherwise-good login.
         //
         // NOTE: the raw per-frame read below intentionally captures EVERY key;
-        // `buildMultiOriginSessionStorageMap` is the single choke point that
-        // drops SESSION_STORAGE_EXCLUDED_KEYS (`__uiBridge_tabId` — a saved
-        // session must not carry a saved tab identity, or the replayed headless
-        // tab registers as the operator's live relay tab).
+        // SESSION_STORAGE_EXCLUDED_KEYS (`__uiBridge_tabId` — a saved session
+        // must not carry a saved tab identity, or the replayed headless tab
+        // registers as the operator's live relay tab) is dropped downstream at
+        // BOTH choke points: `buildMultiOriginSessionStorageMap` filters when
+        // building the map, and the merge helpers
+        // (`mergeMultiOriginSessionStorageIntoArtifact` /
+        // `mergeSessionStorageIntoArtifact`) filter again at artifact-write
+        // time, so any consumer path upholds the invariant.
         try {
           const frames: FrameSessionStorage[] = [];
           for (const frame of page.frames()) {

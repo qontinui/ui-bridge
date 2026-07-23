@@ -10,6 +10,8 @@ import {
 import {
   splitSessionStorageArtifact,
   restoreSessionStorageInitScript,
+  SESSION_STORAGE_EXCLUDED_KEYS as HEADLESS_SESSION_STORAGE_EXCLUDED_KEYS,
+  mergeSessionStorageIntoArtifact as headlessMergeSessionStorageIntoArtifact,
 } from '@qontinui/ui-bridge-headless';
 
 // These two pure helpers are the contract of the sessionStorage parity feature:
@@ -18,6 +20,28 @@ import {
 //   - split (restore side, launcher) extracts that map AND returns a CLEANED
 //     storageState object with the custom key removed, so Playwright's
 //     `newContext({ storageState })` schema validation doesn't reject it.
+
+describe('SESSION_STORAGE_EXCLUDED_KEYS contract', () => {
+  it('wrapper and headless copies of the constant are identical (deliberately duplicated, kept in sync)', () => {
+    // The wrapper's session-storage-capture module deliberately carries NO
+    // static dependency on the optional headless peer, so the constant is
+    // duplicated rather than imported. This test is the sync enforcement.
+    expect([...SESSION_STORAGE_EXCLUDED_KEYS]).toEqual([
+      ...HEADLESS_SESSION_STORAGE_EXCLUDED_KEYS,
+    ]);
+  });
+
+  it('tripwire: the constant is exactly ["__uiBridge_tabId"]', () => {
+    // The inlined literal skip in `restoreSessionStorageInitScript` (that
+    // function is serialized into the page realm via `addInitScript` and
+    // cannot see module constants) only covers `__uiBridge_tabId`. Adding a
+    // key to SESSION_STORAGE_EXCLUDED_KEYS therefore ALSO requires updating
+    // that function's inline skip — this test is the reminder. If it just
+    // failed because you added a key: update the init-script's inline check,
+    // then extend this expectation.
+    expect([...SESSION_STORAGE_EXCLUDED_KEYS]).toEqual(['__uiBridge_tabId']);
+  });
+});
 
 describe('mergeSessionStorageIntoArtifact (capture side)', () => {
   it('adds __sessionStorage for the origin without disturbing cookies/origins', () => {
@@ -59,6 +83,32 @@ describe('mergeSessionStorageIntoArtifact (capture side)', () => {
     const artifact: Record<string, unknown> = {};
     const out = mergeSessionStorageIntoArtifact(artifact, 'https://x.io', { a: '1' });
     expect(out).toBe(artifact);
+  });
+
+  it('drops excluded keys from the incoming kv while sibling keys survive', () => {
+    // The merge choke point enforces the never-serialize-a-tab-identity
+    // invariant even for callers that bypass buildMultiOriginSessionStorageMap.
+    const artifact: Record<string, unknown> = {};
+    mergeSessionStorageIntoArtifact(artifact, 'https://qontinui.io', {
+      auth_bearer_access_token: 'TOKEN',
+      __uiBridge_tabId: 'tab_operator_live',
+      other: 'kept',
+    });
+    expect(artifact.__sessionStorage).toEqual({
+      'https://qontinui.io': { auth_bearer_access_token: 'TOKEN', other: 'kept' },
+    });
+  });
+
+  it("headless's duplicate merge helper drops excluded keys too (choke-point parity)", () => {
+    const artifact: Record<string, unknown> = {};
+    headlessMergeSessionStorageIntoArtifact(artifact, 'https://qontinui.io', {
+      auth_bearer_access_token: 'TOKEN',
+      __uiBridge_tabId: 'tab_operator_live',
+      other: 'kept',
+    });
+    expect(artifact.__sessionStorage).toEqual({
+      'https://qontinui.io': { auth_bearer_access_token: 'TOKEN', other: 'kept' },
+    });
   });
 });
 
@@ -282,6 +332,24 @@ describe('mergeMultiOriginSessionStorageIntoArtifact', () => {
       'https://x.io': { a: '1' },
     });
     expect(out).toBe(artifact);
+  });
+
+  it('drops excluded keys from every incoming origin map while sibling keys survive', () => {
+    // The merge choke point enforces the invariant for maps that did NOT come
+    // from buildMultiOriginSessionStorageMap (which already filters).
+    const artifact: Record<string, unknown> = {};
+    mergeMultiOriginSessionStorageIntoArtifact(artifact, {
+      'https://qontinui.io': {
+        auth_bearer_access_token: 'TOKEN',
+        __uiBridge_tabId: 'tab_operator_live',
+        other: 'kept',
+      },
+      'https://embed.example': { __uiBridge_tabId: 'tab_iframe' },
+    });
+    expect(artifact.__sessionStorage).toEqual({
+      'https://qontinui.io': { auth_bearer_access_token: 'TOKEN', other: 'kept' },
+      'https://embed.example': {},
+    });
   });
 
   it('a single-origin multi-origin merge yields the same shape as the legacy per-origin merge', () => {

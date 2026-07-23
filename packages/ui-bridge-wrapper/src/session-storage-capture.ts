@@ -55,11 +55,29 @@ export interface StorageStateArtifact {
 }
 
 /**
+ * Copy `kv` with {@link SESSION_STORAGE_EXCLUDED_KEYS} dropped — the one filter
+ * every artifact-serialization path applies (map build AND both merge helpers),
+ * so no consumer path can write a tab identity into an artifact.
+ */
+function withoutExcludedKeys(kv: SessionStorageKV): SessionStorageKV {
+  const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
+  const out: SessionStorageKV = {};
+  for (const key of Object.keys(kv)) {
+    if (excluded.includes(key)) continue; // tab identity never rides in a session artifact
+    out[key] = kv[key];
+  }
+  return out;
+}
+
+/**
  * Fold a captured sessionStorage map for `origin` into the parsed storageState
  * `artifact`, returning the SAME object (mutated) for convenience. Only the
  * supplied origin's entry is set/overwritten; sessionStorage already recorded
- * for OTHER origins is preserved. Backward-compatible: a legacy artifact gains
- * the new key without disturbing cookies/origins.
+ * for OTHER origins is preserved. Keys in
+ * {@link SESSION_STORAGE_EXCLUDED_KEYS} are DROPPED from the incoming `kv` —
+ * the merge choke point enforces the invariant even for callers that bypass
+ * {@link buildMultiOriginSessionStorageMap}. Backward-compatible: a legacy
+ * artifact gains the new key without disturbing cookies/origins.
  */
 export function mergeSessionStorageIntoArtifact(
   artifact: StorageStateArtifact,
@@ -70,7 +88,7 @@ export function mergeSessionStorageIntoArtifact(
     artifact.__sessionStorage && typeof artifact.__sessionStorage === 'object'
       ? artifact.__sessionStorage
       : {};
-  artifact.__sessionStorage = { ...existing, [origin]: { ...kv } };
+  artifact.__sessionStorage = { ...existing, [origin]: withoutExcludedKeys(kv) };
   return artifact;
 }
 
@@ -125,17 +143,12 @@ export interface FrameSessionStorage {
 export function buildMultiOriginSessionStorageMap(
   frames: readonly FrameSessionStorage[]
 ): SessionStorageMap {
-  const excluded: readonly string[] = SESSION_STORAGE_EXCLUDED_KEYS;
   const out: SessionStorageMap = {};
   for (const frame of frames) {
     if (frame.kv === null) continue; // capture threw — skip
     const origin = frameOrigin(frame.url);
     if (origin === null) continue; // opaque/about:blank — skip
-    const kv: SessionStorageKV = {};
-    for (const key of Object.keys(frame.kv)) {
-      if (excluded.includes(key)) continue; // tab identity never rides in a session artifact
-      kv[key] = frame.kv[key];
-    }
+    const kv = withoutExcludedKeys(frame.kv);
     out[origin] = { ...(out[origin] ?? {}), ...kv }; // last-write-wins per key
   }
   return out;
@@ -145,8 +158,11 @@ export function buildMultiOriginSessionStorageMap(
  * Fold a whole multi-origin sessionStorage map into the artifact, preserving any
  * origins already recorded that are NOT present in `map`. For each origin in
  * `map`, that origin's entry is set/overwritten (same per-origin semantics as
- * {@link mergeSessionStorageIntoArtifact}, applied for each origin). Returns the
- * SAME (mutated) object. Backward-compatible: the `__sessionStorage` shape is
+ * {@link mergeSessionStorageIntoArtifact}, applied for each origin), with keys
+ * in {@link SESSION_STORAGE_EXCLUDED_KEYS} DROPPED from each incoming origin
+ * map — the merge choke point enforces the invariant even for maps that did
+ * not come from {@link buildMultiOriginSessionStorageMap}. Returns the SAME
+ * (mutated) object. Backward-compatible: the `__sessionStorage` shape is
  * unchanged (origin → kv) — a single-origin map yields exactly the legacy shape.
  */
 export function mergeMultiOriginSessionStorageIntoArtifact(
@@ -159,7 +175,7 @@ export function mergeMultiOriginSessionStorageIntoArtifact(
       : {};
   const merged: SessionStorageMap = { ...existing };
   for (const origin of Object.keys(map)) {
-    merged[origin] = { ...map[origin] };
+    merged[origin] = withoutExcludedKeys(map[origin]);
   }
   artifact.__sessionStorage = merged;
   return artifact;

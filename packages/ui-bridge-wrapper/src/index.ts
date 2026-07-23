@@ -57,7 +57,11 @@ export {
   type HeadlessTransportOptions,
 } from './transports/headless.js';
 export { HeadedTransport } from './transports/headed.js';
-export { InjectedTransport, type InjectedContext } from './transports/injected.js';
+export {
+  InjectedTransport,
+  type InjectedContext,
+  type RegisteredElementDigest,
+} from './transports/injected.js';
 export {
   LiveSessionTransport,
   type LiveContext,
