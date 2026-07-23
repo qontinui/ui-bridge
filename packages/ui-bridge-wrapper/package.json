@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-wrapper",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Runtime for building UI Bridge wrapper apps — transport-agnostic semantic actions.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
