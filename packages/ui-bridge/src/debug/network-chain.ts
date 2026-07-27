@@ -20,6 +20,7 @@
 import type { AnyCapturedEvent, ConsoleCapturedEvent } from './browser-capture-types';
 import type { NetworkRequestTracker } from '../network/tracker';
 import type { NetworkRequestEntry } from '../network/types';
+import { truncateCodePoints } from '../core/text';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -742,7 +743,7 @@ export class NetworkChainTracker {
 
   private truncateBody(body: string): string {
     if (body.length <= this.config.maxBodyPreview) return body;
-    return body.slice(0, this.config.maxBodyPreview) + '…';
+    return truncateCodePoints(body, this.config.maxBodyPreview) + '…';
   }
 
   /** Trim the buffer to `maxChains`, dropping the oldest entries. */

@@ -873,8 +873,10 @@ export function createHandlers(
           // §4.6: an error/alert element inside a redaction boundary must not
           // leak its text through the error-snapshot sweep.
           if (isContentRedacted(htmlEl)) return;
-          const text = readScrubbedText(htmlEl);
-          if (text) visibleErrors.push(text.slice(0, 200));
+          // maxLen goes through readScrubbedText so the cut is code-point-safe
+          // (a raw .slice here could split an emoji and break the JSON response).
+          const text = readScrubbedText(htmlEl, undefined, { maxLen: 200 });
+          if (text) visibleErrors.push(text);
         });
       }
       return {

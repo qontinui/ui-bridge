@@ -13,6 +13,7 @@
  */
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
+import { truncateCodePoints } from '../../core/text';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -180,7 +181,7 @@ function detectReactErrorBoundary(): DetectedErrorOverlay | null {
 
 function truncate(s: string | undefined | null, max: number): string | undefined {
   if (!s) return undefined;
-  return s.length > max ? s.slice(0, max) + '...' : s;
+  return s.length > max ? truncateCodePoints(s, max) + '...' : s;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ export function installFrameworkOverlayCapture(emit: Emit): () => void {
           level: 'error',
           timestamp: Date.now(),
           url: typeof window !== 'undefined' ? window.location.href : '',
-          message: `[${overlay.framework} error overlay] ${overlay.title || 'Error'}${overlay.message ? ': ' + overlay.message.slice(0, 200) : ''}`,
+          message: `[${overlay.framework} error overlay] ${overlay.title || 'Error'}${overlay.message ? ': ' + truncateCodePoints(overlay.message, 200) : ''}`,
           stack: overlay.file ? `at ${overlay.file}` : undefined,
         });
       }

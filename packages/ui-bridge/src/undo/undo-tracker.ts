@@ -20,6 +20,7 @@ import type {
   UndoTrackerConfig,
 } from './types';
 import { UndoDetector } from './undo-detector';
+import { truncateCodePoints } from '../core/text';
 import type { UndoDetectionResult } from './undo-detector';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ interface ActionRecord {
 
 function truncate(str: string | undefined, maxLen: number): string {
   if (!str) return '';
-  return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
+  return str.length > maxLen ? truncateCodePoints(str, maxLen) + '...' : str;
 }
 
 function describeAction(record: ActionRecord): string {

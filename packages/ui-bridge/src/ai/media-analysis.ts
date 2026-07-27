@@ -9,6 +9,7 @@
 import type { RegisteredElement } from '../core/types';
 import { captureMediaSnapshot } from './media-snapshot';
 import { readAriaLabelAttr } from '../core/a11y';
+import { truncateCodePoints } from '../core/text';
 
 // ============================================================================
 // Types
@@ -120,7 +121,7 @@ function getParentContext(element: HTMLElement): string | undefined {
 
     if (label) {
       const containerType = role || tag;
-      return `inside a ${containerType} titled '${label.substring(0, 50)}'`;
+      return `inside a ${containerType} titled '${truncateCodePoints(label, 50)}'`;
     }
 
     // Check for semantic containers
@@ -155,7 +156,7 @@ function getSiblingLabels(element: HTMLElement, maxLabels: number = 3): string[]
 
     const text = (sibling as HTMLElement).textContent?.trim();
     if (text && text.length > 0 && text.length <= 100) {
-      labels.push(text.substring(0, 50));
+      labels.push(truncateCodePoints(text, 50));
     }
   }
 

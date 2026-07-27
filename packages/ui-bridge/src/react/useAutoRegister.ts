@@ -19,6 +19,7 @@ import { trackElementBbox } from './bbox-tracker';
 import { classString } from '../core/class-name';
 import { isBridgeInvisible } from '../core/registry';
 import { isContentRedacted } from '../core/redaction';
+import { truncateCodePoints } from '../core/text';
 import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
@@ -329,7 +330,7 @@ function getAccessibleLabel(element: HTMLElement): string | undefined {
     if (text.length <= 50) return text;
     // For longer text, truncate to first meaningful segment (up to 80 chars)
     // This handles list items, cards, etc. that have rich content
-    const truncated = text.slice(0, 80).replace(/\s+\S*$/, '');
+    const truncated = truncateCodePoints(text, 80).replace(/\s+\S*$/, '');
     if (truncated.length >= 8) return truncated;
   }
 
@@ -1034,7 +1035,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const label = redacted
         ? undefined
         : element.getAttribute('data-content-label') ||
-          normalizedText?.substring(0, 50) ||
+          (normalizedText ? truncateCodePoints(normalizedText, 50) : undefined) ||
           undefined;
 
       bridge.registry.registerContentElement(id, element, {
@@ -1111,7 +1112,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // Label defaults to the first 50 chars of the normalized text so the
       // snapshot has something human-readable in the `label` slot for tools
       // that don't render `content` yet.
-      const label = content ? content.substring(0, 50) : undefined;
+      const label = content ? truncateCodePoints(content, 50) : undefined;
 
       bridge.registry.registerElement(id, element, {
         // `generic` is the closest ElementType we have for a semantic card.

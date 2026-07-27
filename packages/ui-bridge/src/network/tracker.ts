@@ -19,6 +19,7 @@ import type {
   NetworkEvent,
   NetworkEventCallback,
 } from './types';
+import { truncateCodePoints } from '../core/text';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -655,5 +656,5 @@ function tryParsePathname(url: string): string | undefined {
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength) + '...';
+  return truncateCodePoints(text, maxLength) + '...';
 }

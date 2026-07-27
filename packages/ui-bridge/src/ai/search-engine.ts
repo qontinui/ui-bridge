@@ -24,6 +24,7 @@ import {
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
 import { getGlobalRegistry } from '../core/registry';
+import { truncateCodePoints } from '../core/text';
 import {
   verdictOf,
   verdictFromState,
@@ -99,7 +100,7 @@ export function isFindDebugEnabled(): boolean {
  */
 function truncForDebug(s: string | undefined, max = 80): string | undefined {
   if (!s) return s;
-  return s.length > max ? `${s.slice(0, max)}…` : s;
+  return s.length > max ? `${truncateCodePoints(s, max)}…` : s;
 }
 
 /**

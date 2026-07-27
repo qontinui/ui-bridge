@@ -19,6 +19,7 @@ import {
   serializeRegisteredComponent,
 } from '../core/registry';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
+import { truncateCodePoints } from '../core/text';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
@@ -1678,7 +1679,7 @@ export async function executeCommand(
           // are the boundary's secret — collapse the whole cell.
           text: isContentRedacted(e.element)
             ? REDACTED_VALUE
-            : (e.label ?? (readScrubbedText(e.element) ?? '')).slice(0, 50),
+            : truncateCodePoints(e.label ?? (readScrubbedText(e.element) ?? ''), 50),
         })),
       };
 

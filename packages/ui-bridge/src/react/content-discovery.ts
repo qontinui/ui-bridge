@@ -10,6 +10,7 @@
 
 import type { ContentType, ContentRole, ContentMetadata } from '../core/types';
 import { classString } from '../core/class-name';
+import { truncateCodePoints } from '../core/text';
 
 // ============================================================================
 // Configuration
@@ -406,7 +407,7 @@ export function inferContentMetadata(element: HTMLElement): ContentMetadata {
   if (metadata.dynamic) {
     const text = element.textContent?.trim() || '';
     if (text.length > 10) {
-      metadata.stableTextPrefix = text.substring(0, 10);
+      metadata.stableTextPrefix = truncateCodePoints(text, 10);
     }
   }
 

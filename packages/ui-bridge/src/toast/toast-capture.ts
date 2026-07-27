@@ -17,6 +17,7 @@ import type {
 } from './types';
 import { classString } from '../core/class-name';
 import { readAriaLabelAttr } from '../core/a11y';
+import { truncateCodePoints } from '../core/text';
 
 // ============================================================================
 // Built-in selectors for common toast/notification libraries
@@ -227,7 +228,7 @@ function detectAction(el: Element): ActionInfo {
     ) {
       continue;
     }
-    return { hasAction: true, actionText: text.substring(0, 100) };
+    return { hasAction: true, actionText: truncateCodePoints(text, 100) };
   }
   return { hasAction: false };
 }
@@ -261,7 +262,7 @@ function extractMessage(el: Element): string {
   const text = (clone.textContent || '').trim();
   // Collapse whitespace
   const collapsed = text.replace(/\s+/g, ' ');
-  return collapsed.substring(0, 500);
+  return truncateCodePoints(collapsed, 500);
 }
 
 // ============================================================================

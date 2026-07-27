@@ -29,6 +29,7 @@
  */
 
 import type { DiscoveredElement } from '../control';
+import { truncateCodePoints } from '../core/text';
 
 // ============================================================================
 // Types
@@ -118,12 +119,6 @@ function worstSeverity(findings: PageHealthFinding[]): PageHealthSeverity {
     }
   }
   return worst;
-}
-
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  // Use [...s] to chunk by code points, matching the runner's `chars().take(120)`.
-  return [...s].slice(0, n).join('');
 }
 
 // ============================================================================
@@ -278,19 +273,19 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
     const textLower = text.toLowerCase();
     for (const p of ERROR_PHRASES) {
       if (textLower.includes(p)) {
-        detectedErrors.push(truncate(text, 120));
+        detectedErrors.push(truncateCodePoints(text, 120));
         break;
       }
     }
     for (const p of LOADING_PHRASES) {
       if (textLower.includes(p)) {
-        detectedLoading.push(truncate(text, 120));
+        detectedLoading.push(truncateCodePoints(text, 120));
         break;
       }
     }
     for (const p of EMPTY_PHRASES) {
       if (textLower.includes(p)) {
-        detectedEmpty.push(truncate(text, 120));
+        detectedEmpty.push(truncateCodePoints(text, 120));
         break;
       }
     }

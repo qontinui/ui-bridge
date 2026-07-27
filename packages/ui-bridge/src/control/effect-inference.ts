@@ -24,6 +24,7 @@
 import type { IRElementCriteria } from '../react/ir-types';
 import type { ElementFingerprintData } from '../core/element-fingerprint';
 import type { CooccurrenceExportData } from '../recording/types';
+import { truncateCodePoints } from '../core/text';
 
 // ---------------------------------------------------------------------------
 // Flat effect records — one per recorded transition
@@ -118,7 +119,7 @@ function shortText(text: string): string {
   const collapsed = text.trim().replace(/\s+/g, ' ');
   // Cap to a short prefix — long exact text is brittle for a `textContains`
   // substring match; the leading words carry the signal.
-  return collapsed.length > 40 ? collapsed.slice(0, 40).trim() : collapsed;
+  return collapsed.length > 40 ? truncateCodePoints(collapsed, 40).trim() : collapsed;
 }
 
 /**

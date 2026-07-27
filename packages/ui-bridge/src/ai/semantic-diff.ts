@@ -17,6 +17,7 @@ import type {
   StatusChange,
 } from './types';
 import { generateDiffSummary } from './summary-generator';
+import { truncateCodePoints } from '../core/text';
 
 /**
  * Configuration for semantic diff
@@ -239,7 +240,7 @@ function formatValue(value: unknown): string {
   if (typeof value === 'string') {
     // Truncate long strings
     if (value.length > 50) {
-      return value.substring(0, 47) + '...';
+      return truncateCodePoints(value, 47) + '...';
     }
     return value;
   }

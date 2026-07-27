@@ -16,6 +16,7 @@ import type {
   FormsResponse,
 } from './types';
 import { SearchEngine } from './search-engine';
+import { truncateCodePoints } from '../core/text';
 import { generatePageSummary, inferPageType } from './summary-generator';
 import {
   generateAliases,
@@ -316,7 +317,7 @@ export class SemanticSnapshotManager {
   private generateContentDescription(element: ControlSnapshot['elements'][0]): string {
     const meta = element.contentMetadata;
     const text = element.state.textContent?.trim() || '';
-    const truncatedText = text.length > 60 ? text.substring(0, 57) + '...' : text;
+    const truncatedText = text.length > 60 ? truncateCodePoints(text, 57) + '...' : text;
 
     if (!meta) return `"${truncatedText}"`;
 

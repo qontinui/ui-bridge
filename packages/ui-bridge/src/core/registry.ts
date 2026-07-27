@@ -45,6 +45,7 @@ import {
   readPlaceholderAttr,
 } from './a11y';
 import { createStableRef } from './stable-ref';
+import { truncateCodePoints } from './text';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
   verdictOf,
@@ -431,7 +432,7 @@ function computeAccessibleName(element: HTMLElement): string | undefined {
 
   const rawText = element.textContent?.trim();
   if (rawText) {
-    return rawText.length <= 80 ? rawText : rawText.slice(0, 80);
+    return truncateCodePoints(rawText, 80);
   }
 
   return undefined;

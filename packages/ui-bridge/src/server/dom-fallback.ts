@@ -8,6 +8,7 @@
  */
 
 import { readScrubbedText, readScrubbedValue, REDACTED_VALUE, verdictOf } from '../core/redaction';
+import { truncateCodePoints } from '../core/text';
 import {
   computeVisibleText,
   readAriaLabelAttr,
@@ -134,7 +135,7 @@ function getLabel(el: HTMLElement): string {
 
   // Direct text content (capped for perf)
   const text = computeVisibleText(el) ?? '';
-  return text.length > 200 ? text.slice(0, 200) + '…' : text;
+  return text.length > 200 ? truncateCodePoints(text, 200) + '…' : text;
 }
 
 /** Check if element is visible (not hidden/zero-size). */

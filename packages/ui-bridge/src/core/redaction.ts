@@ -28,6 +28,7 @@
 // surfaces it via this module).
 export const REDACTED_VALUE = '[REDACTED]';
 import type { ElementState, MediaMetadata } from './types';
+import { truncateCodePoints } from './text';
 
 /**
  * The attribute that marks an element (and its subtree) as sensitive. Honored
@@ -278,7 +279,7 @@ export function readScrubbedText(
   let raw = el.textContent?.trim();
   if (!raw) return undefined;
   if (opts?.normalizeWhitespace) raw = raw.replace(/\s+/g, ' ');
-  if (opts?.maxLen != null) raw = raw.slice(0, opts.maxLen);
+  if (opts?.maxLen != null) raw = truncateCodePoints(raw, opts.maxLen);
   return scrubContentByVerdict(raw, verdict ?? verdictOf(el as HTMLElement));
 }
 

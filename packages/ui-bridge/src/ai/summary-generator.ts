@@ -12,6 +12,7 @@ import type {
   PageContext,
   SemanticSnapshot,
 } from './types';
+import { truncateCodePoints } from '../core/text';
 
 /**
  * Configuration for summary generation
@@ -125,7 +126,7 @@ export function generatePageSummary(
 
   // Truncate if needed
   if (summary.length > finalConfig.maxLength) {
-    summary = summary.substring(0, finalConfig.maxLength - 3) + '...';
+    summary = truncateCodePoints(summary, finalConfig.maxLength - 3) + '...';
   }
 
   return summary;
@@ -523,7 +524,7 @@ function formatElementType(type: string): string {
  */
 function truncate(str: string, maxLength: number): string {
   if (str.length <= maxLength) return str;
-  return str.substring(0, maxLength - 3) + '...';
+  return truncateCodePoints(str, maxLength - 3) + '...';
 }
 
 /**

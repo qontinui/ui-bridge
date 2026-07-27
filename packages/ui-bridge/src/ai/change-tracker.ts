@@ -38,6 +38,7 @@ import type {
 } from './types';
 import type { ControlSnapshot } from '../control/types';
 import { computeDiff, hasSignificantChanges } from './semantic-diff';
+import { truncateCodePoints } from '../core/text';
 import type { SemanticDiffConfig } from './semantic-diff';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
 import type { CompositeIdleDetector } from '../idle';
@@ -972,7 +973,7 @@ export class ChangeTracker {
 
     const truncateText = (text: string, max: number): string => {
       if (text.length <= max) return text;
-      return text.substring(0, max - 3) + '...';
+      return truncateCodePoints(text, max - 3) + '...';
     };
 
     // 1. Category header

@@ -17,6 +17,7 @@ import {
 } from '../core/redaction';
 import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
+import { truncateCodePoints } from '../core/text';
 
 /**
  * Captured DOM element information
@@ -348,7 +349,7 @@ function captureElement(
   const identifier = createElementIdentifier(element);
   let textContent: string | undefined = readScrubbedText(element);
   if (textContent && textContent.length > maxTextLength) {
-    textContent = textContent.substring(0, maxTextLength) + '...';
+    textContent = truncateCodePoints(textContent, maxTextLength) + '...';
   }
 
   // §4.6: route the content fields + attribute record through the choke point

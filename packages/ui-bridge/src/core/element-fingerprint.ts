@@ -14,6 +14,7 @@ import type { UIBridgeRegistry } from './registry';
 import type { RegisteredElement } from './types';
 import { classString, classList } from './class-name';
 import { readAriaLabelAttr, readAriaLabelledbyAttr, readPlaceholderAttr } from './a11y';
+import { truncateCodePoints } from './text';
 
 // ============================================================================
 // Types
@@ -267,7 +268,7 @@ function normalizeName(name: string): string {
 
   // Truncate to 50 chars
   if (normalized.length > 50) {
-    normalized = normalized.slice(0, 50);
+    normalized = truncateCodePoints(normalized, 50);
   }
 
   return normalized;

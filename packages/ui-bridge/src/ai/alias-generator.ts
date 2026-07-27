@@ -6,6 +6,7 @@
  */
 
 import { tokenize } from './fuzzy-matcher';
+import { truncateCodePoints } from '../core/text';
 
 /**
  * Configuration for alias generation
@@ -483,7 +484,7 @@ export function generateDescription(input: AliasGeneratorInput): string {
     name = name.trim();
     // Truncate if too long
     if (name.length > 30) {
-      name = name.substring(0, 27) + '...';
+      name = truncateCodePoints(name, 27) + '...';
     }
     parts.push(`"${name}"`);
   }

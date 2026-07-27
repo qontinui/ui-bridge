@@ -57,3 +57,9 @@ export { UIBridgeWSClient, createWSClient } from './websocket-client';
 
 // SVG-safe className helpers — always use instead of `.className.split(...)`.
 export { classString, classList } from './class-name';
+
+// Code-point-safe truncation — always use instead of `.slice(0, n)` /
+// `.substring(0, n)` on user text. A raw slice splits surrogate pairs, and the
+// resulting lone surrogate makes the whole JSON response unparseable for a
+// strict-UTF-8 consumer such as the Rust runner.
+export { truncateCodePoints } from './text';
