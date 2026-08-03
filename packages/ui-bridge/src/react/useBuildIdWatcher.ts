@@ -10,10 +10,19 @@
  *      a. Emits `buildId` on a Server-Sent Events stream (default
  *         `/health/stream`), or
  *      b. Exposes a fetch-able snapshot the hook polls on an interval, or
- *      c. Provides a custom getter (e.g. a Tauri `invoke` for desktop apps
- *         where the binary's compiled-in build-id differs from the
- *         meta tag baked into the embedded HTML at the time the webview
- *         loaded it).
+ *      c. Provides a custom getter reading some other live source.
+ *
+ * ⚠️ The watched source MUST be able to change while the page is open.
+ * Comparing two compile-time constants of the SAME process — e.g. a
+ * meta tag baked into HTML embedded in a desktop binary against that same
+ * binary's compiled-in build-id — is a permanent FALSE POSITIVE, not a
+ * staleness check: replacing the executable on disk changes neither value,
+ * so the comparison can only ever fire on a build-time inconsistency, and
+ * the reload it prompts is a guaranteed no-op. The qontinui runner shipped
+ * exactly that (a Tauri `invoke` custom getter against its own embedded
+ * meta tag) and the banner never cleared; it was deleted rather than
+ * repaired. Use this hook only where a real server, or another source that
+ * genuinely moves at runtime, is on the other end.
  *
  * On mount, the hook reads the meta-tag value as the "current" build-id and
  * starts whichever source is configured. When the source reports a build-id
@@ -35,10 +44,11 @@
  *     onBuildIdChange: () => setStale(true),
  *   });
  *
- * Usage (custom getter — e.g. Tauri invoke):
+ * Usage (custom getter — any source that changes at RUNTIME; see the
+ * warning above before reaching for this):
  *   useBuildIdWatcher({
- *     getCurrentBuildId: () => invoke<string>('get_build_id'),
- *     pollIntervalMs: 0, // one-shot; binary swap is the only divergence cause
+ *     getCurrentBuildId: () => fetchBuildIdFromSomewhereLive(),
+ *     pollIntervalMs: 30_000,
  *     onBuildIdChange: () => setStale(true),
  *   });
  */
