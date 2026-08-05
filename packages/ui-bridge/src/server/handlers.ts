@@ -315,6 +315,12 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       mediaMetadata?: unknown;
       element: HTMLElement;
       getState?: () => unknown;
+      // Registry entries expose `getState()`; DOM-fallback scan entries carry
+      // an already-built `state` object instead (`DOMFallbackElement`). Both
+      // are accepted below — reading only `getState()` silently dropped the
+      // whole `state` block on the DOM-fallback path, which is what made the
+      // `?withDisabledOnly` predicate unmatchable there.
+      state?: unknown;
       getIdentifier?: () => unknown;
       bbox?: { x: number; y: number; width: number; height: number };
       visible?: boolean;
@@ -359,7 +365,7 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       text: visibleText,
       title: titleAttr || undefined,
       identifier: el.getIdentifier?.(),
-      state: el.getState?.(),
+      state: el.getState?.() ?? el.state,
       // Canonical lifecycle fields (UIBridgeElement requires both). Registry
       // entries carry real values; DOM-fallback scans synthesize them —
       // materialization time for `registeredAt`, and `mounted: true` since a
@@ -2132,12 +2138,13 @@ export function createHandlers(
         // so registry-empty snapshots can still surface disabled DOM nodes.
         // Keeps elements that are disabled by ANY signal the SDK might
         // surface in `state`:
-        //   - `state.disabled === true` (legacy shape, plan-specified)
-        //   - `state.ariaDisabled === "true"` (aria-disabled attr passthrough)
-        //   - `state.enabled === false` (current SDK shape — registry.ts
-        //     emits the inverse `enabled` boolean rather than `disabled`).
-        // Matching all three keeps the filter useful regardless of which
-        // snapshot construction path produced the element record.
+        //   - `state.disabled === true` (native DOM `disabled` property)
+        //   - `state.ariaDisabled === true` (the `aria-disabled` attribute);
+        //     the `'true'` STRING form is still matched for records produced
+        //     by a pre-R8 SDK that passed the raw attribute through
+        //   - `state.enabled === false` (the derived fold of the two).
+        // Every current serializer emits all three, but a snapshot may have
+        // been produced by an older SDK, so all three arms stay live.
         const wantDisabledOnly =
           request?.withDisabledOnly === true ||
           request?.withDisabledOnly === 'true' ||
@@ -2150,6 +2157,7 @@ export function createHandlers(
             const s = (e as { state?: Record<string, unknown> }).state ?? {};
             return (
               s.disabled === true ||
+              s.ariaDisabled === true ||
               s.ariaDisabled === 'true' ||
               s.enabled === false
             );

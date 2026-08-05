@@ -580,8 +580,8 @@ export interface UIBridgeServerHandlers {
     /**
      * Manual-test remediation 2026-05-10 (Item 2) filter: when `true`,
      * keep only elements that report disabled by any of these signals in
-     * the snapshot's `state`: `disabled === true`,
-     * `ariaDisabled === "true"`, or `enabled === false`. Default `false` —
+     * the snapshot's `state`: `disabled === true`, `ariaDisabled === true`
+     * (or the pre-R8 `"true"` string), or `enabled === false`. Default `false` —
      * include everything. All other snapshot metadata (route, activeTab,
      * registration, viewport, errorSummary) is preserved unchanged.
      */

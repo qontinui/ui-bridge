@@ -14,6 +14,7 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
+  readDisabledSignals,
 } from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
@@ -175,13 +176,22 @@ export interface DOMFallbackElement {
   actions: string[];
   visible: boolean;
   tagName: string;
+  /**
+   * The DOM-scan projection of `ElementState` (`core/types.ts`). The disabled family
+   * (`visible`/`enabled`/`disabled`/`ariaDisabled`/`focused`) is declared with
+   * exactly the canonical requiredness so this serializer and the registry's
+   * cannot disagree about which keys exist — the divergence R8 was filed for
+   * (this path emitted `disabled`, which the canonical type did not even
+   * declare, while never emitting `ariaDisabled`).
+   */
   state: {
     textContent: string;
     value?: string;
     checked?: boolean;
-    disabled?: boolean;
     visible: boolean;
     enabled: boolean;
+    disabled: boolean;
+    ariaDisabled: boolean;
     focused: boolean;
     rect: {
       x: number;
@@ -245,6 +255,10 @@ export function scanDOMForInteractiveElementsWithRefs(
 
     const type = inferType(el);
     const rect = el.getBoundingClientRect();
+    // The two independent disabled signals, unfolded once (`enabled` below is
+    // the derived fold). Same helper as the registry serializer — see
+    // `core/a11y` — so the two paths cannot drift on either value or key set.
+    const disabledSignals = readDisabledSignals(el);
 
     // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
     // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
@@ -266,9 +280,10 @@ export function scanDOMForInteractiveElementsWithRefs(
         textContent: readScrubbedText(el, verdict, { maxLen: 500 }) ?? '',
         value: 'value' in el ? readScrubbedValue(el as HTMLInputElement, verdict) : undefined,
         checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
-        disabled: 'disabled' in el ? (el as HTMLInputElement).disabled : undefined,
         visible: isVisible(el),
-        enabled: !('disabled' in el && (el as HTMLInputElement).disabled),
+        enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+        disabled: disabledSignals.disabled,
+        ariaDisabled: disabledSignals.ariaDisabled,
         focused: document.activeElement === el,
         rect: {
           x: Math.round(rect.x),

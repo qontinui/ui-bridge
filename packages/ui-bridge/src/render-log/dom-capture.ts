@@ -15,7 +15,12 @@ import {
   readScrubbedValue,
   readScrubbedText,
 } from '../core/redaction';
-import { readAriaLabelAttr, readAriaLabelledbyAttr, readTitleAttr } from '../core/a11y';
+import {
+  readAriaLabelAttr,
+  readAriaLabelledbyAttr,
+  readTitleAttr,
+  readDisabledSignals,
+} from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
 
@@ -221,9 +226,15 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
 
+  // The two independent disabled signals, unfolded once (`enabled` below is
+  // the derived fold). Same helper in every serializer — see `core/a11y`.
+  const disabledSignals = readDisabledSignals(element);
+
   const state: ElementState = {
     visible: isVisible(element, rect, style),
-    enabled: !isDisabled(element),
+    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    disabled: disabledSignals.disabled,
+    ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
     rect: {
       x: rect.x,
@@ -316,12 +327,6 @@ function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclarati
     rect.left < window.innerWidth &&
     rect.right > 0
   );
-}
-
-function isDisabled(element: HTMLElement): boolean {
-  if ('disabled' in element && (element as HTMLInputElement).disabled) return true;
-  if (element.getAttribute('aria-disabled') === 'true') return true;
-  return false;
 }
 
 /**

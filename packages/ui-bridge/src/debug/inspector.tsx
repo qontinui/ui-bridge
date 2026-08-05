@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { RegisteredElement, ElementState, ElementIdentifier } from '../core/types';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
+import { readDisabledSignals } from '../core/a11y';
 import { getGlobalAnnotationStore } from '../annotations';
 import { verdictOf, scrubValueByVerdict } from '../core/redaction';
 
@@ -108,9 +109,18 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
 
+  // The two independent disabled signals, unfolded once (`enabled` below is
+  // the derived fold). Same helper in every serializer — see `core/a11y`.
+  // NOTE: this previously ignored `aria-disabled` entirely, so the inspector
+  // showed "enabled" for ARIA-disabled controls the other serializers called
+  // disabled.
+  const disabledSignals = readDisabledSignals(element);
+
   const state: ElementState = {
     visible: rect.width > 0 && rect.height > 0 && style.display !== 'none',
-    enabled: !('disabled' in element && (element as HTMLInputElement).disabled),
+    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    disabled: disabledSignals.disabled,
+    ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
     rect: {
       x: rect.x,

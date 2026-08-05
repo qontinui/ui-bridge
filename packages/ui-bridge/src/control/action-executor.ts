@@ -68,6 +68,7 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
+  readDisabledSignals,
 } from '../core/a11y';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
@@ -180,9 +181,15 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
 
+  // The two independent disabled signals, unfolded once (`enabled` below is
+  // the derived fold). Same helper in every serializer — see `core/a11y`.
+  const disabledSignals = readDisabledSignals(element);
+
   const state: ElementState = {
     visible: isVisible(element, rect, style),
-    enabled: !isDisabled(element),
+    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    disabled: disabledSignals.disabled,
+    ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
     rect: {
       x: rect.x,
@@ -341,10 +348,14 @@ function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclarati
   );
 }
 
+/**
+ * The folded "either signal says disabled" predicate, for the interactability
+ * pre-checks. `ElementState` carries the two signals UNFOLDED (`disabled` /
+ * `ariaDisabled`); this is the one place that still wants the OR.
+ */
 function isDisabled(element: HTMLElement): boolean {
-  if ('disabled' in element && (element as HTMLInputElement).disabled) return true;
-  if (element.getAttribute('aria-disabled') === 'true') return true;
-  return false;
+  const { disabled, ariaDisabled } = readDisabledSignals(element);
+  return disabled || ariaDisabled;
 }
 
 /**

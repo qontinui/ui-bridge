@@ -179,3 +179,25 @@ export function readInnerText(el: Element): string | undefined {
   const inner = (el as HTMLElement).innerText;
   return typeof inner === 'string' ? inner : undefined;
 }
+
+/**
+ * The two INDEPENDENT disabled signals, unfolded.
+ *
+ * `ElementState.enabled` folds these into one boolean, which loses the
+ * distinction a driver needs: only `disabled` (the native IDL property) makes
+ * the browser refuse events, while `ariaDisabled` is a pure announcement that
+ * still dispatches real clicks. Every `ElementState` producer reads this one
+ * helper so the four serializers cannot drift apart again.
+ *
+ * `enabled` is derived as `!(disabled || ariaDisabled)` — the historical
+ * meaning, unchanged.
+ */
+export function readDisabledSignals(el: Element): {
+  disabled: boolean;
+  ariaDisabled: boolean;
+} {
+  return {
+    disabled: 'disabled' in el && (el as unknown as HTMLInputElement).disabled === true,
+    ariaDisabled: el.getAttribute('aria-disabled') === 'true',
+  };
+}

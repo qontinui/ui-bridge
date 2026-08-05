@@ -67,8 +67,28 @@ export interface ElementIdentifier {
 export interface ElementState {
   /** Whether the element is visible in the viewport */
   visible: boolean;
-  /** Whether the element is enabled (not disabled) */
+  /**
+   * DERIVED convenience boolean: `!(disabled || ariaDisabled)`. Kept because
+   * every existing consumer reads it (the runner's `?fields=` allowlist, its
+   * `waitFor` state names, spec-check's canonical `ElementState`), but it
+   * FOLDS the two independent signals below into one — a driver that needs to
+   * tell "the DOM refuses input" from "the author only labelled it disabled"
+   * must read `disabled` / `ariaDisabled`, not this.
+   */
   enabled: boolean;
+  /**
+   * The native DOM `disabled` IDL property ONLY (`<button disabled>`,
+   * `<input disabled>`, …). `false` for elements that have no such property.
+   * This is the signal that actually stops the browser dispatching events.
+   */
+  disabled: boolean;
+  /**
+   * The `aria-disabled="true"` attribute ONLY. Independent of `disabled`: a
+   * Radix/ARIA button styled and announced as disabled still receives real
+   * clicks, so a driver asserting "the click was refused" must distinguish
+   * this from the native property.
+   */
+  ariaDisabled: boolean;
   /** Whether the element has focus */
   focused: boolean;
   /** ARIA role attribute value (e.g. "tablist", "tab", "button") */

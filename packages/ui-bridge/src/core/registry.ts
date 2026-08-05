@@ -43,6 +43,7 @@ import {
   readAriaLabelledbyAttr,
   readTitleAttr,
   readPlaceholderAttr,
+  readDisabledSignals,
 } from './a11y';
 import { createStableRef } from './stable-ref';
 import { truncateCodePoints } from './text';
@@ -475,9 +476,15 @@ function getElementState(element: HTMLElement): ElementState {
   const roleAttr = element.getAttribute('role') || undefined;
   const accessibleName = scrubContentByVerdict(computeAccessibleName(element), verdict);
 
+  // The two independent disabled signals, unfolded once (`enabled` below is
+  // the derived fold). Same helper in every serializer — see `core/a11y`.
+  const disabledSignals = readDisabledSignals(element);
+
   const state: ElementState = {
     visible: isElementVisible(element, rect, computedStyle, inViewport),
-    enabled: !isElementDisabled(element),
+    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    disabled: disabledSignals.disabled,
+    ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
     role: roleAttr,
     accessibleName,
@@ -713,19 +720,6 @@ function isScrollContainer(element: HTMLElement, style: CSSStyleDeclaration): bo
   const oy = style.overflowY;
   const ox = style.overflowX;
   return oy === 'auto' || oy === 'scroll' || ox === 'auto' || ox === 'scroll';
-}
-
-/**
- * Check if an element is disabled
- */
-function isElementDisabled(element: HTMLElement): boolean {
-  if ('disabled' in element && (element as HTMLButtonElement).disabled) {
-    return true;
-  }
-  if (element.getAttribute('aria-disabled') === 'true') {
-    return true;
-  }
-  return false;
 }
 
 /**
