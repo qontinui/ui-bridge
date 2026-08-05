@@ -1520,15 +1520,19 @@ same canonical envelope, so callers branch on `code` uniformly:
 GET /health
 ```
 
-Returns runner liveness signals. Three booleans worth knowing:
+Returns runner liveness signals. The fields worth knowing:
 
 - `responsive` — IPC round-trip succeeds (the React side is alive
   enough to acknowledge a ping).
 - `ready` — the runner has completed its bootstrap routine.
-- `frontendReady` — flips `true` the first time any UI Bridge IPC
-  response comes back from the React frontend, meaning the app has
-  rendered past `App.tsx`'s loading-screen branch and registered its
-  ui-bridge-response listener. **One-way transition** — once true, it
+- `frontendReady` — **derived**, each time `/health` is called, from the
+  runner's frontend-state classification: `true` only while that state is
+  `Responsive`. It is not a latch, so it can go back to `false` if the
+  frontend stops responding.
+- `frontendState` — the reason string behind `frontendReady`, for when
+  you need to know *why* it is false rather than just that it is.
+- `uiBridgeIpcObserved` — the raw one-way latch: flips `true` the first
+  time any UI Bridge IPC response comes back from the React frontend, and
   stays true for the rest of the process lifetime.
 
 Use `frontendReady` to distinguish "Tauri shell is up but the React
@@ -1536,6 +1540,21 @@ app is still loading" from "the app is fully usable." External
 pollers spawning a temp runner should wait until `frontendReady: true`
 before issuing UI Bridge calls — otherwise the first few requests may
 hit the 503 transport-failure path until the React listener attaches.
+
+:::caution Changed contract
+
+`frontendReady` used to *be* the one-way latch now exposed as
+`uiBridgeIpcObserved`. That was wrong in both directions: nothing internal
+drove the latch, so it stayed `false` indefinitely on a healthy but idle
+runner, and being one-way it stayed `true` through a dead WebView2. A
+booting frontend and a hung one were indistinguishable.
+
+If you depend on the old semantics — specifically, "has anyone exercised
+the UI Bridge IPC path yet", which is the right gate for a test that must
+force a round-trip before probing routes — read `uiBridgeIpcObserved`, not
+`frontendReady`.
+
+:::
 
 ## Health stream (SSE — supervisor only)
 
