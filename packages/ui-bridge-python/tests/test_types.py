@@ -99,6 +99,137 @@ class TestElementState:
         )
         assert state.checked is True
 
+    def test_pre_split_payload_defaults_disabled_signals(self):
+        """A payload predating the disabled/ariaDisabled split still validates."""
+        state = ElementState.model_validate(
+            {
+                "visible": True,
+                "enabled": True,
+                "focused": False,
+                "rect": create_test_rect().model_dump(),
+            }
+        )
+        # Absent is NOT "observed enabled" - it only reads False here.
+        assert state.disabled is False
+        assert state.aria_disabled is False
+
+    def test_disabled_and_aria_disabled_are_independent(self):
+        """The two signals the derived `enabled` fold conflates stay separate."""
+        state = ElementState.model_validate(
+            {
+                "visible": True,
+                "enabled": False,
+                "disabled": False,
+                "ariaDisabled": True,
+                "focused": False,
+                "rect": create_test_rect().model_dump(),
+            }
+        )
+        assert state.disabled is False
+        assert state.aria_disabled is True
+        assert state.enabled is False
+
+    def test_full_wire_payload_retains_every_field(self):
+        """Every TS ElementState field survives validation.
+
+        Pydantic silently drops unknown extras, so a model lagging the TS type
+        returns less than the wire carried with no error. This asserts the whole
+        surface round-trips.
+        """
+        payload = {
+            "visible": True,
+            "enabled": False,
+            "disabled": True,
+            "ariaDisabled": False,
+            "focused": True,
+            "role": "button",
+            "accessibleName": "Save",
+            "rect": create_test_rect().model_dump(),
+            "normalizedRect": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+            "value": "typed",
+            "checked": True,
+            "selectedOptions": ["a"],
+            "availableOptions": [{"value": "a", "label": "A", "selected": True}],
+            "textContent": "Save",
+            "innerHTML": "<b>Save</b>",
+            "href": "/save",
+            "dataset": {"route": "/save"},
+            "opacityHidden": False,
+            "ariaSelected": True,
+            "ariaPressed": "mixed",
+            "ariaCurrent": "page",
+            "ariaExpanded": True,
+            "ariaChecked": "mixed",
+            "computedStyles": {
+                "display": "block",
+                "visibility": "visible",
+                "opacity": "1",
+                "pointerEvents": "auto",
+                "cursor": "pointer",
+                "color": "rgb(0, 0, 0)",
+                "backgroundColor": "#fff",
+                "colorScheme": "light",
+                "fontSize": "14px",
+                "fontWeight": "700",
+                "lineHeight": "20px",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "whiteSpace": "nowrap",
+                "position": "relative",
+                "zIndex": "10",
+                "padding": "4px",
+                "margin": "0px",
+                "borderColor": "#ccc",
+                "borderWidth": "1px",
+                "borderRadius": "4px",
+            },
+            "required": True,
+            "validationState": {
+                "valid": False,
+                "validationMessage": "Required",
+                "valueMissing": True,
+            },
+            "constraints": {
+                "pattern": ".+",
+                "minLength": 1,
+                "maxLength": 9,
+                "min": "0",
+                "max": "9",
+                "step": "1",
+            },
+            "mediaMetadata": {
+                "mediaType": "image",
+                "src": "/i.png",
+                "isDecorative": False,
+                "renderedWidth": 10,
+                "renderedHeight": 10,
+                "loadingState": "loaded",
+                "lazyLoading": False,
+            },
+            "inViewport": True,
+            "scrollInfo": {
+                "scrollTop": 0,
+                "scrollLeft": 0,
+                "scrollHeight": 100,
+                "scrollWidth": 50,
+                "clientHeight": 10,
+                "clientWidth": 10,
+                "canScrollUp": False,
+                "canScrollDown": True,
+                "canScrollLeft": False,
+                "canScrollRight": False,
+            },
+            "redaction": {"content": True},
+        }
+        state = ElementState.model_validate(payload)
+        dumped = state.model_dump(by_alias=True, exclude_none=True)
+        assert [key for key in payload if key not in dumped] == []
+        assert state.aria_pressed == "mixed"
+        assert state.scroll_info is not None
+        assert state.scroll_info.can_scroll_down is True
+        assert state.redaction is not None
+        assert state.redaction.content is True
+
 
 class TestActionRequest:
     """Tests for ActionRequest model."""

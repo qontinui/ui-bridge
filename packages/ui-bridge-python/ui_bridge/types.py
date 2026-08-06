@@ -25,30 +25,266 @@ class ElementRect(BaseModel):
     left: float
 
 
-class ComputedStyles(BaseModel):
-    """Relevant computed styles for automation."""
+class NormalizedRect(BaseModel):
+    """Resolution-independent bounding rect normalized to 0-1 viewport coordinates."""
 
+    x: float = Field(description="Normalized left edge (0-1)")
+    y: float = Field(description="Normalized top edge (0-1)")
+    width: float = Field(description="Normalized width (0-1)")
+    height: float = Field(description="Normalized height (0-1)")
+
+
+class ComputedStyles(BaseModel):
+    """Relevant computed styles for automation and visual debugging.
+
+    The first four fields predate the style-surface expansion and are emitted by
+    every known build, so they stay required. Everything below them is optional:
+    an older server sends the four-key object and must still validate.
+    """
+
+    # Visibility & interaction
     display: str
     visibility: str
     opacity: str
     pointer_events: str = Field(alias="pointerEvents")
+    cursor: str | None = None
+    # Color & theming
+    color: str | None = None
+    background_color: str | None = Field(None, alias="backgroundColor")
+    color_scheme: str | None = Field(None, alias="colorScheme")
+    # Typography
+    font_size: str | None = Field(None, alias="fontSize")
+    font_weight: str | None = Field(None, alias="fontWeight")
+    line_height: str | None = Field(None, alias="lineHeight")
+    # Overflow & clipping
+    overflow: str | None = None
+    text_overflow: str | None = Field(None, alias="textOverflow")
+    white_space: str | None = Field(None, alias="whiteSpace")
+    # Layout & layering
+    position: str | None = None
+    z_index: str | None = Field(None, alias="zIndex")
+    # Spacing
+    padding: str | None = None
+    margin: str | None = None
+    # Borders
+    border_color: str | None = Field(None, alias="borderColor")
+    border_width: str | None = Field(None, alias="borderWidth")
+    border_radius: str | None = Field(None, alias="borderRadius")
 
     model_config = {"populate_by_name": True}
 
 
+class SelectOption(BaseModel):
+    """A single <option> of a select element."""
+
+    value: str
+    label: str
+    selected: bool
+
+
+class ValidationState(BaseModel):
+    """HTML5 constraint validation state (form controls only)."""
+
+    valid: bool
+    validation_message: str | None = Field(None, alias="validationMessage")
+    value_missing: bool | None = Field(None, alias="valueMissing")
+    type_mismatch: bool | None = Field(None, alias="typeMismatch")
+    pattern_mismatch: bool | None = Field(None, alias="patternMismatch")
+    too_short: bool | None = Field(None, alias="tooShort")
+    too_long: bool | None = Field(None, alias="tooLong")
+    range_underflow: bool | None = Field(None, alias="rangeUnderflow")
+    range_overflow: bool | None = Field(None, alias="rangeOverflow")
+    step_mismatch: bool | None = Field(None, alias="stepMismatch")
+    custom_error: bool | None = Field(None, alias="customError")
+
+    model_config = {"populate_by_name": True}
+
+
+class ElementConstraints(BaseModel):
+    """HTML5 constraint attributes (form controls only)."""
+
+    pattern: str | None = None
+    min_length: int | None = Field(None, alias="minLength")
+    max_length: int | None = Field(None, alias="maxLength")
+    min: str | None = None
+    max: str | None = None
+    step: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class ScrollInfo(BaseModel):
+    """Scroll container info - only present if the element has overflowing content."""
+
+    scroll_top: float = Field(alias="scrollTop")
+    scroll_left: float = Field(alias="scrollLeft")
+    scroll_height: float = Field(alias="scrollHeight")
+    scroll_width: float = Field(alias="scrollWidth")
+    client_height: float = Field(alias="clientHeight")
+    client_width: float = Field(alias="clientWidth")
+    can_scroll_up: bool = Field(alias="canScrollUp")
+    can_scroll_down: bool = Field(alias="canScrollDown")
+    can_scroll_left: bool = Field(alias="canScrollLeft")
+    can_scroll_right: bool = Field(alias="canScrollRight")
+
+    model_config = {"populate_by_name": True}
+
+
+class MediaType(str, Enum):
+    """Types of media elements."""
+
+    IMAGE = "image"
+    VIDEO = "video"
+    CANVAS = "canvas"
+    SVG = "svg"
+    PICTURE = "picture"
+    BACKGROUND_IMAGE = "background-image"
+
+
+class MediaSource(BaseModel):
+    """A <source> element inside a <picture>."""
+
+    srcset: str
+    media: str | None = None
+    type: str | None = None
+
+
+class VideoState(BaseModel):
+    """Video-specific playback state."""
+
+    poster: str | None = None
+    current_time: float = Field(alias="currentTime")
+    duration: float
+    paused: bool
+    muted: bool
+
+    model_config = {"populate_by_name": True}
+
+
+class MediaMetadata(BaseModel):
+    """Metadata for media elements (images, video, canvas, SVG, etc.)."""
+
+    media_type: MediaType = Field(alias="mediaType")
+    src: str | None = None
+    alt_text: str | None = Field(None, alias="altText")
+    is_decorative: bool = Field(alias="isDecorative")
+    natural_width: float | None = Field(None, alias="naturalWidth")
+    natural_height: float | None = Field(None, alias="naturalHeight")
+    rendered_width: float = Field(alias="renderedWidth")
+    rendered_height: float = Field(alias="renderedHeight")
+    oversize_ratio: float | None = Field(None, alias="oversizeRatio")
+    loading_state: str = Field(
+        alias="loadingState", description="One of 'pending', 'loaded', 'error', 'lazy'"
+    )
+    lazy_loading: bool = Field(alias="lazyLoading")
+    format: str | None = None
+    transfer_size: int | None = Field(None, alias="transferSize")
+    srcset: str | None = None
+    sizes: str | None = None
+    sources: list[MediaSource] | None = None
+    svg_view_box: str | None = Field(None, alias="svgViewBox")
+    video_state: VideoState | None = Field(None, alias="videoState")
+
+    model_config = {"populate_by_name": True}
+
+
+class ElementRedaction(BaseModel):
+    """Section 4.6 redaction verdict, carried as DATA rather than re-derived.
+
+    ``content`` means the element sits inside a ``data-bridge-redact="true"``
+    boundary; ``value`` is the stricter gate (an ``<input type="password">`` OR a
+    boundary). Only the axes that apply are present on the wire, so ``None`` on
+    either axis means "that axis does not apply". Never sniff the exported
+    ``[REDACTED]`` sentinel instead - a page can render that string itself.
+    """
+
+    content: bool | None = None
+    value: bool | None = None
+
+
 class ElementState(BaseModel):
-    """Current state of a UI element."""
+    """Current state of a UI element.
+
+    Mirrors the TypeScript ``ElementState`` in
+    ``packages/ui-bridge/src/core/types.ts``. Every field the TS type marks
+    optional is optional here, and the two natively-required disabled signals
+    default to ``False`` so payloads from servers predating the
+    ``disabled``/``ariaDisabled`` split still validate.
+
+    ABSENT IS NOT "OBSERVED ENABLED". ``disabled`` and ``ariaDisabled`` reading
+    ``False`` may mean the server never sent them (an older build) rather than
+    that the element was observed interactive - the same caveat the Rust side
+    carries. A driver that must distinguish "observed enabled" from "not
+    reported" has to check the field's presence in the raw payload, not this
+    model's value.
+    """
 
     visible: bool
-    enabled: bool
+    enabled: bool = Field(
+        description=(
+            "DERIVED convenience fold: !(disabled or aria_disabled). It CONFLATES "
+            "the two independent signals below - a driver that needs to tell 'the "
+            "DOM refuses input' from 'the author only labelled it disabled' must "
+            "read `disabled` / `aria_disabled`, not this."
+        )
+    )
+    disabled: bool = Field(
+        False,
+        description=(
+            "The native DOM `disabled` IDL property ONLY. False for elements that "
+            "have no such property. This is the signal that actually stops the "
+            "browser dispatching events. Absent on the wire also reads False - see "
+            "the class docstring."
+        ),
+    )
+    aria_disabled: bool = Field(
+        False,
+        alias="ariaDisabled",
+        description=(
+            "The `aria-disabled=\"true\"` attribute ONLY. Independent of "
+            "`disabled`: an ARIA button styled and announced as disabled still "
+            "receives real clicks. Absent on the wire also reads False - see the "
+            "class docstring."
+        ),
+    )
     focused: bool
+    role: str | None = None
+    accessible_name: str | None = Field(None, alias="accessibleName")
     rect: ElementRect
+    normalized_rect: NormalizedRect | None = Field(None, alias="normalizedRect")
     value: str | None = None
     checked: bool | None = None
     selected_options: list[str] | None = Field(None, alias="selectedOptions")
+    available_options: list[SelectOption] | None = Field(None, alias="availableOptions")
     text_content: str | None = Field(None, alias="textContent")
     inner_html: str | None = Field(None, alias="innerHTML")
+    href: str | None = None
+    dataset: dict[str, str] | None = Field(
+        None,
+        description=(
+            "All data-* attributes keyed camelCase per HTMLElement.dataset, "
+            "excluding the bridge's own data-bridge-* control attributes. Omitted "
+            "inside a section 4.6 redaction boundary."
+        ),
+    )
+    opacity_hidden: bool | None = Field(None, alias="opacityHidden")
+    aria_selected: bool | None = Field(None, alias="ariaSelected")
+    aria_pressed: bool | str | None = Field(
+        None, alias="ariaPressed", description="True/False or the literal 'mixed'"
+    )
+    aria_current: str | None = Field(None, alias="ariaCurrent")
+    aria_expanded: bool | None = Field(None, alias="ariaExpanded")
+    aria_checked: bool | str | None = Field(
+        None, alias="ariaChecked", description="True/False or the literal 'mixed'"
+    )
     computed_styles: ComputedStyles | None = Field(None, alias="computedStyles")
+    required: bool | None = None
+    validation_state: ValidationState | None = Field(None, alias="validationState")
+    constraints: ElementConstraints | None = None
+    media_metadata: MediaMetadata | None = Field(None, alias="mediaMetadata")
+    in_viewport: bool | None = Field(None, alias="inViewport")
+    scroll_info: ScrollInfo | None = Field(None, alias="scrollInfo")
+    redaction: ElementRedaction | None = None
 
     model_config = {"populate_by_name": True}
 
