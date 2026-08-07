@@ -51,7 +51,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@qontinui/ui-bridge-cli-args": "^0.1.0",
+    "@qontinui/ui-bridge-cli-args": ">=0.1.0 <1",
     "playwright": "^1.48.0"
   },
   "devDependencies": {

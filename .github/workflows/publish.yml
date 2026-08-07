@@ -18,6 +18,11 @@ name: Publish to npm
 #   - ui-bridge-server (added 2026-05-17 — was previously published via
 #     release.yml's NPM_TOKEN path; migrated to OIDC trusted-publishing
 #     to close the source/registry drift at 0.4.0)
+#   - create-ui-bridge-wrapper (added 2026-08-07 — the `npx` scaffolder. It is
+#     not `private`, so it was always meant to publish, but it had no tag
+#     prefix here and so no way to ship at all. Unscoped name, hence the bare
+#     `create-ui-bridge-wrapper-v*` prefix. First publish needs its npm
+#     trusted-publisher OIDC policy set up — see ui-bridge-cli-args.)
 #
 # To release: bump the version in the package.json, commit, then
 #   git tag <package>-v<version> && git push origin <package>-v<version>
@@ -31,6 +36,7 @@ on:
       - 'ui-bridge-headless-v*'
       - 'ui-bridge-native-v*'
       - 'ui-bridge-server-v*'
+      - 'create-ui-bridge-wrapper-v*'
 
 jobs:
   publish:

@@ -66,7 +66,7 @@
     }
   },
   "dependencies": {
-    "@qontinui/ui-bridge-cli-args": "^0.1.0"
+    "@qontinui/ui-bridge-cli-args": ">=0.1.0 <1"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

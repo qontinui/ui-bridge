@@ -20,11 +20,17 @@ function workspaceVersion(name: string): string {
   return (JSON.parse(readFileSync(manifest, 'utf8')) as { version: string }).version;
 }
 
-// The same rule scripts/check-dep-ranges.cjs applies to every published
-// package.json, applied here to the specs the scaffold WRITES. A range is
-// bounded above iff it excludes some sufficiently large version; testing
-// against a sentinel ceiling rather than `<1.0.0` keeps the rule correct after
-// UI Bridge goes 1.x.
+// The rules scripts/check-dep-ranges.cjs applies to every published
+// package.json, applied here to the specs the scaffold WRITES — the one place
+// that script cannot see, because these live in TypeScript rather than in a
+// manifest.
+//
+// A range is bounded above iff it excludes some sufficiently large version.
+// Testing against a sentinel ceiling rather than `<1.0.0` keeps THIS assertion
+// correct after UI Bridge goes 1.x. The declared specs themselves still hard-
+// code `<1`, so the `still admits the current workspace version` case below is
+// what will fail — deliberately and legibly — on the day ui-bridge cuts 1.0.0,
+// which is exactly when a human should re-pick these floors.
 const UNREACHABLE_CEILING = '<9999.0.0';
 
 describe('scaffolded dependency specs', () => {
@@ -49,8 +55,10 @@ describe('scaffolded dependency specs', () => {
       // The regression this file exists for. All three specs were `^0.1.0`
       // long after the packages had moved on, so a standalone scaffold
       // installed @qontinui/ui-bridge@0.1.1 against an engine at 0.22.0 — with
-      // templates written against the current APIs. A floor that stops
-      // admitting the version it was authored against is stale by definition.
+      // templates written against the current APIs. What this catches is a
+      // stale CEILING: a range whose upper bound has fallen behind the version
+      // the templates are written against. A generous floor stays passing, and
+      // should.
       it('still admits the current workspace version', () => {
         const current = workspaceVersion(name);
         expect(

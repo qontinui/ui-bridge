@@ -583,11 +583,12 @@ specific minor introduced.
 
 The floors above are illustrative. For the floors a wrapper written against
 *today's* templates should declare, read
-`packages/create-ui-bridge-wrapper/src/dep-specs.ts` — `npx
-create-ui-bridge-wrapper` emits exactly those, and a test asserts each one still
-admits the package's current version, so it cannot go stale the way a number
-copied into prose can. The same rule is enforced for every published package in
-this repo by `npm run deps:check-ranges`.
+`packages/create-ui-bridge-wrapper/src/dep-specs.ts` — the scaffolder emits
+exactly those, and a test asserts each one still admits the package's current
+version, so they cannot go stale the way a number copied into prose can. (The
+scaffolder is not on npm yet, so run it from this repo rather than via `npx`.)
+The same rules are enforced for every published package here by
+`npm run deps:check-ranges`.
 
 React is optional so pure-Node daemons (headless / live) skip it. Add
 `playwright` as an optional peer if you support `headless` / `headed`:

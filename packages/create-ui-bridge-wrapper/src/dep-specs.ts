@@ -24,8 +24,19 @@
  * still carry a breaking change.
  *
  * `tests/dep-specs.test.ts` asserts each range still admits the live workspace
- * version of its package, so a floor that goes stale fails CI rather than
- * silently shipping to the next person who runs `npx create-ui-bridge-wrapper`.
+ * version of its package. To be exact about what that buys: it catches a stale
+ * CEILING — the thing that actually broke here — not a stale floor. `>=0.1.0
+ * <1` would keep admitting 0.22.0 forever and the test would keep passing,
+ * which is correct, because a low floor is merely generous rather than wrong.
+ * `^0.1.0` was caught because its ceiling is `<0.2.0`.
+ *
+ * NOTE: these ranges resolve to `@qontinui/ui-bridge-wrapper@0.7.1` and
+ * `@qontinui/ui-bridge-headless@0.4.0`, and both of those published tarballs
+ * declare `@qontinui/ui-bridge-cli-args`, which has never been published. Until
+ * that first publish happens a standalone scaffold cannot `npm install` at all.
+ * That break is not caused by these specs — it hits every direct consumer of
+ * wrapper and headless identically — but the old stale `^0.1.0` did MASK it,
+ * because wrapper 0.1.5 / headless 0.1.0 predate the cli-args dependency.
  */
 export const REGISTRY_DEP_SPECS: Readonly<Record<string, string>> = {
   '@qontinui/ui-bridge': '>=0.22.0 <1',
