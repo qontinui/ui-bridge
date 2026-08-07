@@ -45,11 +45,29 @@ jobs:
         # even when the new file has no raw-read lint violation yet.
         run: npm run redaction:check-surface
 
+      - name: Dependency range ratchet
+        # Fails if a published package declares an internal @qontinui/* range
+        # that is unbounded above, a hand-maintained OR-chain, or stale against
+        # the depended-on package's current source version. Guards the
+        # invariant PR #147 established; without it every one of those defects
+        # is reintroducible by a single hand edit.
+        run: npm run deps:check-ranges
+
       - name: Lint
         run: npm run lint
 
       - name: Build
         # Topological build order lives in the root build script — see README "Development".
+        run: npm run build
+
+      - name: Build again (order-independence guard)
+        # The first build always runs on a clean checkout, so it never walks a
+        # workspace's built `dist/` — which is exactly why CI stayed green
+        # through the esbuild externals bug fixed in dee0f20: bundling the
+        # wrapper barrel only reaches its Node-only imports once
+        # ui-bridge-wrapper HAS a dist/. Every local build after the first hit
+        # it; CI could not. Re-running the build over the populated tree is the
+        # cheap reproduction of that state, and keeps the class fixed.
         run: npm run build
 
       - name: Type check

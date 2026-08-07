@@ -22,6 +22,7 @@
     "diagnostics:check": "node scripts/check-diagnostics.cjs",
     "redaction:check-surface": "node scripts/check-redaction-surface.cjs",
     "redaction:surface:update": "node scripts/check-redaction-surface.cjs --update",
+    "deps:check-ranges": "node scripts/check-dep-ranges.cjs",
     "smoke-test:runner": "bash scripts/smoke-test-runner.sh",
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
   },
@@ -35,6 +36,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.4.0",
     "prettier": "^3.1.0",
+    "semver": "^7.7.4",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.2",
     "vitest": "^4.1.0"

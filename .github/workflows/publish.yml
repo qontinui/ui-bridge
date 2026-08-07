@@ -117,6 +117,23 @@ jobs:
           npm run typecheck --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
           npm test --workspace=packages/${{ steps.pkg.outputs.name }} --if-present
 
+      - name: Dependency resolvability gate
+        # Prove every internal @qontinui/* dependency of THIS package is
+        # already resolvable on the registry, before making the tarball
+        # installable. Build + typecheck + test all pass against workspace
+        # links, so none of them can see that a dependency was never published.
+        #
+        # This is not hypothetical. `@qontinui/ui-bridge-cli-args` — no
+        # `private` flag, its own tag prefix above, simply never tagged —
+        # shipped as a hard dependency of ui-bridge-headless@0.4.0 and
+        # ui-bridge-wrapper@0.7.1. Both packages' `latest` were uninstallable:
+        # a clean `npm install @qontinui/ui-bridge-wrapper` died with E404 on
+        # cli-args. Two releases went out that way before anyone noticed.
+        #
+        # For a coordinated release of several new packages, publish them in
+        # dependency order — this gate is what tells you the order was wrong.
+        run: node scripts/check-dep-ranges.cjs --registry --package ${{ steps.pkg.outputs.name }} --verbose
+
       - name: Publish
         # --provenance generates an attestation linking the npm tarball
         # back to this exact commit + workflow run, signed by the OIDC

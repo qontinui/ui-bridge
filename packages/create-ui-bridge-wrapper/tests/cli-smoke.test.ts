@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { run } from '../src/cli.js';
+import { REGISTRY_DEP_SPECS, WORKSPACE_DEP_SPEC } from '../src/dep-specs.js';
 
 const cleanup: string[] = [];
 
@@ -77,8 +78,16 @@ describe('create-ui-bridge-wrapper CLI', () => {
     };
     expect(pkg.name).toBe('wrapper-my-api-pkg');
     expect(pkg.peerDependencies).toBeDefined();
-    expect(pkg.peerDependencies!['@qontinui/ui-bridge']).toBeDefined();
-    expect(pkg.peerDependencies!['@qontinui/ui-bridge-wrapper']).toBeDefined();
+    // The specs are declared once in src/dep-specs.ts and kept honest against
+    // the live workspace versions by tests/dep-specs.test.ts. Asserting the
+    // rendered output here is what proves the template actually reaches them —
+    // `toBeDefined()` alone passed for the whole time all three were `^0.1.0`.
+    expect(pkg.peerDependencies!['@qontinui/ui-bridge']).toBe(
+      REGISTRY_DEP_SPECS['@qontinui/ui-bridge']
+    );
+    expect(pkg.peerDependencies!['@qontinui/ui-bridge-wrapper']).toBe(
+      REGISTRY_DEP_SPECS['@qontinui/ui-bridge-wrapper']
+    );
     // api-only + --no-ui: no `ws`, no `@qontinui/ui-bridge-headless`.
     expect(pkg.dependencies?.['ws']).toBeUndefined();
     expect(pkg.dependencies?.['@qontinui/ui-bridge-headless']).toBeUndefined();
@@ -127,7 +136,9 @@ describe('create-ui-bridge-wrapper CLI', () => {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
     };
-    expect(pkg.dependencies?.['@qontinui/ui-bridge-headless']).toBeDefined();
+    expect(pkg.dependencies?.['@qontinui/ui-bridge-headless']).toBe(
+      REGISTRY_DEP_SPECS['@qontinui/ui-bridge-headless']
+    );
     expect(pkg.peerDependencies?.['react']).toBeDefined();
 
     const entry = await readFile(join(outDir, 'src/index.tsx'), 'utf8');
@@ -193,7 +204,7 @@ describe('create-ui-bridge-wrapper CLI', () => {
       peerDependencies?: Record<string, string>;
     };
     expect(pkg.name).toBe('@qontinui/wrapper-mono-pkg');
-    expect(pkg.peerDependencies!['@qontinui/ui-bridge-wrapper']).toBe('workspace:*');
+    expect(pkg.peerDependencies!['@qontinui/ui-bridge-wrapper']).toBe(WORKSPACE_DEP_SPEC);
   });
 
   it('outDir stat is a real directory', async () => {

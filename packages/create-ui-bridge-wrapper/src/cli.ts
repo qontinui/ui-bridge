@@ -27,6 +27,7 @@ import {
 } from './prompts.js';
 import { renderTree } from './copy.js';
 import { toDisplayName, toPascalCase } from './render.js';
+import { depSpecFor } from './dep-specs.js';
 
 interface CliFlags {
   name: string | null;
@@ -268,9 +269,9 @@ function buildVars(answers: PromptAnswers): Record<string, string> {
     PACKAGE_NAME: packageName,
     DEFAULT_TRANSPORT: defaultTransport,
     RUNNER_URL_FIELD: runnerUrlField,
-    WRAPPER_DEP_SPEC: answers.monorepo ? 'workspace:*' : '^0.1.0',
-    UI_BRIDGE_DEP_SPEC: answers.monorepo ? 'workspace:*' : '^0.1.0',
-    HEADLESS_DEP_SPEC: answers.monorepo ? 'workspace:*' : '^0.1.0',
+    WRAPPER_DEP_SPEC: depSpecFor('@qontinui/ui-bridge-wrapper', answers.monorepo),
+    UI_BRIDGE_DEP_SPEC: depSpecFor('@qontinui/ui-bridge', answers.monorepo),
+    HEADLESS_DEP_SPEC: depSpecFor('@qontinui/ui-bridge-headless', answers.monorepo),
     TRANSPORTS_CSV: answers.transports.join(','),
   };
 }
