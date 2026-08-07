@@ -76,25 +76,53 @@ const builds = [
     // fs, net, ...) are reachable through ApiTransport's optional adapter
     // path that the live transport never invokes; listing them here is a
     // safety belt for any future dynamic import the wrapper barrel adds.
+    //
+    // Both spellings of every built-in are listed. esbuild matches `external`
+    // literally against the import specifier, so `fs` does NOT cover
+    // `node:fs` — InjectedTransport imports `node:module` for its
+    // `createRequire` bundle lookup, and a bare `module` entry would not have
+    // caught it.
+    //
+    // Without this the build is ORDER-DEPENDENT: `npm run build --workspaces`
+    // runs ui-bridge-extension before ui-bridge-wrapper, so on a clean tree
+    // the wrapper has no dist/ yet and the Node-only graph is never walked.
+    // Build the wrapper first — as any second local build does — and the same
+    // command fails. CI only passes because it always starts clean.
     external: [
       '@qontinui/ui-bridge-headless',
       'playwright',
       'playwright-core',
       'ws',
       'http',
+      'node:http',
       'https',
+      'node:https',
       'fs',
+      'node:fs',
       'net',
+      'node:net',
       'tty',
+      'node:tty',
       'os',
+      'node:os',
       'path',
+      'node:path',
       'stream',
+      'node:stream',
       'url',
+      'node:url',
       'util',
+      'node:util',
       'crypto',
+      'node:crypto',
       'zlib',
+      'node:zlib',
       'child_process',
+      'node:child_process',
       'events',
+      'node:events',
+      'module',
+      'node:module',
     ],
   },
   {
