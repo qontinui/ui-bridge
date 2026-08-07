@@ -553,8 +553,8 @@ declare:
 ```json
 {
   "peerDependencies": {
-    "@qontinui/ui-bridge": "*",
-    "@qontinui/ui-bridge-wrapper": "*",
+    "@qontinui/ui-bridge": ">=0.4.0 <1",
+    "@qontinui/ui-bridge-wrapper": ">=0.4.0 <1",
     "react": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
@@ -562,6 +562,24 @@ declare:
   }
 }
 ```
+
+Bound the UI Bridge peers on **both** ends — `>=<floor> <1`, not `*` and not a
+hand-written `^0.x || ^0.y || …` chain.
+
+Both failure modes are real and this repo has hit each:
+
+- **Unbounded above** (`*`, or a bare `>=0.4.0`) silently accepts a future
+  `1.0.0`. The whole point of the major is that it may break you, so a range
+  that cannot say "no" gives the consumer a broken tree instead of a warning.
+- **Enumerated `^0.x` chains** are bounded but must be hand-extended for every
+  single engine minor. `@qontinui/ui-bridge-wrapper` carried a 19-term chain
+  that had to be edited on each release, and the ceiling went stale in between
+  — an install-time peer warning caused purely by release bookkeeping, not by
+  any real incompatibility.
+
+While UI Bridge is pre-1.0, a minor may carry a breaking change, so `<1` is the
+honest upper bound; pin tighter only if you actually depend on something a
+specific minor introduced.
 
 React is optional so pure-Node daemons (headless / live) skip it. Add
 `playwright` as an optional peer if you support `headless` / `headed`:
