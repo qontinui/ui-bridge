@@ -17,6 +17,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 
+/**
+ * How far below the nominal timeout an elapsed-time assertion may land.
+ *
+ * The handlers arm `setTimeout(…, timeoutMs)` and then report
+ * `Date.now() - started`. Those are two different clocks: `setTimeout`'s
+ * guarantee is against libuv's cached loop time, and `Date.now()` truncates to
+ * whole milliseconds, so the reported delta can come in a millisecond or two
+ * UNDER the nominal timeout even though the timer waited correctly. Asserting
+ * `>= timeoutMs` exactly is therefore racy — it flaked in CI on 2026-08-07
+ * with `expected 149 to be greater than or equal to 150`, on a commit whose
+ * only diff was tooling, and the same suite passed in the parallel workflow.
+ *
+ * What these assertions actually care about is that the handler WAITED rather
+ * than returning immediately, so a couple of milliseconds of clock slop is
+ * exactly the tolerance that belongs here.
+ */
+const TIMER_SLOP_MS = 5;
+
 const emptyBridge: BridgeAccess = {
   elements: [],
   getElement: () => undefined,
@@ -99,7 +117,7 @@ describe('executeCommand · waitForElementRegistered (browser-side)', () => {
 
     expect(result.reason).toBe('timeout');
     expect(typeof result.elapsedMs).toBe('number');
-    expect(result.elapsedMs!).toBeGreaterThanOrEqual(150);
+    expect(result.elapsedMs!).toBeGreaterThanOrEqual(150 - TIMER_SLOP_MS);
   });
 
   it('falls back to document.querySelector when predicate.selector is given', async () => {
@@ -194,7 +212,7 @@ describe('executeCommand · waitForElementByCondition (browser-side)', () => {
     )) as { matched: boolean; waited_ms: number };
 
     expect(result.matched).toBe(false);
-    expect(result.waited_ms).toBeGreaterThanOrEqual(150);
+    expect(result.waited_ms).toBeGreaterThanOrEqual(150 - TIMER_SLOP_MS);
   });
 });
 
@@ -292,7 +310,7 @@ describe('executeCommand · waitForRouteChange (browser-side)', () => {
     )) as { reason?: string; elapsedMs?: number; lastKnownRoute?: string };
 
     expect(result.reason).toBe('timeout');
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(150);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(150 - TIMER_SLOP_MS);
   });
 
   it('rejects an invalid regex toRoute synchronously', async () => {
