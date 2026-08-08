@@ -53,6 +53,15 @@ jobs:
         # is reintroducible by a single hand edit.
         run: npm run deps:check-ranges
 
+      - name: CI manifest ratchet
+        # Validates .qontinui/ci.toml against the runner's parser contract and
+        # enforces the parity invariant that file's header declares: its steps
+        # mirror this job and `docs`, step for step and in order. Without it the
+        # product's local-CI lane silently drifts to running FEWER gates than
+        # this one — and a lane that is green because it checks less is the
+        # worst outcome for two lanes meant to agree on a verdict.
+        run: npm run ci:check-manifest
+
       - name: Lint
         run: npm run lint
 

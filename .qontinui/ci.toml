@@ -3,12 +3,25 @@
 #  configuration.md, Phase 5 — manifest coverage for the repos that had none.
 #  A repo without this file cannot run on the product's local-CI lane at all.)
 #
-# PARITY IS A REVIEW-TIME INVARIANT: the steps below mirror the gate commands of
-# .github/workflows/ci.yml's `lint-and-test` and `docs` jobs, step for step and
-# in their order. When those jobs change, update this file in the SAME PR.
-# Actions steps are referenced by NAME below, never by line number — line
-# numbers in that file move constantly and a stale citation makes the invariant
-# unauditable.
+# PARITY IS A REVIEW-TIME INVARIANT — AND NOW A BUILD-TIME ONE: the steps below
+# mirror the gate commands of .github/workflows/ci.yml's `lint-and-test` and
+# `docs` jobs, step for step and in their order. When those jobs change, update
+# this file in the SAME PR. Actions steps are referenced by NAME below, never by
+# line number — line numbers in that file move constantly and a stale citation
+# makes the invariant unauditable.
+#
+# `scripts/check-ci-manifest.cjs` (npm run ci:check-manifest, run by the
+# `CI manifest ratchet` step of `lint-and-test` and mirrored below) ENFORCES that
+# invariant: it reads the `# parity:` citation on each step, matches it against
+# ci.yml's mirrored jobs by name, command and order, and fails on any drift. It
+# also re-validates this file against the runner's parser contract — the key
+# sets, argv metacharacter ban, env allowlist, timeout ceiling and working_dir
+# containment transcribed from manifest.rs — so a defect in this file surfaces
+# on the PR that wrote it instead of on a user's machine at dispatch time.
+#
+# The citations are COMMENTS rather than TOML keys because they must be: the
+# runner parses `[[steps]]` with `deny_unknown_fields`, so any extra key here
+# would make the whole manifest unrunnable.
 #
 # Commands are argv arrays (never shell strings); env is limited to the runner's
 # allowlist (qontinui-runner/src-tauri/src/ci_node/manifest.rs::ENV_ALLOWLIST);
@@ -108,24 +121,29 @@ version = 1
 # carry a `file:` sibling spec.
 #
 # package.json's devDependencies declare
-# `"@qontinui/ui-bridge-auto": "file:../../ui-bridge-auto"`, and
+# `"@qontinui/ui-bridge-auto": "file:../ui-bridge-auto"`, and
 # packages/ui-bridge/package.json declares the same package at
-# `file:../../../ui-bridge-auto`. NEITHER is provisioned by ci.yml — no job
-# checks that repo out — and `npm ci` is green there without it, because
-# package-lock.json records `../../ui-bridge-auto` as a bare `{"dev": true}`
-# stub with no version or contents (its real resolved entry sits under
-# `../ui-bridge-auto`, a position no lane creates either). Parity therefore says
-# declare nothing: this lane must reproduce the Actions install, not repair it.
+# `file:../../../ui-bridge-auto` — different depths, but both now resolve to the
+# SAME place, `<workspace>/ui-bridge-auto`, which is where the sibling actually
+# lives and where the executor materialises one (a PEER of the worktree).
 #
-# The executor could not satisfy the declared spec anyway. It materialises a
-# sibling as a PEER of the worktree — one level up, `../ui-bridge-auto` — while
-# the root spec points two levels up. The two paths disagree, and a manifest
-# that provisioned the wrong one would change what `npm ci` resolves relative to
-# the Actions lane, which is the opposite of parity.
+# > The root spec used to read `file:../../ui-bridge-auto`, one level too deep,
+# > resolving to a directory that exists on no machine and in no lane. The lock
+# > recorded it as a bare `{"dev": true}` stub — a package npm could not read —
+# > and, because that phantom won the hoist at `node_modules/@qontinui/`, the
+# > real sibling was forced into a duplicate nested link under
+# > `packages/ui-bridge/node_modules/`. The optional peer dependency that
+# > `packages/ui-bridge/src/control/action-executor.ts` delegates DOM actions to
+# > was therefore unresolvable from the monorepo root on a correctly-laid-out dev
+# > box. That is fixed in the same PR as this note; the phantom lock entry and
+# > the duplicate nested link are both gone.
 #
-# This is a real inconsistency in the repo (a devDependency whose declared path
-# is satisfiable by no lane, tolerated only because the lock stubs it out), but
-# fixing it is a package.json + lockfile change, not a manifest change.
+# Still NO [[siblings]] declaration, and the reason is unchanged by that fix:
+# ci.yml checks the sibling repo out in NO job, and `npm ci` is green there
+# without it (npm creates the workspace link and does not fail on a missing
+# `file:` target). Declaring the sibling here would make this lane install
+# something the Actions lane does not, which is the opposite of parity. The lane
+# must REPRODUCE the Actions install, not improve on it.
 
 # NO [limits] TABLE, deliberately.
 #
@@ -144,6 +162,7 @@ version = 1
 
 [[steps]]
 name = "install"
+# parity: ci.yml lint-and-test "Install dependencies"
 # ci.yml "Install dependencies". `npm ci` (not `npm install`) — the lockfile is
 # the input, and a resolver free to move makes two dispatches of one commit
 # incomparable.
@@ -152,6 +171,7 @@ timeout_secs = 7200
 
 [[steps]]
 name = "diagnostics-check"
+# parity: ci.yml lint-and-test "Diagnostics drift check"
 # ci.yml "Diagnostics drift check" → package.json `diagnostics:check` =
 # `node scripts/check-diagnostics.cjs`. Re-runs the generator and fails on drift
 # between diagnostics/codes.json and the committed TS/Python mirrors. The Rust
@@ -161,6 +181,7 @@ command = ["npm", "run", "diagnostics:check"]
 
 [[steps]]
 name = "redaction-surface-ratchet"
+# parity: ci.yml lint-and-test "Redaction surface ratchet"
 # ci.yml "Redaction surface ratchet" → `redaction:check-surface` =
 # `node scripts/check-redaction-surface.cjs`. Fails if the route surface or the
 # Layer-2 projection-module list drifts from redaction-surface.manifest.json, so
@@ -169,12 +190,25 @@ command = ["npm", "run", "redaction:check-surface"]
 
 [[steps]]
 name = "dep-range-ratchet"
+# parity: ci.yml lint-and-test "Dependency range ratchet"
 # ci.yml "Dependency range ratchet" → `deps:check-ranges` =
 # `node scripts/check-dep-ranges.cjs`.
 command = ["npm", "run", "deps:check-ranges"]
 
 [[steps]]
+name = "ci-manifest-ratchet"
+# parity: ci.yml lint-and-test "CI manifest ratchet"
+# ci.yml "CI manifest ratchet" → `ci:check-manifest` =
+# `node scripts/check-ci-manifest.cjs`. THIS STEP CHECKS THIS FILE — it validates
+# the manifest against the runner's parser contract and enforces the parity
+# invariant stated in the header. Running it on the local-CI lane too is not
+# circular: the lane's own copy of the gate is what makes a dispatch able to
+# report the same verdict Actions would, which is the point of parity.
+command = ["npm", "run", "ci:check-manifest"]
+
+[[steps]]
 name = "lint"
+# parity: ci.yml lint-and-test "Lint"
 # ci.yml "Lint" → `lint` = `eslint "packages/*/src/**/*.{ts,tsx}"
 # --max-warnings 0`. Invoked through the npm script rather than spelled out as
 # argv on purpose: the script's glob is quoted so ESLINT expands it, not a
@@ -183,12 +217,14 @@ command = ["npm", "run", "lint"]
 
 [[steps]]
 name = "build"
+# parity: ci.yml lint-and-test "Build"
 # ci.yml "Build". Topological order lives in the root `build` script.
 command = ["npm", "run", "build"]
 timeout_secs = 7200
 
 [[steps]]
 name = "build-again"
+# parity: ci.yml lint-and-test "Build again (order-independence guard)"
 # ci.yml "Build again (order-independence guard)" — a SECOND identical build,
 # and not redundant. The first always runs on a clean checkout so it never walks
 # a workspace's populated `dist/`, which is exactly why CI stayed green through
@@ -200,6 +236,7 @@ timeout_secs = 7200
 
 [[steps]]
 name = "typecheck"
+# parity: ci.yml lint-and-test "Type check"
 # ci.yml "Type check" → `typecheck` = `npm run typecheck --workspaces
 # --if-present`. Runs after the builds because workspaces typecheck against each
 # other's emitted declarations.
@@ -207,6 +244,7 @@ command = ["npm", "run", "typecheck"]
 
 [[steps]]
 name = "test"
+# parity: ci.yml lint-and-test "Test"
 # ci.yml "Test" → `test` = `npm run test --workspaces --if-present`.
 # NOT `test:e2e`: that script targets the `e2e` workspace, which ci.yml does not
 # run on PRs either.
@@ -221,6 +259,7 @@ timeout_secs = 7200
 
 [[steps]]
 name = "docs-install"
+# parity: ci.yml docs "Install dependencies"
 # ci.yml `docs` job, "Install dependencies".
 command = ["npm", "ci"]
 working_dir = "docs-site"
@@ -228,6 +267,7 @@ timeout_secs = 7200
 
 [[steps]]
 name = "docs-build"
+# parity: ci.yml docs "Build documentation"
 # ci.yml `docs` job, "Build documentation". This is the gate that catches a
 # broken doc link or a bad MDX import before it reaches the Pages deploy in
 # docs.yml, which runs the same command on main.
