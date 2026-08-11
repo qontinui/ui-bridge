@@ -264,6 +264,88 @@ interface UseUIBridgeReturn {
 }
 ```
 
+## useBuildIdWatcher
+
+Detects when the server has shipped a new bundle while the tab is still running
+the old code, so you can prompt for a refresh. Pairs with a server that injects
+`<meta name="build-id" content="...">` into the served HTML and exposes the
+current build-id on a live source.
+
+```tsx
+import { useState } from 'react';
+import { useBuildIdWatcher } from '@qontinui/ui-bridge/react';
+
+function BuildRefreshBanner() {
+  const [stale, setStale] = useState(false);
+  useBuildIdWatcher({ onBuildIdChange: () => setStale(true) });
+
+  if (!stale) return null;
+  return (
+    <div role="status" aria-live="polite">
+      A new build is available.
+      <button onClick={() => window.location.reload()}>Refresh</button>
+    </div>
+  );
+}
+```
+
+:::warning The watched source must be able to change while the page is open
+
+Comparing two **compile-time constants of the same process** — for example a
+meta tag baked into HTML embedded in a desktop binary against that same
+binary's compiled-in build-id — is a permanent false positive, not a staleness
+check. Replacing the executable on disk changes neither value, so the
+comparison can only ever fire on a build-time inconsistency, and the reload it
+prompts is a guaranteed no-op.
+
+The qontinui runner shipped exactly that (a Tauri `invoke` custom getter
+against its own embedded meta tag); its banner never cleared and was deleted
+rather than repaired. Use this hook only where a real server — or another
+source that genuinely moves at runtime — is on the other end.
+
+:::
+
+### Options
+
+```typescript
+interface UseBuildIdWatcherOptions {
+  healthStreamUrl?: string; // SSE stream emitting `buildId`. Default '/health/stream'
+  pollUrl?: string; // GET returning JSON `{ buildId }`. Overrides the SSE path
+  getCurrentBuildId?: () => Promise<string> | string; // Custom live source. Overrides both
+  pollIntervalMs?: number; // For pollUrl/getCurrentBuildId. Default 30_000; 0 = one-shot
+  onBuildIdChange?: (oldId: string, newId: string) => void; // Fires at most once per mount
+}
+```
+
+Exactly one source is used, in precedence order: `getCurrentBuildId`, then
+`pollUrl`, then the default SSE stream.
+
+### Sources
+
+```tsx
+// SSE (default) — supervisor dashboard pattern
+useBuildIdWatcher({ onBuildIdChange: () => setStale(true) });
+
+// Polling — Next.js / qontinui-web pattern
+useBuildIdWatcher({
+  pollUrl: '/api/health',
+  pollIntervalMs: 30_000,
+  onBuildIdChange: () => setStale(true),
+});
+
+// Custom getter — any source that changes at RUNTIME (see the warning above)
+useBuildIdWatcher({
+  getCurrentBuildId: () => fetchBuildIdFromSomewhereLive(),
+  pollIntervalMs: 30_000,
+  onBuildIdChange: () => setStale(true),
+});
+```
+
+The hook no-ops cleanly when the `<meta name="build-id">` tag is missing or
+empty, and when the chosen source is unavailable (`EventSource` undefined in
+SSR, `fetch` undefined outside a browser). `onBuildIdChange` fires at most once
+per mount; the source is torn down on unmount.
+
 ## Best Practices
 
 ### 1. Always Add data-ui-id

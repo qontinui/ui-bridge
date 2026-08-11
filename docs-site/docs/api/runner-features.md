@@ -1625,9 +1625,19 @@ The `runners[]` shape mirrors `RunnerInstanceHealth` from
   serve. When the streamed value diverges from the meta tag, the
   supervisor binary has been rebuilt and the open dashboard tab is
   serving a stale bundle — prompt the user to refresh. The reference
-  consumer is the `useBuildIdWatcher` hook in
-  `@qontinui/ui-bridge/react` (`packages/ui-bridge/src/react/useBuildIdWatcher.ts`)
-  which the dashboard's `BootIdWatcher` mounts at the root.
+  consumer is the [`useBuildIdWatcher`](../react/hooks.md#usebuildidwatcher)
+  hook in `@qontinui/ui-bridge/react`
+  (`packages/ui-bridge/src/react/useBuildIdWatcher.ts`), which the
+  dashboard's `BuildRefreshBanner` mounts at the root. (The dashboard's
+  `BootIdWatcher` is a *different*, unrelated component — it polls
+  `/supervisor-bridge/boot-id` to catch a wiped `boot_id`, and does not
+  use this hook.)
+
+  This pairing is valid because the supervisor is a real HTTP server: it
+  re-injects the meta tag on every serve, so a rebuild+restart under a
+  live tab genuinely diverges and a reload genuinely fetches new HTML.
+  Do **not** port the pattern to a host where both sides are
+  compile-time constants of one process — see the warning on the hook.
 - **Live fleet status.** Subscribe to `runners[]` instead of polling
   `GET /runners` every few seconds. The supervisor's background
   health-cache refresher feeds this array, so it carries the same
