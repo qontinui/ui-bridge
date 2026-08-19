@@ -196,6 +196,20 @@ name = "dep-range-ratchet"
 command = ["npm", "run", "deps:check-ranges"]
 
 [[steps]]
+name = "docs-symbol-ratchet"
+# parity: ci.yml lint-and-test "Documentation symbol ratchet"
+# ci.yml "Documentation symbol ratchet" → `docs:check-symbols` =
+# `node scripts/check-docs-symbols.cjs`. Name-checks every import in every
+# fenced ts/tsx/js block under docs-site/docs against the workspace's real
+# package names, `exports` maps and export surfaces. It sits in THIS job rather
+# than in `docs` because the `docs` job installs only docs-site's own tree —
+# packages/* is never present there, so the check would have nothing to resolve
+# against. It needs no docs-site install of its own: it reads .md files and
+# packages/*/src directly, and its only dependency is the `typescript` the root
+# `npm ci` above already provides.
+command = ["npm", "run", "docs:check-symbols"]
+
+[[steps]]
 name = "ci-manifest-ratchet"
 # parity: ci.yml lint-and-test "CI manifest ratchet"
 # ci.yml "CI manifest ratchet" → `ci:check-manifest` =

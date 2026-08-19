@@ -1,0 +1,38 @@
+{
+  "$comment": [
+    "Quarantined documentation-symbol failures — EXACT-MATCH and SHRINK-ONLY.",
+    "Each line is one known-broken import in docs-site/docs, in the form",
+    "\"<page> :: <kind> :: <specifier>[ :: <symbol>]\". scripts/check-docs-symbols.cjs fails on any",
+    "failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off",
+    "debt cannot linger and re-authorise the same defect. Regenerate with",
+    "`npm run docs:symbol-debt:update`; growing this file is a reviewable act of declaring new debt.",
+    "The current contents are one finding: sixteen pages (ai/, observability/, recovery/, state/,",
+    "advanced/) import from \"@anthropic/ui-bridge\" — a scope this project has never owned — and name",
+    "symbols the library does not export under any name. They document a product that was not built,",
+    "so rewriting them against the real surface is its own piece of work, not a line in a ratchet PR."
+  ],
+  "entries": [
+    "docs-site/docs/advanced/component-state-exposure.md :: unknown-package :: @anthropic/ui-bridge/react",
+    "docs-site/docs/advanced/cross-framework-support.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/advanced/cross-framework-support.md :: unknown-package :: @anthropic/ui-bridge-angular",
+    "docs-site/docs/advanced/cross-framework-support.md :: unknown-package :: @anthropic/ui-bridge-svelte",
+    "docs-site/docs/advanced/cross-framework-support.md :: unknown-package :: @anthropic/ui-bridge-vue",
+    "docs-site/docs/advanced/recording-playback.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/advanced/websocket-communication.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/advanced/websocket-communication.md :: unknown-package :: @anthropic/ui-bridge-server",
+    "docs-site/docs/ai/embedding-resolution.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/ai/intent-based-actions.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/ai/navigation-assistance.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/ai/overview.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/ai/overview.md :: unknown-package :: @anthropic/ui-bridge/react",
+    "docs-site/docs/ai/visual-context.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/observability/accessibility.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/observability/logging.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/observability/performance-metrics.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/observability/performance-metrics.md :: unknown-package :: @anthropic/ui-bridge/react",
+    "docs-site/docs/recovery/failure-recovery-strategies.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/recovery/structured-failure-feedback.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/state/dynamic-state-discovery.md :: unknown-package :: @anthropic/ui-bridge",
+    "docs-site/docs/state/state-machine-integration.md :: unknown-package :: @anthropic/ui-bridge"
+  ]
+}

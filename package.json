@@ -23,6 +23,8 @@
     "redaction:check-surface": "node scripts/check-redaction-surface.cjs",
     "redaction:surface:update": "node scripts/check-redaction-surface.cjs --update",
     "deps:check-ranges": "node scripts/check-dep-ranges.cjs",
+    "docs:check-symbols": "node scripts/check-docs-symbols.cjs",
+    "docs:symbol-debt:update": "node scripts/check-docs-symbols.cjs --update",
     "ci:check-manifest": "node scripts/check-ci-manifest.cjs",
     "smoke-test:runner": "bash scripts/smoke-test-runner.sh",
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""

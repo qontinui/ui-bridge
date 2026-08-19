@@ -53,6 +53,22 @@ jobs:
         # is reintroducible by a single hand edit.
         run: npm run deps:check-ranges
 
+      - name: Documentation symbol ratchet
+        # Name-checks every import in every fenced ts/tsx/js block under
+        # docs-site/docs against the workspace's real package names, `exports`
+        # maps and export surfaces. The `docs` job cannot host this: it runs
+        # `npm ci` with working-directory docs-site, so packages/* is never
+        # installed there and there would be nothing to resolve against. This
+        # job's root `npm ci` is what makes the check possible, which is why the
+        # gate lives here beside the other ratchets rather than next to the
+        # Docusaurus build it protects.
+        #
+        # Docusaurus validates links and MDX syntax and nothing else — it never
+        # executes, type-checks or even name-checks a code block, so a page can
+        # name a nonexistent package and three nonexistent exports and still
+        # build green. That is exactly how it happened.
+        run: npm run docs:check-symbols
+
       - name: CI manifest ratchet
         # Validates .qontinui/ci.toml against the runner's parser contract and
         # enforces the parity invariant that file's header declares: its steps
