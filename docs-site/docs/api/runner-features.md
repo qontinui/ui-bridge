@@ -1625,7 +1625,7 @@ The `runners[]` shape mirrors `RunnerInstanceHealth` from
   serve. When the streamed value diverges from the meta tag, the
   supervisor binary has been rebuilt and the open dashboard tab is
   serving a stale bundle — prompt the user to refresh. The reference
-  consumer is the [`useBuildIdWatcher`](../react/hooks.md#usebuildidwatcher)
+  consumer is the [`useBuildIdWatcher`](../react/hooks-integration.md#usebuildidwatcher)
   hook in `@qontinui/ui-bridge/react`
   (`packages/ui-bridge/src/react/useBuildIdWatcher.ts`), which the
   dashboard's `BuildRefreshBanner` mounts at the root. (The dashboard's
