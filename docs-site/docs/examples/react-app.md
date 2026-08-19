@@ -52,20 +52,27 @@ examples/react-app/
 ### Provider Setup
 
 ```tsx title="src/main.tsx"
-import { UIBridgeProvider } from '@qontinui/ui-bridge';
-import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
-
-// Start the server in development
-startUIBridgeServer({ port: 9876 });
+import { UIBridgeProvider, CommandRelayListener } from '@qontinui/ui-bridge';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <UIBridgeProvider
     features={{ control: true, renderLog: true, debug: true }}
     config={{ serverPort: 9876 }}
   >
+    <CommandRelayListener basePath="/ui-bridge" />
     <App />
   </UIBridgeProvider>
 );
+```
+
+The server itself is a Node process, started alongside the dev server:
+
+```typescript title="scripts/ui-bridge-server.mjs"
+import { CommandRelay, createRelayHandlers } from '@qontinui/ui-bridge/server';
+import { createStandaloneServer } from '@qontinui/ui-bridge-server/standalone';
+
+const relay = new CommandRelay();
+await createStandaloneServer(createRelayHandlers(relay), { port: 9876, cors: true });
 ```
 
 ### Element Registration

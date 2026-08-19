@@ -94,7 +94,8 @@ React Native doesn't have a DOM, so auto-registration works differently. See [Mo
 
 ```tsx
 // app/_layout.tsx
-import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
+import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
+import { useAutoRegister } from '@qontinui/ui-bridge-native/react';
 
 function AppContent() {
   // Enable auto-registration infrastructure

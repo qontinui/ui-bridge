@@ -306,7 +306,7 @@ import {
   createAdapterRegistry,
   ReactHookFormAdapter,
   FormikAdapter,
-} from '@qontinui/ui-bridge/adapters';
+} from '@qontinui/ui-bridge';
 
 const registry = createAdapterRegistry();
 registry.register(new ReactHookFormAdapter());

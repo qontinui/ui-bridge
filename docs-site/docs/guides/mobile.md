@@ -30,7 +30,8 @@ For Expo projects, no additional native modules are required.
 
 ```tsx
 // app/_layout.tsx (Expo Router)
-import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
+import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
+import { useAutoRegister } from '@qontinui/ui-bridge-native/react';
 
 function AppContent() {
   // Enable auto-registration infrastructure
@@ -204,7 +205,8 @@ export function useRenderLogOptional() {
 
 ```tsx
 // app/_layout.tsx
-import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
+import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
+import { useAutoRegister } from '@qontinui/ui-bridge-native/react';
 import { RenderLogProvider } from '@/lib/render-log';
 
 function AppContent() {
@@ -503,7 +505,8 @@ client.component("login-form").action("login", {
 import { Stack } from 'expo-router';
 import { QueryClientProvider, QueryClient } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
+import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
+import { useAutoRegister } from '@qontinui/ui-bridge-native/react';
 import { RenderLogProvider } from '@/lib/render-log';
 
 const queryClient = new QueryClient();

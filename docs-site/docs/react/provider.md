@@ -129,18 +129,18 @@ You can use multiple providers for different parts of your app, but typically on
 
 ### Standalone Mode
 
-For standalone React apps (Create React App, Vite, etc.):
+For standalone React apps (Create React App, Vite, etc.) the server runs in a
+separate Node process — see [Standalone Server](../server/standalone). The app
+side only mounts the provider, plus `CommandRelayListener` so the browser
+connects back to that server:
 
 ```tsx
-import { UIBridgeProvider } from '@qontinui/ui-bridge';
-import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
-
-// Start server
-startUIBridgeServer({ port: 9876 });
+import { UIBridgeProvider, CommandRelayListener } from '@qontinui/ui-bridge';
 
 function App() {
   return (
     <UIBridgeProvider config={{ serverPort: 9876 }}>
+      <CommandRelayListener basePath="/ui-bridge" />
       <YourApp />
     </UIBridgeProvider>
   );

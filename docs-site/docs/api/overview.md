@@ -154,12 +154,21 @@ No built-in rate limiting. Implement at the server/proxy level if needed.
 
 ## CORS
 
-The standalone server enables CORS by default. Configure origins:
+CORS is **off** unless you ask for it. Any truthy `cors` value turns it on:
 
 ```typescript
-startUIBridgeServer({
+await createStandaloneServer(handlers, { cors: true });
+```
+
+The standalone server treats `cors` as a boolean switch and always answers
+`Access-Control-Allow-Origin: *`. Only the Express adapter honours a
+`CORSOptions` object with specific origins:
+
+```typescript
+app.use('/ui-bridge', uiBridgeMiddleware(handlers, {
   cors: {
     origin: ['http://localhost:3000'],
+    credentials: true,
   },
-});
+}));
 ```

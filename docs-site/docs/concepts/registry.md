@@ -196,18 +196,21 @@ console.log(snapshot.workflows); // Array of workflow info
 UI Bridge maintains a global registry instance:
 
 ```typescript
-import { getGlobalRegistry, setGlobalRegistry, resetGlobalRegistry } from '@qontinui/ui-bridge';
+import { getGlobalRegistry, UIBridgeRegistry } from '@qontinui/ui-bridge';
 
 // Get the global registry (creates one if none exists)
 const registry = getGlobalRegistry();
 
-// Set a custom registry as global
+// Or build an independent instance and pass it around explicitly
 const customRegistry = new UIBridgeRegistry();
-setGlobalRegistry(customRegistry);
-
-// Reset (clears and removes the global registry)
-resetGlobalRegistry();
 ```
+
+:::note
+`getGlobalRegistry` is the only global-registry accessor exported from
+`@qontinui/ui-bridge` or any of its subpaths. There is no public setter or
+reset: to work against a registry other than the global one, construct a
+`UIBridgeRegistry` and pass the instance explicitly.
+:::
 
 ## Statistics
 

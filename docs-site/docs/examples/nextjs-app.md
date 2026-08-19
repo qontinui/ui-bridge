@@ -56,20 +56,22 @@ examples/nextjs-app/
 
 ### API Route
 
-```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
+```typescript title="lib/ui-bridge.ts"
+import { getGlobalRegistry, createActionExecutor } from '@qontinui/ui-bridge';
+import { createHandlers } from '@qontinui/ui-bridge-server';
 
-const handler = createNextHandler({
-  features: {
-    control: true,
-    renderLog: true,
-    debug: process.env.NODE_ENV === 'development',
-  },
+const registry = getGlobalRegistry();
+
+export const handlers = createHandlers(registry, createActionExecutor(registry), {
+  verbose: process.env.NODE_ENV === 'development',
 });
+```
 
-export const GET = handler;
-export const POST = handler;
-export const DELETE = handler;
+```typescript title="app/api/ui-bridge/[...path]/route.ts"
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
+
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 ```
 
 ### Root Layout
@@ -209,10 +211,10 @@ For production, consider:
 - Using environment variables for feature flags
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-const handler = createNextHandler({
-  features: {
-    control: process.env.ENABLE_UI_BRIDGE === 'true',
-    debug: false,
-  },
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
+
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {
+  authenticate: () => process.env.ENABLE_UI_BRIDGE === 'true',
 });
 ```

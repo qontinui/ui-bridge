@@ -14,21 +14,40 @@ UI Bridge Server provides HTTP endpoints for controlling your React application.
 | **Express**    | Express.js apps        | Middleware       |
 | **Next.js**    | Next.js apps           | API routes       |
 
+## Handlers first
+
+Every adapter takes the same first argument: a `UIBridgeServerHandlers` object.
+Build it once with `createHandlers(registry, actionExecutor, config?)`, then
+hand it to whichever adapter fits your stack.
+
+```typescript
+import { getGlobalRegistry, createActionExecutor } from '@qontinui/ui-bridge';
+import { createHandlers } from '@qontinui/ui-bridge-server';
+
+const registry = getGlobalRegistry();
+export const handlers = createHandlers(registry, createActionExecutor(registry));
+```
+
+`registry` and `actionExecutor` only have to satisfy the `RegistryLike` and
+`ActionExecutorLike` contracts, so a browser app whose server runs out of
+process can substitute relay-backed handlers instead — see
+[Standalone Server](./standalone#relay-backed-handlers).
+
 ## Quick Comparison
 
 ### Standalone Server
 
-Best for simple React apps without a backend:
+A self-contained Node HTTP server, no framework required:
 
-```tsx
-import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
+```typescript
+import { createStandaloneServer } from '@qontinui/ui-bridge-server/standalone';
 
-startUIBridgeServer({ port: 9876 });
+const server = await createStandaloneServer(handlers, { port: 9876 });
 ```
 
-- Runs as a separate process
-- No backend required
-- Simple setup
+- Runs as a separate Node process
+- No backend framework required
+- `async` — resolves once the socket is listening
 
 ### Express Middleware
 
@@ -39,7 +58,7 @@ import express from 'express';
 import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 const app = express();
-app.use('/ui-bridge', uiBridgeMiddleware());
+app.use('/ui-bridge', uiBridgeMiddleware(handlers));
 ```
 
 - Integrates with existing server
@@ -52,7 +71,10 @@ Best for Next.js applications:
 
 ```typescript
 // app/api/ui-bridge/[...path]/route.ts
-export { GET, POST, DELETE } from '@qontinui/ui-bridge-server/nextjs';
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
+
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 ```
 
 - Native Next.js integration
@@ -81,11 +103,15 @@ All server options provide the same HTTP API:
 
 ## Communication
 
-The server communicates with the React app via:
+The server never reaches into the UI itself — it only calls the handler set you
+gave it. How that handler set reaches your elements is the thing that varies:
 
-1. **Direct Integration** (standalone): Server runs in the same process, direct registry access
-2. **IPC/WebSocket** (Tauri): Tauri commands bridge server and React
-3. **API Bridge** (Next.js): Shared state through API routes
+1. **Direct registry access**: handlers built from `getGlobalRegistry()` — the
+   registry lives in the same process as the server
+2. **Command relay**: `createRelayHandlers(relay)` queues each call to a browser
+   that has mounted `CommandRelayListener`, for apps whose UI is out of process
+3. **Custom contract**: any object satisfying `RegistryLike` /
+   `ActionExecutorLike` — used by headless hosts and test doubles
 
 ## Security Considerations
 
@@ -107,26 +133,30 @@ UI Bridge gives programmatic control over your UI. Only enable it in trusted env
 
 For production use, add authentication:
 
+Both the Express and Next.js adapters accept an `authenticate` callback, which
+runs before every UI Bridge route:
+
 ```typescript
 // Express
-app.use('/ui-bridge', authMiddleware, uiBridgeMiddleware());
+app.use('/ui-bridge', uiBridgeMiddleware(handlers, {
+  authenticate: (req) => isAdmin(req),
+}));
 
 // Next.js
-export async function POST(request: Request) {
-  const session = await getSession();
-  if (!session?.isAdmin) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-  return handleUIBridge(request);
-}
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {
+  authenticate: async (req) => (await getSession(req))?.isAdmin === true,
+});
 ```
+
+`authenticate` is not implemented by the standalone server; wrap it in a proxy
+instead, or bind it to loopback only.
 
 ### Network Binding
 
 Bind to localhost only:
 
 ```typescript
-startUIBridgeServer({
+await createStandaloneServer(handlers, {
   port: 9876,
   host: '127.0.0.1', // Only accessible locally
 });

@@ -139,14 +139,25 @@ function LoginForm() {
 
 ### 3. Start the Server
 
-For standalone applications, start the UI Bridge server:
+The server is a Node process — build a handler set, then start a server with
+it. Run this from a Node entry point (a sidecar script, an Electron main
+process), not from your browser bundle:
 
-```tsx title="src/main.tsx"
-import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
+```typescript title="scripts/ui-bridge-server.mjs"
+import { getGlobalRegistry, createActionExecutor } from '@qontinui/ui-bridge';
+import { createHandlers } from '@qontinui/ui-bridge-server';
+import { createStandaloneServer } from '@qontinui/ui-bridge-server/standalone';
+
+const registry = getGlobalRegistry();
+const handlers = createHandlers(registry, createActionExecutor(registry));
 
 // Start the server on port 9876
-startUIBridgeServer({ port: 9876 });
+await createStandaloneServer(handlers, { port: 9876 });
 ```
+
+Because the registry lives in the browser for a typical web app, most React
+apps back the handlers with the command relay instead — see
+[Standalone Server](./server/standalone#relay-backed-handlers).
 
 Or for Next.js, use the API route handler (see [Next.js Integration](./server/nextjs)).
 

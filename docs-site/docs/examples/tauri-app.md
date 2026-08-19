@@ -221,7 +221,12 @@ For desktop apps:
 3. **Tauri Security**: Leverage Tauri's security features
 
 ```typescript
-startUIBridgeServer({
+import { CommandRelay, createRelayHandlers } from '@qontinui/ui-bridge/server';
+import { createStandaloneServer } from '@qontinui/ui-bridge-server/standalone';
+
+const relay = new CommandRelay();
+
+await createStandaloneServer(createRelayHandlers(relay), {
   port: 9876,
   host: '127.0.0.1', // Only local access
 });

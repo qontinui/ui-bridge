@@ -16,23 +16,49 @@ npm install @qontinui/ui-bridge @qontinui/ui-bridge-server
 
 ### App Router (Next.js 13+)
 
-Create the catch-all route handler:
+Create the catch-all route handler. `createNextRouteHandlers` takes the handler
+set you build once (see [Server Overview](./overview#handlers-first)) and
+returns the three route exports the App Router expects:
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
 
-const handler = createNextHandler({
-  features: {
-    control: true,
-    renderLog: true,
-    debug: process.env.NODE_ENV === 'development',
-  },
-});
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
+```
+
+```typescript title="lib/ui-bridge.ts"
+import { getGlobalRegistry, createActionExecutor } from '@qontinui/ui-bridge';
+import { createHandlers } from '@qontinui/ui-bridge-server';
+
+const registry = getGlobalRegistry();
+export const handlers = createHandlers(registry, createActionExecutor(registry));
+```
+
+### Zero-config variant
+
+If you only need the route surface to exist — endpoint discovery, health, and
+well-formed empty responses — `createUIBridgeHandler` builds the whole thing
+for you and returns a single handler:
+
+```typescript title="app/api/ui-bridge/[...path]/route.ts"
+import { createUIBridgeHandler } from '@qontinui/ui-bridge-server/nextjs';
+
+const handler = createUIBridgeHandler();
 
 export const GET = handler;
 export const POST = handler;
 export const DELETE = handler;
 ```
+
+:::warning
+`createUIBridgeHandler` wires **server-safe stub implementations**: read
+operations return empty data and write operations return an error. Your
+browser's live elements are not reachable through it. For real control, pass
+your own handlers to `createNextRouteHandlers` — relay-backed ones if the UI
+runs in the browser, as described in
+[Standalone Server](./standalone#relay-backed-handlers).
+:::
 
 ### Provider Setup
 
@@ -58,73 +84,85 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 ## Pages Router (Legacy)
 
-For Next.js 12 or Pages Router:
+:::warning
+There is no Pages Router adapter. `@qontinui/ui-bridge-server/nextjs` exports
+App Router handlers only — `createNextRouteHandlers`, `createUIBridgeHandler`,
+`createRenderLogHandlers`, `createControlHandlers` and `createDebugHandlers`,
+all of which speak the Web `Request`/`Response` API rather than
+`NextApiRequest`/`NextApiResponse`.
 
-```typescript title="pages/api/ui-bridge/[...path].ts"
-import { createPagesHandler } from '@qontinui/ui-bridge-server/nextjs';
+On Next.js 12 or a Pages-Router-only app, mount the
+[Express adapter](./express) on a custom server, or run the
+[standalone server](./standalone) as a sidecar.
+:::
 
-export default createPagesHandler({
-  features: {
-    control: true,
-    renderLog: true,
-  },
-});
+## Per-domain handlers
+
+Instead of one catch-all, you can mount narrower routes.
+
+`createControlHandlers(handlers)` and `createDebugHandlers(handlers)` return an
+object of route modules keyed by endpoint (`elements`, `element`,
+`components`, … and `actionHistory`, `metrics`, `highlight`):
+
+```typescript title="app/api/ui-bridge/debug/metrics/route.ts"
+import { createDebugHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
+
+export const { GET } = createDebugHandlers(handlers).metrics;
+```
+
+`createRenderLogHandlers(handlers)` covers a single endpoint, so it returns the
+route methods directly:
+
+```typescript title="app/api/ui-bridge/render-log/route.ts"
+import { createRenderLogHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
+
+export const { GET, DELETE } = createRenderLogHandlers(handlers);
 ```
 
 ## Configuration
 
+`NextJSAdapterConfig` extends `UIBridgeServerConfig` with a `runtime` field:
+
+| Option         | Type                                   | Description                                       |
+| -------------- | -------------------------------------- | ------------------------------------------------- |
+| `runtime`      | `'edge' \| 'nodejs'`                   | Declared runtime hint                             |
+| `authenticate` | `(req) => boolean \| Promise<boolean>` | Runs before every route; falsy returns 401        |
+| `basePath`     | `string`                               | Route prefix                                      |
+| `cors`         | `boolean \| CORSOptions`               | Declared on the base config                       |
+
 ### With Authentication
 
+Pass `authenticate` rather than wrapping the exported handlers — it runs inside
+the adapter, ahead of route matching:
+
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
+import { handlers } from '@/lib/ui-bridge';
 
-const handler = createNextHandler({
-  features: {
-    control: true,
-    renderLog: true,
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {
+  authenticate: async () => {
+    const session = await getServerSession(authOptions);
+    return session?.user?.isAdmin === true;
   },
 });
-
-async function withAuth(request: Request) {
-  const session = await getServerSession(authOptions);
-
-  if (!session) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
-  // Optional: Check for admin role
-  if (!session.user?.isAdmin) {
-    return new Response('Forbidden', { status: 403 });
-  }
-
-  return handler(request);
-}
-
-export const GET = withAuth;
-export const POST = withAuth;
-export const DELETE = withAuth;
 ```
+
+A failed check returns `401` with the standard
+`{ success: false, error: 'Unauthorized', code: 'UNAUTHORIZED' }` envelope.
 
 ### Development Only
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
+import { handlers } from '@/lib/ui-bridge';
 
-const handler = createNextHandler();
-
-// Only enable in development
-const devOnlyHandler = (request: Request) => {
-  if (process.env.NODE_ENV !== 'development') {
-    return new Response('Not Found', { status: 404 });
-  }
-  return handler(request);
-};
-
-export const GET = devOnlyHandler;
-export const POST = devOnlyHandler;
-export const DELETE = devOnlyHandler;
+export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {
+  authenticate: () => process.env.NODE_ENV === 'development',
+});
 ```
 
 ## Using Components
@@ -200,11 +238,11 @@ export function InteractiveButton() {
 UI Bridge is compatible with Edge Runtime:
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
+import { createUIBridgeHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 export const runtime = 'edge';
 
-const handler = createNextHandler();
+const handler = createUIBridgeHandler({ runtime: 'edge' });
 export const GET = handler;
 export const POST = handler;
 ```
