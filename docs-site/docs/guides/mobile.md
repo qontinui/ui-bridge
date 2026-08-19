@@ -19,7 +19,7 @@ Complete guide for integrating UI Bridge with React Native and Expo applications
 ## Installation
 
 ```bash
-npm install ui-bridge-native
+npm install @qontinui/ui-bridge-native
 ```
 
 For Expo projects, no additional native modules are required.
@@ -30,7 +30,7 @@ For Expo projects, no additional native modules are required.
 
 ```tsx
 // app/_layout.tsx (Expo Router)
-import { UIBridgeNativeProvider, useAutoRegister } from 'ui-bridge-native';
+import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
 
 function AppContent() {
   // Enable auto-registration infrastructure
@@ -204,7 +204,7 @@ export function useRenderLogOptional() {
 
 ```tsx
 // app/_layout.tsx
-import { UIBridgeNativeProvider, useAutoRegister } from 'ui-bridge-native';
+import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
 import { RenderLogProvider } from '@/lib/render-log';
 
 function AppContent() {
@@ -233,7 +233,7 @@ Since there's no automatic DOM discovery in React Native, register elements expl
 ### Using useUIElement
 
 ```tsx
-import { useUIElement } from 'ui-bridge-native';
+import { useUIElement } from '@qontinui/ui-bridge-native';
 import { Pressable, Text } from 'react-native';
 
 function SubmitButton({ onSubmit }) {
@@ -267,7 +267,7 @@ function SubmitButton({ onSubmit }) {
 ### Using useUIComponent
 
 ```tsx
-import { useUIComponent } from 'ui-bridge-native';
+import { useUIComponent } from '@qontinui/ui-bridge-native';
 
 function LoginForm() {
   const [email, setEmail] = useState('');
@@ -503,7 +503,7 @@ client.component("login-form").action("login", {
 import { Stack } from 'expo-router';
 import { QueryClientProvider, QueryClient } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { UIBridgeNativeProvider, useAutoRegister } from 'ui-bridge-native';
+import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
 import { RenderLogProvider } from '@/lib/render-log';
 
 const queryClient = new QueryClient();

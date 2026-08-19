@@ -126,7 +126,7 @@ export type NextRouteHandler = (
  * @example
  * ```ts
  * // app/api/ui-bridge/[...path]/route.ts
- * import { createNextRouteHandlers } from 'ui-bridge-server/nextjs';
+ * import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
  * import { handlers } from '@/lib/ui-bridge';
  *
  * export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);

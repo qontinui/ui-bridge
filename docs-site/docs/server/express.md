@@ -9,14 +9,14 @@ Integrate UI Bridge with your existing Express.js server.
 ## Installation
 
 ```bash
-npm install ui-bridge-server
+npm install @qontinui/ui-bridge-server
 ```
 
 ## Basic Setup
 
 ```typescript
 import express from 'express';
-import { uiBridgeMiddleware } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 const app = express();
 
@@ -73,7 +73,7 @@ app.get('/ui-bridge/render-log', bridge); // Public
 
 ```typescript
 import express from 'express';
-import { uiBridgeMiddleware } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 const app = express();
 
@@ -96,8 +96,8 @@ The middleware needs access to the UI Bridge registry. Options:
 If your Express server renders the React app:
 
 ```typescript
-import { getGlobalRegistry } from 'ui-bridge';
-import { uiBridgeMiddleware } from 'ui-bridge-server/express';
+import { getGlobalRegistry } from '@qontinui/ui-bridge';
+import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 app.use(
   '/ui-bridge',
@@ -112,7 +112,7 @@ app.use(
 For separate frontend/backend:
 
 ```typescript
-import { uiBridgeMiddleware, createWebSocketBridge } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware, createWebSocketBridge } from '@qontinui/ui-bridge-server/express';
 
 const wss = createWebSocketBridge({ port: 9877 });
 
@@ -157,7 +157,7 @@ Full TypeScript support:
 
 ```typescript
 import express, { Request, Response } from 'express';
-import { uiBridgeMiddleware, UIBridgeMiddlewareOptions } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware, UIBridgeMiddlewareOptions } from '@qontinui/ui-bridge-server/express';
 
 const options: UIBridgeMiddlewareOptions = {
   features: {
@@ -174,7 +174,7 @@ app.use('/ui-bridge', uiBridgeMiddleware(options));
 ```typescript
 import express from 'express';
 import cors from 'cors';
-import { uiBridgeMiddleware } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 const app = express();
 

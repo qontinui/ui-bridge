@@ -46,7 +46,7 @@ Render logging provides:
 
 import { useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { useUIBridgeOptional } from 'ui-bridge/react';
+import { useUIBridgeOptional } from '@qontinui/ui-bridge/react';
 
 export function RenderLogWrapper({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -69,7 +69,7 @@ export function RenderLogWrapper({ children }: { children: ReactNode }) {
 
 ```tsx
 // app/layout.tsx
-import { UIBridgeProvider } from 'ui-bridge/react';
+import { UIBridgeProvider } from '@qontinui/ui-bridge/react';
 import { RenderLogWrapper } from '@/lib/ui-bridge/RenderLogWrapper';
 
 export default function RootLayout({ children }) {
@@ -112,7 +112,7 @@ export function RenderLogWrapper({
 
 ```tsx
 // App.tsx
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 import { RenderLogWrapper } from './lib/ui-bridge';
 
 function App() {

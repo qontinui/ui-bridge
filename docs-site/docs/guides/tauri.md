@@ -17,7 +17,7 @@ Tauri apps have unique requirements:
 ## Installation
 
 ```bash
-npm install ui-bridge
+npm install @qontinui/ui-bridge
 ```
 
 Note: `ui-bridge-server` is typically not needed for Tauri apps since communication happens via Tauri's IPC system rather than HTTP.
@@ -28,7 +28,7 @@ Note: `ui-bridge-server` is typically not needed for Tauri apps since communicat
 
 ```tsx
 // App.tsx
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge';
 
 export default function App() {
   return (
@@ -54,7 +54,7 @@ Create a custom storage backend that persists to files via Tauri:
 ```tsx
 // lib/ui-bridge/TauriRenderLogStorage.ts
 import { invoke } from '@tauri-apps/api/core';
-import type { RenderLogStorage, RenderLogEntry } from 'ui-bridge';
+import type { RenderLogStorage, RenderLogEntry } from '@qontinui/ui-bridge';
 
 export class TauriRenderLogStorage implements RenderLogStorage {
   private maxEntries: number;
@@ -116,7 +116,7 @@ export class TauriRenderLogStorage implements RenderLogStorage {
 ```tsx
 // lib/ui-bridge/useRenderLogManager.ts
 import { useEffect, useRef, useCallback } from 'react';
-import { RenderLogManager } from 'ui-bridge';
+import { RenderLogManager } from '@qontinui/ui-bridge';
 import { TauriRenderLogStorage } from './TauriRenderLogStorage';
 
 export interface UseRenderLogManagerOptions {
@@ -341,7 +341,7 @@ fn main() {
 ```tsx
 // App.tsx
 import { useState } from 'react';
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge';
 import { RenderLogWrapper } from './lib/ui-bridge';
 
 export default function App() {
@@ -389,7 +389,7 @@ For Tauri apps, you can expose UI Bridge via IPC instead of HTTP:
 // hooks/useUIBridgeEventHandler.ts
 import { useEffect } from 'react';
 import { listen, emit } from '@tauri-apps/api/event';
-import { useUIBridge } from 'ui-bridge/react';
+import { useUIBridge } from '@qontinui/ui-bridge/react';
 
 export function UIBridgeEventHandler() {
   const bridge = useUIBridge();

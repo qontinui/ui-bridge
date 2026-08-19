@@ -9,7 +9,7 @@ The `UIBridgeProvider` is the root component that enables UI Bridge functionalit
 ## Basic Setup
 
 ```tsx
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 function App() {
   return (
@@ -85,7 +85,7 @@ Enable debug features in development:
 The provider creates a React context that can be accessed via hooks:
 
 ```tsx
-import { useUIBridge } from 'ui-bridge';
+import { useUIBridge } from '@qontinui/ui-bridge';
 
 function MyComponent() {
   const bridge = useUIBridge();
@@ -132,8 +132,8 @@ You can use multiple providers for different parts of your app, but typically on
 For standalone React apps (Create React App, Vite, etc.):
 
 ```tsx
-import { UIBridgeProvider } from 'ui-bridge';
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 // Start server
 startUIBridgeServer({ port: 9876 });
@@ -153,7 +153,7 @@ For Next.js apps, use API routes:
 
 ```tsx
 // app/layout.tsx
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 export default function RootLayout({ children }) {
   return (

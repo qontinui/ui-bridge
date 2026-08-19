@@ -52,8 +52,8 @@ examples/react-app/
 ### Provider Setup
 
 ```tsx title="src/main.tsx"
-import { UIBridgeProvider } from 'ui-bridge';
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 // Start the server in development
 startUIBridgeServer({ port: 9876 });
@@ -71,7 +71,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 ### Element Registration
 
 ```tsx title="src/LoginForm.tsx"
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 function LoginForm() {
   const emailInput = useUIElement({ id: 'login-email', type: 'input' });

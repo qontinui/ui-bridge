@@ -5,9 +5,9 @@ UI Bridge framework for React Native applications. Enables AI-driven UI automati
 ## Installation
 
 ```bash
-npm install ui-bridge-native
+npm install @qontinui/ui-bridge-native
 # or
-yarn add ui-bridge-native
+yarn add @qontinui/ui-bridge-native
 ```
 
 ## Quick Start
@@ -16,7 +16,7 @@ yarn add ui-bridge-native
 
 ```tsx
 // app/_layout.tsx or App.tsx
-import { UIBridgeNativeProvider } from 'ui-bridge-native';
+import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
 
 export default function RootLayout() {
   return (
@@ -33,7 +33,7 @@ export default function RootLayout() {
 ### 2. Use hooks in your components
 
 ```tsx
-import { useUIElement } from 'ui-bridge-native';
+import { useUIElement } from '@qontinui/ui-bridge-native';
 
 function SubmitButton({ onPress }) {
   const { ref, onLayout, bridgeProps } = useUIElement({
@@ -219,7 +219,7 @@ The HTTP server requires a platform-specific adapter. See [documentation](./docs
 Built-in visual inspector for development:
 
 ```tsx
-import { UIBridgeInspector } from 'ui-bridge-native/debug';
+import { UIBridgeInspector } from '@qontinui/ui-bridge-native/debug';
 
 function App() {
   return (
@@ -236,7 +236,7 @@ function App() {
 Full TypeScript support included. Import types as needed:
 
 ```tsx
-import type { NativeElementState, NativeElementType, UseUIElementOptions } from 'ui-bridge-native';
+import type { NativeElementState, NativeElementType, UseUIElementOptions } from '@qontinui/ui-bridge-native';
 ```
 
 ## License

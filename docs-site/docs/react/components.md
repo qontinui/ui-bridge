@@ -11,7 +11,7 @@ UI Bridge provides React components for common use cases.
 The debug overlay shows registered elements and allows inspection:
 
 ```tsx
-import { UIBridgeProvider, DebugOverlay } from 'ui-bridge';
+import { UIBridgeProvider, DebugOverlay } from '@qontinui/ui-bridge';
 
 function App() {
   return (
@@ -45,7 +45,7 @@ Only show in development:
 A convenience component that automatically registers its children:
 
 ```tsx
-import { UIElement } from 'ui-bridge';
+import { UIElement } from '@qontinui/ui-bridge';
 
 function MyForm() {
   return (
@@ -80,7 +80,7 @@ function MyForm() {
 Register a component with actions:
 
 ```tsx
-import { UIComponentWrapper } from 'ui-bridge';
+import { UIComponentWrapper } from '@qontinui/ui-bridge';
 
 function CheckoutForm() {
   const handleSubmit = async (params) => {
@@ -105,7 +105,7 @@ function CheckoutForm() {
 Combine hooks to create reusable controlled components:
 
 ```tsx
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 interface ControlledFormProps {
   id: string;

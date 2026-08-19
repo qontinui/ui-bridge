@@ -66,13 +66,13 @@ See:
 ### 1. Install the Package
 
 ```bash
-npm install ui-bridge
+npm install @qontinui/ui-bridge
 ```
 
 ### 2. Add the Provider
 
 ```tsx
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 function App() {
   return (
@@ -94,7 +94,7 @@ function App() {
 The SDK automatically sets `data-ui-id` attributes on DOM elements at runtime — no manual attributes needed in JSX.
 
 ```tsx
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 function LoginForm() {
   const emailInput = useUIElement({
@@ -326,7 +326,7 @@ GET  /ui-bridge/debug/metrics
 **Express:**
 
 ```ts
-import { createExpressRouter } from 'ui-bridge-server/express';
+import { createExpressRouter } from '@qontinui/ui-bridge-server/express';
 
 app.use('/ui-bridge', createExpressRouter(handlers));
 ```
@@ -335,7 +335,7 @@ app.use('/ui-bridge', createExpressRouter(handlers));
 
 ```ts
 // app/api/ui-bridge/[...path]/route.ts
-import { createNextRouteHandlers } from 'ui-bridge-server/nextjs';
+import { createNextRouteHandlers } from '@qontinui/ui-bridge-server/nextjs';
 
 export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 ```
@@ -343,7 +343,7 @@ export const { GET, POST, DELETE } = createNextRouteHandlers(handlers);
 **Standalone:**
 
 ```ts
-import { createStandaloneServer } from 'ui-bridge-server/standalone';
+import { createStandaloneServer } from '@qontinui/ui-bridge-server/standalone';
 
 const server = await createStandaloneServer(handlers, { port: 9876 });
 ```

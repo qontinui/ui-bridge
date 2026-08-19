@@ -14,7 +14,7 @@ Register workflows using the registry:
 
 ```tsx
 import { useEffect } from 'react';
-import { getGlobalRegistry } from 'ui-bridge';
+import { getGlobalRegistry } from '@qontinui/ui-bridge';
 
 function App() {
   useEffect(() => {

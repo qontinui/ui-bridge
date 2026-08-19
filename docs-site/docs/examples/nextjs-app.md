@@ -57,7 +57,7 @@ examples/nextjs-app/
 ### API Route
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from 'ui-bridge-server/nextjs';
+import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 const handler = createNextHandler({
   features: {
@@ -75,7 +75,7 @@ export const DELETE = handler;
 ### Root Layout
 
 ```tsx title="app/layout.tsx"
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -94,7 +94,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 'use client';
 
 import { useState } from 'react';
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 export default function ContactForm() {
   const [name, setName] = useState('');

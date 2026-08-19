@@ -21,7 +21,7 @@ UI Bridge Server provides HTTP endpoints for controlling your React application.
 Best for simple React apps without a backend:
 
 ```tsx
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 startUIBridgeServer({ port: 9876 });
 ```
@@ -36,7 +36,7 @@ Best for apps with an existing Express server:
 
 ```typescript
 import express from 'express';
-import { uiBridgeMiddleware } from 'ui-bridge-server/express';
+import { uiBridgeMiddleware } from '@qontinui/ui-bridge-server/express';
 
 const app = express();
 app.use('/ui-bridge', uiBridgeMiddleware());
@@ -52,7 +52,7 @@ Best for Next.js applications:
 
 ```typescript
 // app/api/ui-bridge/[...path]/route.ts
-export { GET, POST, DELETE } from 'ui-bridge-server/nextjs';
+export { GET, POST, DELETE } from '@qontinui/ui-bridge-server/nextjs';
 ```
 
 - Native Next.js integration

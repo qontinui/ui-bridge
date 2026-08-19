@@ -9,7 +9,7 @@ Integrate UI Bridge with Next.js using App Router API routes.
 ## Installation
 
 ```bash
-npm install ui-bridge ui-bridge-server
+npm install @qontinui/ui-bridge @qontinui/ui-bridge-server
 ```
 
 ## API Routes Setup
@@ -19,7 +19,7 @@ npm install ui-bridge ui-bridge-server
 Create the catch-all route handler:
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from 'ui-bridge-server/nextjs';
+import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 const handler = createNextHandler({
   features: {
@@ -37,7 +37,7 @@ export const DELETE = handler;
 ### Provider Setup
 
 ```tsx title="app/layout.tsx"
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -61,7 +61,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 For Next.js 12 or Pages Router:
 
 ```typescript title="pages/api/ui-bridge/[...path].ts"
-import { createPagesHandler } from 'ui-bridge-server/nextjs';
+import { createPagesHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 export default createPagesHandler({
   features: {
@@ -76,7 +76,7 @@ export default createPagesHandler({
 ### With Authentication
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from 'ui-bridge-server/nextjs';
+import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 
@@ -110,7 +110,7 @@ export const DELETE = withAuth;
 ### Development Only
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from 'ui-bridge-server/nextjs';
+import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 const handler = createNextHandler();
 
@@ -134,7 +134,7 @@ Register UI elements in your pages:
 ```tsx title="app/page.tsx"
 'use client';
 
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 import { useState } from 'react';
 
 export default function HomePage() {
@@ -187,7 +187,7 @@ UI Bridge hooks require client components. Use the `'use client'` directive:
 
 'use client';
 
-import { useUIElement } from 'ui-bridge';
+import { useUIElement } from '@qontinui/ui-bridge';
 
 export function InteractiveButton() {
   const control = useUIElement({ id: 'my-button', type: 'button' });
@@ -200,7 +200,7 @@ export function InteractiveButton() {
 UI Bridge is compatible with Edge Runtime:
 
 ```typescript title="app/api/ui-bridge/[...path]/route.ts"
-import { createNextHandler } from 'ui-bridge-server/nextjs';
+import { createNextHandler } from '@qontinui/ui-bridge-server/nextjs';
 
 export const runtime = 'edge';
 

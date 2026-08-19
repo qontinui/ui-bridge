@@ -13,7 +13,7 @@ Register an element for programmatic control.
 ### Basic Usage
 
 ```tsx
-import { useUIElement } from 'ui-bridge';
+import { useUIElement } from '@qontinui/ui-bridge';
 
 function Button() {
   const control = useUIElement({
@@ -137,7 +137,7 @@ Register a component with high-level actions.
 ### Basic Usage
 
 ```tsx
-import { useUIComponent } from 'ui-bridge';
+import { useUIComponent } from '@qontinui/ui-bridge';
 
 function LoginForm() {
   const [email, setEmail] = useState('');
@@ -220,7 +220,7 @@ Action handlers receive parameters and should return a result:
 Access the UI Bridge context.
 
 ```tsx
-import { useUIBridge } from 'ui-bridge';
+import { useUIBridge } from '@qontinui/ui-bridge';
 
 function Dashboard() {
   const bridge = useUIBridge();

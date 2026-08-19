@@ -55,7 +55,7 @@ examples/tauri-app/
 ```tsx title="src/main.tsx"
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 import App from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -106,7 +106,7 @@ fn start_ui_bridge_server(_handle: tauri::AppHandle) {
 
 ```tsx title="src/App.tsx"
 import { useState } from 'react';
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 import { invoke } from '@tauri-apps/api/tauri';
 
 function App() {

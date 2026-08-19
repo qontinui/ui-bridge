@@ -13,11 +13,11 @@ This guide will help you set up UI Bridge in your React application and start co
 Install the main UI Bridge package in your React app:
 
 ```bash
-npm install ui-bridge
+npm install @qontinui/ui-bridge
 # or
-yarn add ui-bridge
+yarn add @qontinui/ui-bridge
 # or
-pnpm add ui-bridge
+pnpm add @qontinui/ui-bridge
 ```
 
 ### Server (Optional)
@@ -25,7 +25,7 @@ pnpm add ui-bridge
 If you need a standalone server:
 
 ```bash
-npm install ui-bridge-server
+npm install @qontinui/ui-bridge-server
 ```
 
 ### Python Client
@@ -43,7 +43,7 @@ pip install ui-bridge-python
 Wrap your application with `UIBridgeProvider`:
 
 ```tsx title="src/App.tsx"
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 function App() {
   return (
@@ -68,7 +68,7 @@ function App() {
 Use the `useUIElement` hook to register interactive elements:
 
 ```tsx title="src/components/LoginForm.tsx"
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 function LoginForm() {
   const [email, setEmail] = useState('');
@@ -142,7 +142,7 @@ function LoginForm() {
 For standalone applications, start the UI Bridge server:
 
 ```tsx title="src/main.tsx"
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 // Start the server on port 9876
 startUIBridgeServer({ port: 9876 });

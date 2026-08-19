@@ -9,13 +9,13 @@ Run UI Bridge as a standalone HTTP server for simple React applications.
 ## Installation
 
 ```bash
-npm install ui-bridge-server
+npm install @qontinui/ui-bridge-server
 ```
 
 ## Basic Usage
 
 ```typescript
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 // Start the server
 const server = startUIBridgeServer({
@@ -62,8 +62,8 @@ const server = startUIBridgeServer({
 ```typescript title="src/main.tsx"
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { UIBridgeProvider } from 'ui-bridge';
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 import App from './App';
 
 // Start the server
@@ -85,8 +85,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 ```typescript title="src/index.tsx"
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { UIBridgeProvider } from 'ui-bridge';
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 import App from './App';
 
 // Start the server in development
@@ -171,7 +171,7 @@ For desktop apps, start the server in the main process:
 
 ```typescript title="electron/main.ts"
 import { app, BrowserWindow } from 'electron';
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 let server;
 
@@ -216,7 +216,7 @@ startUIBridgeServer({
 ## Complete Example
 
 ```typescript
-import { startUIBridgeServer } from 'ui-bridge-server/standalone';
+import { startUIBridgeServer } from '@qontinui/ui-bridge-server/standalone';
 
 const server = startUIBridgeServer({
   port: 9876,

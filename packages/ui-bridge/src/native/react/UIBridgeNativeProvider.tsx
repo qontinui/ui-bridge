@@ -88,7 +88,7 @@ export interface UIBridgeNativeProviderProps {
  * @example
  * ```tsx
  * // app/_layout.tsx
- * import { UIBridgeNativeProvider } from 'ui-bridge-native';
+ * import { UIBridgeNativeProvider } from '@qontinui/ui-bridge-native';
  *
  * export default function RootLayout() {
  *   return (

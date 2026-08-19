@@ -9,7 +9,7 @@ The UI Bridge Registry is a central store for all registered elements, component
 ## Overview
 
 ```typescript
-import { UIBridgeRegistry, getGlobalRegistry } from 'ui-bridge';
+import { UIBridgeRegistry, getGlobalRegistry } from '@qontinui/ui-bridge';
 
 // Get the global registry
 const registry = getGlobalRegistry();
@@ -196,7 +196,7 @@ console.log(snapshot.workflows); // Array of workflow info
 UI Bridge maintains a global registry instance:
 
 ```typescript
-import { getGlobalRegistry, setGlobalRegistry, resetGlobalRegistry } from 'ui-bridge';
+import { getGlobalRegistry, setGlobalRegistry, resetGlobalRegistry } from '@qontinui/ui-bridge';
 
 // Get the global registry (creates one if none exists)
 const registry = getGlobalRegistry();

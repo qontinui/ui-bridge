@@ -46,5 +46,5 @@ export type { AutoPopulateOptions } from './auto-populate';
 
 // Migration utilities (migrateSpecToCtr, migrateDirectoryToCtr, rewriteSpecWithCtr)
 // are Node-only (import 'fs') and must NOT be in the browser-facing barrel.
-// Import from 'ui-bridge/ctr/migrate' for Node-only consumers.
+// Import from '@qontinui/ui-bridge/ctr/migrate' for Node-only consumers.
 export type { MigrationResult } from './migrate-specs-to-ctr';

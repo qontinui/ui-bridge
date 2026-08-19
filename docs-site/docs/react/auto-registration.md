@@ -58,7 +58,7 @@ function MyButton() {
 
 ```tsx
 // app/layout.tsx or _app.tsx
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge/react';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge/react';
 
 export default function RootLayout({ children }) {
   return (
@@ -75,7 +75,7 @@ export default function RootLayout({ children }) {
 
 ```tsx
 // App.tsx
-import { UIBridgeProvider, AutoRegisterProvider } from 'ui-bridge';
+import { UIBridgeProvider, AutoRegisterProvider } from '@qontinui/ui-bridge';
 
 function App() {
   return (
@@ -94,7 +94,7 @@ React Native doesn't have a DOM, so auto-registration works differently. See [Mo
 
 ```tsx
 // app/_layout.tsx
-import { UIBridgeNativeProvider, useAutoRegister } from 'ui-bridge-native';
+import { UIBridgeNativeProvider, useAutoRegister } from '@qontinui/ui-bridge-native';
 
 function AppContent() {
   // Enable auto-registration infrastructure
@@ -259,7 +259,7 @@ function Dashboard() {
 For more control, use the hook directly:
 
 ```tsx
-import { useAutoRegister } from 'ui-bridge/react';
+import { useAutoRegister } from '@qontinui/ui-bridge/react';
 
 function MyComponent() {
   useAutoRegister({
