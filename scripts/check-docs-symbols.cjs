@@ -13,7 +13,10 @@
 // site behind one green check.
 //
 // This is the checker that makes those three failures observable. For every
-// fenced TypeScript-family block under docs-site/docs it:
+// fenced TypeScript-family block on a guarded documentation surface — see
+// DOC_SURFACES: `docs-site/docs/**` (the published site), `docs/**` (a separate
+// root-level tree of authoring guides), `README.md` (the repo's front door) and
+// `packages/*/README.md` (which ARE the npm package pages) — it:
 //
 //   1. Extracts the block (fence-aware, so a fence inside a longer fence does
 //      not terminate it) and parses it with the TypeScript compiler's own
@@ -78,6 +81,19 @@
 //     specifier is checked iff its package name mentions `ui-bridge` — which
 //     is precisely what makes `ui-bridge` and `@anthropic/ui-bridge` failures
 //     rather than "some external package".
+//   - The SUBPATH and SYMBOLS of a first-party package this repo declares but
+//     does not contain — `@qontinui/ui-bridge-auto`, a `packages/ui-bridge`
+//     peer dep that lives in a sibling repo. See readDeclaredExternalPackages.
+//     Only its PACKAGE NAME is checked — it must appear in the root or a
+//     `packages/*` manifest and sit in an owned scope, so a typo of it still
+//     fails. Its SUBPATH and its SYMBOLS are NOT checked: there is no `exports`
+//     map and no `src` tree to resolve them against, and resolving from the
+//     sibling checkout would make the gate's verdict depend on whether an
+//     unrelated repo happens to be checked out — nondeterministic between CI
+//     and a developer's box, which is worse than a disclosed hole. So
+//     `@qontinui/ui-bridge-auto/no/such/subpath` passes. Every affected
+//     `page:line` is listed in the run summary, on passing AND failing runs,
+//     so the size of this hole is visible rather than inferred.
 //   - Relative (`./x`) and path-alias (`@/lib/ui-bridge`) specifiers. Those
 //     name files in the READER's app, which by construction does not exist
 //     here.
@@ -102,9 +118,50 @@ const path = require('node:path');
 const ts = require('typescript');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const DOCS_ROOT = path.join(REPO_ROOT, 'docs-site', 'docs');
 const PACKAGES_ROOT = path.join(REPO_ROOT, 'packages');
 const DEBT_LEDGER = path.join(REPO_ROOT, 'docs-site', 'docs-symbol-debt.json');
+
+/**
+ * Every documentation surface this gate guards.
+ *
+ * `docs-site/docs` is the published site and was this checker's original — and
+ * for one release its only — scope. That was a known hole, not an oversight:
+ * the plan that commissioned this gate measured the identical defect on three
+ * more surfaces and recorded that "extending the checker to README.md and
+ * packages/*\/README.md is a one-glob change and should be done in the Phase 4
+ * PR, since the cost of a wider glob is a wider glob". It was not done in that
+ * PR, so until this commit the repo's front door could re-decay in silence
+ * while the site it links to stayed gated.
+ *
+ * Every surface here must exist, and must be of the kind declared. A configured
+ * surface that has silently moved, been deleted, or turned into the other kind
+ * is the failure mode this whole script exists to prevent, so it fails loudly
+ * rather than shrinking the checked set and reporting a pass.
+ *
+ * NOT included, deliberately: `examples/**`. Those apps declare
+ * `"ui-bridge": "file:../../packages/ui-bridge"`, so the unscoped name is
+ * genuinely correct *inside* them; the plan routes fixing that to its own PR
+ * because it means editing a buildable app's manifest, not rewriting a doc.
+ * Gating their prose against a rule their own code is exempt from would just
+ * force the exemption back in as ledger lines.
+ */
+const DOC_SURFACES = [
+  { kind: 'tree', at: path.join(REPO_ROOT, 'docs-site', 'docs') },
+  // Root-level `docs/` is a SEPARATE, unrelated directory from `docs-site/docs`
+  // — both are real and both carry live authoring guides. Conflating the two
+  // is a documented trap in this repo; see the plan's "Files" preamble.
+  { kind: 'tree', at: path.join(REPO_ROOT, 'docs') },
+  { kind: 'file', at: path.join(REPO_ROOT, 'README.md') },
+  { kind: 'file', at: path.join(REPO_ROOT, 'CONTRIBUTING.md') },
+  // The whole `packages/` tree, not just `packages/*\/README.md`. For a
+  // published package its README IS its npm page — a reader on npmjs.com told
+  // to install a name that does not exist is the loudest possible instance of
+  // the defect this gate was built for — but a README glob would have missed
+  // the two biggest in-package documents there are: `ui-bridge/COOKBOOK.md` and
+  // `ui-bridge/docs/`. `packages/ui-bridge`, the flagship, ships NO README, so
+  // a README-only glob bought nothing at all for the main published package.
+  { kind: 'tree', at: PACKAGES_ROOT },
+];
 
 const VERBOSE = process.argv.includes('--verbose');
 const UPDATE = process.argv.includes('--update');
@@ -199,6 +256,71 @@ function readWorkspacePackages() {
     packages.set(json.name, { dir, json });
   }
   return packages;
+}
+
+/**
+ * First-party package names this repo DECLARES a dependency on but does not
+ * contain — read from the root manifest and every `packages/*` manifest, across
+ * `dependencies`, `devDependencies`, `peerDependencies` and
+ * `optionalDependencies`.
+ *
+ * Why this set has to exist. IN_SCOPE_PACKAGE claims every specifier whose name
+ * mentions `ui-bridge`, but the resolution universe is `packages/*` alone. That
+ * gap makes the checker assert `unknown-package` — "not a package in this
+ * workspace" — about `@qontinui/ui-bridge-auto`, which `packages/ui-bridge`
+ * names in its own `peerDependencies` and which lives in a sibling repo that
+ * simply is not checked out here. Documenting it is correct; the verdict was
+ * the thing that was wrong. Declaring correct documentation to be debt and
+ * parking it in the ledger would be the exact "widen the exclusions until it
+ * passes" move the ledger exists to refuse.
+ *
+ * So a name in this set is in scope for NAME checking (it is real) and out of
+ * scope for SYMBOL checking (unresolvable here) — the same honest split the
+ * `opaque` re-export path already makes, and reported in the same place.
+ *
+ * TWO restrictions make this set safe, and BOTH are load-bearing. Relaxing
+ * either one turns this function into a way to retire the gate.
+ *
+ * 1. ONLY the root and `packages/*` manifests are read, never `examples/*`.
+ *    Each example app declares `"ui-bridge": "file:../../packages/ui-bridge"` —
+ *    the UNSCOPED name, as a deliberate local alias. Reading those manifests
+ *    would enter `ui-bridge` into this set and silently re-authorise the precise
+ *    defect (`npm install ui-bridge`, `from 'ui-bridge'`) that this gate's own
+ *    plan was written to eliminate.
+ *
+ * 2. The name must sit in a scope this project OWNS (OWNED_SCOPE). "Mentions
+ *    ui-bridge" is not ownership, and the difference is the whole gate: add
+ *    `"@anthropic/ui-bridge": "^1.0.0"` to any manifest and, without this
+ *    check, 18 of the 22 quarantined ledger entries stop reproducing at once.
+ *    The gate does fail loudly the first time — but the remedy it PRINTS for a
+ *    stale ledger is `npm run docs:symbol-debt:update`, after which a scope this
+ *    project has never owned is permanently accepted on every page with no
+ *    symbol checking and no ledger line. One manifest line plus the blessed
+ *    remediation command would retire the ratchet. (Measured, not theorised.)
+ */
+const OWNED_SCOPE = (name) => name.startsWith('@qontinui/');
+function readDeclaredExternalPackages(workspacePackages) {
+  const DEP_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
+  const manifests = [path.join(REPO_ROOT, 'package.json')];
+  for (const { dir } of workspacePackages.values()) manifests.push(path.join(dir, 'package.json'));
+
+  const declared = new Map();
+  for (const manifestPath of manifests) {
+    if (!fs.existsSync(manifestPath)) continue;
+    const json = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    for (const field of DEP_FIELDS) {
+      for (const name of Object.keys(json[field] ?? {})) {
+        if (workspacePackages.has(name)) continue;
+        // In scope AND in an owned scope — see restriction 2 above. Every other
+        // declared dependency is third party, which this checker does not
+        // resolve and must not start listing.
+        if (!IN_SCOPE_PACKAGE(name) || !OWNED_SCOPE(name)) continue;
+        if (!declared.has(name)) declared.set(name, []);
+        declared.get(name).push(`${rel(manifestPath)} (${field})`);
+      }
+    }
+  }
+  return declared;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,14 +752,46 @@ function blankOutsideScripts(text) {
   return out;
 }
 
-function docFiles(dir) {
+function markdownTree(dir) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...docFiles(p));
-    else if (/\.mdx?$/.test(entry.name)) out.push(p);
+    if (entry.isDirectory()) {
+      // Installed and built trees are not authored documentation.
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      out.push(...markdownTree(p));
+    } else if (/\.mdx?$/.test(entry.name)) out.push(p);
   }
-  return out.sort();
+  return out;
+}
+
+/**
+ * Every markdown file across DOC_SURFACES, de-duplicated and sorted.
+ *
+ * Returns `{ files, missing }` rather than throwing: main() decides what a
+ * missing required surface means, and reporting all of them at once beats
+ * failing on the first.
+ */
+function docFiles() {
+  const files = new Set();
+  const missing = [];
+  for (const surface of DOC_SURFACES) {
+    // Type, not just existence. A `tree` that has become a file (or a `file`
+    // that has become a directory) would otherwise die on ENOTDIR/EISDIR with a
+    // raw stack, several frames from here — losing the message written for
+    // exactly this case.
+    const stat = fs.statSync(surface.at, { throwIfNoEntry: false });
+    const wrongType = stat && (surface.kind === 'file' ? !stat.isFile() : !stat.isDirectory());
+    if (!stat || wrongType) {
+      missing.push(
+        `${rel(surface.at)}${wrongType ? ` (expected a ${surface.kind === 'file' ? 'file' : 'directory'})` : ''}`
+      );
+      continue;
+    }
+    if (surface.kind === 'tree') for (const f of markdownTree(surface.at)) files.add(f);
+    else files.add(surface.at);
+  }
+  return { files: [...files].sort(), missing };
 }
 
 function main() {
@@ -648,18 +802,31 @@ function main() {
     return;
   }
 
-  if (!fs.existsSync(DOCS_ROOT)) {
-    process.stderr.write(`No docs at ${rel(DOCS_ROOT)} — nothing to check, which is not a pass.\n`);
+  const declaredExternal = readDeclaredExternalPackages(packages);
+
+  const { files, missing } = docFiles();
+  if (missing.length) {
+    process.stderr.write(
+      `${missing.length} configured documentation surface(s) do not exist:\n` +
+        missing.map((m) => `   - ${m}\n`).join('') +
+        'A surface that has moved or been deleted must not quietly shrink the checked set —\n' +
+        'that is a silent pass, which is the one failure mode this gate cannot have. Update\n' +
+        'DOC_SURFACES in this script to match where the docs actually live.\n'
+    );
+    process.exit(1);
+  }
+  if (!files.length) {
+    process.stderr.write('No documentation files found — nothing to check, which is not a pass.\n');
     process.exit(1);
   }
 
-  const files = docFiles(DOCS_ROOT);
   const failures = [];
   const accepted = [];
   let blocksChecked = 0;
   let importsSeen = 0;
   let importsInScope = 0;
   const opaqueEntries = new Map();
+  const externalEntries = new Map();
 
   for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
@@ -689,12 +856,36 @@ function main() {
 
         const docPath = rel(file);
         const pkg = packages.get(name);
+        if (!pkg && declaredExternal.has(name)) {
+          // Real, first-party, and not resolvable from here — see
+          // readDeclaredExternalPackages. The name is verified; the symbols
+          // cannot be, and inventing either verdict would be a lie.
+          if (!externalEntries.has(name)) {
+            externalEntries.set(name, { manifests: declaredExternal.get(name), sites: [] });
+          }
+          externalEntries.get(name).sites.push(`${where}  ${spec}`);
+          const wanted = [...imp.named];
+          if (imp.defaultImport) wanted.push('default');
+          if (wanted.length === 0) continue;
+          accepted.push({
+            where,
+            spec,
+            names: wanted,
+            note: 'declared dependency, not resolvable in this repo',
+            unverified: true,
+          });
+          continue;
+        }
         if (!pkg) {
           failures.push({
             sig: `${docPath} :: unknown-package :: ${spec}`,
             where,
             reason: `imports from "${name}", which is not a package in this workspace`,
-            detail: `this workspace publishes: ${[...packages.keys()].sort().join(', ')}`,
+            detail:
+              `this workspace publishes: ${[...packages.keys()].sort().join(', ')}` +
+              (declaredExternal.size
+                ? `; and declares (but does not contain): ${[...declaredExternal.keys()].sort().join(', ')}`
+                : ''),
           });
           continue;
         }
@@ -741,7 +932,13 @@ function main() {
         // With an unfollowable `export *` in the chain, absence from the set is
         // ignorance rather than proof — see collectExports.
         if (surface.opaque.length) {
-          accepted.push({ where, spec, names: wanted, note: 'surface incomplete (opaque re-export)' });
+          accepted.push({
+            where,
+            spec,
+            names: wanted,
+            note: 'surface incomplete (opaque re-export)',
+            unverified: true,
+          });
           continue;
         }
 
@@ -774,6 +971,31 @@ function main() {
       process.stdout.write(`  --  unfollowable re-export (${n} import(s) affected): ${o}\n`);
     }
   }
+
+  // Printed BEFORE the ledger verdict, so a failing run still discloses what
+  // was waved through. Hiding the size of a known hole behind an unrelated
+  // failure is how a hole stops being known.
+  const disclose = () => {
+    if (opaqueEntries.size) {
+      process.stdout.write(
+        `  note: ${opaqueEntries.size} entry point(s) re-export from outside the workspace, so ` +
+          'their symbol sets are incomplete and unknown-symbol checking is suppressed there:\n'
+      );
+      for (const o of opaqueEntries.keys()) process.stdout.write(`    ${o}\n`);
+    }
+    if (externalEntries.size) {
+      const sites = [...externalEntries.values()].reduce((n, e) => n + e.sites.length, 0);
+      process.stdout.write(
+        `  note: ${externalEntries.size} first-party package(s) are declared by this repo but ` +
+          `live outside it. Their NAMES are verified; their subpaths and symbols are not.\n` +
+          `        ${sites} import(s) are affected:\n`
+      );
+      for (const [name, { manifests, sites: where }] of externalEntries) {
+        process.stdout.write(`    ${name} — declared in ${manifests.join(', ')}\n`);
+        for (const site of where) process.stdout.write(`      ${site}\n`);
+      }
+    }
+  };
 
   // --- the debt ledger ------------------------------------------------------
   const liveSignatures = [...new Set(failures.map((f) => f.sig))].sort();
@@ -808,7 +1030,8 @@ function main() {
     }
     process.stderr.write(
       'Every import in a fenced ts/tsx/js block — or a <script> block inside a\n' +
-        'svelte/vue/html fence — under docs-site/docs must name a real\n' +
+        'svelte/vue/html fence — on any guarded documentation surface\n' +
+        `(${DOC_SURFACES.map((s) => rel(s.at)).join(', ')}) must name a real\n` +
         'workspace package, a subpath its package.json "exports" map publishes, and symbols\n' +
         'that entry point actually exports. Docusaurus checks links and MDX syntax; it never\n' +
         'name-checks a code block, which is how a nonexistent package and three nonexistent\n' +
@@ -830,12 +1053,17 @@ function main() {
     process.stderr.write('\n');
   }
 
-  if (failed) process.exit(1);
+  if (failed) {
+    disclose();
+    process.exit(1);
+  }
 
+  const unverified = accepted.filter((a) => a.unverified).length;
   const quarantinedPages = new Set(quarantined.map((s) => s.split(' :: ')[0]));
   process.stdout.write(
-    `docs:check-symbols OK — ${accepted.length} in-scope import(s) verified across ` +
-      `${blocksChecked} TypeScript code block(s) in ${files.length} doc page(s) ` +
+    `docs:check-symbols OK — ${accepted.length - unverified} in-scope import(s) fully verified` +
+      (unverified ? `, ${unverified} accepted WITHOUT symbol checking (see notes)` : '') +
+      `, across ${blocksChecked} TypeScript code block(s) in ${files.length} doc page(s) ` +
       `(${importsSeen} import statement(s) seen, ${importsInScope} in scope).\n`
   );
   if (quarantined.length) {
@@ -845,18 +1073,14 @@ function main() {
         `fails this gate.\n`
     );
   }
-  if (opaqueEntries.size) {
-    process.stdout.write(
-      `  note: ${opaqueEntries.size} entry point(s) re-export from outside the workspace, so ` +
-        'their symbol sets are incomplete and unknown-symbol checking is suppressed there:\n'
-    );
-    for (const o of opaqueEntries.keys()) process.stdout.write(`    ${o}\n`);
-  }
+  disclose();
 }
 
 const LEDGER_COMMENT = [
   'Quarantined documentation-symbol failures — EXACT-MATCH and SHRINK-ONLY.',
-  'Each line is one known-broken import in docs-site/docs, in the form',
+  'Each line is one known-broken import on a guarded documentation surface (see DOC_SURFACES in',
+  'scripts/check-docs-symbols.cjs — docs-site/docs, docs, packages, and the root README/CONTRIBUTING),',
+  'in the form',
   '"<page> :: <kind> :: <specifier>[ :: <symbol>]". scripts/check-docs-symbols.cjs fails on any',
   'failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off',
   'debt cannot linger and re-authorise the same defect. Regenerate with',

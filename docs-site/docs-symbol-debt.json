@@ -1,7 +1,9 @@
 {
   "$comment": [
     "Quarantined documentation-symbol failures — EXACT-MATCH and SHRINK-ONLY.",
-    "Each line is one known-broken import in docs-site/docs, in the form",
+    "Each line is one known-broken import on a guarded documentation surface (see DOC_SURFACES in",
+    "scripts/check-docs-symbols.cjs — docs-site/docs, docs, packages, and the root README/CONTRIBUTING),",
+    "in the form",
     "\"<page> :: <kind> :: <specifier>[ :: <symbol>]\". scripts/check-docs-symbols.cjs fails on any",
     "failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off",
     "debt cannot linger and re-authorise the same defect. Regenerate with",
