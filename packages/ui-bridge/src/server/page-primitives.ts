@@ -52,7 +52,9 @@ import {
 import {
   normalizeKeyDescriptors,
   dispatchKeySequence,
+  resolveKeyTarget,
   type KeyDispatchOutcome,
+  type KeyDispatchTarget,
 } from '../core/key-events';
 
 /**
@@ -219,10 +221,15 @@ export function readValuePrimitive(
   return { ok: true, data: { ...readGatedValue(el), totalMatches } };
 }
 
-/** Where a document-scoped key dispatch lands. */
-export type PageKeyTarget = 'document' | 'body' | 'window' | 'activeElement';
-
-const PAGE_KEY_TARGETS: readonly PageKeyTarget[] = ['document', 'body', 'window', 'activeElement'];
+/**
+ * Where a document-scoped key dispatch lands.
+ *
+ * Re-exported alias of the shared `KeyDispatchTarget`. The vocabulary, the
+ * default (`document`) and the resolver live in `core/key-events.ts` so this
+ * endpoint, the relay path, and the runner's `POST /ui-bridge/control/key`
+ * cannot drift apart about where a key goes.
+ */
+export type PageKeyTarget = KeyDispatchTarget;
 
 /** Result of `sendKeysToPage`. */
 export interface SendKeysToPageResult {
@@ -245,7 +252,11 @@ export interface SendKeysToPageResult {
  * its close branch could regress unnoticed. This primitive closes that gap.
  *
  * `target` selects the dispatch node and is validated: an unrecognized value is
- * an error, never a silent fallback to `document`.
+ * an error, never a silent fallback to the default. It defaults to
+ * `DEFAULT_KEY_DISPATCH_TARGET` (`document`) — see `core/key-events.ts` for why
+ * `document` and not `window`, and note that the runner's sibling route
+ * `POST /ui-bridge/control/key` still defaults to `window` until it is wired to
+ * this same module.
  */
 export async function sendKeysToPagePrimitive(request: {
   keys?: unknown;
@@ -257,39 +268,15 @@ export async function sendKeysToPagePrimitive(request: {
     return { ok: false, error: normalized.error, code: 'INVALID_PARAMS' };
   }
 
-  const rawTarget = request?.target ?? 'document';
-  if (typeof rawTarget !== 'string' || !PAGE_KEY_TARGETS.includes(rawTarget as PageKeyTarget)) {
+  const resolved = resolveKeyTarget(request?.target);
+  if (!resolved.ok) {
     return {
       ok: false,
-      error: `'target' must be one of ${PAGE_KEY_TARGETS.join(' | ')} (got ${JSON.stringify(rawTarget)})`,
-      code: 'INVALID_PARAMS',
+      error: resolved.error,
+      code: resolved.reason === 'unknown-target' ? 'INVALID_PARAMS' : 'ELEMENT_NOT_FOUND',
     };
   }
-  const target = rawTarget as PageKeyTarget;
-
-  let node: EventTarget | null;
-  switch (target) {
-    case 'window':
-      node = typeof window !== 'undefined' ? window : null;
-      break;
-    case 'body':
-      node = document.body;
-      break;
-    case 'activeElement':
-      node = document.activeElement ?? document.body;
-      break;
-    case 'document':
-    default:
-      node = document;
-      break;
-  }
-  if (!node) {
-    return {
-      ok: false,
-      error: `dispatch target "${target}" is not available in this context`,
-      code: 'ELEMENT_NOT_FOUND',
-    };
-  }
+  const { target, node } = resolved;
 
   const outcomes = await dispatchKeySequence(node, normalized.keys, { delay: request?.delay });
   return {

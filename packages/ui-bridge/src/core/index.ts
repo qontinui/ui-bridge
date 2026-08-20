@@ -72,10 +72,20 @@ export {
   keyToCode,
   normalizeKeyDescriptors,
   dispatchKeySequence,
+  // The ONE dispatch-target vocabulary. Exported so an out-of-repo consumer —
+  // notably the runner's `POST /ui-bridge/control/key` handler — can adopt the
+  // same targets, the same `document` default and the same reject-by-name
+  // behaviour instead of hand-rolling a third copy of the switch.
+  KEY_DISPATCH_TARGETS,
+  DEFAULT_KEY_DISPATCH_TARGET,
+  resolveKeyTarget,
 } from './key-events';
 export type {
   KeyModifiers,
   KeyDescriptor,
   KeyNormalizeResult,
   KeyDispatchOutcome,
+  KeyDispatchTarget,
+  KeyTargetFailure,
+  KeyTargetResult,
 } from './key-events';

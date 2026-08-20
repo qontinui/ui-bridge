@@ -305,3 +305,115 @@ export async function dispatchKeySequence(
 
   return outcomes;
 }
+
+// ============================================================================
+// Dispatch targets — the ONE target vocabulary, default, and resolver
+// ============================================================================
+
+/**
+ * Where a non-element-scoped key dispatch lands.
+ *
+ * This vocabulary is deliberately here, in the shared module, rather than
+ * beside any one endpoint: THREE surfaces need it and they must not disagree
+ * about where a key goes.
+ *
+ *   - `server/page-primitives.ts` → `POST /control/page/send-keys` (ui-bridge)
+ *   - `react/commandHandlers.ts`  → the same primitive over the relay
+ *   - the runner's `dispatch_key` → `POST /ui-bridge/control/key`
+ *     (`qontinui-runner/src-tauri/src/mcp/ui_bridge/keyboard.rs` plus
+ *     `src/hooks/ui-bridge-events/useControlEvents.ts`), which still carries a
+ *     hand-rolled copy of this switch and a `window` default. That copy is the
+ *     third duplicate this module exists to retire — see the note on
+ *     `DEFAULT_KEY_DISPATCH_TARGET`.
+ */
+export type KeyDispatchTarget = 'document' | 'body' | 'window' | 'activeElement';
+
+/** Every accepted target, in canonical spelling. */
+export const KEY_DISPATCH_TARGETS: readonly KeyDispatchTarget[] = [
+  'document',
+  'body',
+  'window',
+  'activeElement',
+];
+
+/**
+ * The default dispatch target: `document`.
+ *
+ * WHY `document` AND NOT `window`. Real keyboard input is delivered at the
+ * focused node and propagates upward, so every global handler in practice sits
+ * on `document` or on `window`. Those two are NOT interchangeable for a
+ * synthetic dispatch, and the asymmetry runs one way only:
+ *
+ *   - dispatched at `document` → propagation path is `[document, window]`, so
+ *     BOTH `document` listeners and `window` listeners fire.
+ *   - dispatched at `window`   → propagation path is `[window]` alone. A
+ *     `document.addEventListener('keydown', …)` handler NEVER fires.
+ *
+ * `document` is therefore a strict superset of `window` delivery, which is why
+ * changing a default from `window` to `document` cannot break a caller that
+ * relied on reaching a `window` listener — it still reaches it — while a
+ * `window` default silently fails every Escape-to-close panel whose only close
+ * path is a `document` listener. A dispatch that reports success while
+ * reaching nothing is the failure class this whole module exists to avoid.
+ *
+ * `window` stays available as an explicit opt-in for a caller that wants to
+ * prove a handler is bound at the window level specifically.
+ *
+ * `activeElement` remains opt-in for a different reason: it is the only target
+ * that can land text in a focused field, and on a runner that field is often a
+ * terminal bound to a live session.
+ */
+export const DEFAULT_KEY_DISPATCH_TARGET: KeyDispatchTarget = 'document';
+
+/** Why a target could not be resolved — mapped to an error code by callers. */
+export type KeyTargetFailure = 'unknown-target' | 'unavailable';
+
+/** Outcome of resolving a caller-supplied `target` to a live `EventTarget`. */
+export type KeyTargetResult =
+  | { ok: true; target: KeyDispatchTarget; node: EventTarget }
+  | { ok: false; error: string; reason: KeyTargetFailure };
+
+/**
+ * Resolve a caller-supplied `target` to the node to dispatch on.
+ *
+ * An unrecognized target is REJECTED BY NAME, never silently coerced to the
+ * default: a caller who typed `"docuemnt"` and got a `window` dispatch would
+ * read "success" off a request that reached nothing. Omitting `target`
+ * entirely is the only path to the default.
+ */
+export function resolveKeyTarget(raw: unknown): KeyTargetResult {
+  const requested = raw ?? DEFAULT_KEY_DISPATCH_TARGET;
+  if (typeof requested !== 'string' || !KEY_DISPATCH_TARGETS.includes(requested as KeyDispatchTarget)) {
+    return {
+      ok: false,
+      reason: 'unknown-target',
+      error: `'target' must be one of ${KEY_DISPATCH_TARGETS.join(' | ')} (got ${JSON.stringify(raw)})`,
+    };
+  }
+  const target = requested as KeyDispatchTarget;
+
+  let node: EventTarget | null = null;
+  switch (target) {
+    case 'window':
+      node = typeof window !== 'undefined' ? window : null;
+      break;
+    case 'body':
+      node = typeof document !== 'undefined' ? document.body : null;
+      break;
+    case 'activeElement':
+      node = typeof document !== 'undefined' ? (document.activeElement ?? document.body) : null;
+      break;
+    case 'document':
+      node = typeof document !== 'undefined' ? document : null;
+      break;
+  }
+
+  if (!node) {
+    return {
+      ok: false,
+      reason: 'unavailable',
+      error: `dispatch target "${target}" is not available in this context`,
+    };
+  }
+  return { ok: true, target, node };
+}
