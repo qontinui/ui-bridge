@@ -6703,7 +6703,7 @@ export function createHandlers(
           error:
             'Headless spawn is not enabled. ' +
             'Set ENABLE_HEADLESS_SPAWN=1 (or pass enableHeadlessSpawn: true ' +
-            'to createHandlers / createUIBridgeServer) to enable.',
+            'to createHandlers) to enable.',
           code: mapInternalErrorCode('HEADLESS_SPAWN_DISABLED'),
           timestamp: Date.now(),
           httpStatus: 503,

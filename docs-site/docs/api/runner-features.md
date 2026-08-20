@@ -1278,7 +1278,7 @@ non-standard shape. `String(e)` swallowing this loses both fields.
 ```http
 GET /control/components
 GET /control/component/:id
-POST /control/component/:id/action/:actionName
+POST /control/component/:id/action/:actionId
 ```
 
 ⭐ **Prefer component actions over button clicks.** Before driving an
@@ -1822,7 +1822,7 @@ rejected with `code:"TAB_NOT_FOUND"`; a registered-but-stale tab returns
 > **Note on deployed-web restrictions.** Some powerful runner endpoints
 > (notably `POST /control/page/evaluate`) are hard-rejected on the deployed
 > web surface (`web-forbidden-routes.ts`). Use component actions
-> (`/control/component/:id/action/:name`) and `/ai/find` to drive the tab,
+> (`/control/component/:id/action/:actionId`) and `/ai/find` to drive the tab,
 > not raw `page/evaluate`.
 
 ## Multi-instance registry

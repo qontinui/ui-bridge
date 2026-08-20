@@ -61,10 +61,10 @@ export class WindowLocationAdapter implements NavigationAdapter {
  * Usage:
  * ```tsx
  * import { useNavigate, useLocation } from 'react-router-dom';
- * import { createReactRouterAdapter } from '@anthropic-ai/ui-bridge-sdk';
+ * import { createReactRouterAdapter } from '@qontinui/ui-bridge';
  *
  * const router = createBrowserRouter(routes);
- * <UiBridgeProvider navigation={createReactRouterAdapter(router)}>
+ * <UIBridgeProvider navigation={createReactRouterAdapter(router)}>
  * ```
  */
 export function createReactRouterAdapter(router: {
@@ -122,10 +122,10 @@ export function createReactRouterAdapter(router: {
  * Usage:
  * ```tsx
  * import { useRouter } from 'next/navigation';
- * import { createNextjsAdapter } from '@anthropic-ai/ui-bridge-sdk';
+ * import { createNextjsAdapter } from '@qontinui/ui-bridge';
  *
  * const router = useRouter();
- * <UiBridgeProvider navigation={createNextjsAdapter(router)}>
+ * <UIBridgeProvider navigation={createNextjsAdapter(router)}>
  * ```
  */
 export function createNextjsAdapter(router: {

@@ -92,7 +92,7 @@ All server options provide the same HTTP API:
 | `/control/element/:id/state`          | GET    | Get element state        |
 | `/control/element/:id/action`         | POST   | Execute action           |
 | `/control/components`                 | GET    | List components          |
-| `/control/component/:id/action/:name` | POST   | Execute component action |
+| `/control/component/:id/action/:actionId` | POST   | Execute component action |
 | `/control/discover`                   | POST   | Discover elements        |
 | `/control/snapshot`                   | GET    | Get full snapshot        |
 | `/control/workflows`                  | GET    | List workflows           |

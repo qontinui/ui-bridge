@@ -258,7 +258,7 @@ GET /control/component/:id
 ### Execute Component Action
 
 ```http
-POST /control/component/:id/action/:actionName
+POST /control/component/:id/action/:actionId
 ```
 
 **Request Body:**

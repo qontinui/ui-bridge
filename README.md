@@ -302,7 +302,7 @@ POST /ui-bridge/control/element/:id/action
 
 # Components
 GET  /ui-bridge/control/components
-POST /ui-bridge/control/component/:id/action/:name
+POST /ui-bridge/control/component/:id/action/:actionId
 
 # Workflows
 GET  /ui-bridge/control/workflows

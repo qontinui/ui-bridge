@@ -61,7 +61,7 @@ Error responses:
 | POST   | `/control/element/:id/action`         | Execute action           |
 | GET    | `/control/components`                 | List components          |
 | GET    | `/control/component/:id`              | Get component details    |
-| POST   | `/control/component/:id/action/:name` | Execute component action |
+| POST   | `/control/component/:id/action/:actionId` | Execute component action |
 | POST   | `/control/discover`                   | Discover elements        |
 | GET    | `/control/snapshot`                   | Get full snapshot        |
 

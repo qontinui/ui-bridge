@@ -138,12 +138,24 @@ const DEBT_LEDGER = path.join(REPO_ROOT, 'docs-site', 'docs-symbol-debt.json');
  * is the failure mode this whole script exists to prevent, so it fails loudly
  * rather than shrinking the checked set and reporting a pass.
  *
- * NOT included, deliberately: `examples/**`. Those apps declare
- * `"ui-bridge": "file:../../packages/ui-bridge"`, so the unscoped name is
- * genuinely correct *inside* them; the plan routes fixing that to its own PR
- * because it means editing a buildable app's manifest, not rewriting a doc.
- * Gating their prose against a rule their own code is exempt from would just
- * force the exemption back in as ledger lines.
+ * NOT included: `examples/**` — and the reason above is no longer the reason.
+ * It used to be that those apps declared
+ * `"ui-bridge": "file:../../packages/ui-bridge"`, which made the unscoped name
+ * genuinely correct *inside* them, so gating their prose against a rule their
+ * own code was exempt from would only have forced the exemption back in as
+ * ledger lines. #159 closed that: all three manifests now declare
+ * `"@qontinui/ui-bridge": "*"` and all six imports are scoped, so nothing in
+ * `examples/` is exempt from anything any more.
+ *
+ * What keeps the tree out today is narrower and purely mechanical: this checker
+ * reads `.md`/`.mdx` only (see docFiles), and the four markdown files under
+ * `examples/` — `tauri-app/README.md` and the three wrapper READMEs — contain
+ * zero `ui-bridge` import specifiers between them. Adding the tree would assert
+ * a fourth surface exists and buy no coverage at all. The examples' real
+ * exposure is `.tsx` source, which no markdown glob reaches; gating THAT means
+ * a real `tsc` program over the examples, which is a different gate. In the
+ * meantime `npm run build` compiles all three, so a broken import there is a
+ * red build rather than a silent one.
  */
 const DOC_SURFACES = [
   { kind: 'tree', at: path.join(REPO_ROOT, 'docs-site', 'docs') },
