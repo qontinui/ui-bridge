@@ -59,11 +59,32 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 /**
+ * The second argument Next.js passes to an App Router route handler.
+ *
+ * `params` is a PLAIN OBJECT in Next 13.0-13.3 and a PROMISE from 13.4 onward
+ * (it is a Promise in 15 and 16). This package's `next` peer range is
+ * `^13 || ^14 || ^15 || ^16`, so a handler typed against either shape alone
+ * fails Next's generated route validator (`.next/types/validator.ts`) on the
+ * other half of that range — which is not a lint nicety: `next build` runs the
+ * validator and the build FAILS. Accepting the union, and `await`ing `params`
+ * (awaiting a non-Promise is a no-op), is what makes one handler satisfy the
+ * whole declared range.
+ *
+ * The value type is `string | string[]` because a catch-all segment
+ * (`[...path]`) yields an array — the handler below has always branched on
+ * `Array.isArray`, so the previous `Record<string, string>` contradicted its
+ * own implementation.
+ */
+export type NextRouteContext<P = Record<string, string | string[]>> = {
+  params: P | Promise<P>;
+};
+
+/**
  * Route handler factory for Next.js App Router
  */
 export type NextRouteHandler = (
   request: NextRequest,
-  context: { params: Record<string, string> }
+  context: NextRouteContext
 ) => Promise<Response>;
 
 /**
@@ -90,10 +111,7 @@ export function createNextRouteHandlers(
 } {
   const authenticate = config.authenticate;
 
-  async function handleRequest(
-    request: NextRequest,
-    context: { params: Record<string, string> }
-  ): Promise<Response> {
+  async function handleRequest(request: NextRequest, context: NextRouteContext): Promise<Response> {
     try {
       // Authentication
       if (authenticate) {
@@ -103,10 +121,22 @@ export function createNextRouteHandlers(
         }
       }
 
-      // Extract path from catch-all route
-      const pathParam = context.params.path;
+      // Extract path from catch-all route. `params` is a Promise on Next
+      // >= 13.4 and a plain object before it; awaiting covers both.
+      const pathParam = (await context.params).path;
       const path = Array.isArray(pathParam) ? '/' + pathParam.join('/') : '/' + pathParam;
       const method = request.method;
+
+      // Health check. Served here for parity with the other two adapters —
+      // `standalone.ts` answers `/health` before it strips the base path and
+      // `express.ts` mounts `app.get('/health')` beside the router, so a caller
+      // pointed at any adapter gets the same `{ status, timestamp }`. The
+      // Next.js adapter is reachable only through its catch-all, so its
+      // equivalent position is the same one `/_routes` occupies: matched on the
+      // path INSIDE the mount, before route lookup.
+      if (method === 'GET' && path === '/health') {
+        return jsonResponse({ status: 'ok', timestamp: Date.now() });
+      }
 
       // P2.2 — Endpoint discovery. Served before route matching so it
       // works without an explicit handler entry.
@@ -257,13 +287,21 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     element: {
-      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.getElement(context.params.id);
+      async GET(
+        _request: NextRequest,
+        context: NextRouteContext<{ id: string }>
+      ): Promise<Response> {
+        const { id } = await context.params;
+        const result = await handlers.getElement(id);
         return jsonResponse(result);
       },
-      async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
+      async POST(
+        request: NextRequest,
+        context: NextRouteContext<{ id: string }>
+      ): Promise<Response> {
         const body = (await request.json()) as ControlActionRequest;
-        const result = await handlers.executeElementAction(context.params.id, body);
+        const { id } = await context.params;
+        const result = await handlers.executeElementAction(id, body);
         return jsonResponse(result);
       },
     },
@@ -274,18 +312,23 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     component: {
-      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.getComponent(context.params.id);
+      async GET(
+        _request: NextRequest,
+        context: NextRouteContext<{ id: string }>
+      ): Promise<Response> {
+        const { id } = await context.params;
+        const result = await handlers.getComponent(id);
         return jsonResponse(result);
       },
       async POST(
         request: NextRequest,
-        context: { params: { id: string; actionId: string } }
+        context: NextRouteContext<{ id: string; actionId: string }>
       ): Promise<Response> {
         const body = (await request.json()) as Omit<ComponentActionRequest, 'action'>;
-        const result = await handlers.executeComponentAction(context.params.id, {
+        const { id, actionId } = await context.params;
+        const result = await handlers.executeComponentAction(id, {
           ...body,
-          action: context.params.actionId,
+          action: actionId,
         });
         return jsonResponse(result);
       },
@@ -320,9 +363,13 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     workflow: {
-      async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
+      async POST(
+        request: NextRequest,
+        context: NextRouteContext<{ id: string }>
+      ): Promise<Response> {
         const body = (await request.json()) as WorkflowRunRequest;
-        const result = await handlers.runWorkflow(context.params.id, body);
+        const { id } = await context.params;
+        const result = await handlers.runWorkflow(id, body);
         return jsonResponse(result);
       },
     },
@@ -345,8 +392,12 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     highlight: {
-      async POST(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.highlightElement(context.params.id);
+      async POST(
+        _request: NextRequest,
+        context: NextRouteContext<{ id: string }>
+      ): Promise<Response> {
+        const { id } = await context.params;
+        const result = await handlers.highlightElement(id);
         return jsonResponse(result);
       },
     },

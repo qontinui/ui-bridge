@@ -794,6 +794,40 @@ function docFiles() {
   return { files: [...files].sort(), missing };
 }
 
+/**
+ * Packages whose manifest lists README.md in `files` but that ship no README.
+ *
+ * DOC_SURFACES walks `packages/` as a tree, so an ABSENT README is simply not
+ * scanned — silently, and a package with no README is a legitimate state. What
+ * is NOT legitimate is a manifest that PROMISES npm one and ships none: `files`
+ * is the publish allowlist, so the tarball goes out with the entry unfulfilled
+ * and npmjs.com renders the literal string "ERROR: No README data found!" where
+ * the package's documentation should be.
+ *
+ * That is this gate's own defect class — a name that resolves to nothing — on
+ * the most published surface there is. Measured 2026-08-20: both
+ * @qontinui/ui-bridge 0.22.0 and @qontinui/ui-bridge-server 0.4.1 were serving
+ * exactly that error to every reader who found them on npm.
+ */
+function unfulfilledReadmePromises() {
+  const out = [];
+  for (const entry of fs.readdirSync(PACKAGES_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifestPath = path.join(PACKAGES_ROOT, entry.name, 'package.json');
+    if (!fs.existsSync(manifestPath)) continue;
+
+    const readme = path.join(PACKAGES_ROOT, entry.name, 'README.md');
+    if (fs.existsSync(readme)) continue;
+
+    const json = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    // `files` is absent on a private package that never publishes; nothing is
+    // promised, so nothing is owed.
+    const promised = (json.files ?? []).some((f) => /(^|[/])README[.]md$/i.test(f));
+    if (promised) out.push({ manifestPath, readme });
+  }
+  return out;
+}
+
 function main() {
   const packages = readWorkspacePackages();
 
@@ -817,6 +851,23 @@ function main() {
   }
   if (!files.length) {
     process.stderr.write('No documentation files found — nothing to check, which is not a pass.\n');
+    process.exit(1);
+  }
+
+  const unfulfilled = unfulfilledReadmePromises();
+  if (unfulfilled.length) {
+    process.stderr.write(
+      `${unfulfilled.length} package(s) promise npm a README and ship none:\n` +
+        unfulfilled
+          .map(
+            ({ manifestPath, readme }) =>
+              `   - ${rel(manifestPath)} lists "README.md" in "files", but ${rel(readme)} does not exist\n`
+          )
+          .join('') +
+        'npm renders "ERROR: No README data found!" on that package page — this gate\'s own\n' +
+        'defect class (a name resolving to nothing) on the most published surface there is.\n' +
+        'Write the README, or drop "README.md" from the manifest\'s "files" array.\n'
+    );
     process.exit(1);
   }
 

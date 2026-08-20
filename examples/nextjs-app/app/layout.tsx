@@ -1,6 +1,6 @@
 'use client';
 
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

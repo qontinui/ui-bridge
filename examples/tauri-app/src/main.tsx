@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { UIBridgeProvider } from 'ui-bridge';
+import { UIBridgeProvider } from '@qontinui/ui-bridge';
 import App from './App';
 import './styles.css';
 

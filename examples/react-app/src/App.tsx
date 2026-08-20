@@ -5,7 +5,7 @@
  */
 
 import React, { useState } from 'react';
-import { UIBridgeProvider, useUIElement, useUIComponent, useUIBridge } from 'ui-bridge';
+import { UIBridgeProvider, useUIElement, useUIComponent, useUIBridge } from '@qontinui/ui-bridge';
 
 /**
  * Login Form Component

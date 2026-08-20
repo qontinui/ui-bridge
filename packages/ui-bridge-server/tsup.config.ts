@@ -16,6 +16,6 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
-  external: ['express', 'next', 'ws', 'ui-bridge'],
+  external: ['express', 'next', 'ws', '@qontinui/ui-bridge'],
   treeshake: true,
 });

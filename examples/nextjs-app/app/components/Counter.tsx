@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useUIElement, useUIComponent } from 'ui-bridge';
+import { useUIElement, useUIComponent } from '@qontinui/ui-bridge';
 
 export default function Counter() {
   const [count, setCount] = useState(0);

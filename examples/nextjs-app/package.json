@@ -9,10 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@qontinui/ui-bridge": "*",
+    "@qontinui/ui-bridge-server": "*",
     "next": "^16.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "ui-bridge": "file:../../packages/ui-bridge"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

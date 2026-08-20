@@ -82,6 +82,38 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 ```
 
+## Health check and route discovery
+
+Both are served by the catch-all itself, so they need no handler entry:
+
+```bash
+curl http://localhost:3000/api/ui-bridge/health
+# {"status":"ok","timestamp":1234567890}
+
+curl http://localhost:3000/api/ui-bridge/_routes
+# {"success":true,"data":{"routes":[...],"count":50},"timestamp":...}
+```
+
+`/health` returns the same `{ status, timestamp }` the
+[standalone](./standalone#health-check) and [Express](./express) adapters do.
+The path differs by construction: those two serve it at the server root, while
+a Next route handler is only reachable through its mount, so here it sits
+inside the catch-all.
+
+## Route `params` across the supported Next versions
+
+App Router `params` is a plain object on Next 13.0–13.3 and a `Promise` from
+13.4 onward — it is a `Promise` on 15 and 16. Every handler this package
+exports accepts either shape and `await`s internally, so the recipes above
+compile against the whole `^13 || ^14 || ^15 || ^16` peer range without a
+version-specific wrapper.
+
+This matters more than it sounds: `next build` runs Next's own generated route
+validator over your exported handlers, so a handler typed against only one of
+the two shapes is a **build failure**, not a warning. `examples/nextjs-app` in
+the repo is the recipe above, built by CI, which is what keeps that claim
+honest.
+
 ## Pages Router (Legacy)
 
 :::warning
