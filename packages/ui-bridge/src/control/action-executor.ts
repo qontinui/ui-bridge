@@ -74,6 +74,10 @@ import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
+// Shared key grammar — the ONE copy, also behind the document-scoped
+// `sendKeysToPage` page primitive. Keeping a private copy here is how the two
+// key paths would drift.
+import { NON_PRINTABLE_KEYS, keyToCode } from '../core/key-events';
 import {
   elementRedaction,
   verdictOf,
@@ -2249,50 +2253,13 @@ export class DefaultActionExecutor implements ActionExecutor {
     element.focus();
     const delay = options.delay || 0;
 
-    // Keys where browsers don't fire keypress
-    const NON_PRINTABLE = new Set([
-      'Enter',
-      'Tab',
-      'Escape',
-      'Backspace',
-      'Delete',
-      'Insert',
-      'ArrowUp',
-      'ArrowDown',
-      'ArrowLeft',
-      'ArrowRight',
-      'Home',
-      'End',
-      'PageUp',
-      'PageDown',
-      'F1',
-      'F2',
-      'F3',
-      'F4',
-      'F5',
-      'F6',
-      'F7',
-      'F8',
-      'F9',
-      'F10',
-      'F11',
-      'F12',
-      'Control',
-      'Shift',
-      'Alt',
-      'Meta',
-      'CapsLock',
-      'NumLock',
-      'ScrollLock',
-    ]);
-
     for (const keyDesc of options.keys) {
       const { key } = keyDesc;
       if (!key || typeof key !== 'string') continue;
       const mods = keyDesc.modifiers || {};
       const eventInit: KeyboardEventInit = {
         key,
-        code: this.keyToCode(key),
+        code: keyToCode(key),
         bubbles: true,
         cancelable: true,
         ctrlKey: mods.ctrl || false,
@@ -2306,7 +2273,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // Fire keypress for printable characters only (no modifiers except shift)
       const isInputElement =
         element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
-      if (key.length === 1 && !NON_PRINTABLE.has(key) && !mods.ctrl && !mods.alt && !mods.meta) {
+      if (key.length === 1 && !NON_PRINTABLE_KEYS.has(key) && !mods.ctrl && !mods.alt && !mods.meta) {
         element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
         // Insert character into input/textarea value (keypress alone doesn't update .value)
         if (isInputElement) {
@@ -2354,32 +2321,6 @@ export class DefaultActionExecutor implements ActionExecutor {
         await sleep(delay);
       }
     }
-  }
-
-  /**
-   * Map a key name to a KeyboardEvent.code value.
-   */
-  private keyToCode(key: string): string {
-    if (!key || typeof key !== 'string') return '';
-    if (key.length === 1) {
-      const upper = key.toUpperCase();
-      if (upper >= 'A' && upper <= 'Z') return `Key${upper}`;
-      if (upper >= '0' && upper <= '9') return `Digit${upper}`;
-    }
-    // Named keys map to themselves as code
-    const codeMap: Record<string, string> = {
-      Enter: 'Enter',
-      Tab: 'Tab',
-      Escape: 'Escape',
-      Backspace: 'Backspace',
-      Delete: 'Delete',
-      ' ': 'Space',
-      ArrowUp: 'ArrowUp',
-      ArrowDown: 'ArrowDown',
-      ArrowLeft: 'ArrowLeft',
-      ArrowRight: 'ArrowRight',
-    };
-    return codeMap[key] || key;
   }
 
   private performClear(element: HTMLElement): void {

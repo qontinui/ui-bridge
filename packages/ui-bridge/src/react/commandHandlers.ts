@@ -43,6 +43,7 @@ import {
   clickByTextPrimitive,
   clickBySelectorPrimitive,
   typeIntoPrimitive,
+  sendKeysToPagePrimitive,
 } from '../server/page-primitives';
 import {
   isContentRedacted,
@@ -1612,8 +1613,26 @@ export async function executeCommand(
     }
 
     case 'readValue': {
-      const { selector, index } = payload as { selector?: string; index?: number };
-      const r = readValuePrimitive(selector, index);
+      const { selector, index, all } = payload as {
+        selector?: string;
+        index?: number;
+        all?: unknown;
+      };
+      const r = readValuePrimitive(selector, index, { all });
+      return r.ok ? r.data : { success: false, error: r.error };
+    }
+
+    // Document-scoped key dispatch. Unlike the element-scoped `sendKeys`
+    // action (inside `executeElementAction`), this reaches global
+    // `document`/`window` keydown listeners, which is where Escape-to-close
+    // behavior actually lives.
+    case 'sendKeysToPage': {
+      const { keys, target, delay } = payload as {
+        keys?: unknown;
+        target?: unknown;
+        delay?: number;
+      };
+      const r = await sendKeysToPagePrimitive({ keys, target, delay });
       return r.ok ? r.data : { success: false, error: r.error };
     }
 

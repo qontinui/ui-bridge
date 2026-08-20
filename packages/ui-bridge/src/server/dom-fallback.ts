@@ -378,6 +378,19 @@ export function findElementBySelector(
 }
 
 /**
+ * Find EVERY DOM element matching a CSS selector, in document order.
+ *
+ * The plural twin of `findElementBySelector`, sharing its `document.body`
+ * container default so `readValue({ all: true })` sees exactly the same match
+ * set the singular read indexes into.
+ */
+export function findAllElementsBySelector(selector: string, root?: HTMLElement): HTMLElement[] {
+  const container = root ?? document.body;
+  if (!container) return [];
+  return Array.from(container.querySelectorAll<HTMLElement>(selector));
+}
+
+/**
  * Find a form element by its associated label text.
  */
 export function findElementByLabel(labelText: string, root?: HTMLElement): HTMLElement | null {

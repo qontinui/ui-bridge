@@ -2186,6 +2186,9 @@ export function createRelayHandlers(
     async findByText(request, context) {
       return relayCommand('findByText', request, ctxOpts(context));
     },
+    async sendKeysToPage(request, context) {
+      return relayCommand('sendKeysToPage', request, ctxOpts(context));
+    },
 
     // Diagnostics
     async getDiagnostics(context) {

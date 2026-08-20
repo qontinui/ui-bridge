@@ -63,3 +63,19 @@ export { classString, classList } from './class-name';
 // resulting lone surrogate makes the whole JSON response unparseable for a
 // strict-UTF-8 consumer such as the Rust runner.
 export { truncateCodePoints } from './text';
+
+// Shared keyboard-event primitives — the ONE key-name grammar and dispatch
+// loop behind the element-scoped `sendKeys` action and the document-scoped
+// `sendKeysToPage` page primitive. Do not hand-roll KeyboardEvent dispatch.
+export {
+  NON_PRINTABLE_KEYS,
+  keyToCode,
+  normalizeKeyDescriptors,
+  dispatchKeySequence,
+} from './key-events';
+export type {
+  KeyModifiers,
+  KeyDescriptor,
+  KeyNormalizeResult,
+  KeyDispatchOutcome,
+} from './key-events';

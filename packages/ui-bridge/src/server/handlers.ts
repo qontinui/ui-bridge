@@ -63,6 +63,9 @@ import {
   clickByTextPrimitive,
   clickBySelectorPrimitive,
   typeIntoPrimitive,
+  sendKeysToPagePrimitive,
+  type ReadValueResult,
+  type SendKeysToPageResult,
 } from './page-primitives';
 import type { NavigationAdapter } from '../navigation/navigation-adapter';
 import { WindowLocationAdapter } from '../navigation/navigation-adapter';
@@ -3019,12 +3022,29 @@ export function createHandlers(
     readValue: async (request: {
       selector: string;
       index?: number;
-    }): Promise<APIResponse<{ value: string | null; length: number }>> => {
+      all?: boolean;
+    }): Promise<APIResponse<ReadValueResult>> => {
       try {
-        const r = readValuePrimitive(request.selector, request.index);
+        const r = readValuePrimitive(request.selector, request.index, { all: request.all });
         return r.ok ? success(r.data) : error(r.error, r.code);
       } catch (err) {
         return error((err as Error).message, 'READ_VALUE_ERROR');
+      }
+    },
+
+    // Document-scoped key dispatch — reaches global `document`/`window` keydown
+    // listeners (Escape-to-close on dropdowns, modals, command palettes) that no
+    // element-scoped `sendKeys` action can address.
+    sendKeysToPage: async (request: {
+      keys: unknown;
+      target?: string;
+      delay?: number;
+    }): Promise<APIResponse<SendKeysToPageResult>> => {
+      try {
+        const r = await sendKeysToPagePrimitive(request);
+        return r.ok ? success(r.data) : error(r.error, r.code);
+      } catch (err) {
+        return error((err as Error).message, 'SEND_KEYS_TO_PAGE_ERROR');
       }
     },
 

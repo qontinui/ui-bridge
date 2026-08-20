@@ -1,9 +1,9 @@
 /**
  * Shared page-primitive implementations for the app-agnostic interaction
  * endpoints: `readValue`, `findByText`, `clickByText`, `clickBySelector`,
- * and `typeInto`.
+ * `typeInto`, and `sendKeysToPage`.
  *
- * These five operations are dispatched from TWO places that must stay in
+ * These operations are dispatched from TWO places that must stay in
  * lockstep:
  *   - the standalone server handlers (`server/handlers.ts`), and
  *   - the React relay command dispatcher (`react/commandHandlers.ts`).
@@ -46,8 +46,14 @@ import {
 import {
   findElementsByText,
   findElementBySelector,
+  findAllElementsBySelector,
   findElementByLabel,
 } from './dom-fallback';
+import {
+  normalizeKeyDescriptors,
+  dispatchKeySequence,
+  type KeyDispatchOutcome,
+} from '../core/key-events';
 
 /**
  * Neutral result of a page primitive. The dispatchers map this onto their own
@@ -100,28 +106,44 @@ function buildClickEcho(el: HTMLElement): ClickEcho {
   };
 }
 
+/** One element's value in a `readValue({ all: true })` batch read. */
+export interface ReadValueHit {
+  /** Position in the selector's document-order match set. */
+  index: number;
+  value: string | null;
+  length: number;
+}
+
 /**
- * `readValue` — read the value/text of a caller-supplied selector.
+ * `readValue` result.
  *
- * §4.6: an arbitrary caller-supplied selector must not be able to read a
- * sensitive value in cleartext. The `isValueRedacted` gate is unconditional —
- * it covers password inputs with no opt-in AND any element inside a
- * `data-bridge-redact` boundary. The element stays addressable; only its value
- * is hidden.
+ * `value`/`length` describe the SINGLE addressed element (the first match, or
+ * the one at `index`) and are always present, so every pre-`all` caller keeps
+ * working. `totalMatches` is always reported — a caller that reads one value
+ * out of 14 matches deserves to know that, rather than inferring completeness
+ * from a shape that cannot express it. `values` is present ONLY for
+ * `all: true`.
  */
-export function readValuePrimitive(
-  selector: string | undefined,
-  index?: number
-): PrimitiveResult<{ value: string | null; length: number }> {
-  if (!selector?.trim()) {
-    return { ok: false, error: 'selector is required and must not be empty', code: 'INVALID_PARAMS' };
-  }
-  const el = findElementBySelector(selector, index);
-  if (!el) {
-    return { ok: false, error: `No element found for selector "${selector}"`, code: 'ELEMENT_NOT_FOUND' };
-  }
+export interface ReadValueResult {
+  value: string | null;
+  length: number;
+  /** How many elements the selector matched, whether or not `all` was set. */
+  totalMatches: number;
+  /** Every match's value, in document order. Present iff `all: true`. */
+  values?: ReadValueHit[];
+}
+
+/**
+ * Read one element's value through the §4.6 choke point.
+ *
+ * The `isValueRedacted` gate is unconditional — it covers password inputs with
+ * no opt-in AND any element inside a `data-bridge-redact` boundary. The element
+ * stays addressable; only its value is hidden. Applied PER ELEMENT, so a batch
+ * read cannot launder a secret through the `all: true` path.
+ */
+function readGatedValue(el: HTMLElement): { value: string | null; length: number } {
   if (isValueRedacted(el)) {
-    return { ok: true, data: { value: REDACTED_VALUE, length: 0 } };
+    return { value: REDACTED_VALUE, length: 0 };
   }
   // el is proven not value-redacted above (password/boundary already returned),
   // so the reader-minters pass the raw content through — routing the read
@@ -130,7 +152,155 @@ export function readValuePrimitive(
     'value' in el
       ? (readScrubbedValue(el as HTMLInputElement) ?? null)
       : (readScrubbedText(el) ?? null);
-  return { ok: true, data: { value, length: value?.length ?? 0 } };
+  return { value, length: value?.length ?? 0 };
+}
+
+/**
+ * `readValue` — read the value/text of a caller-supplied selector.
+ *
+ * `all: true` returns EVERY match in `values[]` (document order). It used to be
+ * accepted and silently dropped, so a caller asking for 14 values got one with
+ * no signal that the parameter had been ignored — an answer that looks complete
+ * and is not. `all` is now honoured; a non-boolean `all`, or `all` combined
+ * with the singular `index`, is REJECTED by name rather than reinterpreted.
+ *
+ * A selector matching nothing is `ELEMENT_NOT_FOUND` in BOTH modes, so the
+ * endpoint has one rule for "no match" regardless of `all`.
+ */
+export function readValuePrimitive(
+  selector: string | undefined,
+  index?: number,
+  options?: { all?: unknown }
+): PrimitiveResult<ReadValueResult> {
+  if (!selector?.trim()) {
+    return { ok: false, error: 'selector is required and must not be empty', code: 'INVALID_PARAMS' };
+  }
+
+  const all = options?.all;
+  if (all !== undefined && typeof all !== 'boolean') {
+    return {
+      ok: false,
+      error: `'all' must be a boolean (got ${typeof all})`,
+      code: 'INVALID_PARAMS',
+    };
+  }
+  if (all === true && index !== undefined) {
+    return {
+      ok: false,
+      error:
+        "'all' and 'index' are mutually exclusive — 'all' returns every match, 'index' selects one. Drop one of them.",
+      code: 'INVALID_PARAMS',
+    };
+  }
+
+  const matches = findAllElementsBySelector(selector);
+  const totalMatches = matches.length;
+
+  if (all === true) {
+    if (totalMatches === 0) {
+      return {
+        ok: false,
+        error: `No element found for selector "${selector}"`,
+        code: 'ELEMENT_NOT_FOUND',
+      };
+    }
+    const values = matches.map((el, i) => ({ index: i, ...readGatedValue(el) }));
+    // Destructured, not read as `values[0].value`: every entry is already
+    // through the §4.6 gate, and the Layer-2 lint rightly cannot tell a
+    // scrubbed carrier from a raw DOM read at a computed index.
+    const { value, length } = values[0];
+    return { ok: true, data: { value, length, totalMatches, values } };
+  }
+
+  const el = findElementBySelector(selector, index);
+  if (!el) {
+    return { ok: false, error: `No element found for selector "${selector}"`, code: 'ELEMENT_NOT_FOUND' };
+  }
+  return { ok: true, data: { ...readGatedValue(el), totalMatches } };
+}
+
+/** Where a document-scoped key dispatch lands. */
+export type PageKeyTarget = 'document' | 'body' | 'window' | 'activeElement';
+
+const PAGE_KEY_TARGETS: readonly PageKeyTarget[] = ['document', 'body', 'window', 'activeElement'];
+
+/** Result of `sendKeysToPage`. */
+export interface SendKeysToPageResult {
+  dispatched: number;
+  target: PageKeyTarget;
+  /** The normalized `KeyboardEvent.key` values actually dispatched. */
+  keys: string[];
+  /** Per key: did a listener call `preventDefault()` on the keydown? */
+  outcomes: KeyDispatchOutcome[];
+}
+
+/**
+ * `sendKeysToPage` — dispatch a key sequence at the DOCUMENT level, not scoped
+ * to any element.
+ *
+ * The element-scoped `sendKeys` action can only reach an element that
+ * advertises it, so a component whose behavior lives in a
+ * `document.addEventListener('keydown', …)` handler — Escape-to-close on
+ * dropdowns, modals and command palettes — had no reachable dispatch point and
+ * its close branch could regress unnoticed. This primitive closes that gap.
+ *
+ * `target` selects the dispatch node and is validated: an unrecognized value is
+ * an error, never a silent fallback to `document`.
+ */
+export async function sendKeysToPagePrimitive(request: {
+  keys?: unknown;
+  target?: unknown;
+  delay?: number;
+}): Promise<PrimitiveResult<SendKeysToPageResult>> {
+  const normalized = normalizeKeyDescriptors(request?.keys);
+  if (!normalized.ok) {
+    return { ok: false, error: normalized.error, code: 'INVALID_PARAMS' };
+  }
+
+  const rawTarget = request?.target ?? 'document';
+  if (typeof rawTarget !== 'string' || !PAGE_KEY_TARGETS.includes(rawTarget as PageKeyTarget)) {
+    return {
+      ok: false,
+      error: `'target' must be one of ${PAGE_KEY_TARGETS.join(' | ')} (got ${JSON.stringify(rawTarget)})`,
+      code: 'INVALID_PARAMS',
+    };
+  }
+  const target = rawTarget as PageKeyTarget;
+
+  let node: EventTarget | null;
+  switch (target) {
+    case 'window':
+      node = typeof window !== 'undefined' ? window : null;
+      break;
+    case 'body':
+      node = document.body;
+      break;
+    case 'activeElement':
+      node = document.activeElement ?? document.body;
+      break;
+    case 'document':
+    default:
+      node = document;
+      break;
+  }
+  if (!node) {
+    return {
+      ok: false,
+      error: `dispatch target "${target}" is not available in this context`,
+      code: 'ELEMENT_NOT_FOUND',
+    };
+  }
+
+  const outcomes = await dispatchKeySequence(node, normalized.keys, { delay: request?.delay });
+  return {
+    ok: true,
+    data: {
+      dispatched: outcomes.length,
+      target,
+      keys: normalized.keys.map((k) => k.key),
+      outcomes,
+    },
+  };
 }
 
 /**

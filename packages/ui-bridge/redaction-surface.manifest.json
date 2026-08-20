@@ -183,6 +183,7 @@
     "POST /control/page/read-value -> readValue",
     "POST /control/page/refresh -> pageRefresh",
     "POST /control/page/scroll -> pageScroll",
+    "POST /control/page/send-keys -> sendKeysToPage",
     "POST /control/page/type-into -> typeInto",
     "POST /control/performance-entries/clear -> clearPerformanceEntries",
     "POST /control/redo -> executeRedo",

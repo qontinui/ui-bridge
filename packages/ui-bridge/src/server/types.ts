@@ -1346,11 +1346,59 @@ export interface UIBridgeServerHandlers {
     request: {
       selector: string;
       index?: number;
+      /**
+       * Return EVERY matching element's value in `values[]` instead of just the
+       * addressed one. Mutually exclusive with `index` — passing both is a
+       * 400, never a silent pick. (Was accepted and silently dropped before.)
+       */
+      all?: boolean;
       /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
       windowLabel?: string;
     },
     context?: HandlerContext
-  ) => Promise<APIResponse<{ value: string | null; length: number }>>;
+  ) => Promise<
+    APIResponse<{
+      value: string | null;
+      length: number;
+      /** Matches for the selector, reported whether or not `all` was set. */
+      totalMatches: number;
+      /** Every match, in document order. Present iff `all: true`. */
+      values?: Array<{ index: number; value: string | null; length: number }>;
+    }>
+  >;
+
+  /**
+   * Dispatch a key sequence at the DOCUMENT level rather than at an element.
+   *
+   * The element-scoped `sendKeys` action only reaches elements that advertise
+   * it, so behavior implemented as a global `document.addEventListener(
+   * 'keydown', …)` — Escape-to-close on dropdowns/modals/command palettes —
+   * was unreachable and could regress silently.
+   */
+  sendKeysToPage: (
+    request: {
+      /**
+       * `"Escape"` / `"ctrl+Enter"` (ONE key), an array of such strings, or the
+       * explicit `[{ key, modifiers? }]` descriptor form. A bare string is never
+       * re-read as a character sequence — use `typeInto` to type text.
+       */
+      keys: string | string[] | Array<{ key: string; modifiers?: Record<string, boolean> }>;
+      /** Dispatch node. Default `document`. An unknown value is a 400, not a fallback. */
+      target?: 'document' | 'body' | 'window' | 'activeElement';
+      /** Milliseconds between keys. */
+      delay?: number;
+      /** Target a runner pop-out window discoverable via `listWindows()`; omit → main window. Read from the body. */
+      windowLabel?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<
+    APIResponse<{
+      dispatched: number;
+      target: string;
+      keys: string[];
+      outcomes: Array<{ key: string; defaultPrevented: boolean }>;
+    }>
+  >;
 
   findByText: (
     request: { text: string; tag?: string; exact?: boolean; windowLabel?: string },
@@ -2234,6 +2282,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'findByText',
     bodyRequired: true,
   },
+  {
+    method: 'POST',
+    path: '/control/page/send-keys',
+    handler: 'sendKeysToPage',
+    bodyRequired: true,
+  },
 
   // Tier 3.1 — registry-based element condition polling
   {
@@ -2304,6 +2358,7 @@ export const INTERACTION_RELAY_COMMAND_ACTIONS = [
   'typeInto',
   'readValue',
   'findByText',
+  'sendKeysToPage',
 ] as const;
 
 /**
