@@ -57,6 +57,7 @@ import type {
   ActionErrorDiff,
   FillResult,
   FillFieldResult,
+  RegisteredElement,
 } from '../core/types';
 import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-types';
 import type { BrowserEventCapture } from '../debug/browser-capture';
@@ -1216,7 +1217,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         const verified = await this.getEffectVerifier().verifyAction(
           effectParams,
           signature,
-          () => this.performAction(element, request.action, actionParams)
+          () => this.performAction(element, request.action, actionParams, registered)
         );
         result = verified.result;
         effectVerification = verified.verification;
@@ -1232,7 +1233,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           timestamp: Date.now(),
         });
       } else {
-        result = await this.performAction(element, request.action, actionParams);
+        result = await this.performAction(element, request.action, actionParams, registered);
       }
 
       // Visual click feedback — show a brief highlight at the action location
@@ -2120,11 +2121,16 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   /**
    * Perform an action on an element
+   *
+   * `registered` is the id-resolved registration from `executeAction`. It is
+   * threaded down so custom-action precedence (below) is decided on the
+   * resolved element's OWN registration rather than on a global name check.
    */
   private async performAction(
     element: HTMLElement,
     action: string,
-    params?: Record<string, unknown>
+    params?: Record<string, unknown>,
+    registered?: RegisteredElement | null
   ): Promise<unknown> {
     // Disabled-state pre-check for click-like actions.
     //
@@ -2172,6 +2178,40 @@ export class DefaultActionExecutor implements ActionExecutor {
           );
         }
       }
+    }
+
+    // Custom-action precedence — a registered handler wins over a same-named
+    // built-in.
+    //
+    // THE DEFECT this closes: the custom-action lookup used to live ONLY in the
+    // `default:` arm of the built-in switch below, so any `customActions` entry
+    // whose name collides with an entry in `SUPPORTED_ACTIONS` was unreachable.
+    // The runner's terminal pane registers `sendKeys`, which is also a built-in
+    // verb: `performAction` dispatched the SDK's DOM key synthesis, the
+    // registered handler never ran, and the call still reported
+    // `success: true` — a silent ghost write whose bytes never reached the pty
+    // (and which robbed the handler of its chance to return `TERMINAL_EXITED`
+    // for a dead terminal).
+    //
+    // Precedence is decided on THIS element's own registration, never on a
+    // global name check: an element that does not register `sendKeys` still
+    // gets the built-in. Prefer the id-resolved registration threaded down from
+    // `executeAction`; fall back to a DOM lookup for elements resolved by
+    // identifier / CTR / discovery cache rather than by registry id.
+    const owner = registered ?? this.registry.findByDOMElement(element);
+    const customAction = owner?.customActions?.[action];
+    if (customAction) {
+      // A handler throw propagates to `executeAction`'s outer catch, which
+      // preserves the handler's typed `code` via `readHandlerErrorEnvelope`.
+      //
+      // The options bag is ALWAYS supplied, exactly as the `default:` arm below
+      // supplies it — `ActionHandlerOptions` promises it, and a handler written
+      // the documented way (`(params, { signal }) => …`) throws on `undefined`.
+      // An element action carries no cancellation source, so the signal is
+      // inert; see `inertAbortSignal`. This seam MUST keep passing it: it now
+      // shadows the `default:` arm for every registered custom action, so
+      // dropping the bag here would silently re-open the defect that arm fixed.
+      return customAction.handler(params, { signal: inertAbortSignal() });
     }
 
     // `hoverClick` is a SDK-native composite action (hover-reveal → click).

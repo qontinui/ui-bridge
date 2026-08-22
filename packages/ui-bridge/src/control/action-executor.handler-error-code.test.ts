@@ -115,10 +115,11 @@ describe('DefaultActionExecutor — typed handler error propagation', () => {
   it('propagates the second terminal code (TERMINAL_WRITE_FAILED) unchanged', async () => {
     const err = new Error('TERMINAL_WRITE_FAILED: terminal_write failed for term-9: ipc down');
     Object.assign(err, { code: 'TERMINAL_WRITE_FAILED', terminalId: 'term-9', exitCode: null });
-    // NB: a *custom* action name. `sendKeys` is a built-in in SUPPORTED_ACTIONS,
-    // so a same-named customAction is shadowed by the built-in dispatch and
-    // never runs — unrelated to this fix, but it makes `sendKeys` a misleading
-    // fixture name here.
+    // NB: a *custom* action name, kept deliberately distinct from the built-in
+    // verbs so this file exercises only the typed-error path. (The
+    // built-in-shadowing defect that once made `sendKeys` unusable as a custom
+    // name is fixed — see `action-executor.custom-action-precedence.test.ts`,
+    // which pins the collision case including its typed-code passthrough.)
     registerThrowingAction('pane-9', 'writeToTerminal', err);
 
     const res = await executor.executeAction('pane-9', { action: 'writeToTerminal' });
