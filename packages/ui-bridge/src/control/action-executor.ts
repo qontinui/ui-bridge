@@ -74,6 +74,17 @@ import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
+// Phase 3: the executor races every action handler against its abort signal,
+// so a handler that ignores the signal is still abandonable at the caller.
+import { runAbortable } from '../core/abortable';
+// Phase 2: the executor validates action params against the action's published
+// `paramSchema` before the handler runs. See `core/param-schema.ts` for the
+// documented subset and for why `warn` is the default mode.
+import {
+  validateActionParams,
+  formatParamValidationFailure,
+  getDefaultParamValidationMode,
+} from '../core/param-schema';
 // Shared key grammar — the ONE copy, also behind the document-scoped
 // `sendKeysToPage` page primitive. Keeping a private copy here is how the two
 // key paths would drift.
@@ -104,6 +115,7 @@ import type {
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
+  ComponentActionInvokeOptions,
   BatchActionRequest,
   BatchActionResponse,
   BatchActionStepResult,
@@ -1407,7 +1419,8 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   async executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest
+    request: ComponentActionRequest,
+    options: ComponentActionInvokeOptions = {}
   ): Promise<ComponentActionResponse> {
     const startTime = performance.now();
 
@@ -1445,11 +1458,73 @@ export class DefaultActionExecutor implements ActionExecutor {
         };
       }
 
-      const result = await action.handler(request.params);
+      // Phase 2: `paramSchema` is published to agents, so it has to mean
+      // something. Validate BEFORE the handler runs — a rejection after a
+      // side-effect is not a rejection.
+      const validationMode = options.paramValidation ?? getDefaultParamValidationMode();
+      if (validationMode !== 'off' && action.paramSchema !== undefined) {
+        const validation = validateActionParams(action.paramSchema, request.params);
+        if (!validation.valid) {
+          const message = formatParamValidationFailure(
+            componentId,
+            request.action,
+            validation.issues
+          );
+          if (validationMode === 'enforce') {
+            return {
+              success: false,
+              error: message,
+              failureDetails: buildActionFailureDetails('UB-ACTION-REJECTED', message, {
+                elementId: componentId,
+                context: { action: request.action, invalidParams: validation.issues },
+                invalidParams: validation.issues,
+                durationMs: performance.now() - startTime,
+              }),
+              durationMs: performance.now() - startTime,
+              timestamp: Date.now(),
+              requestId: request.requestId,
+            };
+          }
+          // warn: proceed anyway. The default mode — see
+          // `DEFAULT_PARAM_VALIDATION_MODE` for why the validator does not get
+          // to refuse anything until its violations have been measured.
+          console.warn(`[ui-bridge] ${message}`);
+        }
+      }
+
+      // The handler is *given* a signal (cooperative cancellation) and is
+      // *raced* against it (enforced abandonment) — a handler that ignores its
+      // signal must still be abandonable at the caller. Phase 3 of plan
+      // 2026-08-20-ui-bridge-action-declaration-shape.
+      const outcome = await runAbortable((signal) => action.handler(request.params, { signal }), {
+        signal: options.signal,
+        timeoutMs: request.timeoutMs,
+      });
+
+      if (outcome.aborted) {
+        const message =
+          outcome.reason === 'timeout'
+            ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${request.timeoutMs}ms timeout elapsed.`
+            : `Action "${request.action}" on component "${componentId}" was cancelled by the caller's abort signal.`;
+        return {
+          success: false,
+          error: message,
+          failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', message, {
+            elementId: componentId,
+            context: { action: request.action, cancelReason: outcome.reason },
+            cancelReason: outcome.reason,
+            durationMs: performance.now() - startTime,
+            timeoutMs: request.timeoutMs,
+          }),
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
 
       return {
         success: true,
-        result,
+        result: outcome.result,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,

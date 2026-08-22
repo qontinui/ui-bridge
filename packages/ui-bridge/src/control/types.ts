@@ -25,6 +25,8 @@ import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { EffectVerification } from './effect-types';
 import type { Scrubbed } from '../core/redaction';
+// Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
+import type { ParamValidationMode } from '../core/param-schema';
 
 /**
  * Extended action request with additional options
@@ -105,6 +107,52 @@ export interface ComponentActionRequest {
   params?: Record<string, unknown>;
   /** Unique request ID */
   requestId?: string;
+  /**
+   * Abandon the action if it has not produced a result within this many
+   * milliseconds (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+   * Phase 3). Omitted = no timeout.
+   *
+   * This is the **wire-reachable** half of cancellation: an `AbortSignal`
+   * cannot be JSON-serialized, so an HTTP or WebSocket caller has no other way
+   * to call off a hung handler. In-process callers should prefer the
+   * `{ signal }` option bag on `executeComponentAction`, which composes with
+   * this one — whichever fires first wins.
+   *
+   * The abandonment does not depend on the handler observing its signal; the
+   * executor races the handler promise. On abandonment the response is
+   * `success: false` with `failureDetails.errorCode === 'UB-ACTION-FAILED'`
+   * and `failureDetails.cancelReason === 'timeout'`.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Per-invocation options for `ActionExecutor.executeComponentAction`.
+ *
+ * In-process only — nothing here survives JSON serialization, which is why
+ * the wire-reachable timeout lives on {@link ComponentActionRequest} instead.
+ */
+export interface ComponentActionInvokeOptions {
+  /**
+   * Cancellation signal owned by the caller. Aborting it abandons the
+   * invocation whether or not the handler observes the signal it is given.
+   */
+  signal?: AbortSignal;
+  /**
+   * What to do when `params` violate the action's declared `paramSchema`
+   * (plan `2026-08-20-ui-bridge-action-declaration-shape`, Phase 2).
+   *
+   * Omitted = whatever `getDefaultParamValidationMode()` currently returns,
+   * which starts at `DEFAULT_PARAM_VALIDATION_MODE` (`'warn'`) and is armed
+   * process-wide by `setDefaultParamValidationMode()`. Deliberately NOT on
+   * {@link ComponentActionRequest}: enforcement is a deployment's policy, not
+   * something the caller being validated gets to switch off over the wire.
+   *
+   * On `'enforce'` the response is `success: false` with
+   * `failureDetails.errorCode === 'UB-ACTION-REJECTED'` and
+   * `failureDetails.invalidParams` naming each offending param.
+   */
+  paramValidation?: ParamValidationMode;
 }
 
 /**
@@ -580,8 +628,16 @@ export interface ControlSnapshot {
     name: string;
     description?: string;
     /**
-     * Canonical `ComponentActionInfo` objects (`{ id, label?, description? }`).
-     * Was `string[]` of bare action ids before 0.22.0.
+     * `ComponentActionInfo` objects, a superset of the canonical
+     * `{ id, label?, description? }`. Was `string[]` of bare action ids before
+     * 0.22.0.
+     *
+     * The `/control/components` and `/control/component/:id` handlers build
+     * this by spreading the whole registered action
+     * (`server/handlers.ts` `annotateComponentWithInvocationPaths`), so each
+     * entry also carries `paramSchema` (when declared) and a concrete `path`.
+     * Only `handler` is dropped, and only because a function does not survive
+     * `JSON.stringify`. See {@link SerializedComponentAction}.
      */
     actions: SerializedComponentAction[];
     /** URL template for invoking an action — substitute `{actionId}`. */
@@ -1097,10 +1153,16 @@ export interface ActionExecutor {
   /** Execute an action on an element */
   executeAction(elementId: string, action: ControlActionRequest): Promise<ControlActionResponse>;
 
-  /** Execute an action on a component */
+  /**
+   * Execute an action on a component.
+   *
+   * `options.signal` lets an in-process caller abandon the invocation;
+   * `action.timeoutMs` is the wire-reachable equivalent (Phase 3).
+   */
   executeComponentAction(
     componentId: string,
-    action: ComponentActionRequest
+    action: ComponentActionRequest,
+    options?: ComponentActionInvokeOptions
   ): Promise<ComponentActionResponse>;
 
   /** Wait for a condition */

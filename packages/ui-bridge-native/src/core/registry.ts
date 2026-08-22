@@ -25,6 +25,7 @@ import type {
   BridgeEvent,
   BridgeEventType,
   BridgeEventListener,
+  IREffect,
 } from './types';
 import { projectVisionFields } from './vision-fields';
 
@@ -62,7 +63,31 @@ export interface RegisterComponentOptions {
     id: string;
     label?: string;
     description?: string;
-    handler: (params?: unknown) => unknown | Promise<unknown>;
+    /**
+     * Phase 2 (same plan): the action's published parameter schema. It was
+     * ABSENT here and dropped by the object literal in `registerComponent`
+     * below, so the field `ComponentAction` declares could never reach a
+     * registered native component and the native invocation seam had nothing
+     * to validate against. That is the silent-drop trap the plan warns about,
+     * already realised.
+     */
+    paramSchema?: Record<string, unknown>;
+    /**
+     * Phase 4 (same plan): the safety annotation. Absent here, an author's
+     * `effect: 'destructive'` would die at this hop exactly the way
+     * `paramSchema` did before Phase 2 — the literal in `registerComponent`
+     * has a closed field list and nothing type-checks the omission.
+     */
+    effect?: IREffect;
+    /**
+     * Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape): the second
+     * argument is the `ActionHandlerOptions` bag carrying the cancellation
+     * signal. A 1-arity handler stays assignable.
+     */
+    handler: (
+      params?: unknown,
+      options?: { signal?: AbortSignal }
+    ) => unknown | Promise<unknown>;
   }>;
   elementIds?: string[];
 }
@@ -928,6 +953,13 @@ export class NativeUIBridgeRegistry {
         id: a.id,
         label: a.label,
         description: a.description,
+        // ⚠ CLOSED FIELD LIST. Any `ComponentAction` field not named here is
+        // dropped at registration time, silently: the literal stays assignable,
+        // the serializer still runs, the field is simply never there.
+        // `paramSchema` was exactly that until Phase 2, and `effect` is the
+        // Phase 4 addition that would have gone the same way.
+        paramSchema: a.paramSchema,
+        effect: a.effect,
         handler: a.handler,
       })),
       elementIds,

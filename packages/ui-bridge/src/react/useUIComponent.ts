@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useCallback, useRef, useMemo } from 'react';
-import type { RegisteredComponent } from '../core/types';
+import type { IREffect, RegisteredComponent } from '../core/types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
 /**
@@ -19,14 +19,80 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   /** Description */
   description?: string;
   /**
-   * Parameter schema — surfaced verbatim on `/control/component/:id` so
-   * callers discover what shape `params` should take without reading source.
-   * Keep it lightweight: a map of `{ paramName: "string" | "number" | ... }`
-   * or a small JSON Schema subset. No runtime validation is performed.
+   * Parameter schema — **serialized, published to agents, and VALIDATED.**
+   *
+   * It is spread onto `/control/components` and `/control/component/:id`, and
+   * four `qontinui-runner` consumers read it from there — including the LLM
+   * router that generates a slash command's args from it. Since Phase 2 of
+   * plan `2026-08-20-ui-bridge-action-declaration-shape` the invocation seam
+   * checks `params` against it BEFORE your handler runs, so a schema declared
+   * here is a promise the runtime keeps.
+   *
+   * (The doc this replaces promised both halves of a contradiction: the schema
+   * is "surfaced verbatim on `/control/component/:id`" AND "No runtime
+   * validation is performed." The first half was always true; the second is no
+   * longer.)
+   *
+   * Two accepted shapes:
+   *
+   * - **Object-schema form** — `{ type: 'object', properties: { ... },
+   *   required: ['...'], additionalProperties: false }`. The only form that can
+   *   express *requiredness*. `paramSchemaOf()` from
+   *   `@qontinui/ui-bridge-wrapper` emits it for you.
+   * - **Map form** — `{ paramName: 'string', other: { type: 'number' } }`. A
+   *   TYPE hint only: it cannot mark anything required, and a string that is
+   *   not one of the seven JSON Schema primitive names (`string`, `number`,
+   *   `integer`, `boolean`, `object`, `array`, `null`) is read as prose and
+   *   constrains nothing — which is what keeps the fleet's many
+   *   `{ count: 'number (>= 1, defaults to 1)' }` hint maps working.
+   *
+   * Recognised keywords: `type`, `enum`, `const`, `properties`, `required`,
+   * `additionalProperties: false`, `items`, `minimum`/`maximum`,
+   * `minLength`/`maxLength`, `pattern`. **Anything else is ignored, never
+   * rejected** — a schema richer than the subset is still valid JSON Schema,
+   * it just expresses fewer enforced constraints. No type coercion: `"5"` does
+   * not satisfy `{ type: 'number' }`.
+   *
+   * Enforcement is a deployment setting and defaults to `'warn'` — violations
+   * are logged and the handler still runs until someone calls
+   * `setDefaultParamValidationMode('enforce')`. The full grammar, and why warn
+   * is the default, are documented at `core/param-schema.ts`.
    */
   paramSchema?: Record<string, unknown>;
-  /** Handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
+  /**
+   * Safety annotation — `'read' | 'write' | 'destructive'` (Phase 4 of plan
+   * `2026-08-20-ui-bridge-action-declaration-shape`).
+   *
+   * **Declare `'destructive'` on anything irreversible** — a delete, a send, a
+   * charge, a deploy. It is the one value nothing can infer for you: the
+   * static verb map behind this field never produces `'destructive'`, because
+   * destructiveness depends on what your control does, not on what it is
+   * called. An autonomous walk excludes destructive actions and walks
+   * everything else, so an unmarked delete button gets clicked.
+   *
+   * **Precedence:** what you write here wins. When you leave it undefined and
+   * the action `id` happens to be one of the 22 standard verbs (`click`,
+   * `hover`, `submit`, …), `STANDARD_ACTION_EFFECTS` supplies a default —
+   * otherwise the effect is simply unknown.
+   *
+   * Serialized on `/control/components`, `/control/component/:id` **and** in
+   * the `/control/snapshot` component projection.
+   */
+  effect?: IREffect;
+  /**
+   * Handler function.
+   *
+   * The second argument is the `ActionHandlerOptions` bag whose `signal` is
+   * aborted when the caller cancels or the request's `timeoutMs` elapses
+   * (Phase 3 of plan `2026-08-20-ui-bridge-action-declaration-shape`).
+   * Observing it is optional: the executor races this promise against the
+   * abort, so an unobservant handler is abandoned anyway — observing it is how
+   * a handler releases its own in-flight work instead of leaving it detached.
+   */
+  handler: (
+    params?: TParams,
+    options?: { signal?: AbortSignal }
+  ) => TResult | Promise<TResult>;
 }
 
 /**
@@ -196,12 +262,18 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           label: a.label,
           description: a.description,
           paramSchema: a.paramSchema,
+          // ⚠ RE-WRAP SITE with a CLOSED field list. Phase 4's `effect` dies
+          // here if it is not named — the wrapper type-checks either way.
+          effect: a.effect,
           // Stable wrapper: always delegates to the latest handler in actionsRef
           // so that handlers closing over React state see current values, not
           // the stale closure captured at registration time.
-          handler: (params?: unknown) => {
+          // Forwards BOTH arguments. Dropping `options` here would silently
+          // strip the Phase 3 cancellation signal on its way to the author's
+          // handler — the wrapper type-checks either way.
+          handler: (params?: unknown, options?: { signal?: AbortSignal }) => {
             const current = actionsRef.current.find((x) => x.id === actionId);
-            return current?.handler(params);
+            return current?.handler(params, options);
           },
         };
       }),
@@ -329,9 +401,16 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           label: a.label,
           description: a.description,
           paramSchema: a.paramSchema,
-          handler: (params?: unknown) => {
+          // ⚠ RE-WRAP SITE with a CLOSED field list — the update-path twin of
+          // the register path above. Phase 4's `effect` dies here if it is not
+          // named.
+          effect: a.effect,
+          // Forwards BOTH arguments. Dropping `options` here would silently
+          // strip the Phase 3 cancellation signal on its way to the author's
+          // handler — the wrapper type-checks either way.
+          handler: (params?: unknown, options?: { signal?: AbortSignal }) => {
             const current = actionsRef.current.find((x) => x.id === actionId);
-            return current?.handler(params);
+            return current?.handler(params, options);
           },
         };
       }),
@@ -425,9 +504,9 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
  * Useful for memoizing action handlers.
  */
 export function useUIComponentAction<TParams = unknown, TResult = unknown>(
-  handler: (params?: TParams) => TResult | Promise<TResult>,
+  handler: (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult>,
   deps: React.DependencyList
-): (params?: TParams) => TResult | Promise<TResult> {
+): (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult> {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useCallback(handler, deps);
 }

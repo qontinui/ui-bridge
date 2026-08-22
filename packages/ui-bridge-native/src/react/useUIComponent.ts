@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useCallback, useRef, useMemo } from 'react';
-import type { RegisteredNativeComponent } from '../core/types';
+import type { IREffect, RegisteredNativeComponent } from '../core/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
 /**
@@ -18,8 +18,78 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   label?: string;
   /** Description */
   description?: string;
-  /** Handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
+  /**
+   * Parameter schema — **serialized, published to agents, and VALIDATED.**
+   *
+   * It is spread onto `/control/components` and `/control/component/:id`, and
+   * four `qontinui-runner` consumers read it from there — including the LLM
+   * router that generates a slash command's args from it. Since Phase 2 of
+   * plan `2026-08-20-ui-bridge-action-declaration-shape` the invocation seam
+   * checks `params` against it BEFORE your handler runs, so a schema declared
+   * here is a promise the runtime keeps.
+   *
+   * (The doc this replaces promised both halves of a contradiction: the schema
+   * is "surfaced verbatim on `/control/component/:id`" AND "No runtime
+   * validation is performed." The first half was always true; the second is no
+   * longer.)
+   *
+   * Two accepted shapes:
+   *
+   * - **Object-schema form** — `{ type: 'object', properties: { ... },
+   *   required: ['...'], additionalProperties: false }`. The only form that can
+   *   express *requiredness*. `paramSchemaOf()` from
+   *   `@qontinui/ui-bridge-wrapper` emits it for you.
+   * - **Map form** — `{ paramName: 'string', other: { type: 'number' } }`. A
+   *   TYPE hint only: it cannot mark anything required, and a string that is
+   *   not one of the seven JSON Schema primitive names (`string`, `number`,
+   *   `integer`, `boolean`, `object`, `array`, `null`) is read as prose and
+   *   constrains nothing — which is what keeps the fleet's many
+   *   `{ count: 'number (>= 1, defaults to 1)' }` hint maps working.
+   *
+   * Recognised keywords: `type`, `enum`, `const`, `properties`, `required`,
+   * `additionalProperties: false`, `items`, `minimum`/`maximum`,
+   * `minLength`/`maxLength`, `pattern`. **Anything else is ignored, never
+   * rejected** — a schema richer than the subset is still valid JSON Schema,
+   * it just expresses fewer enforced constraints. No type coercion: `"5"` does
+   * not satisfy `{ type: 'number' }`.
+   *
+   * Enforcement is a deployment setting and defaults to `'warn'` — violations
+   * are logged and the handler still runs until someone calls
+   * `setDefaultParamValidationMode('enforce')`. The full grammar, and why warn
+   * is the default, are documented at `core/param-schema.ts`.
+   */
+  paramSchema?: Record<string, unknown>;
+  /**
+   * Safety annotation — `'read' | 'write' | 'destructive'` (Phase 4 of plan
+   * `2026-08-20-ui-bridge-action-declaration-shape`).
+   *
+   * **Declare `'destructive'` on anything irreversible** — a delete, a send, a
+   * charge, a deploy. It is the one value nothing can infer for you: the
+   * static verb map behind this field never produces `'destructive'`, because
+   * destructiveness depends on what your control does, not on what it is
+   * called. An autonomous walk excludes destructive actions and walks
+   * everything else, so an unmarked delete control gets pressed.
+   *
+   * **Precedence:** what you write here wins. When you leave it undefined and
+   * the action `id` happens to be one of the native standard verbs (`press`,
+   * `longPress`, `swipe`, …), `NATIVE_STANDARD_ACTION_EFFECTS` supplies a
+   * default — otherwise the effect is simply unknown.
+   */
+  effect?: IREffect;
+  /**
+   * Handler function.
+   *
+   * The second argument is the `ActionHandlerOptions` bag whose `signal` is
+   * aborted when the caller cancels or the request's `timeoutMs` elapses
+   * (Phase 3 of plan `2026-08-20-ui-bridge-action-declaration-shape`).
+   * Observing it is optional: the executor races this promise against the
+   * abort, so an unobservant handler is abandoned anyway — observing it is how
+   * a handler releases its own in-flight work instead of leaving it detached.
+   */
+  handler: (
+    params?: TParams,
+    options?: { signal?: AbortSignal }
+  ) => TResult | Promise<TResult>;
 }
 
 /**
@@ -137,6 +207,15 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
         id: a.id,
         label: a.label,
         description: a.description,
+        // Phase 2: re-wrap site with a CLOSED field list. `paramSchema` was
+        // absent here, so an author's declared schema died at this hop even
+        // once the registry accepted it. Count re-wrap sites, not declaration
+        // sites.
+        paramSchema: a.paramSchema,
+        // Phase 4: `effect` is the next field this closed list would have
+        // dropped silently. Name it, or the annotation never reaches the
+        // registry.
+        effect: a.effect,
         handler: a.handler,
       })),
       elementIds: elementIdsRef.current,
@@ -252,9 +331,9 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
  * Useful for memoizing action handlers.
  */
 export function useUIComponentAction<TParams = unknown, TResult = unknown>(
-  handler: (params?: TParams) => TResult | Promise<TResult>,
+  handler: (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult>,
   deps: React.DependencyList
-): (params?: TParams) => TResult | Promise<TResult> {
+): (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult> {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useCallback(handler, deps);
 }

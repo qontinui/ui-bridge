@@ -28,25 +28,33 @@ export interface WaitOptions {
   interval?: number;
 }
 
-// Types that would be re-exported from ui-bridge/core in a full implementation
-export type ActionHandler<TParams = unknown, TResult = unknown> = (
-  params?: TParams
-) => TResult | Promise<TResult>;
+// COLLAPSED 2026-08-22 (plan 2026-08-20-ui-bridge-action-declaration-shape,
+// Phase 3). These four were byte-identical redeclarations of the canonical
+// `src/core/types.ts` shapes, carrying the standing comment "Types that would
+// be re-exported from ui-bridge/core in a full implementation" — so this
+// finishes that. They are `export type` re-exports, which TypeScript elides
+// entirely: no runtime edge is created from this React-Native tree to the web
+// core, and nothing DOM-shaped is pulled in (the shapes reference only
+// `AbortSignal`, which React Native provides).
+//
+// `WaitOptions` above stays a local declaration deliberately — see its own
+// comment.
+//
+// `IREffect` joins them in Phase 4: the safety annotation must mean the same
+// thing on both channels, and `ComponentAction.effect` (re-exported above)
+// already refers to the web core's declaration — re-declaring the union here
+// would create a second, drift-prone copy of the same three literals.
+export type {
+  ActionHandler,
+  ActionHandlerOptions,
+  CustomAction,
+  ComponentAction,
+  IREffect,
+} from '../../core/types';
 
-export interface CustomAction<TParams = unknown, TResult = unknown> {
-  id: string;
-  label?: string;
-  description?: string;
-  handler: ActionHandler<TParams, TResult>;
-}
-
-export interface ComponentAction<TParams = unknown, TResult = unknown> {
-  id: string;
-  label?: string;
-  description?: string;
-  paramSchema?: Record<string, unknown>;
-  handler: ActionHandler<TParams, TResult>;
-}
+// Local binding for `NativeComponentAction` below (a re-export does not put
+// the name in this module's scope).
+import type { ComponentAction } from '../../core/types';
 
 export type WorkflowStepType =
   | 'element-action'
@@ -299,20 +307,19 @@ export interface RegisteredNativeElement {
 }
 
 /**
- * Component action definition for native components
+ * Component action definition for native components.
+ *
+ * COLLAPSED 2026-08-22 (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+ * Phase 3): this was a *fourth* copy of `ComponentAction`, duplicated inside
+ * this same file next to the re-export above, and it carried no divergence —
+ * identical field list, identical semantics, only the handler type inlined
+ * instead of named. It is now an alias, so a component action means one thing
+ * on both channels and the signal reaches this tree too.
  */
-export interface NativeComponentAction<TParams = unknown, TResult = unknown> {
-  /** Action identifier */
-  id: string;
-  /** Human-readable label */
-  label?: string;
-  /** Description of what the action does */
-  description?: string;
-  /** Parameter schema (for documentation/validation) */
-  paramSchema?: Record<string, unknown>;
-  /** Action handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
-}
+export type NativeComponentAction<TParams = unknown, TResult = unknown> = ComponentAction<
+  TParams,
+  TResult
+>;
 
 /**
  * A native component registered with the bridge (higher-level than elements)
