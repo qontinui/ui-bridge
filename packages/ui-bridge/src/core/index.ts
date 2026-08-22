@@ -7,6 +7,34 @@
 // Export all types
 export * from './types';
 
+// Action-invocation abandonment primitive (plan
+// 2026-08-20-ui-bridge-action-declaration-shape, Phase 3)
+export { runAbortable } from './abortable';
+export type { AbortReason, AbortableOutcome, RunAbortableOptions } from './abortable';
+
+// Parameter-schema validation (plan
+// 2026-08-20-ui-bridge-action-declaration-shape, Phase 2)
+export {
+  validateActionParams,
+  formatParamValidationFailure,
+  DEFAULT_PARAM_VALIDATION_MODE,
+  getDefaultParamValidationMode,
+  setDefaultParamValidationMode,
+  resetDefaultParamValidationMode,
+} from './param-schema';
+// The TYPES are re-exported by `./types` (which `export *`s above), the same
+// way `UiBridgeErrorCode` is — re-exporting them here too would be a duplicate
+// export.
+
+// Action effect defaults (plan
+// 2026-08-20-ui-bridge-action-declaration-shape, Phase 4). `IREffect` itself
+// is declared in `./types` and comes through the `export *` above.
+export {
+  STANDARD_ACTION_EFFECTS,
+  standardActionEffect,
+  resolveActionEffect,
+} from './action-effect';
+
 // Chainable query DSL
 export { UIQuery } from './query-builder';
 export type { QueryResult } from './query-builder';

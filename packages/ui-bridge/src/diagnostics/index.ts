@@ -18,6 +18,10 @@ export { UI_BRIDGE_ERROR_CODES, DIAGNOSTICS } from './codes.generated';
 
 import type { UiBridgeErrorCode, RecoverySuggestion } from './codes.generated';
 import { DIAGNOSTICS } from './codes.generated';
+// Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape). `param-schema`
+// has NO imports, so this type-only edge to `../core` creates no module cycle
+// even though `core/types.ts` imports from this barrel.
+import type { ParamSchemaIssue } from '../core/param-schema';
 
 /**
  * Recovery suggestions per code, sourced from the generated catalog.
@@ -142,6 +146,19 @@ export interface BuiltActionFailureDetails {
   waitCondition?: string;
   waitTimedOutAfterMs?: number;
   timeoutType?: 'network' | 'navigation' | 'computation';
+  /**
+   * Why an action was abandoned before producing a result — the discriminator
+   * that stands in for a dedicated cancellation code on the
+   * `errorCode: 'UB-ACTION-FAILED'` path. Mirrors
+   * `ActionFailureDetails.cancelReason`.
+   */
+  cancelReason?: 'signal' | 'timeout';
+  /**
+   * Which params failed the action's declared `paramSchema` (Phase 2). Mirrors
+   * `ActionFailureDetails.invalidParams`; paired with
+   * `errorCode: 'UB-ACTION-REJECTED'`.
+   */
+  invalidParams?: ParamSchemaIssue[];
 }
 
 /**
@@ -248,6 +265,17 @@ export function buildActionFailureDetails(
     waitCondition?: string;
     waitTimedOutAfterMs?: number;
     timeoutType?: 'network' | 'navigation' | 'computation';
+    /**
+     * Why an action was abandoned (Phase 3). Paired with
+     * `errorCode: 'UB-ACTION-FAILED'` — see `ActionFailureDetails.cancelReason`.
+     */
+    cancelReason?: 'signal' | 'timeout';
+    /**
+     * Which params failed the declared `paramSchema` (Phase 2). Paired with
+     * `errorCode: 'UB-ACTION-REJECTED'` — see
+     * `ActionFailureDetails.invalidParams`.
+     */
+    invalidParams?: ParamSchemaIssue[];
   } = {}
 ): BuiltActionFailureDetails {
   // The element id is always a valid `${elementId}` substitution source even
@@ -272,5 +300,7 @@ export function buildActionFailureDetails(
     waitCondition: options.waitCondition,
     waitTimedOutAfterMs: options.waitTimedOutAfterMs,
     timeoutType: options.timeoutType,
+    cancelReason: options.cancelReason,
+    invalidParams: options.invalidParams,
   };
 }

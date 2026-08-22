@@ -34,6 +34,7 @@ import type {
   SnapshotEnrichers,
   SnapshotEnricher,
   ElementBbox,
+  IREffect,
 } from './types';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
@@ -278,8 +279,22 @@ export function serializeRegisteredElement(
  * canonical `ComponentActionInfo` shape) rather than bare id strings, and
  * `registeredAt`/`mounted` are included — both required by the canonical
  * `qontinui-types::ui_bridge::UIBridgeComponent` consumed by
- * qontinui-spec-check's strict parse. The action `handler`/`paramSchema`
- * never reach the wire.
+ * qontinui-spec-check's strict parse.
+ *
+ * Phase 4 added `effect` to this projection — see the inline note at the map.
+ * It is the one added field BOTH projections carry, because the snapshot is
+ * the surface an autonomous walk reads.
+ *
+ * This projection drops the action's `handler` and `paramSchema`. Only the
+ * `handler` drop generalizes: it is a function, so `JSON.stringify` would
+ * strip it from any response. `paramSchema` is **not** runtime-only — the
+ * `/control/components` and `/control/component/:id` handlers spread the whole
+ * action and do emit it (`server/handlers.ts`
+ * `annotateComponentWithInvocationPaths`; see `SerializedComponentAction`),
+ * and qontinui-runner reads it off the wire. It is omitted *here* only to keep
+ * the snapshot entry byte-identical to the canonical `UIBridgeComponent`. The
+ * comment this replaces claimed `paramSchema` "never reaches the wire", which
+ * was false.
  */
 export function serializeRegisteredComponent(
   comp: RegisteredComponent,
@@ -294,6 +309,16 @@ export function serializeRegisteredComponent(
       id: a.id,
       label: a.label,
       description: a.description,
+      // Phase 4 (plan 2026-08-20-ui-bridge-action-declaration-shape): the
+      // safety annotation IS projected here, unlike `paramSchema`. The
+      // snapshot is what an autonomous walker reads, and excluding
+      // destructive actions from an automatic walk is this annotation's only
+      // job — omitting it here would make a `'destructive'` declaration
+      // invisible on the surface that matters most, i.e. fail open.
+      // `undefined` when nothing was declared, and `JSON.stringify` drops
+      // undefined keys, so an un-annotated app's snapshot is byte-identical
+      // to before.
+      effect: a.effect,
     })),
     // Tell the caller exactly how to invoke any action on this component
     // without having to grep docs or guess the route shape.
@@ -2043,7 +2068,24 @@ export class UIBridgeRegistry {
         label?: string;
         description?: string;
         paramSchema?: Record<string, unknown>;
-        handler: (params?: unknown) => unknown | Promise<unknown>;
+        /**
+         * Phase 4 (same plan): the safety annotation, overriding the static
+         * `STANDARD_ACTION_EFFECTS` verb map. Structural for the same reason
+         * `handler` is — this signature inlines the action shape rather than
+         * importing `ComponentAction`.
+         */
+        effect?: IREffect;
+        /**
+         * Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape): the
+         * second argument is the `ActionHandlerOptions` bag carrying the
+         * cancellation signal. Kept structural (not `ActionHandler`) to match
+         * the pre-existing shape of this inlined signature; a 1-arity handler
+         * stays assignable.
+         */
+        handler: (
+          params?: unknown,
+          options?: { signal?: AbortSignal }
+        ) => unknown | Promise<unknown>;
       }>;
       elementIds?: string[];
       getState?: StateGetter<Record<string, unknown>>;
@@ -2062,6 +2104,13 @@ export class UIBridgeRegistry {
         label: a.label,
         description: a.description,
         paramSchema: a.paramSchema,
+        // ⚠ CLOSED FIELD LIST. Any field added to `ComponentAction` and not
+        // listed here is dropped at registration time, silently: the literal
+        // stays assignable, the serializer still runs, the field is simply
+        // never there. Phase 3 added no field (it changed `handler`'s arity,
+        // and `handler` is already copied); Phase 4's `effect` is the next one
+        // and is carried below. Prove additions by round-trip, not typecheck.
+        effect: a.effect,
         handler: a.handler,
       }));
     }
@@ -2085,7 +2134,24 @@ export class UIBridgeRegistry {
         label?: string;
         description?: string;
         paramSchema?: Record<string, unknown>;
-        handler: (params?: unknown) => unknown | Promise<unknown>;
+        /**
+         * Phase 4 (same plan): the safety annotation, overriding the static
+         * `STANDARD_ACTION_EFFECTS` verb map. Structural for the same reason
+         * `handler` is — this signature inlines the action shape rather than
+         * importing `ComponentAction`.
+         */
+        effect?: IREffect;
+        /**
+         * Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape): the
+         * second argument is the `ActionHandlerOptions` bag carrying the
+         * cancellation signal. Kept structural (not `ActionHandler`) to match
+         * the pre-existing shape of this inlined signature; a 1-arity handler
+         * stays assignable.
+         */
+        handler: (
+          params?: unknown,
+          options?: { signal?: AbortSignal }
+        ) => unknown | Promise<unknown>;
       }>;
       elementIds?: string[];
       getState?: StateGetter<Record<string, unknown>>;
@@ -2109,6 +2175,10 @@ export class UIBridgeRegistry {
           label: a.label,
           description: a.description,
           paramSchema: a.paramSchema,
+          // ⚠ CLOSED FIELD LIST — see the note on `updateComponent`'s twin
+          // above. A new `ComponentAction` field must be added here too or it
+          // never reaches `RegisteredComponent`.
+          effect: a.effect,
           handler: a.handler,
         })) ?? [],
       elementIds: options.elementIds,

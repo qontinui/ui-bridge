@@ -28,15 +28,66 @@ export interface WaitOptions {
   interval?: number;
 }
 
-// Types that would be re-exported from ui-bridge/core in a full implementation
+// DUPLICATE OF `@qontinui/ui-bridge` `core/types.ts` — DELIBERATELY NOT A
+// RE-EXPORT. Checked 2026-08-22 (plan
+// 2026-08-20-ui-bridge-action-declaration-shape, Phase 3): `@qontinui/ui-bridge`
+// is an OPTIONAL peerDependency of this package (`peerDependenciesMeta`) and
+// appears in `dependencies` not at all, so a consumer may install
+// `@qontinui/ui-bridge-native` alone. Re-exporting would resolve inside this
+// monorepo (the workspace symlink) and then fail for exactly that consumer,
+// whose emitted `.d.ts` would reference a module they never installed. The
+// package treats the peer as runtime-optional everywhere else too — see the
+// "Install @qontinui/ui-bridge for ..." fallbacks in
+// `src/server/design-handlers.ts`.
+//
+// KEEP IN SYNC with `@qontinui/ui-bridge` `src/core/types.ts`
+// `ActionHandler` / `ActionHandlerOptions` / `CustomAction` / `ComponentAction`.
+// The sibling copy at `@qontinui/ui-bridge` `src/native/core/types.ts` HAS been
+// collapsed to a re-export — same package, so it has no such constraint.
+
+/**
+ * Second argument handed to every {@link ActionHandler}: the option-bag shape
+ * the SDK already uses to *accept* a caller's cancellation. See the canonical
+ * declaration in `@qontinui/ui-bridge` for the full rationale, including where
+ * the signal comes from at each seam.
+ */
+export interface ActionHandlerOptions {
+  /**
+   * Aborted when the caller cancels or the request's `timeoutMs` elapses.
+   * Observing it is optional — the executor races the handler promise against
+   * the abort, so a handler that ignores the signal is still abandoned.
+   */
+  signal?: AbortSignal;
+}
+
 export type ActionHandler<TParams = unknown, TResult = unknown> = (
-  params?: TParams
+  params?: TParams,
+  options?: ActionHandlerOptions
 ) => TResult | Promise<TResult>;
+
+/**
+ * Whether an action is read-only, mutating, or destructive.
+ *
+ * - `"read"`        — query/navigate/reveal; no persistent state change.
+ * - `"write"`       — modifies persistent state but is reversible.
+ * - `"destructive"` — irreversible (delete, send, charge, deploy). **Excluded
+ *   from automatic walks** — that exclusion is the annotation's only job.
+ *
+ * DUPLICATE, for the same reason the four types above are duplicated: this
+ * package must not import from `@qontinui/ui-bridge` (an optional peer). The
+ * canonical publication is
+ * `qontinui-schemas/ts/src/ui-bridge-ir/primitives.ts` (`IREffect`); the web
+ * SDK mirrors it at `@qontinui/ui-bridge` `src/core/types.ts`. KEEP IN SYNC
+ * with both.
+ */
+export type IREffect = 'read' | 'write' | 'destructive';
 
 export interface CustomAction<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
+  /** Safety annotation. See {@link ComponentAction.effect}. */
+  effect?: IREffect;
   handler: ActionHandler<TParams, TResult>;
 }
 
@@ -45,6 +96,19 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
   label?: string;
   description?: string;
   paramSchema?: Record<string, unknown>;
+  /**
+   * Safety annotation — the per-registration override (Phase 4 of plan
+   * `2026-08-20-ui-bridge-action-declaration-shape`).
+   *
+   * **Precedence: this wins.** `resolveActionEffect()`
+   * (`core/action-effect.ts`) reads `action.effect ??
+   * NATIVE_STANDARD_ACTION_EFFECTS[action.id]`, so an explicit value beats the
+   * static verb map, which only applies when `id` is a standard native verb at
+   * all. No verb ever defaults to `'destructive'` — destructiveness depends on
+   * what a control does, not on what it is called, so declaring it here is the
+   * only way it can be true.
+   */
+  effect?: IREffect;
   handler: ActionHandler<TParams, TResult>;
 }
 
@@ -266,20 +330,19 @@ export interface RegisteredNativeElement {
 }
 
 /**
- * Component action definition for native components
+ * Component action definition for native components.
+ *
+ * COLLAPSED 2026-08-22 (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+ * Phase 3): this was a *fourth* copy of `ComponentAction`, duplicated inside
+ * this same file, with no divergence from it — identical field list, identical
+ * semantics, only the handler type inlined instead of named. Unlike the
+ * cross-package case above, this collapse is purely intra-file and so carries
+ * no dependency constraint at all.
  */
-export interface NativeComponentAction<TParams = unknown, TResult = unknown> {
-  /** Action identifier */
-  id: string;
-  /** Human-readable label */
-  label?: string;
-  /** Description of what the action does */
-  description?: string;
-  /** Parameter schema (for documentation/validation) */
-  paramSchema?: Record<string, unknown>;
-  /** Action handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
-}
+export type NativeComponentAction<TParams = unknown, TResult = unknown> = ComponentAction<
+  TParams,
+  TResult
+>;
 
 /**
  * A native component registered with the bridge (higher-level than elements)

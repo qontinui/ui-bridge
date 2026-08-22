@@ -422,7 +422,11 @@ export function createServerHandlers(
         id: c.id,
         name: c.name,
         description: c.description,
-        actions: c.actions.map((a) => ({ id: a.id, label: a.label })),
+        // Phase 4 (plan 2026-08-20-ui-bridge-action-declaration-shape):
+        // carry the safety annotation onto the native wire too — a walker
+        // driving a React Native app needs the same `destructive` exclusion
+        // the web channel gets.
+        actions: c.actions.map((a) => ({ id: a.id, label: a.label, effect: a.effect })),
         elementIds: c.elementIds,
       }));
 
@@ -446,6 +450,8 @@ export function createServerHandlers(
             id: a.id,
             label: a.label,
             description: a.description,
+            // Phase 4 — see the listing twin above.
+            effect: a.effect,
           })),
           elementIds: component.elementIds,
         },

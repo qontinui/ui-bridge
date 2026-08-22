@@ -12,6 +12,8 @@ import type {
   NativeElementState,
   WaitOptions,
 } from '../core/types';
+// Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
+import type { ParamValidationMode } from '../core/param-schema';
 
 /**
  * Extended action request with control-specific options
@@ -48,6 +50,51 @@ export interface ComponentActionRequest {
   params?: Record<string, unknown>;
   /** Request ID for correlation */
   requestId?: string;
+  /**
+   * Abandon the action if it has not produced a result within this many
+   * milliseconds (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+   * Phase 3). Omitted = no timeout.
+   *
+   * The wire-reachable half of cancellation: an `AbortSignal` cannot be
+   * JSON-serialized, so an HTTP caller has no other way to call off a hung
+   * handler. In-process callers should prefer the `{ signal }` option bag on
+   * `executeComponentAction`; whichever fires first wins.
+   *
+   * Abandonment does not depend on the handler observing its signal — the
+   * executor races the handler promise.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Per-invocation options for `NativeActionExecutor.executeComponentAction`.
+ *
+ * In-process only — nothing here survives JSON serialization, which is why the
+ * wire-reachable timeout lives on {@link ComponentActionRequest} instead.
+ *
+ * Mirrors `@qontinui/ui-bridge` `ComponentActionInvokeOptions`; kept local
+ * because that package is an OPTIONAL peer dependency here (see
+ * `core/types.ts`).
+ */
+export interface ComponentActionInvokeOptions {
+  /**
+   * Cancellation signal owned by the caller. Aborting it abandons the
+   * invocation whether or not the handler observes the signal it is given.
+   */
+  signal?: AbortSignal;
+  /**
+   * What to do when `params` violate the action's declared `paramSchema`
+   * (Phase 2). Omitted = `getDefaultParamValidationMode()`, which starts at
+   * `'warn'`. Deliberately NOT on {@link ComponentActionRequest}: enforcement
+   * is a deployment's policy, not the validated caller's to switch off.
+   *
+   * NOTE: this tree's {@link ComponentActionResponse} carries no
+   * `failureDetails`, so an enforced rejection surfaces as a prose `error`
+   * naming each offending param — the same limitation Phase 3's cancellation
+   * path hit here. Giving the native channel structured failure details is a
+   * separate change.
+   */
+  paramValidation?: ParamValidationMode;
 }
 
 /**
@@ -116,7 +163,8 @@ export interface NativeActionExecutor {
    */
   executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest
+    request: ComponentActionRequest,
+    options?: ComponentActionInvokeOptions
   ): Promise<ComponentActionResponse>;
 
   /**

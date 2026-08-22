@@ -15,11 +15,23 @@ import type {
   WaitOptions,
 } from '../core/types';
 import { findElementByIdentifier } from '../core/element-identifier';
+// Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape). A justified
+// duplicate of the web SDK's primitive — see the header of `core/abortable.ts`
+// for why this package cannot import it.
+import { runAbortable } from '../core/abortable';
+// Phase 2 (same plan). A justified duplicate of the web SDK's validator — see
+// the header of `core/param-schema.ts` for why this package cannot import it.
+import {
+  validateActionParams,
+  formatParamValidationFailure,
+  getDefaultParamValidationMode,
+} from '../core/param-schema';
 import type {
   ControlActionRequest,
   ControlActionResponse,
   ComponentActionRequest,
   ComponentActionResponse,
+  ComponentActionInvokeOptions,
   WaitResult,
   NativeActionExecutor,
   NativeActionEvent,
@@ -556,7 +568,8 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
    */
   async executeComponentAction(
     componentId: string,
-    request: ComponentActionRequest
+    request: ComponentActionRequest,
+    options: ComponentActionInvokeOptions = {}
   ): Promise<ComponentActionResponse> {
     const startTime = Date.now();
 
@@ -586,12 +599,65 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         };
       }
 
-      // Execute the action
-      const result = await action.handler(request.params);
+      // Phase 2: `paramSchema` is published to agents, so it has to mean
+      // something. Validate BEFORE the handler runs — a rejection after a
+      // side-effect is not a rejection.
+      const validationMode = options.paramValidation ?? getDefaultParamValidationMode();
+      if (validationMode !== 'off' && action.paramSchema !== undefined) {
+        const validation = validateActionParams(action.paramSchema, request.params);
+        if (!validation.valid) {
+          const message = formatParamValidationFailure(
+            componentId,
+            request.action,
+            validation.issues
+          );
+          if (validationMode === 'enforce') {
+            // Prose `error` rather than structured `failureDetails` — this
+            // tree's response type has no such field. See the note on
+            // `ComponentActionInvokeOptions.paramValidation`.
+            return {
+              success: false,
+              error: message,
+              durationMs: Date.now() - startTime,
+              timestamp: Date.now(),
+              requestId: request.requestId,
+            };
+          }
+          console.warn(`[ui-bridge-native] ${message}`);
+        }
+      }
+
+      // The handler is *given* a signal (cooperative cancellation) and is
+      // *raced* against it (enforced abandonment) — a handler that ignores its
+      // signal must still be abandonable at the caller. Phase 3 of plan
+      // 2026-08-20-ui-bridge-action-declaration-shape.
+      const outcome = await runAbortable((signal) => action.handler(request.params, { signal }), {
+        signal: options.signal,
+        timeoutMs: request.timeoutMs,
+      });
+
+      if (outcome.aborted) {
+        // NOTE: this tree's `ComponentActionResponse` has no `failureDetails`
+        // field and this package ships no diagnostics module, so the
+        // cancellation surfaces as a prose `error` rather than through
+        // `buildActionFailureDetails('UB-ACTION-FAILED', ...)` the way the web
+        // seam does. Giving the native channel structured failure details is a
+        // separate change, not Phase 3.
+        return {
+          success: false,
+          error:
+            outcome.reason === 'timeout'
+              ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${request.timeoutMs}ms timeout elapsed.`
+              : `Action "${request.action}" on component "${componentId}" was cancelled by the caller's abort signal.`,
+          durationMs: Date.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
 
       return {
         success: true,
-        result,
+        result: outcome.result,
         durationMs: Date.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,

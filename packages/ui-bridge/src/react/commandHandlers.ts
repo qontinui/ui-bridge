@@ -1722,7 +1722,17 @@ export async function executeCommand(
           id: c.id,
           name: c.name,
           description: c.description,
-          actions: c.actions.map((a) => ({ id: a.id, label: a.label, description: a.description })),
+          // Phase 4 carries `effect` onto the Tauri IPC channel too — it is
+          // half of UI Bridge's dual-channel design, so a walker driving a
+          // Tauri app must be able to exclude destructive actions here as
+          // well as over HTTP. (`paramSchema` is still absent at this seam;
+          // that is a Phase 2 gap, not something Phase 4 widened.)
+          actions: c.actions.map((a) => ({
+            id: a.id,
+            label: a.label,
+            description: a.description,
+            effect: a.effect,
+          })),
           elementIds: c.elementIds,
           state: c.getState?.() ?? {},
           mounted: true,
@@ -1749,6 +1759,8 @@ export async function executeCommand(
           id: a.id,
           label: a.label,
           description: a.description,
+          // Phase 4 — see the `get_components` twin above.
+          effect: a.effect,
         })),
         elementIds: comp.elementIds,
         state: comp.getState?.() ?? {},

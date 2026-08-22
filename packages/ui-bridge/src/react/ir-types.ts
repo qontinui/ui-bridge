@@ -67,17 +67,25 @@ export interface IRMetadata {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a transition is read-only, mutating, or destructive.
+ * `IREffect` — "read" | "write" | "destructive". Whether a transition (or, since
+ * Phase 4, an SDK action) is read-only, mutating, or destructive. Drives
+ * counterfactual analysis (section 6) and gates auto-regression generation
+ * (section 9): destructive transitions are excluded from automatic walks.
  *
- * - "read"        — query/navigate; no persistent state change.
- * - "write"       — modifies persistent state but is reversible (or has an undo).
- * - "destructive" — irreversible state change (delete, send, charge, deploy).
+ * **MOVED 2026-08-22** (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+ * Phase 4). The declaration now lives one layer down, in `core/types.ts`,
+ * because `ComponentAction` / `CustomAction` carry it too and `core` cannot
+ * import from `react` without inverting the layering. This file re-exports it
+ * so the IR-facing name and the action-facing name are the **same type**,
+ * rather than a second inlined copy of the literal union — which is the drift
+ * this plan exists to fix.
  *
- * Drives counterfactual analysis (section 6) and gates auto-regression
- * generation (section 9) — destructive transitions are excluded from
- * automatic walks.
+ * The type-only-mirror policy stated at the top of this file is unchanged; the
+ * KEEP-IN-SYNC obligation with
+ * `qontinui-schemas/ts/src/ui-bridge-ir/primitives.ts` moved to `core/types.ts`
+ * along with the declaration and is restated there in full.
  */
-export type IREffect = 'read' | 'write' | 'destructive';
+export type { IREffect } from '../core/types';
 
 // ---------------------------------------------------------------------------
 // Element criteria — IR's canonical element-matching shape

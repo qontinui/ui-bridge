@@ -20,6 +20,16 @@ import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
 import type { Scrubbed } from './redaction';
+// Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape). `param-schema`
+// imports nothing, so this creates no cycle with `../diagnostics` above — which
+// imports the same type from the same import-free module.
+import type { ParamSchemaIssue } from './param-schema';
+export type {
+  ParamSchemaIssue,
+  ParamSchemaKeyword,
+  ParamValidationMode,
+  ParamValidationResult,
+} from './param-schema';
 
 // ============================================================================
 // Core Element Types
@@ -399,6 +409,42 @@ export interface MediaMetadata {
   };
 }
 
+// ============================================================================
+// Effect — the safety annotation
+// ============================================================================
+
+/**
+ * Whether an action or transition is read-only, mutating, or destructive.
+ *
+ * - `"read"`        — query/navigate/reveal; no persistent state change.
+ * - `"write"`       — modifies persistent state but is reversible (or has an undo).
+ * - `"destructive"` — irreversible state change (delete, send, charge, deploy).
+ *
+ * Drives counterfactual analysis and gates auto-regression generation —
+ * **destructive actions are excluded from automatic walks.** That single job
+ * is why the annotation exists, and why it must be *declarable*: see
+ * {@link ComponentAction.effect}.
+ *
+ * ---
+ *
+ * **MOVED HERE 2026-08-22** (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+ * Phase 4). This union was declared in `react/ir-types.ts`, which is the wrong
+ * layer now that `core`'s own action types carry it: `core` importing from
+ * `react` would invert the layering, and inlining the literal union a second
+ * time in `core` is precisely the drift that plan exists to fix.
+ * `react/ir-types.ts` now re-exports this declaration, so the IR-facing name
+ * and the action-facing name are the same type.
+ *
+ * **KEEP IN SYNC with `qontinui-schemas/ts/src/ui-bridge-ir/primitives.ts`
+ * (`IREffect`).** That is the canonical publication of this vocabulary; this is
+ * a deliberate type-only mirror, because `@qontinui/ui-bridge` must not take a
+ * runtime dependency on `@qontinui/shared-types` (the standing policy stated at
+ * `react/ir-types.ts:1-19`, which this move preserves — it relocates the mirror
+ * one layer down, it does not remove it). If the vocabulary gains a member
+ * there, add it here.
+ */
+export type IREffect = 'read' | 'write' | 'destructive';
+
 /**
  * Standard actions available on elements
  */
@@ -427,10 +473,52 @@ export type StandardAction =
   | 'autocomplete';
 
 /**
- * Handler for custom actions
+ * Second argument handed to every {@link ActionHandler} (plan
+ * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3).
+ *
+ * This is the SDK's established shape for *accepting* a caller's cancellation
+ * — the same `signal?: AbortSignal` option bag used by `ai/wait-for.ts`,
+ * `ai/wait-for-element.ts`, `ai/network-probe.ts` and `vision/mutation.ts`.
+ * It is deliberately NOT the `contracts/executor.ts` shape, which builds its
+ * own `AbortController` for a fetch timeout and accepts nothing inbound.
+ *
+ * **Where the signal comes from.** The action executor
+ * (`control/action-executor.ts` `executeComponentAction`) composes it from two
+ * independent sources, because the invocation seam is reachable two ways:
+ *
+ * | Source | Reaches the seam via | Why both |
+ * |---|---|---|
+ * | An in-process caller's own signal | `executeComponentAction(id, request, { signal })` | A workflow engine / React caller already holds a controller; an `AbortSignal` cannot be JSON-serialized, so this arm is in-process only |
+ * | A per-request timeout the executor owns | `ComponentActionRequest.timeoutMs` (wire field) | An HTTP/WebSocket caller has no way to hand over a live signal, so without this arm a hung action is uncancellable over the wire — i.e. exactly the population the feature exists for |
+ *
+ * Whichever fires first aborts the signal the handler sees.
+ *
+ * **Observing it is optional; abandonment is not.** A handler that ignores
+ * `signal` is still abandoned by the executor, which races the handler promise
+ * against the abort rather than trusting the handler to cooperate (see
+ * `core/abortable.ts` `runAbortable`). Observing the signal is what lets a
+ * handler release its own resources; ignoring it only means it keeps running
+ * detached while the caller has already moved on.
+ */
+export interface ActionHandlerOptions {
+  /**
+   * Aborted when the caller cancels or the request's `timeoutMs` elapses.
+   * Always supplied by the executor — it is optional only so a handler may be
+   * invoked directly in a test or by app code that has nothing to cancel.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Handler for custom actions.
+ *
+ * Receives the invocation params and an {@link ActionHandlerOptions} bag
+ * carrying the cancellation signal. Both are optional at the call site, so a
+ * handler may declare either arity.
  */
 export type ActionHandler<TParams = unknown, TResult = unknown> = (
-  params?: TParams
+  params?: TParams,
+  options?: ActionHandlerOptions
 ) => TResult | Promise<TResult>;
 
 /**
@@ -443,6 +531,17 @@ export interface CustomAction<TParams = unknown, TResult = unknown> {
   label?: string;
   /** Description of what the action does */
   description?: string;
+  /**
+   * Safety annotation (plan `2026-08-20-ui-bridge-action-declaration-shape`,
+   * Phase 4). See {@link ComponentAction.effect} for the full precedence rule
+   * — it is identical here, including the `STANDARD_ACTION_EFFECTS` fallback
+   * that applies when `id` happens to be a standard verb.
+   *
+   * **Declare `'destructive'` on anything irreversible.** A custom action is
+   * the shape most likely to need it: it exists precisely because no standard
+   * verb described what the control does.
+   */
+  effect?: IREffect;
   /** Action handler function */
   handler: ActionHandler<TParams, TResult>;
 }
@@ -666,7 +765,48 @@ export interface RegisteredElement {
 export type StateGetter<T = unknown> = () => T;
 
 /**
- * Component action definition
+ * Component action definition — an agent-callable tool declared by the page.
+ *
+ * ## Relationship to WebMCP's `ModelContextTool` (Phase 5)
+ *
+ * This shape is a deliberate **strict superset** of the `ModelContextTool`
+ * dictionary from the Web ML CG's WebMCP draft, so that a Qontinui app can
+ * later project the same handlers through `document.modelContext` via a thin
+ * adapter. The correspondence is mechanical:
+ *
+ * | `ModelContextTool` | here | note |
+ * |---|---|---|
+ * | `name` (required) | {@link ComponentAction.id} | identifier within the component |
+ * | `title` | {@link ComponentAction.label} | human-readable |
+ * | `description` (required) | {@link ComponentAction.description} | optional here |
+ * | `inputSchema` | {@link ComponentAction.paramSchema} | validated — see `core/param-schema.ts` |
+ * | `execute` (required) | {@link ComponentAction.handler} | plus an `AbortSignal`, as WebMCP threads into `execute` |
+ * | `annotations.readOnlyHint` | {@link ComponentAction.effect} | **NOT adopted as a boolean** — see below |
+ *
+ * Qontinui extensions with no `ModelContextTool` counterpart: `path` and
+ * `actionInvocationPath` on the serialized form (server-annotated invocation
+ * routes — WebMCP has no out-of-process call surface, which is the whole
+ * reason UI Bridge does).
+ *
+ * **`effect` deliberately does NOT mirror `annotations.readOnlyHint`.** That
+ * is a boolean; this is the tri-state `read | write | destructive` already
+ * defined by the IR ({@link IREffect}), and the third state is the one that
+ * carries the safety semantics — `readOnlyHint: false` cannot distinguish
+ * "edits a field" from "deletes the account". An adapter projecting outward
+ * maps `effect === 'read'` to `readOnlyHint: true` and everything else to
+ * `false`, which is lossy in the outward direction only.
+ *
+ * **This is a vocabulary alignment, NOT a dependency.** WebMCP is a CG draft
+ * (`repo-type: cg-report`), Chromium/Edge origin-trial only, Mozilla
+ * `neutral`, **WebKit `oppose`**; its stated non-goals exclude headless and
+ * fully autonomous operation — which is how Qontinui runs — and it defines no
+ * inspection surface at all. It is also absent from UI Bridge's Tauri IPC
+ * channel, half of the dual-channel design. Nothing here imports or requires
+ * it; if WebMCP is abandoned, nothing in this file needs reverting.
+ *
+ * No `toolchange`-equivalent invalidation event is provided: no consumer needs
+ * one yet, and building it speculatively would add a second registry-change
+ * notification beside the existing snapshot/observer paths.
  */
 export interface ComponentAction<TParams = unknown, TResult = unknown> {
   /** Action identifier */
@@ -677,14 +817,62 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
   description?: string;
   /** Parameter schema (for documentation/validation) */
   paramSchema?: Record<string, unknown>;
+  /**
+   * Safety annotation — **the per-registration override** (plan
+   * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 4).
+   *
+   * **Precedence: this field wins; the verb map is only the default.**
+   * `resolveActionEffect()` (`core/action-effect.ts`) reads
+   * `action.effect ?? STANDARD_ACTION_EFFECTS[action.id]`, so an explicit
+   * value here beats whatever the static verb map would have said, and the
+   * map only applies at all when `id` happens to be one of the 22
+   * {@link StandardAction} verbs.
+   *
+   * **Why an override exists at all.** The annotation has exactly one job:
+   * exclude destructive actions from automatic walks. A static `click →
+   * write` map is wrong *precisely on the delete button* — i.e. guaranteed
+   * wrong in the single case the feature exists to protect — and it fails
+   * OPEN, so an unmarked destructive action gets walked. An override an
+   * author can get wrong fails in both directions and is auditable; a default
+   * that cannot be corrected fails silently in the dangerous one. This also
+   * matches the IR, where `effect` is already an optional per-transition
+   * override (`qontinui-schemas/ts/src/ui-bridge-ir/transition.ts`) rather
+   * than a derived value.
+   *
+   * **No verb ever defaults to `'destructive'`**, by construction:
+   * destructiveness is not knowable from a verb, only from what the control
+   * does. Declaring it here is the only way it can ever be true.
+   *
+   * Serialized on the `/control/component*` responses AND in the
+   * `BridgeSnapshot` projection — see {@link SerializedComponentAction}.
+   */
+  effect?: IREffect;
   /** Action handler function */
   handler: ActionHandler<TParams, TResult>;
 }
 
 /**
- * Wire-serializable subset of a {@link ComponentAction} — the canonical
- * `qontinui-types::ui_bridge::ComponentActionInfo` shape emitted on
- * snapshots. `handler`/`paramSchema` are runtime-only and never serialized.
+ * Wire-serializable subset of a {@link ComponentAction} — a superset of the
+ * canonical `qontinui-types::ui_bridge::ComponentActionInfo` shape.
+ *
+ * **`handler` is the only runtime-only field.** It is a function, so
+ * `JSON.stringify` drops it from every response body; it is deliberately
+ * absent from this type.
+ *
+ * **`paramSchema` IS serialized** — it is not runtime-only. The
+ * `/control/components` and `/control/component/:id` handlers spread the whole
+ * registered action (`server/handlers.ts` `annotateComponentWithInvocationPaths`),
+ * so the schema reaches the wire verbatim, and four qontinui-runner consumers
+ * read it off the wire today (`workflow_generation/wrapper_manifest.rs`,
+ * `commands/command_interpreter.rs`, `bin/wrappers_mcp.rs`). The comment this
+ * replaces claimed it was "never serialized", which was false.
+ *
+ * The optional fields are optional because two projections share this type:
+ * the `/control/component*` routes emit `paramSchema` and `path`, while the
+ * narrower `BridgeSnapshot` projection (`core/registry.ts`
+ * `serializeRegisteredComponent`) picks `{ id, label, description }` — plus,
+ * since Phase 4, `effect`. `effect` is the one added field that BOTH
+ * projections carry; the reason is on the field itself.
  */
 export interface SerializedComponentAction {
   /** Action identifier */
@@ -693,6 +881,41 @@ export interface SerializedComponentAction {
   label?: string;
   /** Description of what the action does */
   description?: string;
+  /**
+   * Parameter schema, echoed verbatim from the registration. Emitted on the
+   * `/control/components` and `/control/component/:id` responses; absent from
+   * the `BridgeSnapshot` component projection.
+   */
+  paramSchema?: Record<string, unknown>;
+  /**
+   * Concrete URL for invoking this one action, added by
+   * `annotateComponentWithInvocationPaths` (`server/handlers.ts`). Emitted on
+   * the `/control/components` and `/control/component/:id` responses only.
+   */
+  path?: string;
+  /**
+   * Safety annotation, echoed verbatim from the registration (Phase 4).
+   *
+   * **Emitted by BOTH projections**, unlike `paramSchema`/`path`. The narrow
+   * `serializeRegisteredComponent` projection carries it too, deliberately:
+   * `BridgeSnapshot` / `/control/snapshot` / the relay's `getControlSnapshot`
+   * are the surfaces an autonomous walker actually reads, and the walk is the
+   * one consumer this annotation exists for. Absent there, a `'destructive'`
+   * declaration could not do its job on the surface that matters most — it
+   * would fail open, which is the failure mode the per-registration override
+   * was chosen to close.
+   *
+   * Still `undefined` for every action that declares nothing (component action
+   * ids are free-form, so the verb map usually does not apply), and
+   * `JSON.stringify` drops undefined keys — so a snapshot from an
+   * un-annotated app stays byte-identical to before Phase 4, and the widening
+   * is opt-in per action.
+   *
+   * Mirrors `param_schema`/`path` in the canonical
+   * `qontinui-types::ui_bridge::ComponentActionInfo`, whose `effect` field is
+   * `Option<_>` + `skip_serializing_if` for the same reason.
+   */
+  effect?: IREffect;
 }
 
 /**
@@ -1129,6 +1352,34 @@ export interface ActionFailureDetails {
    * `computation` = a JS/render condition never became true.
    */
   timeoutType?: 'network' | 'navigation' | 'computation';
+  /**
+   * Why an action was abandoned before it produced a result (Phase 3 of plan
+   * `2026-08-20-ui-bridge-action-declaration-shape`). Set only on the
+   * cancellation path, which reports `errorCode: 'UB-ACTION-FAILED'` —
+   * cancellation deliberately does NOT get a code of its own, because that
+   * would mean regenerating `diagnostics/codes.json` into four mirrors, one
+   * of them cross-repo. This field is the discriminator instead.
+   *
+   * `signal` = the in-process caller's `AbortSignal` fired;
+   * `timeout` = the request's own `timeoutMs` elapsed.
+   *
+   * A `UB-ACTION-FAILED` without `cancelReason` is a handler that threw.
+   */
+  cancelReason?: 'signal' | 'timeout';
+  /**
+   * Which params failed the action's declared `paramSchema`, and why (Phase 2
+   * of plan `2026-08-20-ui-bridge-action-declaration-shape`). Set only on the
+   * param-validation path, which reports
+   * `errorCode: 'UB-ACTION-REJECTED'` — the code whose own catalog entry reads
+   * *"rejected before execution (e.g. by a guard, policy, or **validation
+   * gate**)"*, so no new diagnostic code was minted for this.
+   *
+   * Each entry names the offending param by `path` (`"username"`,
+   * `"filter.status"`, `"ids[2]"`), the `keyword` that rejected it, and a
+   * human-readable `message`. A bare "invalid params" is useless to the agent
+   * on the other end of the wire — this is what it reads instead.
+   */
+  invalidParams?: ParamSchemaIssue[];
 }
 
 // ============================================================================
@@ -1511,11 +1762,19 @@ export interface BridgeSnapshot {
     name: string;
     description?: string;
     /**
-     * Actions exposed by this component, in the canonical
-     * `ComponentActionInfo` shape (`{ id, label?, description? }`) required
-     * by `qontinui-types::ui_bridge::UIBridgeComponent`. The registration's
-     * `handler`/`paramSchema` never reach the wire. (Was `string[]` of bare
-     * action ids before 0.22.0.)
+     * Actions exposed by this component. This *snapshot* projection is built
+     * by `serializeRegisteredComponent` (`core/registry.ts`), which picks
+     * `{ id, label?, description? }` — the canonical
+     * `qontinui-types::ui_bridge::UIBridgeComponent` shape. (Was `string[]` of
+     * bare action ids before 0.22.0.)
+     *
+     * `handler` never reaches the wire anywhere: it is a function and
+     * `JSON.stringify` drops it. **`paramSchema` is a different case** — it is
+     * not runtime-only, merely not projected *here*. The
+     * `/control/components` and `/control/component/:id` responses do emit it
+     * (see {@link SerializedComponentAction}) and qontinui-runner reads it off
+     * the wire. The comment this replaces asserted `paramSchema` "never
+     * reaches the wire", which was false.
      */
     actions: SerializedComponentAction[];
     /**
