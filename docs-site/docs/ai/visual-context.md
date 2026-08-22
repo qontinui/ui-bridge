@@ -142,7 +142,7 @@ const snapshots = createSnapshotManager({
   generateDescriptions: true, // generate element descriptions
   useAnnotations: true, // merge in the annotation store
   includeForms: false, // attach DOM-level form discovery detail
-  maxElements: 200, // hard element cap
+  maxElements: 500, // hard element cap
   maxTokens: 0, // token budget; 0 = unlimited
 });
 ```

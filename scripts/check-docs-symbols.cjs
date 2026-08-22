@@ -215,11 +215,13 @@ const TS_FENCE_LANGS = new Set([
 /**
  * Fence languages that are NOT TypeScript but EMBED it in a `<script>` block.
  *
- * Left out, these are a real bypass, not a theoretical one: the Svelte example
- * on advanced/cross-framework-support.md imports from
+ * Left out, these are a real bypass, not a theoretical one. The example that
+ * proved it is gone now: advanced/cross-framework-support.md imported from
  * `@anthropic/ui-bridge-svelte` inside a ```svelte fence, and every sibling
  * example on that same page — Vue, Angular, vanilla — was caught while that one
- * was invisible purely because of its fence label. A gate whose coverage
+ * stayed invisible purely because of its fence label, until the page was
+ * rewritten against the real surface. The rule outlives the example that
+ * motivated it: a gate whose coverage
  * depends on which framework a page happens to document is not a gate. Only the
  * script block is parsed; the template markup around it is not TypeScript and
  * is left alone.
@@ -315,7 +317,9 @@ function readWorkspacePackages() {
  * 2. The name must sit in a scope this project OWNS (OWNED_SCOPE). "Mentions
  *    ui-bridge" is not ownership, and the difference is the whole gate: add
  *    `"@anthropic/ui-bridge": "^1.0.0"` to any manifest and, without this
- *    check, 18 of the 22 quarantined ledger entries stop reproducing at once.
+ *    check, every page importing that scope is waved through with no symbol
+ *    checking at all. Measured while the ledger still existed: 18 of its 22
+ *    entries stopped reproducing at once.
  *    The gate does fail loudly the first time — but the remedy it PRINTS for a
  *    stale ledger is `npm run docs:symbol-debt:update`, after which a scope this
  *    project has never owned is permanently accepted on every page with no
@@ -1078,11 +1082,14 @@ function main() {
   for (const f of failures) if (!bySignature.has(f.sig)) bySignature.set(f.sig, f);
 
   if (UPDATE) {
+    const hadLedger = fs.existsSync(DEBT_LEDGER);
     writeLedger(liveSignatures);
     process.stdout.write(
       liveSignatures.length === 0
         ? `docs:symbol-debt:update — no quarantined failure(s) remain; ` +
-            `${rel(DEBT_LEDGER)} removed. The ledger is paid off.\n`
+            (hadLedger
+              ? `${rel(DEBT_LEDGER)} removed. The ledger is paid off.\n`
+              : `${rel(DEBT_LEDGER)} was already absent. Nothing to record.\n`)
         : `docs:symbol-debt:update — recorded ${liveSignatures.length} quarantined failure(s) ` +
             `across ${new Set(liveSignatures.map((sig) => sig.split(' :: ')[0])).size} page(s) in ` +
             `${rel(DEBT_LEDGER)}\n`

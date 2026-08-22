@@ -179,7 +179,7 @@ Subscriptions are re-applied on reconnect, so listeners registered with
 set — you do not construct one yourself:
 
 ```tsx
-import { UIBridgeProvider, useUIBridge } from '@qontinui/ui-bridge';
+import { UIBridgeProvider, useUIBridgeContext } from '@qontinui/ui-bridge';
 
 function App({ children }: { children: React.ReactNode }) {
   return (
@@ -190,7 +190,7 @@ function App({ children }: { children: React.ReactNode }) {
 }
 
 function ConnectionBadge() {
-  const { wsClient, wsConnectionState } = useUIBridge();
+  const { wsClient, wsConnectionState } = useUIBridgeContext();
   return <span data-connected={wsConnectionState === 'connected'}>{wsConnectionState}</span>;
 }
 ```
