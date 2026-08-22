@@ -70,13 +70,19 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * called. An autonomous walk excludes destructive actions and walks
    * everything else, so an unmarked delete button gets clicked.
    *
-   * **Precedence:** what you write here wins. When you leave it undefined and
+   * **Precedence:** what you write here wins, and it is the **only** thing
+   * that reaches the wire. `STANDARD_ACTION_EFFECTS` supplies a default when
    * the action `id` happens to be one of the 22 standard verbs (`click`,
-   * `hover`, `submit`, …), `STANDARD_ACTION_EFFECTS` supplies a default —
-   * otherwise the effect is simply unknown.
+   * `hover`, `submit`, …), but that default is applied **by the consumer**,
+   * via the exported `resolveActionEffect()` — the SDK does *not* stamp it
+   * onto the response. Leave this undefined and the field is simply **absent**
+   * from every projection, which is the honest encoding of "nobody classified
+   * this action" (see `core/action-effect.ts` for why a server-applied default
+   * would fail open).
    *
-   * Serialized on `/control/components`, `/control/component/:id` **and** in
-   * the `/control/snapshot` component projection.
+   * Serialized verbatim on `/control/components`, `/control/component/:id`,
+   * the `/control/snapshot` component projection, and the Tauri IPC
+   * `get_components` / `get_component` commands.
    */
   effect?: IREffect;
   /**

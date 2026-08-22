@@ -454,7 +454,20 @@ export interface ActionExecutorLike {
   ): Promise<unknown>;
   executeComponentAction(
     componentId: string,
-    request: { action: string; params?: Record<string, unknown> }
+    request: {
+      action: string;
+      params?: Record<string, unknown>;
+      /**
+       * Wire-reachable cancellation (plan
+       * `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3). An
+       * `AbortSignal` cannot be JSON-serialized, so this is the ONLY way an
+       * out-of-process caller can call off a hung handler — dropping it here
+       * is what made `ComponentActionRequest.timeoutMs` unreachable from every
+       * HTTP and WebSocket entry point. Validated and clamped by the executor
+       * (`normalizeActionTimeoutMs`); never passed to a timer unchecked.
+       */
+      timeoutMs?: number;
+    }
   ): Promise<unknown>;
   fillForm?(request: FillFormRequest): Promise<FillResult>;
   executeBatch?(request: BatchActionRequest): Promise<BatchActionResponse>;
@@ -1924,12 +1937,14 @@ export function createHandlers(
 
     executeComponentAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown> }
+      request: { action: string; params?: Record<string, unknown>; timeoutMs?: number }
     ) => {
       try {
         const result = await actionExecutor.executeComponentAction(id, {
           action: request.action,
           params: request.params,
+          // Forwarded, not dropped. See `ActionExecutorLike` above.
+          timeoutMs: request.timeoutMs,
         });
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {

@@ -63,6 +63,13 @@ export interface ComponentActionRequest {
    *
    * Abandonment does not depend on the handler observing its signal — the
    * executor races the handler promise.
+   *
+   * **Validated and clamped at the executor**, so no wire caller reaches a
+   * timer unchecked: `0` abandons on the next tick; a negative, `NaN`,
+   * infinite or non-numeric value is REFUSED (the response is `success: false`
+   * naming `timeoutMs`); anything above 24h is clamped, because past 2^31-1
+   * `setTimeout` wraps negative and fires immediately. See
+   * `core/abortable.ts` `normalizeActionTimeoutMs`.
    */
   timeoutMs?: number;
 }

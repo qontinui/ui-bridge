@@ -147,10 +147,12 @@ export interface BuiltActionFailureDetails {
   waitTimedOutAfterMs?: number;
   timeoutType?: 'network' | 'navigation' | 'computation';
   /**
-   * Why an action was abandoned before producing a result — the discriminator
-   * that stands in for a dedicated cancellation code on the
-   * `errorCode: 'UB-ACTION-FAILED'` path. Mirrors
-   * `ActionFailureDetails.cancelReason`.
+   * Why an action was abandoned before producing a result. `'timeout'` pairs
+   * with `errorCode: 'UB-ACTION-TIMEOUT'`; `'signal'` pairs with
+   * `'UB-ACTION-FAILED'` and is the discriminator that stands in for a
+   * dedicated caller-cancellation code. Mirrors
+   * `ActionFailureDetails.cancelReason` — see it for why only one arm needs a
+   * discriminator.
    */
   cancelReason?: 'signal' | 'timeout';
   /**
@@ -266,8 +268,9 @@ export function buildActionFailureDetails(
     waitTimedOutAfterMs?: number;
     timeoutType?: 'network' | 'navigation' | 'computation';
     /**
-     * Why an action was abandoned (Phase 3). Paired with
-     * `errorCode: 'UB-ACTION-FAILED'` — see `ActionFailureDetails.cancelReason`.
+     * Why an action was abandoned (Phase 3). `'timeout'` is paired with
+     * `errorCode: 'UB-ACTION-TIMEOUT'`, `'signal'` with `'UB-ACTION-FAILED'` —
+     * see `ActionFailureDetails.cancelReason`.
      */
     cancelReason?: 'signal' | 'timeout';
     /**

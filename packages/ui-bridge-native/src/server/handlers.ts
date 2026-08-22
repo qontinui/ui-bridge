@@ -629,11 +629,16 @@ export function createServerHandlers(
 
     executeComponentAction: async (ctx: HandlerContext) => {
       const { id, actionId } = ctx.params;
-      const body = ctx.body as { params?: Record<string, unknown> };
+      // `timeoutMs` is read from the body, not dropped: an HTTP caller cannot
+      // hand over an `AbortSignal`, so this is its ONLY way to call off a hung
+      // handler. The executor validates and clamps it
+      // (`normalizeActionTimeoutMs`) before it can reach a timer.
+      const body = ctx.body as { params?: Record<string, unknown>; timeoutMs?: number };
 
       const response = await executor.executeComponentAction(id, {
         action: actionId,
         params: body?.params,
+        timeoutMs: body?.timeoutMs,
       });
 
       if (!response.success) {

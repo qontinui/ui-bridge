@@ -217,7 +217,12 @@ describe('Phase 3 — web executor: wire-reachable request timeout', () => {
 
     expect(res.success).toBe(false);
     expect(res.requestId).toBe('req-timeout');
-    expect(res.failureDetails?.errorCode).toBe('UB-ACTION-FAILED');
+    // The TIMEOUT arm carries the catalog's dedicated timeout code (the
+    // pre-PR review's finding #10); the SIGNAL arm above keeps
+    // `UB-ACTION-FAILED`, because caller cancellation has no code of its own.
+    // `cancelReason` is set on both, so it stays the reliable
+    // "was this abandoned?" test.
+    expect(res.failureDetails?.errorCode).toBe('UB-ACTION-TIMEOUT');
     expect(res.failureDetails?.cancelReason).toBe('timeout');
     expect(res.failureDetails?.timeoutMs).toBe(10);
     expect(res.error).toContain('10ms timeout');

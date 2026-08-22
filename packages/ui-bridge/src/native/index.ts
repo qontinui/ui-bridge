@@ -38,8 +38,12 @@ export {
   type BridgeEventType,
   type BridgeEventListener,
   type ActionHandler,
+  type ActionHandlerOptions,
   type CustomAction,
   type ComponentAction,
+  // The safety-annotation vocabulary (Phase 4). Without it a consumer cannot
+  // even name the type its `effect` field holds.
+  type IREffect,
 } from './core/types';
 
 export {
@@ -51,6 +55,53 @@ export {
   type RegisterComponentOptions,
   type NativeRegistryConfig,
 } from './core/registry';
+
+// Action declarations: effect annotation, param validation, cancellation
+// (plan `2026-08-20-ui-bridge-action-declaration-shape`, Phases 2-4).
+//
+// These were reachable only from the `./native/core` subpath, because this file uses an explicit export list and was never updated.
+// A consumer holding the root import could not resolve a declared `effect`,
+// arm param enforcement, or race a handler — i.e. three shipped features with
+// no route to the caller, which is the exact defect class that plan exists to
+// remove.
+export {
+  // NOTE: the NATIVE verb table. `resolveActionEffect` here resolves a native
+  // verb (`press`, `swipe`, …); the web table is exported beside it under its
+  // own name for callers that need the DOM verbs.
+  NATIVE_STANDARD_ACTION_EFFECTS,
+  nativeStandardActionEffect,
+  resolveActionEffect,
+  STANDARD_ACTION_EFFECTS,
+  standardActionEffect,
+} from './core/action-effect';
+
+export {
+  validateActionParams,
+  formatParamValidationFailure,
+  DEFAULT_PARAM_VALIDATION_MODE,
+  getDefaultParamValidationMode,
+  setDefaultParamValidationMode,
+  resetDefaultParamValidationMode,
+} from '../core/param-schema';
+export type {
+  ParamSchemaKeyword,
+  ParamSchemaIssue,
+  ParamValidationResult,
+  ParamValidationMode,
+} from '../core/param-schema';
+
+export {
+  runAbortable,
+  inertAbortSignal,
+  normalizeActionTimeoutMs,
+  MAX_ACTION_TIMEOUT_MS,
+} from '../core/abortable';
+export type {
+  AbortReason,
+  AbortableOutcome,
+  RunAbortableOptions,
+  TimeoutNormalization,
+} from '../core/abortable';
 
 export {
   createNativeElementIdentifier,

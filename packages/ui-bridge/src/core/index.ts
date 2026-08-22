@@ -9,8 +9,18 @@ export * from './types';
 
 // Action-invocation abandonment primitive (plan
 // 2026-08-20-ui-bridge-action-declaration-shape, Phase 3)
-export { runAbortable } from './abortable';
-export type { AbortReason, AbortableOutcome, RunAbortableOptions } from './abortable';
+export {
+  runAbortable,
+  inertAbortSignal,
+  normalizeActionTimeoutMs,
+  MAX_ACTION_TIMEOUT_MS,
+} from './abortable';
+export type {
+  AbortReason,
+  AbortableOutcome,
+  RunAbortableOptions,
+  TimeoutNormalization,
+} from './abortable';
 
 // Parameter-schema validation (plan
 // 2026-08-20-ui-bridge-action-declaration-shape, Phase 2)

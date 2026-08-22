@@ -30,7 +30,9 @@ import {
   findHoverableAncestor,
   dispatchHoverEnter,
   nextAnimationFrame,
+  DefaultActionExecutor,
 } from '../control/action-executor';
+import type { ComponentActionRequest } from '../control/types';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -321,6 +323,60 @@ function resolveElementWithFallback(id: string): RegisteredElement | undefined {
 function elementToSnapshot(e: RegisteredElement) {
   const state = e.getState();
   return { id: e.id, type: e.type, label: e.label, actions: e.actions, state };
+}
+
+/**
+ * The ONE `DefaultActionExecutor` behind the Tauri IPC channel.
+ *
+ * Plan `2026-08-20-ui-bridge-action-declaration-shape`. The two
+ * component-action commands below used to resolve the action off the registry
+ * and call `action.handler(params)` **directly**, bypassing the executor
+ * entirely — so on this channel there was no `paramSchema` validation, no
+ * `runAbortable` race, no `signal` and no `timeoutMs`. That made it a FOURTH
+ * invocation seam the plan's census missed, and it is not a marginal one: the
+ * Tauri IPC channel is half of UI Bridge's dual-channel design and the half a
+ * Tauri app actually uses.
+ *
+ * Routing through the executor rather than re-implementing the three guards
+ * inline is the point — a fourth inline copy is how the first three drifted.
+ *
+ * Memoized per registry instance (a `WeakMap`, so a discarded registry in a
+ * test does not pin an executor). `DefaultActionExecutor`'s constructor is
+ * cheap; it builds an `ErrorImpactAssessor` only when a `document` exists.
+ */
+const IPC_EXECUTORS = new WeakMap<object, DefaultActionExecutor>();
+
+function ipcActionExecutor(registry: ReturnType<typeof getGlobalRegistry>): DefaultActionExecutor {
+  const existing = IPC_EXECUTORS.get(registry);
+  if (existing) return existing;
+  const created = new DefaultActionExecutor(registry);
+  IPC_EXECUTORS.set(registry, created);
+  return created;
+}
+
+/**
+ * Invoke a component action through {@link ipcActionExecutor} and reshape the
+ * response into this channel's `{ success, result?, error?, timestamp }`
+ * envelope.
+ *
+ * The extra fields the executor produces (`failureDetails`, `durationMs`) are
+ * passed through additively — `JSON.stringify` drops the undefined ones, so an
+ * ordinary success is byte-identical to what this seam emitted before.
+ */
+async function runComponentActionViaExecutor(
+  registry: ReturnType<typeof getGlobalRegistry>,
+  componentId: string,
+  request: ComponentActionRequest
+): Promise<Record<string, unknown>> {
+  const response = await ipcActionExecutor(registry).executeComponentAction(componentId, request);
+  return {
+    success: response.success,
+    result: response.result,
+    error: response.error,
+    failureDetails: response.failureDetails,
+    durationMs: response.durationMs,
+    timestamp: response.timestamp,
+  };
 }
 
 /**
@@ -1725,13 +1781,21 @@ export async function executeCommand(
           // Phase 4 carries `effect` onto the Tauri IPC channel too — it is
           // half of UI Bridge's dual-channel design, so a walker driving a
           // Tauri app must be able to exclude destructive actions here as
-          // well as over HTTP. (`paramSchema` is still absent at this seam;
-          // that is a Phase 2 gap, not something Phase 4 widened.)
+          // well as over HTTP. `paramSchema` was still absent at this seam
+          // when Phase 4 landed; it is emitted below as of 2026-08-23, at the
+          // same time the seam started routing through the executor that
+          // enforces it.
           actions: c.actions.map((a) => ({
             id: a.id,
             label: a.label,
             description: a.description,
             effect: a.effect,
+            // `paramSchema` too, as of 2026-08-23. It is what an agent reads
+            // to build conforming params, and the executor now VALIDATES
+            // against it on this channel — publishing the enforcement without
+            // the declaration would be the same self-contradiction the plan
+            // is fixing on the HTTP side.
+            paramSchema: a.paramSchema,
           })),
           elementIds: c.elementIds,
           state: c.getState?.() ?? {},
@@ -1761,6 +1825,8 @@ export async function executeCommand(
           description: a.description,
           // Phase 4 — see the `get_components` twin above.
           effect: a.effect,
+          // `paramSchema` — see the `get_components` twin above.
+          paramSchema: a.paramSchema,
         })),
         elementIds: comp.elementIds,
         state: comp.getState?.() ?? {},
@@ -1788,12 +1854,15 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       }
-      try {
-        const result = await compAction.handler(payload.params as Record<string, unknown>);
-        return { success: true, result, timestamp: Date.now() };
-      } catch (err) {
-        return { success: false, error: (err as Error).message, timestamp: Date.now() };
-      }
+      // Through the executor, not `compAction.handler(...)` — see
+      // `ipcActionExecutor`. The component/action pre-checks above stay only
+      // because they produce this channel's richer not-found prose; the
+      // executor re-resolves both and would answer identically.
+      return await runComponentActionViaExecutor(registry, compId, {
+        action: actionId,
+        params: payload.params as Record<string, unknown> | undefined,
+        timeoutMs: (payload as { timeoutMs?: unknown }).timeoutMs as number | undefined,
+      });
     }
 
     case 'getComponentState': {
@@ -1817,7 +1886,10 @@ export async function executeCommand(
     case 'executeComponentAction': {
       const { id, request } = payload as {
         id: string;
-        request: { action: string; actionId?: string; params?: P };
+        // `timeoutMs` is the wire-reachable half of cancellation — the relay
+        // forwards the whole `ComponentActionRequest`, so failing to read it
+        // here is what made it unreachable on this channel.
+        request: { action: string; actionId?: string; params?: P; timeoutMs?: number };
       };
       const actionId = request.actionId ?? request.action;
       const comp = registry.getComponent(id);
@@ -1836,12 +1908,12 @@ export async function executeCommand(
           timestamp: Date.now(),
         };
       }
-      try {
-        const result = await action.handler(request.params);
-        return { success: true, result, timestamp: Date.now() };
-      } catch (err) {
-        return { success: false, error: (err as Error).message, timestamp: Date.now() };
-      }
+      // Through the executor — see `ipcActionExecutor` and the twin above.
+      return await runComponentActionViaExecutor(registry, id, {
+        action: actionId,
+        params: request.params as Record<string, unknown> | undefined,
+        timeoutMs: request.timeoutMs,
+      });
     }
 
     // ======================================================================

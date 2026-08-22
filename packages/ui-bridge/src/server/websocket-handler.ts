@@ -499,7 +499,7 @@ export class UIBridgeWSHandler {
     clientId: string,
     message: WSClientMessage & { type: 'executeComponentAction' }
   ): Promise<void> {
-    const { componentId, action, params } = message.payload;
+    const { componentId, action, params, timeoutMs } = message.payload;
     if (!this.handlers.executeComponentAction) {
       this.sendResponse(
         clientId,
@@ -510,7 +510,12 @@ export class UIBridgeWSHandler {
       );
       return;
     }
-    const result = await this.handlers.executeComponentAction(componentId, { action, params });
+    // `timeoutMs` forwarded — it is the only cancellation a WS caller has.
+    const result = await this.handlers.executeComponentAction(componentId, {
+      action,
+      params,
+      timeoutMs,
+    });
 
     this.sendResponse(clientId, message.id, result.success, result.data, result.error);
   }

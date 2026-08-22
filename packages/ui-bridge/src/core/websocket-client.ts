@@ -354,13 +354,19 @@ export class UIBridgeWSClient {
   async executeComponentAction(
     componentId: string,
     action: string,
-    params?: Record<string, unknown>
+    params?: Record<string, unknown>,
+    /**
+     * Abandon the action after this many milliseconds. The wire-reachable half
+     * of cancellation — an `AbortSignal` cannot cross a WebSocket. See
+     * `ComponentActionRequest.timeoutMs`.
+     */
+    timeoutMs?: number
   ): Promise<ActionResponse> {
     const response = await this.sendRequest<ActionResponse>({
       id: generateId(),
       type: 'executeComponentAction',
       timestamp: Date.now(),
-      payload: { componentId, action, params },
+      payload: { componentId, action, params, timeoutMs },
     });
 
     return response;

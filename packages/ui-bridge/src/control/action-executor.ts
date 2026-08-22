@@ -76,7 +76,10 @@ import { findElementByIdentifier } from '../core/element-identifier';
 import { classString } from '../core/class-name';
 // Phase 3: the executor races every action handler against its abort signal,
 // so a handler that ignores the signal is still abandonable at the caller.
-import { runAbortable } from '../core/abortable';
+// `normalizeActionTimeoutMs` is the wire-boundary guard: `timeoutMs` arrives
+// from an HTTP/WS body, so it is validated and clamped here — the one place
+// every transport funnels through — rather than reaching `setTimeout` raw.
+import { runAbortable, normalizeActionTimeoutMs, inertAbortSignal } from '../core/abortable';
 // Phase 2: the executor validates action params against the action's published
 // `paramSchema` before the handler runs. See `core/param-schema.ts` for the
 // documented subset and for why `warn` is the default mode.
@@ -1458,12 +1461,68 @@ export class DefaultActionExecutor implements ActionExecutor {
         };
       }
 
+      // `timeoutMs` is WIRE data — every HTTP/WS entry point forwards it
+      // verbatim from a JSON body — so it is validated and clamped here,
+      // before it can reach a timer. See `normalizeActionTimeoutMs` for the
+      // full policy (0 abandons on the next tick; negative / NaN / non-numeric
+      // are refused; anything above 24h is clamped, because past 2^31-1
+      // `setTimeout` wraps negative and fires immediately).
+      const timeout = normalizeActionTimeoutMs(request.timeoutMs);
+      if (!timeout.ok) {
+        const message = `Action "${request.action}" on component "${componentId}" was rejected: ${timeout.reason}.`;
+        return {
+          success: false,
+          error: message,
+          failureDetails: buildActionFailureDetails('UB-VALIDATION-ERROR', message, {
+            elementId: componentId,
+            context: { action: request.action, timeoutMs: request.timeoutMs },
+            durationMs: performance.now() - startTime,
+          }),
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
+      const timeoutMs = timeout.timeoutMs;
+
       // Phase 2: `paramSchema` is published to agents, so it has to mean
       // something. Validate BEFORE the handler runs — a rejection after a
       // side-effect is not a rejection.
       const validationMode = options.paramValidation ?? getDefaultParamValidationMode();
       if (validationMode !== 'off' && action.paramSchema !== undefined) {
-        const validation = validateActionParams(action.paramSchema, request.params);
+        // The validator walks AUTHOR-supplied schema data. It is bounded
+        // against both known fault routes (`core/param-schema.ts`
+        // MAX_SCHEMA_DEPTH / MAX_PATTERN_LENGTH), but it is wrapped anyway:
+        // without this, a validator fault would fall into the generic catch
+        // below and be reported as `UB-ACTION-FAILED` — "your handler failed"
+        // — for a handler that never ran.
+        let validation: ReturnType<typeof validateActionParams>;
+        try {
+          validation = validateActionParams(action.paramSchema, request.params);
+        } catch (validatorFault) {
+          const detail =
+            validatorFault instanceof Error ? validatorFault.message : String(validatorFault);
+          const message = `Action "${request.action}" on component "${componentId}": its declared paramSchema could not be evaluated (${detail}).`;
+          if (validationMode === 'enforce') {
+            // A gate that cannot be evaluated has not been cleared. Refuse —
+            // but as UB-VALIDATION-ERROR naming the SCHEMA, never as a
+            // handler failure.
+            return {
+              success: false,
+              error: message,
+              failureDetails: buildActionFailureDetails('UB-VALIDATION-ERROR', message, {
+                elementId: componentId,
+                context: { action: request.action, paramSchemaFault: detail },
+                durationMs: performance.now() - startTime,
+              }),
+              durationMs: performance.now() - startTime,
+              timestamp: Date.now(),
+              requestId: request.requestId,
+            };
+          }
+          console.warn(`[ui-bridge] ${message}`);
+          validation = { valid: true, issues: [] };
+        }
         if (!validation.valid) {
           const message = formatParamValidationFailure(
             componentId,
@@ -1498,24 +1557,43 @@ export class DefaultActionExecutor implements ActionExecutor {
       // 2026-08-20-ui-bridge-action-declaration-shape.
       const outcome = await runAbortable((signal) => action.handler(request.params, { signal }), {
         signal: options.signal,
-        timeoutMs: request.timeoutMs,
+        timeoutMs,
       });
 
       if (outcome.aborted) {
+        // Two arms, two codes. The timeout arm gets the catalog's dedicated
+        // `UB-ACTION-TIMEOUT` — it exists, and a consumer matching on it would
+        // otherwise never see a component-action timeout. The signal arm has
+        // no dedicated code, so it keeps `UB-ACTION-FAILED` and is told apart
+        // by `cancelReason`, which BOTH arms carry.
         const message =
           outcome.reason === 'timeout'
-            ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${request.timeoutMs}ms timeout elapsed.`
+            ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${timeoutMs}ms timeout elapsed.`
             : `Action "${request.action}" on component "${componentId}" was cancelled by the caller's abort signal.`;
         return {
           success: false,
           error: message,
-          failureDetails: buildActionFailureDetails('UB-ACTION-FAILED', message, {
-            elementId: componentId,
-            context: { action: request.action, cancelReason: outcome.reason },
-            cancelReason: outcome.reason,
-            durationMs: performance.now() - startTime,
-            timeoutMs: request.timeoutMs,
-          }),
+          failureDetails: buildActionFailureDetails(
+            outcome.reason === 'timeout' ? 'UB-ACTION-TIMEOUT' : 'UB-ACTION-FAILED',
+            message,
+            {
+              elementId: componentId,
+              context: { action: request.action, cancelReason: outcome.reason },
+              cancelReason: outcome.reason,
+              durationMs: performance.now() - startTime,
+              timeoutMs,
+              // `UB-ACTION-TIMEOUT`'s recovery template renders
+              // `${waitDurationMs}` / `${waitCondition}`; without these the
+              // agent-facing suggestion would keep the raw placeholders.
+              renderContext:
+                outcome.reason === 'timeout'
+                  ? {
+                      waitDurationMs: timeoutMs,
+                      waitCondition: `action "${request.action}" to resolve`,
+                    }
+                  : undefined,
+            }
+          ),
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -2214,7 +2292,14 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Check for custom actions
         const registered = this.registry.findByDOMElement(element);
         if (registered?.customActions?.[action]) {
-          return registered.customActions[action].handler(params);
+          // The options bag is ALWAYS supplied — `ActionHandlerOptions`
+          // promises it, and a handler written the documented way
+          // (`(params, { signal }) => …`) throws on `undefined`. An element
+          // action carries no cancellation source, so the signal is inert;
+          // see `inertAbortSignal`.
+          return registered.customActions[action].handler(params, {
+            signal: inertAbortSignal(),
+          });
         }
         throw new Error(`Unknown action: ${action}`);
       }

@@ -951,12 +951,20 @@ export function createRelayHandlers(
         // and the element-action route's flat-format handling.
         const body = bodyOrContext as Record<string, unknown> | undefined;
         const explicitParams = body?.params as Record<string, unknown> | undefined;
+        // `timeoutMs` and `requestId` are REQUEST fields, not params. They are
+        // excluded from the flat merge and hoisted onto the request instead —
+        // otherwise `{"timeoutMs":5000}` would arrive at the handler as a
+        // parameter named `timeoutMs` (and fail an `additionalProperties:
+        // false` schema), while the action stayed uncancellable.
+        const REQUEST_LEVEL_KEYS = new Set(['params', 'timeoutMs', 'requestId']);
         const flatKeys = body
-          ? Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'params'))
+          ? Object.fromEntries(Object.entries(body).filter(([k]) => !REQUEST_LEVEL_KEYS.has(k)))
           : {};
         normalizedRequest = {
           action: request,
           params: { ...flatKeys, ...(explicitParams ?? {}) },
+          timeoutMs: body?.timeoutMs as number | undefined,
+          requestId: body?.requestId as string | undefined,
         };
         // Express never threads HandlerContext through this path.
         context = undefined;

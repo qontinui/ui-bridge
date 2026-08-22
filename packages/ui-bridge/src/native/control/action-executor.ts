@@ -21,7 +21,11 @@ import { findElementByIdentifier } from '../core/element-identifier';
 // present in React Native — so this intra-package edge is safe for the RN
 // bundle and is what keeps the abandonment semantics from drifting between the
 // two channels.
-import { runAbortable } from '../../core/abortable';
+import {
+  runAbortable,
+  normalizeActionTimeoutMs,
+  inertAbortSignal,
+} from '../../core/abortable';
 // Phase 2 (same plan). Same reasoning as `runAbortable` above: the ONE
 // validator implementation, shared with the web executor, so the documented
 // subset cannot drift between the two channels. `core/param-schema.ts` has no
@@ -156,7 +160,11 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 
     // Check for custom action first
     if (element.customActions && action in element.customActions) {
-      return element.customActions[action].handler(params);
+      // The options bag is ALWAYS supplied — `ActionHandlerOptions` promises
+      // it, and a handler written the documented way (`(params, { signal }) =>
+      // …`) throws on `undefined`. An element action carries no cancellation
+      // source, so the signal is inert; see `inertAbortSignal`.
+      return element.customActions[action].handler(params, { signal: inertAbortSignal() });
     }
 
     // Execute standard actions
@@ -473,12 +481,55 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         };
       }
 
+      // `timeoutMs` is WIRE data — the HTTP entry point forwards it verbatim
+      // from a JSON body — so it is validated and clamped here, before it can
+      // reach a timer. See `normalizeActionTimeoutMs` for the policy (0
+      // abandons on the next tick; negative / NaN / non-numeric are refused;
+      // anything above 24h is clamped, because past 2^31-1 `setTimeout` wraps
+      // negative and fires immediately).
+      const timeout = normalizeActionTimeoutMs(request.timeoutMs);
+      if (!timeout.ok) {
+        return {
+          success: false,
+          error: `Action "${request.action}" on component "${componentId}" was rejected: ${timeout.reason}.`,
+          durationMs: Date.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
+      const timeoutMs = timeout.timeoutMs;
+
       // Phase 2: `paramSchema` is published to agents, so it has to mean
       // something. Validate BEFORE the handler runs — a rejection after a
       // side-effect is not a rejection.
       const validationMode = options.paramValidation ?? getDefaultParamValidationMode();
       if (validationMode !== 'off' && action.paramSchema !== undefined) {
-        const validation = validateActionParams(action.paramSchema, request.params);
+        // The validator walks AUTHOR-supplied schema data. It is bounded
+        // against both known fault routes (`param-schema.ts` MAX_SCHEMA_DEPTH /
+        // MAX_PATTERN_LENGTH), but it is wrapped anyway: without this, a
+        // validator fault would fall into the generic catch below and be
+        // reported as a HANDLER failure, for a handler that never ran.
+        let validation: ReturnType<typeof validateActionParams>;
+        try {
+          validation = validateActionParams(action.paramSchema, request.params);
+        } catch (validatorFault) {
+          const detail =
+            validatorFault instanceof Error ? validatorFault.message : String(validatorFault);
+          const faultMessage = `Action "${request.action}" on component "${componentId}": its declared paramSchema could not be evaluated (${detail}).`;
+          if (validationMode === 'enforce') {
+            // A gate that cannot be evaluated has not been cleared. The prose
+            // names the SCHEMA, so it is not mistaken for a handler fault.
+            return {
+              success: false,
+              error: faultMessage,
+              durationMs: Date.now() - startTime,
+              timestamp: Date.now(),
+              requestId: request.requestId,
+            };
+          }
+          console.warn(`[ui-bridge-native] ${faultMessage}`);
+          validation = { valid: true, issues: [] };
+        }
         if (!validation.valid) {
           const message = formatParamValidationFailure(
             componentId,
@@ -507,7 +558,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       // 2026-08-20-ui-bridge-action-declaration-shape.
       const outcome = await runAbortable((signal) => action.handler(request.params, { signal }), {
         signal: options.signal,
-        timeoutMs: request.timeoutMs,
+        timeoutMs,
       });
 
       if (outcome.aborted) {
@@ -521,7 +572,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
           success: false,
           error:
             outcome.reason === 'timeout'
-              ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${request.timeoutMs}ms timeout elapsed.`
+              ? `Action "${request.action}" on component "${componentId}" was abandoned after its ${timeoutMs}ms timeout elapsed.`
               : `Action "${request.action}" on component "${componentId}" was cancelled by the caller's abort signal.`,
           durationMs: Date.now() - startTime,
           timestamp: Date.now(),

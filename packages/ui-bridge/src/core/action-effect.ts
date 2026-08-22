@@ -18,6 +18,33 @@
  * **1 wins.** See `ComponentAction.effect` for why the override ships at all:
  * a static `click → write` map is wrong precisely on a delete button, and it
  * fails *open*.
+ *
+ * ---------------------------------------------------------------------------
+ * WHERE THE MAP IS APPLIED: at the CONSUMER, never at the projection
+ * ---------------------------------------------------------------------------
+ *
+ * **Nothing in this SDK calls {@link resolveActionEffect} on the way out, and
+ * that is the design, not an omission.** Every projection —
+ * `serializeRegisteredComponent`, `annotateComponentWithInvocationPaths`, the
+ * native handlers, the Tauri IPC command handlers — emits the raw declared
+ * `action.effect`, so an un-annotated action goes over the wire with `effect`
+ * absent. These are **exported helpers a consumer applies to what it reads**;
+ * that is their whole job.
+ *
+ * Two reasons, and the first is the one that decides it:
+ *
+ * 1. **Applying the map server-side would destroy the distinction between
+ *    "unknown" and "declared".** The map produces only `read` and `write` —
+ *    never `destructive`, by construction — so stamping it onto the payload
+ *    adds no safety whatsoever. What it *does* add is a walker reading
+ *    `effect: 'write'` on an action **whose author said nothing**, and
+ *    believing them. `undefined` is honest ("nobody classified this"); a
+ *    default rendered as a declaration is a fail-open lie on exactly the
+ *    surface the annotation exists to protect. A consumer that wants the
+ *    default can call `resolveActionEffect` and *knows* it is defaulting.
+ * 2. It keeps an un-annotated app's payload byte-identical to before Phase 4
+ *    (`JSON.stringify` drops `undefined` keys), so the annotation is purely
+ *    additive on the wire.
  */
 
 import type { IREffect, StandardAction } from './types';

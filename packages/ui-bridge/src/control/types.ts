@@ -120,8 +120,19 @@ export interface ComponentActionRequest {
    *
    * The abandonment does not depend on the handler observing its signal; the
    * executor races the handler promise. On abandonment the response is
-   * `success: false` with `failureDetails.errorCode === 'UB-ACTION-FAILED'`
-   * and `failureDetails.cancelReason === 'timeout'`.
+   * `success: false` with `failureDetails.errorCode === 'UB-ACTION-TIMEOUT'`
+   * and `failureDetails.cancelReason === 'timeout'`. (The `{ signal }` arm
+   * reports `'UB-ACTION-FAILED'` instead — caller cancellation has no
+   * dedicated code, a timeout does.)
+   *
+   * **Validated and clamped at the executor** — the one place every transport
+   * funnels through, so no wire caller reaches a timer unchecked. `0` abandons
+   * on the next tick; a negative, `NaN`, infinite or non-numeric value is
+   * REFUSED with `UB-VALIDATION-ERROR` (silently ignoring it would leave the
+   * action uncancellable, and coercing it to `0` would abandon every call);
+   * anything above 24h is clamped, because past 2^31-1 `setTimeout` wraps
+   * negative and fires immediately. See `core/abortable.ts`
+   * `normalizeActionTimeoutMs`.
    */
   timeoutMs?: number;
 }
@@ -632,12 +643,24 @@ export interface ControlSnapshot {
      * `{ id, label?, description? }`. Was `string[]` of bare action ids before
      * 0.22.0.
      *
-     * The `/control/components` and `/control/component/:id` handlers build
-     * this by spreading the whole registered action
-     * (`server/handlers.ts` `annotateComponentWithInvocationPaths`), so each
-     * entry also carries `paramSchema` (when declared) and a concrete `path`.
-     * Only `handler` is dropped, and only because a function does not survive
-     * `JSON.stringify`. See {@link SerializedComponentAction}.
+     * ⚠️ **Two projections share this type, and they do NOT emit the same
+     * fields.** Which one you are holding depends on where it came from:
+     *
+     * | Producer | Emits |
+     * |---|---|
+     * | `getSnapshot()` / `createSnapshot()` → `core/registry.ts` `serializeRegisteredComponent` — i.e. THIS interface's own snapshot | `{ id, label?, description?, effect? }` — **no `paramSchema`, no `path`** |
+     * | `GET /control/components` and `/control/component/:id`, whose handlers return `ControlSnapshot['components'][number]` and build it by spreading the whole registered action (`server/handlers.ts` `annotateComponentWithInvocationPaths`) | the above **plus** `paramSchema` (when declared) and a concrete `path` |
+     *
+     * That is why every field beyond `id` on {@link SerializedComponentAction}
+     * is optional: one type has to serve both, and a required `paramSchema`
+     * would not type-check against the snapshot projection.
+     *
+     * `handler` is dropped by both, and only because a function does not
+     * survive `JSON.stringify`.
+     *
+     * (An earlier revision of this comment said the snapshot carried
+     * `paramSchema`. It does not — read it off `/control/component/:id`, not
+     * off `/control/snapshot`.)
      */
     actions: SerializedComponentAction[];
     /** URL template for invoking an action — substitute `{actionId}`. */

@@ -52,9 +52,9 @@ export type {
   IREffect,
 } from '../../core/types';
 
-// Local binding for `NativeComponentAction` below (a re-export does not put
-// the name in this module's scope).
-import type { ComponentAction } from '../../core/types';
+// Local bindings for the `NativeComponentAction` / `NativeCustomAction`
+// aliases below (a re-export does not put the name in this module's scope).
+import type { ComponentAction, CustomAction } from '../../core/types';
 
 export type WorkflowStepType =
   | 'element-action'
@@ -248,18 +248,26 @@ export type NativeStandardAction =
   | 'toggle';
 
 /**
- * Custom action definition for native elements
+ * Custom action definition for native elements.
+ *
+ * COLLAPSED 2026-08-23 (plan `2026-08-20-ui-bridge-action-declaration-shape`),
+ * for the same reason `NativeComponentAction` was collapsed below: it was a
+ * copy of {@link CustomAction} with no divergence — identical field list,
+ * identical semantics, only the handler type inlined instead of named.
+ *
+ * Keeping the copy had already cost something. `CustomAction` was exported
+ * from this tree and referenced by nothing, while `RegisteredNativeElement`
+ * used this type — so Phase 4's `effect` landed on the unused one, and the
+ * options bag Phase 3 added to `ActionHandler` never reached a native custom
+ * action's handler at all. Aliasing means both channels get the signal, and
+ * there is one shape to change next time.
+ *
+ * A one-argument handler stays assignable, so no existing registration breaks.
  */
-export interface NativeCustomAction<TParams = unknown, TResult = unknown> {
-  /** Action identifier */
-  id: string;
-  /** Human-readable label */
-  label?: string;
-  /** Description of what the action does */
-  description?: string;
-  /** Action handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
-}
+export type NativeCustomAction<TParams = unknown, TResult = unknown> = CustomAction<
+  TParams,
+  TResult
+>;
 
 /**
  * A native UI element registered with the bridge

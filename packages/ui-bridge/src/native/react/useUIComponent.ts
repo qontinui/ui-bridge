@@ -70,10 +70,15 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * called. An autonomous walk excludes destructive actions and walks
    * everything else, so an unmarked delete control gets pressed.
    *
-   * **Precedence:** what you write here wins. When you leave it undefined and
-   * the action `id` happens to be one of the native standard verbs (`press`,
-   * `longPress`, `swipe`, …), `NATIVE_STANDARD_ACTION_EFFECTS` supplies a
-   * default — otherwise the effect is simply unknown.
+   * **Precedence:** what you write here wins, and it is the **only** thing
+   * that reaches the wire. `NATIVE_STANDARD_ACTION_EFFECTS` supplies a default
+   * when the action `id` happens to be one of the native standard verbs
+   * (`press`, `longPress`, `swipe`, …), but that default is applied **by the
+   * consumer**, via the exported `resolveActionEffect()` — the SDK does *not*
+   * stamp it onto the response. Leave this undefined and the field is simply
+   * **absent** from every projection, which is the honest encoding of "nobody
+   * classified this action" (see `core/action-effect.ts` for why a
+   * server-applied default would fail open).
    */
   effect?: IREffect;
   /**

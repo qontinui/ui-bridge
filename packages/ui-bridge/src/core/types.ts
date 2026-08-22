@@ -503,8 +503,21 @@ export type StandardAction =
 export interface ActionHandlerOptions {
   /**
    * Aborted when the caller cancels or the request's `timeoutMs` elapses.
-   * Always supplied by the executor — it is optional only so a handler may be
-   * invoked directly in a test or by app code that has nothing to cancel.
+   *
+   * **Always supplied by the executor**, at every seam — a handler written the
+   * idiomatic way this doc describes (`(params, { signal }) => …`) must never
+   * see `undefined` here, or it throws `Cannot destructure property 'signal'
+   * of 'undefined'` before running a line of its own. It stays optional only
+   * so a handler may be invoked directly in a test, or by app code that has
+   * nothing to cancel.
+   *
+   * One caveat, stated rather than papered over: an **element** custom action
+   * (`RegisteredElement.customActions`, invoked through
+   * `executeAction`/`performAction`) has no cancellation source at all —
+   * `ControlActionRequest` carries no `timeoutMs` and the executor holds no
+   * controller for it. Those seams supply an `inertAbortSignal()`: real, safe
+   * to destructure and to add a listener to, but it will never fire. Component
+   * actions get the real, composed signal.
    */
   signal?: AbortSignal;
 }
@@ -522,7 +535,40 @@ export type ActionHandler<TParams = unknown, TResult = unknown> = (
 ) => TResult | Promise<TResult>;
 
 /**
- * Custom action definition
+ * Custom action definition — an ELEMENT-level action
+ * ({@link RegisteredElement.customActions}), as opposed to the component-level
+ * {@link ComponentAction}.
+ *
+ * ---
+ *
+ * **No `effect` here, deliberately — removed 2026-08-23.** Phase 4 originally
+ * put the safety annotation on this type too. It was dead: **no projection
+ * emits an element's custom actions as objects.** Every one of them emits the
+ * *keys* only —
+ *
+ * - `core/registry.ts` `serializeRegisteredElement`
+ * - `server/handlers.ts` `getElements`
+ * - `native/server/handlers.ts` `getElements` / `getElement` (and the twins in
+ *   `@qontinui/ui-bridge-native`)
+ * - `native/core/registry.ts` snapshot
+ *
+ * — all as `el.customActions ? Object.keys(el.customActions) : undefined`,
+ * because the canonical `qontinui-types::ui_bridge::UIBridgeElement` types
+ * `custom_actions` as a list of names. So a declared `effect` reached no
+ * consumer at all.
+ *
+ * Widening that field from `string[]` to objects is a **published-schema
+ * break** in another repo plus every runner consumer that reads it, which is
+ * not this plan's scope. And an unreachable safety annotation is worse than an
+ * absent one: the annotation's single job is to let an autonomous walk exclude
+ * `'destructive'` actions, so one the walker cannot see fails **open** — the
+ * author believes the delete button is marked and it gets walked anyway.
+ *
+ * Component actions do carry it ({@link ComponentAction.effect}); they are
+ * projected as objects on `/control/components`, `/control/component/:id` and
+ * the snapshot. **If element custom actions ever need it, widen the wire
+ * projection FIRST and add the field second** — that ordering is the whole
+ * lesson of the plan this type belongs to.
  */
 export interface CustomAction<TParams = unknown, TResult = unknown> {
   /** Action identifier */
@@ -531,17 +577,6 @@ export interface CustomAction<TParams = unknown, TResult = unknown> {
   label?: string;
   /** Description of what the action does */
   description?: string;
-  /**
-   * Safety annotation (plan `2026-08-20-ui-bridge-action-declaration-shape`,
-   * Phase 4). See {@link ComponentAction.effect} for the full precedence rule
-   * — it is identical here, including the `STANDARD_ACTION_EFFECTS` fallback
-   * that applies when `id` happens to be a standard verb.
-   *
-   * **Declare `'destructive'` on anything irreversible.** A custom action is
-   * the shape most likely to need it: it exists precisely because no standard
-   * verb described what the control does.
-   */
-  effect?: IREffect;
   /** Action handler function */
   handler: ActionHandler<TParams, TResult>;
 }
@@ -1375,16 +1410,22 @@ export interface ActionFailureDetails {
   timeoutType?: 'network' | 'navigation' | 'computation';
   /**
    * Why an action was abandoned before it produced a result (Phase 3 of plan
-   * `2026-08-20-ui-bridge-action-declaration-shape`). Set only on the
-   * cancellation path, which reports `errorCode: 'UB-ACTION-FAILED'` —
-   * cancellation deliberately does NOT get a code of its own, because that
-   * would mean regenerating `diagnostics/codes.json` into four mirrors, one
-   * of them cross-repo. This field is the discriminator instead.
+   * `2026-08-20-ui-bridge-action-declaration-shape`).
    *
-   * `signal` = the in-process caller's `AbortSignal` fired;
-   * `timeout` = the request's own `timeoutMs` elapsed.
+   * - `'timeout'` — the request's own `timeoutMs` elapsed. Reported with
+   *   **`errorCode: 'UB-ACTION-TIMEOUT'`**, the catalog's dedicated timeout
+   *   code. It already existed; a consumer matching on it would otherwise
+   *   never see a component-action timeout, which is precisely the population
+   *   that code names.
+   * - `'signal'` — the in-process caller's `AbortSignal` fired. Reported with
+   *   `errorCode: 'UB-ACTION-FAILED'`. Caller-initiated cancellation has no
+   *   dedicated code, and minting one means regenerating
+   *   `diagnostics/codes.json` into four mirrors, one of them cross-repo — so
+   *   for THIS arm the field is the discriminator.
    *
-   * A `UB-ACTION-FAILED` without `cancelReason` is a handler that threw.
+   * Both arms set it, so `cancelReason` is the reliable "was this abandoned?"
+   * test regardless of code. A `UB-ACTION-FAILED` **without** `cancelReason`
+   * is a handler that threw.
    */
   cancelReason?: 'signal' | 'timeout';
   /**
@@ -1786,8 +1827,14 @@ export interface BridgeSnapshot {
      * Actions exposed by this component. This *snapshot* projection is built
      * by `serializeRegisteredComponent` (`core/registry.ts`), which picks
      * `{ id, label?, description? }` — the canonical
-     * `qontinui-types::ui_bridge::UIBridgeComponent` shape. (Was `string[]` of
-     * bare action ids before 0.22.0.)
+     * `qontinui-types::ui_bridge::UIBridgeComponent` shape — **plus `effect`**,
+     * the Phase 4 safety annotation. `effect` is the one field this projection
+     * carries beyond the canonical set, and deliberately: the snapshot is what
+     * an autonomous walk reads, so omitting a declared `'destructive'` here
+     * would fail open on the surface that matters most. It is `undefined` when
+     * nothing was declared and `JSON.stringify` drops undefined keys, so an
+     * un-annotated app's snapshot is byte-identical to before. (Was `string[]`
+     * of bare action ids before 0.22.0.)
      *
      * `handler` never reaches the wire anywhere: it is a function and
      * `JSON.stringify` drops it. **`paramSchema` is a different case** — it is
@@ -2441,6 +2488,16 @@ export interface WSExecuteComponentActionMessage extends WSMessageBase {
     componentId: string;
     action: string;
     params?: Record<string, unknown>;
+    /**
+     * Wire-reachable cancellation — see {@link ComponentActionRequest.timeoutMs}
+     * (plan `2026-08-20-ui-bridge-action-declaration-shape`, Phase 3).
+     *
+     * A WebSocket caller cannot hand over an `AbortSignal`, so without this
+     * field the whole WS channel had no way to call off a hung handler. Both
+     * WS handlers (`ui-bridge` and `ui-bridge-server`, which imports this
+     * type) forward it to the executor, which validates and clamps it.
+     */
+    timeoutMs?: number;
   };
 }
 

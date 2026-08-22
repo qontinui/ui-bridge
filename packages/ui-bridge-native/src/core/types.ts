@@ -82,12 +82,22 @@ export type ActionHandler<TParams = unknown, TResult = unknown> = (
  */
 export type IREffect = 'read' | 'write' | 'destructive';
 
+/**
+ * Element-level custom action.
+ *
+ * **No `effect` here — removed 2026-08-23**, in step with the canonical
+ * `@qontinui/ui-bridge` `CustomAction`. Every projection of an element's
+ * custom actions emits the KEYS only (`Object.keys(el.customActions)` —
+ * `core/registry.ts`, `server/handlers.ts`), because the canonical
+ * `UIBridgeElement.custom_actions` is a list of names, so a declared `effect`
+ * reached no consumer. An unreachable safety annotation fails OPEN, which is
+ * strictly worse than an absent one. Component actions keep it — they are
+ * projected as objects. See the full note on the web declaration.
+ */
 export interface CustomAction<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
-  /** Safety annotation. See {@link ComponentAction.effect}. */
-  effect?: IREffect;
   handler: ActionHandler<TParams, TResult>;
 }
 
@@ -278,18 +288,26 @@ export type NativeStandardAction =
   | 'toggle';
 
 /**
- * Custom action definition for native elements
+ * Custom action definition for native elements.
+ *
+ * COLLAPSED 2026-08-23 (plan `2026-08-20-ui-bridge-action-declaration-shape`),
+ * for the same reason `NativeComponentAction` was collapsed below: it was a
+ * copy of {@link CustomAction} with no divergence — identical field list,
+ * identical semantics, only the handler type inlined instead of named.
+ *
+ * Keeping the copy had already cost something. `CustomAction` was exported
+ * from this tree and referenced by nothing, while `RegisteredNativeElement`
+ * used this type — so Phase 4's `effect` landed on the unused one, and the
+ * options bag Phase 3 added to `ActionHandler` never reached a native custom
+ * action's handler at all. Aliasing means both channels get the signal, and
+ * there is one shape to change next time.
+ *
+ * A one-argument handler stays assignable, so no existing registration breaks.
  */
-export interface NativeCustomAction<TParams = unknown, TResult = unknown> {
-  /** Action identifier */
-  id: string;
-  /** Human-readable label */
-  label?: string;
-  /** Description of what the action does */
-  description?: string;
-  /** Action handler function */
-  handler: (params?: TParams) => TResult | Promise<TResult>;
-}
+export type NativeCustomAction<TParams = unknown, TResult = unknown> = CustomAction<
+  TParams,
+  TResult
+>;
 
 /**
  * A native UI element registered with the bridge
