@@ -529,6 +529,51 @@ class ElementNotVisibleError extends Error {
 }
 
 /**
+ * `Error` own-properties that carry no handler-domain meaning and must never
+ * be copied into the failure context. `message`/`stack` already have dedicated
+ * response fields; `name`/`cause` are plumbing.
+ */
+const RESERVED_ERROR_FIELDS = new Set(['name', 'message', 'stack', 'cause']);
+
+/**
+ * The typed payload a custom-action handler attached to the error it threw.
+ */
+interface HandlerErrorEnvelope {
+  /** The handler's own machine-readable code, propagated verbatim. */
+  code: string;
+  /** Every other own enumerable property the handler attached. */
+  fields: Record<string, unknown>;
+}
+
+/**
+ * Read a typed handler-error envelope off a thrown value.
+ *
+ * THE DEFECT this closes: throwing is the only way a custom-action handler can
+ * make `executeAction` report `success: false` (a resolved handler is a success
+ * no matter what it resolved WITH), so handlers encode the machine-readable
+ * reason on the thrown `Error` — `Object.assign(err, { code, terminalId,
+ * exitCode })`. The outer catch used to keep `error.message` and nothing else,
+ * so a dead-terminal write minted as `TERMINAL_EXITED` reached the caller as a
+ * bare `UB-ACTION-FAILED` and the only remaining signal was prose.
+ *
+ * Returns `undefined` unless the value carries a non-empty **string** `code`,
+ * which keeps ordinary `Error`s (and `DOMException`, whose `code` is a number)
+ * on the historical generic shape.
+ */
+function readHandlerErrorEnvelope(error: unknown): HandlerErrorEnvelope | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== 'string' || code.length === 0) return undefined;
+
+  const fields: Record<string, unknown> = {};
+  for (const key of Object.keys(error as Record<string, unknown>)) {
+    if (key === 'code' || RESERVED_ERROR_FIELDS.has(key)) continue;
+    fields[key] = (error as Record<string, unknown>)[key];
+  }
+  return { code, fields };
+}
+
+/**
  * Sleep for a duration
  */
 function sleep(ms: number): Promise<void> {
@@ -1276,6 +1321,10 @@ export class DefaultActionExecutor implements ActionExecutor {
       // `computedStyles.pointerEvents`, so no separate field is needed.
       let elementState: ElementState | undefined;
       const message = error instanceof Error ? error.message : String(error);
+      // A custom-action handler's typed throw carries its own machine-readable
+      // code (+ any fields it attached). Preserve it instead of flattening to
+      // the message — see `readHandlerErrorEnvelope`.
+      const handlerError = readHandlerErrorEnvelope(error);
       let failureDetails;
       if (error instanceof ElementDisabledError) {
         try {
@@ -1324,13 +1373,24 @@ export class DefaultActionExecutor implements ActionExecutor {
       } else {
         failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
           elementId,
-          context: { action: request.action },
+          // The canonical `errorCode` stays `UB-ACTION-FAILED` — the handler's
+          // vocabulary is not the SDK taxonomy. Its `code` and the fields it
+          // attached ride in `context`, which is exactly the untyped bag the
+          // other failure paths already use for their discriminators.
+          context: handlerError
+            ? { action: request.action, code: handlerError.code, ...handlerError.fields }
+            : { action: request.action },
           durationMs: performance.now() - startTime,
         });
       }
       return {
         success: false,
         error: message,
+        // Hoisted so callers can match on `code` without walking
+        // `failureDetails.context` — and so the runner's `data.code` read
+        // (mcp/ui_bridge/elements.rs) sees the handler's code rather than
+        // nothing. Omitted entirely for untyped errors.
+        ...(handlerError ? { code: handlerError.code } : {}),
         failureDetails,
         stack: error instanceof Error ? error.stack : undefined,
         elementState,

@@ -956,6 +956,27 @@ export interface ActionResponse {
    * context-rendered from the catalog `recoveryTemplate`.
    */
   failureDetails?: ActionFailureDetails;
+  /**
+   * Handler-domain failure code, propagated **verbatim** from a custom-action
+   * handler that threw a typed error (`Object.assign(err, { code })`).
+   *
+   * This is NOT a `UiBridgeErrorCode` and does not replace one — the canonical
+   * SDK taxonomy stays in `failureDetails.errorCode` (a handler throw is still
+   * `UB-ACTION-FAILED`). This field carries the *handler's own* vocabulary,
+   * which the SDK has no catalog for and must not translate: e.g. the runner's
+   * terminal write paths throw `TERMINAL_EXITED` / `TERMINAL_WRITE_FAILED`,
+   * and a caller has to be able to tell "the PTY is dead, restart it" from
+   * "the action failed" without string-matching `error`.
+   *
+   * Any other own enumerable properties the handler attached to the error
+   * (`terminalId`, `exitCode`, …) are preserved alongside it in
+   * `failureDetails.context` rather than hoisted here, so handler-authored
+   * field names can never collide with this response's own fields.
+   *
+   * Absent for untyped errors — a plain `new Error('boom')` keeps the
+   * historical generic shape.
+   */
+  code?: string;
   /** Stack trace if failed */
   stack?: string;
   /** Duration of the action in milliseconds */
