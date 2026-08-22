@@ -7,10 +7,11 @@ sidebar_position: 2.2
 Four hooks from `@qontinui/ui-bridge/react` register and observe **UI states** —
 the nodes of the model UI Bridge navigates. What a state *is*, and why an app is
 modelled as one, is covered in
-[State Machine Integration](../state/state-machine-integration.md); states that
-the bridge learns for itself are covered in
-[Dynamic State Discovery](../state/dynamic-state-discovery.md). This page is the
-reference for the hooks.
+[State Machine Integration](../state/state-machine-integration.md). States are
+declared explicitly by the app rather than inferred: `useUIState` and
+`useUIStateGroup` register them, and `useActiveStates` / `useStateSnapshot` read
+back what is currently registered and active. This page is the reference for
+the hooks.
 
 All four require a `UIBridgeProvider` above them: they resolve the bridge with
 `useUIBridgeOptional()` and degrade quietly to a no-op (`false` / `[]` / `null`)

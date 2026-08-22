@@ -41,26 +41,38 @@
 //
 // THE DEBT LEDGER (docs-site/docs-symbol-debt.json)
 //
-// Turning this on found MORE than the sweep that preceded it had. Sixteen
-// pages — the whole of ai/, observability/, recovery/, state/ and advanced/ —
-// import from `@anthropic/ui-bridge`, a scope this project has never owned, and
-// name symbols (`Recorder`, `Player`, `IntentExecutor`, `EmbeddingResolver`,
-// `NavigationAssistant`, `VisualContextGenerator`, `UIBridgeClient`,
-// `StateMachine`, `announce`, `pressKey`, `createTrace`, …) that the library
-// does not export under any name. Those pages do not describe a renamed API;
-// they describe a product that was not built. Rewriting ~1600 lines of them
-// against the real surface is its own piece of work, and smuggling it into the
-// commit that adds a ratchet would make both unreviewable.
+// THE LEDGER IS CURRENTLY EMPTY, AND THE FILE IS ABSENT. That is the paid-off
+// state, not a missing file: `readLedger` reads an absent ledger as "nothing
+// quarantined", and `writeLedger` deletes it rather than leaving an
+// `{"entries": []}` husk that `--update` would otherwise resurrect. Every
+// in-scope import on every guarded surface is fully name-checked today.
 //
-// So they are QUARANTINED — enumerated one by one in a committed ledger, never
-// waved through by a widened pattern. The ledger is EXACT-MATCH and
-// SHRINK-ONLY, the same shape as packages/ui-bridge/redaction-surface.manifest.json:
+// It was not always. Turning this gate on found MORE than the sweep that
+// preceded it had: sixteen pages — the whole of ai/, observability/, recovery/,
+// state/ and advanced/ — imported from `@anthropic/ui-bridge`, a scope this
+// project has never owned, and named symbols (`Recorder`, `Player`,
+// `IntentExecutor`, `EmbeddingResolver`, `NavigationAssistant`,
+// `VisualContextGenerator`, `UIBridgeClient`, `StateMachine`, `announce`,
+// `pressKey`, `createTrace`, …) the library does not export under any name.
+// Those pages did not describe a renamed API; they described a product that
+// was not built. Rewriting them against the real surface was its own piece of
+// work — plan `2026-08-19-ui-bridge-docs-document-an-unbuilt-product` — and
+// smuggling it into the commit that added this ratchet would have made both
+// unreviewable. Eleven pages were rewritten and five, whose subject matter had
+// no real counterpart of any kind, were deleted; the 22 quarantined entries
+// went to zero and the ledger file was removed.
 //
-//   * a failure NOT in the ledger fails the build — every one of the 45 other
-//     pages, and every new code block on a quarantined page, is fully gated;
+// So the mechanism stays, unused, for the next time it is needed. Failures are
+// QUARANTINED — enumerated one by one in a committed ledger, never waved
+// through by a widened pattern. The ledger is EXACT-MATCH and SHRINK-ONLY, the
+// same shape as packages/ui-bridge/redaction-surface.manifest.json:
+//
+//   * a failure NOT in the ledger fails the build — every unquarantined page,
+//     and every new code block on a quarantined page, is fully gated;
 //   * a ledger entry that no longer reproduces ALSO fails the build, with
 //     "delete this line". Debt that gets paid cannot silently stay on the books
-//     and re-authorise the same defect later.
+//     and re-authorise the same defect later. Paying off the LAST entry deletes
+//     the file, so the books close rather than lingering empty.
 //
 // Its one disclosed hole: entries are a SET, so a second occurrence of an
 // already-quarantined signature on the same page does not add a failure. The
@@ -1068,9 +1080,12 @@ function main() {
   if (UPDATE) {
     writeLedger(liveSignatures);
     process.stdout.write(
-      `docs:symbol-debt:update — recorded ${liveSignatures.length} quarantined failure(s) ` +
-        `across ${new Set(liveSignatures.map((s) => s.split(' :: ')[0])).size} page(s) in ` +
-        `${rel(DEBT_LEDGER)}\n`
+      liveSignatures.length === 0
+        ? `docs:symbol-debt:update — no quarantined failure(s) remain; ` +
+            `${rel(DEBT_LEDGER)} removed. The ledger is paid off.\n`
+        : `docs:symbol-debt:update — recorded ${liveSignatures.length} quarantined failure(s) ` +
+            `across ${new Set(liveSignatures.map((sig) => sig.split(' :: ')[0])).size} page(s) in ` +
+            `${rel(DEBT_LEDGER)}\n`
     );
     return;
   }
@@ -1148,10 +1163,10 @@ const LEDGER_COMMENT = [
   'failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off',
   'debt cannot linger and re-authorise the same defect. Regenerate with',
   '`npm run docs:symbol-debt:update`; growing this file is a reviewable act of declaring new debt.',
-  'The current contents are one finding: sixteen pages (ai/, observability/, recovery/, state/,',
-  'advanced/) import from "@anthropic/ui-bridge" — a scope this project has never owned — and name',
-  'symbols the library does not export under any name. They document a product that was not built,',
-  'so rewriting them against the real surface is its own piece of work, not a line in a ratchet PR.',
+  'This comment describes the MECHANISM only. It deliberately does not narrate whatever finding',
+  'currently populates the ledger: a comment that names a specific finding outlives it, and',
+  'shipping prose that is no longer true is the exact defect class this gate exists to catch.',
+  'Read `entries` for what is quarantined now; read git history for why each line was added.',
 ];
 
 function readLedger() {
@@ -1160,7 +1175,26 @@ function readLedger() {
   return Array.isArray(json.entries) ? [...json.entries].sort() : [];
 }
 
+/**
+ * Write the ledger — or DELETE it when there is nothing left to quarantine.
+ *
+ * The empty case is not a corner: it is the end state every ratchet aims at,
+ * and it must be symmetric with `readLedger`, which already reads an ABSENT
+ * file as "no quarantined failures" (`existsSync` -> `[]`). Writing
+ * `{"entries": []}` instead leaves a husk that says nothing `readLedger` does
+ * not already infer, and — worse — silently RESURRECTS the file after a
+ * `git rm`, because `--update` writes unconditionally. That resurrection is
+ * how a paid-off ledger comes back carrying prose about a finding that is
+ * gone.
+ *
+ * So: zero signatures deletes the file. The paid-off state is the ABSENCE of
+ * the file, and one `git rm` expresses it durably.
+ */
 function writeLedger(signatures) {
+  if (signatures.length === 0) {
+    if (fs.existsSync(DEBT_LEDGER)) fs.unlinkSync(DEBT_LEDGER);
+    return;
+  }
   fs.writeFileSync(
     DEBT_LEDGER,
     JSON.stringify({ $comment: LEDGER_COMMENT, entries: signatures }, null, 2) + '\n'

@@ -33,9 +33,12 @@ Auto-registering a whole subtree instead of hook-by-hook is
 
 UI Bridge models an app as **states** connected by **transitions**, and
 navigates between them by pathfinding. The concepts are explained in
-[State Machine Integration](../state/state-machine-integration.md) and
-[Dynamic State Discovery](../state/dynamic-state-discovery.md); the pages below
-are the reference for the hooks that implement them.
+[State Machine Integration](../state/state-machine-integration.md); the pages
+below are the reference for the hooks that implement them. States are declared
+by the app — [`useUIState`](./hooks-state.md#useuistate) registers one — and
+observed at runtime with
+[`useActiveStates`](./hooks-state.md#useactivestates) and
+[`useStateSnapshot`](./hooks-state.md#usestatesnapshot).
 
 | Hook | What it does |
 |------|--------------|

@@ -40,7 +40,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'ai/overview',
         'ai/intent-based-actions',
-        'ai/embedding-resolution',
         'ai/visual-context',
         'ai/navigation-assistance',
       ],
@@ -48,21 +47,17 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Error Handling & Recovery',
-      items: ['recovery/structured-failure-feedback', 'recovery/failure-recovery-strategies'],
+      items: ['recovery/structured-failure-feedback'],
     },
     {
       type: 'category',
       label: 'State Management',
-      items: ['state/state-machine-integration', 'state/dynamic-state-discovery'],
+      items: ['state/state-machine-integration'],
     },
     {
       type: 'category',
       label: 'Observability',
-      items: [
-        'observability/logging',
-        'observability/performance-metrics',
-        'observability/accessibility',
-      ],
+      items: ['observability/performance-metrics'],
     },
     {
       type: 'category',
