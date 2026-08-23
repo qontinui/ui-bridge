@@ -19,7 +19,8 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
-  readDisabledSignals,
+  isInteractionBlocked,
+  readInteractionBlockers,
 } from '../core/a11y';
 import { createElementIdentifier, getBestIdentifier } from '../core/element-identifier';
 import { truncateCodePoints } from '../core/text';
@@ -226,13 +227,14 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
 
-  // The two independent disabled signals, unfolded once (`enabled` below is
-  // the derived fold). Same helper in every serializer — see `core/a11y`.
-  const disabledSignals = readDisabledSignals(element);
+  // The interaction blockers, unfolded once (`enabled` below is the derived
+  // fold). Same helper in every serializer AND in the click-path pre-check —
+  // see `core/a11y`.
+  const disabledSignals = readInteractionBlockers(element, style);
 
   const state: ElementState = {
     visible: isVisible(element, rect, style),
-    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    enabled: !isInteractionBlocked(disabledSignals),
     disabled: disabledSignals.disabled,
     ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,

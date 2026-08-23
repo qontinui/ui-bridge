@@ -14,7 +14,8 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
-  readDisabledSignals,
+  isInteractionBlocked,
+  readInteractionBlockers,
 } from '../core/a11y';
 
 /** Selectors for standard interactive DOM elements. */
@@ -255,10 +256,11 @@ export function scanDOMForInteractiveElementsWithRefs(
 
     const type = inferType(el);
     const rect = el.getBoundingClientRect();
-    // The two independent disabled signals, unfolded once (`enabled` below is
-    // the derived fold). Same helper as the registry serializer — see
-    // `core/a11y` — so the two paths cannot drift on either value or key set.
-    const disabledSignals = readDisabledSignals(el);
+    // The interaction blockers, unfolded once (`enabled` below is the derived
+    // fold). Same helper as the registry serializer and the click-path
+    // pre-check — see `core/a11y` — so the paths cannot drift on either value
+    // or key set.
+    const disabledSignals = readInteractionBlockers(el);
 
     // §4.6 F5: this is the ONLY place the DOM-fallback path still holds the live
     // `element` ref — `scanDOMForInteractiveElements` drops it right after. The
@@ -281,7 +283,7 @@ export function scanDOMForInteractiveElementsWithRefs(
         value: 'value' in el ? readScrubbedValue(el as HTMLInputElement, verdict) : undefined,
         checked: 'checked' in el ? (el as HTMLInputElement).checked : undefined,
         visible: isVisible(el),
-        enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+        enabled: !isInteractionBlocked(disabledSignals),
         disabled: disabledSignals.disabled,
         ariaDisabled: disabledSignals.ariaDisabled,
         focused: document.activeElement === el,

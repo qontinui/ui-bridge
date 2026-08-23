@@ -69,7 +69,8 @@ import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
-  readDisabledSignals,
+  isInteractionBlocked,
+  readInteractionBlockers,
 } from '../core/a11y';
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
@@ -201,13 +202,15 @@ function getElementState(element: HTMLElement): ElementState {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
 
-  // The two independent disabled signals, unfolded once (`enabled` below is
-  // the derived fold). Same helper in every serializer — see `core/a11y`.
-  const disabledSignals = readDisabledSignals(element);
+  // The interaction blockers, unfolded once (`enabled` below is the derived
+  // fold). Same helper in every serializer AND in `getClickDisabledSignals`
+  // below — see `core/a11y` — so this reader publishes exactly the verdict the
+  // click path will reach.
+  const disabledSignals = readInteractionBlockers(element, style);
 
   const state: ElementState = {
     visible: isVisible(element, rect, style),
-    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    enabled: !isInteractionBlocked(disabledSignals),
     disabled: disabledSignals.disabled,
     ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
@@ -369,23 +372,26 @@ function isVisible(element: HTMLElement, rect: DOMRect, style: CSSStyleDeclarati
 }
 
 /**
- * The folded "either signal says disabled" predicate, for the interactability
- * pre-checks. `ElementState` carries the two signals UNFOLDED (`disabled` /
- * `ariaDisabled`); this is the one place that still wants the OR.
+ * The folded "anything blocks interaction" predicate, for the interactability
+ * pre-checks. `ElementState` carries the signals UNFOLDED (`disabled` /
+ * `ariaDisabled`, plus the computed `pointerEvents` under `computedStyles`);
+ * this is the one place that still wants the OR. It is exactly
+ * `!ElementState.enabled` because both derive from `isInteractionBlocked`.
  */
 function isDisabled(element: HTMLElement): boolean {
-  const { disabled, ariaDisabled } = readDisabledSignals(element);
-  return disabled || ariaDisabled;
+  return isInteractionBlocked(readInteractionBlockers(element));
 }
 
 /**
  * Click-time disabled signals.
  *
- * Distinct from `isDisabled` because we also surface
- * `pointer-events: none` (a Radix idiom for disabled-by-style buttons that
- * don't have the DOM `disabled` property) and we want the individual signals
- * to show up in the error so callers can disambiguate. Returns `null` when the
- * element is actionable.
+ * The SAME predicate the `ElementState` readers fold into `state.enabled`
+ * (`core/a11y`'s `readInteractionBlockers` / `isInteractionBlocked`) — a
+ * second, click-only copy is precisely how the reader and the actor drifted
+ * apart before (a `pointer-events: none` control read `enabled: true` and then
+ * had its click refused). This wrapper only RESHAPES that verdict into the
+ * per-signal envelope the error surfaces so callers can disambiguate, and
+ * returns `null` when nothing blocks interaction.
  */
 interface ClickDisabledSignals {
   disabled: true;
@@ -395,28 +401,13 @@ interface ClickDisabledSignals {
 }
 
 function getClickDisabledSignals(element: HTMLElement): ClickDisabledSignals | null {
-  const ariaDisabled = element.getAttribute('aria-disabled') === 'true';
-  const nativeDisabled =
-    (element instanceof HTMLButtonElement ||
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLSelectElement ||
-      element instanceof HTMLTextAreaElement) &&
-    element.disabled;
-  // `getComputedStyle` is unreliable in some test environments; guard it.
-  let pointerEvents: string;
-  try {
-    pointerEvents = window.getComputedStyle(element).pointerEvents;
-  } catch {
-    pointerEvents = '';
-  }
-  const pointerNone = pointerEvents === 'none';
-
-  if (!ariaDisabled && !nativeDisabled && !pointerNone) return null;
+  const blockers = readInteractionBlockers(element);
+  if (!isInteractionBlocked(blockers)) return null;
   return {
     disabled: true,
-    ariaDisabled,
-    nativeDisabled,
-    pointerEvents,
+    ariaDisabled: blockers.ariaDisabled,
+    nativeDisabled: blockers.disabled,
+    pointerEvents: blockers.pointerEvents,
   };
 }
 

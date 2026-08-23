@@ -201,3 +201,71 @@ export function readDisabledSignals(el: Element): {
     ariaDisabled: el.getAttribute('aria-disabled') === 'true',
   };
 }
+
+/**
+ * The FULL interaction-blocking surface: the two DOM disabled signals above
+ * plus effective `pointer-events: none`.
+ *
+ * THE DEFECT this closes: `ElementState.enabled` was derived from
+ * `readDisabledSignals` alone, while the click path's own pre-check ALSO
+ * refused a target whose computed `pointer-events` is `none`. A caller could
+ * therefore read `enabled: true` off `GET /control/element/{id}` and then get
+ * `element is disabled (pointer-events:none)` from the very next click — the
+ * reader and the actor disagreeing about the same element. Both now consult
+ * THIS one function, so they cannot drift again.
+ *
+ * `pointerEvents` is read from the COMPUTED style, never from an inline
+ * `style` attribute: `pointer-events` is a CSS-inherited property, so a
+ * control is unclickable whenever an ANCESTOR declares `none`, and only the
+ * computed value reflects that (no ancestor walk needed).
+ *
+ * Pass `computedStyle` when the caller already has one for this element — the
+ * `ElementState` serializers all do, and re-reading would double the
+ * `getComputedStyle` cost of a full-page snapshot.
+ */
+export interface InteractionBlockers {
+  /** Native DOM `disabled` IDL property. See `readDisabledSignals`. */
+  disabled: boolean;
+  /** `aria-disabled="true"`. See `readDisabledSignals`. */
+  ariaDisabled: boolean;
+  /** Effective (computed, therefore inherited-aware) `pointer-events: none`. */
+  pointerEventsNone: boolean;
+  /**
+   * The raw computed `pointer-events` value, `''` when it could not be read
+   * (SSR / degraded DOM shims). An unreadable value is never treated as a
+   * blocker — absence of evidence is not evidence of `none`.
+   */
+  pointerEvents: string;
+}
+
+export function readInteractionBlockers(
+  el: Element,
+  computedStyle?: CSSStyleDeclaration
+): InteractionBlockers {
+  const { disabled, ariaDisabled } = readDisabledSignals(el);
+
+  // `getComputedStyle` is unavailable/throwing in some degraded environments;
+  // guard it and fall back to "no pointer-events evidence".
+  let pointerEvents: string;
+  try {
+    const style = computedStyle ?? window.getComputedStyle(el);
+    pointerEvents = style.pointerEvents ?? '';
+  } catch {
+    pointerEvents = '';
+  }
+
+  return {
+    disabled,
+    ariaDisabled,
+    pointerEvents,
+    pointerEventsNone: pointerEvents === 'none',
+  };
+}
+
+/**
+ * The ONE fold consulted by every `ElementState.enabled` producer AND by the
+ * click-path pre-check. `enabled` is `!isInteractionBlocked(...)`.
+ */
+export function isInteractionBlocked(blockers: InteractionBlockers): boolean {
+  return blockers.disabled || blockers.ariaDisabled || blockers.pointerEventsNone;
+}

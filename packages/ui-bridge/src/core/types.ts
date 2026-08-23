@@ -78,12 +78,23 @@ export interface ElementState {
   /** Whether the element is visible in the viewport */
   visible: boolean;
   /**
-   * DERIVED convenience boolean: `!(disabled || ariaDisabled)`. Kept because
-   * every existing consumer reads it (the runner's `?fields=` allowlist, its
-   * `waitFor` state names, spec-check's canonical `ElementState`), but it
-   * FOLDS the two independent signals below into one — a driver that needs to
-   * tell "the DOM refuses input" from "the author only labelled it disabled"
-   * must read `disabled` / `ariaDisabled`, not this.
+   * DERIVED convenience boolean: `!(disabled || ariaDisabled || effective
+   * `pointer-events: none`)` — the SAME predicate the click path applies
+   * before dispatching (`core/a11y`'s `isInteractionBlocked`), so a caller
+   * that reads `enabled: true` here will not have its next click refused as
+   * disabled.
+   *
+   * `pointer-events` is read from the COMPUTED style, so a control blocked
+   * only because an ANCESTOR declares `pointer-events: none` (the property is
+   * CSS-inherited) also reads `enabled: false`. The value is exposed
+   * unfolded under `computedStyles.pointerEvents`.
+   *
+   * Kept because every existing consumer reads it (the runner's `?fields=`
+   * allowlist, its `waitFor` state names, spec-check's canonical
+   * `ElementState`), but it FOLDS three independent signals into one — a
+   * driver that needs to tell "the DOM refuses input" from "the author only
+   * labelled it disabled" from "CSS made it click-through" must read
+   * `disabled` / `ariaDisabled` / `computedStyles.pointerEvents`, not this.
    */
   enabled: boolean;
   /**

@@ -44,7 +44,8 @@ import {
   readAriaLabelledbyAttr,
   readTitleAttr,
   readPlaceholderAttr,
-  readDisabledSignals,
+  isInteractionBlocked,
+  readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
 import { truncateCodePoints } from './text';
@@ -501,13 +502,15 @@ function getElementState(element: HTMLElement): ElementState {
   const roleAttr = element.getAttribute('role') || undefined;
   const accessibleName = scrubContentByVerdict(computeAccessibleName(element), verdict);
 
-  // The two independent disabled signals, unfolded once (`enabled` below is
-  // the derived fold). Same helper in every serializer — see `core/a11y`.
-  const disabledSignals = readDisabledSignals(element);
+  // The interaction blockers, unfolded once (`enabled` below is the derived
+  // fold). Same helper in every serializer AND in the click-path pre-check —
+  // see `core/a11y` — so the reader and the actor cannot disagree about
+  // whether this element can be clicked.
+  const disabledSignals = readInteractionBlockers(element, computedStyle);
 
   const state: ElementState = {
     visible: isElementVisible(element, rect, computedStyle, inViewport),
-    enabled: !(disabledSignals.disabled || disabledSignals.ariaDisabled),
+    enabled: !isInteractionBlocked(disabledSignals),
     disabled: disabledSignals.disabled,
     ariaDisabled: disabledSignals.ariaDisabled,
     focused: document.activeElement === element,
