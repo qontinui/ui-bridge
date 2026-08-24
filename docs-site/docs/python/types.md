@@ -34,12 +34,93 @@ from ui_bridge.types import ComponentActionResponse
 
 response: ComponentActionResponse = client.component('form').action('submit')
 
-response.success        # bool
-response.duration_ms    # float
-response.timestamp      # int
-response.result         # Any | None - Handler return value
-response.error          # str | None
+response.success          # bool
+response.duration_ms      # float
+response.timestamp        # int
+response.result           # Any | None - Handler return value
+response.error            # str | None
+response.failure_details  # ActionFailureDetails | None - set on every failure
 ```
+
+`client.component(...).action(...)` raises `ActionFailedError` when the action
+fails, and the exception carries the same `failure_details`, so the structured
+reason survives the raise:
+
+```python
+from ui_bridge.client import ActionFailedError
+
+try:
+    client.component('invoice').action('delete', timeout_ms=5_000)
+except ActionFailedError as err:
+    if err.failure_details and err.failure_details.is_timeout():
+        ...  # the handler never returned within 5s
+```
+
+#### Cancelling a slow action
+
+`timeout_ms` is the **only** cancellation an out-of-process client has — an
+`AbortSignal` cannot be JSON-serialized. The SDK races the handler promise, so
+abandonment does not depend on the handler observing anything:
+
+```python
+client.component('report').action('generate', timeout_ms=30_000)
+```
+
+The SDK validates and clamps the value at the executor: `0` abandons on the next
+tick, anything above 24h is clamped, and a negative, NaN, infinite or
+non-numeric value is refused with `UB-VALIDATION-ERROR`.
+
+### ActionFailureDetails
+
+The structured reason behind any `success=False`.
+
+```python
+details = response.failure_details
+
+details.error_code        # UiBridgeErrorCode | str - canonical "UB-" code
+details.message           # str
+details.retry_recommended # bool
+details.suggested_actions # list[RecoveryAction]
+details.timeout_ms        # float | None - the timeout that was configured
+details.cancel_reason     # str | None - "timeout" | "signal"
+details.invalid_params    # list[ParamSchemaIssue] | None
+```
+
+`error_code` is the generated catalog in `ui_bridge.diagnostics`
+(`UiBridgeErrorCode.ACTION_TIMEOUT == "UB-ACTION-TIMEOUT"`). A code a newer
+server mints that this build's catalog does not carry stays a plain `str`
+rather than raising, so a pinned client keeps parsing.
+
+`cancel_reason` — not the code — is the reliable "was this abandoned?" test:
+a request timeout reports `UB-ACTION-TIMEOUT` while a caller's in-process signal
+reports `UB-ACTION-FAILED`, and both set `cancel_reason`. A `UB-ACTION-FAILED`
+*without* one is a handler that threw.
+
+`invalid_params` is set only when the SDK's param-validation gate rejects a call
+(`UB-ACTION-REJECTED`); each `ParamSchemaIssue` names the offending param by
+`path` (`"email"`, `"filter.status"`, `"ids[2]"`), the schema `keyword` that
+rejected it, and a human-readable `message`.
+
+### ComponentActionInfo
+
+One action as published on `/control/components` and
+`/control/component/{id}`.
+
+```python
+action = client.get_component('invoice').actions[0]
+
+action.id            # str
+action.label         # str | None
+action.description   # str | None
+action.param_schema  # dict | None - declared params, ENFORCED at invocation
+action.effect        # str | None - "read" | "write" | "destructive"
+action.path          # str | None - resolved invocation URL for this action
+```
+
+`effect` being `None` means **unclassified, not safe**: an autonomous walk must
+treat it as unknown rather than as `"read"`. `param_schema` and `path` are
+absent from the `ControlSnapshot` component projection, which emits only
+`id`/`label`/`description` plus `effect`.
 
 ### DiscoveryResponse
 

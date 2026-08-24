@@ -3,10 +3,30 @@
  *
  * Tiny helper that produces a JSON-Schema-subset object from a plain
  * descriptor, matching the shape `useUIComponent` already exposes on its
- * `actions[].paramSchema` field. The existing SDK contract says "no
- * runtime validation is performed" — this helper's only job is to surface
- * parameter names and types on the runner's `/control/component/:id`
- * endpoint so callers can discover the action signature.
+ * `actions[].paramSchema` field. It surfaces parameter names and types on the
+ * runner's `/control/component/:id` endpoint so callers can discover the
+ * action signature.
+ *
+ * ⚠️ **The output is ENFORCED, not merely advertised.** This doc used to say
+ * the SDK performs "no runtime validation"; that stopped being true in Phase 2
+ * of plan `2026-08-20-ui-bridge-action-declaration-shape`. The invocation seam
+ * now checks `params` against the schema before the handler runs, and the
+ * object form this helper emits is exactly form 1 of the supported subset
+ * (`@qontinui/ui-bridge` `core/param-schema.ts`, which documents the grammar).
+ * Enforcement defaults to `'warn'`, so a wrong schema logs rather than breaks —
+ * until a deployment arms `setDefaultParamValidationMode('enforce')`, at which
+ * point it rejects real calls with `UB-ACTION-REJECTED`.
+ *
+ * Two consequences worth knowing before you declare one:
+ *
+ *   - **`additionalProperties: false` is always emitted**, so any param not in
+ *     the descriptor is a violation. That is the point of the helper, but it
+ *     means a handler that quietly accepts extras must declare them.
+ *   - **An unrecognised type name is passed through verbatim** (see `normalize`
+ *     below). The validator treats a `type` outside the seven JSON Schema
+ *     primitive names as expressing no constraint, so a typo like `"sting"`
+ *     silently validates everything rather than rejecting everything. It fails
+ *     open, not closed — but it fails.
  *
  * Accepted descriptor values:
  *   - a JSON-Schema type name string (`"string"`, `"number"`, ...)

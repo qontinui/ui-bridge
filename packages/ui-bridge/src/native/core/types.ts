@@ -467,6 +467,30 @@ export interface NativeBridgeSnapshot {
     description?: string;
     stepCount: number;
   }>;
+  /**
+   * How many elements the registry captured — `elements.length`, restated so a
+   * consumer can compare it against {@link totalInteractiveInDOM} without
+   * walking the array.
+   *
+   * Undeclared until the `src/native/**` type gate (`tsconfig.native.json`)
+   * was added, though `createSnapshot` has emitted it all along. Same class of
+   * defect as the `paramSchema` / `path` wire fields plan
+   * `2026-08-20-ui-bridge-action-declaration-shape` Phase 1 had to declare:
+   * data that reaches consumers while the type denies it exists. Declared, not
+   * deleted — the emitter and its readers are the evidence of intent.
+   */
+  registeredCount: number;
+  /**
+   * How many interactive elements exist in the DOM, for the web-hosted
+   * (react-native-web) case. A large gap against {@link registeredCount} — 30
+   * registered out of 120 present — is the signal that auto-registration
+   * missed elements.
+   *
+   * `0` on a real React Native runtime, where there is no `document` to query;
+   * `createSnapshot` swallows the failure. So a `0` here means "not
+   * measurable", not "nothing interactive on screen".
+   */
+  totalInteractiveInDOM: number;
 }
 
 /**

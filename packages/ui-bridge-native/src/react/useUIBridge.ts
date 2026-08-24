@@ -15,33 +15,32 @@ import type {
   RegisteredNativeComponent,
   Workflow,
 } from '../core/types';
+import type { ComponentActionRequest, ComponentActionResponse } from '../control/types';
 import { useUIBridgeNativeOptional } from './UIBridgeNativeProvider';
 
 /**
- * Component action request
+ * Component action request / response.
+ *
+ * Re-exported from `../control/types` rather than re-declared. These were a
+ * fifth and sixth copy of a shape that already existed there, and the copy had
+ * already drifted: it carried neither `requestId` nor `timeoutMs`, so a React
+ * Native caller reaching an action through this hook could not set a timeout
+ * even though `DefaultNativeActionExecutor` has honoured one since Phase 3 of
+ * plan `2026-08-20-ui-bridge-action-declaration-shape`. The executor accepted
+ * it; the hook's own type refused to express it.
+ *
+ * `timeoutMs` is the only cancellation this seam can carry — an `AbortSignal`
+ * is not JSON-serializable, and the hook does not forward the executor's
+ * in-process `{ signal }` option bag.
+ *
+ * Collapsing rather than adding the two fields is the plan's stated direction:
+ * "collapse before you extend", because eight copies drift and two already
+ * had.
  */
-export interface ComponentActionRequest {
-  /** Action ID */
-  action: string;
-  /** Action parameters */
-  params?: Record<string, unknown>;
-}
-
-/**
- * Component action response
- */
-export interface ComponentActionResponse {
-  /** Whether the action succeeded */
-  success: boolean;
-  /** Result of the action */
-  result?: unknown;
-  /** Error message if failed */
-  error?: string;
-  /** Duration in milliseconds */
-  durationMs: number;
-  /** Timestamp */
-  timestamp: number;
-}
+export type {
+  ComponentActionRequest,
+  ComponentActionResponse,
+} from '../control/types';
 
 /**
  * useUIBridge return type
