@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
+from .diagnostics import UiBridgeErrorCode
+
 
 class ElementRect(BaseModel):
     """Element bounding rectangle."""
@@ -361,23 +363,37 @@ class ActionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class ActionErrorCode(str, Enum):
-    """Machine-readable error codes for action failures."""
+# The wire's error-code vocabulary is the GENERATED catalog in
+# `ui_bridge.diagnostics` (source of truth: `ui-bridge/diagnostics/codes.json`),
+# whose members are `UB-`-prefixed. This module used to declare a second,
+# hand-written enum of un-prefixed names (`"ACTION_TIMEOUT"`) that no server has
+# ever emitted, so `ActionResponse.model_validate` raised `ValidationError` on
+# every real structured failure payload and the whole
+# `failure_details` / `is_timeout()` / `get_suggestions()` surface was
+# unreachable. It is deleted rather than aliased — see
+# `tests/test_action_declaration_followup.py::TestCanonicalErrorCodes`.
+#
+# `str` keeps the annotation open on purpose: a client pinned to one release
+# must not start raising when a newer server mints a code this build's catalog
+# does not carry yet. Comparison still works either way, because
+# `UiBridgeErrorCode` is a `str` enum.
+ActionErrorCodeValue = UiBridgeErrorCode | str
 
-    ELEMENT_NOT_FOUND = "ELEMENT_NOT_FOUND"
-    ELEMENT_NOT_VISIBLE = "ELEMENT_NOT_VISIBLE"
-    ELEMENT_NOT_ENABLED = "ELEMENT_NOT_ENABLED"
-    ELEMENT_NOT_INTERACTABLE = "ELEMENT_NOT_INTERACTABLE"
-    ACTION_TIMEOUT = "ACTION_TIMEOUT"
-    ACTION_REJECTED = "ACTION_REJECTED"
-    STATE_NOT_REACHED = "STATE_NOT_REACHED"
-    NETWORK_ERROR = "NETWORK_ERROR"
-    PARSE_ERROR = "PARSE_ERROR"
-    VALIDATION_ERROR = "VALIDATION_ERROR"
-    AMBIGUOUS_MATCH = "AMBIGUOUS_MATCH"
-    LOW_CONFIDENCE = "LOW_CONFIDENCE"
-    UNSUPPORTED_ACTION = "UNSUPPORTED_ACTION"
-    UNKNOWN_ERROR = "UNKNOWN_ERROR"
+
+def wire_error_code(code: ActionErrorCodeValue | None) -> str | None:
+    """
+    Render an error code as the string that was on the wire.
+
+    ``UiBridgeErrorCode`` is a ``(str, Enum)``, so ``str(code)`` and
+    ``f"{code}"`` both give ``"UiBridgeErrorCode.ELEM_NOT_FOUND"`` -- the enum
+    repr, not ``"UB-ELEM-NOT-FOUND"``. Comparison and dict-keying work on the
+    value, which is why the mix-in is easy to trust and easy to get wrong.
+    Anything that LOGS or FORMATS a code should go through here; anything that
+    compares one can use it directly.
+    """
+    if code is None:
+        return None
+    return code.value if isinstance(code, UiBridgeErrorCode) else code
 
 
 class PartialMatch(BaseModel):
@@ -403,10 +419,27 @@ class RecoveryAction(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ParamSchemaIssue(BaseModel):
+    """
+    One parameter that failed an action's declared ``paramSchema``.
+
+    Populated on ``ActionFailureDetails.invalid_params`` when the SDK's
+    param-validation gate rejects a call (``UB-ACTION-REJECTED``). ``path``
+    names the offending param (``"username"``, ``"filter.status"``,
+    ``"ids[2]"``) and ``keyword`` names the schema keyword that rejected it.
+    """
+
+    path: str
+    keyword: str
+    message: str
+
+    model_config = {"populate_by_name": True}
+
+
 class ActionFailureDetails(BaseModel):
     """Structured error details for action failures."""
 
-    error_code: ActionErrorCode = Field(alias="errorCode")
+    error_code: ActionErrorCodeValue = Field(alias="errorCode")
     message: str
     element_id: str | None = Field(None, alias="elementId")
     selectors_tried: list[str] | None = Field(None, alias="selectorsTried")
@@ -418,24 +451,64 @@ class ActionFailureDetails(BaseModel):
     context: dict[str, Any] | None = None
     duration_ms: float | None = Field(None, alias="durationMs")
     timeout_ms: float | None = Field(None, alias="timeoutMs")
+    # Why an action was abandoned before producing a result. ``"timeout"`` is
+    # reported with ``UB-ACTION-TIMEOUT``, ``"signal"`` with
+    # ``UB-ACTION-FAILED`` -- so this field, not the code, is the reliable
+    # "was this abandoned?" test. A ``UB-ACTION-FAILED`` *without* it is a
+    # handler that threw.
+    cancel_reason: str | None = Field(None, alias="cancelReason")
+    # Which params violated the action's declared ``paramSchema``. Set only on
+    # the validation-gate path (``UB-ACTION-REJECTED``).
+    invalid_params: list[ParamSchemaIssue] | None = Field(None, alias="invalidParams")
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("error_code", mode="before")
+    @classmethod
+    def _coerce_error_code(cls, v: Any) -> Any:
+        """Promote a known code to the enum; pass an unrecognised one through."""
+        if isinstance(v, str):
+            try:
+                return UiBridgeErrorCode(v)
+            except ValueError:
+                return v
+        return v
+
     def is_element_not_found(self) -> bool:
         """Check if the error is due to element not being found."""
-        return self.error_code == ActionErrorCode.ELEMENT_NOT_FOUND
+        return self.error_code == UiBridgeErrorCode.ELEM_NOT_FOUND
 
     def is_element_not_visible(self) -> bool:
         """Check if the error is due to element not being visible."""
-        return self.error_code == ActionErrorCode.ELEMENT_NOT_VISIBLE
+        return self.error_code == UiBridgeErrorCode.ELEM_NOT_VISIBLE
 
     def is_element_not_enabled(self) -> bool:
-        """Check if the error is due to element being disabled."""
-        return self.error_code == ActionErrorCode.ELEMENT_NOT_ENABLED
+        """
+        Check if the error is due to element being disabled.
+
+        Two live codes mean this, and the SDK treats them as one case itself
+        (``ai/error-context.ts`` cases them together): the element-action path
+        reports ``UB-ELEM-DISABLED``, the form-fill path reports
+        ``UB-ELEM-NOT-ENABLED``. Matching only one would answer ``False`` for
+        half of the real disabled-element failures.
+        """
+        return self.error_code in (
+            UiBridgeErrorCode.ELEM_NOT_ENABLED,
+            UiBridgeErrorCode.ELEM_DISABLED,
+        )
 
     def is_timeout(self) -> bool:
         """Check if the error is due to timeout."""
-        return self.error_code == ActionErrorCode.ACTION_TIMEOUT
+        return self.error_code == UiBridgeErrorCode.ACTION_TIMEOUT
+
+    def is_cancelled(self) -> bool:
+        """
+        Check if the action was abandoned rather than failing on its own.
+
+        True for both arms: the request's own ``timeoutMs`` elapsing and an
+        in-process caller aborting its ``AbortSignal``.
+        """
+        return self.cancel_reason is not None
 
     def is_retryable(self) -> bool:
         """Check if the action should be retried."""
@@ -486,7 +559,7 @@ class ActionResponse(BaseModel):
             return self.failure_details.get_suggestions()
         return []
 
-    def get_error_code(self) -> ActionErrorCode | None:
+    def get_error_code(self) -> ActionErrorCodeValue | None:
         """Get the structured error code if available."""
         if self.failure_details:
             return self.failure_details.error_code
@@ -499,6 +572,18 @@ class ComponentActionRequest(BaseModel):
     action: str
     params: dict[str, Any] | None = None
     request_id: str | None = Field(None, alias="requestId")
+    # Abandon the action if it has not produced a result within this many
+    # milliseconds. This is the *wire-reachable* half of cancellation -- an
+    # ``AbortSignal`` cannot be JSON-serialized, so for an out-of-process
+    # client like this one it is the only way to call off a hung handler.
+    #
+    # The SDK validates and clamps it at the executor: ``0`` abandons on the
+    # next tick, anything above 24h is clamped, and a negative, NaN, infinite
+    # or non-numeric value is REFUSED with ``UB-VALIDATION-ERROR``. On
+    # abandonment the response is ``success=False`` with
+    # ``failure_details.error_code == UB-ACTION-TIMEOUT`` and
+    # ``failure_details.cancel_reason == "timeout"``.
+    timeout_ms: int | None = Field(None, alias="timeoutMs")
 
     model_config = {"populate_by_name": True}
 
@@ -510,11 +595,41 @@ class ComponentActionResponse(BaseModel):
     result: Any | None = None
     error: str | None = None
     stack: str | None = None
+    # Populated on every ``success=False`` path, the same as
+    # ``ActionResponse.failure_details``. It is what distinguishes a handler
+    # that threw (``UB-ACTION-FAILED``, no ``cancel_reason``) from a timed-out
+    # one (``UB-ACTION-TIMEOUT``) from params the SDK's validation gate
+    # rejected (``UB-ACTION-REJECTED`` + ``invalid_params``).
+    failure_details: ActionFailureDetails | None = Field(None, alias="failureDetails")
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
     request_id: str | None = Field(None, alias="requestId")
 
     model_config = {"populate_by_name": True}
+
+    def is_timeout(self) -> bool:
+        """Check if the action was abandoned because ``timeout_ms`` elapsed."""
+        if self.failure_details:
+            return self.failure_details.is_timeout()
+        return False
+
+    def get_error_code(self) -> ActionErrorCodeValue | None:
+        """Get the structured error code if available."""
+        if self.failure_details:
+            return self.failure_details.error_code
+        return None
+
+    def get_invalid_params(self) -> list[ParamSchemaIssue]:
+        """Get the params that failed the action's declared ``paramSchema``."""
+        if self.failure_details and self.failure_details.invalid_params:
+            return self.failure_details.invalid_params
+        return []
+
+    def get_suggestions(self) -> list[str]:
+        """Get recovery suggestions if available."""
+        if self.failure_details:
+            return self.failure_details.get_suggestions()
+        return []
 
 
 class WorkflowRunStatus(str, Enum):
@@ -686,6 +801,27 @@ class ComponentActionInfo(BaseModel):
     id: str
     label: str | None = None
     description: str | None = None
+    # Author-declared parameter schema, surfaced verbatim on
+    # ``/control/components`` and ``/control/component/:id``. Conventionally a
+    # small JSON Schema subset; the SDK enforces it at invocation, so params
+    # that violate it come back as ``UB-ACTION-REJECTED`` with
+    # ``failure_details.invalid_params``. Absent from the ``ControlSnapshot``
+    # component projection, which emits only ``id``/``label``/``description``
+    # (plus ``effect``).
+    param_schema: dict[str, Any] | None = Field(None, alias="paramSchema")
+    # Safety class of this action: ``"read"``, ``"write"`` or
+    # ``"destructive"``. **Absent means unclassified, not safe** -- an action
+    # nobody has judged must be treated as unknown rather than as ``"read"``.
+    # An autonomous walk MUST NOT fire an action annotated ``"destructive"``.
+    effect: str | None = None
+    # Fully-resolved invocation path for this one action,
+    # ``/control/component/<componentId>/action/<actionId>``. Server-annotated,
+    # never author-declared, and emitted only on the component listing
+    # endpoints. Distinct from ``RegisteredComponent.action_invocation_path``,
+    # which is a *template* carrying a literal ``{actionId}`` placeholder.
+    path: str | None = None
+
+    model_config = {"populate_by_name": True}
 
 
 class RegisteredComponent(BaseModel):

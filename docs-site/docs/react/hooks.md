@@ -163,5 +163,54 @@ useUIComponent({
 ```
 
 `paramSchema` is surfaced verbatim on `/control/component/:id` so a caller can
-discover the shape without reading your source. It is **not** validated at
-runtime.
+discover the shape without reading your source, **and the SDK checks `params`
+against it before your handler runs**. Two forms are accepted: the map shorthand
+above, and a JSON-Schema-subset object (`{ type: 'object', properties, required,
+additionalProperties }`) — the shape
+`paramSchemaOf()` (`@qontinui/ui-bridge-wrapper`) emits.
+
+The gate starts in **`'warn'`** mode: violations are logged and the handler
+still runs. Arm it per deployment with
+`setDefaultParamValidationMode('enforce')`, after which a violating call comes
+back as `success: false` with `failureDetails.errorCode ===
+'UB-ACTION-REJECTED'` and `failureDetails.invalidParams` naming each offending
+param. A single call can override the mode through
+`executeComponentAction`'s `{ paramValidation }` option bag; the wire cannot,
+deliberately — enforcement is the deployment's policy, not the validated
+caller's to switch off.
+
+In map form a bare string is read as a type hint **only** when it is one of the
+seven JSON Schema primitive names (`string`, `number`, `integer`, `boolean`,
+`object`, `array`, `null`). Any other string is prose and constrains nothing, so
+`{ count: 'number (>= 1, defaults to 1)' }` stays a human-readable hint rather
+than becoming an unsatisfiable rule. Map form also never marks a param
+required — it has no way to express optionality. Write the object form if you
+need `required`.
+
+### 5. Give a long-running action a timeout
+
+An `AbortSignal` cannot be JSON-serialized, so `timeoutMs` on the request is the
+only way an out-of-process caller can call off a hung handler:
+
+```ts
+await bridge.executeComponentAction('login-form', {
+  action: 'login',
+  params: { email, password },
+  timeoutMs: 5_000,
+});
+```
+
+The executor races the handler promise, so abandonment does not depend on your
+handler observing the signal it is passed. On abandonment the response is
+`success: false` with `failureDetails.errorCode === 'UB-ACTION-TIMEOUT'` and
+`failureDetails.cancelReason === 'timeout'`. An in-process caller can pass its
+own `{ signal }` instead — that arm reports `'UB-ACTION-FAILED'` with
+`cancelReason === 'signal'`, so `cancelReason` rather than the code is the
+reliable "was this abandoned?" test.
+
+Your handler receives the signal as the second argument, which is how it
+releases its own in-flight work instead of leaving it detached:
+
+```ts
+handler: async (params, { signal }) => fetch(url, { signal }),
+```

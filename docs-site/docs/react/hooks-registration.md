@@ -190,7 +190,8 @@ function LoginForm() {
         id: 'login',
         label: 'Submit Login',
         paramSchema: { email: 'string', password: 'string' },
-        handler: async (params) => authenticate(params),
+        effect: 'write',
+        handler: async (params, { signal } = {}) => authenticate(params, { signal }),
       },
       {
         id: 'clear',
@@ -235,10 +236,37 @@ interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
-  paramSchema?: Record<string, unknown>;   // surfaced verbatim; NOT validated
-  handler: (params?: TParams) => TResult | Promise<TResult>;
+  paramSchema?: Record<string, unknown>;   // surfaced verbatim AND validated
+  effect?: 'read' | 'write' | 'destructive';
+  handler: (
+    params?: TParams,
+    options?: { signal?: AbortSignal }
+  ) => TResult | Promise<TResult>;
 }
 ```
+
+`paramSchema` is both published to callers and **checked before your handler
+runs**. It accepts the map shorthand above and the JSON-Schema-subset object
+form (`{ type: 'object', properties, required, additionalProperties }`).
+Enforcement defaults to `'warn'` — violations are logged and the handler still
+runs until a deployment calls `setDefaultParamValidationMode('enforce')`, after
+which a violating call comes back as `success: false` with
+`failureDetails.errorCode === 'UB-ACTION-REJECTED'` and
+`failureDetails.invalidParams`. In map form, a bare string is a type hint only
+when it is one of the seven JSON Schema primitive names; any other string is
+prose and constrains nothing, and map form can never mark a param required.
+
+`effect` is the safety annotation an autonomous walk reads. **Declare
+`'destructive'` on anything irreversible** — a delete, a send, a charge, a
+deploy. Nothing can infer it for you: the static verb map behind this field
+never produces `'destructive'`, because destructiveness depends on what the
+control does, not what it is called, and a walk skips only what is declared. An
+absent `effect` means *unclassified*, not *safe*.
+
+`options.signal` is aborted when the caller cancels or the request's
+`timeoutMs` elapses. Observing it is optional — the executor races your promise
+against the abort either way — but observing it is how a handler releases its
+own in-flight work instead of leaving it detached.
 
 Each `computed` entry may be either a `{ getter, description }` object or a bare
 getter function; both forms are accepted. A getter that throws yields

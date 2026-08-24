@@ -65,6 +65,7 @@ from .capture_host import (
     CaptureHostIds,
 )
 from .client import UIBridgeClient
+from .diagnostics import UiBridgeErrorCode
 
 # Logging
 from .logging import (
@@ -111,10 +112,10 @@ from .types import (
     AccessibilityIssue,
     AccessibilityReport,
     AccessibilitySeverity,
-    ActionErrorCode,
     ActionFailureDetails,
     ActionRequest,
     ActionResponse,
+    ComponentActionInfo,
     ComponentActionRequest,
     ComponentActionResponse,
     ControlSnapshot,
@@ -127,6 +128,7 @@ from .types import (
     FindRequest,
     FindResponse,
     NavigationResult,
+    ParamSchemaIssue,
     PartialMatch,
     PathResult,
     PerformanceMetrics,
@@ -141,6 +143,7 @@ from .types import (
     WorkflowRunRequest,
     WorkflowRunResponse,
     WorkflowStepResult,
+    wire_error_code,
 )
 
 __version__ = "0.1.0"
@@ -166,11 +169,14 @@ __all__ = [
     # Action types
     "ActionRequest",
     "ActionResponse",
+    "ComponentActionInfo",
     "ComponentActionRequest",
     "ComponentActionResponse",
     # Structured failure types
-    "ActionErrorCode",
+    "UiBridgeErrorCode",
     "ActionFailureDetails",
+    "ParamSchemaIssue",
+    "wire_error_code",
     "PartialMatch",
     "RecoveryAction",
     "StructuredFailureInfo",

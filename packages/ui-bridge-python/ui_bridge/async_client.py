@@ -24,6 +24,7 @@ from .types import (
     ActionResponse,
     AnnotationConfig,
     AnnotationCoverage,
+    ComponentActionRequest,
     ComponentActionResponse,
     ComponentState,
     ControlSnapshot,
@@ -33,6 +34,7 @@ from .types import (
     NavigationResult,
     PathResult,
     PerformanceMetrics,
+    RegisteredComponent,
     RenderLogEntry,
     StateSnapshot,
     TransitionResult,
@@ -40,6 +42,7 @@ from .types import (
     UIStateGroup,
     UITransition,
     WorkflowRunResponse,
+    wire_error_code,
 )
 
 if TYPE_CHECKING:
@@ -509,10 +512,10 @@ class AsyncUIBridgeClient:
             if not response.success:
                 if self._logger:
                     error_code = (
-                        response.failure_details.error_code.value
+                        wire_error_code(response.failure_details.error_code)
                         if response.failure_details
                         else "UNKNOWN"
-                    )
+                    ) or "UNKNOWN"
                     self._logger.action_failed(
                         element_id,
                         action,
@@ -521,7 +524,10 @@ class AsyncUIBridgeClient:
                         duration_ms=duration_ms,
                         trace=self._active_trace,
                     )
-                raise ActionFailedError(response.error or "Action failed")
+                raise ActionFailedError(
+                    response.error or "Action failed",
+                    failure_details=response.failure_details,
+                )
 
             if self._logger:
                 self._logger.action_completed(
@@ -576,15 +582,37 @@ class AsyncUIBridgeClient:
         """Get a component control interface."""
         return AsyncComponentControl(self, component_id)
 
-    async def get_component(self, component_id: str) -> dict[str, Any]:
-        """Get component details."""
-        result: dict[str, Any] = await self._request("GET", f"/control/component/{component_id}")
-        return result
+    async def get_component(self, component_id: str) -> RegisteredComponent:
+        """
+        Get one component's published declaration.
 
-    async def get_components(self) -> list[dict[str, Any]]:
-        """Get all registered components."""
-        result: list[dict[str, Any]] = await self._request("GET", "/control/components")
-        return result
+        Parsed into ``RegisteredComponent`` rather than returned raw: this
+        endpoint and ``get_components`` are the only two that carry an action's
+        ``paramSchema`` and resolved ``path`` (the ``ControlSnapshot``
+        projection emits neither), so a raw ``dict`` here left the canonical
+        ``ComponentActionInfo`` model with no route to the data it describes.
+
+        Returns:
+            RegisteredComponent, whose ``actions`` are ``ComponentActionInfo``
+        """
+        data = await self._request("GET", f"/control/component/{component_id}")
+        return RegisteredComponent.model_validate(data)
+
+    async def get_components(self) -> list[RegisteredComponent]:
+        """
+        Get every registered component's published declaration.
+
+        The envelope is ``{"components": [...]}`` — the shape the runner's own
+        direct ``/ui-bridge/control/components`` route uses. The previous
+        annotation claimed a bare ``list``, which this endpoint has never
+        returned.
+
+        Returns:
+            list[RegisteredComponent]
+        """
+        data = await self._request("GET", "/control/components")
+        raw = data.get("components", []) if isinstance(data, dict) else data
+        return [RegisteredComponent.model_validate(c) for c in raw]
 
     async def get_component_state(self, component_id: str) -> ComponentState:
         """Get the current state and computed properties of a component."""
@@ -596,11 +624,38 @@ class AsyncUIBridgeClient:
         component_id: str,
         action: str,
         params: dict[str, Any] | None = None,
+        *,
+        timeout_ms: int | None = None,
+        request_id: str | None = None,
     ) -> ComponentActionResponse:
-        """Execute an action on a component."""
-        request: dict[str, Any] = {"action": action}
-        if params:
-            request["params"] = params
+        """
+        Execute an action on a component.
+
+        Args:
+            component_id: Component identifier
+            action: Action identifier, as published on
+                ``/control/component/{component_id}``
+            params: Action parameters. Validated against the action's declared
+                ``paramSchema`` before its handler runs; a violation comes back
+                as ``UB-ACTION-REJECTED`` with
+                ``failure_details.invalid_params``.
+            timeout_ms: Abandon the action if it has not produced a result
+                within this many milliseconds. The only cancellation an
+                out-of-process caller has -- an ``AbortSignal`` cannot be
+                JSON-serialized. On abandonment the failure carries
+                ``UB-ACTION-TIMEOUT`` and ``cancel_reason == "timeout"``.
+            request_id: Correlation id echoed back on the response.
+
+        Returns:
+            ComponentActionResponse (raises ``ActionFailedError`` on failure;
+            read ``err.failure_details`` for the structured reason)
+        """
+        request = ComponentActionRequest(
+            action=action,
+            params=params or None,
+            request_id=request_id,
+            timeout_ms=timeout_ms,
+        ).model_dump(by_alias=True, exclude_none=True)
 
         data = await self._request(
             "POST",
@@ -610,7 +665,10 @@ class AsyncUIBridgeClient:
         response = ComponentActionResponse.model_validate(data)
 
         if not response.success:
-            raise ActionFailedError(response.error or "Component action failed")
+            raise ActionFailedError(
+                response.error or "Component action failed",
+                failure_details=response.failure_details,
+            )
 
         return response
 
@@ -963,9 +1021,18 @@ class AsyncComponentControl:
         self,
         action: str,
         params: dict[str, Any] | None = None,
+        *,
+        timeout_ms: int | None = None,
+        request_id: str | None = None,
     ) -> ComponentActionResponse:
         """Execute an action on the component."""
-        return await self._client.execute_component_action(self._component_id, action, params)
+        return await self._client.execute_component_action(
+            self._component_id,
+            action,
+            params,
+            timeout_ms=timeout_ms,
+            request_id=request_id,
+        )
 
     async def __call__(
         self,

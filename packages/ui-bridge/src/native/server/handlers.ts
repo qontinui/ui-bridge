@@ -363,7 +363,7 @@ export function createServerHandlers(
         index: number;
         label?: string;
         elementId: string;
-        response: ControlActionResponse | { success: false; error: string };
+        response: ControlActionResponse;
       }> = [];
       let succeededCount = 0;
       let failedCount = 0;
@@ -379,7 +379,18 @@ export function createServerHandlers(
             index: i,
             label: body.steps[i].label,
             elementId: body.steps[i].elementId,
-            response: { success: false, error: 'Skipped (previous step failed)' },
+            // A skipped step still has to be a whole `NativeActionResponse`:
+            // `NativeServerHandlers.executeBatchAction` declares every
+            // `results[].response` as one, and a client reading
+            // `results[i].response.durationMs` off a skipped entry was getting
+            // `undefined` where the type promises a number. Zero elapsed is
+            // the truth for a step that never ran.
+            response: {
+              success: false,
+              error: 'Skipped (previous step failed)',
+              durationMs: 0,
+              timestamp: Date.now(),
+            },
           });
           continue;
         }
