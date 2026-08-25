@@ -201,14 +201,22 @@ name = "docs-symbol-ratchet"
 # ci.yml "Documentation symbol ratchet" → `docs:check-symbols` =
 # `node scripts/check-docs-symbols.cjs`. Name-checks every import in every
 # fenced ts/tsx/js block on every guarded documentation surface — docs-site/docs,
-# docs, packages/, and the root README.md / CONTRIBUTING.md — against the
-# workspace's real package names, `exports` maps and export surfaces. It sits in
-# THIS job rather
-# than in `docs` because the `docs` job installs only docs-site's own tree —
-# packages/* is never present there, so the check would have nothing to resolve
-# against. It needs no docs-site install of its own: it reads .md files and
-# packages/*/src directly, and its only dependency is the `typescript` the root
-# `npm ci` above already provides.
+# docs, packages/, examples/, and the root README.md / CONTRIBUTING.md — against
+# the workspace's real package names, `exports` maps and export surfaces. It also
+# fails when a tracked .md/.mdx file sits on no surface and on no declared
+# exemption, so a new documentation tree cannot land unchecked. It sits in THIS
+# job rather than in `docs` because the `docs` job installs only docs-site's own
+# tree — packages/* is never present there, so the check would have nothing to
+# resolve against.
+#
+# It needs no docs-site install of its own: it reads .md files and packages/*/src
+# directly, and its only INSTALLED dependency is the `typescript` the root
+# `npm ci` above already provides. It does require two things of the environment
+# rather than of the install, and this lane is the one most likely to lack them:
+# `git` on PATH, and a real git work tree. The file list comes from `git ls-files`
+# so that the verdict is a property of the commit and not of whatever the working
+# tree happens to have built; without it the step exits 1 saying so, because a
+# gate that passes for want of anything to check is worse than one that fails.
 command = ["npm", "run", "docs:check-symbols"]
 
 [[steps]]

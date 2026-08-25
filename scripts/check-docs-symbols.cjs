@@ -13,10 +13,10 @@
 // site behind one green check.
 //
 // This is the checker that makes those three failures observable. For every
-// fenced TypeScript-family block on a guarded documentation surface — see
-// DOC_SURFACES: `docs-site/docs/**` (the published site), `docs/**` (a separate
-// root-level tree of authoring guides), `README.md` (the repo's front door) and
-// `packages/*/README.md` (which ARE the npm package pages) — it:
+// fenced TypeScript-family block on a guarded documentation surface — the
+// roster is DOC_SURFACES, and every .md/.mdx file this repo tracks is either on
+// it or named in UNGUARDED_DOCS with a reason, so a new documentation tree
+// cannot land unchecked and silent — it:
 //
 //   1. Extracts the block (fence-aware, so a fence inside a longer fence does
 //      not terminate it) and parses it with the TypeScript compiler's own
@@ -125,6 +125,7 @@
 
 'use strict';
 
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
@@ -150,24 +151,11 @@ const DEBT_LEDGER = path.join(REPO_ROOT, 'docs-site', 'docs-symbol-debt.json');
  * is the failure mode this whole script exists to prevent, so it fails loudly
  * rather than shrinking the checked set and reporting a pass.
  *
- * NOT included: `examples/**` — and the reason above is no longer the reason.
- * It used to be that those apps declared
- * `"ui-bridge": "file:../../packages/ui-bridge"`, which made the unscoped name
- * genuinely correct *inside* them, so gating their prose against a rule their
- * own code was exempt from would only have forced the exemption back in as
- * ledger lines. #159 closed that: all three manifests now declare
- * `"@qontinui/ui-bridge": "*"` and all six imports are scoped, so nothing in
- * `examples/` is exempt from anything any more.
- *
- * What keeps the tree out today is narrower and purely mechanical: this checker
- * reads `.md`/`.mdx` only (see docFiles), and the four markdown files under
- * `examples/` — `tauri-app/README.md` and the three wrapper READMEs — contain
- * zero `ui-bridge` import specifiers between them. Adding the tree would assert
- * a fourth surface exists and buy no coverage at all. The examples' real
- * exposure is `.tsx` source, which no markdown glob reaches; gating THAT means
- * a real `tsc` program over the examples, which is a different gate. In the
- * meantime `npm run build` compiles all three, so a broken import there is a
- * red build rather than a silent one.
+ * The roster must also be COMPLETE, not merely present: see UNGUARDED_DOCS.
+ * Guarding what is listed here says nothing about the markdown that is listed
+ * nowhere, and a documentation tree that lands unguarded is the same silent
+ * pass as one that vanishes — it is how `README.md` stayed ungated for a whole
+ * release after the plan had already written down that it should not be.
  */
 const DOC_SURFACES = [
   { kind: 'tree', at: path.join(REPO_ROOT, 'docs-site', 'docs') },
@@ -182,9 +170,84 @@ const DOC_SURFACES = [
   // to install a name that does not exist is the loudest possible instance of
   // the defect this gate was built for — but a README glob would have missed
   // the two biggest in-package documents there are: `ui-bridge/COOKBOOK.md` and
-  // `ui-bridge/docs/`. `packages/ui-bridge`, the flagship, ships NO README, so
-  // a README-only glob bought nothing at all for the main published package.
+  // `ui-bridge/docs/`. When this surface was added the flagship
+  // `packages/ui-bridge` shipped no README at all, so a README-only glob bought
+  // nothing whatsoever for the main published package; #159 has since written
+  // one, which changes the example and not the argument.
   { kind: 'tree', at: PACKAGES_ROOT },
+  // `examples/` was held out of this list until now, and the reason it was held
+  // out has been retired twice over.
+  //
+  // Originally those apps declared `"ui-bridge": "file:../../packages/ui-bridge"`
+  // — the UNSCOPED name — which made `npm install ui-bridge` genuinely correct
+  // *inside* them, so gating their prose against a rule their own code was
+  // exempt from would only have forced the exemption back in as ledger lines.
+  // #159 closed that: every example manifest now declares `"@qontinui/ui-bridge"`
+  // and every example import is scoped, so nothing here is exempt any more.
+  //
+  // The fallback argument — that the four READMEs carry zero `ui-bridge` import
+  // specifiers, so a fourth surface buys no coverage — measures today and
+  // budgets for nothing. These files document how to install and use the
+  // published packages; the next one written is exactly where an unscoped name
+  // reappears. The plan's own accounting applies unchanged: "the cost of a
+  // wider glob is a wider glob".
+  //
+  // What made this unsafe before was mechanical, not editorial:
+  // `examples/tauri-app/src-tauri` is a real cargo crate, and its `target/` is
+  // on neither `.gitignore` nor the old walk's hardcoded skip list — so on any
+  // box that had built it, whatever markdown a build had left in there was
+  // scanned, and the gate's answer differed from CI's at the same commit.
+  // Enumerating from git (see trackedMarkdown) removes that whole class, for
+  // this tree and for `packages/`.
+  { kind: 'tree', at: path.join(REPO_ROOT, 'examples') },
+];
+
+/**
+ * Markdown this gate deliberately does NOT guard.
+ *
+ * DOC_SURFACES asserts that everything it names exists. That is only half the
+ * invariant, and it is the half that does not catch the way this gate has
+ * actually decayed. #155 shipped the ratchet over `docs-site/docs` alone while
+ * the plan that commissioned it had already recorded, in writing, that
+ * `README.md` needed the same treatment; the plan was then marked SHIPPED and
+ * the repo's front door stayed ungated for a release. Nothing failed, because
+ * nothing was looking at the files the roster did not mention.
+ *
+ * So the roster is checked in BOTH directions. Every `.md`/`.mdx` file this
+ * repository tracks must be either on a guarded surface or named here with a
+ * reason — a new documentation tree cannot land unguarded and silent, it lands
+ * red with a message telling the author to make a decision.
+ *
+ * EXACT and SHRINK-ONLY, exactly like the debt ledger: an entry that waives
+ * nothing is itself a failure. An exemption must not outlive the files it was
+ * written for, or the roster rots into a list of paths that once existed and
+ * quietly re-authorises whatever moves back into them.
+ *
+ * Entries may nest — a tree here plus one file inside it — and every entry
+ * covering a file is credited, not just the first. Crediting only the first
+ * would report the narrower entry as waiving nothing and demand its deletion,
+ * which is the opposite of what the author wrote it for.
+ *
+ * Nothing on this list is product documentation. A file that tells a reader
+ * how to install or call a published package does not belong here — it belongs
+ * on a surface.
+ */
+const UNGUARDED_DOCS = [
+  {
+    // Issue/PR templates and a workflow-authoring note. These address
+    // contributors filing against this repo, not readers installing from npm;
+    // none of them names a package or shows an import.
+    at: '.github',
+    why: 'contributor templates and workflow notes — not product documentation',
+  },
+  {
+    at: 'CLA.md',
+    why: 'a legal agreement — its text is negotiated, not maintained against the API',
+  },
+  {
+    at: 'STATEMENT_OF_PURPOSE.md',
+    why: 'a project charter — prose about intent, with no install or import instructions',
+  },
 ];
 
 const VERBOSE = process.argv.includes('--verbose');
@@ -780,29 +843,95 @@ function blankOutsideScripts(text) {
   return out;
 }
 
-function markdownTree(dir) {
-  const out = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      // Installed and built trees are not authored documentation.
-      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
-      out.push(...markdownTree(p));
-    } else if (/\.mdx?$/.test(entry.name)) out.push(p);
+/**
+ * Every `.md`/`.mdx` file this repository TRACKS, repo-relative and sorted.
+ *
+ * Enumerated from git rather than by walking the filesystem, and that is a
+ * correctness requirement rather than a tidy-up. A walk sees whatever happens
+ * to be on the disk it is run on, so the gate's verdict stopped being a
+ * property of the commit:
+ *
+ *   - Gitignored trees under a guarded surface get SCANNED. Demonstrated with
+ *     a fixture, not observed in the wild: dropping one markdown file into
+ *     `packages/ui-bridge/coverage/` — gitignored, and inside the `packages/`
+ *     surface — makes the pre-change checker fail on a developer's box over a
+ *     file CI does not have. How likely a given generated tree is to contain
+ *     markdown that trips a check is not the point; that the answer differs
+ *     between two boxes at the same commit is.
+ *   - The hardcoded skip list (`node_modules`, `dist`) was the only thing
+ *     standing between the gate and those trees, and it was a list of the
+ *     build outputs that existed when it was written. `.next/`, `build/`,
+ *     `coverage/`, `target/` and every future one had to be remembered by
+ *     hand — the same drift this whole script exists to refuse. That list is
+ *     also what made `examples/` unsafe to add: `examples/tauri-app/src-tauri`
+ *     is a real cargo crate whose `target/` is on neither the skip list nor
+ *     `.gitignore`.
+ *   - Untracked scratch files get judged as though the repo shipped them.
+ *
+ * Enumerating the index rather than the disk has one consequence worth naming:
+ * a doc deleted or renamed but not yet staged is still listed. That is a hard
+ * failure here (see docFiles), never a skip — see the note there.
+ *
+ * `.gitignore` already answers "does this repo own this file", is versioned
+ * with the commit, and gives CI and a developer the same answer. It is also
+ * what makes the `examples/` surface safe to add at all.
+ *
+ * Cannot-enumerate is a hard failure, never a quiet empty set: a gate that
+ * passes because it found nothing to check is the one outcome this script may
+ * not produce.
+ */
+let TRACKED_MARKDOWN = null;
+function trackedMarkdown() {
+  if (TRACKED_MARKDOWN) return TRACKED_MARKDOWN;
+  let raw;
+  try {
+    raw = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z', '--', '*.md', '*.mdx'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    process.stderr.write(
+      "Could not list this repository's documentation with `git ls-files`:\n" +
+        // git's own stderr says WHICH of the two cases this is — "not a git
+        // repository" reads very differently from a missing binary — and the
+        // wrapped `Command failed: ...` message says neither.
+        `  ${String(err.stderr || '').trim() || err.message}\n` +
+        'This gate enumerates the files it checks from git so that its verdict depends on the\n' +
+        'commit and not on whatever happens to be built in the working tree. Without that list\n' +
+        'it cannot tell a guarded page from a generated one, and reporting a pass it did not\n' +
+        'earn is the single outcome it may not produce. Run it inside a git checkout.\n'
+    );
+    process.exit(1);
   }
-  return out;
+  TRACKED_MARKDOWN = raw.split('\0').filter(Boolean).sort();
+  return TRACKED_MARKDOWN;
+}
+
+/** Does repo-relative `file` sit on `surface`? */
+function onSurface(surface, file) {
+  const at = rel(surface.at);
+  return surface.kind === 'file' ? file === at : file === at || file.startsWith(`${at}/`);
 }
 
 /**
- * Every markdown file across DOC_SURFACES, de-duplicated and sorted.
+ * Every tracked markdown file across DOC_SURFACES, de-duplicated and sorted.
  *
- * Returns `{ files, missing }` rather than throwing: main() decides what a
- * missing required surface means, and reporting all of them at once beats
- * failing on the first.
+ * Returns `{ files, unusable }` rather than throwing: main() decides what a
+ * broken surface means, and reporting all of them at once beats failing on the
+ * first.
+ *
+ * A surface is unusable when it is absent, is the wrong kind, or contributes no
+ * tracked markdown at all. That last one matters as much as the other two and
+ * is what a bare existence check misses: `docs/` stays a directory long after
+ * every page inside it has moved elsewhere, and a surface that silently
+ * contributes nothing shrinks the checked set exactly the way a deleted one
+ * does — while still reporting a pass.
  */
 function docFiles() {
+  const tracked = trackedMarkdown();
   const files = new Set();
-  const missing = [];
+  const unusable = [];
   for (const surface of DOC_SURFACES) {
     // Type, not just existence. A `tree` that has become a file (or a `file`
     // that has become a directory) would otherwise die on ENOTDIR/EISDIR with a
@@ -811,15 +940,94 @@ function docFiles() {
     const stat = fs.statSync(surface.at, { throwIfNoEntry: false });
     const wrongType = stat && (surface.kind === 'file' ? !stat.isFile() : !stat.isDirectory());
     if (!stat || wrongType) {
-      missing.push(
-        `${rel(surface.at)}${wrongType ? ` (expected a ${surface.kind === 'file' ? 'file' : 'directory'})` : ''}`
-      );
+      unusable.push({
+        at: rel(surface.at),
+        why: wrongType
+          ? `expected a ${surface.kind === 'file' ? 'file' : 'directory'}`
+          : 'does not exist',
+        fix: 'Update DOC_SURFACES in this script to match where the docs actually live.',
+      });
       continue;
     }
-    if (surface.kind === 'tree') for (const f of markdownTree(surface.at)) files.add(f);
-    else files.add(surface.at);
+    const here = tracked.filter((f) => onSurface(surface, f));
+    if (here.length === 0) {
+      unusable.push({
+        at: rel(surface.at),
+        why:
+          surface.kind === 'file'
+            ? 'exists but is not tracked by git, so this gate cannot see it'
+            : 'exists but contains no tracked .md/.mdx file',
+        fix:
+          surface.kind === 'file'
+            ? `Run \`git add ${rel(surface.at)}\`, or drop it from DOC_SURFACES.`
+            : 'Update DOC_SURFACES in this script to match where the docs actually live.',
+      });
+      continue;
+    }
+    // git lists the INDEX, so a page deleted or renamed but not yet staged is
+    // still in `tracked`. Reading it would throw ENOENT several frames from
+    // here, and skipping it would shrink the checked set silently — the one
+    // thing this gate may not do. Name it instead.
+    for (const f of here) {
+      if (!fs.existsSync(path.join(REPO_ROOT, f))) {
+        unusable.push({
+          at: f,
+          why: 'is tracked by git but missing from the working tree',
+          fix: 'Stage the deletion or rename (`git add -A`), or restore the file.',
+        });
+        continue;
+      }
+      files.add(f);
+    }
   }
-  return { files: [...files].sort(), missing };
+  return { files: [...files].sort().map((f) => path.join(REPO_ROOT, f)), unusable };
+}
+
+/**
+ * Tracked markdown that is on no guarded surface and named by no exemption —
+ * plus the mirror image, exemptions that waive nothing.
+ *
+ * Both are failures; see UNGUARDED_DOCS for why the roster is checked in both
+ * directions.
+ */
+function rosterDrift(guarded) {
+  const tracked = trackedMarkdown();
+  const onASurface = new Set(guarded.map((f) => rel(f)));
+  const covers = (u, file) => file === u.at || file.startsWith(`${u.at}/`);
+
+  // Counted per ENTRY, not per path: two entries may legitimately nest (a tree
+  // plus one file inside it), and keying by `at` would both merge duplicates
+  // and — because only the first match was credited — report the narrower one
+  // as matching nothing. `exempts` is what the entry waives; `matches` is every
+  // tracked file under it, guarded or not, which is how a still-real path that
+  // a surface has since grown over is told apart from one that is simply gone.
+  const exempts = UNGUARDED_DOCS.map(() => 0);
+  const matches = UNGUARDED_DOCS.map(() => 0);
+
+  const stray = new Set();
+  for (const file of tracked) {
+    let waived = false;
+    UNGUARDED_DOCS.forEach((u, i) => {
+      if (!covers(u, file)) return;
+      matches[i] += 1;
+      if (onASurface.has(file)) return;
+      exempts[i] += 1;
+      waived = true;
+    });
+    if (!waived && !onASurface.has(file)) stray.add(file);
+  }
+
+  const stale = UNGUARDED_DOCS.map((u, i) => ({
+    ...u,
+    // An entry waiving nothing is stale either way, but for opposite reasons,
+    // and telling an author the wrong one sends them to the wrong fix.
+    why:
+      matches[i] === 0
+        ? 'matches no tracked file — the exemption has outlived its files'
+        : 'every file under it is now on a guarded surface, so it waives nothing',
+  })).filter((_, i) => exempts[i] === 0);
+
+  return { stray: [...stray].sort(), stale };
 }
 
 /**
@@ -866,19 +1074,46 @@ function main() {
 
   const declaredExternal = readDeclaredExternalPackages(packages);
 
-  const { files, missing } = docFiles();
-  if (missing.length) {
+  const { files, unusable } = docFiles();
+  if (unusable.length) {
     process.stderr.write(
-      `${missing.length} configured documentation surface(s) do not exist:\n` +
-        missing.map((m) => `   - ${m}\n`).join('') +
-        'A surface that has moved or been deleted must not quietly shrink the checked set —\n' +
-        'that is a silent pass, which is the one failure mode this gate cannot have. Update\n' +
-        'DOC_SURFACES in this script to match where the docs actually live.\n'
+      `${unusable.length} documentation surface(s) cannot be checked:\n` +
+        unusable.map((u) => `   - ${u.at} — ${u.why}\n     ${u.fix}\n`).join('') +
+        'A surface that has moved, been deleted, or been emptied must not quietly shrink the\n' +
+        'checked set — that is a silent pass, which is the one failure mode this gate cannot\n' +
+        'have, so each of these is reported rather than skipped.\n'
     );
     process.exit(1);
   }
   if (!files.length) {
     process.stderr.write('No documentation files found — nothing to check, which is not a pass.\n');
+    process.exit(1);
+  }
+
+  // The roster's other direction: markdown that no surface covers and no
+  // exemption names. See UNGUARDED_DOCS.
+  const { stray, stale: staleExemptions } = rosterDrift(files);
+  if (stray.length || staleExemptions.length) {
+    if (stray.length) {
+      process.stderr.write(
+        `${stray.length} tracked documentation file(s) are on no guarded surface:\n` +
+          stray.map((f) => `   - ${f}\n`).join('') +
+          'Every .md/.mdx file in this repository must be either guarded or deliberately\n' +
+          'exempt. Documentation that lands outside the roster is never checked and nothing\n' +
+          'says so — which is exactly how README.md stayed ungated for a release after the\n' +
+          'plan had already written down that it should not be.\n' +
+          'Add the surface to DOC_SURFACES, or add the file to UNGUARDED_DOCS with a reason.\n'
+      );
+    }
+    if (staleExemptions.length) {
+      process.stderr.write(
+        `${staleExemptions.length} UNGUARDED_DOCS exemption(s) waive nothing:\n` +
+          staleExemptions.map((u) => `   - ${u.at} — ${u.why}\n`).join('') +
+          'The exemption roster is exact and shrink-only, like the debt ledger: an exemption\n' +
+          'that no longer waives anything silently re-authorises whatever moves back into\n' +
+          'that path. Delete the entry from UNGUARDED_DOCS in this script.\n'
+      );
+    }
     process.exit(1);
   }
 
@@ -1163,13 +1398,14 @@ function main() {
 
 const LEDGER_COMMENT = [
   'Quarantined documentation-symbol failures — EXACT-MATCH and SHRINK-ONLY.',
-  'Each line is one known-broken import on a guarded documentation surface (see DOC_SURFACES in',
-  'scripts/check-docs-symbols.cjs — docs-site/docs, docs, packages, and the root README/CONTRIBUTING),',
-  'in the form',
+  'Each line is one known-broken import on a guarded documentation surface — as of this write,',
+  `${DOC_SURFACES.map((s) => rel(s.at)).join(', ')} — in the form`,
   '"<page> :: <kind> :: <specifier>[ :: <symbol>]". scripts/check-docs-symbols.cjs fails on any',
   'failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off',
   'debt cannot linger and re-authorise the same defect. Regenerate with',
   '`npm run docs:symbol-debt:update`; growing this file is a reviewable act of declaring new debt.',
+  'The surface list above is a snapshot taken when this file was last regenerated; the roster',
+  'that is actually enforced is DOC_SURFACES in scripts/check-docs-symbols.cjs.',
   'This comment describes the MECHANISM only. It deliberately does not narrate whatever finding',
   'currently populates the ledger: a comment that names a specific finding outlives it, and',
   'shipping prose that is no longer true is the exact defect class this gate exists to catch.',

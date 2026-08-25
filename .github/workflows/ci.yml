@@ -55,13 +55,20 @@ jobs:
 
       - name: Documentation symbol ratchet
         # Name-checks every import in every fenced ts/tsx/js block on every
-        # guarded documentation surface — docs-site/docs, docs, packages/, and
-        # the root README.md / CONTRIBUTING.md (see DOC_SURFACES in the script)
-        # — against the workspace's real package names, `exports` maps and
-        # export surfaces. The surfaces beyond docs-site matter as much as it
-        # does: README.md is the repo's front door and a package's README is its
-        # npm page, so an unscoped name there 404s for a reader who never opens
-        # the docs site at all.
+        # guarded documentation surface — docs-site/docs, docs, packages/,
+        # examples/, and the root README.md / CONTRIBUTING.md (see DOC_SURFACES
+        # in the script) — against the workspace's real package names, `exports`
+        # maps and export surfaces. The surfaces beyond docs-site matter as much
+        # as it does: README.md is the repo's front door and a package's README
+        # is its npm page, so an unscoped name there 404s for a reader who never
+        # opens the docs site at all.
+        #
+        # The roster is also checked for COMPLETENESS: every .md/.mdx file the
+        # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS
+        # with a reason, so a new documentation tree cannot land unchecked. The
+        # file list comes from `git ls-files`, which is what keeps the verdict a
+        # property of the commit rather than of whatever the working tree
+        # happens to have built (coverage/, target/, .next/ ...).
         # The `docs` job cannot host this: it runs
         # `npm ci` with working-directory docs-site, so packages/* is never
         # installed there and there would be nothing to resolve against. This
