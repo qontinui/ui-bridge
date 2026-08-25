@@ -6,8 +6,11 @@
 
 import type { NativeUIBridgeRegistry } from '../core/registry';
 import type { WorkflowStep, NativeElementType } from '../core/types';
-import type { NativeActionExecutor, ControlActionResponse } from '../control/types';
-import type { WaitOptions } from '../core/types';
+import type {
+  NativeActionExecutor,
+  ControlActionRequest,
+  ControlActionResponse,
+} from '../control/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
 
 /**
@@ -320,21 +323,17 @@ export function createServerHandlers(
 
     executeAction: async (ctx: HandlerContext) => {
       const { id } = ctx.params;
-      const body = ctx.body as {
-        action: string;
-        params?: Record<string, unknown>;
-        waitOptions?: WaitOptions;
-      };
+      const body = ctx.body as ControlActionRequest | undefined;
 
       if (!body?.action) {
         return error('Action is required', 'INVALID_REQUEST');
       }
 
-      const response = await executor.executeAction(id, {
-        action: body.action,
-        params: body.params,
-        waitOptions: body.waitOptions,
-      });
+      // Forwarded whole. Re-listing the fields here is how the web seam
+      // silently dropped every option added to the request type after the
+      // list was written; the native seam is the same shape and gets the same
+      // treatment before it grows its own.
+      const response = await executor.executeAction(id, body);
 
       if (!response.success) {
         return error(response.error || 'Action failed', 'ACTION_FAILED');

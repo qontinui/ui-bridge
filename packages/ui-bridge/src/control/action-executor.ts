@@ -76,9 +76,16 @@ import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
 // Phase 1/2 of plan `2026-08-20-ui-bridge-snapshot-identity-and-selector-candidates`:
-// the snapshot-identity fold, used here only to PARSE a caller-cited id and to
-// compare it against the registry's cheap live mount fold.
-import { parseSnapshotId, type SnapshotSignature } from '../core/snapshot-signature';
+// the snapshot-identity fold — used here to PARSE a caller-cited id, to compare
+// it against the registry's cheap live mount fold, and to stamp `find()`'s own
+// payload so an off-process driver folding it can tell whether its comparison
+// could see a remount at all.
+import {
+  computeSnapshotSignature,
+  evaluateSnapshotFreshness,
+  supersededSnapshotMessage,
+  type SnapshotFreshness,
+} from '../core/snapshot-signature';
 // Phase 3: the ONE ordinal vocabulary both element-resolution chains report in.
 import {
   buildElementResolution,
@@ -280,7 +287,10 @@ function getElementState(element: HTMLElement): ElementState {
   // Populate textContent from the element's visible text (CONTENT axis).
   // Reads textContent internally, trims, collapses whitespace, truncates to 500,
   // then scrubs the CONTENT axis through the choke point.
-  state.textContent = readScrubbedText(element, verdict, { normalizeWhitespace: true, maxLen: 500 });
+  state.textContent = readScrubbedText(element, verdict, {
+    normalizeWhitespace: true,
+    maxLen: 500,
+  });
 
   // Fallback for icon-only elements (no textContent but has aria-label/title).
   // §4.6: re-reads raw aria-label/title — must scrub or the boundary's secret
@@ -635,11 +645,7 @@ function createMouseEvent(type: string, element: HTMLElement, options?: MouseAct
  * handlers won't fire there, but neither will they crash, which preserves the
  * existing test surface.
  */
-function createPointerEvent(
-  type: string,
-  element: HTMLElement,
-  options?: MouseAction
-): Event {
+function createPointerEvent(type: string, element: HTMLElement, options?: MouseAction): Event {
   const rect = element.getBoundingClientRect();
   const x = options?.position?.x ?? rect.width / 2;
   const y = options?.position?.y ?? rect.height / 2;
@@ -992,81 +998,20 @@ export class DefaultActionExecutor implements ActionExecutor {
   /**
    * Decide whether a caller-cited snapshot id still describes this UI.
    *
-   * ## What it can prove cheaply, and what it deliberately does not
-   *
-   * The honest definition of "superseded" is *"the identity the caller cited is
-   * not the identity of the current UI state"*. Recomputing that identity in
-   * full would mean re-serializing every element — `state.textContent` /
-   * `state.ariaPressed` come from `getState()`, which forces layout per element.
-   * That is a cost a snapshot pays deliberately and an action must not pay
-   * incidentally, so this uses two cheap arms instead:
-   *
-   * 1. **The live mount fold** (`registry.computeLiveMountFold`) — always
-   *    available, reads only `id` and `registeredAt`, no DOM access at all, and
-   *    reproduces a stamped snapshot's `count`/`generation` EXACTLY when nothing
-   *    has changed. A `count` mismatch means the element set churned; a
-   *    `generation` mismatch on a matching count is a **remount**: the same
-   *    elements, possibly showing exactly the same thing, but not the same DOM
-   *    nodes the caller reasoned about. That is the case the pre-existing
-   *    "element not found" check can never catch, because the element resolves.
-   * 2. **A newer stamped snapshot** — available only once this registry has
-   *    stamped at least one snapshot. If the most recent one carries a different
-   *    id while count and generation match, the difference is in `content`: what
-   *    the caller could see has changed.
-   *
-   * What escapes both arms is a content change with no intervening snapshot —
-   * nothing observed it, so nothing can prove it. Plus the inherited
-   * millisecond residual: `registeredAt` is millisecond-resolution, so a remount
-   * completed inside one millisecond leaves `generation` untouched. Callers get
-   * a strong freshness signal, **not a total guarantee**; see
-   * `core/snapshot-signature.ts`.
-   *
-   * ## Unknown is not stale
-   *
-   * An id this SDK cannot parse, or a registry that has never stamped a
-   * snapshot, both yield `superseded: false`. Refusing on "cannot judge" would
-   * fail closed on the wrong axis: the caller opted into a freshness check, not
-   * into a ban on actions this SDK has no opinion about.
+   * A thin adapter over {@link evaluateSnapshotFreshness}, which holds the
+   * whole rulebook — the two cheap arms, the three-valued verdict, and why
+   * "cannot judge" must never render as "fresh". The evaluation is shared
+   * rather than reimplemented because this SDK has a SECOND action path (the
+   * injected/relay `executeElementAction` in `react/commandHandlers.ts`, a
+   * separate DOM implementation that never touches this executor), and a
+   * freshness gate that answers differently depending on which transport the
+   * caller reached is worse than one that does not exist.
    */
-  private checkSnapshotFreshness(citedSnapshotId: string): {
-    superseded: boolean;
-    supersededBy?: 'element-set' | 'remount' | 'content';
-    detail?: string;
-  } {
-    const cited: SnapshotSignature | null = parseSnapshotId(citedSnapshotId);
-    if (!cited) {
-      // Not a spec-v1 id — UNKNOWN, not stale.
-      return { superseded: false };
-    }
-
-    const live = this.registry.computeLiveMountFold?.();
-    if (live) {
-      if (live.count !== cited.count) {
-        return {
-          superseded: true,
-          supersededBy: 'element-set',
-          detail: `the registered element set changed (${cited.count} elements when the snapshot was taken, ${live.count} now)`,
-        };
-      }
-      if (live.generation !== cited.generation) {
-        return {
-          superseded: true,
-          supersededBy: 'remount',
-          detail: `the same ${cited.count} elements now belong to a different mount (generation ${cited.generation} -> ${live.generation}), so the target may not be the element the snapshot described`,
-        };
-      }
-    }
-
-    const last = this.registry.getLastSnapshotIdentity?.();
-    if (last && last.snapshotId !== citedSnapshotId) {
-      return {
-        superseded: true,
-        supersededBy: 'content',
-        detail: `a newer snapshot (${last.snapshotId}) shows different content`,
-      };
-    }
-
-    return { superseded: false };
+  private checkSnapshotFreshness(citedSnapshotId: string): SnapshotFreshness {
+    return evaluateSnapshotFreshness(citedSnapshotId, {
+      liveMountFold: this.registry.computeLiveMountFold?.(),
+      lastSnapshotIdentity: this.registry.getLastSnapshotIdentity?.(),
+    });
   }
 
   /**
@@ -1112,14 +1057,15 @@ export class DefaultActionExecutor implements ActionExecutor {
     // reasoning, not about the target: an element that resolves perfectly well
     // can still be the wrong element. Omitting `fromSnapshotId` skips this
     // entirely and preserves the pre-plan behaviour exactly.
+    let snapshotFreshness: SnapshotFreshness | undefined;
     if (request.fromSnapshotId !== undefined) {
       const freshness = this.checkSnapshotFreshness(request.fromSnapshotId);
-      if (freshness.superseded) {
-        const message =
-          `Snapshot '${request.fromSnapshotId}' is superseded: ${freshness.detail}. ` +
-          `The action on '${elementId}' was refused before it ran because it was reasoned ` +
-          `from a snapshot that no longer describes this UI. Take a fresh snapshot and ` +
-          `re-resolve the target from it before retrying.`;
+      // Reported on EVERY response that opted in, not just the refusals. A
+      // caller that asked for a freshness check and got `success: true` needs
+      // to see whether the check actually ran — see `checkSnapshotFreshness`.
+      snapshotFreshness = freshness;
+      if (freshness.verdict === 'superseded') {
+        const message = supersededSnapshotMessage(freshness, elementId);
         const details = buildActionFailureDetails('UB-STALE-ELEMENT', message, {
           elementId,
           staleReason: 'snapshot-superseded',
@@ -1150,6 +1096,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           success: false,
           error: message,
           failureDetails: details,
+          snapshotFreshness: freshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -1249,8 +1196,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         // reference rather than a never-existed miss — report it as
         // UB-STALE-ELEMENT with the matching `staleReason` discriminator so
         // the runner can re-find instead of re-describing.
-        let errorCode: import('../diagnostics').UiBridgeErrorCode =
-          'UB-ELEM-NOT-FOUND';
+        let errorCode: import('../diagnostics').UiBridgeErrorCode = 'UB-ELEM-NOT-FOUND';
         let staleReason: 'unmounted' | 'rerendered' | 'detached' | undefined;
         if (wasRegistered && !wasRegistered.element?.isConnected) {
           hint = `Element '${elementId}' was registered but is no longer in the DOM (component may have unmounted). Try re-discovering with find() or navigate to the page containing this element.`;
@@ -1272,6 +1218,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             staleReason,
             durationMs: performance.now() - startTime,
           }),
+          snapshotFreshness,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -1295,28 +1242,24 @@ export class DefaultActionExecutor implements ActionExecutor {
               conds.push(`${k}=${String(v)}`);
             }
           }
-          const waitCondition =
-            conds.length > 0 ? conds.join(', ') : 'element condition';
+          const waitCondition = conds.length > 0 ? conds.join(', ') : 'element condition';
           const roundedWait = Math.round(waitDurationMs);
           return {
             success: false,
             error: message,
-            failureDetails: buildActionFailureDetails(
-              'UB-ACTION-TIMEOUT',
-              message,
-              {
-                elementId,
+            failureDetails: buildActionFailureDetails('UB-ACTION-TIMEOUT', message, {
+              elementId,
+              waitCondition,
+              waitTimedOutAfterMs: roundedWait,
+              timeoutType: 'computation',
+              timeoutMs: wo.timeout,
+              durationMs: performance.now() - startTime,
+              renderContext: {
+                waitDurationMs: roundedWait,
                 waitCondition,
-                waitTimedOutAfterMs: roundedWait,
-                timeoutType: 'computation',
-                timeoutMs: wo.timeout,
-                durationMs: performance.now() - startTime,
-                renderContext: {
-                  waitDurationMs: roundedWait,
-                  waitCondition,
-                },
-              }
-            ),
+              },
+            }),
+            snapshotFreshness,
             durationMs: performance.now() - startTime,
             timestamp: Date.now(),
             requestId: request.requestId,
@@ -1385,10 +1328,8 @@ export class DefaultActionExecutor implements ActionExecutor {
           params: actionParams as Record<string, unknown> | undefined,
           requestId: request.requestId,
         };
-        const verified = await this.getEffectVerifier().verifyAction(
-          effectParams,
-          signature,
-          () => this.performAction(element, request.action, actionParams, registered)
+        const verified = await this.getEffectVerifier().verifyAction(effectParams, signature, () =>
+          this.performAction(element, request.action, actionParams, registered)
         );
         result = verified.result;
         effectVerification = verified.verification;
@@ -1495,6 +1436,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         errorImpact,
         effectVerification,
         elementResolution,
+        snapshotFreshness,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -1525,12 +1467,11 @@ export class DefaultActionExecutor implements ActionExecutor {
         // Precedence: native > aria > pointer-none (a native `disabled`
         // property is the strongest, most actionable signal).
         const sig = error.elementState;
-        const disabledReason: 'native' | 'aria' | 'pointer-none' =
-          sig.nativeDisabled
-            ? 'native'
-            : sig.ariaDisabled
-              ? 'aria'
-              : 'pointer-none';
+        const disabledReason: 'native' | 'aria' | 'pointer-none' = sig.nativeDisabled
+          ? 'native'
+          : sig.ariaDisabled
+            ? 'aria'
+            : 'pointer-none';
         failureDetails = buildActionFailureDetails('UB-ELEM-DISABLED', message, {
           elementId,
           disabledReason,
@@ -1549,15 +1490,11 @@ export class DefaultActionExecutor implements ActionExecutor {
         } catch {
           // Best-effort snapshot — never mask the original error.
         }
-        failureDetails = buildActionFailureDetails(
-          'UB-ELEM-NOT-VISIBLE',
-          message,
-          {
-            elementId,
-            visibilityReason: error.visibilityReason,
-            durationMs: performance.now() - startTime,
-          }
-        );
+        failureDetails = buildActionFailureDetails('UB-ELEM-NOT-VISIBLE', message, {
+          elementId,
+          visibilityReason: error.visibilityReason,
+          durationMs: performance.now() - startTime,
+        });
       } else {
         failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
           elementId,
@@ -1583,6 +1520,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         stack: error instanceof Error ? error.stack : undefined,
         elementState,
         elementResolution,
+        snapshotFreshness,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -1963,6 +1901,13 @@ export class DefaultActionExecutor implements ActionExecutor {
           actions: registered?.actions || this.inferActions(el),
           state,
           registered: !!registered,
+          // WHICH MOUNT this element belongs to — the only field that makes a
+          // same-shape remount visible to anything folding this payload. Copied
+          // off the registry record, and deliberately left ABSENT for a
+          // DOM-scanned node: it has no registration time, and synthesizing one
+          // would churn the generation fold on every call. See
+          // `DiscoveredElement.registeredAt`.
+          registeredAt: registered?.registeredAt,
           category: registered?.category || 'interactive',
           className: classString(el) || undefined,
           classes: el.classList?.length > 0 ? Array.from(el.classList) : undefined,
@@ -2016,6 +1961,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           actions: [],
           state,
           registered: true,
+          // See the interactive block above — mount identity, always real here
+          // because a content element only reaches this loop via the registry.
+          registeredAt: el.registeredAt,
           category: 'content',
           className: classString(el.element) || undefined,
           classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
@@ -2098,6 +2046,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           actions: [],
           state,
           registered: true,
+          // See the interactive block above — mount identity, always real here
+          // because a media element only reaches this loop via the registry.
+          registeredAt: el.registeredAt,
           category: 'media',
           className: classString(el.element) || undefined,
           classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
@@ -2109,6 +2060,13 @@ export class DefaultActionExecutor implements ActionExecutor {
     return {
       elements,
       total: elements.length,
+      // The identity fold over exactly the array being returned. Off-process
+      // drivers fold this payload themselves to answer "did that click change
+      // anything?"; emitting the fold lets them compare instead of
+      // re-implementing, and — the load-bearing part — lets them read
+      // `mountEvidence` and find out whether their comparison could see a
+      // remount at all. See `FindResponse.signature`.
+      signature: computeSnapshotSignature(elements),
       durationMs: performance.now() - startTime,
       timestamp: Date.now(),
     };
@@ -2569,10 +2527,7 @@ export class DefaultActionExecutor implements ActionExecutor {
    * interactive for the duration of the click — mirroring how a real pointer
    * would still be over the toolbar at click time.
    */
-  private async performHoverClick(
-    element: HTMLElement,
-    options?: MouseAction
-  ): Promise<void> {
+  private async performHoverClick(element: HTMLElement, options?: MouseAction): Promise<void> {
     // Hover the nearest hoverable ancestor first (outermost → innermost is
     // irrelevant for `:hover` activation, but ancestor-then-target matches the
     // natural pointer-enter order and lets a `group-hover` rule on the
@@ -2706,7 +2661,13 @@ export class DefaultActionExecutor implements ActionExecutor {
       // Fire keypress for printable characters only (no modifiers except shift)
       const isInputElement =
         element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
-      if (key.length === 1 && !NON_PRINTABLE_KEYS.has(key) && !mods.ctrl && !mods.alt && !mods.meta) {
+      if (
+        key.length === 1 &&
+        !NON_PRINTABLE_KEYS.has(key) &&
+        !mods.ctrl &&
+        !mods.alt &&
+        !mods.meta
+      ) {
         element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
         // Insert character into input/textarea value (keypress alone doesn't update .value)
         if (isInputElement) {
@@ -3799,11 +3760,7 @@ function computeActionErrorDiff(
  */
 const SAFE_SERIALIZE_MAX_DEPTH = 6;
 
-function safeSerialize(
-  value: unknown,
-  seen = new WeakSet<object>(),
-  depth = 0
-): unknown {
+function safeSerialize(value: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
   if (depth > SAFE_SERIALIZE_MAX_DEPTH) return '[MaxDepth]';
   if (value === null || value === undefined) return value;
   if (typeof value === 'function') return '[Function]';

@@ -20,6 +20,12 @@ import {
 } from '../core/registry';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
+import {
+  computeSnapshotSignature,
+  evaluateSnapshotFreshness,
+  supersededSnapshotMessage,
+  type SnapshotFreshness,
+} from '../core/snapshot-signature';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
@@ -388,9 +394,7 @@ async function runComponentActionViaExecutor(
  */
 function inProcessComponentNotFoundMessage(id: string): string {
   let available: string[] = [];
-  let byRoute:
-    | Record<string, { count: number; ids: string[] }>
-    | undefined;
+  let byRoute: Record<string, { count: number; ids: string[] }> | undefined;
   let currentRoute: string | undefined;
   try {
     const reg = getGlobalRegistry();
@@ -409,6 +413,27 @@ function inProcessComponentNotFoundMessage(id: string): string {
   return buildComponentNotFoundError(id, available, byRoute, currentRoute);
 }
 
+/**
+ * Serialize one registered element for the `find` / `discover` relay reply.
+ *
+ * This is a SECOND producer of the find shape — the injected / CDP-driven
+ * path (qontinui-web and anything else driven through the relay) — running
+ * alongside the executor's own `find()` in `control/action-executor.ts`. Both
+ * feed the same consumer folds, so both must emit the same identity fields:
+ *
+ * - **`registeredAt`** — WHICH MOUNT the element belongs to. Without it the
+ *   `generation` half of every downstream signature (the runner's
+ *   `SnapshotSignature`, `core/snapshot-signature.ts`) folds ids alone, and a
+ *   same-shape remount is invisible: the ids survive by design
+ *   (`preserveIdAcrossRemount`) and the text is identical, so the fold reports
+ *   "nothing changed" about a subtree that was destroyed and rebuilt.
+ * - **`category`** — part of the `content` half of the same fold, and the
+ *   discriminator every `interactive` / `content` / `media` filter reads.
+ *
+ * Both were missing here while the direct path emitted them, which made the
+ * whole staleness story silently inert on exactly the consumers that are not
+ * the runner's own frontend.
+ */
 function elementToFindResult(e: RegisteredElement) {
   const state = e.getState();
   return {
@@ -423,6 +448,8 @@ function elementToFindResult(e: RegisteredElement) {
     actions: e.actions,
     state,
     registered: true,
+    registeredAt: e.registeredAt,
+    category: e.category,
     stableRef: createStableRef(e),
   };
 }
@@ -1091,8 +1118,63 @@ export async function executeCommand(
       const startTime = performance.now();
       const { id, request } = payload as {
         id: string;
-        request: { action: string; value?: string; params?: P; text?: string; clear?: boolean };
+        request: {
+          action: string;
+          value?: string;
+          params?: P;
+          text?: string;
+          clear?: boolean;
+          fromSnapshotId?: string;
+        };
       };
+
+      // Opt-in stale-snapshot precondition, on the INJECTED/RELAY path.
+      //
+      // This case is a wholly separate DOM implementation from
+      // `DefaultActionExecutor.executeAction` — it never calls the executor —
+      // so every guarantee the executor grew had to be wired here explicitly or
+      // it simply did not exist for the consumers that reach the SDK this way
+      // (qontinui-web and anything else driven through the relay or CDP). A
+      // freshness gate that silently does nothing on one transport is exactly
+      // the "shipped but unreachable" defect it was built to prevent.
+      //
+      // The verdict itself comes from the SHARED evaluator, not a second copy
+      // of the rules: two implementations of "is this snapshot current?" would
+      // drift, and a driver cannot pattern-match a failure whose prose depends
+      // on which transport it happened to reach.
+      let snapshotFreshness: SnapshotFreshness | undefined;
+      if (typeof request.fromSnapshotId === 'string') {
+        const freshnessRegistry = getGlobalRegistry();
+        snapshotFreshness = evaluateSnapshotFreshness(request.fromSnapshotId, {
+          liveMountFold: freshnessRegistry.computeLiveMountFold(),
+          lastSnapshotIdentity: freshnessRegistry.getLastSnapshotIdentity(),
+        });
+        if (snapshotFreshness.verdict === 'superseded') {
+          const message = supersededSnapshotMessage(snapshotFreshness, id);
+          const failure = createActionFailure(id, 'UB-STALE-ELEMENT', message, startTime);
+          return {
+            ...failure,
+            failureDetails: {
+              ...failure.failureDetails,
+              staleReason: 'snapshot-superseded',
+              // Re-FINDING this id would succeed and click the wrong thing, so
+              // the re-snapshot recovery has to lead. Same ordering as the
+              // executor's arm.
+              suggestedActions: [
+                {
+                  suggestion: 'Take a fresh snapshot and re-resolve the target from it',
+                  command: 'snapshot',
+                  confidence: 0.95,
+                  retryable: true,
+                  priority: 0,
+                },
+                ...failure.failureDetails.suggestedActions,
+              ],
+            },
+            snapshotFreshness,
+          };
+        }
+      }
 
       // Page-level sentinel IDs ("document", "body", "window") resolve to
       // document.documentElement for scroll actions, bypassing the element registry.
@@ -1543,6 +1625,10 @@ export async function executeCommand(
         success: true,
         action: request.action,
         elementId: id,
+        // Present only when the caller opted in — and `indeterminate` is a real
+        // answer here, not an omission: it says the action ran WITHOUT its
+        // freshness being verified.
+        snapshotFreshness,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
       };
@@ -1734,9 +1820,16 @@ export async function executeCommand(
       } catch {
         // Fall back to the conservative default above.
       }
+      const findElements = filtered.map(elementToFindResult);
       return {
-        elements: filtered.map(elementToFindResult),
+        elements: findElements,
         total: filtered.length,
+        // Folded over exactly the array being returned. This is the payload
+        // the runner re-folds in Rust to answer "did that click change
+        // anything?", so it must carry `mountEvidence` — otherwise a driver
+        // cannot tell a generation that matched from a generation that was
+        // never able to move. See `FindResponse.signature`.
+        signature: computeSnapshotSignature(findElements),
         durationMs: 0,
         timestamp: Date.now(),
         registration,
@@ -1754,7 +1847,7 @@ export async function executeCommand(
           // are the boundary's secret — collapse the whole cell.
           text: isContentRedacted(e.element)
             ? REDACTED_VALUE
-            : truncateCodePoints(e.label ?? (readScrubbedText(e.element) ?? ''), 50),
+            : truncateCodePoints(e.label ?? readScrubbedText(e.element) ?? '', 50),
         })),
       };
 
@@ -2362,10 +2455,7 @@ export async function executeCommand(
           ? predicate.label.toLowerCase()
           : null;
 
-      const predicateMatches = (
-        el: RegisteredElement,
-        domEl: HTMLElement | null
-      ): boolean => {
+      const predicateMatches = (el: RegisteredElement, domEl: HTMLElement | null): boolean => {
         if (typeof predicate.id === 'string' && predicate.id.length > 0) {
           if (el.id !== predicate.id) return false;
         }
@@ -2383,10 +2473,7 @@ export async function executeCommand(
         return true;
       };
 
-      const requirementMet = (
-        el: RegisteredElement,
-        domEl: HTMLElement | null
-      ): boolean => {
+      const requirementMet = (el: RegisteredElement, domEl: HTMLElement | null): boolean => {
         if (requirement === 'registered') return true;
 
         if (requirement === 'visible') {
@@ -2618,7 +2705,8 @@ export async function executeCommand(
             const label = typeof el.label === 'string' ? el.label.toLowerCase() : '';
             const ariaLabel = ((domEl ? readAriaLabelAttr(domEl) : null) ?? '').toLowerCase();
             const title = ((domEl ? readTitleAttr(domEl) : null) ?? '').toLowerCase();
-            const textContent = (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
+            const textContent =
+              (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
             return (
               label.includes(needle) ||
               ariaLabel.includes(needle) ||
@@ -2715,8 +2803,7 @@ export async function executeCommand(
           : null;
 
       const started = Date.now();
-      const initialRoute =
-        typeof window !== 'undefined' ? window.location.pathname : '';
+      const initialRoute = typeof window !== 'undefined' ? window.location.pathname : '';
 
       return new Promise((resolve) => {
         let settled = false;
@@ -2768,11 +2855,7 @@ export async function executeCommand(
           const origPush = window.history.pushState.bind(window.history);
           const origReplace = window.history.replaceState.bind(window.history);
 
-          window.history.pushState = (
-            data: unknown,
-            unused: string,
-            url?: string | URL | null
-          ) => {
+          window.history.pushState = (data: unknown, unused: string, url?: string | URL | null) => {
             const from = window.location.pathname;
             origPush(data as never, unused, url as never);
             const to = window.location.pathname;
@@ -3149,7 +3232,11 @@ export async function executeCommand(
       for (const [tag, role] of Object.entries(semanticMap)) {
         document.querySelectorAll(tag).forEach((el) => {
           if (!el.getAttribute('role'))
-            regions.push({ role, tag, text: readScrubbedText(el, undefined, { maxLen: 100 }) ?? '' });
+            regions.push({
+              role,
+              tag,
+              text: readScrubbedText(el, undefined, { maxLen: 100 }) ?? '',
+            });
         });
       }
       return { regions, timestamp: Date.now() };

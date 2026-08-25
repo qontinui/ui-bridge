@@ -9,6 +9,7 @@ import type {
   ControlSnapshot,
   DiscoveredElement,
   ActionExecutor,
+  ControlActionRequest,
   ControlActionResponse,
   ComponentActionResponse,
   FindResponse,
@@ -93,10 +94,15 @@ export interface RegistryLike {
  * Action executor interface - minimal contract for handler usage
  */
 export interface ActionExecutorLike {
-  executeAction(
-    elementId: string,
-    request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
-  ): Promise<unknown>;
+  /**
+   * The request is the WHOLE {@link ControlActionRequest}, deliberately not a
+   * narrowed `{ action, params, waitOptions }` literal. A narrowed parameter
+   * type here is what let the handler above forward a hand-written field list
+   * and still type-check, silently dropping every request option added since
+   * that list was written. Widen this, and the handler's pass-through, together
+   * — never one without the other.
+   */
+  executeAction(elementId: string, request: ControlActionRequest): Promise<unknown>;
   executeComponentAction(
     componentId: string,
     request: {
@@ -513,9 +519,19 @@ export function createHandlers(
       }
     },
 
+    /**
+     * `POST /control/element/:id/action`.
+     *
+     * The request is forwarded **whole**. It previously re-listed
+     * `{ action, params, waitOptions }`, which silently dropped every field
+     * `ControlActionRequest` has gained since — a caller's opt-in never
+     * reached the executor and the response still said `success: true`. Same
+     * defect, same fix, as the twin handler in `@qontinui/ui-bridge`'s
+     * `server/handlers.ts`. Do not reintroduce a field list.
+     */
     executeElementAction: async (
       id: string,
-      request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
+      request: ControlActionRequest
     ): Promise<APIResponse<ControlActionResponse>> => {
       const startTime = Date.now();
       try {
@@ -543,11 +559,8 @@ export function createHandlers(
           } as APIResponse<ControlActionResponse>;
         }
 
-        const result = await actionExecutor.executeAction(id, {
-          action: request.action,
-          params: request.params,
-          waitOptions: request.waitOptions,
-        });
+        // Forwarded whole — see the doc comment on this handler.
+        const result = await actionExecutor.executeAction(id, request);
 
         // If the action executor returned a failure, enhance with structured details
         if (result && typeof result === 'object' && 'success' in result && !result.success) {
@@ -778,7 +791,10 @@ export function createHandlers(
       }
     },
 
-    runWorkflow: async (id: string, request?: unknown): Promise<APIResponse<WorkflowRunResponse>> => {
+    runWorkflow: async (
+      id: string,
+      request?: unknown
+    ): Promise<APIResponse<WorkflowRunResponse>> => {
       try {
         const runnerPort = process.env['QONTINUI_PORT'] ?? '9876';
         const runnerUrl = `http://localhost:${runnerPort}`;

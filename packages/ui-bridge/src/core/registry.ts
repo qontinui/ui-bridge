@@ -79,7 +79,6 @@ import {
   computeVisibleText,
 } from './a11y';
 
-
 /**
  * The attribute that opts an element (and its subtree) out of the
  * relay's snapshot. Used by §4.5's "AI in control" banner to make
@@ -175,7 +174,7 @@ export function serializeRegisteredElement(
   // "manually stamped" entries without DOM queries.
   const uiBridgeId =
     typeof el.element?.getAttribute === 'function'
-      ? el.element.getAttribute('data-ui-bridge-id') ?? undefined
+      ? (el.element.getAttribute('data-ui-bridge-id') ?? undefined)
       : undefined;
   // Structural-accessibility view (Stream-A A.5). Populated from the live
   // DOM node so Spec-Check's matcher reads these directly without rederiving.
@@ -1509,8 +1508,7 @@ export class UIBridgeRegistry {
       route,
       // Undefined for default-window elements (keeps single-window snapshots
       // byte-identical); the real webview label for multi-window hosts.
-      windowLabel:
-        windowLabel === UIBridgeRegistry.DEFAULT_WINDOW_LABEL ? undefined : windowLabel,
+      windowLabel: windowLabel === UIBridgeRegistry.DEFAULT_WINDOW_LABEL ? undefined : windowLabel,
       // Content/role fields for data-ui-bridge-content semantic elements.
       // Undefined for interactive elements and for content registered via
       // the heading/paragraph/table-cell content-discovery path.
@@ -1670,9 +1668,7 @@ export class UIBridgeRegistry {
    * Get all interactive elements
    */
   getAllInteractiveElements(): RegisteredElement[] {
-    return this.allElements().filter(
-      (el) => el.category !== 'content' && el.category !== 'media'
-    );
+    return this.allElements().filter((el) => el.category !== 'content' && el.category !== 'media');
   }
 
   /**
@@ -1875,7 +1871,10 @@ export class UIBridgeRegistry {
         // client cannot confirm the secret name by guessing it. Dev `label`
         // and already-scrubbed `textContent` are safe.
         const ariaLabel =
-          scrubContentByVerdict(readAriaLabelAttr(element.element) || undefined, redactionVerdict) || '';
+          scrubContentByVerdict(
+            readAriaLabelAttr(element.element) || undefined,
+            redactionVerdict
+          ) || '';
         const accessibleName = ariaLabel || label || textContent;
 
         if (accessibleName.toLowerCase() === criteria.accessibleName.toLowerCase()) {
@@ -1980,7 +1979,8 @@ export class UIBridgeRegistry {
           // `element.description` is developer-SET (never DOM-scraped) — the
           // documented boundary exemption, so `trustDeveloperContent` is correct.
           description: element.description
-            ? trustDeveloperContent(element.description) ?? scrubContentRequired('', redactionVerdict)
+            ? (trustDeveloperContent(element.description) ??
+              scrubContentRequired('', redactionVerdict))
             : scrubContentRequired(descriptionText, redactionVerdict),
           // `aliases` is EITHER dev-set (trusted) OR already gated through
           // `scrubAliases` above (→ `[]` when content-redacted). Brand each for
@@ -2960,8 +2960,15 @@ export class UIBridgeRegistry {
    * What it deliberately does NOT recompute is `content`, which would need
    * `state.textContent` / `state.ariaPressed` per element. See
    * `computeMountFold` for why.
+   *
+   * `mountEvidence` comes back too, and on this path it is effectively a
+   * health check rather than a variable: every `RegisteredElement` is stamped
+   * with a `registeredAt` at registration, so a live fold over a non-empty
+   * registry always has full evidence. A **zero** here therefore means the
+   * registry is empty — nothing to testify about — and the freshness gate must
+   * report that as "cannot judge", not as "nothing remounted".
    */
-  computeLiveMountFold(): { count: number; generation: string } {
+  computeLiveMountFold(): { count: number; generation: string; mountEvidence: number } {
     return computeMountFold(this.getAllElements());
   }
 

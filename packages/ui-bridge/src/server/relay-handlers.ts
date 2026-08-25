@@ -34,6 +34,7 @@ import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
+import { computeSnapshotSignature } from '../core/snapshot-signature';
 import type { ElementQuery } from '../core/find';
 import {
   applyCanonicalFindFilter,
@@ -249,12 +250,7 @@ export function createRelayHandlers(
       nestedCaller =
         typeof req.__callerUserId === 'string' ? (req.__callerUserId as string) : undefined;
       if (nestedTabId !== undefined || nestedCaller !== undefined) {
-        const {
-          targetTabId: _omitT,
-          tabId: _omitP,
-          __callerUserId: _omitC,
-          ...restReq
-        } = req;
+        const { targetTabId: _omitT, tabId: _omitP, __callerUserId: _omitC, ...restReq } = req;
         cleanedRequest = restReq;
         requestRewritten = true;
       }
@@ -306,11 +302,7 @@ export function createRelayHandlers(
       context?: HandlerContext;
     }
   ): Promise<APIResponse<T>> {
-    const {
-      targetTabId: payloadTabId,
-      callerUserId,
-      cleaned,
-    } = extractTabRouting(payload);
+    const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
     const effectiveTabId = opts?.targetTabId ?? payloadTabId;
     const contextUserId = opts?.context?.callerUserId;
     const effectiveOwnerCheck =
@@ -444,9 +436,7 @@ export function createRelayHandlers(
   // existing precedence rules). Centralizes the per-handler boilerplate
   // for the dozens of handlers that need to thread context into the
   // relay layer.
-  function ctxOpts(
-    context?: HandlerContext
-  ): { context?: HandlerContext } | undefined {
+  function ctxOpts(context?: HandlerContext): { context?: HandlerContext } | undefined {
     return context ? { context } : undefined;
   }
 
@@ -581,9 +571,7 @@ export function createRelayHandlers(
       try {
         const { cleaned, callerUserId } = extractTabRouting(query ?? {});
         const effectiveUserId = callerUserId ?? context?.callerUserId;
-        const liveOpts = effectiveUserId
-          ? { ownerCheck: { userId: effectiveUserId } }
-          : undefined;
+        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand('getRenderLog', cleaned, liveOpts);
         if (
           result &&
@@ -641,9 +629,7 @@ export function createRelayHandlers(
       // fallback chain (label → id) is what actually fires here.
       // Phase 3.2 adds the `revealsAny` filter which acts on each element's
       // `reveals` array — passed through verbatim by `serializeRegisteredElement`.
-      const applyFilters = (
-        elements: ControlSnapshot['elements']
-      ): ControlSnapshot['elements'] => {
+      const applyFilters = (elements: ControlSnapshot['elements']): ControlSnapshot['elements'] => {
         if (!(opts.title || opts.aria_label || opts.text || opts.revealsAny)) return elements;
         return elements.filter((el) =>
           matchesElementSelector(el as unknown as MatchableElement, {
@@ -745,9 +731,7 @@ export function createRelayHandlers(
 
       // Try relay first for live element data when browser is connected
       try {
-        const liveOpts = effectiveUserId
-          ? { ownerCheck: { userId: effectiveUserId } }
-          : undefined;
+        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand('getElement', { id }, liveOpts);
         if (result) return success(result) as APIResponse<ControlSnapshot['elements'][0]>;
       } catch {
@@ -825,8 +809,7 @@ export function createRelayHandlers(
           if (hasValue) {
             return {
               success: false,
-              error:
-                "type action takes 'text' parameter; got 'value'. Did you mean setValue?",
+              error: "type action takes 'text' parameter; got 'value'. Did you mean setValue?",
               code: 'WRONG_TYPE_PARAM' as APIResponse['code'],
               data: {
                 hint: { provided: ['value'], required: ['text'] },
@@ -1016,6 +999,11 @@ export function createRelayHandlers(
         {
           elements: filtered as unknown as FindResponse['elements'],
           total: filtered.length,
+          // Stamped on the DEGRADED arm too. A payload that silently omits the
+          // fold is indistinguishable from one produced by a build that never
+          // had it, and the whole point of `mountEvidence` is that a consumer
+          // can tell what its comparison was worth. See `FindResponse.signature`.
+          signature: computeSnapshotSignature(filtered),
           durationMs: 0,
           timestamp: Date.now(),
           // F3 readiness signal (item 5): carry the cached snapshot's
@@ -1268,9 +1256,7 @@ export function createRelayHandlers(
       try {
         const { cleaned, callerUserId } = extractTabRouting(params ?? {});
         const effectiveUserId = callerUserId ?? context?.callerUserId;
-        const liveOpts = effectiveUserId
-          ? { ownerCheck: { userId: effectiveUserId } }
-          : undefined;
+        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
           cleaned,
@@ -1324,9 +1310,7 @@ export function createRelayHandlers(
       try {
         const { cleaned, callerUserId } = extractTabRouting(options ?? {});
         const effectiveUserId = callerUserId ?? context?.callerUserId;
-        const liveOpts = effectiveUserId
-          ? { ownerCheck: { userId: effectiveUserId } }
-          : undefined;
+        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<SemanticSnapshot>(
           'getSemanticSnapshot',
           cleaned,
@@ -1660,10 +1644,7 @@ export function createRelayHandlers(
      * Will be removed in a future major version.
      */
     async clipboardWrite(request: unknown, context) {
-      return handlers.setClipboard(
-        request as Parameters<typeof handlers.setClipboard>[0],
-        context
-      );
+      return handlers.setClipboard(request as Parameters<typeof handlers.setClipboard>[0], context);
     },
 
     /**
@@ -1862,7 +1843,9 @@ export function createRelayHandlers(
         activeTab?: string;
       };
       const visibleElementCount = snapshot.elements.reduce((acc, el) => {
-        const state = el.state as { rect?: { width: number; height: number }; visible?: boolean } | undefined;
+        const state = el.state as
+          | { rect?: { width: number; height: number }; visible?: boolean }
+          | undefined;
         const rect = state?.rect;
         const hasLayout = !!rect && (rect.width > 0 || rect.height > 0);
         const isVisible = state?.visible !== false;
@@ -1874,9 +1857,10 @@ export function createRelayHandlers(
       // NOT trigger a fresh round-trip here — state-summary's contract is
       // "synthesize from what we already have", not "make extra calls".
       let hasErrors = false;
-      const cache = lastConsoleErrorsCache as
-        | APIResponse<{ count?: number; errors?: unknown[] }>
-        | null;
+      const cache = lastConsoleErrorsCache as APIResponse<{
+        count?: number;
+        errors?: unknown[];
+      }> | null;
       if (cache?.success && cache.data) {
         const count = cache.data.count;
         if (typeof count === 'number') {
@@ -1891,9 +1875,8 @@ export function createRelayHandlers(
       // so callers can detect "idle detection unavailable" without 500ing.
       let idleSignals: StateSummary['idleSignals'] = null;
       try {
-        const idleResp = await relayCommand<NonNullable<StateSummary['idleSignals']>>(
-          'getIdleStatus'
-        );
+        const idleResp =
+          await relayCommand<NonNullable<StateSummary['idleSignals']>>('getIdleStatus');
         if (idleResp.success && idleResp.data) idleSignals = idleResp.data;
       } catch {
         idleSignals = null;

@@ -25,6 +25,7 @@ import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { EffectVerification } from './effect-types';
 import type { Scrubbed } from '../core/redaction';
+import type { SnapshotSignature } from '../core/snapshot-signature';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
 import type { ParamValidationMode } from '../core/param-schema';
 
@@ -351,6 +352,25 @@ export interface DiscoveredElement {
   state: ElementState;
   /** Whether registered with UI Bridge */
   registered: boolean;
+  /**
+   * Unix-epoch ms timestamp of the element's **registration** — i.e. which
+   * mount it belongs to.
+   *
+   * This is the only field in a find/discover payload that can make a
+   * *same-shape remount* visible. The registry deliberately preserves element
+   * ids across a remount (`preserveIdAcrossRemount`), and a component
+   * destroyed and rebuilt in the same state renders identical text — so
+   * without this, a consumer folding the payload (the runner's
+   * `SnapshotSignature.generation`, or `core/snapshot-signature.ts`) folds ids
+   * alone and reports "nothing changed" for a click that tore the whole
+   * subtree down. See `computeMountFold`.
+   *
+   * **Absent for elements this SDK has not registered** — a DOM-scanned node
+   * has no registration time, and synthesizing "now" would move the generation
+   * fold on every single call, turning a blind detector into a lying one. An
+   * absent value contributes no bytes to the fold, by the fold's own spec.
+   */
+  registeredAt?: number;
   /** Whether this is an interactive element, static content, or media */
   category?: 'interactive' | 'content' | 'media';
   /**
@@ -475,6 +495,26 @@ export interface FindResponse {
   durationMs: number;
   /** Timestamp */
   timestamp: number;
+  /**
+   * The identity fold over `elements` — the same `{ count, content,
+   * generation, mountEvidence }` a `BridgeSnapshot` carries.
+   *
+   * A find/discover payload is what off-process drivers actually fold to
+   * detect a click that changed nothing (the runner's
+   * `mcp/ui_bridge/helpers.rs` re-derives exactly this shape in Rust from the
+   * raw JSON). Emitting it here means such a driver compares two folds instead
+   * of re-implementing one — and, more importantly, can read **`mountEvidence`
+   * and know whether its own comparison is worth anything**. Zero means no
+   * element in this payload carried a `registeredAt`, so the `generation` half
+   * folded ids alone and a same-shape remount is invisible to it: *cannot
+   * judge*, never *nothing changed*.
+   *
+   * **Optional, and its absence is UNKNOWN, not evidence.** A payload from an
+   * SDK build predating this field carries no signature at all; a consumer
+   * must treat that the same way it treats `mountEvidence: 0`, rather than
+   * assuming the elements were unchanged.
+   */
+  signature?: SnapshotSignature;
   /**
    * Registry readiness signal (F3). `everHadRegistrations: false` + empty
    * `elements` ⇒ the page has not hydrated/registered yet — poll again;

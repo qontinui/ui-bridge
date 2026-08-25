@@ -9,7 +9,7 @@
  * the drift this plan exists to prevent.
  *
  * If a vector here fails, do not "fix" the fixture. Either the fold changed
- * (which is a spec-v1 break and needs a new `ubs2_` prefix) or one side has a
+ * (which is a spec-v1 break and needs a new `ubs3_` prefix) or one side has a
  * bug.
  */
 
@@ -22,6 +22,7 @@ import {
   parseSnapshotId,
   snapshotUnchangedFrom,
   snapshotRemountedFrom,
+  generationComparable,
   SNAPSHOT_ID_PREFIX,
   type SignatureElementLike,
 } from './snapshot-signature';
@@ -32,6 +33,7 @@ interface GoldenCase {
   count: number;
   content: string;
   generation: string;
+  mountEvidence: number;
   snapshotId: string;
 }
 
@@ -44,6 +46,7 @@ describe('snapshot signature — spec v1 golden vectors', () => {
       expect(signature.count).toBe(expected.count);
       expect(signature.content).toBe(expected.content);
       expect(signature.generation).toBe(expected.generation);
+      expect(signature.mountEvidence).toBe(expected.mountEvidence);
       expect(formatSnapshotId(signature)).toBe(expected.snapshotId);
       expect(computeSnapshotIdentity(expected.elements).snapshotId).toBe(expected.snapshotId);
     });
@@ -107,6 +110,9 @@ describe('snapshot signature — the remount case this plan exists for', () => {
   it('reports it as a remount, not as unchanged', () => {
     expect(snapshotRemountedFrom(after.snapshotId, before.snapshotId)).toBe(true);
     expect(snapshotUnchangedFrom(after.snapshotId, before.snapshotId)).toBe(false);
+    // Both sides folded real registration times, so the generation halves were
+    // entitled to be compared in the first place.
+    expect(generationComparable(after.snapshotId, before.snapshotId)).toBe(true);
   });
 });
 
@@ -148,31 +154,50 @@ describe('snapshot signature — id format', () => {
         count: expected.count,
         content: expected.content,
         generation: expected.generation,
+        mountEvidence: expected.mountEvidence,
       });
     }
   });
 
-  it('encodes count in base 36', () => {
+  it('encodes count and mountEvidence in base 36', () => {
     const elements: SignatureElementLike[] = Array.from({ length: 40 }, (_, i) => ({
       id: `el_${i}`,
+      registeredAt: 1724500000000 + i,
     }));
     const id = computeSnapshotIdentity(elements).snapshotId;
     expect(id.split('_')[1]).toBe((40).toString(36));
+    expect(id.split('_')[2]).toBe((40).toString(36));
     expect(parseSnapshotId(id)!.count).toBe(40);
+    expect(parseSnapshotId(id)!.mountEvidence).toBe(40);
   });
 
   it('rejects malformed ids rather than throwing', () => {
     expect(parseSnapshotId('')).toBeNull();
-    expect(parseSnapshotId('ubs1_0_short_cbf29ce484222325')).toBeNull();
+    expect(parseSnapshotId('ubs2_0_0_short_cbf29ce484222325')).toBeNull();
+    expect(parseSnapshotId('ubs3_0_0_cbf29ce484222325_cbf29ce484222325')).toBeNull();
     expect(parseSnapshotId('ubs2_0_cbf29ce484222325_cbf29ce484222325')).toBeNull();
-    expect(parseSnapshotId('ubs1_0_cbf29ce484222325')).toBeNull();
-    expect(parseSnapshotId('ubs1_0_CBF29CE484222325_cbf29ce484222325')).toBeNull();
-    expect(parseSnapshotId('ubs1_-1_cbf29ce484222325_cbf29ce484222325')).toBeNull();
+    expect(parseSnapshotId('ubs2_0_0_cbf29ce484222325')).toBeNull();
+    expect(parseSnapshotId('ubs2_0_0_CBF29CE484222325_cbf29ce484222325')).toBeNull();
+    expect(parseSnapshotId('ubs2_-1_0_cbf29ce484222325_cbf29ce484222325')).toBeNull();
   });
 
-  it('uses the spec-v1 prefix', () => {
-    expect(SNAPSHOT_ID_PREFIX).toBe('ubs1');
-    expect(CASES.empty.snapshotId.startsWith('ubs1_')).toBe(true);
+  it('rejects a ubs1 id — it carries no evidence count to reason from', () => {
+    // The `ubs1` grammar had four segments and no `mountEvidence`, so a gate
+    // reading one would have to GUESS whether its generation was folded over
+    // ids alone. Refusing to parse routes it to the honest "cannot judge" arm
+    // instead of to a guess.
+    expect(parseSnapshotId('ubs1_2_65a59daceda26fb2_c5d41be145c82269')).toBeNull();
+  });
+
+  it('rejects an id claiming more mount evidence than it has elements', () => {
+    expect(parseSnapshotId('ubs2_1_2_cbf29ce484222325_cbf29ce484222325')).toBeNull();
+  });
+
+  it('uses the ubs2 prefix and carries mountEvidence as its own segment', () => {
+    expect(SNAPSHOT_ID_PREFIX).toBe('ubs2');
+    expect(CASES.empty.snapshotId.startsWith('ubs2_')).toBe(true);
+    expect(CASES.two_elements.snapshotId.split('_')[2]).toBe('2');
+    expect(CASES.missing_registeredAt.snapshotId.split('_')[2]).toBe('0');
   });
 });
 
@@ -293,5 +318,98 @@ describe('snapshot signature — cost', () => {
     for (let i = 0; i < runs; i++) computeSnapshotSignature(elements);
     const perSnapshot = (performance.now() - start) / runs;
     expect(perSnapshot).toBeLessThan(25);
+  });
+});
+
+describe('snapshot signature — mount evidence ("cannot judge" is not "fresh")', () => {
+  /**
+   * The regression these tests exist for: a payload whose serializer never
+   * emits `registeredAt` folds a `generation` over ids alone. It cannot move
+   * on a remount — so reading its equality as "nothing remounted" reports a
+   * clean bill of health for a subtree that was torn down and rebuilt. The
+   * signature therefore has to SAY how much evidence it had.
+   */
+  const withMounts: SignatureElementLike[] = [
+    { id: 'btn', category: 'button', state: { textContent: 'Save' }, registeredAt: 1_000 },
+  ];
+  const remounted: SignatureElementLike[] = [
+    { id: 'btn', category: 'button', state: { textContent: 'Save' }, registeredAt: 9_000 },
+  ];
+  // Byte-identical to `withMounts` on the content axis — the older-deployed-app
+  // payload, which simply never carried a registration time.
+  const withoutMounts: SignatureElementLike[] = [
+    { id: 'btn', category: 'button', state: { textContent: 'Save' } },
+  ];
+
+  it('counts the elements that actually contributed a registeredAt', () => {
+    expect(computeSnapshotSignature(withMounts).mountEvidence).toBe(1);
+    expect(computeSnapshotSignature(withoutMounts).mountEvidence).toBe(0);
+    expect(computeSnapshotSignature([]).mountEvidence).toBe(0);
+  });
+
+  it('counts partial evidence in a mixed payload', () => {
+    // Registered elements alongside DOM-scanned ones is the normal way this
+    // happens, and it is neither full evidence nor none.
+    const mixed = computeSnapshotSignature([...withMounts, { id: 'scanned' }]);
+    expect(mixed.count).toBe(2);
+    expect(mixed.mountEvidence).toBe(1);
+  });
+
+  it('reports it identically through computeMountFold, the cheap arm', () => {
+    expect(computeMountFold(withMounts).mountEvidence).toBe(1);
+    expect(computeMountFold(withoutMounts).mountEvidence).toBe(0);
+  });
+
+  it('survives the round trip through the id', () => {
+    const id = computeSnapshotIdentity(withoutMounts).snapshotId;
+    expect(parseSnapshotId(id)!.mountEvidence).toBe(0);
+    // This is the whole reason it is IN the id: `fromSnapshotId` is a bare
+    // string, so a gate that could not recover the evidence count would have
+    // nothing to reason from.
+    expect(parseSnapshotId(id)!.count).toBe(1);
+  });
+
+  it('refuses to call two evidence-free generations comparable', () => {
+    const a = computeSnapshotIdentity(withoutMounts).snapshotId;
+    expect(generationComparable(a, a)).toBe(false);
+  });
+
+  it('refuses to compare a mounted generation against an evidence-free one', () => {
+    expect(
+      generationComparable(
+        computeSnapshotIdentity(withMounts).snapshotId,
+        computeSnapshotIdentity(withoutMounts).snapshotId
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT accuse an evidence-free snapshot of a remount', () => {
+    // Same elements, same content; one side folded a registration time and the
+    // other did not, so the generations were never going to agree. Calling that
+    // a remount would be a spurious accusation, which is the mirror image of
+    // the spurious pass — both are the fold overstating what it knows.
+    const mounted = computeSnapshotIdentity(withMounts).snapshotId;
+    const unmounted = computeSnapshotIdentity(withoutMounts).snapshotId;
+    expect(parseSnapshotId(mounted)!.content).toBe(parseSnapshotId(unmounted)!.content);
+    expect(parseSnapshotId(mounted)!.generation).not.toBe(parseSnapshotId(unmounted)!.generation);
+    expect(snapshotRemountedFrom(mounted, unmounted)).toBe(false);
+  });
+
+  it('still catches a real remount when both sides can testify', () => {
+    expect(
+      snapshotRemountedFrom(
+        computeSnapshotIdentity(remounted).snapshotId,
+        computeSnapshotIdentity(withMounts).snapshotId
+      )
+    ).toBe(true);
+  });
+
+  it('an evidence-free pair reads as "unchanged" ONLY on the axes it could see', () => {
+    // `snapshotUnchangedFrom` is still true here — and that is exactly why it
+    // is not a freshness verdict on its own. The remount is invisible to it.
+    const a = computeSnapshotIdentity(withoutMounts).snapshotId;
+    const b = computeSnapshotIdentity(withoutMounts).snapshotId;
+    expect(snapshotUnchangedFrom(a, b)).toBe(true);
+    expect(generationComparable(a, b)).toBe(false);
   });
 });

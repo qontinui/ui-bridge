@@ -28,6 +28,7 @@ import type {
 } from './types';
 import type {
   ActionExecutor,
+  ControlActionRequest,
   ControlActionResponse,
   ComponentActionResponse,
   ControlSnapshot,
@@ -46,15 +47,9 @@ import type {
   EffectRecordEntry,
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
-import {
-  applyCanonicalFindFilter,
-  type FindFilterableElement,
-} from '../core/find-filter';
+import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
 import { diagnosePageHealth } from './page-health';
-import {
-  scanDOMForInteractiveElements,
-  countDOMInteractiveElements,
-} from './dom-fallback';
+import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
 import {
@@ -216,16 +211,15 @@ import { BrowserEventStream } from '../debug/ws-streaming';
 import { CompositeIdleDetector } from '../idle';
 import type { CompositeIdleConfig } from '../idle';
 import { NetworkRequestTracker } from '../network';
-import type {
-  NetworkRequestFilter,
-  NetworkRequestStatus,
-  NetworkTrackerConfig,
-} from '../network';
+import type { NetworkRequestFilter, NetworkRequestStatus, NetworkTrackerConfig } from '../network';
 import { ChangeObserver } from '../core/change-observer';
 import type { BridgeEvent } from '../core';
 import { findElements } from '../core/find';
 import type { ElementQuery } from '../core/find';
 import { classString } from '../core/class-name';
+// The identity fold, stamped onto find/discover payloads so an off-process
+// driver can read `mountEvidence` instead of guessing what its own fold saw.
+import { computeSnapshotSignature } from '../core/snapshot-signature';
 import {
   pollWaitForElement,
   snapshotFromRegisteredElement,
@@ -342,10 +336,7 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     // entry (`{}`, `null`) yields `undefined` without a verdict probe (which
     // would throw on a non-node). CONTENT axis; `role` stays raw (structural).
     const liveEl = el.element instanceof HTMLElement ? el.element : undefined;
-    const titleAttr = scrubContent(
-      (liveEl ? readTitleAttr(liveEl) : null) ?? undefined,
-      liveEl
-    );
+    const titleAttr = scrubContent((liveEl ? readTitleAttr(liveEl) : null) ?? undefined, liveEl);
     const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
     const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
     const accessibleName = scrubContent(
@@ -448,10 +439,15 @@ export interface RegistryLike {
  * Action executor interface - minimal contract for handler usage
  */
 export interface ActionExecutorLike {
-  executeAction(
-    elementId: string,
-    request: { action: string; params?: Record<string, unknown>; waitOptions?: unknown }
-  ): Promise<unknown>;
+  /**
+   * The request is the WHOLE {@link ControlActionRequest}, deliberately not a
+   * narrowed `{ action, params, waitOptions }` literal. A narrowed parameter
+   * type here is what let the handler above forward a hand-written field list
+   * and still type-check, silently dropping every request option added since
+   * that list was written. Widen this, and the handler's pass-through, together
+   * — never one without the other.
+   */
+  executeAction(elementId: string, request: ControlActionRequest): Promise<unknown>;
   executeComponentAction(
     componentId: string,
     request: {
@@ -946,40 +942,42 @@ export function createHandlers(
   ) {
     const emitBrowserEvent = config.onBrowserEvent;
 
-    (consoleCapture as { setOnEvent: (cb: (event: AnyCapturedEvent) => void) => void }).setOnEvent((event: AnyCapturedEvent) => {
-      // Feed error session manager
-      errorSessionManager.recordEvent(event);
+    (consoleCapture as { setOnEvent: (cb: (event: AnyCapturedEvent) => void) => void }).setOnEvent(
+      (event: AnyCapturedEvent) => {
+        // Feed error session manager
+        errorSessionManager.recordEvent(event);
 
-      // Feed error snapshot buffer
-      errorSnapshotBuffer.processEvent(event);
+        // Feed error snapshot buffer
+        errorSnapshotBuffer.processEvent(event);
 
-      // Feed browser event stream (for WebSocket subscribers)
-      const messages = browserEventStream.processEvent(event);
-      if (emitBrowserEvent && messages.size > 0) {
-        const { severity } = classifyEvent(event);
-        const eventType: import('../core').BridgeEventType =
-          severity === 'crash'
-            ? 'browser:crash'
-            : severity === 'error'
-              ? 'browser:error'
-              : 'browser:warning';
+        // Feed browser event stream (for WebSocket subscribers)
+        const messages = browserEventStream.processEvent(event);
+        if (emitBrowserEvent && messages.size > 0) {
+          const { severity } = classifyEvent(event);
+          const eventType: import('../core').BridgeEventType =
+            severity === 'crash'
+              ? 'browser:crash'
+              : severity === 'error'
+                ? 'browser:error'
+                : 'browser:warning';
 
-        emitBrowserEvent({
-          type: eventType,
-          timestamp: Date.now(),
-          data: { event, severity },
-        });
-      }
+          emitBrowserEvent({
+            type: eventType,
+            timestamp: Date.now(),
+            data: { event, severity },
+          });
+        }
 
-      // Tier 3.3: broadcast to change-buffer subscribers
-      for (const listener of browserEventListeners) {
-        try {
-          listener(event);
-        } catch {
-          /* ignore */
+        // Tier 3.3: broadcast to change-buffer subscribers
+        for (const listener of browserEventListeners) {
+          try {
+            listener(event);
+          } catch {
+            /* ignore */
+          }
         }
       }
-    });
+    );
   }
 
   // Annotation store
@@ -1252,9 +1250,7 @@ export function createHandlers(
   // a flaky enricher must not turn a 404 into a 500.
   function componentNotFoundMessage(id: string): string {
     let available: string[];
-    let byRoute:
-      | Record<string, { count: number; ids: string[] }>
-      | undefined;
+    let byRoute: Record<string, { count: number; ids: string[] }> | undefined;
     let currentRoute: string | undefined;
     try {
       const snapshot = registry.createSnapshot() as ControlSnapshot & {
@@ -1268,9 +1264,7 @@ export function createHandlers(
       // Best-effort — if the snapshot probe explodes, fall back to a bare
       // available-components-only message rather than 500ing the request.
       try {
-        available = (registry.getAllComponents() as Array<{ id: string }>).map(
-          (c) => c.id
-        );
+        available = (registry.getAllComponents() as Array<{ id: string }>).map((c) => c.id);
       } catch {
         available = [];
       }
@@ -1287,8 +1281,7 @@ export function createHandlers(
   // every createHandlers call in a process) iterates the union of all
   // tracked sets.
   // ===========================================================================
-  const headlessSpawnEnabled =
-    config.enableHeadlessSpawn === true || isHeadlessSpawnEnvEnabled();
+  const headlessSpawnEnabled = config.enableHeadlessSpawn === true || isHeadlessSpawnEnvEnabled();
   const spawnedHeadlessTabs = new Set<{ close: () => Promise<void> }>();
   registerSpawnedHeadlessTabSet(spawnedHeadlessTabs);
 
@@ -1327,8 +1320,14 @@ export function createHandlers(
         }
       }
 
+      const materialized = materializeElements(elements);
       return success({
-        elements: materializeElements(elements),
+        elements: materialized,
+        // Folded over exactly the array being returned — see
+        // `FindResponse.signature`. `mountEvidence` is the honest half: it
+        // tells a driver folding this payload whether its own remount check
+        // could see anything.
+        signature: computeSnapshotSignature(materialized),
         timestamp: Date.now(),
         total: elements.length,
         durationMs: 0,
@@ -1408,12 +1407,7 @@ export function createHandlers(
         // Apply case-insensitive substring filters via the shared matcher
         // (uses the accessible-name fallback chain so callers see consistent
         // results across getElements / waitForElementByCondition / relay).
-        if (
-          options?.title ||
-          options?.aria_label ||
-          options?.text ||
-          options?.revealsAny
-        ) {
+        if (options?.title || options?.aria_label || options?.text || options?.revealsAny) {
           materialized = materialized.filter((el) =>
             matchesElementSelector(el as unknown as MatchableElement, {
               title: options?.title,
@@ -1533,15 +1527,23 @@ export function createHandlers(
       }
     },
 
-    executeElementAction: async (
-      id: string,
-      request: {
-        action: string;
-        params?: Record<string, unknown>;
-        waitOptions?: unknown;
-        captureAfter?: boolean;
-      }
-    ) => {
+    /**
+     * `POST /control/element/:id/action` — the ONE exported action seam every
+     * transport lands on (HTTP adapters, the WebSocket handler, the window
+     * scoper, the Next.js route).
+     *
+     * The request is typed as the whole {@link ControlActionRequest} and
+     * **forwarded whole** to the executor. That is load-bearing, not
+     * stylistic. This handler used to re-list the fields it forwarded
+     * (`{ action, params, waitOptions }`), which meant every field added to
+     * `ControlActionRequest` after that line was written was silently dropped
+     * on the floor here — the caller's opt-in never reached the executor, the
+     * executor did the default thing, and the response came back
+     * `success: true` as if the option had been honoured. A dropped opt-in
+     * that reports success is worse than an unimplemented one, because it is
+     * believed. Do not reintroduce a field list.
+     */
+    executeElementAction: async (id: string, request: ControlActionRequest) => {
       const startTime = Date.now();
       try {
         // Settle before reading the registry — same pattern as
@@ -1587,11 +1589,8 @@ export function createHandlers(
           }
         }
 
-        const result = await actionExecutor.executeAction(id, {
-          action: request.action,
-          params: request.params,
-          waitOptions: request.waitOptions,
-        });
+        // Forwarded whole — see the doc comment on this handler.
+        const result = await actionExecutor.executeAction(id, request);
 
         // Record successful action for undo correlation
         if (
@@ -1963,96 +1962,57 @@ export function createHandlers(
     // for type-completeness and returns `RUNNER_REQUIRED` when mounted
     // without a runner backing.
     visionCapture: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionAnnotate: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionDiff: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionRaw: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionCacheStream: async (_sha256: string) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionHealth: async () => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     // Phase 4 — text-bearing outputs.
     visionExtract: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionDescribe: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     // Phase 6 — analyzers + assertion DSL + baselines.
     visionAnalyze: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionAssert: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionBaseline: async (_request?: Record<string, unknown>) => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionBaselinesList: async () => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     visionMutationOccurred: async () => {
-      return error(
-        'route is runner-direct, mount the runner',
-        'RUNNER_REQUIRED'
-      );
+      return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
 
     /**
@@ -6280,7 +6240,8 @@ export function createHandlers(
             const label = (typeof el.label === 'string' ? el.label : '').toLowerCase();
             const ariaLabel = (typeof el.ariaLabel === 'string' ? el.ariaLabel : '').toLowerCase();
             const title = (typeof el.title === 'string' ? el.title : '').toLowerCase();
-            const textContent = (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
+            const textContent =
+              (domEl ? computeVisibleText(domEl) : undefined)?.toLowerCase() ?? '';
             return (
               label.includes(needle) ||
               ariaLabel.includes(needle) ||
@@ -6776,9 +6737,8 @@ export function createHandlers(
       // so the engine never depends on the peer's real exported types.
       let launcher: HeadlessLauncherModule;
       try {
-        launcher = (await import(
-          '@qontinui/ui-bridge-headless'
-        )) as unknown as HeadlessLauncherModule;
+        launcher =
+          (await import('@qontinui/ui-bridge-headless')) as unknown as HeadlessLauncherModule;
       } catch (importErr) {
         return {
           success: false,

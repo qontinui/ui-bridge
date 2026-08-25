@@ -22,11 +22,16 @@ import type { SnapshotShortcutContext } from '../shortcuts/types';
 import type { Scrubbed } from './redaction';
 // Snapshot identity (plan `2026-08-20-ui-bridge-snapshot-identity-and-selector-candidates`
 // Phase 1). `snapshot-signature` imports nothing, so this creates no cycle.
-import type { SnapshotSignature } from './snapshot-signature';
+import type { SnapshotFreshness, SnapshotSignature } from './snapshot-signature';
 export type {
   SnapshotSignature,
   SnapshotIdentity,
   SignatureElementLike,
+  SnapshotFreshness,
+  SnapshotFreshnessVerdict,
+  SnapshotFreshnessArm,
+  SnapshotFreshnessBlindSpot,
+  SnapshotFreshnessWorld,
 } from './snapshot-signature';
 // Phase 3 of the same plan. `resolution-score` also imports nothing.
 import type { ElementResolution } from './resolution-score';
@@ -1292,6 +1297,25 @@ export interface ActionResponse {
    * `core/resolution-score.ts`.
    */
   elementResolution?: ElementResolution;
+  /**
+   * What the stale-snapshot gate concluded about the snapshot this call cited.
+   * Present **only** when the caller supplied
+   * `ControlActionRequest.fromSnapshotId` — same shape discipline as
+   * `effectVerification` and `elementResolution` above.
+   *
+   * Three verdicts, and the third one is the point: `fresh` (checked and
+   * current), `superseded` (checked and stale — the action was refused before
+   * it ran), and **`indeterminate`** (an arm could not run, so the action WAS
+   * executed but nothing verified it). Without the third, a gate that could
+   * not judge was indistinguishable from a gate that judged favourably: the
+   * caller saw `success: true` and inferred a freshness guarantee nobody had
+   * checked. `blindTo` names exactly which arms were mute — including the
+   * older-deployed-app case, where the cited snapshot carried no `registeredAt`
+   * at all and its `generation` therefore could never have detected a remount.
+   *
+   * See `core/snapshot-signature.ts`.
+   */
+  snapshotFreshness?: SnapshotFreshness;
 }
 
 /**
@@ -1657,7 +1681,7 @@ export interface SnapshotRegistrationMetadata {
 export interface BridgeSnapshot {
   /**
    * Content-addressed identity of this snapshot:
-   * `` `ubs1_${count36}_${contentHex}_${generationHex}` ``.
+   * `` `ubs2_${count36}_${mountEvidence36}_${contentHex}_${generationHex}` ``.
    *
    * Two ids are directly comparable and answer both freshness questions on
    * their own — *equal* means nothing observable changed and nothing
@@ -1679,10 +1703,16 @@ export interface BridgeSnapshot {
   snapshotId: string;
   /**
    * The structured signature `snapshotId` was rendered from — `{ count,
-   * content, generation }`. Emitted alongside the id (rather than making
-   * consumers re-parse it) because the three parts are separately meaningful:
-   * `count` alone catches element-set churn, and `generation` alone is the
-   * mount identity. Mirrors the runner's `SnapshotSignature` field-for-field.
+   * content, generation, mountEvidence }`. Emitted alongside the id (rather
+   * than making consumers re-parse it) because the parts are separately
+   * meaningful: `count` alone catches element-set churn, and `generation`
+   * alone is the mount identity. Mirrors the runner's `SnapshotSignature`
+   * field-for-field, plus `mountEvidence`.
+   *
+   * **Read `mountEvidence` before trusting `generation`.** Zero means no
+   * element in this snapshot carried a `registeredAt`, so the generation half
+   * folded ids alone and cannot detect a remount at all. That is *"cannot
+   * judge"*, never *"nothing changed"* — see `core/snapshot-signature.ts`.
    */
   signature: SnapshotSignature;
   /**
@@ -2230,11 +2260,7 @@ export interface ComponentStateResponse {
  * introduces the `"git-supervised"` value; older runners may emit only the
  * other three.
  */
-export type UIStateProvenance =
-  | 'ai-generated'
-  | 'observed'
-  | 'ai-fallback'
-  | 'git-supervised';
+export type UIStateProvenance = 'ai-generated' | 'observed' | 'ai-fallback' | 'git-supervised';
 
 /**
  * Provenance metadata attached to a state explaining *why* the runner-side

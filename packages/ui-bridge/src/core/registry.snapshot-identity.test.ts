@@ -37,9 +37,21 @@ describe('BridgeSnapshot identity', () => {
     addButton('btn_save', 'Save');
     const snapshot = registry.createSnapshot();
 
-    expect(snapshot.snapshotId).toMatch(/^ubs1_[0-9a-z]+_[0-9a-f]{16}_[0-9a-f]{16}$/);
+    expect(snapshot.snapshotId).toMatch(/^ubs2_[0-9a-z]+_[0-9a-z]+_[0-9a-f]{16}_[0-9a-f]{16}$/);
     expect(snapshot.signature.count).toBe(snapshot.elements.length);
     expect(parseSnapshotId(snapshot.snapshotId)).toEqual(snapshot.signature);
+  });
+
+  it('stamps FULL mount evidence — every serialized element carries registeredAt', () => {
+    // The serializer emitting `registeredAt` is what makes the generation half
+    // able to testify at all. If this ever regresses, every remount in every
+    // snapshot becomes invisible and the freshness gate silently degrades to
+    // "cannot judge" — so assert the evidence, not just the hash.
+    addButton('a', 'A');
+    addButton('b', 'B');
+    const snapshot = registry.createSnapshot();
+    expect(snapshot.signature.mountEvidence).toBe(snapshot.elements.length);
+    expect(snapshot.elements.every((e) => typeof e.registeredAt === 'number')).toBe(true);
   });
 
   it('stamps the fold OVER ITS OWN elements array', () => {
@@ -65,6 +77,7 @@ describe('BridgeSnapshot identity', () => {
       count: 0,
       content: 'cbf29ce484222325',
       generation: 'cbf29ce484222325',
+      mountEvidence: 0,
     });
   });
 
@@ -147,6 +160,15 @@ describe('BridgeSnapshot identity', () => {
     // or every opt-in freshness check is a false rejection.
     expect(live.count).toBe(snapshot.signature.count);
     expect(live.generation).toBe(snapshot.signature.generation);
+    expect(live.mountEvidence).toBe(snapshot.signature.mountEvidence);
+  });
+
+  it('an empty registry has NO mount evidence — nothing to testify about', () => {
+    const live = registry.computeLiveMountFold();
+    expect(live.count).toBe(0);
+    // Zero here is "cannot judge", not "nothing remounted". The freshness gate
+    // reads it as a blind spot rather than as a pass.
+    expect(live.mountEvidence).toBe(0);
   });
 
   it('computeLiveMountFold moves when an element remounts', () => {

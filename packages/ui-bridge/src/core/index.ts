@@ -77,11 +77,7 @@ export type { ElementFingerprintData, RepeatPatternData } from './element-finger
 
 // Stable element references across React re-renders
 export { createStableRef, resolveStableRef } from './stable-ref';
-export type {
-  StableElementRef,
-  StableRefResolution,
-  ResolveStableRefOptions,
-} from './stable-ref';
+export type { StableElementRef, StableRefResolution, ResolveStableRefOptions } from './stable-ref';
 
 // Snapshot identity — the cross-language FNV-1a-64 fold that gives every
 // `BridgeSnapshot` a content-addressed id, plus the two comparison predicates
@@ -94,12 +90,20 @@ export {
   parseSnapshotId,
   snapshotUnchangedFrom,
   snapshotRemountedFrom,
+  generationComparable,
+  evaluateSnapshotFreshness,
+  supersededSnapshotMessage,
   SNAPSHOT_ID_PREFIX,
 } from './snapshot-signature';
 export type {
   SnapshotSignature,
   SnapshotIdentity,
   SignatureElementLike,
+  SnapshotFreshness,
+  SnapshotFreshnessVerdict,
+  SnapshotFreshnessArm,
+  SnapshotFreshnessBlindSpot,
+  SnapshotFreshnessWorld,
 } from './snapshot-signature';
 
 // Resolution stability — the ONE ordinal vocabulary both element-resolution

@@ -22,14 +22,8 @@ import {
   projectBbox,
 } from '../core/registry';
 import { projectVisionFields } from '../core/vision-fields';
-import type {
-  NativeElementType,
-  NativeLayout,
-  NativeModalInfo,
-  WaitOptions,
-  WorkflowStep,
-} from '../core/types';
-import type { NativeActionExecutor } from '../control/types';
+import type { NativeElementType, NativeLayout, NativeModalInfo, WorkflowStep } from '../core/types';
+import type { ControlActionRequest, NativeActionExecutor } from '../control/types';
 import type {
   APIResponse,
   ConsoleErrorsResponse,
@@ -369,7 +363,6 @@ async function executeWorkflowStep(
   }
 }
 
-
 /**
  * Create a success response
  */
@@ -547,16 +540,9 @@ export function createServerHandlers(
       //      object becomes `ctx.body`, so the action lives at `body.request`,
       //      NOT `body.action`. Without this unwrap a runner-driven
       //      `{ action: 'press' }` was rejected with "Action is required".
-      const rawBody = (ctx.body ?? {}) as {
-        action?: string;
-        params?: Record<string, unknown>;
-        waitOptions?: WaitOptions;
+      const rawBody = (ctx.body ?? {}) as Partial<ControlActionRequest> & {
         id?: string;
-        request?: {
-          action?: string;
-          params?: Record<string, unknown>;
-          waitOptions?: WaitOptions;
-        };
+        request?: Partial<ControlActionRequest>;
       };
 
       // The nested `request` envelope wins when present (relay/WS path);
@@ -572,11 +558,11 @@ export function createServerHandlers(
         return error('Action is required', 'INVALID_REQUEST');
       }
 
-      const response = await executor.executeAction(id, {
-        action: envelope.action,
-        params: envelope.params,
-        waitOptions: envelope.waitOptions,
-      });
+      // Forwarded WHOLE, not field-by-field. Re-listing the fields is how the
+      // web seam silently dropped every request option added after the list
+      // was written — the caller opted in, the executor never heard about it,
+      // and the response still came back `success: true`.
+      const response = await executor.executeAction(id, envelope as ControlActionRequest);
 
       if (!response.success) {
         return error(response.error || 'Action failed', 'ACTION_FAILED');
@@ -779,8 +765,7 @@ export function createServerHandlers(
       // crash the host RN app — see the [[viewportProvider]] doc comment
       // in `NativeServerConfig` and the project memory entry
       // `feedback_metro_require_gotcha.md`.
-      const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })
-        ?.viewport;
+      const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })?.viewport;
       const viewport = bodyViewport ?? config?.viewportProvider?.() ?? { width: 0, height: 0 };
 
       const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
@@ -1118,9 +1103,7 @@ export function createServerHandlers(
 
     findByText: async (
       ctx: HandlerContext
-    ): Promise<
-      APIResponse<Array<{ index: number; id: string; type: string; label?: string }>>
-    > => {
+    ): Promise<APIResponse<Array<{ index: number; id: string; type: string; label?: string }>>> => {
       const body = ctx.body as { text?: string; visibleOnly?: boolean } | undefined;
       const text = typeof body?.text === 'string' ? body.text.trim() : '';
       if (!text) {
@@ -1156,11 +1139,13 @@ export function createServerHandlers(
       // mount-time positions. Bounded by an internal timeout; never throws.
       await registry.refreshMeasurements();
 
-      const body = ctx.body as Partial<{
-        x: number;
-        y: number;
-        action: 'press' | 'longPress' | 'doubleTap';
-      }> | undefined;
+      const body = ctx.body as
+        | Partial<{
+            x: number;
+            y: number;
+            action: 'press' | 'longPress' | 'doubleTap';
+          }>
+        | undefined;
 
       const x = body?.x;
       const y = body?.y;
@@ -1217,12 +1202,7 @@ export function createServerHandlers(
         const left = hasPage ? layout.pageX : layout.x;
         const top = hasPage ? layout.pageY : layout.y;
 
-        if (
-          x >= left &&
-          x <= left + layout.width &&
-          y >= top &&
-          y <= top + layout.height
-        ) {
+        if (x >= left && x <= left + layout.width && y >= top && y <= top + layout.height) {
           candidates.push({
             elementId: el.id,
             layout,
@@ -1337,19 +1317,13 @@ export function createServerHandlers(
     pushModal: async (ctx: HandlerContext): Promise<APIResponse<PushModalResponse>> => {
       const detector = registry.getEnrichers().modalDetector;
       if (!detector) {
-        return error<PushModalResponse>(
-          'modal detector not registered',
-          'ENRICHER_UNAVAILABLE'
-        );
+        return error<PushModalResponse>('modal detector not registered', 'ENRICHER_UNAVAILABLE');
       }
 
       const body = ctx.body as Partial<PushModalRequest> | undefined;
       const id = body?.id;
       if (typeof id !== 'string' || id.length === 0) {
-        return error<PushModalResponse>(
-          'pushModal requires a non-empty "id"',
-          'INVALID_REQUEST'
-        );
+        return error<PushModalResponse>('pushModal requires a non-empty "id"', 'INVALID_REQUEST');
       }
 
       const allowedTypes = ['modal', 'sheet', 'drawer', 'popover', 'alertdialog', 'dialog'];
@@ -1391,10 +1365,7 @@ export function createServerHandlers(
     dismissModal: async (ctx: HandlerContext): Promise<APIResponse<DismissModalResponse>> => {
       const detector = registry.getEnrichers().modalDetector;
       if (!detector) {
-        return error<DismissModalResponse>(
-          'modal detector not registered',
-          'ENRICHER_UNAVAILABLE'
-        );
+        return error<DismissModalResponse>('modal detector not registered', 'ENRICHER_UNAVAILABLE');
       }
 
       const { id } = ctx.params;
