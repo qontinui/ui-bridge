@@ -79,6 +79,25 @@ export type { ElementFingerprintData, RepeatPatternData } from './element-finger
 export { createStableRef, resolveStableRef } from './stable-ref';
 export type { StableElementRef } from './stable-ref';
 
+// Snapshot identity — the cross-language FNV-1a-64 fold that gives every
+// `BridgeSnapshot` a content-addressed id, plus the two comparison predicates
+// (`unchanged` / `remounted`) the id was designed to answer on its own.
+export {
+  computeSnapshotSignature,
+  computeMountFold,
+  computeSnapshotIdentity,
+  formatSnapshotId,
+  parseSnapshotId,
+  snapshotUnchangedFrom,
+  snapshotRemountedFrom,
+  SNAPSHOT_ID_PREFIX,
+} from './snapshot-signature';
+export type {
+  SnapshotSignature,
+  SnapshotIdentity,
+  SignatureElementLike,
+} from './snapshot-signature';
+
 // Structured NL-disambiguation query — rank elements by metadata without
 // pixel inspection. Replaces the VLM-for-disambiguation path.
 export { findElements } from './find';

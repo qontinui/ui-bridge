@@ -20,6 +20,14 @@ import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
 import type { Scrubbed } from './redaction';
+// Snapshot identity (plan `2026-08-20-ui-bridge-snapshot-identity-and-selector-candidates`
+// Phase 1). `snapshot-signature` imports nothing, so this creates no cycle.
+import type { SnapshotSignature } from './snapshot-signature';
+export type {
+  SnapshotSignature,
+  SnapshotIdentity,
+  SignatureElementLike,
+} from './snapshot-signature';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape). `param-schema`
 // imports nothing, so this creates no cycle with `../diagnostics` above — which
 // imports the same type from the same import-free module.
@@ -1614,6 +1622,35 @@ export interface SnapshotRegistrationMetadata {
  * Snapshot of the entire UI bridge state
  */
 export interface BridgeSnapshot {
+  /**
+   * Content-addressed identity of this snapshot:
+   * `` `ubs1_${count36}_${contentHex}_${generationHex}` ``.
+   *
+   * Two ids are directly comparable and answer both freshness questions on
+   * their own — *equal* means nothing observable changed and nothing
+   * remounted; *same count and content, different generation* means a
+   * **remount**: the same elements showing the same thing, but belonging to a
+   * different mount than the one the caller reasoned about. See
+   * `core/snapshot-signature.ts` for the normative fold, and
+   * `snapshotUnchangedFrom` / `snapshotRemountedFrom` for the predicates.
+   *
+   * Unlike the AI layer's `snapshot-<counter>-<Date.now()>`
+   * (`ai/semantic-snapshot.ts`), this is not minted from a per-instance
+   * counter, so it does not collide across processes.
+   *
+   * Subject to the millisecond residual documented in
+   * `core/snapshot-signature.ts` — a sub-1 ms remount is invisible to the fold,
+   * so this is a strong freshness signal, not a total guarantee.
+   */
+  snapshotId: string;
+  /**
+   * The structured signature `snapshotId` was rendered from — `{ count,
+   * content, generation }`. Emitted alongside the id (rather than making
+   * consumers re-parse it) because the three parts are separately meaningful:
+   * `count` alone catches element-set churn, and `generation` alone is the
+   * mount identity. Mirrors the runner's `SnapshotSignature` field-for-field.
+   */
+  signature: SnapshotSignature;
   /**
    * Timestamp of the snapshot (ms since epoch).
    *

@@ -24,6 +24,7 @@ import type {
   WorkflowRunResponse,
 } from '../control/types';
 import { useUIBridgeContext, useUIBridgeOptional } from './UIBridgeProvider';
+import { computeSnapshotIdentity } from '../core/snapshot-signature';
 
 /**
  * useUIBridge return value
@@ -161,6 +162,10 @@ export function useUIBridge(): UseUIBridgeReturn {
       return {
         timestamp: takenAt,
         snapshotTakenAtMs: takenAt,
+        // The identity of an empty element list. Not a placeholder: it is the
+        // correct spec-v1 fold over zero elements, so it compares equal to any
+        // other empty snapshot and unequal to every non-empty one.
+        ...computeSnapshotIdentity([]),
         // No bridge → no registration activity observed. Callers can
         // disambiguate this from "bridge present but empty page" via
         // `registration.everHadRegistrations`.
@@ -187,6 +192,8 @@ export function useUIBridge(): UseUIBridgeReturn {
         return {
           timestamp: takenAt,
           snapshotTakenAtMs: takenAt,
+          // See the sync path above — the real fold over zero elements.
+          ...computeSnapshotIdentity([]),
           registration: { totalRegistered: 0, everHadRegistrations: false, byRoute: {} },
           elements: [],
           components: [],

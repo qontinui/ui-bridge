@@ -48,6 +48,11 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
+import {
+  computeSnapshotIdentity,
+  computeMountFold,
+  type SnapshotIdentity,
+} from './snapshot-signature';
 import { truncateCodePoints } from './text';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
@@ -883,6 +888,18 @@ export interface RegistrySnapshot {
   version: number;
 }
 
+/**
+ * A snapshot before its identity has been stamped.
+ *
+ * `snapshotId` and `signature` are REQUIRED on {@link BridgeSnapshot} — a
+ * snapshot without an identity is exactly the hole this plan closed, so they
+ * are not optional. They are assigned in exactly ONE place,
+ * `UIBridgeRegistry.stampSnapshotIdentity`, at the tail of `runEnrichers`. The
+ * builders below therefore type their local literal without them and hand the
+ * draft to the funnel that completes it.
+ */
+type UnstampedSnapshot = Omit<BridgeSnapshot, 'snapshotId' | 'signature'>;
+
 export class UIBridgeRegistry {
   /**
    * Stable per-instance tag assigned at construction time. Used by
@@ -938,6 +955,18 @@ export class UIBridgeRegistry {
   // seen a registration" (no SDK coverage on this page) from "registrations
   // happened but are all unmounted now". Never reset except on `clear()`.
   private everHadRegistrationsFlag = false;
+
+  // ── Snapshot identity ─────────────────────────────────────────────────────
+  // The identity of the most recent snapshot this registry stamped. Set by
+  // `stampSnapshotIdentity` — the ONE funnel every snapshot-shaped payload
+  // passes through — and read by the action path to answer "has a newer
+  // snapshot superseded the one this caller cited?".
+  //
+  // `null` until the first snapshot is stamped, and that is a meaningful
+  // value: it means "this registry has never been snapshotted", which is
+  // UNKNOWN, not "nothing has changed". The action path must never read a
+  // null here as freshness.
+  private lastSnapshotIdentity: SnapshotIdentity | null = null;
 
   // Per-window, per-route element-id sets: windowLabel -> route -> Set<id>.
   // Single source of truth for BOTH the merged `byRoute` view (union across
@@ -2880,6 +2909,62 @@ export class UIBridgeRegistry {
     this.runEnrichers(snapshot, options);
   }
 
+  /**
+   * Stamp `snapshotId` + `signature` onto a snapshot and record the result as
+   * this registry's most recent snapshot identity.
+   *
+   * Called at the tail of {@link runEnrichers}, which is deliberately the LAST
+   * thing every snapshot-shaped payload does — `createSnapshot`,
+   * `createSnapshotAsync` and the relay's `getControlSnapshot` all funnel
+   * through it. Putting the stamp anywhere else would recreate the
+   * snapshot-two-channel drift class that funnel exists to prevent (see memory
+   * note `proj_issue_snapshot_two_channel_drift.md`), and stamping *after* the
+   * custom enrichers means the identity covers the element array as the caller
+   * will actually see it, even if an enricher rewrote it.
+   *
+   * The fold itself is `core/snapshot-signature.ts` — see it for the normative
+   * spec and for the millisecond residual this inherits.
+   */
+  private stampSnapshotIdentity(snapshot: BridgeSnapshot): void {
+    const identity = computeSnapshotIdentity(snapshot.elements ?? []);
+    snapshot.snapshotId = identity.snapshotId;
+    snapshot.signature = identity.signature;
+    this.lastSnapshotIdentity = identity;
+  }
+
+  /**
+   * The identity of the most recent snapshot this registry stamped, or `null`
+   * if it has never stamped one.
+   *
+   * `null` is UNKNOWN, not "fresh" — a caller may legitimately hold a snapshot
+   * id that was minted by a different registry instance (or a different
+   * process entirely, since the id is content-addressed). Consumers must treat
+   * the absence of a stamped identity as "cannot judge".
+   */
+  getLastSnapshotIdentity(): SnapshotIdentity | null {
+    return this.lastSnapshotIdentity;
+  }
+
+  /**
+   * Recompute the `count` + `generation` half of the snapshot signature from
+   * the LIVE element set, without serializing anything.
+   *
+   * This is the arm the action path can afford: the generation fold reads only
+   * `id` and `registeredAt`, both plain fields on a `RegisteredElement`, so it
+   * costs no `getState()` calls and forces no layout. Because
+   * `serializeRegisteredElement` emits those two fields verbatim, this
+   * reproduces a stamped snapshot's `generation` exactly when nothing has
+   * changed — it is a cheaper projection of the same spec, not a second
+   * definition of it.
+   *
+   * What it deliberately does NOT recompute is `content`, which would need
+   * `state.textContent` / `state.ariaPressed` per element. See
+   * `computeMountFold` for why.
+   */
+  computeLiveMountFold(): { count: number; generation: string } {
+    return computeMountFold(this.getAllElements());
+  }
+
   private runEnrichers(
     snapshot: BridgeSnapshot,
     options: { getActiveTab?: () => string | null | undefined } = {}
@@ -2982,6 +3067,11 @@ export class UIBridgeRegistry {
         }
       }
     }
+
+    // LAST, unconditionally: the identity fold. It has to run after the custom
+    // enrichers so the id covers the element array as the caller will actually
+    // see it. See `stampSnapshotIdentity`.
+    this.stampSnapshotIdentity(snapshot);
   }
 
   /**
@@ -3008,7 +3098,7 @@ export class UIBridgeRegistry {
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
     const visibility = captureDocumentVisibility();
-    const snapshot: BridgeSnapshot = {
+    const draft: UnstampedSnapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
@@ -3029,6 +3119,9 @@ export class UIBridgeRegistry {
         stepCount: wf.steps.length,
       })),
     };
+    // `runEnrichers` stamps `snapshotId`/`signature` last — see
+    // `stampSnapshotIdentity`. The cast is the one place the draft is widened.
+    const snapshot = draft as BridgeSnapshot;
     this.runEnrichers(snapshot, { getActiveTab: options.getActiveTab });
     return snapshot;
   }
@@ -3077,7 +3170,7 @@ export class UIBridgeRegistry {
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
     const visibility = captureDocumentVisibility();
-    const snapshot: BridgeSnapshot = {
+    const draft: UnstampedSnapshot = {
       timestamp: takenAt,
       snapshotTakenAtMs: takenAt,
       route: this.currentRoute(),
@@ -3098,6 +3191,9 @@ export class UIBridgeRegistry {
         stepCount: wf.steps.length,
       })),
     };
+    // `runEnrichers` stamps `snapshotId`/`signature` last — see
+    // `stampSnapshotIdentity`. The cast is the one place the draft is widened.
+    const snapshot = draft as BridgeSnapshot;
     this.runEnrichers(snapshot, { getActiveTab: options.getActiveTab });
     return snapshot;
   }
@@ -3119,6 +3215,10 @@ export class UIBridgeRegistry {
     // the lifetime semantics expected after `resetGlobalRegistry()`.
     this.routeIdsByWindow.clear();
     this.everHadRegistrationsFlag = false;
+    // Same lifetime semantics as the latch above: a full teardown means this
+    // registry has never been snapshotted again, which is UNKNOWN rather than
+    // a stale identity the action path could reject against.
+    this.lastSnapshotIdentity = null;
   }
 
   /**
