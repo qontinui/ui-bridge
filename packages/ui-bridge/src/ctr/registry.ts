@@ -219,6 +219,34 @@ export class CentralTargetRegistry {
     };
   }
 
+  /**
+   * READ-ONLY sibling of {@link resolveInDOM}: would this logical name resolve
+   * right now, and to what?
+   *
+   * `resolveInDOM` is not a query — it self-heals. On a hit it promotes the
+   * winning selector, demotes every selector tried before it, writes the
+   * resolution cache, stamps `lastResolved`, and emits
+   * `ctr:resolution-succeeded`; on a miss it stamps `lastFailed` and emits
+   * `ctr:resolution-failed`. That is exactly right when the caller is about to
+   * act on the result, and exactly wrong for a diagnostic probe: a probe that
+   * rewrites the selector ranking it is reporting on has changed the thing it
+   * was asked to observe, and an emitted `resolution-succeeded` for a
+   * resolution nobody acted on is an observability lie.
+   *
+   * This walks the same viable-selector list in the same priority order and
+   * returns the first DOM hit, mutating nothing and emitting nothing. Used by
+   * the action executor's opt-in resolution-alternates probe.
+   */
+  probeInDOM(logicalName: string): HTMLElement | null {
+    const entry = this.entries.get(logicalName);
+    if (!entry) return null;
+    for (const selector of getViableSelectors(entry)) {
+      const element = resolveSelectorInDOM(selector);
+      if (element) return element;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Config Import/Export
   // ---------------------------------------------------------------------------

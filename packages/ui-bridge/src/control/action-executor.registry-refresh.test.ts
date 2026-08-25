@@ -18,6 +18,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry } from '../core/registry';
+import { ELEMENT_RESOLUTION_RANK } from '../core/resolution-score';
 import { DefaultActionExecutor } from './action-executor';
 
 describe('DefaultActionExecutor — registry refresh after mutation actions', () => {
@@ -277,5 +278,114 @@ describe('DefaultActionExecutor — registry refresh after mutation actions', ()
     // Click should NOT touch the value overlay.
     await executor.executeAction('q', { action: 'click' });
     expect(registry.getElement('q')?.getState().value).toBe('typed');
+  });
+
+  // ==========================================================================
+  // Resolution reporting
+  // ==========================================================================
+  //
+  // The re-resolution this file is about — the registered `element` reference
+  // drifting from the live DOM node across a React re-render — is exactly when
+  // the executor stops using the registry entry and starts *inferring* the
+  // target. Before this plan, the response looked identical either way: the
+  // caller could not tell an exact registry hit from a `[data-testid]` query
+  // that happened to match. `elementResolution` closes that.
+  //
+  // The scores are ordinal class labels, not calibrated probabilities — see
+  // `core/resolution-score.ts`.
+
+  it('reports an exact registry hit as such', async () => {
+    const input = makeInput('email');
+    registry.registerElement('email', input, { type: 'input' });
+
+    const result = await executor.executeAction('email', { action: 'focus' });
+    expect(result.success).toBe(true);
+    expect(result.elementResolution?.strategy).toBe('registry-id');
+    expect(result.elementResolution?.stabilityClass).toBe('exact');
+    expect(result.elementResolution?.stabilityRank).toBe(ELEMENT_RESOLUTION_RANK['registry-id']);
+  });
+
+  it('reports the weaker strategy when the registered node was detached', async () => {
+    // Simulate the React-detach the whole file is about: the registration still
+    // exists, but its `element` is no longer in the document, so the executor
+    // re-resolves off the identifier instead.
+    const detached = makeInput('email');
+    registry.registerElement('email', detached, { type: 'input' });
+    detached.remove();
+    const live = makeInput('email');
+
+    const result = await executor.executeAction('email', { action: 'focus' });
+    expect(result.success).toBe(true);
+    expect(document.activeElement).toBe(live);
+    expect(result.elementResolution?.strategy).toBe('element-identifier');
+    expect(result.elementResolution?.stabilityClass).toBe('strong');
+    // Strictly weaker than the registry hit it fell back from — the ordering is
+    // the point.
+    expect(result.elementResolution!.stabilityRank).toBeLessThan(
+      ELEMENT_RESOLUTION_RANK['registry-id']
+    );
+  });
+
+  it('omits alternates unless the request asks for them', async () => {
+    const input = makeInput('email');
+    registry.registerElement('email', input, { type: 'input' });
+
+    const plain = await executor.executeAction('email', { action: 'focus' });
+    expect(plain.elementResolution).toBeDefined();
+    expect(plain.elementResolution?.alternates).toBeUndefined();
+  });
+
+  it('returns ranked alternates when the request asks for them', async () => {
+    // Registered AND reachable by `[data-testid]`, so more than one strategy
+    // would resolve. By default the chain still stops at the first.
+    const input = makeInput('email');
+    registry.registerElement('email', input, { type: 'input' });
+
+    const result = await executor.executeAction('email', {
+      action: 'focus',
+      includeResolutionAlternates: true,
+    });
+    expect(result.elementResolution?.strategy).toBe('registry-id');
+    const alternates = result.elementResolution!.alternates!;
+    expect(alternates.length).toBeGreaterThan(0);
+    expect(alternates.some((c) => c.strategy === 'element-identifier')).toBe(true);
+    // The winner is never repeated inside its own fallback list.
+    expect(alternates.some((c) => c.strategy === 'registry-id')).toBe(false);
+    // Strongest-first.
+    const ranks = alternates.map((c) => c.stabilityRank);
+    expect([...ranks].sort((a, b) => b - a)).toEqual(ranks);
+  });
+
+  it('returns an empty alternates list rather than omitting it when there are none', async () => {
+    // "Asked, and there were none" must stay distinguishable from "did not ask".
+    const bare = document.createElement('button');
+    container.appendChild(bare);
+    registry.registerElement('lonely-button', bare, { type: 'button' });
+
+    const result = await executor.executeAction('lonely-button', {
+      action: 'focus',
+      includeResolutionAlternates: true,
+    });
+    expect(result.elementResolution?.alternates).toEqual([]);
+  });
+
+  it('reports the resolution on the failure arm too', async () => {
+    // A click that threw on a weak match is precisely when the caller wants to
+    // know the match was weak.
+    const input = makeInput('locked');
+    input.disabled = true;
+    registry.registerElement('locked', input, { type: 'input' });
+
+    const result = await executor.executeAction('locked', { action: 'click' });
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('UB-ELEM-DISABLED');
+    expect(result.elementResolution?.strategy).toBe('registry-id');
+  });
+
+  it('omits the resolution entirely when nothing resolved', async () => {
+    const result = await executor.executeAction('never-existed', { action: 'click' });
+    expect(result.success).toBe(false);
+    // Same discipline as `effectVerification`: present only when applicable.
+    expect(result.elementResolution).toBeUndefined();
   });
 });

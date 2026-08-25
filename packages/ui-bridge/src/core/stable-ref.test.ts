@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry, setGlobalRegistry, resetGlobalRegistry } from './registry';
 import { createStableRef, resolveStableRef } from './stable-ref';
+import { ELEMENT_RESOLUTION_CLASS, ELEMENT_RESOLUTION_RANK } from './resolution-score';
 import type { RegisteredElement } from './types';
 
 let idCounter = 0;
@@ -83,7 +84,10 @@ describe('StableElementRef', () => {
 
       const resolved = resolveStableRef(ref);
       expect(resolved).not.toBeNull();
-      expect(resolved!.id).toBe(regEl.id);
+      expect(resolved!.element.id).toBe(regEl.id);
+      // Strategy 1 is the only non-inferential arm in the chain.
+      expect(resolved!.resolution.strategy).toBe('registry-id');
+      expect(resolved!.resolution.stabilityClass).toBe('exact');
     });
 
     it('resolves via data-ui-bridge-id when primaryId is stale', () => {
@@ -101,7 +105,78 @@ describe('StableElementRef', () => {
 
       const resolved = resolveStableRef(ref);
       expect(resolved).not.toBeNull();
-      expect(resolved!.element).toBe(newEl);
+      expect(resolved!.element.element).toBe(newEl);
+    });
+
+    it('reports the data-ui-bridge-id strategy as strong, not exact', () => {
+      // A registry that does NOT re-match remounts by fingerprint, so the
+      // stale primaryId genuinely misses strategy 1 and the stamped attribute
+      // is what carries the resolution.
+      const plain = new UIBridgeRegistry({ preserveIdAcrossRemount: false });
+      setGlobalRegistry(plain);
+      const el = document.createElement('button');
+      const stampedId = `stamped-${++idCounter}`;
+      el.setAttribute('data-ui-bridge-id', stampedId);
+      el.textContent = 'Save';
+      document.body.appendChild(el);
+      const regEl = plain.registerElement(stampedId, el, {});
+      const ref = createStableRef(regEl);
+
+      plain.unregisterElement(regEl.id);
+      const newEl = document.createElement('button');
+      newEl.setAttribute('data-ui-bridge-id', stampedId);
+      newEl.textContent = 'Save';
+      document.body.appendChild(newEl);
+      el.remove();
+      plain.registerElement(`remounted-${++idCounter}`, newEl, {});
+
+      const resolved = resolveStableRef(ref);
+      expect(resolved).not.toBeNull();
+      expect(resolved!.element.element).toBe(newEl);
+      expect(resolved!.resolution.strategy).toBe('ui-bridge-id-attr');
+      expect(resolved!.resolution.stabilityClass).toBe('strong');
+      // Strictly weaker than an exact registry hit — that ordering is the
+      // whole point of reporting a rank at all.
+      expect(resolved!.resolution.stabilityRank).toBeLessThan(
+        ELEMENT_RESOLUTION_RANK['registry-id']
+      );
+    });
+
+    it('omits alternates unless the call asks for them', () => {
+      const regEl = makeRegisteredElement(registry, 'button', {
+        'data-ui-bridge-id': 'alt-btn',
+      });
+      const ref = createStableRef(regEl);
+      // The ref's primaryId IS the stamp target here, so several strategies
+      // would all resolve; by default the chain still stops at the first.
+      ref.stableId = regEl.id;
+
+      expect(resolveStableRef(ref)!.resolution.alternates).toBeUndefined();
+
+      const withAlternates = resolveStableRef(ref, { includeAlternates: true })!;
+      expect(withAlternates.resolution.alternates).toBeDefined();
+      // The winner is never repeated in its own alternate list.
+      expect(
+        withAlternates.resolution.alternates!.some(
+          (candidate) => candidate.strategy === withAlternates.resolution.strategy
+        )
+      ).toBe(false);
+      // Ranked strongest-first.
+      const ranks = withAlternates.resolution.alternates!.map((c) => c.stabilityRank);
+      expect([...ranks].sort((a, b) => b - a)).toEqual(ranks);
+    });
+
+    it('ranks the semantic-path strategy as weak', () => {
+      expect(ELEMENT_RESOLUTION_CLASS['semantic-path']).toBe('weak');
+      expect(ELEMENT_RESOLUTION_RANK['semantic-path']).toBeLessThan(
+        ELEMENT_RESOLUTION_RANK['fingerprint']
+      );
+      expect(ELEMENT_RESOLUTION_RANK['fingerprint']).toBeLessThan(
+        ELEMENT_RESOLUTION_RANK['ui-bridge-id-attr']
+      );
+      expect(ELEMENT_RESOLUTION_RANK['ui-bridge-id-attr']).toBeLessThan(
+        ELEMENT_RESOLUTION_RANK['registry-id']
+      );
     });
 
     it('returns null when element is fully gone', () => {

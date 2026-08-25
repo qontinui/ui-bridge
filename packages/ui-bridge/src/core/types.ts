@@ -28,6 +28,14 @@ export type {
   SnapshotIdentity,
   SignatureElementLike,
 } from './snapshot-signature';
+// Phase 3 of the same plan. `resolution-score` also imports nothing.
+import type { ElementResolution } from './resolution-score';
+export type {
+  ElementResolution,
+  ElementResolutionCandidate,
+  ElementResolutionStrategy,
+  ResolutionStabilityClass,
+} from './resolution-score';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape). `param-schema`
 // imports nothing, so this creates no cycle with `../diagnostics` above — which
 // imports the same type from the same import-free module.
@@ -1270,6 +1278,20 @@ export interface ActionResponse {
   errorImpact?: ErrorImpact;
   /** D3 effect-calculus verification: predicted-vs-observed outcome for this action (present only when a signature resolved). */
   effectVerification?: EffectVerification;
+  /**
+   * How the target element id was turned back into a live element on this call
+   * — which strategy in the fallback chain won, and how stable that class of
+   * evidence is. Present only when a resolution actually happened, exactly like
+   * `effectVerification` above; a request that never got as far as resolving an
+   * element (unsupported action, element not found) omits it.
+   *
+   * The ranked `alternates` list inside it is opt-in per call — see
+   * `ControlActionRequest.includeResolutionAlternates`.
+   *
+   * The scores are **ordinal class labels, not calibrated probabilities**. See
+   * `core/resolution-score.ts`.
+   */
+  elementResolution?: ElementResolution;
 }
 
 /**
@@ -1413,9 +1435,20 @@ export interface ActionFailureDetails {
    * Why the element reference was stale (set on stale-element paths).
    * `unmounted` = the owning component unmounted;
    * `rerendered` = a re-render replaced the node;
-   * `detached` = the node was detached from the document.
+   * `detached` = the node was detached from the document;
+   * `snapshot-superseded` = the element is perfectly live, but the **snapshot
+   * the caller cited** no longer describes the current UI.
+   *
+   * The first three all answer *"this element is gone"* — they are discovered
+   * by failing to resolve anything. `snapshot-superseded` answers the
+   * different, and until now unanswerable, question *"your snapshot is old"*:
+   * it fires **before** the action runs, on a target that resolves fine and may
+   * even look identical, because the world moved under the caller's reasoning.
+   * That is the case a post-hoc not-found check can never catch. Emitted only
+   * when the caller opted in by passing
+   * `ControlActionRequest.fromSnapshotId`; the recovery is to re-snapshot.
    */
-  staleReason?: 'unmounted' | 'rerendered' | 'detached';
+  staleReason?: 'unmounted' | 'rerendered' | 'detached' | 'snapshot-superseded';
   /** The wait condition that was being awaited when a timeout occurred. */
   waitCondition?: string;
   /** Milliseconds waited before the wait condition timed out. */
@@ -1638,7 +1671,8 @@ export interface BridgeSnapshot {
    * (`ai/semantic-snapshot.ts`), this is not minted from a per-instance
    * counter, so it does not collide across processes.
    *
-   * Subject to the millisecond residual documented in
+   * Pass it back as `ControlActionRequest.fromSnapshotId` to opt an action into
+   * stale-snapshot rejection. Subject to the millisecond residual documented in
    * `core/snapshot-signature.ts` — a sub-1 ms remount is invisible to the fold,
    * so this is a strong freshness signal, not a total guarantee.
    */

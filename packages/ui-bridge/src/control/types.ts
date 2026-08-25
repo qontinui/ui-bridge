@@ -77,6 +77,49 @@ export interface ControlActionRequest extends ActionRequest {
    * verified outcome without flipping a server-wide switch.
    */
   verifyEffect?: boolean;
+  /**
+   * The `BridgeSnapshot.snapshotId` this call was reasoned from. Supplying it
+   * opts THIS action into stale-snapshot rejection.
+   *
+   * **Omitting it preserves today's behaviour exactly.** That is the whole
+   * design: a caller that does snapshot-then-several-actions — the normal
+   * pattern — is unaffected, while a caller that wants a hard failure instead
+   * of a blind click can ask for one. Rejecting unconditionally would break
+   * every existing caller; leaving it purely advisory would change nothing,
+   * which is the fate of the `_meta.stale` flag that already exists.
+   *
+   * When supplied and superseded, the action is refused **before it runs**
+   * with `errorCode: 'UB-STALE-ELEMENT'` and
+   * `failureDetails.staleReason === 'snapshot-superseded'`, and the recovery is
+   * to re-snapshot. This is a different question from the pre-existing stale
+   * arms: those all mean "this element is gone", discovered by failing to
+   * resolve. This one fires on a target that resolves perfectly well and may
+   * look identical — the world simply moved under the caller's reasoning.
+   *
+   * An id this SDK cannot parse is treated as UNKNOWN and does **not** reject;
+   * neither does a registry that has never stamped a snapshot. Refusing on
+   * "cannot judge" would fail closed on the wrong axis.
+   *
+   * Not a total guarantee: the fold's `generation` is derived from
+   * millisecond-resolution `registeredAt` values, so a remount completed inside
+   * one millisecond is invisible to it. See `core/snapshot-signature.ts`.
+   */
+  fromSnapshotId?: string;
+  /**
+   * Also return the ranked list of OTHER strategies that would have resolved
+   * this element, on `elementResolution.alternates`.
+   *
+   * The winning strategy and its stability score come back on every action that
+   * resolved something — that is O(1) and withholding it would defeat the
+   * purpose, since a caller cannot know it acted on a weak match if it has to
+   * ask in advance whether it is about to. The ranked alternates are the
+   * expensive half (they force the whole chain to run instead of stopping at
+   * the first hit), so they are opt-in.
+   *
+   * A **request** parameter, deliberately not a config setting: a config toggle
+   * would make the same call return different shapes on different machines.
+   */
+  includeResolutionAlternates?: boolean;
 }
 
 /**

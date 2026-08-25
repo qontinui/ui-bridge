@@ -315,7 +315,7 @@ function resolveElementWithFallback(id: string): RegisteredElement | undefined {
     lastSeenAt: 0,
   };
   const resolved = resolveStableRef(syntheticRef);
-  if (resolved) return resolved;
+  if (resolved) return resolved.element;
 
   return undefined;
 }
@@ -4832,11 +4832,21 @@ export async function executeCommand(
     // ======================================================================
 
     case 'resolve_stable_ref': {
-      const { stableRef } = payload as { stableRef: StableElementRef };
-      const resolved = resolveStableRef(stableRef);
+      const { stableRef, includeAlternates } = payload as {
+        stableRef: StableElementRef;
+        includeAlternates?: boolean;
+      };
+      const resolved = resolveStableRef(stableRef, {
+        includeAlternates: includeAlternates === true,
+      });
+      // `resolution` carries which of the four strategies won and how stable
+      // that class of evidence is — an exact registry hit and a semantic-path
+      // guess used to be indistinguishable on this channel. Ranked alternates
+      // are opt-in per call (`includeAlternates`), never a config setting.
       return {
         resolved: !!resolved,
-        elementId: resolved?.id ?? null,
+        elementId: resolved?.element.id ?? null,
+        resolution: resolved?.resolution,
         timestamp: Date.now(),
       };
     }

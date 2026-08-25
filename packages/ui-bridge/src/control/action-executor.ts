@@ -75,6 +75,18 @@ import {
 import { ErrorImpactAssessor, type UIStateSnapshot } from '../debug/error-impact';
 import type { CompositeIdleDetector } from '../idle/composite-idle';
 import { findElementByIdentifier } from '../core/element-identifier';
+// Phase 1/2 of plan `2026-08-20-ui-bridge-snapshot-identity-and-selector-candidates`:
+// the snapshot-identity fold, used here only to PARSE a caller-cited id and to
+// compare it against the registry's cheap live mount fold.
+import { parseSnapshotId, type SnapshotSignature } from '../core/snapshot-signature';
+// Phase 3: the ONE ordinal vocabulary both element-resolution chains report in.
+import {
+  buildElementResolution,
+  scoreResolution,
+  type ElementResolution,
+  type ElementResolutionCandidate,
+  type ElementResolutionStrategy,
+} from '../core/resolution-score';
 import { classString } from '../core/class-name';
 // Phase 3: the executor races every action handler against its abort signal,
 // so a handler that ignores the signal is still abandonable at the caller.
@@ -978,6 +990,86 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * Decide whether a caller-cited snapshot id still describes this UI.
+   *
+   * ## What it can prove cheaply, and what it deliberately does not
+   *
+   * The honest definition of "superseded" is *"the identity the caller cited is
+   * not the identity of the current UI state"*. Recomputing that identity in
+   * full would mean re-serializing every element — `state.textContent` /
+   * `state.ariaPressed` come from `getState()`, which forces layout per element.
+   * That is a cost a snapshot pays deliberately and an action must not pay
+   * incidentally, so this uses two cheap arms instead:
+   *
+   * 1. **The live mount fold** (`registry.computeLiveMountFold`) — always
+   *    available, reads only `id` and `registeredAt`, no DOM access at all, and
+   *    reproduces a stamped snapshot's `count`/`generation` EXACTLY when nothing
+   *    has changed. A `count` mismatch means the element set churned; a
+   *    `generation` mismatch on a matching count is a **remount**: the same
+   *    elements, possibly showing exactly the same thing, but not the same DOM
+   *    nodes the caller reasoned about. That is the case the pre-existing
+   *    "element not found" check can never catch, because the element resolves.
+   * 2. **A newer stamped snapshot** — available only once this registry has
+   *    stamped at least one snapshot. If the most recent one carries a different
+   *    id while count and generation match, the difference is in `content`: what
+   *    the caller could see has changed.
+   *
+   * What escapes both arms is a content change with no intervening snapshot —
+   * nothing observed it, so nothing can prove it. Plus the inherited
+   * millisecond residual: `registeredAt` is millisecond-resolution, so a remount
+   * completed inside one millisecond leaves `generation` untouched. Callers get
+   * a strong freshness signal, **not a total guarantee**; see
+   * `core/snapshot-signature.ts`.
+   *
+   * ## Unknown is not stale
+   *
+   * An id this SDK cannot parse, or a registry that has never stamped a
+   * snapshot, both yield `superseded: false`. Refusing on "cannot judge" would
+   * fail closed on the wrong axis: the caller opted into a freshness check, not
+   * into a ban on actions this SDK has no opinion about.
+   */
+  private checkSnapshotFreshness(citedSnapshotId: string): {
+    superseded: boolean;
+    supersededBy?: 'element-set' | 'remount' | 'content';
+    detail?: string;
+  } {
+    const cited: SnapshotSignature | null = parseSnapshotId(citedSnapshotId);
+    if (!cited) {
+      // Not a spec-v1 id — UNKNOWN, not stale.
+      return { superseded: false };
+    }
+
+    const live = this.registry.computeLiveMountFold?.();
+    if (live) {
+      if (live.count !== cited.count) {
+        return {
+          superseded: true,
+          supersededBy: 'element-set',
+          detail: `the registered element set changed (${cited.count} elements when the snapshot was taken, ${live.count} now)`,
+        };
+      }
+      if (live.generation !== cited.generation) {
+        return {
+          superseded: true,
+          supersededBy: 'remount',
+          detail: `the same ${cited.count} elements now belong to a different mount (generation ${cited.generation} -> ${live.generation}), so the target may not be the element the snapshot described`,
+        };
+      }
+    }
+
+    const last = this.registry.getLastSnapshotIdentity?.();
+    if (last && last.snapshotId !== citedSnapshotId) {
+      return {
+        superseded: true,
+        supersededBy: 'content',
+        detail: `a newer snapshot (${last.snapshotId}) shows different content`,
+      };
+    }
+
+    return { superseded: false };
+  }
+
+  /**
    * Execute an action on an element
    */
   async executeAction(
@@ -986,6 +1078,10 @@ export class DefaultActionExecutor implements ActionExecutor {
   ): Promise<ControlActionResponse> {
     const startTime = performance.now();
     let waitDurationMs = 0;
+    // Declared out here so the failure arm can report it as well: a click that
+    // threw on a `weak` semantic-path match is precisely when the caller wants
+    // to know the match was weak.
+    let elementResolution: ElementResolution | undefined;
 
     // Validate action name early — check built-in actions first
     const actionName = request.action;
@@ -1011,43 +1107,119 @@ export class DefaultActionExecutor implements ActionExecutor {
       }
     }
 
-    try {
-      // Find the element
-      const registered = this.registry.getElement(elementId);
-      let element: HTMLElement | null = registered?.element ?? null;
+    // Opt-in stale-snapshot precondition. Runs BEFORE anything is resolved or
+    // executed, because the question it answers is about the caller's
+    // reasoning, not about the target: an element that resolves perfectly well
+    // can still be the wrong element. Omitting `fromSnapshotId` skips this
+    // entirely and preserves the pre-plan behaviour exactly.
+    if (request.fromSnapshotId !== undefined) {
+      const freshness = this.checkSnapshotFreshness(request.fromSnapshotId);
+      if (freshness.superseded) {
+        const message =
+          `Snapshot '${request.fromSnapshotId}' is superseded: ${freshness.detail}. ` +
+          `The action on '${elementId}' was refused before it ran because it was reasoned ` +
+          `from a snapshot that no longer describes this UI. Take a fresh snapshot and ` +
+          `re-resolve the target from it before retrying.`;
+        const details = buildActionFailureDetails('UB-STALE-ELEMENT', message, {
+          elementId,
+          staleReason: 'snapshot-superseded',
+          context: {
+            citedSnapshotId: request.fromSnapshotId,
+            supersededBy: freshness.supersededBy,
+            currentSnapshotId: this.registry.getLastSnapshotIdentity?.()?.snapshotId,
+          },
+          durationMs: performance.now() - startTime,
+        });
+        // The shared `UB-STALE-ELEMENT` catalog entry recommends re-FINDING the
+        // element. That is the right advice for the other three staleReasons
+        // (`unmounted`/`rerendered`/`detached` all mean the element is gone) and
+        // the WRONG advice here — re-finding the same id would succeed and click
+        // the wrong thing. So the re-snapshot recovery is prepended at this emit
+        // site rather than bolted onto a catalog entry three other reasons share.
+        details.suggestedActions = [
+          {
+            suggestion: 'Take a fresh snapshot and re-resolve the target from it',
+            command: 'snapshot',
+            confidence: 0.95,
+            retryable: true,
+            priority: 0,
+          },
+          ...details.suggestedActions,
+        ];
+        return {
+          success: false,
+          error: message,
+          failureDetails: details,
+          durationMs: performance.now() - startTime,
+          timestamp: Date.now(),
+          requestId: request.requestId,
+        };
+      }
+    }
 
+    try {
+      // Find the element. Every arm records WHICH strategy produced it, so the
+      // response can say what the match is worth — an exact registry hit and a
+      // discovery-cache node used to be indistinguishable to the caller. See
+      // `core/resolution-score.ts`; the scores are ordinal class labels, not
+      // calibrated probabilities.
+      const wantAlternates = request.includeResolutionAlternates === true;
+      const hits: ElementResolutionCandidate[] = [];
+      let element: HTMLElement | null = null;
+      const recordHit = (strategy: ElementResolutionStrategy): void => {
+        hits.push(scoreResolution(strategy, elementId));
+      };
+
+      const registered = this.registry.getElement(elementId);
       // Verify element is still in the live DOM (React re-renders can detach elements)
-      if (element && !element.isConnected) {
-        element = null;
+      if (registered?.element && registered.element.isConnected) {
+        element = registered.element;
+        recordHit('registry-id');
       }
 
       // If not registered or detached, try to find by identifier
-      if (!element) {
-        element = findElementByIdentifier(elementId);
+      if (!element || wantAlternates) {
+        const byIdentifier = findElementByIdentifier(elementId);
+        if (byIdentifier) {
+          element = element ?? byIdentifier;
+          recordHit('element-identifier');
+        }
       }
 
       // Try CTR (Central Target Registry) — resolves logical names to DOM
-      // elements via self-healing selector fallback chains
+      // elements via self-healing selector fallback chains.
+      //
+      // The alternates probe deliberately goes through `probeInDOM` instead:
+      // `resolveInDOM` self-heals (promotes/demotes selectors, writes the cache,
+      // emits resolution events), which is right when the caller is about to act
+      // on the result and wrong for a diagnostic probe.
       if (!element) {
         const ctr = getGlobalCtr();
         if (ctr.has(elementId)) {
           const result = ctr.resolveInDOM(elementId);
           if (result.resolved && result.element) {
             element = result.element;
+            recordHit('ctr-selector');
           }
+        }
+      } else if (wantAlternates) {
+        const ctr = getGlobalCtr();
+        if (ctr.has(elementId) && ctr.probeInDOM(elementId)) {
+          recordHit('ctr-selector');
         }
       }
 
       // If still not found, check the discovery cache (elements found via
       // find()/discover() that weren't in the registry)
-      if (!element) {
-        const cached = this.discoveryCache.get(elementId);
-        if (cached && cached.isConnected) {
-          element = cached;
-        } else if (cached) {
-          // Clean up stale entry
-          this.discoveryCache.delete(elementId);
+      const cached = this.discoveryCache.get(elementId);
+      if (cached && cached.isConnected) {
+        if (element === null || wantAlternates) {
+          element = element ?? cached;
+          recordHit('discovery-cache');
         }
+      } else if (cached && element === null) {
+        // Clean up stale entry
+        this.discoveryCache.delete(elementId);
       }
 
       // Resolve page-level sentinel IDs for scroll actions.
@@ -1057,8 +1229,16 @@ export class DefaultActionExecutor implements ActionExecutor {
         const sentinel = elementId.toLowerCase();
         if (sentinel === 'document' || sentinel === 'body' || sentinel === 'window') {
           element = document.documentElement;
+          recordHit('page-sentinel');
         }
       }
+
+      // First hit wins, exactly as before — `hits[0]` is the arm that actually
+      // produced `element`. Later entries exist only when the caller asked for
+      // alternates.
+      elementResolution = hits[0]
+        ? buildElementResolution(hits[0], wantAlternates ? hits.slice(1) : undefined)
+        : undefined;
 
       if (!element) {
         // Build diagnostic hint for AI consumers
@@ -1314,6 +1494,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         errorDiff,
         errorImpact,
         effectVerification,
+        elementResolution,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -1401,6 +1582,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         failureDetails,
         stack: error instanceof Error ? error.stack : undefined,
         elementState,
+        elementResolution,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,

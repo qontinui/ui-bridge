@@ -142,7 +142,12 @@ export interface BuiltActionFailureDetails {
   /** Typed-reason discriminators (Phase 3) — mirror `ActionFailureDetails`. */
   disabledReason?: 'native' | 'aria' | 'pointer-none';
   visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
-  staleReason?: 'unmounted' | 'rerendered' | 'detached';
+  /**
+   * `'snapshot-superseded'` is the opt-in stale-*snapshot* arm — the element
+   * resolves fine, the snapshot the caller reasoned from does not. See
+   * `ActionFailureDetails.staleReason`.
+   */
+  staleReason?: 'unmounted' | 'rerendered' | 'detached' | 'snapshot-superseded';
   waitCondition?: string;
   waitTimedOutAfterMs?: number;
   timeoutType?: 'network' | 'navigation' | 'computation';
@@ -263,7 +268,7 @@ export function buildActionFailureDetails(
     /** Typed-reason discriminators (Phase 3). */
     disabledReason?: 'native' | 'aria' | 'pointer-none';
     visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
-    staleReason?: 'unmounted' | 'rerendered' | 'detached';
+    staleReason?: 'unmounted' | 'rerendered' | 'detached' | 'snapshot-superseded';
     waitCondition?: string;
     waitTimedOutAfterMs?: number;
     timeoutType?: 'network' | 'navigation' | 'computation';

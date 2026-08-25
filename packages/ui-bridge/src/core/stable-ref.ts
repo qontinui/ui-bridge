@@ -16,6 +16,13 @@
 import type { RegisteredElement } from './types';
 import { getGlobalRegistry } from './registry';
 import { computeElementFingerprint, findNearestRegisteredElement } from './element-fingerprint';
+import {
+  buildElementResolution,
+  scoreResolution,
+  type ElementResolution,
+  type ElementResolutionCandidate,
+  type ElementResolutionStrategy,
+} from './resolution-score';
 
 // ============================================================================
 // Types
@@ -132,72 +139,167 @@ export function createStableRef(element: RegisteredElement): StableElementRef {
 // ============================================================================
 
 /**
- * Resolve a StableElementRef back to a live RegisteredElement.
+ * The outcome of a successful {@link resolveStableRef}: the live element, plus
+ * WHICH of the four strategies produced it and how stable that class of
+ * evidence is.
  *
- * Tries resolution strategies in order:
- *   1. Direct ID lookup in the registry
- *   2. DOM query for data-ui-bridge-id attribute
- *   3. Fingerprint match across all registered elements
- *   4. Semantic path CSS selector traversal
- *
- * Returns null if no strategy finds a match.
+ * The chain used to return a bare `RegisteredElement`, which made an exact
+ * registry hit and a fourth-strategy CSS-path guess indistinguishable to the
+ * caller. The scores are ordinal class labels, not calibrated probabilities —
+ * see `core/resolution-score.ts`.
  */
-export function resolveStableRef(ref: StableElementRef): RegisteredElement | null {
+export interface StableRefResolution {
+  /** The live element the chain resolved to. */
+  element: RegisteredElement;
+  /** Which strategy won, its stability class/rank, and (opt-in) the alternates. */
+  resolution: ElementResolution;
+}
+
+/** Per-call options for {@link resolveStableRef}. */
+export interface ResolveStableRefOptions {
+  /**
+   * Also report every OTHER strategy that would have resolved something,
+   * ranked strongest-first, on {@link ElementResolution.alternates}.
+   *
+   * **Off by default, and a per-call request rather than a config setting.**
+   * Building the list means running the whole chain instead of stopping at the
+   * first hit — including a fingerprint sweep across every registered element —
+   * so it is `O(elements)` on a path that is otherwise a map lookup. Making it
+   * a config toggle would additionally make the same call return different
+   * shapes on different machines.
+   */
+  includeAlternates?: boolean;
+}
+
+/** One strategy's hit: which strategy, and what it found. */
+interface StrategyHit {
+  strategy: ElementResolutionStrategy;
+  element: RegisteredElement;
+}
+
+/** Strategy 1: direct id lookup in the registry. The only non-inferential arm. */
+function tryRegistryId(ref: StableElementRef): RegisteredElement | null {
   const registry = getGlobalRegistry();
-
-  // Strategy 1: Direct ID lookup
   const byId = registry.getElement(ref.primaryId);
-  if (byId && byId.mounted && byId.element.isConnected) {
-    return byId;
-  }
+  return byId && byId.mounted && byId.element.isConnected ? byId : null;
+}
 
-  // Strategy 2: data-ui-bridge-id attribute lookup
-  if (typeof document !== 'undefined') {
-    const byAttr = document.querySelector(
-      `[data-ui-bridge-id="${CSS.escape(ref.primaryId)}"]`
-    ) as HTMLElement | null;
-    if (byAttr) {
-      const registered = registry.findByDOMElement(byAttr);
-      if (registered && registered.mounted) {
-        return registered;
-      }
-      // The DOM node exists but isn't registered — try ancestor walk
-      const nearest = findNearestRegisteredElement(byAttr, registry);
-      if (nearest && nearest.mounted) {
-        return nearest;
-      }
-    }
-  }
+/** Strategy 2: the developer-stamped `data-ui-bridge-id` attribute. */
+function tryUiBridgeIdAttr(ref: StableElementRef): RegisteredElement | null {
+  if (typeof document === 'undefined') return null;
+  const registry = getGlobalRegistry();
+  const byAttr = document.querySelector(
+    `[data-ui-bridge-id="${CSS.escape(ref.primaryId)}"]`
+  ) as HTMLElement | null;
+  if (!byAttr) return null;
+  const registered = registry.findByDOMElement(byAttr);
+  if (registered && registered.mounted) return registered;
+  // The DOM node exists but isn't registered — try ancestor walk.
+  const nearest = findNearestRegisteredElement(byAttr, registry);
+  return nearest && nearest.mounted ? nearest : null;
+}
 
-  // Strategy 3: Fingerprint match across all registered elements
-  const allElements = registry.getAllElements();
-  for (const el of allElements) {
+/**
+ * Strategy 3: content-fingerprint match across every registered element.
+ *
+ * Inferential: it finds an element that LOOKS like the one the ref captured. A
+ * second element with identical content would satisfy it equally well, which is
+ * why it scores `moderate` rather than `strong`.
+ */
+function tryFingerprint(ref: StableElementRef): RegisteredElement | null {
+  if (!ref.fingerprint) return null;
+  const registry = getGlobalRegistry();
+  for (const el of registry.getAllElements()) {
     if (!el.mounted || !el.element.isConnected) continue;
     const fp = computeElementFingerprint(el.element);
-    if (fp.hash === ref.fingerprint) {
-      return el;
-    }
+    if (fp.hash === ref.fingerprint) return el;
   }
-
-  // Strategy 4: Semantic path CSS selector traversal
-  if (ref.semanticPath && typeof document !== 'undefined') {
-    try {
-      const byPath = document.querySelector(ref.semanticPath) as HTMLElement | null;
-      if (byPath) {
-        const registered = registry.findByDOMElement(byPath);
-        if (registered && registered.mounted) {
-          return registered;
-        }
-        // Walk up from the CSS-matched node to find a registered ancestor
-        const nearest = findNearestRegisteredElement(byPath, registry);
-        if (nearest && nearest.mounted) {
-          return nearest;
-        }
-      }
-    } catch {
-      // Invalid CSS selector — skip
-    }
-  }
-
   return null;
+}
+
+/**
+ * Strategy 4: `semanticPath` CSS traversal — the weakest arm.
+ *
+ * The path is role plus a non-utility class walked up to depth 8
+ * (`buildSemanticPath`), so a match is structural guesswork: it says "something
+ * shaped like this still exists here", not "this is your element". Scored
+ * `weak` for exactly that reason.
+ */
+function trySemanticPath(ref: StableElementRef): RegisteredElement | null {
+  if (!ref.semanticPath || typeof document === 'undefined') return null;
+  const registry = getGlobalRegistry();
+  try {
+    const byPath = document.querySelector(ref.semanticPath) as HTMLElement | null;
+    if (!byPath) return null;
+    const registered = registry.findByDOMElement(byPath);
+    if (registered && registered.mounted) return registered;
+    // Walk up from the CSS-matched node to find a registered ancestor.
+    const nearest = findNearestRegisteredElement(byPath, registry);
+    return nearest && nearest.mounted ? nearest : null;
+  } catch {
+    // Invalid CSS selector — skip.
+    return null;
+  }
+}
+
+/**
+ * The four strategies in strength order. First hit wins, which is why this
+ * array order and `ELEMENT_RESOLUTION_RANK` must agree — they encode the same
+ * claim (registry id > `data-ui-bridge-id` > fingerprint > semantic path) for
+ * two different purposes.
+ */
+const STABLE_REF_STRATEGIES: ReadonlyArray<{
+  strategy: ElementResolutionStrategy;
+  run: (ref: StableElementRef) => RegisteredElement | null;
+}> = [
+  { strategy: 'registry-id', run: tryRegistryId },
+  { strategy: 'ui-bridge-id-attr', run: tryUiBridgeIdAttr },
+  { strategy: 'fingerprint', run: tryFingerprint },
+  { strategy: 'semantic-path', run: trySemanticPath },
+];
+
+/**
+ * Resolve a StableElementRef back to a live RegisteredElement, reporting which
+ * strategy produced it.
+ *
+ * Tries resolution strategies in strength order:
+ *   1. Direct ID lookup in the registry            (`registry-id`,        exact)
+ *   2. DOM query for data-ui-bridge-id attribute   (`ui-bridge-id-attr`,  strong)
+ *   3. Fingerprint match across all registered     (`fingerprint`,        moderate)
+ *   4. Semantic path CSS selector traversal        (`semantic-path`,      weak)
+ *
+ * Returns `null` if no strategy finds a match.
+ *
+ * Without `includeAlternates` this stops at the first hit, so it costs exactly
+ * what it always did. With it, every strategy runs — see
+ * {@link ResolveStableRefOptions.includeAlternates} for what that buys and what
+ * it costs.
+ */
+export function resolveStableRef(
+  ref: StableElementRef,
+  options: ResolveStableRefOptions = {}
+): StableRefResolution | null {
+  const hits: StrategyHit[] = [];
+  for (const { strategy, run } of STABLE_REF_STRATEGIES) {
+    const element = run(ref);
+    if (element) {
+      hits.push({ strategy, element });
+      if (!options.includeAlternates) break;
+    }
+  }
+
+  const winner = hits[0];
+  if (!winner) return null;
+
+  const alternates: ElementResolutionCandidate[] | undefined = options.includeAlternates
+    ? hits.slice(1).map((hit) => scoreResolution(hit.strategy, hit.element.id))
+    : undefined;
+
+  return {
+    element: winner.element,
+    resolution: buildElementResolution(
+      scoreResolution(winner.strategy, winner.element.id),
+      alternates
+    ),
+  };
 }

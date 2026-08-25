@@ -77,7 +77,11 @@ export type { ElementFingerprintData, RepeatPatternData } from './element-finger
 
 // Stable element references across React re-renders
 export { createStableRef, resolveStableRef } from './stable-ref';
-export type { StableElementRef } from './stable-ref';
+export type {
+  StableElementRef,
+  StableRefResolution,
+  ResolveStableRefOptions,
+} from './stable-ref';
 
 // Snapshot identity — the cross-language FNV-1a-64 fold that gives every
 // `BridgeSnapshot` a content-addressed id, plus the two comparison predicates
@@ -97,6 +101,21 @@ export type {
   SnapshotIdentity,
   SignatureElementLike,
 } from './snapshot-signature';
+
+// Resolution stability — the ONE ordinal vocabulary both element-resolution
+// chains report in. Ordinal class labels, NOT calibrated probabilities.
+export {
+  scoreResolution,
+  buildElementResolution,
+  ELEMENT_RESOLUTION_RANK,
+  ELEMENT_RESOLUTION_CLASS,
+} from './resolution-score';
+export type {
+  ElementResolution,
+  ElementResolutionCandidate,
+  ElementResolutionStrategy,
+  ResolutionStabilityClass,
+} from './resolution-score';
 
 // Structured NL-disambiguation query — rank elements by metadata without
 // pixel inspection. Replaces the VLM-for-disambiguation path.
