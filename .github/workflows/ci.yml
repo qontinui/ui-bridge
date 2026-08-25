@@ -63,6 +63,14 @@ jobs:
         # is its npm page, so an unscoped name there 404s for a reader who never
         # opens the docs site at all.
         #
+        # It checks a second surface no markdown glob can reach: the COMMENTS of
+        # every tracked .ts/.tsx/.mts/.cts/.js/.jsx/.mjs/.cjs source. A JSDoc
+        # `@example` is documentation that ships — it renders in every IDE hover
+        # and is the copy a reader is most likely to paste. #160 found two such
+        # blocks importing `@anthropic-ai/ui-bridge-sdk`, a scope this project
+        # has never owned, and fixed them by hand because nothing was looking;
+        # the same rule now judges a fenced block wherever a reader meets it.
+        #
         # The roster is also checked for COMPLETENESS: every .md/.mdx file the
         # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS
         # with a reason, so a new documentation tree cannot land unchecked. The

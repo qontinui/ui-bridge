@@ -294,9 +294,11 @@ export class BrowserEventCapture {
    * total of evicted entries), and `bufferedCount` (current buffer size).
    *
    * @example
-   *   const first = capture.getConsoleRecent({ limit: 100 });
-   *   // … later …
-   *   const delta = capture.getConsoleRecent({ sinceId: first.nextSinceId });
+   * ```ts
+   * const first = capture.getConsoleRecent({ limit: 100 });
+   * // … later …
+   * const delta = capture.getConsoleRecent({ sinceId: first.nextSinceId });
+   * ```
    */
   getConsoleRecent(options: ConsoleRecentOptions): ConsoleRecentResponse;
   /**

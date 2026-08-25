@@ -82,8 +82,10 @@ slice it needs — a Node-only server never pays for the React import:
 | `./diagnostics`                                  | The generated diagnostic-code catalogue                                         |
 
 `npm run docs:check-symbols` at the repo root name-checks every documented
-import on this page against these `exports` entries and their real export
-surfaces, so an example here cannot drift from the code without failing CI.
+import on this page — and every one in a fenced `@example` block in this
+package's own source comments, which is what an IDE hover shows you — against
+these `exports` entries and their real export surfaces, so an example cannot
+drift from the code without failing CI.
 
 ## CLI
 

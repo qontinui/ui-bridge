@@ -201,18 +201,24 @@ name = "docs-symbol-ratchet"
 # ci.yml "Documentation symbol ratchet" → `docs:check-symbols` =
 # `node scripts/check-docs-symbols.cjs`. Name-checks every import in every
 # fenced ts/tsx/js block on every guarded documentation surface — docs-site/docs,
-# docs, packages/, examples/, and the root README.md / CONTRIBUTING.md — against
-# the workspace's real package names, `exports` maps and export surfaces. It also
-# fails when a tracked .md/.mdx file sits on no surface and on no declared
-# exemption, so a new documentation tree cannot land unchecked. It sits in THIS
-# job rather than in `docs` because the `docs` job installs only docs-site's own
-# tree — packages/* is never present there, so the check would have nothing to
-# resolve against.
+# docs, packages/, examples/, and the root README.md / CONTRIBUTING.md — AND in
+# the comments of every tracked .ts/.tsx/.mts/.cts/.js/.jsx/.mjs/.cjs source,
+# against the workspace's real package names, `exports` maps and export surfaces.
+# That second surface is where a JSDoc `@example` lives: it renders in every IDE
+# hover, it is the copy a reader is most likely to paste, and no markdown glob
+# reaches it — #160 found two blocks importing a scope this project has never
+# owned and had to fix them by hand with nothing left behind to stop the next.
+# It also fails when a tracked .md/.mdx file sits on no surface and on no
+# declared exemption, so a new documentation tree cannot land unchecked. It sits
+# in THIS job rather than in `docs` because the `docs` job installs only
+# docs-site's own tree — packages/* is never present there, so the check would
+# have nothing to resolve against.
 #
-# It needs no docs-site install of its own: it reads .md files and packages/*/src
-# directly, and its only INSTALLED dependency is the `typescript` the root
-# `npm ci` above already provides. It does require two things of the environment
-# rather than of the install, and this lane is the one most likely to lack them:
+# It needs no docs-site install of its own: it reads .md and source files and
+# packages/*/src directly, and its only INSTALLED dependency is the `typescript`
+# the root `npm ci` above already provides. It does require two things of the
+# environment rather than of the install, and this lane is the one most likely
+# to lack them:
 # `git` on PATH, and a real git work tree. The file list comes from `git ls-files`
 # so that the verdict is a property of the commit and not of whatever the working
 # tree happens to have built; without it the step exits 1 saying so, because a

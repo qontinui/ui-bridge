@@ -13,10 +13,10 @@
 // site behind one green check.
 //
 // This is the checker that makes those three failures observable. For every
-// fenced TypeScript-family block on a guarded documentation surface — the
-// roster is DOC_SURFACES, and every .md/.mdx file this repo tracks is either on
-// it or named in UNGUARDED_DOCS with a reason, so a new documentation tree
-// cannot land unchecked and silent — it:
+// fenced TypeScript-family block on a guarded surface — markdown, whose roster
+// is DOC_SURFACES with every tracked .md/.mdx either on it or named in
+// UNGUARDED_DOCS with a reason, plus the comments of every TypeScript-family
+// source this repo tracks (see SOURCE_EXTENSIONS) — it:
 //
 //   1. Extracts the block (fence-aware, so a fence inside a longer fence does
 //      not terminate it) and parses it with the TypeScript compiler's own
@@ -38,6 +38,29 @@
 // It FAILS on an unknown package, an unknown subpath, or an unknown symbol.
 // There is no report-only mode: .qontinui/ci.toml's own header states the
 // mirroring rule as "A step that cannot fail is not a gate worth mirroring".
+//
+// THE SECOND SURFACE: JSDOC (see SOURCE_EXTENSIONS)
+//
+// A `@example` in a JSDoc comment is documentation that ships. It renders in
+// every IDE hover and in every generated API page, it is the copy a reader is
+// most likely to paste, and until this commit no glob in this repo reached it.
+// That was not theoretical: #160 found two JSDoc blocks in
+// packages/ui-bridge/src/navigation/navigation-adapter.ts importing from
+// `@anthropic-ai/ui-bridge-sdk` — a scope this project has never owned, an
+// E404 for anyone who copied it — plus `UiBridgeProvider` for the real
+// `UIBridgeProvider`. Both were fixed BY HAND, with nothing left behind to stop
+// the next one, and the whole argument for this file is that a hand-fix without
+// a gate is how README.md re-decayed for a release while the site it links to
+// stayed green. Same defect class, same corpus, same reader: same gate.
+//
+// The mechanics are the markdown path's, unchanged. Comment bodies are stripped
+// of their `/**`, ` * ` and `//` markers by BLANKING them (spaces of equal
+// width, never deletion), so line and column offsets survive and a failure
+// still cites the true `file:line` of the source. What comes out goes through
+// the same extractCodeBlocks, the same readImports, the same resolver. A fenced
+// block in a comment is judged by exactly the rule a fenced block in a README
+// is judged by, which is the point: the gate's coverage must not depend on
+// which file a reader happens to be reading the example in.
 //
 // THE DEBT LEDGER (docs-site/docs-symbol-debt.json)
 //
@@ -116,6 +139,19 @@
 //   - Property access on an imported value (`bridge.doesNotExist()`), JSX
 //     component props, and anything in a non-TypeScript fence (python, bash,
 //     http, json, rust, vue, svelte, html).
+//   - An `@example` body carrying no fence at all. JSDoc permits it; this repo
+//     had exactly one, `debug/browser-capture.ts`, fenced in the same commit
+//     that added this surface — so the convention is uniform and teaching
+//     extractCodeBlocks to guess where an unfenced example starts and stops
+//     would buy no coverage while starting to parse prose as code. A fence is
+//     cheap; the remedy for an unfenced example is to fence it, not to widen
+//     the parser. (No tally is given on purpose: a count here would be stale on
+//     the next `@example` anyone writes, which is the defect class this gate
+//     exists to catch.)
+//   - Source comments OUTSIDE this repository's tracked TypeScript-family
+//     files — `.py`, `.rs`, `.java` and the rest. The resolver is a TypeScript
+//     one; a Python docstring showing a `ui-bridge` import is a real surface
+//     and a real gap, and it is named here rather than left to be discovered.
 //
 // Usage:
 //   node scripts/check-docs-symbols.cjs                     # verify (CI)
@@ -250,6 +286,30 @@ const UNGUARDED_DOCS = [
   },
 ];
 
+/**
+ * The source surface: file extensions whose COMMENTS are scanned for fenced
+ * examples.
+ *
+ * Deliberately NOT a roster of paths, and deliberately with no exemption list.
+ *
+ * DOC_SURFACES needs both because markdown is an open set of trees that get
+ * added, moved and emptied, and because some of it (a CLA, a charter, an issue
+ * template) genuinely documents nothing about the API. Source comments have
+ * neither property. There is exactly one rule — a fenced TypeScript block in a
+ * comment is an example, wherever it sits — and a per-path roster over the ~700
+ * tracked sources this matches would be a list to forget to update, i.e. the
+ * very drift that UNGUARDED_DOCS exists to catch, reintroduced one layer down.
+ *
+ * The set is every extension the parser can read as TypeScript, so a `.js`
+ * build script's example is judged by the same rule as a `.tsx` component's.
+ * As with markdown, the file list comes from `git ls-files` and not from a walk
+ * — see trackedSources: `dist/`, `node_modules/`, `coverage/`, `.next/` and
+ * `examples/tauri-app/src-tauri/target/` are excluded because git already knows
+ * they are not this repo's source, not because a hardcoded skip list remembered
+ * to name them.
+ */
+const SOURCE_EXTENSIONS = ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'];
+
 const VERBOSE = process.argv.includes('--verbose');
 const UPDATE = process.argv.includes('--update');
 const SURFACE_OF = readFlag('--surface');
@@ -371,11 +431,23 @@ function readWorkspacePackages() {
  * either one turns this function into a way to retire the gate.
  *
  * 1. ONLY the root and `packages/*` manifests are read, never `examples/*`.
- *    Each example app declares `"ui-bridge": "file:../../packages/ui-bridge"` —
- *    the UNSCOPED name, as a deliberate local alias. Reading those manifests
- *    would enter `ui-bridge` into this set and silently re-authorise the precise
- *    defect (`npm install ui-bridge`, `from 'ui-bridge'`) that this gate's own
- *    plan was written to eliminate.
+ *    The reason this restriction was WRITTEN no longer holds and must not be
+ *    left standing as though it did: each example app used to declare
+ *    `"ui-bridge": "file:../../packages/ui-bridge"` — the UNSCOPED name, as a
+ *    deliberate local alias — so reading those manifests would have entered
+ *    `ui-bridge` into this set and silently re-authorised the precise defect
+ *    (`npm install ui-bridge`, `from 'ui-bridge'`) this gate's own plan was
+ *    written to eliminate. #159 rewrote all three to `"@qontinui/ui-bridge"`,
+ *    which is a workspace package and so never reaches this set at all.
+ *
+ *    The restriction stays, on the reason that survives: this set's whole job
+ *    is to name packages that are REAL but unresolvable here, and the evidence
+ *    it accepts for "real" is a manifest entry. `examples/` manifests are
+ *    written to make a demo app install, not to attest that a name is
+ *    published — a `file:` or `link:` alias to a local directory is normal
+ *    there and says nothing about npm. Restriction 2 already refuses an
+ *    unowned scope; this one refuses the weaker evidence, so a demo's
+ *    convenience alias can never become the reason a doc page passes.
  *
  * 2. The name must sit in a scope this project OWNS (OWNED_SCOPE). "Mentions
  *    ui-bridge" is not ownership, and the difference is the whole gate: add
@@ -724,6 +796,145 @@ function extractCodeBlocks(text) {
 }
 
 /**
+ * Every comment in a source file, as `{ pos, end }` offsets.
+ *
+ * Walked from the AST rather than scanned from the raw text. A raw scan has to
+ * decide whether `/` opens a regex or divides, and getting that wrong invents a
+ * comment out of ordinary code — which would then be name-checked and could
+ * fail the build on a file with no examples in it at all. The parser has
+ * already made that decision correctly, so leading + trailing comment ranges
+ * over every node is both cheaper to trust and exactly what TypeScript's own
+ * tooling does.
+ *
+ * Runs of `//` lines separated by nothing but whitespace are merged into one
+ * range. A `//`-style fenced example spans several comment tokens, and left
+ * unmerged its opening fence would land in one range and its closing fence in
+ * another — so the block would be read as unterminated and, worse, an import on
+ * a line that PRECEDES any fence in its own range is dropped entirely. That is a
+ * silent pass, measured: with the run split by one blank line, an import of a
+ * symbol that does not exist was accepted while three siblings in the same file
+ * failed correctly.
+ *
+ * Whitespace-only is the right width for the gap. A blank line inside a fenced
+ * block is ordinary code, and an author who leaves one there has not stopped
+ * writing the same example; anything else between two comments is CODE, which
+ * ends the run for real. Coverage that depends on which comment syntax the
+ * author reached for — or on whether they hit Enter twice — is the same defect
+ * as coverage that depends on a fence's info string, which this file already
+ * refuses (see SCRIPT_EMBEDDING_FENCE_LANGS).
+ *
+ * The merged slice keeps everything between the two ranges, blank lines
+ * included, so line offsets stay addable and a failure still cites the true
+ * line.
+ */
+function commentRanges(sf, text) {
+  const seen = new Set();
+  const found = [];
+  const add = (ranges) => {
+    if (!ranges) return;
+    for (const r of ranges) {
+      if (seen.has(r.pos)) continue;
+      seen.add(r.pos);
+      found.push({ pos: r.pos, end: r.end, kind: r.kind });
+    }
+  };
+
+  add(ts.getLeadingCommentRanges(text, 0));
+  const walk = (node) => {
+    if (node.kind !== ts.SyntaxKind.SourceFile) {
+      add(ts.getLeadingCommentRanges(text, node.pos));
+      add(ts.getTrailingCommentRanges(text, node.end));
+    }
+    for (const child of node.getChildren(sf)) walk(child);
+  };
+  walk(sf);
+  found.sort((a, b) => a.pos - b.pos);
+
+  const merged = [];
+  for (const r of found) {
+    const prev = merged[merged.length - 1];
+    const whitespaceOnly = prev !== undefined && /^\s*$/.test(text.slice(prev.end, r.pos));
+    if (
+      prev &&
+      prev.kind === ts.SyntaxKind.SingleLineCommentTrivia &&
+      r.kind === ts.SyntaxKind.SingleLineCommentTrivia &&
+      whitespaceOnly
+    ) {
+      prev.end = r.end;
+      continue;
+    }
+    merged.push(r);
+  }
+  return merged;
+}
+
+/**
+ * A comment body with its `/**`, ` * ` and `//` markers removed.
+ *
+ * Removed by BLANKING — each marker becomes spaces of its own width — never by
+ * deletion. Deleting would shift every column and, on the last line, could drop
+ * a line entirely; both would make the `file:line` in a failure point somewhere
+ * the reader has to go hunting. Preserving the shape means extractCodeBlocks'
+ * indent handling works on a JSDoc block exactly as it does on an indented
+ * markdown fence, and offsets stay addable straight back onto the comment's own
+ * start line.
+ *
+ * `isBlockComment` is not decoration, and blanking a trailing `*\/` on every
+ * line instead was a measured silent pass. A comment range ends AT its
+ * terminator, so a block comment's `*\/` is only ever on its final line — while
+ * inside a `//` run it is ordinary content. Blanked there, a line ending in an
+ * inline `/* … *\/` loses its closer, the surviving `/*` swallows the rest of
+ * the parse, and every import below it goes unchecked while the gate reports a
+ * pass.
+ */
+const blankOut = (s) => ' '.repeat(s.length);
+function stripCommentMarkers(comment, isBlockComment) {
+  const lines = comment.split(/\r?\n/);
+  return lines
+    .map((line, i) => {
+      // `/**`, `/*` or `//` opens the comment; on continuation lines a leading
+      // `*` is JSDoc's gutter — but `*/` is the terminator, matched below, and
+      // must not be eaten as a gutter marker.
+      const out =
+        i === 0
+          ? line.replace(/^([ \t]*)(\/\*\*?|\/\/)/, (_m, ws, marker) => ws + blankOut(marker))
+          : line.replace(/^([ \t]*)(\/\/|\*(?!\/))/, (_m, ws, marker) => ws + blankOut(marker));
+      return isBlockComment && i === lines.length - 1 ? out.replace(/\*\/[ \t]*$/, blankOut) : out;
+    })
+    .join('\n');
+}
+
+/**
+ * Every fenced code block inside the comments of one source file, with
+ * `startLine` already translated into the SOURCE file's own 1-based lines.
+ *
+ * Returns blocks in exactly extractCodeBlocks' shape, so main() consumes a
+ * markdown page and a `.tsx` file through the same path and neither can be
+ * checked by a different rule than the other.
+ */
+function extractCommentCodeBlocks(file, text) {
+  // The overwhelming majority of sources carry no fence at all; skip parsing
+  // them rather than building an AST per file to find nothing.
+  if (!text.includes('```') && !text.includes('~~~')) return [];
+
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKindFor(file));
+  const blocks = [];
+  for (const range of commentRanges(sf, text)) {
+    const body = text.slice(range.pos, range.end);
+    if (!body.includes('```') && !body.includes('~~~')) continue;
+    // 0-based line of the comment's first character; extractCodeBlocks returns
+    // a 1-based line within the text it was handed, so adding the two lands on
+    // the source file's own 1-based line.
+    const commentLine = sf.getLineAndCharacterOfPosition(range.pos).line;
+    const isBlockComment = range.kind === ts.SyntaxKind.MultiLineCommentTrivia;
+    for (const block of extractCodeBlocks(stripCommentMarkers(body, isBlockComment))) {
+      blocks.push({ ...block, startLine: block.startLine + commentLine });
+    }
+  }
+  return blocks;
+}
+
+/**
  * Every import/export-from statement in a code block.
  *
  * Parsed TWICE, once as TS and once as TSX, and unioned. The fence's info
@@ -880,19 +1091,17 @@ function blankOutsideScripts(text) {
  * passes because it found nothing to check is the one outcome this script may
  * not produce.
  */
-let TRACKED_MARKDOWN = null;
-function trackedMarkdown() {
-  if (TRACKED_MARKDOWN) return TRACKED_MARKDOWN;
+function gitLsFiles(globs, what) {
   let raw;
   try {
-    raw = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z', '--', '*.md', '*.mdx'], {
+    raw = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z', '--', ...globs], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
     process.stderr.write(
-      "Could not list this repository's documentation with `git ls-files`:\n" +
+      `Could not list this repository's ${what} with \`git ls-files\`:\n` +
         // git's own stderr says WHICH of the two cases this is — "not a git
         // repository" reads very differently from a missing binary — and the
         // wrapped `Command failed: ...` message says neither.
@@ -904,8 +1113,41 @@ function trackedMarkdown() {
     );
     process.exit(1);
   }
-  TRACKED_MARKDOWN = raw.split('\0').filter(Boolean).sort();
+  return raw.split('\0').filter(Boolean).sort();
+}
+
+let TRACKED_MARKDOWN = null;
+function trackedMarkdown() {
+  if (!TRACKED_MARKDOWN) TRACKED_MARKDOWN = gitLsFiles(['*.md', '*.mdx'], 'documentation');
   return TRACKED_MARKDOWN;
+}
+
+/**
+ * Every tracked TypeScript-family source, for the comment surface.
+ *
+ * Same enumeration discipline and the same reasons as trackedMarkdown — see the
+ * note above it, which is about where the file list comes from and applies
+ * identically here. What differs is only what an empty answer means: markdown
+ * is enumerated per surface and docFiles reports an emptied surface as unusable,
+ * while this list has no roster to be empty against. A repository of TypeScript
+ * packages that returns no TypeScript source has a broken enumeration, not zero
+ * examples, so it is a hard failure rather than a quiet pass — the same rule
+ * main() already applies to `files`.
+ */
+let TRACKED_SOURCES = null;
+function trackedSources() {
+  if (TRACKED_SOURCES) return TRACKED_SOURCES;
+  const listed = gitLsFiles(
+    SOURCE_EXTENSIONS.map((ext) => `*.${ext}`),
+    'TypeScript-family sources'
+  );
+  // git lists the INDEX, so a source deleted or renamed but not yet staged is
+  // still here. docFiles names that case for markdown because a doc surface can
+  // be hollowed out by it; for sources the honest and proportionate answer is to
+  // read what is on disk and let `git status` speak for the rest — a half-staged
+  // rename must not turn this gate red on a file nobody edited.
+  TRACKED_SOURCES = listed.filter((f) => fs.existsSync(path.join(REPO_ROOT, f)));
+  return TRACKED_SOURCES;
 }
 
 /** Does repo-relative `file` sit on `surface`? */
@@ -1134,21 +1376,49 @@ function main() {
     process.exit(1);
   }
 
+  // The comment surface. Enumerated here rather than inside the loop so an
+  // enumeration that comes back empty is a failure at the same place, and for
+  // the same reason, as an empty `files`: this repository is TypeScript
+  // packages, so "no TypeScript source" is a broken list, not a clean bill.
+  const sources = trackedSources();
+  if (!sources.length) {
+    process.stderr.write(
+      'No TypeScript-family source files found — this repository is TypeScript packages, so\n' +
+        'an empty list is a broken enumeration rather than an absence of examples, and a gate\n' +
+        'that passes for want of anything to check is worse than one that fails.\n'
+    );
+    process.exit(1);
+  }
+
+  const documents = [
+    ...files.map((file) => ({
+      file,
+      blocks: extractCodeBlocks(fs.readFileSync(file, 'utf8')),
+    })),
+    ...sources.map((f) => {
+      const file = path.join(REPO_ROOT, f);
+      const blocks = extractCommentCodeBlocks(file, fs.readFileSync(file, 'utf8'));
+      return { file, source: true, blocks };
+    }),
+  ];
+
   const failures = [];
   const accepted = [];
   let blocksChecked = 0;
+  let sourceBlocksChecked = 0;
   let importsSeen = 0;
   let importsInScope = 0;
   const opaqueEntries = new Map();
   const externalEntries = new Map();
 
-  for (const file of files) {
-    const text = fs.readFileSync(file, 'utf8');
-    for (const block of extractCodeBlocks(text)) {
+  for (const document of documents) {
+    const { file } = document;
+    for (const block of document.blocks) {
       const isTs = TS_FENCE_LANGS.has(block.lang);
       const embedsScript = SCRIPT_EMBEDDING_FENCE_LANGS.has(block.lang);
       if (!isTs && !embedsScript) continue;
       blocksChecked += 1;
+      if (document.source) sourceBlocksChecked += 1;
       // For a script-embedding fence, blank out everything OUTSIDE `<script>`
       // rather than slicing the script out: keeping the blanked lines preserves
       // line numbers, so a failure still cites the right line of the .md.
@@ -1351,11 +1621,13 @@ function main() {
     process.stderr.write(
       'Every import in a fenced ts/tsx/js block — or a <script> block inside a\n' +
         'svelte/vue/html fence — on any guarded documentation surface\n' +
-        `(${DOC_SURFACES.map((s) => rel(s.at)).join(', ')}) must name a real\n` +
+        `(${DOC_SURFACES.map((s) => rel(s.at)).join(', ')}), and in the COMMENTS of\n` +
+        `every tracked .${SOURCE_EXTENSIONS.join('/.')} source, must name a real\n` +
         'workspace package, a subpath its package.json "exports" map publishes, and symbols\n' +
         'that entry point actually exports. Docusaurus checks links and MDX syntax; it never\n' +
         'name-checks a code block, which is how a nonexistent package and three nonexistent\n' +
-        'exports shipped to the published site behind a green build.\n\n' +
+        'exports shipped to the published site behind a green build — and nothing at all was\n' +
+        'checking a JSDoc @example, which is the copy an IDE hover puts in front of a reader.\n\n' +
         `Fix the page. If — and only if — you are deliberately DECLARING NEW DEBT, run\n` +
         '`npm run docs:symbol-debt:update` and justify the added lines in review.\n'
     );
@@ -1383,8 +1655,10 @@ function main() {
   process.stdout.write(
     `docs:check-symbols OK — ${accepted.length - unverified} in-scope import(s) fully verified` +
       (unverified ? `, ${unverified} accepted WITHOUT symbol checking (see notes)` : '') +
-      `, across ${blocksChecked} TypeScript code block(s) in ${files.length} doc page(s) ` +
-      `(${importsSeen} import statement(s) seen, ${importsInScope} in scope).\n`
+      `, across ${blocksChecked} TypeScript code block(s) — ${blocksChecked - sourceBlocksChecked} ` +
+      `in ${files.length} doc page(s), ${sourceBlocksChecked} in the comments of ` +
+      `${sources.length} tracked source(s) — (${importsSeen} import statement(s) seen, ` +
+      `${importsInScope} in scope).\n`
   );
   if (quarantined.length) {
     process.stdout.write(
@@ -1398,14 +1672,15 @@ function main() {
 
 const LEDGER_COMMENT = [
   'Quarantined documentation-symbol failures — EXACT-MATCH and SHRINK-ONLY.',
-  'Each line is one known-broken import on a guarded documentation surface — as of this write,',
-  `${DOC_SURFACES.map((s) => rel(s.at)).join(', ')} — in the form`,
+  'Each line is one known-broken import on a guarded surface — as of this write, the markdown',
+  `surfaces ${DOC_SURFACES.map((s) => rel(s.at)).join(', ')} plus the comments of every tracked`,
+  `.${SOURCE_EXTENSIONS.join('/.')} source — in the form`,
   '"<page> :: <kind> :: <specifier>[ :: <symbol>]". scripts/check-docs-symbols.cjs fails on any',
   'failure NOT listed here, and ALSO fails when a listed entry stops reproducing — so paid-off',
   'debt cannot linger and re-authorise the same defect. Regenerate with',
   '`npm run docs:symbol-debt:update`; growing this file is a reviewable act of declaring new debt.',
-  'The surface list above is a snapshot taken when this file was last regenerated; the roster',
-  'that is actually enforced is DOC_SURFACES in scripts/check-docs-symbols.cjs.',
+  'The surface list above is a snapshot taken when this file was last regenerated; what is',
+  'actually enforced is DOC_SURFACES and SOURCE_EXTENSIONS in scripts/check-docs-symbols.cjs.',
   'This comment describes the MECHANISM only. It deliberately does not narrate whatever finding',
   'currently populates the ledger: a comment that names a specific finding outlives it, and',
   'shipping prose that is no longer true is the exact defect class this gate exists to catch.',
