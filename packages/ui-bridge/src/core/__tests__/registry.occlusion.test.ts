@@ -149,4 +149,46 @@ describe('ElementState occlusion reporting', () => {
     expect(st.scrollWidth).toBe(160);
     expect(st.clientWidth).toBe(80);
   });
+
+  it('probes only the centre for small elements — the hot-path guard', () => {
+    // `getElementState` recomputes live on every `getState()`, and callers
+    // iterate the whole registry, so nine probes unconditionally would be a
+    // 9x multiplier on every snapshot. A 24x24 icon gains nothing from
+    // perimeter samples: an overlay covering part of it covers essentially
+    // all of it.
+    const registry = new UIBridgeRegistry();
+    const icon = place('icon', 0, 0, 24, 24, 'x');
+    registry.registerElement('icon', icon, { type: 'generic' });
+
+    let probes = 0;
+    const inner = document.elementFromPoint;
+    document.elementFromPoint = ((x: number, y: number) => {
+      probes++;
+      return inner.call(document, x, y);
+    }) as typeof document.elementFromPoint;
+
+    stateOf(registry, 'icon');
+    document.elementFromPoint = inner;
+    expect(probes).toBe(1);
+  });
+
+  it('probes the full perimeter for a wide element', () => {
+    const registry = new UIBridgeRegistry();
+    const header = place('wide', 0, 0, 400, 20, 'a wide label');
+    registry.registerElement('wide', header, { type: 'generic' });
+
+    let probes = 0;
+    const inner = document.elementFromPoint;
+    document.elementFromPoint = ((x: number, y: number) => {
+      probes++;
+      return inner.call(document, x, y);
+    }) as typeof document.elementFromPoint;
+
+    stateOf(registry, 'wide');
+    document.elementFromPoint = inner;
+    // Wide on one axis is enough — that is exactly the label-clipped-at-the-
+    // end case, where height is small and width is not.
+    expect(probes).toBe(9);
+  });
+
 });

@@ -720,15 +720,14 @@ function getElementState(element: HTMLElement): ElementState {
 
 /**
  * Sample points used by the occlusion hit-test, as fractions of the
- * element's own box.
+ * element's own box. The centre is FIRST and is always probed; the eight
+ * perimeter points are added only for elements large enough that partial
+ * occlusion is a distinct outcome (see `OCCLUSION_PERIMETER_MIN_PX`).
  *
  * A single centre probe — which is all this used to do — cannot see PARTIAL
  * occlusion, and partial is the common shape: a floating widget parked in a
  * corner clips the end of a wide label while its centre stays clear, so the
  * element reported `visible: true` while a human could not read its name.
- * Nine points (corners, edge midpoints, centre) is enough to catch a corner
- * overlay on a wide element and still cheap — `elementFromPoint` is a hit
- * test, not a relayout, and this runs once per element per snapshot.
  *
  * Inset from the true edges so a 1px border or a neighbour's touching box
  * doesn't register as covering this one.
@@ -744,6 +743,22 @@ const OCCLUSION_SAMPLE_POINTS: ReadonlyArray<readonly [number, number]> = [
   [0.06, 0.5],
   [0.94, 0.5],
 ];
+
+/**
+ * Below this size on BOTH axes, only the centre point is probed.
+ *
+ * `getElementState` is a hot path — it recomputes live on every `getState()`,
+ * and callers iterate the whole registry — so going from one probe to nine
+ * unconditionally would be a 9x multiplier on every snapshot. It buys nothing
+ * for a 24x24 icon: an overlay covering part of it covers essentially all of
+ * it, so the centre already answers correctly. The perimeter samples exist for
+ * WIDE or TALL elements, where a corner widget can hide the end of a label
+ * while the middle stays clear — which is the defect class this is for.
+ *
+ * 48px is two minimum WCAG touch targets: below it there is no room for a
+ * meaningful partial overlap.
+ */
+const OCCLUSION_PERIMETER_MIN_PX = 48;
 
 /** Why an element is not visible. Mirrors `VisibilityReason` in control/. */
 type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
@@ -824,7 +839,15 @@ function computeVisibilityVerdict(
   // covering, not whichever point happened to be probed last.
   const blame = new Map<string, number>();
 
-  for (const [fx, fy] of OCCLUSION_SAMPLE_POINTS) {
+  // Adaptive: the centre alone for small elements, the full perimeter for
+  // elements big enough to be partially covered in a way a reader would
+  // notice.
+  const wide = rect.width >= OCCLUSION_PERIMETER_MIN_PX;
+  const tall = rect.height >= OCCLUSION_PERIMETER_MIN_PX;
+  const points =
+    wide || tall ? OCCLUSION_SAMPLE_POINTS : OCCLUSION_SAMPLE_POINTS.slice(0, 1);
+
+  for (const [fx, fy] of points) {
     const px = rect.left + rect.width * fx;
     const py = rect.top + rect.height * fy;
     // A point outside the viewport tells us nothing — `elementFromPoint`
