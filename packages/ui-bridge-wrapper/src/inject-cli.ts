@@ -14,6 +14,10 @@
  *   - Variant A (one-shot exec): `--exec '<action> <json>'` (repeatable) or
  *     `--exec-stdin` (NDJSON on stdin). Each action runs against the in-page
  *     runtime; one JSON result line per action is written to stdout, then exit.
+ *     An action that FAILS — whether it threw or merely returned
+ *     `{ success: false }` — puts a `{ code, message, source, details }` object
+ *     on that line's `error` key and makes the process exit 1. See
+ *     `./action-outcome.js` for why the returned case needs saying out loud.
  *   - Variant B (relay, DEFAULT): no exec actions → register as a relay tab
  *     (requires `--relay`) and stay alive until SIGINT/SIGTERM.
  *
@@ -24,7 +28,7 @@
 
 import { createTransport } from './create-transport.js';
 import { consumeValue } from './cli-args.js';
-import { WrapperTransportError } from './types.js';
+import { returnedFailureError, thrownError } from './action-outcome.js';
 
 export const USAGE = `ui-bridge-inject — drive UI Bridge's injected transport against a UI-Bridge-free page
 
@@ -49,6 +53,28 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
                                defaults {}). Example: --exec 'find {"text":"Sign in"}'
   --exec-stdin                 Read NDJSON lines from stdin; each line is
                                {"action":"...","payload":{...}}
+
+  Exec output & exit code:
+    One JSON line per action, in order, on stdout — ALWAYS one line per action,
+    including failures. An action that succeeded prints {"action":..,"result":..}.
+    An action that FAILED additionally carries an "error" key:
+      {"action":..,"result":..,"error":{"code":..,"message":..,"source":"returned",
+                                        "details":{..}}}
+    A failure is EITHER thrown by the transport (source "thrown") OR returned by
+    the in-page handler as {"success":false,...} (source "returned") — a missing,
+    invisible or disabled element is the RETURNED kind, so "result" alone never
+    tells you whether the action did anything. Branch on "error"; "error.code" is
+    the handler's own errorCode (ELEMENT_NOT_FOUND / ELEMENT_NOT_VISIBLE /
+    ELEMENT_NOT_ENABLED / ...) and "error.details" is its full failureDetails,
+    unflattened.
+
+    A failed action does NOT abort the actions after it. Every action runs, each
+    gets its line, and the process exits 1 at the end if ANY action failed (0 if
+    all succeeded). This is the pre-existing behaviour of a thrown failure, kept
+    for a returned one so there is one convention rather than two — and it is
+    what keeps the one-line-per-action contract intact for a caller that pairs
+    N actions with N lines. A caller that wants stop-on-first-failure gets it by
+    running one action per invocation and checking the exit code.
 
 Optional:
   --storage-state <path>       Seed the browser context from a Playwright storageState
@@ -616,19 +642,19 @@ async function runExec(
       }
       try {
         const result = await transport.dispatch(action, payload);
-        process.stdout.write(`${JSON.stringify({ action, result })}\n`);
+        // A handler that FAILED but returned (rather than threw) still has to
+        // reach the error channel — see `returnedFailureError`. `result` is
+        // kept verbatim alongside it so this stays additive.
+        const returnedError = returnedFailureError(action, result);
+        if (returnedError) anyError = true;
+        process.stdout.write(
+          `${JSON.stringify(
+            returnedError ? { action, result, error: returnedError } : { action, result }
+          )}\n`
+        );
       } catch (err) {
         anyError = true;
-        if (err instanceof WrapperTransportError) {
-          process.stdout.write(
-            `${JSON.stringify({ action, error: { code: err.code, message: err.message } })}\n`
-          );
-        } else {
-          const message = err instanceof Error ? err.message : String(err);
-          process.stdout.write(
-            `${JSON.stringify({ action, error: { code: 'UNKNOWN', message } })}\n`
-          );
-        }
+        process.stdout.write(`${JSON.stringify({ action, error: thrownError(err) })}\n`);
       }
     }
   } finally {

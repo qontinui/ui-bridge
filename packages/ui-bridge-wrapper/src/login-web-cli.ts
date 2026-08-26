@@ -60,6 +60,7 @@ import {
 } from './session-storage-capture.js';
 import { ArgReader, COMMON_FLAGS, makeLogger, rejectEmptyValue } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
+import { isReturnedFailure } from './action-outcome.js';
 import {
   isCognito,
   pathOf,
@@ -338,7 +339,16 @@ async function main(): Promise<void> {
       .catch(() => {});
     let snap: DriveSnapshot | null = null;
     try {
-      snap = (await ctx.snapshot()) as DriveSnapshot;
+      const raw = await ctx.snapshot();
+      // The in-page dispatcher RETURNS structured failures rather than throwing
+      // them, and `ctx.snapshot()` passes the result through verbatim — so a
+      // failed snapshot arrives as `{ success: false, error, failureDetails }`,
+      // not as an exception. Left unchecked it would be read as a snapshot,
+      // silently optional-chaining `route` / `registration` to null and letting
+      // the `ok` verdict fall back to the raw URL. Discard it exactly as the
+      // thrown case below is discarded, so both kinds of failure mean "no
+      // bridge route to trust" rather than one meaning it and the other lying.
+      if (!isReturnedFailure(raw)) snap = raw as DriveSnapshot;
     } catch {
       /* registry may be empty on some pages */
     }

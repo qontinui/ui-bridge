@@ -27,6 +27,7 @@ import { createTransport } from './create-transport.js';
 import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
 import { isAppLoginPath, loginDrive } from './login-drive.js';
+import { returnedFailureError } from './action-outcome.js';
 
 export const USAGE = `ui-bridge-capture-specs — log in and snapshot authed pages via the injected transport
 
@@ -294,7 +295,16 @@ async function main(): Promise<void> {
       let snap: CaptureSnapshot | null = null;
       let err: string | null = null;
       try {
-        snap = (await ctx.snapshot()) as CaptureSnapshot;
+        const raw = await ctx.snapshot();
+        // `ctx.snapshot()` hands back the in-page result VERBATIM, and the
+        // in-page dispatcher *returns* structured failures rather than throwing
+        // them. Keying failure off `catch` alone therefore wrote the failure
+        // envelope itself into <slug>.snapshot.json as if it were a capture,
+        // left `error` null, and let the line-below gate pass — exit 0 with
+        // garbage files, which is exactly what that gate was added to stop.
+        const failure = returnedFailureError('getControlSnapshot', raw);
+        if (failure) err = `${failure.code}: ${failure.message}`;
+        else snap = raw as CaptureSnapshot;
       } catch (e) {
         err = e instanceof Error ? e.message : String(e);
       }
