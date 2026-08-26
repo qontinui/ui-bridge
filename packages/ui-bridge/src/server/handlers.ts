@@ -5302,7 +5302,26 @@ export function createHandlers(
       try {
         const minRatio = params?.minRatio ?? 0.02;
         const includeExpected = params?.includeExpected ?? false;
-        const all = registry.getAllElements() as unknown as OcclusionQueryable[];
+        // Snapshot every element's state ONCE, then hand `computeVisibility`
+        // entries whose `getState` returns the cached value.
+        //
+        // This is not a micro-optimisation. `getState()` recomputes live —
+        // `getBoundingClientRect`, `getComputedStyle`, and the occlusion
+        // hit-test — and `computeVisibility` calls it for every candidate on
+        // every target, so a naive pass is O(n^2) live layout reads. On a
+        // 300-element page that is ~90k recomputes, each carrying its own
+        // hit-test probes: enough to lock the page for seconds. Caching
+        // collapses it to n reads and n^2 cheap rect comparisons.
+        //
+        // Reading state at one instant is also more CORRECT here: an
+        // occlusion verdict compares elements against each other, and
+        // sampling them at different moments (mid-scroll, mid-animation) can
+        // report a pair that was never simultaneously on screen that way.
+        const live = registry.getAllElements() as unknown as OcclusionQueryable[];
+        const all: OcclusionQueryable[] = live.map((el) => {
+          const snapshotState = el.getState();
+          return { ...el, getState: () => snapshotState };
+        });
         const viewport = {
           x: 0,
           y: 0,
