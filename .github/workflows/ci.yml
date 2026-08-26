@@ -2,9 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      # Coord pushes the rebased-onto-main tip of a merge proposal to these
+      # refs before it lands. Without these globs the candidate lane runs
+      # almost nothing, so the tree that actually lands is less checked than
+      # the PR head. See plan 2026-08-23-stacked-pr-ci-parity Phase 4.
+      - 'merge-candidate/**'
+      - 'merge-candidate-spec/**'
+      - 'merge-candidate-batch/**'
+  # Unfiltered on purpose: a stacked PR (base != main) must get the same check
+  # set as a base-on-main PR. Plan 2026-08-23-stacked-pr-ci-parity Phase 5.
   pull_request:
-    branches: [main]
 
 jobs:
   lint-and-test:
