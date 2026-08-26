@@ -49,28 +49,6 @@ import type {
 import { getGlobalEffectStore } from '../control/effect-store';
 import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
 import { diagnosePageHealth } from './page-health';
-import { computeVisibility } from '@qontinui/ui-bridge-auto/visual';
-
-/**
- * The shape `computeVisibility` needs from a registry entry.
- *
- * Declared structurally rather than imported: ui-bridge-auto's
- * `QueryableElement` lives in `core/element-query`, which is not on the
- * package's `exports` map, so importing the name would resolve only by
- * reaching past the public surface. TypeScript matches this by structure,
- * which is all `computeVisibility` requires.
- */
-interface OcclusionQueryable {
-  id: string;
-  element: HTMLElement;
-  type: string;
-  label?: string;
-  getState: () => {
-    rect?: { x: number; y: number; width: number; height: number };
-    computedStyles?: Record<string, string>;
-    visible?: boolean;
-  };
-}
 import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
@@ -5272,23 +5250,21 @@ export function createHandlers(
      * neither answers the question an operator or an autonomous tester
      * actually asks after a layout regression: "is any floating widget
      * hiding something?". Answering it needs the DIRECTED relation —
-     * occluder -> occluded — which is what `computeVisibility` produces
-     * and what nothing shipped was calling.
+     * occluder -> occluded.
      *
-     * Two sources, deliberately both:
-     *   - `computeVisibility` (ui-bridge-auto) reasons over z-index and
-     *     document order across the whole registry and returns every
-     *     occluder with the fraction it covers.
-     *   - the registry's own hit-test (`state.occludedBy`) is ground
-     *     truth from `elementFromPoint` — it sees things geometry cannot,
-     *     like a `clip-path` or a transformed ancestor.
-     * They disagree in useful ways, so the response carries both rather
-     * than picking a winner.
+     * Sourced entirely from the registry's own `elementFromPoint` hit-test
+     * (`state.occludedBy` / `occludedPct`, computed in `getElementState`).
      *
-     * `minRatio` filters hairline overlaps (default 0.02); `includeExpected`
-     * keeps occlusions caused by tracked modals/dropdowns, which are
-     * suppressed by default because a dialog covering the page is the
-     * dialog working.
+     * That is deliberate, and not a reduced version of something better.
+     * ui-bridge-auto's `computeVisibility` models stacking geometrically,
+     * but ui-bridge-auto DEPENDS ON THIS PACKAGE — importing it here would
+     * make the two mutually dependent, which is why it is not imported.
+     * The geometric arm stays available to ui-bridge-auto's own consumers
+     * (`crossCheckText` uses it), on the correct side of the layering.
+     *
+     * The hit-test is also the stronger signal of the two: it observes what
+     * the compositor actually painted, so it sees `clip-path`, transformed
+     * ancestors and scroll clipping that a bounding-box model cannot derive.
      *
      * §4.6 redaction disposition: the response echoes `text`, which is the
      * covered element's `state.textContent`. That field is minted through
@@ -5297,99 +5273,40 @@ export function createHandlers(
      * additional scrubbing happens — or is needed — here. Echoing the text
      * is the point: "something is covered" is not actionable, "the string
      * `Zone 8: qontinui-web` is covered" is.
+     *
+     * `minRatio` filters hairline overlaps (default 0.02).
      */
     visibility: async (params?: { minRatio?: number; includeExpected?: boolean }) => {
       try {
         const minRatio = params?.minRatio ?? 0.02;
         const includeExpected = params?.includeExpected ?? false;
-        // Snapshot every element's state ONCE, then hand `computeVisibility`
-        // entries whose `getState` returns the cached value.
-        //
-        // This is not a micro-optimisation. `getState()` recomputes live —
-        // `getBoundingClientRect`, `getComputedStyle`, and the occlusion
-        // hit-test — and `computeVisibility` calls it for every candidate on
-        // every target, so a naive pass is O(n^2) live layout reads. On a
-        // 300-element page that is ~90k recomputes, each carrying its own
-        // hit-test probes: enough to lock the page for seconds. Caching
-        // collapses it to n reads and n^2 cheap rect comparisons.
-        //
-        // Reading state at one instant is also more CORRECT here: an
-        // occlusion verdict compares elements against each other, and
-        // sampling them at different moments (mid-scroll, mid-animation) can
-        // report a pair that was never simultaneously on screen that way.
-        const live = registry.getAllElements() as unknown as OcclusionQueryable[];
-        const all: OcclusionQueryable[] = live.map((el) => {
-          const snapshotState = el.getState();
-          return { ...el, getState: () => snapshotState };
-        });
-        const viewport = {
-          x: 0,
-          y: 0,
-          width: typeof window !== 'undefined' ? window.innerWidth : 0,
-          height: typeof window !== 'undefined' ? window.innerHeight : 0,
-        };
-
-        const occlusions: Array<{
-          element: string;
+        const all = registry.getAllElements() as Array<{
+          id: string;
           label?: string;
-          text?: string;
-          occludedBy: string;
-          ratio: number;
-          isExpectedOverlay: boolean;
-          hidesText: boolean;
-          source: 'geometry' | 'hit-test';
-        }> = [];
-
-        for (const el of all) {
-          const state = el.getState() as ReturnType<OcclusionQueryable['getState']> & {
+          getState: () => {
             occludedBy?: string;
             occludedPct?: number;
             textContent?: string;
           };
+        }>;
+
+        const occlusions = [];
+        for (const el of all) {
+          const state = el.getState();
+          if (!state?.occludedBy) continue;
+          const ratio = (state.occludedPct ?? 0) / 100;
+          if (ratio < minRatio) continue;
           const text = typeof state.textContent === 'string' ? state.textContent.trim() : '';
-          const hidesText = text.length > 0;
-
-          // Source 1 — geometric, z-order aware, names every occluder.
-          let report;
-          try {
-            report = computeVisibility(el, all, viewport);
-          } catch {
-            report = undefined;
-          }
-          for (const occ of report?.occludedBy ?? []) {
-            if (occ.ratio < minRatio) continue;
-            if (occ.isExpectedOverlay && !includeExpected) continue;
-            occlusions.push({
-              element: el.id,
-              label: el.label,
-              text: hidesText ? text : undefined,
-              occludedBy: occ.id,
-              ratio: occ.ratio,
-              isExpectedOverlay: occ.isExpectedOverlay,
-              hidesText,
-              source: 'geometry',
-            });
-          }
-
-          // Source 2 — the registry's own hit-test. Reported even when
-          // geometry already flagged the same pair: agreement between an
-          // independent probe and the z-order model is the strongest
-          // evidence available here, and hiding it would throw that away.
-          if (state.occludedBy) {
-            const ratio = (state.occludedPct ?? 0) / 100;
-            if (ratio >= minRatio) {
-              occlusions.push({
-                element: el.id,
-                label: el.label,
-                text: hidesText ? text : undefined,
-                occludedBy: state.occludedBy,
-                ratio,
-                isExpectedOverlay: false,
-                hidesText,
-                source: 'hit-test',
-              });
-            }
-          }
+          occlusions.push({
+            element: el.id,
+            label: el.label,
+            text: text || undefined,
+            occludedBy: state.occludedBy,
+            ratio,
+            isExpectedOverlay: false,
+            hidesText: text.length > 0,
+            source: 'hit-test' as const,
+          });
         }
 
         // Worst first, and text-hiding occlusions outrank blank ones: a
@@ -5407,10 +5324,10 @@ export function createHandlers(
           // not "nothing is covered" — say which one this is.
           verdict:
             all.length === 0
-              ? 'unknown_empty_registry'
+              ? ('unknown_empty_registry' as const)
               : occlusions.length === 0
-                ? 'clear'
-                : 'occlusions_found',
+                ? ('clear' as const)
+                : ('occlusions_found' as const),
         });
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');

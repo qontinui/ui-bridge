@@ -2425,9 +2425,11 @@ export interface VisibilityOcclusionEntry {
   /** True when the covered element has text. Ranks above blank occlusions. */
   hidesText: boolean;
   /**
-   * Which probe found it. `geometry` is the z-order model; `hit-test` is
-   * `elementFromPoint`. Reported separately rather than merged so a
-   * disagreement between the two is visible.
+   * Which probe found it. Always `hit-test` from this package — the
+   * geometric z-order model lives in ui-bridge-auto, which depends on this
+   * one, so importing it here would make the two mutually dependent. The
+   * field is kept as a union because a consumer merging results from both
+   * sides needs to say which is which.
    */
   source: 'geometry' | 'hit-test';
 }
