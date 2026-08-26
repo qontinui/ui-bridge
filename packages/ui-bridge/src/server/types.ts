@@ -1204,6 +1204,15 @@ export interface UIBridgeServerHandlers {
   // browser context required beyond a relayed snapshot.
   pageHealth: () => Promise<APIResponse<PageHealthReport>>;
 
+  // Occlusion sweep — WHAT IS COVERING WHAT, page-wide and directed.
+  // `pageHealth` and `discover` both report per-element visibility, but
+  // neither answers "is a floating widget hiding something?", which needs
+  // the occluder -> occluded relation rather than a per-element boolean.
+  visibility: (params?: {
+    minRatio?: number;
+    includeExpected?: boolean;
+  }) => Promise<APIResponse<VisibilityReport>>;
+
   // API discovery
   getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
 
@@ -1766,6 +1775,11 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // regardless of transport. POST (matches runner) — body reserved for
   // future per-check toggles (currently ignored).
   { method: 'POST', path: '/control/page-health', handler: 'pageHealth' },
+
+  // Occlusion sweep. POST so the filter knobs (`minRatio`,
+  // `includeExpected`) ride in a body rather than a query string, matching
+  // page-health's shape.
+  { method: 'POST', path: '/control/visibility', handler: 'visibility' },
 
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
@@ -2387,4 +2401,45 @@ export interface WebSocketMessage<T = unknown> {
   data?: T;
   error?: string;
   timestamp: number;
+}
+
+/**
+ * One element painting over another, as reported by `/control/visibility`.
+ *
+ * The relation is DIRECTED: `occludedBy` is on top, `element` is hidden.
+ * That direction is the whole value — "these two boxes intersect" does not
+ * tell you which one the user can actually read.
+ */
+export interface VisibilityOcclusionEntry {
+  /** Registry id of the element being covered. */
+  element: string;
+  label?: string;
+  /** The covered element's text, when it has any. */
+  text?: string;
+  /** Registry id (or DOM descriptor) of the element on top. */
+  occludedBy: string;
+  /** Fraction of the covered element's area that is hidden, 0..1. */
+  ratio: number;
+  /** True when the occluder is a tracked modal/dropdown — expected, not a bug. */
+  isExpectedOverlay: boolean;
+  /** True when the covered element has text. Ranks above blank occlusions. */
+  hidesText: boolean;
+  /**
+   * Which probe found it. `geometry` is the z-order model; `hit-test` is
+   * `elementFromPoint`. Reported separately rather than merged so a
+   * disagreement between the two is visible.
+   */
+  source: 'geometry' | 'hit-test';
+}
+
+export interface VisibilityReport {
+  occlusions: VisibilityOcclusionEntry[];
+  elementCount: number;
+  minRatio: number;
+  includeExpected: boolean;
+  /**
+   * `unknown_empty_registry` exists so an empty `occlusions` list from a
+   * registry with no elements cannot be read as "nothing is covered".
+   */
+  verdict: 'clear' | 'occlusions_found' | 'unknown_empty_registry';
 }

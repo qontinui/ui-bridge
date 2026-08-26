@@ -197,6 +197,7 @@
     "POST /control/transition/:id/execute -> executeTransition",
     "POST /control/undo -> executeUndo",
     "POST /control/viewport-constraints -> setViewportConstraints",
+    "POST /control/visibility -> visibility",
     "POST /control/wait-for-idle -> waitForIdle",
     "POST /control/wait-for-idle/:signal -> waitForSignalIdle",
     "POST /control/wait-for-targets -> waitForTargets",
