@@ -53,6 +53,7 @@ import {
   computeMountFold,
   type SnapshotIdentity,
 } from './snapshot-signature';
+import { classList } from './class-name';
 import { truncateCodePoints } from './text';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
@@ -512,8 +513,22 @@ function getElementState(element: HTMLElement): ElementState {
   // whether this element can be clicked.
   const disabledSignals = readInteractionBlockers(element, computedStyle);
 
+  // Occlusion is computed once here and carried on the state, so every
+  // consumer — discover, snapshot, page-health, the CI style gate, the
+  // vision-core projection — sees the same verdict AND the same occluder.
+  const visibility = computeVisibilityVerdict(element, rect, computedStyle, inViewport);
+
   const state: ElementState = {
-    visible: isElementVisible(element, rect, computedStyle, inViewport),
+    visible: visibility.visible,
+    visibilityReason: visibility.reason,
+    occludedBy: visibility.occludedBy,
+    occludedPct: visibility.occludedPct,
+    // Content width vs. box width is what makes horizontal truncation
+    // MEASURABLE. Captured for every element, not just scroll containers:
+    // a `truncate`d label is `overflow: hidden` with no scrollbar, so it
+    // never qualified as one and its overflow went unrecorded.
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
     enabled: !isInteractionBlocked(disabledSignals),
     disabled: disabledSignals.disabled,
     ariaDisabled: disabledSignals.ariaDisabled,
@@ -704,39 +719,153 @@ function getElementState(element: HTMLElement): ElementState {
 }
 
 /**
+ * Sample points used by the occlusion hit-test, as fractions of the
+ * element's own box.
+ *
+ * A single centre probe — which is all this used to do — cannot see PARTIAL
+ * occlusion, and partial is the common shape: a floating widget parked in a
+ * corner clips the end of a wide label while its centre stays clear, so the
+ * element reported `visible: true` while a human could not read its name.
+ * Nine points (corners, edge midpoints, centre) is enough to catch a corner
+ * overlay on a wide element and still cheap — `elementFromPoint` is a hit
+ * test, not a relayout, and this runs once per element per snapshot.
+ *
+ * Inset from the true edges so a 1px border or a neighbour's touching box
+ * doesn't register as covering this one.
+ */
+const OCCLUSION_SAMPLE_POINTS: ReadonlyArray<readonly [number, number]> = [
+  [0.5, 0.5],
+  [0.06, 0.06],
+  [0.94, 0.06],
+  [0.06, 0.94],
+  [0.94, 0.94],
+  [0.5, 0.06],
+  [0.5, 0.94],
+  [0.06, 0.5],
+  [0.94, 0.5],
+];
+
+/** Why an element is not visible. Mirrors `VisibilityReason` in control/. */
+type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+
+/**
+ * `document.elementFromPoint` guarded for environments that don't implement
+ * it. jsdom does not, and an unguarded call would throw during any test that
+ * snapshots the registry — which would make the hit-test's absence a crash
+ * rather than a missing measurement.
+ */
+function safeElementFromPoint(x: number, y: number): Element | null {
+  try {
+    return typeof document.elementFromPoint === 'function'
+      ? document.elementFromPoint(x, y)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+interface VisibilityVerdict {
+  visible: boolean;
+  reason?: RegistryVisibilityReason;
+  /** Registry id (or a DOM-derived label) of the element painting on top. */
+  occludedBy?: string;
+  /** Share of the sampled points that another element owns, 0-100. */
+  occludedPct?: number;
+}
+
+/**
+ * Best-effort identifier for whatever is covering an element. Prefers the
+ * UI Bridge registry id, because that is the name every downstream report
+ * and assertion speaks; falls back to a DOM-shaped descriptor so an
+ * unregistered overlay is still NAMED rather than reported as an anonymous
+ * "something".
+ */
+function describeOccluder(hit: Element): string {
+  const el = hit as HTMLElement;
+  const registered = el.closest<HTMLElement>('[data-ui-bridge-id]');
+  const id = registered?.getAttribute('data-ui-bridge-id');
+  if (id) return id;
+  const tag = el.tagName.toLowerCase();
+  if (el.id) return `${tag}#${el.id}`;
+  // `classList(el)`, never raw `.className`: an SVG element's className is an
+  // SVGAnimatedString, and the occluder here is very often exactly that — the
+  // widget that motivated this work is an <svg>.
+  const cls = classList(el)[0] ?? '';
+  return cls ? `${tag}.${cls}` : tag;
+}
+
+/**
  * Check if an element is truly visible — not just in the viewport, but
  * actually reachable (not clipped by ancestor overflow, not covered by
- * another element in a higher stacking context).
+ * another element in a higher stacking context) — and, when it is not,
+ * WHICH element is responsible.
  *
- * Uses `elementFromPoint` as a hit-test: if the element (or one of its
- * descendants) is at its own centre point, it's genuinely visible.
+ * Returning the occluder is the difference between "the session name is
+ * not visible" and "the zone minimap is covering the session name". Only
+ * the second is actionable, and the identity used to be discarded here.
  */
-function isElementVisible(
+function computeVisibilityVerdict(
   element: HTMLElement,
   rect: DOMRect,
   style: CSSStyleDeclaration,
   inViewport: boolean
-): boolean {
-  if (rect.width === 0 || rect.height === 0) return false;
-  if (style.display === 'none') return false;
-  if (style.visibility === 'hidden') return false;
-  if (parseFloat(style.opacity) === 0) return false;
-  if (!inViewport) return false;
+): VisibilityVerdict {
+  if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
+  if (style.display === 'none') return { visible: false, reason: 'hidden' };
+  if (style.visibility === 'hidden') return { visible: false, reason: 'hidden' };
+  if (parseFloat(style.opacity) === 0) return { visible: false, reason: 'hidden' };
+  if (!inViewport) return { visible: false, reason: 'off-screen' };
 
-  // Hit-test: check if the element is actually rendered at its centre.
-  // This catches elements hidden by ancestor overflow:hidden, scroll
+  // Hit-test: catches elements hidden by ancestor overflow:hidden, scroll
   // clipping, clip-path, or z-index occlusion.
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  // Centre must be within the viewport for elementFromPoint to work
-  if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
-    const hit = document.elementFromPoint(cx, cy);
-    if (hit !== null && hit !== element && !element.contains(hit)) {
-      return false;
+  let sampled = 0;
+  let covered = 0;
+  // Count occluders so the finding names the one doing most of the
+  // covering, not whichever point happened to be probed last.
+  const blame = new Map<string, number>();
+
+  for (const [fx, fy] of OCCLUSION_SAMPLE_POINTS) {
+    const px = rect.left + rect.width * fx;
+    const py = rect.top + rect.height * fy;
+    // A point outside the viewport tells us nothing — `elementFromPoint`
+    // returns null there, which is not evidence of covering.
+    if (px < 0 || px >= window.innerWidth || py < 0 || py >= window.innerHeight) continue;
+    sampled++;
+    const hit = safeElementFromPoint(px, py);
+    if (hit === null) continue;
+    if (hit === element || element.contains(hit)) continue;
+    // An ANCESTOR at the sample point means our own box is transparent
+    // there (padding, a gap between children) — not that something is
+    // covering us.
+    if (hit.contains(element)) continue;
+    covered++;
+    const who = describeOccluder(hit);
+    blame.set(who, (blame.get(who) ?? 0) + 1);
+  }
+
+  if (sampled === 0 || covered === 0) return { visible: true };
+
+  const occludedPct = Math.round((covered / sampled) * 100);
+  let occludedBy: string | undefined;
+  let worst = 0;
+  for (const [who, n] of blame) {
+    if (n > worst) {
+      worst = n;
+      occludedBy = who;
     }
   }
 
-  return true;
+  // Fully covered is not visible. PARTIALLY covered still reports as
+  // visible — it is on screen and clickable at some points — but carries
+  // the occluder so a report can say what is clipping it. Collapsing
+  // partial occlusion into `visible: false` would break every consumer
+  // that filters on `visible`, and losing it entirely is the defect.
+  return {
+    visible: covered < sampled,
+    reason: covered >= sampled ? 'occluded' : undefined,
+    occludedBy,
+    occludedPct,
+  };
 }
 
 /**

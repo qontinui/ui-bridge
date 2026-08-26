@@ -258,6 +258,40 @@ export interface ElementState {
   mediaMetadata?: MediaMetadata;
   /** Whether this element is within the viewport bounds (separate from `visible` which also checks display/opacity) */
   inViewport?: boolean;
+  /**
+   * Why `visible` is false, when it is. `visible` folds six different
+   * causes together (zero-size, `display:none`, `visibility:hidden`,
+   * `opacity:0`, out-of-viewport, covered by another element) and a
+   * consumer reading the bare boolean cannot tell "scrolled away" from
+   * "a widget is on top of it" — which are opposite bugs.
+   */
+  visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+  /**
+   * Identifier of the element painting on top of this one, when the
+   * hit-test found anything covering it. The UI Bridge registry id where
+   * the occluder is registered, otherwise a DOM descriptor
+   * (`div#toast`, `div.minimap`).
+   *
+   * Present for PARTIAL occlusion too, where `visible` stays `true` — an
+   * element clipped at one edge is still on screen, and the whole point
+   * is that the clipping is reportable without pretending the element
+   * vanished.
+   */
+  occludedBy?: string;
+  /** Share of the sampled points another element owns, 0-100. */
+  occludedPct?: number;
+  /**
+   * Laid-out content width vs. the visible box, in CSS pixels. When
+   * `scrollWidth > clientWidth` the text is horizontally truncated —
+   * a `truncate` / `text-overflow: ellipsis` / `overflow: hidden`.
+   *
+   * Distinct from `scrollInfo`, which is populated only for genuine
+   * scroll containers: a truncated label has no scrollbar, so it never
+   * qualified, and its overflow was therefore never recorded anywhere.
+   */
+  scrollWidth?: number;
+  /** Visible content-box width, the partner measurement to `scrollWidth`. */
+  clientWidth?: number;
   /** Scroll container info — only present if this element has overflowing scrollable content */
   scrollInfo?: {
     /** Current vertical scroll offset */

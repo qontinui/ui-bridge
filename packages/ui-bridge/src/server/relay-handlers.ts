@@ -1904,6 +1904,72 @@ export function createRelayHandlers(
     // (`state.visible`, `state.normalizedRect`, `category`, `classes`,
     // `state.textContent`) already lives in the snapshot relay maintains.
 
+    // Occlusion sweep over the cached snapshot.
+    //
+    // The relay variant uses ONLY the hit-test half. `computeVisibility`'s
+    // geometric arm needs live `HTMLElement`s to walk stacking contexts and
+    // ancestors, and the relay has element RECORDS, not DOM nodes — there is
+    // no browser here to query. The in-page handler runs both arms.
+    //
+    // The hit-test half survives the trip because the page already ran it and
+    // stamped `occludedBy` / `occludedPct` onto each element's state, so this
+    // is a projection of a measurement, not a re-derivation of one. Findings
+    // are therefore a SUBSET of what the in-page endpoint reports; the
+    // verdict says so rather than implying parity.
+    async visibility(params?: { minRatio?: number; includeExpected?: boolean }) {
+      try {
+        const minRatio = params?.minRatio ?? 0.02;
+        const includeExpected = params?.includeExpected ?? false;
+        const snapshot = latestControlSnapshot as ControlSnapshot;
+        const elements = (snapshot?.elements ?? []) as Array<{
+          id: string;
+          label?: string;
+          state?: {
+            occludedBy?: string;
+            occludedPct?: number;
+            textContent?: string;
+          };
+        }>;
+
+        const occlusions = [];
+        for (const el of elements) {
+          const st = el.state;
+          if (!st?.occludedBy) continue;
+          const ratio = (st.occludedPct ?? 0) / 100;
+          if (ratio < minRatio) continue;
+          const text = st.textContent?.trim() ?? '';
+          occlusions.push({
+            element: el.id,
+            label: el.label,
+            text: text || undefined,
+            occludedBy: st.occludedBy,
+            ratio,
+            isExpectedOverlay: false,
+            hidesText: text.length > 0,
+            source: 'hit-test' as const,
+          });
+        }
+        occlusions.sort(
+          (a, b) => Number(b.hidesText) - Number(a.hidesText) || b.ratio - a.ratio
+        );
+
+        return success({
+          occlusions,
+          elementCount: elements.length,
+          minRatio,
+          includeExpected,
+          verdict:
+            elements.length === 0
+              ? ('unknown_empty_registry' as const)
+              : occlusions.length === 0
+                ? ('clear' as const)
+                : ('occlusions_found' as const),
+        });
+      } catch (err) {
+        return error((err as Error).message, 'VISIBILITY_ERROR');
+      }
+    },
+
     async pageHealth() {
       try {
         const snapshot = latestControlSnapshot as ControlSnapshot;
