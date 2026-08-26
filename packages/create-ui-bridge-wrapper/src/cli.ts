@@ -14,7 +14,7 @@
  * See README.md for the full reference.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -335,10 +335,30 @@ function resolveTemplatesRoot(): string {
 }
 
 // When invoked directly (not imported), run the CLI.
-const invokedDirectly =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== undefined &&
-  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+//
+// This entry ships as ESM (`"bin": { "create-ui-bridge-wrapper":
+// "./dist/cli.js" }` in a `"type": "module"` package), so there is no
+// `require.main` to compare against and the check has to go through
+// `process.argv[1]`. That is the path AS INVOKED, and Node never resolves
+// symlinks in it: running through the installed bin symlink —
+// `node_modules/.bin/create-ui-bridge-wrapper`, which is exactly what
+// `npm create @qontinui/ui-bridge-wrapper` / `npx create-ui-bridge-wrapper`
+// resolves to — made a raw comparison against `import.meta.url` false, so
+// `run()` never ran and the process exited 0 having printed nothing at all.
+// Compare REAL paths so the symlink collapses.
+const invokedDirectly = (() => {
+  try {
+    if (typeof process === 'undefined') return false;
+    const invokedAs = process.argv[1];
+    if (invokedAs === undefined) return false;
+    const here = fileURLToPath(import.meta.url);
+    const invokedAbs = resolve(invokedAs);
+    if (invokedAbs === here) return true;
+    return realpathSync(invokedAbs) === realpathSync(here);
+  } catch {
+    return false;
+  }
+})();
 
 if (invokedDirectly) {
   run().catch((err: unknown) => {

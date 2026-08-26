@@ -23,7 +23,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createTransport } from './create-transport.js';
 import { ArgReader, COMMON_FLAGS, makeLogger } from './cli-args.js';
 import type { InjectedContext } from './transports/injected.js';
@@ -354,13 +353,23 @@ async function main(): Promise<void> {
   process.exit(code);
 }
 
-const isMain = (() => {
-  try {
-    return process.argv[1] === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-})();
+// Execute only when run as the bin (importing this module — e.g. from a unit
+// test that exercises `parseArgs` — must stay inert).
+//
+// tsup emits this entry as CJS ONLY (see tsup.config.ts: the bin config's
+// `format: ['cjs']`, and package.json's `"ui-bridge-capture-specs": "./dist/...cjs"`),
+// so `require.main === module` is available here and is the symlink-proof
+// check. The guard this replaced compared `process.argv[1]` against the
+// module's own filename. `process.argv[1]` is the path AS INVOKED and Node
+// never resolves symlinks in it, so running through the installed bin symlink
+// — `node_modules/.bin/ui-bridge-capture-specs`, which is exactly what
+// `npx ... ui-bridge-capture-specs` resolves to — made the two differ: `main()` never
+// ran and the process exited 0 having printed nothing at all. Module identity
+// is immune to that.
+declare const require: NodeRequire | undefined;
+declare const module: NodeModule | undefined;
+const isMain =
+  typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module;
 
 if (isMain) {
   void main().catch((err: unknown) => {
