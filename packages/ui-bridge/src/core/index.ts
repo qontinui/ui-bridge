@@ -150,6 +150,12 @@ export { truncateCodePoints } from './text';
 export {
   NON_PRINTABLE_KEYS,
   keyToCode,
+  // Legacy `keyCode`/`which`/`charCode` derivation plus the ONE synthetic
+  // `KeyboardEventInit` builder. Exported for the same reason as the dispatch
+  // targets below: an out-of-repo consumer must not hand-roll an init that
+  // omits the legacy fields and silently reaches no handler.
+  keyToKeyCode,
+  buildKeyboardEventInit,
   normalizeKeyDescriptors,
   dispatchKeySequence,
   // The ONE dispatch-target vocabulary. Exported so an out-of-repo consumer —
@@ -163,6 +169,7 @@ export {
 export type {
   KeyModifiers,
   KeyDescriptor,
+  KeyEventType,
   KeyNormalizeResult,
   KeyDispatchOutcome,
   KeyDispatchTarget,

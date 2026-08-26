@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { UndoDetector } from './undo-detector';
 import { truncateCodePoints } from '../core/text';
+import { buildKeyboardEventInit } from '../core/key-events';
 import type { UndoDetectionResult } from './undo-detector';
 
 // ---------------------------------------------------------------------------
@@ -192,15 +193,15 @@ export class UndoTracker {
     // Fallback: dispatch Ctrl+Z / Cmd+Z keyboard event
     if (typeof document !== 'undefined') {
       const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+      // Built by the ONE shared keyboard-event builder so this dispatch carries
+      // `keyCode`/`which` (90 for Z) as well as `key`/`code`. An undo handler
+      // written as `if (e.ctrlKey && e.keyCode === 90)` saw 0 before and never
+      // fired.
       document.activeElement?.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'z',
-          code: 'KeyZ',
-          ctrlKey: !isMac,
-          metaKey: isMac,
-          bubbles: true,
-          cancelable: true,
-        })
+        new KeyboardEvent(
+          'keydown',
+          buildKeyboardEventInit('z', { ctrl: !isMac, meta: isMac }, 'keydown')
+        )
       );
       return true;
     }
@@ -222,16 +223,12 @@ export class UndoTracker {
     // Fallback: dispatch Ctrl+Shift+Z / Cmd+Shift+Z keyboard event
     if (typeof document !== 'undefined') {
       const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+      // Same shared builder as `executeUndo` — see the note there.
       document.activeElement?.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'z',
-          code: 'KeyZ',
-          ctrlKey: !isMac,
-          metaKey: isMac,
-          shiftKey: true,
-          bubbles: true,
-          cancelable: true,
-        })
+        new KeyboardEvent(
+          'keydown',
+          buildKeyboardEventInit('z', { ctrl: !isMac, meta: isMac, shift: true }, 'keydown')
+        )
       );
       return true;
     }

@@ -2,15 +2,23 @@
  * Shared keyboard-event primitives.
  *
  * Zero-dependency and browser-safe: pure key-name normalization plus a
- * `KeyboardEvent` dispatch loop, importing nothing. Three call sites share it
+ * `KeyboardEvent` dispatch loop, importing nothing. Four call sites share it
  * so the key grammar cannot drift:
  *
  *   - `control/action-executor.ts` — the ELEMENT-scoped `sendKeys` action
- *     (`keyToCode` / `NON_PRINTABLE_KEYS`; it keeps its own dispatch loop
- *     because it interleaves input-value mutation between the events).
+ *     (`buildKeyboardEventInit` / `NON_PRINTABLE_KEYS`; it keeps its own
+ *     dispatch loop because it interleaves input-value mutation between the
+ *     events).
  *   - `server/page-primitives.ts` — the DOCUMENT-scoped `sendKeysToPage`
  *     primitive (this module's `dispatchKeySequence`).
- *   - `react/commandHandlers.ts` — the relay path, via the same primitive.
+ *   - `react/commandHandlers.ts` — the relay path, via the same primitive and
+ *     via `buildKeyboardEventInit` for its own element-scoped `sendKeys` arm.
+ *   - `undo/undo-tracker.ts` — the Ctrl+Z / Ctrl+Shift+Z fallback dispatch.
+ *
+ * EVERY synthetic `KeyboardEvent` in this SDK is constructed from
+ * `buildKeyboardEventInit`, which is what guarantees the legacy
+ * `keyCode`/`which`/`charCode` fields are present. See its own doc comment for
+ * why a missing `keyCode` made handlers silently no-op.
  *
  * WHY A DOCUMENT-SCOPED DISPATCH EXISTS AT ALL: a component that closes on a
  * global key (`document.addEventListener('keydown', …)` — dropdowns, modals,
@@ -149,10 +157,133 @@ export function keyToCode(key: string): string {
   return key;
 }
 
+/**
+ * Legacy `keyCode` values for the named (non-single-character) keys, keyed by
+ * their DOM `KeyboardEvent.key` value.
+ *
+ * WHY THIS TABLE EXISTS. `keyCode` / `which` / `charCode` are deprecated in the
+ * UI Events spec, but a very large amount of shipped application code still
+ * reads them — `if (e.keyCode === 13)` is still the most common way an app
+ * recognizes Enter. A synthetic `KeyboardEvent` constructed without them
+ * reports `keyCode === 0`, so every such handler silently no-ops and the
+ * dispatch "succeeds" while doing nothing. That is the same silently-wrong
+ * answer this module rejects everywhere else, so we populate them.
+ *
+ * This is the ONE table; `keyToKeyCode` below is its only reader.
+ */
+const NAMED_KEY_CODES: Readonly<Record<string, number>> = {
+  Backspace: 8,
+  Tab: 9,
+  Clear: 12,
+  Enter: 13,
+  Shift: 16,
+  Control: 17,
+  Alt: 18,
+  Pause: 19,
+  CapsLock: 20,
+  Escape: 27,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Select: 41,
+  PrintScreen: 44,
+  Insert: 45,
+  Delete: 46,
+  Meta: 91,
+  ContextMenu: 93,
+  NumLock: 144,
+  ScrollLock: 145,
+  AltGraph: 225,
+};
+
+/**
+ * Map a key name to its legacy `keyCode` value.
+ *
+ * Mirrors `keyToCode`'s best-effort conventions:
+ *   - a single letter/digit/character reports its UPPERCASE character code
+ *     (the legacy model is physical-key shaped, so `a` and `A` share 65);
+ *   - a named key comes from `NAMED_KEY_CODES`;
+ *   - `F1`–`F24` map to 112–135.
+ *
+ * Returns 0 for a key we cannot place, which is exactly what the platform
+ * reports for an unidentified key — never a fabricated code.
+ *
+ * Punctuation is a deliberate approximation: it reports the character's own
+ * code rather than the US-layout virtual-key code (`;` → 59, not 186), because
+ * the layout-specific table is not derivable from a `key` value alone. That
+ * matches `keyToCode`, which likewise returns punctuation unchanged instead of
+ * inventing `Semicolon`.
+ */
+export function keyToKeyCode(key: string): number {
+  if (!key || typeof key !== 'string') return 0;
+  if (key.length === 1) {
+    return key.toUpperCase().charCodeAt(0);
+  }
+  const named = NAMED_KEY_CODES[key];
+  if (named !== undefined) return named;
+  const fn = /^F([1-9]|1[0-9]|2[0-4])$/.exec(key);
+  if (fn) return 111 + Number(fn[1]);
+  return 0;
+}
+
+/** Which event of the `keydown` → `keypress` → `keyup` triple is being built. */
+export type KeyEventType = 'keydown' | 'keypress' | 'keyup';
+
+/**
+ * Build the `KeyboardEventInit` for one synthetic key event.
+ *
+ * This is the ONE construction site for synthetic keyboard events in this SDK.
+ * Every dispatch path — the document-scoped `dispatchKeySequence` below, the
+ * element-scoped `sendKeys` action in `control/action-executor.ts`, the relay
+ * path in `react/commandHandlers.ts`, and the undo/redo fallback in
+ * `undo/undo-tracker.ts` — routes through it so the modern fields (`key`,
+ * `code`, modifiers) and the legacy fields (`keyCode`, `which`, `charCode`)
+ * cannot drift apart.
+ *
+ * The legacy triple follows the browsers exactly:
+ *   - `keydown` / `keyup` — `keyCode` is the virtual key code, `charCode` is 0.
+ *   - `keypress`          — `keyCode`, `charCode` and `which` are all the
+ *                           character's own code point, so a handler doing
+ *                           `String.fromCharCode(e.which)` recovers the typed
+ *                           character with its case intact.
+ *
+ * `which` always mirrors `keyCode`, which is what `e.which || e.keyCode`
+ * feature-probes expect.
+ */
+export function buildKeyboardEventInit(
+  key: string,
+  mods?: KeyModifiers,
+  type: KeyEventType = 'keydown'
+): KeyboardEventInit {
+  const m = mods ?? {};
+  const isKeypress = type === 'keypress';
+  // On `keypress` the legacy model reports the CHARACTER, not the physical
+  // key — `b` is 98 there and 66 on keydown.
+  const charCode = isKeypress && key.length === 1 ? key.charCodeAt(0) : 0;
+  const keyCode = isKeypress ? charCode : keyToKeyCode(key);
+
+  return {
+    key,
+    code: keyToCode(key),
+    bubbles: true,
+    cancelable: true,
+    ctrlKey: !!m.ctrl,
+    shiftKey: !!m.shift,
+    altKey: !!m.alt,
+    metaKey: !!m.meta,
+    keyCode,
+    which: keyCode,
+    charCode,
+  };
+}
+
 /** Outcome of normalizing a caller-supplied `keys` parameter. */
-export type KeyNormalizeResult =
-  | { ok: true; keys: KeyDescriptor[] }
-  | { ok: false; error: string };
+export type KeyNormalizeResult = { ok: true; keys: KeyDescriptor[] } | { ok: false; error: string };
 
 /**
  * Parse one combo token of the string grammar: optional `+`-joined modifier
@@ -242,7 +373,7 @@ export function normalizeKeyDescriptors(raw: unknown): KeyNormalizeResult {
   return {
     ok: false,
     error:
-      "'keys' is required and must be a string (\"Escape\", \"ctrl+Enter\"), " +
+      '\'keys\' is required and must be a string ("Escape", "ctrl+Enter"), ' +
       'an array of such strings, or an array of { key, modifiers? } descriptors',
   };
 }
@@ -271,18 +402,8 @@ export async function dispatchKeySequence(
 
   for (const desc of keys) {
     const mods = desc.modifiers ?? {};
-    const eventInit: KeyboardEventInit = {
-      key: desc.key,
-      code: keyToCode(desc.key),
-      bubbles: true,
-      cancelable: true,
-      ctrlKey: !!mods.ctrl,
-      shiftKey: !!mods.shift,
-      altKey: !!mods.alt,
-      metaKey: !!mods.meta,
-    };
 
-    const keydown = new KeyboardEvent('keydown', eventInit);
+    const keydown = new KeyboardEvent('keydown', buildKeyboardEventInit(desc.key, mods, 'keydown'));
     target.dispatchEvent(keydown);
 
     if (
@@ -292,10 +413,14 @@ export async function dispatchKeySequence(
       !mods.alt &&
       !mods.meta
     ) {
-      target.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      target.dispatchEvent(
+        new KeyboardEvent('keypress', buildKeyboardEventInit(desc.key, mods, 'keypress'))
+      );
     }
 
-    target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    target.dispatchEvent(
+      new KeyboardEvent('keyup', buildKeyboardEventInit(desc.key, mods, 'keyup'))
+    );
     outcomes.push({ key: desc.key, defaultPrevented: keydown.defaultPrevented });
 
     if (delay > 0) {
@@ -383,7 +508,10 @@ export type KeyTargetResult =
  */
 export function resolveKeyTarget(raw: unknown): KeyTargetResult {
   const requested = raw ?? DEFAULT_KEY_DISPATCH_TARGET;
-  if (typeof requested !== 'string' || !KEY_DISPATCH_TARGETS.includes(requested as KeyDispatchTarget)) {
+  if (
+    typeof requested !== 'string' ||
+    !KEY_DISPATCH_TARGETS.includes(requested as KeyDispatchTarget)
+  ) {
     return {
       ok: false,
       reason: 'unknown-target',

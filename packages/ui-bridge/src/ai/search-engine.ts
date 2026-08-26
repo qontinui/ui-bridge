@@ -148,6 +148,48 @@ interface TokenAlignmentResult {
   totalQueryTokens: number;
 }
 
+/** Strength ordering for `TokenAlignmentKind`, so "best verdict wins" is one lookup. */
+const ALIGNMENT_STRENGTH: Readonly<Record<TokenAlignmentKind, number>> = {
+  none: 0,
+  partial: 1,
+  'all-tokens-present': 2,
+  'prefix-aligned': 3,
+};
+
+/**
+ * Fold a new alignment verdict into the running best. `null` means "no text
+ * criterion has been scored yet", which any real verdict replaces.
+ */
+function strongerAlignment(
+  current: TokenAlignmentKind | null,
+  next: TokenAlignmentKind
+): TokenAlignmentKind {
+  if (current === null) return next;
+  return ALIGNMENT_STRENGTH[next] > ALIGNMENT_STRENGTH[current] ? next : current;
+}
+
+/**
+ * Ceiling placed on an element's final confidence when the best text alignment
+ * across every scored source was `partial` (some query tokens matched, the rest
+ * matched nothing) or `none` (nothing in the query was answered for at all).
+ *
+ * WHY A CAP AND NOT JUST A RANKING PENALTY. The graduated ladder in
+ * `scoreTextMatch` is a *ranking* signal: it decides which candidate sorts
+ * first. Nothing downstream stopped a badly-aligned candidate from clearing the
+ * gate outright, because the final confidence is a weighted average — so a
+ * `partial` text score of 0.7 (weight 0.35) plus a synonym hit of 0.85
+ * (weight 0.15) averages to 0.745 and sails past the 0.5 default
+ * `confidenceThreshold`. That is how the query "Session Manager" returned
+ * `found: true` at 74.5% on an element that answered for "session" and nothing
+ * at all for "manager".
+ *
+ * A confidently-wrong answer is worse than no answer, so an unaligned match is
+ * capped BELOW the 0.5 default threshold. It is a cap rather than a zero so the
+ * candidate still ranks sensibly inside `partialMatches` / `alternatives`,
+ * where sub-threshold candidates are exactly what the caller asked to see.
+ */
+const UNALIGNED_CONFIDENCE_CAP = 0.45;
+
 /**
  * Compare a query string against a target string and report the strongest
  * token-level relationship between them. Returns `kind: 'none'` when nothing
@@ -204,6 +246,58 @@ function analyzeTokenAlignment(query: string, target: string): TokenAlignmentRes
   }
 
   return { kind: 'none', matchedTokenCount: 0, totalQueryTokens };
+}
+
+/**
+ * How close a query token must come to SOME target token before that token
+ * counts as answered for.
+ *
+ * Deliberately a fixed floor rather than the caller's `fuzzyThreshold`. The two
+ * ask different questions: the caller's threshold governs how good a match has
+ * to be to WIN, while this one governs whether a word was addressed AT ALL.
+ * Letting a stricter caller threshold also tighten this gate would start
+ * rejecting typos the caller never asked to reject — and `find()` already
+ * passes its `confidenceThreshold` (0.5 by default) down as `fuzzyThreshold`,
+ * so the two are not independent knobs in practice.
+ *
+ * 0.5 is where the measured cases separate, and they separate cleanly:
+ *
+ *   covered   "sumbit" ~ "submit"      0.657   (a typo — must still find)
+ *   covered   "buton"  ~ "button"      0.874
+ *   UNCOVERED "warehouse" ~ "report"   0.369   (a word this page cannot answer)
+ *   UNCOVERED "manager"   ~ "sessions" 0.000
+ */
+const TOKEN_COVERAGE_FLOOR = 0.5;
+
+/**
+ * The typo-tolerant reading of `analyzeTokenAlignment`'s coverage question:
+ * does every query token have SOME target token it plausibly names?
+ *
+ * Used only to decide whether the confidence cap fires — never to score. It
+ * cannot report `prefix-aligned`, because a fuzzy hit is by definition not a
+ * clean prefix; the exact ladder remains the only source of that verdict.
+ */
+function analyzeFuzzyTokenCoverage(query: string, target: string): TokenAlignmentKind {
+  const queryTokens = tokenizeForAlignment(query);
+  const targetTokens = tokenizeForAlignment(target);
+  if (queryTokens.length === 0 || targetTokens.length === 0) return 'none';
+
+  let covered = 0;
+  for (const qt of queryTokens) {
+    let best = 0;
+    for (const tt of targetTokens) {
+      if (tt.startsWith(qt) || tt.includes(qt)) {
+        best = 1;
+        break;
+      }
+      const sim = fuzzyMatch(qt, tt, { threshold: TOKEN_COVERAGE_FLOOR }).similarity;
+      if (sim > best) best = sim;
+    }
+    if (best >= TOKEN_COVERAGE_FLOOR) covered += 1;
+  }
+
+  if (covered === queryTokens.length) return 'all-tokens-present';
+  return covered > 0 ? 'partial' : 'none';
 }
 
 /**
@@ -990,6 +1084,11 @@ export class SearchEngine {
     const matchReasons: string[] = [];
     let totalWeight = 0;
     let weightedScore = 0;
+    // Best token-alignment verdict seen across the text-bearing criteria.
+    // `null` means the caller supplied no text criterion at all, in which case
+    // there is nothing to align against and the cap below must not fire —
+    // a structured `{ role: 'button' }` search is not an unaligned match.
+    let textAlignment: TokenAlignmentKind | null = null;
 
     const fuzzyConfig = {
       ...DEFAULT_FUZZY_CONFIG,
@@ -1041,6 +1140,7 @@ export class SearchEngine {
         fuzzyConfig.threshold
       );
       scores.text = textScore.score;
+      textAlignment = strongerAlignment(textAlignment, textScore.alignment);
       if (textScore.score > 0) {
         matchReasons.push(...textScore.reasons);
       }
@@ -1072,6 +1172,13 @@ export class SearchEngine {
           fuzzyConfig.threshold
         );
         const containsScore = this.scoreContainsMatch(searchable, alt, criteria.fuzzy !== false);
+        // Any ONE alternative aligning is enough — `"Connected|Disconnected"`
+        // is satisfied by either side, so the best verdict across the
+        // alternatives is the honest one.
+        textAlignment = strongerAlignment(
+          textAlignment,
+          containsScore.score > exactScore.score ? 'all-tokens-present' : exactScore.alignment
+        );
         const altBest = Math.max(exactScore.score, containsScore.score);
         if (altBest > bestScore) {
           bestScore = altBest;
@@ -1209,7 +1316,28 @@ export class SearchEngine {
     }
 
     // Calculate final confidence
-    const confidence = totalWeight > 0 ? weightedScore / totalWeight : 0;
+    let confidence = totalWeight > 0 ? weightedScore / totalWeight : 0;
+
+    // ALIGNMENT IS A GATE, NOT ONLY A REWARD.
+    //
+    // The weighted average above can be carried over the threshold by branches
+    // that know nothing about whether the query's words are answered here —
+    // synonym/alias weight most of all. When the winning text evidence was
+    // `partial` or `none`, cap the result below the 0.5 default
+    // `confidenceThreshold` so it cannot be reported as a find. See
+    // `UNALIGNED_CONFIDENCE_CAP`.
+    if (
+      textAlignment !== null &&
+      (textAlignment === 'partial' || textAlignment === 'none') &&
+      confidence > UNALIGNED_CONFIDENCE_CAP
+    ) {
+      matchReasons.push(
+        `capped at ${(UNALIGNED_CONFIDENCE_CAP * 100).toFixed(0)}%: query tokens ${
+          textAlignment === 'partial' ? 'only partially align' : 'do not align'
+        } with this element`
+      );
+      confidence = UNALIGNED_CONFIDENCE_CAP;
+    }
 
     // Convert to AIDiscoveredElement
     const aiElement = this.toAIDiscoveredElement(searchable);
@@ -1217,7 +1345,11 @@ export class SearchEngine {
     return {
       element: aiElement,
       confidence,
-      matchReasons,
+      // B2 — display-only dedupe. The synonym branch of `scoreAliasMatch`
+      // pushes one reason per (searchWord x aliasWord) hit, so the same pair
+      // could be listed several times and read like term-frequency inflation.
+      // Scoring is unaffected: every alias branch accumulates with `Math.max`.
+      matchReasons: [...new Set(matchReasons)],
       scores,
     };
   }
@@ -1238,9 +1370,15 @@ export class SearchEngine {
     text: string,
     fuzzy: boolean,
     threshold: number
-  ): { score: number; reasons: string[] } {
+  ): { score: number; reasons: string[]; alignment: TokenAlignmentKind } {
     const reasons: string[] = [];
     let maxScore = 0;
+    // Best alignment verdict across every source, computed independently of
+    // which scoring arm wins. Carried out so `scoreElement` can CAP the final
+    // confidence when the query's tokens never lined up with this element —
+    // see `UNALIGNED_CONFIDENCE_CAP`. `none` is the starting value and
+    // therefore also the honest answer when no source matched at all.
+    let alignment: TokenAlignmentKind = 'none';
 
     // Source weight establishes precedence when multiple signals match.
     // textContent stays at 1.00 to preserve the original behaviour where
@@ -1256,6 +1394,27 @@ export class SearchEngine {
 
     for (const { value: targetText, label: sourceLabel, weight } of sources) {
       if (!targetText) continue;
+
+      // The alignment verdict is computed for EVERY source, independently of
+      // which scoring arm ends up winning. That independence is the point: the
+      // fuzzy and word-similarity arms score generously across whole phrases
+      // ("Export Report" scores 92% against "Export Warehouse"), so letting a
+      // high score imply good alignment would put the gate back where it was.
+      const tokenAnalysis = analyzeTokenAlignment(text, targetText);
+      alignment = strongerAlignment(alignment, tokenAnalysis.kind);
+
+      // TYPO TOLERANCE MUST SURVIVE THE GATE. The ladder above is exact-substring
+      // based, so a misspelling ("Sumbit Buton") aligns as `none` even though the
+      // user clearly named this element. Re-ask the same question fuzzily, but
+      // only when the exact answer would have capped — this is the expensive arm
+      // and it can only ever improve the verdict.
+      if (
+        fuzzy &&
+        tokenAnalysis.kind !== 'prefix-aligned' &&
+        tokenAnalysis.kind !== 'all-tokens-present'
+      ) {
+        alignment = strongerAlignment(alignment, analyzeFuzzyTokenCoverage(text, targetText));
+      }
 
       // Exact match
       if (targetText.toLowerCase() === text.toLowerCase()) {
@@ -1305,7 +1464,6 @@ export class SearchEngine {
         //      cleaner matches. → 0.7.
         // Punctuation is stripped from tokens (`Advanced:` → `advanced`)
         // so a label that ends a heading with `:` or `.` still aligns.
-        const tokenAnalysis = analyzeTokenAlignment(text, targetText);
         if (tokenAnalysis.kind !== 'none') {
           const baseScore =
             tokenAnalysis.kind === 'prefix-aligned'
@@ -1329,11 +1487,15 @@ export class SearchEngine {
             maxScore = score;
             reasons.push(`${sourceLabel} contains "${text}"`);
           }
+          // A literal substring hit IS full coverage of the query, even when
+          // the tokenizer could not line the two up (the query is a contiguous
+          // chunk inside one longer word).
+          alignment = strongerAlignment(alignment, 'all-tokens-present');
         }
       }
     }
 
-    return { score: maxScore, reasons };
+    return { score: maxScore, reasons, alignment };
   }
 
   /**

@@ -20,6 +20,7 @@ import {
 } from '../core/registry';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
+import { buildKeyboardEventInit } from '../core/key-events';
 import {
   computeSnapshotSignature,
   evaluateSnapshotFreshness,
@@ -1501,38 +1502,45 @@ export async function executeCommand(
               mods: { ctrl?: boolean; alt?: boolean; meta?: boolean }
             ) => key.length === 1 && !mods.ctrl && !mods.alt && !mods.meta;
 
+            // Both arms build their events with the ONE shared builder in
+            // `core/key-events`, which supplies `code` and the legacy
+            // `keyCode`/`which`/`charCode` fields. Hand-rolled inits here used
+            // to omit all four, so an app handler reading `e.keyCode` saw 0
+            // and the dispatch reached nothing.
             if (Array.isArray(rawKeys)) {
               // Spec-compliant: array of KeyboardAction objects [{key: "a", modifiers?: {...}}, ...]
               for (const keyDesc of rawKeys) {
                 const key = typeof keyDesc === 'string' ? keyDesc : keyDesc?.key;
                 if (!key) continue;
                 const mods = (typeof keyDesc === 'object' && keyDesc?.modifiers) || {};
-                const eventInit: KeyboardEventInit = {
-                  key,
-                  bubbles: true,
-                  cancelable: true,
-                  ctrlKey: !!mods.ctrl,
-                  shiftKey: !!mods.shift,
-                  altKey: !!mods.alt,
-                  metaKey: !!mods.meta,
-                };
-                dom.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+                dom.dispatchEvent(
+                  new KeyboardEvent('keydown', buildKeyboardEventInit(key, mods, 'keydown'))
+                );
                 if (shouldKeypress(key, mods)) {
-                  dom.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+                  dom.dispatchEvent(
+                    new KeyboardEvent('keypress', buildKeyboardEventInit(key, mods, 'keypress'))
+                  );
                 }
-                dom.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+                dom.dispatchEvent(
+                  new KeyboardEvent('keyup', buildKeyboardEventInit(key, mods, 'keyup'))
+                );
               }
             } else {
               // Legacy: string of characters (from text param or keys-as-string)
               const text =
                 (typeof rawKeys === 'string' ? rawKeys : (request.params?.text as string)) || '';
               for (const char of text) {
-                const eventInit: KeyboardEventInit = { key: char, bubbles: true, cancelable: true };
-                dom.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+                dom.dispatchEvent(
+                  new KeyboardEvent('keydown', buildKeyboardEventInit(char, {}, 'keydown'))
+                );
                 if (shouldKeypress(char, {})) {
-                  dom.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+                  dom.dispatchEvent(
+                    new KeyboardEvent('keypress', buildKeyboardEventInit(char, {}, 'keypress'))
+                  );
                 }
-                dom.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+                dom.dispatchEvent(
+                  new KeyboardEvent('keyup', buildKeyboardEventInit(char, {}, 'keyup'))
+                );
               }
             }
             break;
