@@ -112,7 +112,7 @@ import {
 // Shared key grammar — the ONE copy, also behind the document-scoped
 // `sendKeysToPage` page primitive. Keeping a private copy here is how the two
 // key paths would drift.
-import { NON_PRINTABLE_KEYS, keyToCode } from '../core/key-events';
+import { NON_PRINTABLE_KEYS, buildKeyboardEventInit } from '../core/key-events';
 import {
   elementRedaction,
   verdictOf,
@@ -2645,18 +2645,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       const { key } = keyDesc;
       if (!key || typeof key !== 'string') continue;
       const mods = keyDesc.modifiers || {};
-      const eventInit: KeyboardEventInit = {
-        key,
-        code: keyToCode(key),
-        bubbles: true,
-        cancelable: true,
-        ctrlKey: mods.ctrl || false,
-        shiftKey: mods.shift || false,
-        altKey: mods.alt || false,
-        metaKey: mods.meta || false,
-      };
-
-      element.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      // The event init comes from the ONE shared builder so this path carries
+      // the legacy `keyCode`/`which`/`charCode` fields too — without them an
+      // app handler reading `e.keyCode` sees 0 and silently no-ops. The
+      // dispatch LOOP stays local because it interleaves input-value mutation
+      // between the events.
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', buildKeyboardEventInit(key, mods, 'keydown'))
+      );
 
       // Fire keypress for printable characters only (no modifiers except shift)
       const isInputElement =
@@ -2668,7 +2664,9 @@ export class DefaultActionExecutor implements ActionExecutor {
         !mods.alt &&
         !mods.meta
       ) {
-        element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+        element.dispatchEvent(
+          new KeyboardEvent('keypress', buildKeyboardEventInit(key, mods, 'keypress'))
+        );
         // Insert character into input/textarea value (keypress alone doesn't update .value)
         if (isInputElement) {
           const start = element.selectionStart ?? element.value.length;
@@ -2709,7 +2707,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         );
       }
 
-      element.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      element.dispatchEvent(new KeyboardEvent('keyup', buildKeyboardEventInit(key, mods, 'keyup')));
 
       if (delay > 0) {
         await sleep(delay);

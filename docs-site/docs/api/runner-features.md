@@ -340,6 +340,35 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > `value` is for `select` / `setValue`; `type` is for `type` / `clear`'s
 > input fields.
 
+> **`sendKeys` now carries `keyCode` / `which`.** Synthetic keyboard events
+> used to be built from `key` and `code` alone, so `event.keyCode` and
+> `event.which` both read `0`. Any handler written the common way —
+> `if (e.keyCode === 13)` for Enter, `e.which || e.keyCode` — saw nothing and
+> silently did nothing, while the action still returned `success: true`. That
+> is fixed: every event this SDK dispatches (`sendKeys`, the page-scoped
+> `/control/page/send-keys`, and the undo/redo fallback) now sets the legacy
+> `keyCode`, `which` and `charCode` alongside `key` and `code`, following the
+> browsers — `keyCode` is the virtual key on `keydown`/`keyup` (Enter 13,
+> ArrowDown 40, `b` 66) and the character on `keypress`, where `charCode`
+> matches it. If you saw a `sendKeys` that reported success and changed
+> nothing, retry it against a build newer than this note before digging
+> further.
+
+> **A per-element action list can be narrower than the global one.** An action
+> being documented here does not mean every element accepts it: the element's
+> own `actions` array is the authority, and a component that declares, say,
+> `["click", "hover"]` will reject `sendKeys` with `UNSUPPORTED_ACTION` even
+> though `sendKeys` is a first-class action. Read the list before dispatching:
+>
+> ```bash
+> curl -s $BASE/control/element/term-pane | jq '.data.actions'
+> ```
+>
+> The same array appears on every element of `/control/snapshot`, so one
+> snapshot answers it for the whole page. An `UNSUPPORTED_ACTION` failure means
+> the verb is absent from THAT element's list — not that the verb is unknown to
+> the bridge.
+
 ## Page navigation
 
 ### Soft vs hard
