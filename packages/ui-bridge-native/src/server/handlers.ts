@@ -17,6 +17,7 @@ declare const __SDK_VERSION__: string;
 
 import {
   type NativeUIBridgeRegistry,
+  computeVisibility,
   extractHandlerNames,
   matchesCurrentRoute,
   projectBbox,
@@ -454,14 +455,21 @@ export function createServerHandlers(
         allElements = allElements.filter((e) => matchesCurrentRoute(e.registrationRoute, forRoute));
       }
 
+      // Read once for the whole response, for the same reason `createSnapshot`
+      // does: per-element reads cost a `Dimensions.get` each and let a rotation
+      // split one response across two clip regions.
+      const viewport = registry.getViewportRect();
+
       const elements = allElements.map((e) => {
         const handlers = extractHandlerNames(e.props);
         const state = e.getState();
-        const visibility: 'visible' | 'likely-visible' | 'hidden' = !state.visible
-          ? 'hidden'
-          : state.layout !== null
-            ? 'visible'
-            : 'likely-visible';
+        // Same helper `createSnapshot` uses — this used to be a hand-copied
+        // duplicate of the predicate, which is how the two surfaces could
+        // disagree about what "visible" means.
+        const { visibility, visibilityReason } = computeVisibility(
+          state,
+          registry.getClipRectFor(e, viewport)
+        );
         const bbox = projectBbox(state, visibility, registry.getPixelRatio());
         const vision = projectVisionFields({
           type: e.type,
@@ -483,6 +491,7 @@ export function createServerHandlers(
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
+          ...(visibilityReason ? { visibilityReason } : {}),
           ...(bbox ? { bbox } : {}),
           ...vision,
         };
@@ -897,9 +906,12 @@ export function createServerHandlers(
     //
     // The mobile bridge mounts explicit NOT_SUPPORTED stubs at the runner's
     // cheatsheet paths so callers (and the /manual-test skill in particular)
-    // get a structured envelope explaining the gap rather than a confusing
-    // HTTP 404. Each error message names an in-tree mobile replacement so
-    // operators aren't left guessing what to use instead.
+    // get a structured envelope explaining the gap rather than a bare
+    // "no such route". These answer **HTTP 501** — `httpStatusForResponse` in
+    // server/http-server.ts maps NOT_SUPPORTED → 501, so the status line and
+    // the envelope agree; an unmounted path answers 404 instead. Each error
+    // message names an in-tree mobile replacement so operators aren't left
+    // guessing what to use instead.
     aiForms: async () => {
       return error<never>(
         'ai/forms (form discovery) is runner-only; mobile React Native has no DOM to walk. ' +

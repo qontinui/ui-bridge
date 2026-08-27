@@ -82,7 +82,7 @@ describe('POST /ui-bridge/ai/fill-form — routing smoke', () => {
       query: {},
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(405);
     const parsed = JSON.parse(response.body);
     expect(parsed.success).toBe(false);
     expect(parsed.code).toBe('METHOD_NOT_ALLOWED');

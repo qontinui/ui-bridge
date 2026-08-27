@@ -30,6 +30,53 @@ import type { WebSocketEventBridge } from './ws-event-bridge';
 import type { JsonRpcRequest, JsonRpcResponse } from './ws-types';
 import { isBatchRequest, isSubscribe, isUnsubscribe } from './ws-types';
 
+// ── HTTP status mapping ─────────────────────────────────────────────────────
+
+/**
+ * HTTP status for each `APIResponse.code` that has an honest status of its own.
+ *
+ * Handlers already distinguish "this platform will never do that"
+ * (`NOT_SUPPORTED`), "no such route" (`NOT_FOUND`) and "wrong verb"
+ * (`METHOD_NOT_ALLOWED`) in the response envelope. Anything not listed here is
+ * a client-input problem and keeps 400, which is what 400 is for.
+ *
+ * RESOURCE-level misses are deliberately NOT here. `ELEMENT_NOT_FOUND`,
+ * `COMPONENT_NOT_FOUND`, `MODAL_NOT_FOUND` and `WORKFLOW_NOT_FOUND`
+ * (`handlers.ts`) keep 400: the route resolved and served a request whose
+ * *argument* named nothing — a client-input problem, not a routing one.
+ * Widening 404 to cover them would make "this endpoint does not exist" and
+ * "this id does not exist" the same status, which is the ambiguity this
+ * mapping exists to remove.
+ *
+ * A `Map` rather than an object literal on purpose: a plain object resolves
+ * inherited keys, so a `code` of `"toString"` or `"constructor"` would return
+ * a FUNCTION where a status number is typed, and it would be relayed straight
+ * into the cloud tunnel (`transport/CloudRelayClient.ts`). Unreachable today —
+ * every `code` in the tree is a hardcoded literal — but a `Map` costs nothing
+ * and closes it structurally rather than by audit.
+ */
+const ERROR_CODE_HTTP_STATUS = new Map<string, number>([
+  ['NOT_SUPPORTED', 501],
+  ['NOT_FOUND', 404],
+  ['METHOD_NOT_ALLOWED', 405],
+]);
+
+/**
+ * Derive the HTTP status for a completed `APIResponse`.
+ *
+ * Every unsuccessful response used to be flattened to HTTP 400, which made a
+ * deliberately-unimplemented route (`/ai/forms` → `NOT_SUPPORTED`) and a route
+ * that does not exist (`NOT_FOUND`) indistinguishable from a malformed request
+ * — so callers retried request shapes against endpoints that were never going
+ * to answer. The envelope's `code` already carries the distinction; this maps
+ * it onto the status line so a caller reading only the status gets the truth.
+ */
+function httpStatusForResponse(response: APIResponse): number {
+  if (response.success) return 200;
+  const mapped = response.code ? ERROR_CODE_HTTP_STATUS.get(response.code) : undefined;
+  return mapped ?? 400;
+}
+
 // ── Path pattern matching ───────────────────────────────────────────────────
 
 /**
@@ -1491,7 +1538,7 @@ export class NativeUIBridgeServer {
     try {
       const response = await this.routeRequest(request);
       return {
-        status: response.success ? 200 : 400,
+        status: httpStatusForResponse(response),
         headers,
         body: JSON.stringify(response),
       };

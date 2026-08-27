@@ -218,17 +218,70 @@ interface PatchableGlobal {
   XMLHttpRequest?: typeof XMLHttpRequest;
 }
 
+/**
+ * An XHR instance, plus the markers the patches hang on it.
+ *
+ * `__uiBridgeMethod` / `__uiBridgeUrl` carry method+url from `open` to `send`.
+ * `__uiBridgeFromFetch` marks an XHR that the `fetch` polyfill created for
+ * itself — see {@link NetworkRequestBuffer.install}.
+ */
+type MarkedXhr = XMLHttpRequest & {
+  __uiBridgeMethod?: string;
+  __uiBridgeUrl?: string;
+  __uiBridgeFromFetch?: boolean;
+};
+
 export class NetworkRequestBuffer {
   private buffer: RingBuffer<NetworkRequestEntry>;
   private installed = false;
   private originalFetch?: FetchFn;
   private originalXhrOpen?: typeof XMLHttpRequest.prototype.open;
   private originalXhrSend?: typeof XMLHttpRequest.prototype.send;
+  /**
+   * Synchronous re-entrancy depth: non-zero while the ORIGINAL `fetch` is
+   * executing, which is exactly the window in which React Native's whatwg-fetch
+   * polyfill constructs and opens its internal `XMLHttpRequest`.
+   *
+   * A counter rather than a boolean so a `fetch` called from inside a `fetch`
+   * (an interceptor, a retry wrapper) still unwinds to zero. Safe as a plain
+   * number: JS is single-threaded and the only writes are the paired
+   * increment/decrement around one synchronous call.
+   */
+  private fetchDepth = { value: 0 };
 
   constructor(capacity = 100) {
     this.buffer = new RingBuffer<NetworkRequestEntry>(capacity);
   }
 
+  /**
+   * Patch `fetch` and `XMLHttpRequest` so `GET /sdk/network-requests` can
+   * report what the app talked to.
+   *
+   * ONE REQUEST MUST PRODUCE ONE ENTRY. React Native implements `fetch` **on
+   * top of** XHR (whatwg-fetch), so both patches observe the same request and
+   * the buffer used to carry every call twice — same url, timestamps ~1ms
+   * apart, and on failure one `"Network request failed"` beside one
+   * `"XMLHttpRequest error"`. A tester reads that as a double-fetch bug in the
+   * app and chases a defect that does not exist.
+   *
+   * The de-dup: `fetchDepth` is raised across the synchronous call into the
+   * original `fetch`, which is when the polyfill builds its XHR; `open` stamps
+   * any XHR created in that window with `__uiBridgeFromFetch`, and `send`
+   * skips recording those. The `fetch` patch keeps the entry, because it is
+   * the layer the app actually called and the only one that sees `Response.ok`.
+   *
+   * Uninstalling both patches together keeps this sound: an XHR can only be
+   * marked while the fetch patch is live.
+   *
+   * KNOWN LIMIT — it is coupled to the polyfill building its XHR SYNCHRONOUSLY,
+   * which whatwg-fetch does (its work happens in the Promise executor). If the
+   * host's `fetch` is wrapped by an interceptor that defers the real call to a
+   * microtask or `setTimeout`, the depth is back to 0 by the time `open` runs
+   * and every request duplicates again — the original symptom, with no signal
+   * that the mechanism disengaged. Duplicates in `/sdk/network-requests` are
+   * the thing to look for; they mean this assumption stopped holding, not that
+   * the app double-fetched.
+   */
   install(): void {
     if (this.installed) return;
     const g = globalThis as PatchableGlobal;
@@ -239,6 +292,7 @@ export class NetworkRequestBuffer {
       this.originalFetch = g.fetch;
       const buffer = this.buffer;
       const original = this.originalFetch;
+      const fetchDepth = this.fetchDepth;
 
       const patched: FetchFn = async (input, init) => {
         const start = Date.now();
@@ -246,7 +300,18 @@ export class NetworkRequestBuffer {
         const method = extractMethod(input, init);
 
         try {
-          const res = await original.call(globalThis, input, init);
+          // The polyfill's `new XMLHttpRequest()` / `open` / `send` all happen
+          // synchronously inside this call (whatwg-fetch does its work in the
+          // Promise executor), so raising the depth across just the invocation
+          // — not the await — covers exactly that window and nothing else.
+          let pending: Promise<Response>;
+          fetchDepth.value += 1;
+          try {
+            pending = original.call(globalThis, input, init);
+          } finally {
+            fetchDepth.value -= 1;
+          }
+          const res = await pending;
           buffer.push({
             timestamp: start,
             method,
@@ -280,20 +345,31 @@ export class NetworkRequestBuffer {
       this.originalXhrSend = Xhr.prototype.send;
 
       const buffer = this.buffer;
+      const fetchDepth = this.fetchDepth;
 
       // Stash method+url on the instance so `send` can record them.
       const origOpen = this.originalXhrOpen;
       Xhr.prototype.open = function (
-        this: XMLHttpRequest & {
-          __uiBridgeMethod?: string;
-          __uiBridgeUrl?: string;
-        },
+        this: MarkedXhr,
         method: string,
         url: string | URL,
         ...rest: unknown[]
       ) {
         this.__uiBridgeMethod = method.toUpperCase();
         this.__uiBridgeUrl = typeof url === 'string' ? url : String(url);
+        // Opened while the original `fetch` was running: this XHR belongs to
+        // the fetch polyfill, and the fetch patch already records it.
+        //
+        // KNOWN LIMIT — the window, not the identity, is what's tested, so an
+        // UNRELATED xhr opened synchronously inside another wrapper's `fetch`
+        // (an analytics beacon, an error-reporter transport) is dropped too.
+        // Narrowing this to the polyfill's own XHR means matching on url, and
+        // whatwg-fetch normalises the url it opens with — a mismatch there
+        // would silently restore the duplicate-every-request bug rather than
+        // lose one beacon. Pinned by a test in network-buffer-dedup.test.ts.
+        if (fetchDepth.value > 0) {
+          this.__uiBridgeFromFetch = true;
+        }
         // origOpen has overloaded signatures; we forward the original args.
         return (origOpen as (...args: unknown[]) => unknown).call(
           this,
@@ -305,12 +381,21 @@ export class NetworkRequestBuffer {
 
       const origSend = this.originalXhrSend;
       Xhr.prototype.send = function (
-        this: XMLHttpRequest & {
-          __uiBridgeMethod?: string;
-          __uiBridgeUrl?: string;
-        },
+        this: MarkedXhr,
         body?: Document | XMLHttpRequestBodyInit | null
       ) {
+        // The fetch patch owns this request's entry. Recording it here too is
+        // what made every RN request appear twice in the buffer.
+        //
+        // The MARKER is the whole test, deliberately. A `fetchDepth > 0` check
+        // here as well would also drop any UNRELATED xhr sent synchronously
+        // during a `fetch` — an analytics beacon from a library that wrapped
+        // `fetch` first, say — and a silently absent request is a worse answer
+        // than a visible duplicate.
+        if (this.__uiBridgeFromFetch === true) {
+          return (origSend as (...args: unknown[]) => unknown).call(this, body) as void;
+        }
+
         const start = Date.now();
         const method = this.__uiBridgeMethod ?? 'GET';
         const url = this.__uiBridgeUrl ?? '';

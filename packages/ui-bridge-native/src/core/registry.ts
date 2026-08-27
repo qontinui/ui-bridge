@@ -43,6 +43,24 @@ export interface RegisterElementOptions {
   accessibilityLabel?: string;
   /** Route path where the element was registered (for page-scoped filtering) */
   registrationRoute?: string | null;
+  /**
+   * Id of the registered scrollable container this element lives inside.
+   *
+   * When set, {@link computeVisibility} clips the element against that
+   * container's measured frame as well as the window, so a row scrolled out of
+   * its `ScrollView` / `FlatList` stops reporting `visibility: 'visible'`.
+   *
+   * DECLARED, not inferred, and that is deliberate. React Native gives the
+   * registry no parent chain — `useUIElement` is a hook, so it never wraps its
+   * element's children and cannot publish itself as their ancestor. Guessing
+   * the ancestor geometrically is worse than not clipping: a full-width scroll
+   * container horizontally contains the tab bar and the header too, and
+   * clipping those against it would report on-screen chrome as off-screen.
+   * A wrong `hidden` is a worse answer than a coarse `visible`.
+   *
+   * Unset (the default) leaves the window as the only clip region.
+   */
+  scrollAncestorId?: string;
   /** Flattened RN style (from StyleSheet.flatten) for design review */
   flatStyle?: Record<string, unknown>;
   /** State-specific style overrides for design review */
@@ -207,6 +225,191 @@ export function projectBbox(
   };
 }
 
+// ── Visibility ──────────────────────────────────────────────────────────────
+
+/**
+ * A rectangle in window (page) coordinates, logical dp — the same space
+ * `measureInWindow` reports `pageX`/`pageY` in.
+ */
+export interface NativePageRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Why an element is not plainly visible.
+ *
+ * DUPLICATE of `@qontinui/ui-bridge` `VisibilityReason`
+ * (`src/core/types.ts` — `'hidden' | 'off-screen' | 'occluded' | 'no-layout'`),
+ * for the same reason the action types above are duplicated: `@qontinui/ui-bridge`
+ * is an OPTIONAL peer of this package, so this module must not import from it.
+ * KEEP IN SYNC — one vocabulary across both SDKs is the point; do not coin
+ * native-only spellings.
+ *
+ * `'occluded'` is declared but never produced here: React Native gives the
+ * registry no hit-test equivalent of `document.elementFromPoint`, so this SDK
+ * cannot honestly claim occlusion. It stays in the union so a native reason
+ * string is always a valid web reason string.
+ */
+export type NativeVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
+
+/** The three-value verdict carried on every snapshot element. */
+export type NativeVisibility = 'visible' | 'likely-visible' | 'hidden';
+
+/**
+ * Convert an element's measured layout into a page-space rect, or `null` when
+ * it has no TRUSTWORTHY page-space origin.
+ *
+ * STRICTER THAN {@link projectBbox} ON PURPOSE. `projectBbox` falls back to the
+ * parent-relative `x`/`y` when `pageX`/`pageY` weren't measured, because a
+ * slightly-wrong box is still a usable box. Clipping cannot take that trade: a
+ * parent-relative origin compared against window coordinates silently mixes two
+ * coordinate spaces and yields a wrong `hidden` verdict — the outcome
+ * `RegisterElementOptions.scrollAncestorId` calls worse than a coarse
+ * `visible`. So a layout flagged `pageOriginUnmeasured` returns `null` here,
+ * and {@link computeVisibility} declines to clip rather than guess.
+ */
+export function pageRectOf(state: NativeElementState): NativePageRect | null {
+  const layout = state.layout;
+  if (!layout) return null;
+  // The writer told us `pageX`/`pageY` are a parent-relative stand-in, not a
+  // `measureInWindow` result. Not a page-space rect, and not guessable into one.
+  if (layout.pageOriginUnmeasured === true) return null;
+
+  const hasPage =
+    typeof layout.pageX === 'number' &&
+    typeof layout.pageY === 'number' &&
+    Number.isFinite(layout.pageX) &&
+    Number.isFinite(layout.pageY);
+  if (!hasPage) return null;
+
+  const left = layout.pageX;
+  const top = layout.pageY;
+
+  if (
+    typeof layout.width !== 'number' ||
+    typeof layout.height !== 'number' ||
+    !Number.isFinite(layout.width) ||
+    !Number.isFinite(layout.height)
+  ) {
+    return null;
+  }
+
+  return { left, top, right: left + layout.width, bottom: top + layout.height };
+}
+
+/** Do two 1-D spans share any extent? A zero-length span counts as touching. */
+function spansOverlap(aMin: number, aMax: number, bMin: number, bMax: number): boolean {
+  if (aMin === aMax) return aMin >= bMin && aMin <= bMax;
+  return aMin < bMax && aMax > bMin;
+}
+
+/**
+ * Is this rect empty — nothing can overlap it?
+ *
+ * {@link intersectRects} returns an INVERTED rect (`right < left`) when the two
+ * inputs are disjoint, which is the honest answer for "the reachable region",
+ * but `spansOverlap`'s `aMin < bMax && aMax > bMin` reads an inverted span as
+ * overlapping. Every consumer of an intersection must ask this first.
+ */
+export function isEmptyRect(rect: NativePageRect): boolean {
+  return rect.right <= rect.left || rect.bottom <= rect.top;
+}
+
+/**
+ * Intersect two page rects, or `null` when either is absent (`null` means
+ * UNKNOWN, so it never narrows the other side).
+ *
+ * The result may be EMPTY — check {@link isEmptyRect}. That happens whenever
+ * the two rects are disjoint, e.g. a scroll container that has itself been
+ * scrolled out of the window: nothing inside it can be on screen, and an empty
+ * clip is exactly how that is expressed.
+ */
+export function intersectRects(
+  a: NativePageRect | null,
+  b: NativePageRect | null
+): NativePageRect | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    left: Math.max(a.left, b.left),
+    top: Math.max(a.top, b.top),
+    right: Math.min(a.right, b.right),
+    bottom: Math.min(a.bottom, b.bottom),
+  };
+}
+
+/**
+ * Decide what a snapshot should say about an element being on screen.
+ *
+ * THE DEFECT THIS CLOSES: visibility used to be derived from mount + `measure()`
+ * alone — `state.visible ? (state.layout ? 'visible' : 'likely-visible') : 'hidden'`
+ * — with no comparison against any bounds at all. Every mounted, measured
+ * element reported `visible`, including rows scrolled far past the fold, so a
+ * snapshot claimed things were on screen that were not.
+ *
+ * SCOPE — read this before citing it. This is a PURE PROJECTION: it reads
+ * `state.visible` and never writes it. An off-screen element still carries
+ * `state.visible === true`; only the snapshot's `visibility` /
+ * `visibilityReason` change. That is a deliberate divergence from the web SDK,
+ * which folds off-screen INTO the boolean (`@qontinui/ui-bridge`
+ * `src/core/registry.ts` — `if (!inViewport) return { visible: false, reason:
+ * 'off-screen' }`), and it means any consumer asserting on `state.visible`
+ * alone — `/manual-test`'s "PRESENT IS NOT VISIBLE" gate among them — sees no
+ * change on mobile and stays as vacuous as it was. Closing that needs either a
+ * matching demotion of `state.visible` here or a consumer that reads
+ * `visibility`; both are contract decisions beyond this projection, and
+ * neither is done. The strings are shared with the web SDK; the SHAPE is not.
+ *
+ * `clip` is the region the element must reach to count as on screen — the
+ * window, intersected with the measured frame of a declared
+ * `scrollAncestorId`. **A `null`/absent clip means the bounds are UNKNOWN, and
+ * an unknown never demotes**: with no viewport injected (every non-RN caller,
+ * including this package's own suite) the answer is exactly what it was before.
+ * Absence of evidence is not evidence of off-screen.
+ *
+ * Any overlap at all counts as visible. A half-scrolled row IS on screen, and
+ * a ratio threshold would be a second, unshared policy knob for callers to
+ * disagree about.
+ */
+export function computeVisibility(
+  state: NativeElementState,
+  clip?: NativePageRect | null
+): { visibility: NativeVisibility; visibilityReason?: NativeVisibilityReason } {
+  if (!state.visible) {
+    return { visibility: 'hidden', visibilityReason: 'hidden' };
+  }
+  if (state.layout === null) {
+    // Registered and mounted but not yet measured. `'likely-visible'` already
+    // is this SDK's honest-UNKNOWN value; `'no-layout'` names why.
+    return { visibility: 'likely-visible', visibilityReason: 'no-layout' };
+  }
+  if (!clip) {
+    return { visibility: 'visible' };
+  }
+  const rect = pageRectOf(state);
+  if (!rect) {
+    // Measured, but with no trustworthy page-space origin (see `pageRectOf`).
+    // Report it exactly as before — an unknown must not manufacture a verdict.
+    return { visibility: 'visible' };
+  }
+  // A disjoint intersection (a scroll container itself scrolled off the window)
+  // inverts rather than zeroing, and `spansOverlap` would read an inverted span
+  // as overlapping. Nothing can be inside an empty clip.
+  if (isEmptyRect(clip)) {
+    return { visibility: 'hidden', visibilityReason: 'off-screen' };
+  }
+  const onScreen =
+    spansOverlap(rect.left, rect.right, clip.left, clip.right) &&
+    spansOverlap(rect.top, rect.bottom, clip.top, clip.bottom);
+
+  return onScreen
+    ? { visibility: 'visible' }
+    : { visibility: 'hidden', visibilityReason: 'off-screen' };
+}
+
 /**
  * Infer available actions based on element type
  */
@@ -291,6 +494,18 @@ export class NativeUIBridgeRegistry {
    */
   private pixelRatio = 1;
   /**
+   * Injected getter for the device window size in logical dp, used to clip
+   * reported visibility. Injected rather than read here for exactly the reason
+   * `pixelRatio` is: a static `import { Dimensions } from 'react-native'` in
+   * this non-React core module breaks the vitest suite and risks the
+   * Metro/Hermes `unknownModuleError`. It is a PROVIDER, not a value, so a
+   * rotation is picked up on the next snapshot with nothing to keep in sync.
+   *
+   * `null` means the window bounds are UNKNOWN, and {@link computeVisibility}
+   * treats unknown bounds as "cannot demote" — never as an empty viewport.
+   */
+  private viewportProvider: (() => { width: number; height: number }) | null = null;
+  /**
    * Sticky flag: flips `true` the first time any element is registered and
    * stays `true` even after elements are unregistered. Lets agents distinguish
    * "this route never wired any elements" from "this route registered then
@@ -350,6 +565,79 @@ export class NativeUIBridgeRegistry {
   /** Read-only accessor for the device pixel ratio used for bbox projection. */
   getPixelRatio(): number {
     return this.pixelRatio;
+  }
+
+  /**
+   * Set the getter for the device window size (logical dp) that reported
+   * visibility is clipped against. The React provider passes
+   * `() => Dimensions.get('window')` here at construction.
+   *
+   * Pass `null` to detach. While detached the window bounds are UNKNOWN and no
+   * element is ever demoted for being outside them.
+   */
+  setViewportProvider(
+    provider: (() => { width: number; height: number }) | null | undefined
+  ): void {
+    this.viewportProvider = provider ?? null;
+  }
+
+  /**
+   * The window as a page-space rect, or `null` when it is unknown or the
+   * provider returned something unusable (it throws in some RN teardown
+   * paths, and a zero-size window would silently hide the entire screen).
+   */
+  getViewportRect(): NativePageRect | null {
+    if (!this.viewportProvider) return null;
+    let size: { width: number; height: number };
+    try {
+      size = this.viewportProvider();
+    } catch (error) {
+      if (this.config.verbose) {
+        console.warn(`[ui-bridge-native] viewportProvider threw:`, error);
+      }
+      return null;
+    }
+    const { width, height } = size ?? {};
+    if (
+      typeof width !== 'number' ||
+      typeof height !== 'number' ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return null;
+    }
+    return { left: 0, top: 0, right: width, bottom: height };
+  }
+
+  /**
+   * The region `element` must reach to count as on screen: the window,
+   * intersected with the measured frame of its declared `scrollAncestorId`.
+   *
+   * Returns `null` when neither bound is known — see {@link computeVisibility}
+   * for why that means "do not demote" rather than "nothing is visible".
+   * An ancestor that is not registered, or registered but not yet measured,
+   * contributes nothing rather than hiding its subtree.
+   */
+  getClipRectFor(
+    element: RegisteredNativeElement,
+    viewport?: NativePageRect | null
+  ): NativePageRect | null {
+    // `undefined` = not supplied, read it now. `null` = the caller already
+    // read it and it was UNKNOWN — don't re-read and disagree with them.
+    const bounds = viewport === undefined ? this.getViewportRect() : viewport;
+    const ancestorId = element.scrollAncestorId;
+    if (!ancestorId) return bounds;
+
+    // Single level by design: only the DECLARED ancestor is applied, and its
+    // own `scrollAncestorId` is not followed. The window clip already covers
+    // most of what a second level would add, and a recursive walk needs a
+    // visited set to survive a declaration cycle. Revisit together.
+    const ancestor = this.elements.get(ancestorId);
+    if (!ancestor || ancestorId === element.id) return bounds;
+
+    return intersectRects(bounds, pageRectOf(ancestor.getState()));
   }
 
   // ============================================================================
@@ -412,6 +700,7 @@ export class NativeUIBridgeRegistry {
       testId,
       accessibilityLabel,
       registrationRoute,
+      scrollAncestorId,
       flatStyle,
       stateStyles,
     } = options;
@@ -466,6 +755,7 @@ export class NativeUIBridgeRegistry {
       registeredAt: Date.now(),
       mounted: true,
       registrationRoute: registrationRoute ?? null,
+      scrollAncestorId,
       flatStyle,
       stateStyles,
     };
@@ -1166,16 +1456,20 @@ export class NativeUIBridgeRegistry {
       elements = elements.filter((e) => matchesCurrentRoute(e.registrationRoute, currentRoute));
     }
 
+    // Read ONCE per snapshot, not once per element: it is a `Dimensions.get`
+    // call behind a try/catch, and a rotation landing mid-map would otherwise
+    // give elements in the SAME snapshot different clip regions.
+    const viewport = this.getViewportRect();
+
     const snapshot: NativeBridgeSnapshot = {
       timestamp: Date.now(),
       elements: elements.map((e) => {
         const handlers = extractHandlerNames(e.props);
         const state = e.getState();
-        const visibility: 'visible' | 'likely-visible' | 'hidden' = !state.visible
-          ? 'hidden'
-          : state.layout !== null
-            ? 'visible'
-            : 'likely-visible';
+        const { visibility, visibilityReason } = computeVisibility(
+          state,
+          this.getClipRectFor(e, viewport)
+        );
         const bbox = projectBbox(state, visibility, this.pixelRatio);
         const vision = projectVisionFields({
           type: e.type,
@@ -1199,6 +1493,7 @@ export class NativeUIBridgeRegistry {
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
+          ...(visibilityReason ? { visibilityReason } : {}),
           ...(bbox ? { bbox } : {}),
           ...vision,
         };

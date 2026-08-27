@@ -216,6 +216,19 @@ export interface NativeLayout {
   pageX: number;
   /** Absolute Y position on screen (from measureInWindow) */
   pageY: number;
+  /**
+   * `true` when `pageX`/`pageY` are a PARENT-RELATIVE stand-in rather than a
+   * `measureInWindow` result — set only by `useUIElement`'s fallback for a ref
+   * that exposes no `measureInWindow` (a function component without
+   * `forwardRef`, a custom wrapper, a test fixture). `refreshMeasurements`
+   * skips those same refs, so the stand-in is never corrected later.
+   *
+   * Consumers that merely need a box (`projectBbox`) ignore it and keep using
+   * the values. Consumers that COMPARE against window coordinates (`pageRectOf`
+   * → `computeVisibility`) must not: mixing coordinate spaces there produces a
+   * confident, wrong `hidden`. Absent/`false` means the origin is genuine.
+   */
+  pageOriginUnmeasured?: boolean;
 }
 
 /**
@@ -337,6 +350,12 @@ export interface RegisteredNativeElement {
   mounted: boolean;
   /** Route path where this element was registered (for page-scoped filtering) */
   registrationRoute?: string | null;
+  /**
+   * Id of the registered scrollable container this element lives inside, used
+   * to clip its reported visibility. See `RegisterElementOptions.scrollAncestorId`
+   * in `core/registry.ts` for why it is declared rather than inferred.
+   */
+  scrollAncestorId?: string;
   /** Flattened RN style for design review */
   flatStyle?: Record<string, unknown>;
   /** State-specific style overrides (pressed, focused, disabled) */
@@ -515,21 +534,52 @@ export interface NativeBridgeSnapshot {
     /**
      * Best-effort visibility classification for the element. React Native has
      * no first-class "is this in the viewport" signal — we infer from
-     * `state.visible` (set false by `markRouteOffscreen` on focus change) and
-     * `state.layout` (populated by the user's `onLayout` callback).
+     * `state.visible` (set false by `markRouteOffscreen` on focus change),
+     * `state.layout` (populated by the user's `onLayout` callback), and the
+     * measured geometry compared against the clip region (the window, plus a
+     * declared `scrollAncestorId`'s frame).
      *
-     * - `"visible"` — `visible: true` AND `layout !== null` (we measured it).
+     * - `"visible"` — measured, and overlapping the clip region. When the clip
+     *   region is UNKNOWN (no viewport injected) this degrades to the older
+     *   "measured at all" meaning rather than guessing.
      * - `"likely-visible"` — `visible: true` AND `layout === null`. Typically
      *   means the element is registered on the active route but its first
      *   `onLayout` hasn't fired yet. Treat as visible-but-unverified.
      * - `"hidden"` — `visible: false` (markRouteOffscreen ran for this route,
-     *   or the host explicitly marked it hidden). Filtered out when callers
-     *   pass `visibleOnly=true`.
+     *   or the host explicitly marked it hidden), OR measured entirely outside
+     *   the clip region. Read `visibilityReason` to tell those two apart.
+     *
+     * `visibleOnly=true` remains the LOOSER `state.visible` filter and does not
+     * consult this field — deliberately, so a snapshot taken in the gap between
+     * mount and the first `onLayout` doesn't return 0 elements on a populated
+     * screen (the 2026-05-20 regression `snapshot-visibility.test.ts` pins).
+     * A caller that wants on-screen-only should filter on this field itself.
      *
      * Callers that need stricter guarantees should additionally check
      * `state.layout !== null`.
      */
     visibility?: 'visible' | 'likely-visible' | 'hidden';
+    /**
+     * Why the element is not plainly visible. Omitted when it simply is.
+     *
+     * Shares the web SDK's vocabulary verbatim (`@qontinui/ui-bridge`
+     * `VisibilityReason`) so native and web snapshots stay comparable — see
+     * `NativeVisibilityReason` in `core/registry.ts` for why it is duplicated
+     * rather than imported, and why `'occluded'` is declared but never
+     * produced here.
+     *
+     * - `"hidden"` — `state.visible === false`; not on screen at all.
+     * - `"off-screen"` — measured, but entirely outside the clip region
+     *   (scrolled past the fold, or outside its scroll container). This is the
+     *   case that used to report `"visible"`, which made any mobile PASS
+     *   asserted on `state.visible` vacuous.
+     * - `"no-layout"` — registered but not yet measured; pairs with
+     *   `visibility: "likely-visible"`.
+     *
+     * ADDITIVE and optional: `visibility` keeps its three values, so no
+     * existing consumer of that union has to change.
+     */
+    visibilityReason?: 'hidden' | 'off-screen' | 'occluded' | 'no-layout';
     /**
      * Pixel-space bounding box, runner-native `{x, y, w, h}` shape (see
      * {@link NativeElementBbox}). Projected from `state.layout` (logical dp)

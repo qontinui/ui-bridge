@@ -16,9 +16,15 @@ import { NativeUIBridgeServer } from '../http-server';
  * and the /manual-test skill's cheatsheet documents them as if they're
  * universally available. Mobile React Native has no DOM analog for any of
  * them, so a manual-test operator probing these against a mobile bridge
- * previously got either a confusing HTTP 404 or a `{success:false}` envelope
- * with no `error` field. The stubs guarantee a structured NOT_SUPPORTED
- * response that names a mobile-native replacement in the message.
+ * previously got a `{success:false}` envelope with no `error` field. The stubs
+ * guarantee a structured NOT_SUPPORTED response that names a mobile-native
+ * replacement in the message.
+ *
+ * The asserted status is **501**, not 400: the transport maps the envelope's
+ * `code` onto the status line (`httpStatusForResponse`, ../http-server.ts), so
+ * "this platform will never do that" is readable from the status alone. It was
+ * 400 for every unsuccessful response until then, which is why operators kept
+ * retrying request shapes against endpoints that were never going to answer.
  */
 
 interface ParsedResponse {
@@ -45,7 +51,7 @@ describe('mobile bridge — runner-only /ai/* endpoints return NOT_SUPPORTED stu
         headers: {},
         query: {},
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(501);
       const parsed = JSON.parse(res.body) as ParsedResponse;
       expect(parsed.success).toBe(false);
       expect(parsed.code).toBe('NOT_SUPPORTED');
@@ -81,7 +87,7 @@ describe('mobile bridge — runner-only /ai/* endpoints return NOT_SUPPORTED stu
         headers: {},
         query: {},
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(501);
       const parsed = JSON.parse(res.body) as ParsedResponse;
       expect(parsed.success).toBe(false);
       expect(parsed.code).toBe('NOT_SUPPORTED');
@@ -117,7 +123,7 @@ describe('mobile bridge — runner-only /ai/* endpoints return NOT_SUPPORTED stu
         query: {},
         body: {},
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(501);
       const parsed = JSON.parse(res.body) as ParsedResponse;
       expect(parsed.success).toBe(false);
       expect(parsed.code).toBe('NOT_SUPPORTED');
@@ -153,7 +159,7 @@ describe('mobile bridge — runner-only /ai/* endpoints return NOT_SUPPORTED stu
         query: {},
         body: { id: 'foo', timeout: 1000 },
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(501);
       const parsed = JSON.parse(res.body) as ParsedResponse;
       expect(parsed.success).toBe(false);
       expect(parsed.code).toBe('NOT_SUPPORTED');

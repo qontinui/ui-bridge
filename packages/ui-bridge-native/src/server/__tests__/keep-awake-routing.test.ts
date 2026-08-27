@@ -71,7 +71,7 @@ describe('POST /ui-bridge/control/keep-awake — routing + behaviour', () => {
       const { server } = buildServer(false);
 
       const res = await post(server, { enabled: true });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(404);
       const parsed = JSON.parse(res.body) as ParsedResponse<unknown>;
       expect(parsed.success).toBe(false);
       expect(parsed.code).toBe('NOT_FOUND');
@@ -112,7 +112,7 @@ describe('POST /ui-bridge/control/keep-awake — routing + behaviour', () => {
     const { server } = buildServer(true);
 
     const res = await post(server, { enabled: true });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(501);
     const parsed = JSON.parse(res.body) as ParsedResponse<unknown>;
     expect(parsed.success).toBe(false);
     expect(parsed.code).toBe('NOT_SUPPORTED');

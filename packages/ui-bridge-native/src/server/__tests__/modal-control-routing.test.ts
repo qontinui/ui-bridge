@@ -163,7 +163,7 @@ describe('POST /ui-bridge/control/modal/push + dismiss/:id — round trip', () =
       query: {},
       body: { id: 'm-1' },
     });
-    expect(direct.status).toBe(400);
+    expect(direct.status).toBe(404);
     const directParsed = JSON.parse(direct.body) as ParsedResponse<unknown>;
     expect(directParsed.code).toBe('NOT_FOUND');
 

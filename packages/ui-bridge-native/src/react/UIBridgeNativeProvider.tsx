@@ -168,6 +168,26 @@ export interface UIBridgeNativeProviderProps {
  * }
  * ```
  */
+/**
+ * The device window size in logical dp — the single definition, shared by every
+ * consumer that needs it.
+ *
+ * Read through `react-native` HERE rather than inside the core registry or the
+ * server: the require/import pattern there crashed the host RN app in
+ * 0.6.3/0.6.4 (Metro/Hermes raised `unknownModuleError` past every try/catch).
+ * This file already has a live react-native import, so it is the safe
+ * injection point. See feedback_metro_require_gotcha for the full incident.
+ *
+ * Injected as a FUNCTION, not a value, so a rotation or split-screen resize is
+ * picked up on the next read with nothing to keep in sync. Its three sinks —
+ * `getPageHealth`, the design handlers, and the registry's visibility clipping
+ * — must not each carry their own copy of this fact and drift apart.
+ */
+function readWindowViewport(): { width: number; height: number } {
+  const win = Dimensions.get('window');
+  return { width: win.width, height: win.height };
+}
+
 export function UIBridgeNativeProvider({
   children,
   features = {},
@@ -201,6 +221,12 @@ export function UIBridgeNativeProvider({
     // imports react-native) rather than inside the core registry, which must
     // stay free of react-native imports — see the `projectBbox` doc comment.
     registryRef.current.setPixelRatio(PixelRatio.get());
+    // Inject the window bounds so reported `visibility` is clipped against the
+    // viewport instead of meaning "mounted and measured somewhere". Same
+    // injection rationale as `setPixelRatio` above — the core registry must
+    // stay free of react-native imports. A PROVIDER rather than a value so a
+    // rotation or a split-screen resize is picked up on the next read.
+    registryRef.current.setViewportProvider(readWindowViewport);
     setGlobalRegistry(registryRef.current);
   }
 
@@ -252,16 +278,10 @@ export function UIBridgeNativeProvider({
       // the `testHooks` value when undefined, so passing it through verbatim
       // keeps existing consumers unchanged.
       observability: features.observability,
-      // Injected device-viewport getter for POST /control/page-health. The
-      // server doesn't import `react-native` itself — the require/import
-      // pattern there crashed the host RN app in 0.6.3/0.6.4 (Metro/Hermes
-      // raised `unknownModuleError` past every try/catch). This provider
-      // already has a live react-native import, so it's the safe injection
-      // point. See feedback_metro_require_gotcha for the full incident.
-      viewportProvider: () => {
-        const win = Dimensions.get('window');
-        return { width: win.width, height: win.height };
-      },
+      // Injected device-viewport getter for POST /control/page-health and the
+      // design handlers. Same source as the registry's clipping bounds — see
+      // `readWindowViewport`.
+      viewportProvider: readWindowViewport,
     });
 
     server.setAdapter(serverAdapter);
@@ -401,10 +421,7 @@ export function UIBridgeNativeProvider({
             appInfo: config.appInfo,
             testHooks: features.testHooks === true,
             observability: features.observability,
-            viewportProvider: () => {
-              const win = Dimensions.get('window');
-              return { width: win.width, height: win.height };
-            },
+            viewportProvider: readWindowViewport,
           });
           if (navigationProvider) bareServer.setNavigationProvider(navigationProvider);
           if (screenshotProvider) bareServer.setScreenshotProvider(screenshotProvider);

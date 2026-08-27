@@ -127,6 +127,22 @@ export interface UseUIElementOptionsBase<T extends NativeElementType = NativeEle
   onStateChange?: (state: NativeElementState) => void;
   /** Parent component path for tree path generation */
   parentPath?: string;
+  /**
+   * Id of the registered scrollable container (`type: 'scroll' | 'list'`) this
+   * element is rendered inside.
+   *
+   * Supplying it makes the bridge clip this element's reported `visibility`
+   * against that container's measured frame, so a row scrolled past the fold
+   * reports `visibility: 'hidden'` with `visibilityReason: 'off-screen'`
+   * instead of claiming to be on screen. Without it, the device window is the
+   * only clip region.
+   *
+   * It has to be declared: `useUIElement` is a hook, so it never wraps its
+   * element's children and cannot publish itself to them as an ancestor. See
+   * `RegisterElementOptions.scrollAncestorId` for why guessing geometrically
+   * would be worse than not clipping.
+   */
+  scrollAncestorId?: string;
   /** RN style prop — will be flattened for design review */
   style?: unknown;
   /** State-specific style overrides for design review (pressed, focused, disabled) */
@@ -431,6 +447,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     autoRegister = true,
     onStateChange,
     parentPath,
+    scrollAncestorId,
     style,
     stateStyles: stateStylesProp,
     handlers: handlersProp,
@@ -462,6 +479,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
       testId: id,
       accessibilityLabel: label,
       registrationRoute: bridge.getCurrentRoute(),
+      scrollAncestorId,
       flatStyle: flattenStyle(style),
       stateStyles: flattenStateStyles(stateStylesProp),
     });
@@ -488,7 +506,20 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     // `ref` (the interceptor object) is created exactly once per hook
     // instance, so listing it is identity-stable — included to satisfy
     // exhaustive-deps now that it isn't a direct useRef result.
-  }, [bridge, id, type, label, actions, customActions, treePath, style, stateStylesProp, valueProp, ref]);
+  }, [
+    bridge,
+    id,
+    type,
+    label,
+    actions,
+    customActions,
+    treePath,
+    scrollAncestorId,
+    style,
+    stateStylesProp,
+    valueProp,
+    ref,
+  ]);
 
   // Unregister the element
   const unregister = useCallback(() => {
@@ -549,7 +580,10 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         });
       } else {
         // Fallback when measureInWindow isn't on the ref (test fixtures, web).
-        writeLayout({ x, y, width, height, pageX: x, pageY: y });
+        // `pageX`/`pageY` are PARENT-RELATIVE here, not window coordinates —
+        // flagged so visibility clipping declines to compare them against the
+        // window rather than mixing coordinate spaces. See `NativeLayout`.
+        writeLayout({ x, y, width, height, pageX: x, pageY: y, pageOriginUnmeasured: true });
       }
     },
     // `ref` is the once-per-hook interceptor object — identity-stable.
