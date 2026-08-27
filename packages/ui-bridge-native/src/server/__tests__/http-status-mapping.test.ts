@@ -49,10 +49,16 @@ describe('HTTP status mapping — the status line matches the envelope code', ()
   });
 
   it('maps NOT_FOUND to 404 for a route that is not registered', async () => {
-    // `control/visibility` is documented by two skill files but implemented by
-    // no SDK on any platform, so it is the real-world NOT_FOUND this mapping
-    // exists to make legible. It used to answer 400 while carrying
-    // `code: "NOT_FOUND"`.
+    // `control/visibility` is implemented by the WEB SDK in this same repo
+    // (`packages/ui-bridge`: the `visibility` handler, its relay twin, and the
+    // route entry in `types.ts`) — but NOT here, and not by the runner's Rust
+    // route table on `:9876` either. So it is the real-world NOT_FOUND this
+    // mapping exists to make legible: a route that genuinely exists on another
+    // platform and genuinely does not exist on this one. It used to answer 400
+    // while carrying `code: "NOT_FOUND"`.
+    //
+    // This assertion pins the ABSENCE deliberately. Should React Native ever
+    // grow the route, this test is the thing that must change first.
     const { status, parsed } = await probe('POST', '/ui-bridge/control/visibility', {
       minRatio: 0.02,
     });
