@@ -60,6 +60,13 @@ export interface RouteProvider {
   /** Return the current route segments (e.g. ["(tabs)", "runs"]), if available. */
   getSegments?: () => string[];
   /**
+   * Optionally return the currently-active tab id for the snapshot's
+   * `activeTab` field. Only needed when the visible pane is decoupled from the
+   * router; Expo Router apps can omit it and let the registry derive the value
+   * from `getSegments()`.
+   */
+  getActiveTab?: () => string | null | undefined;
+  /**
    * Subscribe to route changes. Required so the UI Bridge can clear stale
    * layouts on route changes with zero lag.
    *

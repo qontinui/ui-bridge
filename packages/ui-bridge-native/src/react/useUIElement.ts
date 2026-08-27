@@ -265,17 +265,22 @@ export interface UseUIElementReturn {
    * `testId` so spec-check and a11y stay in sync). Idempotent — no-op when
    * the new label equals the current registered value.
    *
-   * Labels passed via `useUIElement({ id, label })` are captured ONCE at
-   * registration; if the source state changes (e.g. a tab's active suffix,
-   * or a list's "N events" count), the registry would otherwise hold the
-   * mount-time label forever. Call `updateLabel(...)` from a `useEffect`
-   * (or directly from a handler) to keep the registry in sync.
+   * NOT required for the common case any more. The `label` OPTION passed to
+   * `useUIElement({ id, label })` is now auto-re-published whenever its value
+   * changes, so a state-derived label (a tab's active suffix, a card's
+   * `${title}: ${loading ? 'loading' : value}`, a list's "N events" count)
+   * stays in sync with zero call-site ceremony. Existing consumers that still
+   * drive `updateLabel(label)` from their own `useEffect` keep working — the
+   * second publish is inert, not a flicker.
+   *
+   * Reach for this only when the string you want in the registry is NOT the
+   * `label` option — e.g. a label owned by an imperative handler, or one
+   * computed outside the render path.
    *
    * @example
    * ```tsx
-   * const label = `${events.length} events`;
-   * const { updateLabel } = useUIElement({ id: 'events-list', label, type: 'list' });
-   * useEffect(() => { updateLabel(label); }, [label, updateLabel]);
+   * // No `updateLabel` needed — the option is republished automatically.
+   * const { ref } = useUIElement({ id: 'events-list', label: `${events.length} events`, type: 'list' });
    * ```
    */
   updateLabel: (newLabel: string) => void;
@@ -380,6 +385,12 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
   // creates a cleanup/run feedback loop past React's 50-update ceiling.
   const registeredRef = useRef(false);
   const registeredIdRef = useRef<string | null>(null);
+  // Last label value the SDK's OWN auto-publisher wrote to the registry
+  // (seeded by `register()`). Only the auto-publish paths write it — a manual
+  // `updateLabel(...)` deliberately does not, so the redundant-call warning
+  // below can still tell "the SDK already published this" apart from "this
+  // call site republishes the same string on its own".
+  const autoPublishedLabelRef = useRef<string | undefined>(undefined);
 
   // Latest bridge for the ref interceptor below. React attaches/detaches
   // refs during the commit phase — outside any effect closure — so the
@@ -485,6 +496,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     });
     registeredRef.current = true;
     registeredIdRef.current = id;
+    autoPublishedLabelRef.current = typeof label === 'string' ? label : undefined;
 
     // Seed the controlled value into the element state so a bridge read
     // reflects what the user sees immediately on mount — before any `type`/
@@ -528,6 +540,7 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     bridge.registry.unregisterElement(registeredIdRef.current ?? id);
     registeredRef.current = false;
     registeredIdRef.current = null;
+    autoPublishedLabelRef.current = undefined;
     setRegistered(false);
   }, [bridge, id]);
 
@@ -780,6 +793,48 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
     bridge.registry.updateElementState(id, { value: valueProp });
   }, [bridge, registered, id, valueProp]);
 
+  // Keep the registry's label in sync with the `label` OPTION — automatically.
+  //
+  // ROOT CAUSE this closes: `register()` publishes `label` exactly once and is
+  // guarded by `registeredRef.current`, while the auto-register effect only
+  // re-runs on `[autoRegister, bridge, id]`. A consumer whose label is derived
+  // from state — `${title}: ${error ? 'error' : loading ? 'loading' : value}` —
+  // therefore left the registry holding the MOUNT-TIME string forever unless it
+  // also remembered to call `updateLabel(...)` by hand. Measured consequence:
+  // five `operations-card-*` elements reporting `Fleet: loading` /
+  // `Questions: loading` indefinitely while the screen beside them rendered the
+  // real numbers. That is both an a11y defect (TalkBack reads "loading"
+  // forever) and a test-surface defect (any bridge assertion on those labels
+  // reads a fossil). `updateLabel` stays as the escape hatch for labels that
+  // are NOT the `label` option; it is no longer something a call site has to
+  // remember.
+  //
+  // Identity trap, handled twice over:
+  //   1. `label` is a STRING, so React's `Object.is` dependency compare IS a
+  //      value compare. An inline template literal rebuilt on every render but
+  //      producing the same text does NOT re-run this effect — no publish per
+  //      render, per element.
+  //   2. `updateElementMeta` compares each field by value before mutating and
+  //      returns `false` without emitting when nothing changed. So even when
+  //      the effect DOES re-run for another reason (`registered` flipping,
+  //      `bridge`/`id` changing), a same-value publish is inert.
+  //
+  // Publishes the LABEL ONLY. `registerElement` is never called a second time,
+  // so the registry entry is mutated in place: no churn, no duplicate entry, and
+  // no reset of state / props / layout / handler registration. Double-publishing
+  // alongside a consumer that still calls `updateLabel(label)` itself is
+  // therefore idempotent rather than a flicker.
+  useEffect(() => {
+    if (!bridge || !registered) return;
+    if (typeof label !== 'string') return;
+    autoPublishedLabelRef.current = label;
+    bridge.registry.updateElementMeta(id, {
+      label,
+      accessibilityLabel: label,
+      testId: id,
+    });
+  }, [bridge, registered, id, label]);
+
   // Update props for action execution (allows accessing onPress, onChangeText, etc.)
   const _updateProps = useCallback(
     (props: Record<string, unknown>) => {
@@ -844,7 +899,14 @@ export function useUIElement(options: UseUIElementOptionsHandlersOptional): UseU
         accessibilityLabel: newLabel,
         testId: id,
       });
-      if (!changed && !warnedRedundantUpdateLabelIds.has(id)) {
+      // The hook now auto-publishes the `label` option (see the effect above),
+      // so a consumer that ALSO drives `updateLabel(label)` from its own
+      // `useEffect` will legitimately observe a no-op every time. Warning there
+      // would fire on every correct pre-existing call site, so the warning is
+      // scoped to the case it was written for: a redundant publish of a string
+      // the SDK did NOT just publish itself.
+      const alreadyPublishedBySdk = newLabel === autoPublishedLabelRef.current;
+      if (!changed && !alreadyPublishedBySdk && !warnedRedundantUpdateLabelIds.has(id)) {
         warnedRedundantUpdateLabelIds.add(id);
         console.warn(
           `[UI Bridge] updateLabel("${newLabel}") on element "${id}" was a no-op (label unchanged). Gate the call behind a useEffect with [label] deps to avoid redundant publishes.`

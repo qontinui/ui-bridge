@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { NativeUIBridgeRegistry, matchesCurrentRoute } from './registry';
+import {
+  NativeUIBridgeRegistry,
+  matchesCurrentRoute,
+  deriveActiveTabFromSegments,
+} from './registry';
 import type { NativeElementRef } from './types';
 
 function makeRef(): React.RefObject<NativeElementRef> {
@@ -536,5 +540,114 @@ describe('NativeUIBridgeRegistry.refreshMeasurements', () => {
 
     expect(counts).toEqual({ measured: 0, cleared: 0, skipped: 1 });
     expect(registry.getElement('thrower')!.getState().layout).toEqual(staleLayout);
+  });
+});
+
+/**
+ * Canonical `route` / `activeTab` snapshot fields.
+ *
+ * The native snapshot emitted only `currentRoute` + `segments`, while the web
+ * SDK's `BridgeSnapshot` — the shape every cross-platform consumer speaks —
+ * spells them `route` and `activeTab`. A device sitting on a perfectly
+ * well-known screen therefore answered `control/snapshot` with a null route
+ * and a null active tab. Both are now emitted, derived from the Expo Router
+ * navigation state the `RouteProvider` already exposes.
+ */
+describe('deriveActiveTabFromSegments — Expo Router navigation state', () => {
+  it('returns the segment that follows the innermost layout group', () => {
+    expect(deriveActiveTabFromSegments(['(tabs)', 'runs'])).toBe('runs');
+  });
+
+  it('keeps reporting the tab from a detail screen pushed on top of it', () => {
+    expect(deriveActiveTabFromSegments(['(tabs)', 'runs', '[id]'])).toBe('runs');
+  });
+
+  it("reports the group's index route when the group is the leaf", () => {
+    expect(deriveActiveTabFromSegments(['(tabs)'])).toBe('index');
+  });
+
+  it('uses the INNERMOST group when layouts are nested', () => {
+    expect(deriveActiveTabFromSegments(['(app)', '(tabs)', 'fleet'])).toBe('fleet');
+  });
+
+  it('declines to guess for a dynamic route directly under the group', () => {
+    expect(deriveActiveTabFromSegments(['(tabs)', '[id]'])).toBeUndefined();
+  });
+
+  it('declines to guess when the app has no group layout at all', () => {
+    expect(deriveActiveTabFromSegments(['settings'])).toBeUndefined();
+  });
+
+  it('handles empty / absent segment lists', () => {
+    expect(deriveActiveTabFromSegments([])).toBeUndefined();
+    expect(deriveActiveTabFromSegments(undefined)).toBeUndefined();
+  });
+});
+
+describe('createSnapshot — canonical route / activeTab', () => {
+  it('populates both from the route provider', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/runs',
+      getSegments: () => ['(tabs)', 'runs'],
+    });
+
+    const snapshot = registry.createSnapshot();
+
+    expect(snapshot.route).toBe('/(tabs)/runs');
+    expect(snapshot.activeTab).toBe('runs');
+    // The pre-existing native-only fields are untouched.
+    expect(snapshot.currentRoute).toBe('/(tabs)/runs');
+    expect(snapshot.segments).toEqual(['(tabs)', 'runs']);
+  });
+
+  it('lets an explicit getActiveTab provider win over the derivation', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/runs',
+      getSegments: () => ['(tabs)', 'runs'],
+      getActiveTab: () => 'custom-pane',
+    });
+
+    expect(registry.createSnapshot().activeTab).toBe('custom-pane');
+  });
+
+  it('falls back to the derivation when getActiveTab throws or answers blank', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/fleet',
+      getSegments: () => ['(tabs)', 'fleet'],
+      getActiveTab: () => {
+        throw new Error('host bug');
+      },
+    });
+    expect(registry.createSnapshot().activeTab).toBe('fleet');
+
+    const blank = new NativeUIBridgeRegistry();
+    blank.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/fleet',
+      getSegments: () => ['(tabs)', 'fleet'],
+      getActiveTab: () => '',
+    });
+    expect(blank.createSnapshot().activeTab).toBe('fleet');
+  });
+
+  it('derives activeTab from an explicit routeInfo argument too', () => {
+    const registry = new NativeUIBridgeRegistry();
+    const snapshot = registry.createSnapshot({
+      currentRoute: '/(tabs)/gates',
+      segments: ['(tabs)', 'gates'],
+    });
+    expect(snapshot.route).toBe('/(tabs)/gates');
+    expect(snapshot.activeTab).toBe('gates');
+  });
+
+  it('omits both fields (rather than nulling them) when no route is known', () => {
+    const registry = new NativeUIBridgeRegistry();
+    const snapshot = registry.createSnapshot();
+    expect('route' in snapshot).toBe(false);
+    expect('activeTab' in snapshot).toBe(false);
+    // `currentRoute` keeps its explicit-null contract for existing consumers.
+    expect(snapshot.currentRoute).toBeNull();
   });
 });

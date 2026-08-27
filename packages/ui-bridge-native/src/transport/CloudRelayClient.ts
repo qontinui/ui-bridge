@@ -95,8 +95,13 @@ export class CloudRelayClient {
     if (this.stopped) return;
 
     const url = `${this.config.relayUrl}?token=${encodeURIComponent(this.config.authToken)}`;
+    // Everything that reaches a log sink uses the redacted spelling — the
+    // relay URL carries the device auth token in its query string, and
+    // `/control/console-errors` is readable by anything that can reach the
+    // bridge.
+    const safeUrl = redactRelayUrl(url);
 
-    transportLogger.log('[CloudRelayClient] Connecting to', url);
+    transportLogger.log('[CloudRelayClient] Connecting to', safeUrl);
 
     const ws = new WebSocket(url);
     this.ws = ws;
@@ -124,15 +129,32 @@ export class CloudRelayClient {
       void this.onMessage(event.data as string);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       this._isConnected = false;
-      if (!this.stopped) {
+      const detail = describeCloseEvent(event);
+      if (this.stopped) {
+        // Expected: we asked for this close (or `stop()` raced the handshake).
+        transportLogger.log(`[CloudRelayClient] WebSocket closed ${detail} url=${safeUrl}`);
+      } else {
+        // Unexpected: the tunnel died under us and we are about to reconnect.
+        // The close CODE is the whole diagnosis here — 1006 is "no close frame"
+        // (network/TLS died), 1008/4001-class codes are the relay rejecting our
+        // token, 1001 is the backend going away. Logging the raw event instead
+        // said nothing: a DOM CloseEvent has no own enumerable properties, so
+        // the observability capture's `JSON.stringify` rendered it as `{}`.
+        transportLogger.warn(
+          `[CloudRelayClient] WebSocket closed unexpectedly ${detail} url=${safeUrl}`
+        );
         this.scheduleReconnect();
       }
     };
 
     ws.onerror = (err: Event) => {
-      transportLogger.warn('[CloudRelayClient] WebSocket error:', err);
+      // Same trap as onclose: the bare event stringifies to `{}`. Pull the
+      // fields that exist across React Native's event shape and the DOM one.
+      transportLogger.warn(
+        `[CloudRelayClient] WebSocket error: ${describeErrorEvent(err)} url=${safeUrl}`
+      );
       // onclose will fire next and handle reconnect
     };
   }
@@ -233,6 +255,48 @@ export class CloudRelayClient {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+/**
+ * Replace the value of the relay URL's `token` query parameter with a marker.
+ *
+ * The relay URL is built as `<relayUrl>?token=<authToken>`; every log line that
+ * names the target URL goes through here first so the device auth token never
+ * lands in a log file, a console-error ring buffer, or a bug report.
+ */
+export function redactRelayUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&#]*/gi, '$1<redacted>');
+}
+
+/**
+ * Render a WebSocket close event as `code=… reason=… wasClean=…`.
+ *
+ * Read defensively: React Native's WebSocket delivers a plain object rather
+ * than a DOM `CloseEvent`, and a missing field must read `unknown` rather than
+ * silently print `undefined` as if the relay had told us something.
+ */
+function describeCloseEvent(event: unknown): string {
+  const e = (event ?? {}) as { code?: unknown; reason?: unknown; wasClean?: unknown };
+  const code = typeof e.code === 'number' ? String(e.code) : 'unknown';
+  const reason = typeof e.reason === 'string' && e.reason.length > 0 ? e.reason : '(none)';
+  const wasClean = typeof e.wasClean === 'boolean' ? String(e.wasClean) : 'unknown';
+  return `code=${code} reason=${reason} wasClean=${wasClean}`;
+}
+
+/**
+ * Render a WebSocket error event. React Native puts the useful text on
+ * `message`; some transports also carry an `Error` on `error`, and a few
+ * surface a close `code` on the error event itself.
+ */
+function describeErrorEvent(event: unknown): string {
+  const e = (event ?? {}) as { message?: unknown; error?: unknown; code?: unknown };
+  const parts: string[] = [];
+  if (typeof e.message === 'string' && e.message.length > 0) parts.push(`message=${e.message}`);
+  if (e.error instanceof Error) parts.push(`error=${e.error.message}`);
+  else if (typeof e.error === 'string' && e.error.length > 0) parts.push(`error=${e.error}`);
+  if (typeof e.code === 'number') parts.push(`code=${e.code}`);
+  if (parts.length === 0) parts.push('message=(none reported by the transport)');
+  return parts.join(' ');
+}
 
 /**
  * Extract query-string parameters from a URL path.

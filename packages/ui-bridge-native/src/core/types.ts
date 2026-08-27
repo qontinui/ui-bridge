@@ -663,6 +663,35 @@ export interface NativeBridgeSnapshot {
   currentRoute?: string | null;
   /** Current route segments (if a RouteProvider is configured) */
   segments?: string[];
+  /**
+   * Canonical alias for {@link currentRoute}, spelled the way the web SDK's
+   * `BridgeSnapshot` spells it (`@qontinui/ui-bridge` `BridgeSnapshot.route`).
+   *
+   * Native emitted only `currentRoute`, so every cross-platform consumer that
+   * speaks the canonical snapshot shape — the runner's bridge client, the MCP
+   * tools, `control/snapshot` readers — read `snapshot.route` off a mobile
+   * snapshot and got nothing, reporting a null route for a device that was
+   * sitting on a perfectly well-known screen. `currentRoute` is kept verbatim
+   * for existing native-only consumers; this is ADDITIVE.
+   *
+   * Omitted (not null) when the route is unknown, matching the web field.
+   */
+  route?: string;
+  /**
+   * Currently-active tab id, canonical alias-mate of {@link route} — again
+   * matching `BridgeSnapshot.activeTab` in the web SDK.
+   *
+   * Resolved in two steps: an explicit `getActiveTab()` on the configured
+   * route provider wins; otherwise it is derived from the Expo Router
+   * navigation state the provider already exposes via `getSegments()` — the
+   * segment that follows the innermost layout group, e.g. `["(tabs)", "runs"]`
+   * → `"runs"`. See `deriveActiveTabFromSegments` in `core/registry.ts` for the
+   * exact rules.
+   *
+   * Omitted when the app has no group/tab layout, when the current screen is a
+   * dynamic route rather than a tab, or when no route provider is configured.
+   */
+  activeTab?: string;
   /** Modal/sheet/drawer context (populated when a modalDetector enricher is registered) */
   modalStack?: NativeSnapshotModalContext;
   /** Toast/snackbar context (populated when a toastCapture enricher is registered) */
@@ -818,6 +847,15 @@ export type NativeSnapshotEnricher = (ctx: {
 export interface NativeRouteProviderLike {
   getCurrentRoute: () => string | null;
   getSegments?: () => string[];
+  /**
+   * Optional explicit active-tab id for the snapshot's `activeTab` field.
+   *
+   * Apps whose visible pane is decoupled from the router (a segmented control,
+   * a custom tab shell) can answer directly. When absent the registry derives
+   * the value from `getSegments()`, so an Expo Router app needs to implement
+   * nothing.
+   */
+  getActiveTab?: () => string | null | undefined;
 }
 
 /**

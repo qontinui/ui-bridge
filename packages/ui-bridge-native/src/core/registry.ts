@@ -159,6 +159,51 @@ export function matchesCurrentRoute(
 }
 
 /**
+ * Derive the snapshot's `activeTab` from an Expo Router segment list.
+ *
+ * Expo Router spells a layout group as a parenthesised segment and a dynamic
+ * route as a bracketed one, so `usePathname()`/`useSegments()` on the "runs"
+ * tab of a `(tabs)` layout yield `"/(tabs)/runs"` and `["(tabs)", "runs"]`
+ * (the shape the `RouteProvider` doc comment already documents). The tab a user
+ * is looking at is therefore the segment immediately following the INNERMOST
+ * group.
+ *
+ * Rules, all deliberately conservative — an unknown tab is reported as absent
+ * rather than guessed:
+ *
+ *   - `["(tabs)", "runs"]`        → `"runs"`
+ *   - `["(tabs)", "runs", "[id]"]`→ `"runs"`  (a detail screen is still *on* a tab)
+ *   - `["(tabs)"]`                → `"index"` (the group's own index route)
+ *   - `["(tabs)", "[id]"]`        → `undefined` (dynamic route, not a tab)
+ *   - `["settings"]`              → `undefined` (no group layout ⇒ no tabs)
+ *   - `[]` / `undefined`          → `undefined`
+ *
+ * Exported so the rules are unit-testable without standing up a registry.
+ */
+export function deriveActiveTabFromSegments(segments?: string[]): string | undefined {
+  if (!segments || segments.length === 0) return undefined;
+
+  let innermostGroup = -1;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (typeof segment === 'string' && segment.startsWith('(') && segment.endsWith(')')) {
+      innermostGroup = i;
+    }
+  }
+  // No layout group at all — the app has no tab shell, so claiming an active
+  // tab would be an invention.
+  if (innermostGroup === -1) return undefined;
+
+  const next = segments[innermostGroup + 1];
+  // The group IS the leaf: the router is showing that group's index route.
+  if (next === undefined) return 'index';
+  if (typeof next !== 'string' || next.length === 0) return undefined;
+  // A dynamic segment is a detail screen reached from a tab, not a tab itself.
+  if (next.startsWith('[') && next.endsWith(']')) return undefined;
+  return next;
+}
+
+/**
  * Project an element's runtime state into a runner-native pixel-space `bbox`.
  *
  * Returns `{x, y, w, h}` in PHYSICAL pixels (RN `state.layout` is logical dp;
@@ -548,6 +593,31 @@ export class NativeUIBridgeRegistry {
   /** Read-only accessor for the registered route provider, if any. */
   getRouteProvider(): NativeRouteProviderLike | null {
     return this.routeProvider;
+  }
+
+  /**
+   * Resolve the snapshot's `activeTab`: an explicit `getActiveTab()` on the
+   * route provider wins, otherwise derive it from the Expo Router segments the
+   * provider already exposes.
+   *
+   * A throwing or empty-string provider degrades to the derivation rather than
+   * to `undefined` — the host's opt-in extra should never be able to make the
+   * snapshot WORSE than it was without it. A blank derivation stays blank.
+   */
+  private resolveActiveTab(segments: string[] | undefined): string | undefined {
+    const explicit = (() => {
+      if (!this.routeProvider?.getActiveTab) return undefined;
+      try {
+        const value = this.routeProvider.getActiveTab();
+        return typeof value === 'string' && value.length > 0 ? value : undefined;
+      } catch (error) {
+        if (this.config.verbose) {
+          console.warn(`[ui-bridge-native] routeProvider getActiveTab threw:`, error);
+        }
+        return undefined;
+      }
+    })();
+    return explicit ?? deriveActiveTabFromSegments(segments);
   }
 
   /**
@@ -1414,27 +1484,34 @@ export class NativeUIBridgeRegistry {
     // registered route provider. We treat an explicitly-passed `routeInfo`
     // (even if both fields are null/undefined) as "the caller is in charge"
     // so server-layer overrides that pass `{currentRoute: null}` keep working.
-    const resolvedRoute: { currentRoute: string | null; segments: string[] | undefined } = (() => {
+    const resolvedRoute: {
+      currentRoute: string | null;
+      segments: string[] | undefined;
+      activeTab: string | undefined;
+    } = (() => {
       if (routeInfo !== undefined) {
         return {
           currentRoute: routeInfo.currentRoute ?? null,
           segments: routeInfo.segments,
+          activeTab: deriveActiveTabFromSegments(routeInfo.segments),
         };
       }
       if (this.routeProvider) {
         try {
+          const segments = this.routeProvider.getSegments?.();
           return {
             currentRoute: this.routeProvider.getCurrentRoute() ?? null,
-            segments: this.routeProvider.getSegments?.(),
+            segments,
+            activeTab: this.resolveActiveTab(segments),
           };
         } catch (error) {
           if (this.config.verbose) {
             console.warn(`[ui-bridge-native] routeProvider getCurrentRoute threw:`, error);
           }
-          return { currentRoute: null, segments: undefined };
+          return { currentRoute: null, segments: undefined, activeTab: undefined };
         }
       }
-      return { currentRoute: null, segments: undefined };
+      return { currentRoute: null, segments: undefined, activeTab: undefined };
     })();
 
     // visibleOnly uses the *looser* mounted-visible filter so a snapshot
@@ -1513,6 +1590,13 @@ export class NativeUIBridgeRegistry {
       })),
       currentRoute: resolvedRoute.currentRoute,
       segments: resolvedRoute.segments,
+      // Canonical aliases, spelled the way the web SDK's `BridgeSnapshot`
+      // spells them so a cross-platform consumer reads one field name on both
+      // platforms. Omitted rather than nulled when unknown — same convention
+      // as the web fields, and it keeps the emitted shape byte-identical for
+      // hosts that wire no route provider.
+      ...(resolvedRoute.currentRoute ? { route: resolvedRoute.currentRoute } : {}),
+      ...(resolvedRoute.activeTab ? { activeTab: resolvedRoute.activeTab } : {}),
       registration: this.getRegistrationCoverage(),
     };
 
