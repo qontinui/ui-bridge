@@ -224,10 +224,20 @@ export class NativeUIBridgeRegistry {
   }
 
   /**
-   * Unregister an element
+   * Unregister an element.
+   *
+   * `expectedRef` is an OWNERSHIP guard mirroring the web registry's. Ids are a
+   * shared key space and `registerElement` is last-write-wins, so a consumer
+   * that keys ids on a *slot* rather than a component instance can have two
+   * components hold the same id across a re-layout: A registers, B re-registers
+   * over it, then A unmounts. Deleting unconditionally there strands B — still
+   * mounted, no registry entry, permanently. Callers that hold the ref they
+   * registered pass it; a mismatch makes this a no-op. Omitting it keeps the
+   * historical unconditional behavior.
    */
-  unregisterElement(id: string): void {
+  unregisterElement(id: string, expectedRef?: React.RefObject<NativeElementRef>): void {
     const element = this.elements.get(id);
+    if (expectedRef && element && element.ref !== expectedRef) return;
     if (element) {
       this.elements.delete(id);
       this.emit('element:unregistered', { id });

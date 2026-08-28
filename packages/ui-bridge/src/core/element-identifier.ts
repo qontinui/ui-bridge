@@ -188,6 +188,14 @@ export function findElementByIdentifier(
 ): HTMLElement | null {
   // If string, try each identification method
   if (typeof identifier === 'string') {
+    // Try the Item-10 pinning alias first — `getBestIdentifier` and the
+    // discovery namer both emit it ahead of `data-testid`, so resolution has
+    // to look for it first or a pinned id round-trips to the wrong element.
+    const byPinnedId = root.querySelector<HTMLElement>(
+      `[data-ui-bridge-test-id="${CSS.escape(identifier)}"]`
+    );
+    if (byPinnedId) return byPinnedId;
+
     // Try data-testid
     const byTestId = root.querySelector<HTMLElement>(`[data-testid="${identifier}"]`);
     if (byTestId) return byTestId;

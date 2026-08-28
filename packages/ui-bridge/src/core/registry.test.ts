@@ -93,6 +93,59 @@ describe('UIBridgeRegistry', () => {
       expect(registry.getElement('btn-1')).toBeUndefined();
     });
 
+    // Ids are a shared key space and registration is last-write-wins, so a
+    // slot-keyed id (`panel-<zoneIndex>`) can be held by two components in
+    // sequence across a re-layout. The late-arriving unregister of the first
+    // owner must not delete the entry the second owner now holds — that
+    // strands a live element with no registry entry, permanently.
+    it('does not remove an entry another element has taken over (ownership guard)', () => {
+      const a = document.createElement('button');
+      const b = document.createElement('button');
+      container.appendChild(a);
+      container.appendChild(b);
+
+      registry.registerElement('slot-1', a);
+      registry.registerElement('slot-1', b); // overwrite — b owns the id now
+
+      expect(registry.unregisterElement('slot-1', undefined, a)).toBe(false);
+      expect(registry.getElement('slot-1')?.element).toBe(b);
+
+      // The real owner can still remove it.
+      expect(registry.unregisterElement('slot-1', undefined, b)).toBe(true);
+      expect(registry.getElement('slot-1')).toBeUndefined();
+    });
+
+    it('omitting the ownership guard keeps the unconditional removal', () => {
+      const a = document.createElement('button');
+      const b = document.createElement('button');
+      container.appendChild(a);
+      container.appendChild(b);
+
+      registry.registerElement('slot-2', a);
+      registry.registerElement('slot-2', b);
+
+      expect(registry.unregisterElement('slot-2')).toBe(true);
+      expect(registry.getElement('slot-2')).toBeUndefined();
+    });
+
+    it('the ownership guard does not emit element:unregistered on a refused removal', () => {
+      const a = document.createElement('button');
+      const b = document.createElement('button');
+      container.appendChild(a);
+      container.appendChild(b);
+
+      registry.registerElement('slot-3', a);
+      registry.registerElement('slot-3', b);
+
+      const seen: string[] = [];
+      registry.on('element:unregistered', (event) => {
+        seen.push((event as { id: string }).id);
+      });
+
+      registry.unregisterElement('slot-3', undefined, a);
+      expect(seen).toEqual([]);
+    });
+
     it('should get all elements', () => {
       const btn1 = document.createElement('button');
       const btn2 = document.createElement('button');

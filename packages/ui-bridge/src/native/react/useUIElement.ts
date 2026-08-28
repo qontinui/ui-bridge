@@ -292,7 +292,10 @@ export function useUIElement(options: UseUIElementOptionsBase): UseUIElementRetu
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(id);
+    // Pass the ref we registered so the registry only removes the entry if THIS
+    // instance still owns the id — slot-keyed ids (`row-<index>`) can be held
+    // by a different component by the time we unmount.
+    bridge.registry.unregisterElement(id, ref);
     registeredRef.current = false;
   }, [bridge, id]);
 

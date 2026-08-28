@@ -129,3 +129,46 @@ describe('NativeUIBridgeRegistry bbox/visible parity', () => {
     expect(serialized!.visible).toBeUndefined();
   });
 });
+
+/**
+ * Mirror of the web registry's ownership guard. Ids are a shared key space and
+ * registration is last-write-wins, so a slot-keyed id can be held by two
+ * components in sequence; the first owner's late unregister must not delete the
+ * entry the second owner holds.
+ */
+describe('NativeUIBridgeRegistry unregister ownership guard', () => {
+  let registry: NativeUIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new NativeUIBridgeRegistry();
+  });
+
+  afterEach(() => {
+    resetGlobalRegistry();
+  });
+
+  it('refuses to remove an entry another ref has taken over', () => {
+    const refA = makeRef();
+    const refB = makeRef();
+
+    registry.registerElement('slot-1', refA, { type: 'button' });
+    registry.registerElement('slot-1', refB, { type: 'button' });
+
+    registry.unregisterElement('slot-1', refA);
+    expect(registry.getElement('slot-1')?.ref).toBe(refB);
+
+    registry.unregisterElement('slot-1', refB);
+    expect(registry.getElement('slot-1')).toBeUndefined();
+  });
+
+  it('omitting the guard keeps the unconditional removal', () => {
+    const refA = makeRef();
+    const refB = makeRef();
+
+    registry.registerElement('slot-2', refA, { type: 'button' });
+    registry.registerElement('slot-2', refB, { type: 'button' });
+
+    registry.unregisterElement('slot-2');
+    expect(registry.getElement('slot-2')).toBeUndefined();
+  });
+});

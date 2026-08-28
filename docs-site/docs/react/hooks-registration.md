@@ -34,7 +34,18 @@ function SubmitButton() {
 Attaching the returned `ref` is what registers the element — the hook has no DOM
 node to register before that. It also stamps `data-ui-bridge-id="<your id>"` on
 the node so out-of-process runners can resolve it without holding the React ref;
-you do not write that attribute yourself.
+you do not write that attribute yourself. It is an output of registration, not
+an identification input — to pin the id an *unregistered* element is discovered
+under, stamp `data-ui-bridge-test-id` instead (see
+[Element Identification](../concepts/element-identification.md#pinning-a-discovered-id)).
+
+`id` is a key in a registry-wide namespace, and registration is last-write-wins.
+Two components may legitimately hold the same id at different moments when the
+id is keyed on a *slot* (`panel-<zoneIndex>`) rather than on a component
+instance; the hook's unmount cleanup removes the registry entry only if this
+instance's node is still the one registered under that id, so a component that
+took the id over is never stranded. Unique-per-instance ids remain the
+recommendation.
 
 ### Options
 

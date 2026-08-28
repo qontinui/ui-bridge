@@ -3413,15 +3413,33 @@ export class DefaultActionExecutor implements ActionExecutor {
    * Generate a deterministic, semantic ID for an unregistered element.
    *
    * Priority:
-   *  1. data-testid attribute
-   *  2. HTML id attribute (skip React auto-generated IDs like `:r1a:`)
-   *  3. Semantic ID: {tagName}-{slugified label}[-{index}]
+   *  1. data-ui-bridge-test-id attribute (the Item-10 pinning alias)
+   *  2. data-testid attribute
+   *  3. HTML id attribute (skip React auto-generated IDs like `:r1a:`)
+   *  4. Semantic ID: {tagName}-{slugified label}[-{index}]
    *
    * The semantic fallback produces stable IDs across discover() calls as
    * long as the element's label and DOM position don't change, making
-   * them usable with executeAction().
+   * them usable with executeAction(). It is only *mostly* stable: the
+   * collision counter is first-free-integer in DOM-walk order, so two
+   * same-slug siblings swap suffixes when the DOM reorders. Authors who need
+   * a genuinely pinned id stamp `data-ui-bridge-test-id` — the same alias
+   * `getBestIdentifier` (core/element-identifier.ts) and `useAutoRegister`
+   * already honour above `data-testid`, honoured here so it works on the
+   * unregistered-element path too.
+   *
+   * Note `data-ui-bridge-id` is deliberately NOT read here: it is an OUTPUT
+   * the SDK stamps onto elements it has registered (see `useUIElement` /
+   * `useAutoRegister`), and a registered element never reaches this function —
+   * discover() uses its registry id. Reading it as an input would let one
+   * verbatim author-supplied value name two elements with no collision
+   * counter to separate them.
    */
   private getElementId(element: HTMLElement): string {
+    // Item 10 alias — wins over everything, matching `getBestIdentifier`.
+    const pinnedId = element.getAttribute('data-ui-bridge-test-id')?.trim();
+    if (pinnedId) return pinnedId;
+
     const testId = element.getAttribute('data-testid');
     if (testId) return testId;
 

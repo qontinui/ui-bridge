@@ -984,7 +984,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       untrack?.();
       bboxUntrackersRef.current.delete(id);
 
-      bridge.registry.unregisterElement(id);
+      // Ownership guard: derived ids are not instance-unique, so another node
+      // may have taken this id since we registered. Only remove the entry if it
+      // still points at OUR node — see `unregisterElement` in core/registry.ts.
+      bridge.registry.unregisterElement(id, undefined, element);
       registeredElementsRef.current.delete(element);
 
       onUnregister?.(id);
@@ -1058,7 +1061,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const id = registeredContentElementsRef.current.get(element);
       if (!id || !bridge?.registry) return;
 
-      bridge.registry.unregisterElement(id);
+      bridge.registry.unregisterElement(id, undefined, element);
       registeredContentElementsRef.current.delete(element);
     },
     [bridge]
@@ -1192,7 +1195,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const id = registeredMediaElementsRef.current.get(element);
       if (!id || !bridge?.registry) return;
 
-      bridge.registry.unregisterElement(id);
+      bridge.registry.unregisterElement(id, undefined, element);
       registeredMediaElementsRef.current.delete(element);
     },
     [bridge]
@@ -1360,7 +1363,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             const untrack = bboxUntrackersRef.current.get(id);
             untrack?.();
             bboxUntrackersRef.current.delete(id);
-            bridge.registry.unregisterElement(id);
+            bridge.registry.unregisterElement(id, undefined, element);
           }
         });
         ref.current = keep;
@@ -1794,7 +1797,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             const untrack = bboxUntrackers.get(id);
             untrack?.();
             bboxUntrackers.delete(id);
-            bridge.registry.unregisterElement(id);
+            bridge.registry.unregisterElement(id, undefined, element);
           }
         });
         ref.current = stillAlive;

@@ -291,7 +291,16 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const unregister = useCallback(() => {
     if (!bridge || !registeredRef.current) return;
 
-    bridge.registry.unregisterElement(registeredElementIdRef.current ?? id, windowLabel);
+    // Pass the node we registered so the registry only removes the entry if
+    // THIS instance still owns it. Ids are commonly keyed on a slot
+    // (`panel-<zoneIndex>`), so across a re-layout another component can have
+    // re-registered the same id with its own node; deleting that entry on our
+    // unmount would strand a live element with no registry entry.
+    bridge.registry.unregisterElement(
+      registeredElementIdRef.current ?? id,
+      windowLabel,
+      elementRef.current
+    );
     registeredRef.current = false;
     registeredElementIdRef.current = null;
     stopBboxTracking();
@@ -426,7 +435,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       // Re-register under new id. Also re-point the bbox tracker at the
       // new registry key so updates land on the right entry.
       stopBboxTracking();
-      bridge.registry.unregisterElement(registeredElementId);
+      // Same ownership guard as the unmount path — only drop the old id if our
+      // node is still the one registered under it.
+      bridge.registry.unregisterElement(registeredElementId, windowLabel, elementRef.current);
       registeredElementIdRef.current = id;
       bridge.registry.registerElement(id, elementRef.current, {
         type,

@@ -10,11 +10,26 @@ UI Bridge uses multiple strategies to uniquely identify DOM elements. The AutoRe
 
 When finding elements, UI Bridge tries these strategies in order:
 
-1. **`data-testid`** - Testing library convention
-2. **`id`** - HTML id attribute (skips React auto-generated IDs like `:r1a:`)
-3. **Semantic ID** - Generated from element type + label/content
-4. **CSS Selector** - Generated selector
-5. **XPath** - Generated XPath (last resort)
+1. **`data-ui-bridge-test-id`** - Author-pinned id (see [Pinning a discovered id](#pinning-a-discovered-id))
+2. **`data-testid`** - Testing library convention
+3. **`id`** - HTML id attribute (skips React auto-generated IDs like `:r1a:`)
+4. **Semantic ID** - Generated from element type + label/content
+5. **CSS Selector** - Generated selector
+6. **XPath** - Generated XPath (last resort)
+
+:::note data-ui-bridge-id is an output, not an input
+
+`data-ui-bridge-id` is written **by** the SDK onto elements it has registered,
+so an out-of-process runner can find a registered element without holding the
+React ref. It is not read as an identification input on the discovery path, and
+stamping it by hand does not pin the id an unregistered element is discovered
+under. Use `data-ui-bridge-test-id` for that.
+
+The one place the attribute is read as an input is `useAutoRegister`'s element
+selector: a node carrying `data-ui-bridge-id` is always registered, even if it
+would not otherwise match the interactive-element filter.
+
+:::
 
 ## AutoRegisterProvider (Recommended)
 
@@ -40,6 +55,23 @@ The format is: `{type}-{label-slug}[-{context}][-{index}]`
 - **label**: Slugified from text content, aria-label, title, placeholder, or name
 - **context**: Optional ancestor context (nearest id, data-testid, aria-label, or landmark tag) for disambiguation
 - **index**: Optional numeric suffix when siblings of the same type exist
+
+## Pinning a discovered id
+
+A semantic id is deterministic but not permanent: the `[-{index}]` suffix is
+assigned in DOM-walk order, so two same-slug siblings swap suffixes when the DOM
+reorders, and the slug itself moves when the label copy changes. When a caller
+needs an id that never moves, stamp `data-ui-bridge-test-id`. It is taken
+verbatim and outranks every other strategy, on both the registered and the
+unregistered path:
+
+```tsx
+<button data-ui-bridge-test-id="checkout-submit">Place order</button>
+```
+
+Because the value is used verbatim there is no collision counter behind it —
+two elements carrying the same `data-ui-bridge-test-id` produce the same id, and
+which one a call resolves to is undefined. Keep the value unique per element.
 
 ## Leverage Existing Test IDs
 

@@ -1837,8 +1837,27 @@ export class UIBridgeRegistry {
    * ("main") window is resolved first, falling back to whichever window holds
    * the id (so single-window callers — `useUIElement`'s cleanup — behave
    * exactly as before).
+   *
+   * `expectedElement` is an OWNERSHIP guard. Ids are a shared key space and
+   * `registerElement` is last-write-wins, so two components can legitimately
+   * hold the same id at different moments — consumers routinely key ids on a
+   * *slot* (`panel-<zoneIndex>`, `terminal-<thing>-<zoneIndex>`) rather than on
+   * a component instance. Across a re-layout that produces: A mounts as slot 1,
+   * the layout shifts, B mounts as slot 1 and overwrites the entry, then A
+   * unmounts. An unconditional delete there strands B — live in the DOM, gone
+   * from the registry, permanently, because nothing re-registers it.
+   *
+   * Callers that know which DOM node they registered pass it here; when the
+   * entry now points at a DIFFERENT node the id has been taken over by another
+   * owner and the removal is a no-op returning `false`. Omitting the argument
+   * keeps the historical unconditional behavior for callers that only hold an
+   * id.
    */
-  unregisterElement(id: string, windowLabel?: string): boolean {
+  unregisterElement(
+    id: string,
+    windowLabel?: string,
+    expectedElement?: HTMLElement | null
+  ): boolean {
     // Resolve which window's bucket owns this id.
     let ownerLabel: string | undefined;
     let bucket: Map<string, RegisteredElement> | undefined;
@@ -1861,6 +1880,12 @@ export class UIBridgeRegistry {
       }
     }
     const registered = ownerLabel !== undefined ? bucket?.get(id) : undefined;
+    // Ownership guard — see `expectedElement` in the doc comment above. A
+    // mismatch means someone else owns this id now; deleting would strand a
+    // live element.
+    if (expectedElement != null && registered && registered.element !== expectedElement) {
+      return false;
+    }
     if (registered && ownerLabel !== undefined && bucket) {
       // Track recently removed for remount ID preservation
       if (this.options.preserveIdAcrossRemount && registered.element) {
