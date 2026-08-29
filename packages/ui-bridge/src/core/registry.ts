@@ -919,12 +919,24 @@ function inferActions(type: ElementType): StandardAction[] {
   switch (type) {
     case 'button':
       return [...baseActions, 'click', 'hoverClick', 'doubleClick', 'rightClick', 'middleClick'];
+    // `setValue` and `sendKeys` are advertised wherever the executor actually
+    // implements them, because this list is ENFORCED, not merely descriptive:
+    // the runner's MCP element-action door rejects any verb absent from it
+    // (`is_action_advertised`, `src-tauri/src/mcp/ui_bridge/elements.rs`) with
+    // `UNSUPPORTED_ACTION` before the SDK is ever reached. Omitting a verb the
+    // executor supports therefore makes it unreachable for every
+    // auto-registered element, which is what happened to `setValue` (
+    // `performSetValue` handles input/textarea/select) and `sendKeys`
+    // (`performSendKeys` focuses and dispatches to any element). Only two
+    // hand-declared elements had it, added one at a time.
     case 'input':
-      return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
+      return [...baseActions, 'click', 'hoverClick', 'type', 'sendKeys', 'clear', 'setValue'];
     case 'textarea':
-      return [...baseActions, 'click', 'hoverClick', 'type', 'clear'];
+      return [...baseActions, 'click', 'hoverClick', 'type', 'sendKeys', 'clear', 'setValue'];
     case 'select':
-      return [...baseActions, 'click', 'hoverClick', 'select'];
+      // No `type`/`clear`: `performType` and `performClear` mutate `.value` on
+      // input/textarea only. `setValue` is the select-shaped way to set one.
+      return [...baseActions, 'click', 'hoverClick', 'select', 'setValue'];
     case 'checkbox':
       return [...baseActions, 'click', 'hoverClick', 'check', 'uncheck', 'toggle'];
     case 'radio':
@@ -932,7 +944,10 @@ function inferActions(type: ElementType): StandardAction[] {
     case 'link':
       return [...baseActions, 'click', 'hoverClick'];
     case 'form':
-      return ['focus', 'blur'];
+      // `performSubmit` / `performReset` resolve the element itself when it IS
+      // a form, so a registered form is exactly the case they were written for
+      // — it was simply never advertised, and so never reachable.
+      return ['focus', 'blur', 'submit', 'reset'];
     case 'menu':
     case 'menuitem':
       return [...baseActions, 'click', 'hoverClick'];

@@ -3236,6 +3236,14 @@ export class DefaultActionExecutor implements ActionExecutor {
     } else if (element instanceof HTMLSelectElement) {
       element.value = value;
       element.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      // Falling through silently returned success on an element that has no
+      // value to set — the caller saw `success: true` and an unchanged page.
+      // Throwing matches `performSubmit`'s "no form found" arm and the relay's
+      // `UNSUPPORTED_ACTION` for the same case (`react/commandHandlers.ts`).
+      throw new Error(
+        `setValue is not supported on <${element.tagName.toLowerCase()}> — it applies to input, textarea and select elements.`
+      );
     }
   }
 
