@@ -26,6 +26,7 @@
     "docs:check-symbols": "node scripts/check-docs-symbols.cjs",
     "docs:symbol-debt:update": "node scripts/check-docs-symbols.cjs --update",
     "ci:check-manifest": "node scripts/check-ci-manifest.cjs",
+    "contract:runner": "node scripts/check-runner-contract.mjs",
     "smoke-test:runner": "bash scripts/smoke-test-runner.sh",
     "prepare": "node -e \"try { require('husky').install() } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e }\""
   },

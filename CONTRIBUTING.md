@@ -246,6 +246,30 @@ describe('useUIElement', () => {
 - [ ] Commit messages are clear
 - [ ] No unnecessary files included
 
+### Adding or removing a route in `UI_BRIDGE_ROUTES`
+
+`UI_BRIDGE_ROUTES` (`packages/ui-bridge/src/server/types.ts`) is the source of
+truth for the UI Bridge HTTP contract, and `qontinui-runner` must expose every
+entry. A route added here with no runner handler simply 404s against a live
+runner — silently, because both repos' CI can be green while it is true.
+
+The `Runner Contract` check gates that on your PR. Run it locally first:
+
+```bash
+npm run contract:runner            # finds ../qontinui-runner automatically
+npm run contract:runner -- --runner /path/to/qontinui-runner
+```
+
+It prints which runner ref it compared against — a green from a stale local
+checkout is not a green against the ref CI will use, so read that line.
+
+If it fails, there are three legitimate answers and the allow-list is only one
+of them; the failure message spells out all three. In short: land the runner
+handler and bump `.github/sibling-pins.conf` in this PR, or declare the runner
+adaptation PR with a `coord:` dep-edge label so the check resolves that tree
+instead of the pin, or — for genuinely intentional divergence — add a line to
+`.github/peer-contract-baseline.conf` **with a reason**.
+
 ### PR Description
 
 - Clearly describe what the PR does

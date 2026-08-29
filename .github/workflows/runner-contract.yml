@@ -1,0 +1,137 @@
+name: Runner Contract
+
+# Peer-payload gate: does the route contract THIS repo declares match the one
+# qontinui-runner exposes?
+#
+# WHY (plan 2026-08-20-runner-ci-consumes-ui-bridge-unpinned-so-any-peer-land-can-red-main):
+#
+#   `UI_BRIDGE_ROUTES` is the source of truth for the UI Bridge HTTP contract
+#   and qontinui-runner must expose every entry. The runner asserts that in its
+#   own CI. Until 2026-08-26 it asserted it against a FLOATING clone of this
+#   repo, so a land here reddened the runner's `main` an hour later on a commit
+#   that touched none of it — a 5h+ merge-train outage on 2026-08-20.
+#
+#   qontinui-runner#1158 pinned the clone, which stops the bleeding but trades a
+#   loud failure for a silent one: a pinned consumer stops REPORTING, and the
+#   contract drifts unobserved until someone bumps. Measured 2026-08-29, three
+#   days after that pin landed, this repo's `main` already declared
+#   POST /control/visibility with no runner handler — and BOTH repos were green.
+#
+#   This workflow is the producer half. A route addition fails HERE, on the PR
+#   that adds it, instead of later on a sibling's main.
+#
+# TWO MODES, AND THE SPLIT IS THE SAFETY PROPERTY:
+#
+#   pull_request                    -> pinned runner tree, GATING.
+#   push / schedule / dispatch      -> advisory only, never fails the job.
+#   schedule / workflow_dispatch    -> additionally BYPASS the pin and compare
+#                                      against qontinui-runner's default branch.
+#
+#   The gating job must never float on the runner's `main`: a runner land that
+#   exposed a route this repo does not declare would then red THIS repo's main —
+#   importing the very defect this plan exists to close, pointed the other way.
+#   Floating only the advisory nightly buys the visibility without the hazard,
+#   and gives the pin bump the cadence the plan asked for: a rotting pin shows
+#   up as a growing nightly warning instead of as silence.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Nightly drift radar against the runner's default branch. Advisory.
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  # `checkout-sibling` resolves a DECLARED coord dep-edge adaptation PR before
+  # falling back to the pin, which reads PR labels. Stated explicitly rather
+  # than inherited: the repo-level default is an operator-flippable setting that
+  # is invisible in this file.
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: runner-contract-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: SDK <-> runner route contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve mode
+        id: mode
+        # `pin_file` CANNOT be an inline `${{ … && '' || '…' }}` ternary. In a
+        # GitHub expression the empty string is FALSY, so `cond && '' || X`
+        # collapses to X on BOTH branches — the nightly would silently keep
+        # using the pin and the drift radar would report nothing new, forever,
+        # while looking like it worked. Compute it in a step instead.
+        #
+        # (The `--advisory` flag below is safe as an inline ternary only
+        # because its empty branch sits on the `||` side, where falsiness is
+        # the intended result.)
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Drift radar: bypass the pin, look at the runner as it is today.
+            echo "pin_file=" >> "$GITHUB_OUTPUT"
+          else
+            echo "pin_file=.github/sibling-pins.conf" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Use Node.js
+        uses: actions/setup-node@v5
+        with:
+          # The checker has ZERO dependencies and no build step, so there is no
+          # `npm ci` here on purpose — this job must stay cheap enough to run on
+          # every PR, including the pure-docs ones.
+          node-version: 22.x
+
+      - name: Check out sibling qontinui-runner
+        id: sibling
+        # Referenced cross-repo and SHA-PINNED. Both repos are public, so the
+        # default GITHUB_TOKEN reaches it and no secret is needed.
+        #
+        # Consuming the consumer's action rather than copying it is deliberate:
+        # a second copy of a 941-line resolver is a second thing to keep
+        # correct, and would re-create — inside the fix — the divergent-twin
+        # problem the fix exists to close. A sha-pinned `uses:` is immutable, so
+        # this introduces no floating-peer hazard of its own.
+        #
+        # Resolution order inside the action: a DECLARED coord dep-edge
+        # adaptation PR > this repo's .github/sibling-pins.conf > the default
+        # branch. The declaration outranking the pin is what lets a coordinated
+        # two-repo route addition land instead of deadlocking.
+        uses: qontinui/qontinui-runner/.github/actions/checkout-sibling@9ed902f489437bd28887331e5a94e8e338f4e846
+        with:
+          repo: qontinui/qontinui-runner
+          path: ${{ github.workspace }}/qontinui-runner
+          # Empty string skips the pin lookup entirely (the action documents
+          # that spelling). Resolved in the `mode` step — see the note there
+          # for why this cannot be an inline expression.
+          pin-file: ${{ steps.mode.outputs.pin_file }}
+          # This gate's question is about the PAIR, not about what main will
+          # look like — this repo LEADS a route addition and the runner
+          # adaptation PR TRAILS it. That is exactly the case the action's own
+          # documentation reserves this flag for.
+          accept-trailing-sibling: 'true'
+
+      - name: Contract check
+        env:
+          # WHICH answer the resolver gave — a declared adaptation PR, the pin,
+          # or a fall-through to the default branch. The action materialises the
+          # sibling with `git init` + a depth-1 fetch, so the checker only ever
+          # sees a detached HEAD and cannot tell those three apart on its own.
+          # On a PR this should report the pin; on the nightly it must NOT.
+          SIBLING_SOURCE: ${{ steps.sibling.outputs.source }}
+          SIBLING_REF: ${{ steps.sibling.outputs.ref }}
+          SIBLING_SHA: ${{ steps.sibling.outputs.sha }}
+        run: |
+          echo "sibling resolved by: ${SIBLING_SOURCE:-<none reported>} (ref=${SIBLING_REF:-?} sha=${SIBLING_SHA:-?})"
+          node scripts/check-runner-contract.mjs \
+            --runner "${{ github.workspace }}/qontinui-runner" \
+            ${{ github.event_name != 'pull_request' && '--advisory' || '' }}
