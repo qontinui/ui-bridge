@@ -179,6 +179,13 @@ interface DragDropDetector {
 interface UndoTracker {
   getState: () => unknown;
   setDeclaredState?: (state: unknown) => void;
+  // The two execute arms are the whole point of registering a tracker: they
+  // run the app's declared `onUndo` / `onRedo` handler and only fall back to a
+  // synthetic Ctrl/Cmd+Z when none was declared. They were absent from this
+  // structural type, so the relay arms below could not reach them and
+  // hand-rolled a bare keydown instead — see `case 'executeUndo'`.
+  executeUndo?: () => boolean;
+  executeRedo?: () => boolean;
 }
 interface SpecStore {
   load?: (id: string, config: unknown) => void;
@@ -4624,19 +4631,63 @@ export async function executeCommand(
         }
       );
 
-    case 'executeUndo': {
-      // Try keyboard shortcut as undo trigger
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })
-      );
-      return { success: true, method: 'keyboard', timestamp: Date.now() };
-    }
-
+    // Undo/redo over the relay must answer the same way the in-process
+    // handler does (`server/handlers.ts` `executeUndo`/`executeRedo`), which
+    // calls the registered tracker and reports `{ executed }`. Both arms serve
+    // the SAME route — `POST /control/undo` / `/control/redo` — so a caller
+    // reading `data.executed` must not get a boolean from one and `undefined`
+    // from the other.
+    //
+    // Two defects this replaces, both of the "reports success while reaching
+    // nothing" shape:
+    //  - the tracker was never consulted, so an app that declared `onUndo`
+    //    (the documented way to wire undo) never had it called over the relay;
+    //  - the fallback keydown was hand-built, so it carried no
+    //    `keyCode`/`which`/`code` and any handler written
+    //    `if (e.ctrlKey && e.keyCode === 90)` saw 0 and no-opped — the exact
+    //    bug `buildKeyboardEventInit` exists to prevent. It was also Ctrl-only
+    //    (dead on macOS) and aimed at `document` rather than the focused
+    //    element, while the tracker's own fallback is neither.
+    // It returned `success: true` unconditionally through all of that.
+    case 'executeUndo':
     case 'executeRedo': {
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true, bubbles: true })
+      const isUndo = action === 'executeUndo';
+
+      // 1. The tracker, when one is registered — it honours the app's declared
+      //    handler and falls back to its own (correctly built) keystroke.
+      const viaTracker = isUndo ? g.undoTracker?.executeUndo?.() : g.undoTracker?.executeRedo?.();
+      if (viaTracker !== undefined) {
+        return {
+          success: viaTracker,
+          executed: viaTracker,
+          method: 'tracker',
+          timestamp: Date.now(),
+        };
+      }
+
+      // 2. No tracker registered: keep the keystroke fallback, but built by the
+      //    ONE shared builder and aimed at the focused element, matching
+      //    `UndoTracker.executeUndo`. `document` is the floor when nothing is
+      //    focused, so the dispatch still happens rather than silently not.
+      const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+      const target: EventTarget = document.activeElement ?? document;
+      const event = new KeyboardEvent(
+        'keydown',
+        buildKeyboardEventInit('z', { ctrl: !isMac, meta: isMac, shift: !isUndo }, 'keydown')
       );
-      return { success: true, method: 'keyboard', timestamp: Date.now() };
+      target.dispatchEvent(event);
+      // `executed` mirrors `UndoTracker.executeUndo()`: a trigger was available
+      // and dispatched. It is NOT `dispatchEvent`'s return, which is
+      // `!defaultPrevented` and so reads FALSE for the handler that actually
+      // took the shortcut. That signal is still worth reporting, separately and
+      // under its own name.
+      return {
+        success: true,
+        executed: true,
+        method: 'keyboard',
+        defaultPrevented: event.defaultPrevented,
+        timestamp: Date.now(),
+      };
     }
 
     // ======================================================================

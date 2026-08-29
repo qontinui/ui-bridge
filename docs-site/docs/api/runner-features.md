@@ -369,6 +369,25 @@ If an action returns `success: false` with `error: "... requires a 'X' parameter
 > the verb is absent from THAT element's list — not that the verb is unknown to
 > the bridge.
 
+> **Auto-registered inputs now advertise `setValue` and `sendKeys`.** Because
+> that list is enforced, a verb missing from it is unreachable even when the
+> SDK implements it — and the inferred lists were missing several that it does.
+> An element the bridge typed automatically (rather than one declaring its own
+> `actions`) now advertises:
+>
+> | Inferred type | Added |
+> |---|---|
+> | `input`, `textarea` | `setValue`, `sendKeys` |
+> | `select` | `setValue` (not `type` / `clear`, which only mutate input/textarea values) |
+> | `form` | `submit`, `reset` |
+>
+> If you previously worked around `UNSUPPORTED_ACTION` on an input — driving it
+> with `type` plus a `clear`, or declaring `actions` by hand purely to get
+> `sendKeys` — that workaround is no longer needed against a build newer than
+> this note. `setValue` on an element with no value to set (a `<div>`, say) now
+> fails with a message naming the tag instead of reporting success against an
+> unchanged page.
+
 ## Page navigation
 
 ### Soft vs hard
