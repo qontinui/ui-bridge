@@ -681,15 +681,22 @@ export interface NativeBridgeSnapshot {
    * Currently-active tab id, canonical alias-mate of {@link route} — again
    * matching `BridgeSnapshot.activeTab` in the web SDK.
    *
-   * Resolved in two steps: an explicit `getActiveTab()` on the configured
-   * route provider wins; otherwise it is derived from the Expo Router
-   * navigation state the provider already exposes via `getSegments()` — the
-   * segment that follows the innermost layout group, e.g. `["(tabs)", "runs"]`
-   * → `"runs"`. See `deriveActiveTabFromSegments` in `core/registry.ts` for the
-   * exact rules.
+   * Resolved in three steps, highest wins:
+   *   1. an `activeTab` supplied directly by the caller of `createSnapshot`
+   *      (this is how the HTTP server passes the value it read from its own
+   *      route provider);
+   *   2. `getActiveTab()` on the route provider registered with the registry;
+   *   3. derivation from the Expo Router navigation state the provider exposes
+   *      via `getSegments()` — the segment that follows the innermost layout
+   *      group, e.g. `["(tabs)", "runs"]` → `"runs"`. See
+   *      `deriveActiveTabFromSegments` in `core/registry.ts` for the exact rules.
+   *
+   * A blank or throwing answer at any step falls through to the next rather
+   * than blanking the field: a host's opt-in extra must never make the snapshot
+   * worse than it would have been without it.
    *
    * Omitted when the app has no group/tab layout, when the current screen is a
-   * dynamic route rather than a tab, or when no route provider is configured.
+   * dynamic route rather than a tab, or when nothing answers at any step.
    */
   activeTab?: string;
   /** Modal/sheet/drawer context (populated when a modalDetector enricher is registered) */

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { CloudRelayClient, redactRelayUrl } from './CloudRelayClient';
+import { CloudRelayClient } from './CloudRelayClient';
 import type { NativeUIBridgeServer } from '../server/http-server';
 
 /**
@@ -64,23 +64,9 @@ function newClient(): CloudRelayClient {
   });
 }
 
-describe('redactRelayUrl', () => {
-  it('masks the token query parameter', () => {
-    expect(redactRelayUrl(`${RELAY_URL}?token=${AUTH_TOKEN}`)).toBe(
-      `${RELAY_URL}?token=<redacted>`
-    );
-  });
-
-  it('masks the token when it is not the first parameter, keeping the rest', () => {
-    expect(redactRelayUrl(`${RELAY_URL}?v=2&token=${AUTH_TOKEN}&mode=tunnel`)).toBe(
-      `${RELAY_URL}?v=2&token=<redacted>&mode=tunnel`
-    );
-  });
-
-  it('leaves a URL with no token untouched', () => {
-    expect(redactRelayUrl(RELAY_URL)).toBe(RELAY_URL);
-  });
-});
+// `redactRelayUrl` itself is unit-tested in `relay-logging.test.ts`, which owns
+// the rule. What is asserted here is that this client APPLIES it at every log
+// site — a different claim, and the one that regressed.
 
 describe('CloudRelayClient — WebSocket failure diagnostics', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;

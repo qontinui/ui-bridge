@@ -8,6 +8,7 @@
 
 import type { NativeUIBridgeServer } from '../server/http-server';
 import { transportLogger } from './logger';
+import { describeCloseEvent, describeErrorEvent, redactRelayUrl } from './relay-logging';
 
 export interface CloudRelayConfig {
   /** WebSocket URL for the device bridge endpoint */
@@ -255,48 +256,6 @@ export class CloudRelayClient {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-
-/**
- * Replace the value of the relay URL's `token` query parameter with a marker.
- *
- * The relay URL is built as `<relayUrl>?token=<authToken>`; every log line that
- * names the target URL goes through here first so the device auth token never
- * lands in a log file, a console-error ring buffer, or a bug report.
- */
-export function redactRelayUrl(url: string): string {
-  return url.replace(/([?&]token=)[^&#]*/gi, '$1<redacted>');
-}
-
-/**
- * Render a WebSocket close event as `code=… reason=… wasClean=…`.
- *
- * Read defensively: React Native's WebSocket delivers a plain object rather
- * than a DOM `CloseEvent`, and a missing field must read `unknown` rather than
- * silently print `undefined` as if the relay had told us something.
- */
-function describeCloseEvent(event: unknown): string {
-  const e = (event ?? {}) as { code?: unknown; reason?: unknown; wasClean?: unknown };
-  const code = typeof e.code === 'number' ? String(e.code) : 'unknown';
-  const reason = typeof e.reason === 'string' && e.reason.length > 0 ? e.reason : '(none)';
-  const wasClean = typeof e.wasClean === 'boolean' ? String(e.wasClean) : 'unknown';
-  return `code=${code} reason=${reason} wasClean=${wasClean}`;
-}
-
-/**
- * Render a WebSocket error event. React Native puts the useful text on
- * `message`; some transports also carry an `Error` on `error`, and a few
- * surface a close `code` on the error event itself.
- */
-function describeErrorEvent(event: unknown): string {
-  const e = (event ?? {}) as { message?: unknown; error?: unknown; code?: unknown };
-  const parts: string[] = [];
-  if (typeof e.message === 'string' && e.message.length > 0) parts.push(`message=${e.message}`);
-  if (e.error instanceof Error) parts.push(`error=${e.error.message}`);
-  else if (typeof e.error === 'string' && e.error.length > 0) parts.push(`error=${e.error}`);
-  if (typeof e.code === 'number') parts.push(`code=${e.code}`);
-  if (parts.length === 0) parts.push('message=(none reported by the transport)');
-  return parts.join(' ');
-}
 
 /**
  * Extract query-string parameters from a URL path.

@@ -46,10 +46,29 @@ function Wrapper({ children }: { children: ReactNode }) {
  * the press-handler-required type-tightening landed in Phase 1 of plan
  * `2026-05-20-manual-test-remediation`. The layout-on-mount behavior under
  * test is type-agnostic; switching to `'view'` keeps the fixture honest.
+ *
+ * `measurableNode`, when supplied, is attached to the hook's ref DURING RENDER.
+ * That is deliberate. React attaches a real host ref in the COMMIT phase,
+ * before passive effects run — the measure effect's own comment says so
+ * ("refs attach during commit, BEFORE effects run") — and `renderHook` renders
+ * no host node to carry one, so attaching during render is the closest faithful
+ * emulation of the real ordering.
+ *
+ * The three measure tests below used to attach the node AFTER mount and then
+ * call `rerender()` to make the effect fire "again". That only ever worked
+ * because `UIBridgeNativeProvider`'s inline `{}` prop defaults minted a fresh
+ * context value on every render and the effect's deps are
+ * `[bridge, registered, id, ref]` — i.e. the fixture was riding the
+ * registry-churn defect, exactly as `useUIElement-label.test.tsx` was working
+ * around it. With the provider's defaults stabilised a bare re-render correctly
+ * re-runs nothing, so the fixture now attaches the ref where React would.
  */
-function useElementWithRegistry(id: string) {
+function useElementWithRegistry(id: string, measurableNode?: object) {
   const element = useUIElement({ id, type: 'view' });
   const bridge = useUIBridgeNative();
+  if (measurableNode && element.ref.current == null) {
+    (element.ref as unknown as { current: object }).current = measurableNode;
+  }
   return { element, registry: bridge.registry };
 }
 
@@ -112,21 +131,13 @@ describe('useUIElement — layout populated on mount', () => {
       cb(100, 200, 60, 40);
     });
 
-    const { result, rerender } = renderHook(() => useElementWithRegistry('el-3'), {
-      wrapper: Wrapper,
-    });
-
-    // After initial mount, attach measureInWindow to the ref the hook owns.
-    // The post-registration effect re-fires when the ref is non-null on a
-    // re-render with `registered = true`.
-    (result.current.element.ref as unknown as { current: object }).current = {
-      measureInWindow: measure,
-    };
-
-    // Trigger a re-render so React re-runs the layout-on-mount effect.
-    act(() => {
-      rerender();
-    });
+    // The node is attached during render (see `useElementWithRegistry`), so the
+    // post-registration effect sees it on mount — no re-render needed, which is
+    // what happens in a real tree.
+    const { result } = renderHook(
+      () => useElementWithRegistry('el-3', { measureInWindow: measure }),
+      { wrapper: Wrapper }
+    );
 
     expect(measureCalls).toBeGreaterThanOrEqual(1);
     const layout = result.current.registry.getElement('el-3')?.getState().layout;
@@ -146,20 +157,12 @@ describe('useUIElement — layout populated on mount', () => {
         else cb(40, 60, 200, 50);
       });
 
-      const { result, rerender } = renderHook(() => useElementWithRegistry('el-4'), {
-        wrapper: Wrapper,
-      });
+      const { result } = renderHook(
+        () => useElementWithRegistry('el-4', { measureInWindow: measure }),
+        { wrapper: Wrapper }
+      );
 
-      (result.current.element.ref as unknown as { current: object }).current = {
-        measureInWindow: measure,
-      };
-
-      // Re-render so the post-registration effect re-runs with the ref attached.
-      act(() => {
-        rerender();
-      });
-
-      // First attempt fired synchronously — zeros, no write yet.
+      // First attempt fired synchronously on mount — zeros, no write yet.
       expect(measure).toHaveBeenCalledTimes(1);
       expect(result.current.registry.getElement('el-4')?.getState().layout).toBeNull();
 
@@ -189,17 +192,10 @@ describe('useUIElement — layout populated on mount', () => {
         cb(0, 0, 0, 0);
       });
 
-      const { result, rerender } = renderHook(() => useElementWithRegistry('el-5'), {
-        wrapper: Wrapper,
-      });
-
-      (result.current.element.ref as unknown as { current: object }).current = {
-        measureInWindow: measure,
-      };
-
-      act(() => {
-        rerender();
-      });
+      const { result } = renderHook(
+        () => useElementWithRegistry('el-5', { measureInWindow: measure }),
+        { wrapper: Wrapper }
+      );
 
       // Run far past the longest backoff (50 + 200 + 500 + 1000 + 2500 = 4250ms)
       // to confirm the retry chain terminates instead of looping forever.

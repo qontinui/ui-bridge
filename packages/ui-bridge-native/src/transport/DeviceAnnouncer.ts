@@ -8,6 +8,7 @@
 
 import { Platform } from 'react-native';
 import { transportLogger } from './logger';
+import { describeCloseEvent, describeErrorEvent, redactRelayUrl } from './relay-logging';
 
 export interface AnnouncerConfig {
   /** Stable device identifier */
@@ -134,8 +135,13 @@ export class DeviceAnnouncer {
     if (this.stopped) return;
 
     const url = `${this.config.cloudRelayUrl}?token=${encodeURIComponent(this.config.cloudToken)}`;
+    // Same credential, same sink, same rule as `CloudRelayClient`: the relay URL
+    // carries the device auth token in its query string and `transportLogger`
+    // feeds the ring buffer behind `/control/console-errors`, so nothing that
+    // reaches a log sink may name the raw URL.
+    const safeUrl = redactRelayUrl(url);
 
-    transportLogger.log('[DeviceAnnouncer] Cloud relay: connecting to', url);
+    transportLogger.log('[DeviceAnnouncer] Cloud relay: connecting to', safeUrl);
 
     const ws = new WebSocket(url);
     this.cloudWs = ws;
@@ -172,15 +178,35 @@ export class DeviceAnnouncer {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       this.state = { ...this.state, cloudConnected: false };
-      if (!this.stopped) {
+      const detail = describeCloseEvent(event);
+      if (this.stopped) {
+        // Expected: `stop()` asked for this close. Defensive rather than
+        // reachable in the normal lifecycle — `stop()` nulls this handler
+        // before calling `close()`, and `connectCloudRelay()` early-returns
+        // once stopped — so this arm only fires if a transport delivers a
+        // close to a handler captured before `stop()` ran. Kept because
+        // "logged nothing" is what made the pre-fix behaviour undiagnosable.
+        transportLogger.log(`[DeviceAnnouncer] Cloud relay closed ${detail} url=${safeUrl}`);
+      } else {
+        // Unexpected: the registration socket died and we are about to
+        // reconnect. Logging the bare event said nothing — a DOM `CloseEvent`
+        // has no own enumerable properties, so the observability capture's
+        // `JSON.stringify` rendered it as `{}`. The close code is the whole
+        // diagnosis: 1008/4001-class means the relay rejected this device's
+        // token, which is otherwise indistinguishable from a flaky network.
+        transportLogger.warn(
+          `[DeviceAnnouncer] Cloud relay closed unexpectedly ${detail} url=${safeUrl}`
+        );
         this.scheduleReconnect();
       }
     };
 
     ws.onerror = (err: Event) => {
-      transportLogger.warn('[DeviceAnnouncer] Cloud relay error:', err);
+      transportLogger.warn(
+        `[DeviceAnnouncer] Cloud relay error: ${describeErrorEvent(err)} url=${safeUrl}`
+      );
       // onclose will fire after this and trigger reconnect
     };
   }

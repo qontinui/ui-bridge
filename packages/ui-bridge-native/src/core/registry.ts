@@ -1472,11 +1472,26 @@ export class NativeUIBridgeRegistry {
    * server-level override (the bare-server / cloud-relay path) still get a
    * populated `currentRoute` field as long as `setRouteProvider` was called
    * on the registry.
+   *
+   * `activeTab` resolves through {@link resolveActiveTab} on BOTH branches. An
+   * explicit `routeInfo.activeTab` wins outright; otherwise a registered
+   * provider's `getActiveTab()` answers and the Expo Router derivation is the
+   * fallback. Deriving straight from `routeInfo.segments` here instead — which
+   * is what this branch did when `activeTab` was introduced — silently ignored
+   * `RouteProvider.getActiveTab` on the ONLY path that serves
+   * `control/snapshot` once `setRouteProvider` is wired (the server installs a
+   * `getSnapshot` override that passes `routeInfo`), so the opt-in hook for an
+   * app whose visible pane is decoupled from the router reached no consumer.
    */
   createSnapshot(
     routeInfo?: {
       currentRoute?: string | null;
       segments?: string[];
+      /**
+       * Explicit active tab for callers that own the answer outright. Omit to
+       * let the registered `routeProvider` / the segment derivation resolve it.
+       */
+      activeTab?: string | null;
     },
     options?: { visibleOnly?: boolean; currentRouteOnly?: boolean }
   ): NativeBridgeSnapshot {
@@ -1490,10 +1505,14 @@ export class NativeUIBridgeRegistry {
       activeTab: string | undefined;
     } = (() => {
       if (routeInfo !== undefined) {
+        const explicit =
+          typeof routeInfo.activeTab === 'string' && routeInfo.activeTab.length > 0
+            ? routeInfo.activeTab
+            : undefined;
         return {
           currentRoute: routeInfo.currentRoute ?? null,
           segments: routeInfo.segments,
-          activeTab: deriveActiveTabFromSegments(routeInfo.segments),
+          activeTab: explicit ?? this.resolveActiveTab(routeInfo.segments),
         };
       }
       if (this.routeProvider) {

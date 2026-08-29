@@ -650,4 +650,76 @@ describe('createSnapshot — canonical route / activeTab', () => {
     // `currentRoute` keeps its explicit-null contract for existing consumers.
     expect(snapshot.currentRoute).toBeNull();
   });
+
+  // The `routeInfo` branch is not a corner case: `NativeUIBridgeServer.
+  // setRouteProvider` installs a `getSnapshot` override that ALWAYS passes
+  // `routeInfo`, so this is the branch that serves `control/snapshot` for every
+  // app that wires a route provider. Deriving straight from `routeInfo.segments`
+  // here made `RouteProvider.getActiveTab` unreachable in production while the
+  // provider-branch tests above stayed green.
+  it('honours a registered getActiveTab even when the caller passes routeInfo', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/runs',
+      getSegments: () => ['(tabs)', 'runs'],
+      getActiveTab: () => 'custom-pane',
+    });
+
+    const snapshot = registry.createSnapshot({
+      currentRoute: '/(tabs)/runs',
+      segments: ['(tabs)', 'runs'],
+    });
+
+    expect(snapshot.activeTab).toBe('custom-pane');
+  });
+
+  it('falls back to the derivation on the routeInfo branch when no provider answers', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/fleet',
+      getSegments: () => ['(tabs)', 'fleet'],
+      getActiveTab: () => {
+        throw new Error('host bug');
+      },
+    });
+
+    expect(
+      registry.createSnapshot({ currentRoute: '/(tabs)/fleet', segments: ['(tabs)', 'fleet'] })
+        .activeTab
+    ).toBe('fleet');
+  });
+
+  it('lets an explicit routeInfo.activeTab win over both provider and derivation', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/runs',
+      getSegments: () => ['(tabs)', 'runs'],
+      getActiveTab: () => 'from-provider',
+    });
+
+    const snapshot = registry.createSnapshot({
+      currentRoute: '/(tabs)/runs',
+      segments: ['(tabs)', 'runs'],
+      activeTab: 'from-caller',
+    });
+
+    expect(snapshot.activeTab).toBe('from-caller');
+  });
+
+  it('treats a blank routeInfo.activeTab as "not answered", not as an override', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteProvider({
+      getCurrentRoute: () => '/(tabs)/runs',
+      getSegments: () => ['(tabs)', 'runs'],
+      getActiveTab: () => 'from-provider',
+    });
+
+    expect(
+      registry.createSnapshot({
+        currentRoute: '/(tabs)/runs',
+        segments: ['(tabs)', 'runs'],
+        activeTab: '',
+      }).activeTab
+    ).toBe('from-provider');
+  });
 });

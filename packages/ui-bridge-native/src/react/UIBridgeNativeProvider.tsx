@@ -86,6 +86,58 @@ export interface UIBridgeNativeContextValue {
 const UIBridgeNativeContext = createContext<UIBridgeNativeContextValue | null>(null);
 
 /**
+ * Stable defaults for the two optional object props.
+ *
+ * Written as `features = {}` these were fresh literals on every render, so
+ * `Object.is` failed for both entries of the `contextValue` `useMemo` deps below
+ * and the context value was NEW on every provider render. `useUIElement`'s
+ * auto-register effect has deps `[autoRegister, bridge, id]` where `bridge` IS
+ * that context value, and its cleanup runs a real `registry.unregisterElement`
+ * followed by a full `registerElement` — not an in-place mutate. So a host that
+ * re-renders its provider (any `useState` in the root layout) churned the entire
+ * element registry every time. `useUIComponent` (deps `[autoRegister, bridge]`)
+ * had the identical exposure.
+ *
+ * The two sibling providers in this repo — `packages/ui-bridge/src/react/
+ * UIBridgeProvider.tsx` and `packages/ui-bridge/src/native/react/
+ * UIBridgeNativeProvider.tsx` — already carry exactly this idiom. Plain
+ * literals, not `Object.freeze`d, to match them verbatim.
+ */
+const EMPTY_FEATURES: NativeUIBridgeFeatures = {};
+const EMPTY_CONFIG: NativeUIBridgeConfig = {};
+
+/**
+ * Hold an options object's identity steady for as long as its VALUE is
+ * unchanged.
+ *
+ * Stable defaults alone only fix the host that OMITS the prop. This component's
+ * own usage example passes inline literals —
+ * `features={{ server: __DEV__, debug: __DEV__ }} config={{ serverPort: 8087 }}`
+ * — which are freshly allocated on every render of the host's layout, so
+ * `Object.is` fails and the context value churns exactly as before. That is the
+ * documented pattern, so it is the one that has to work.
+ *
+ * Keyed on a JSON signature rather than an enumerated field list: both
+ * `NativeUIBridgeFeatures` and `NativeUIBridgeConfig` are small, plain,
+ * JSON-serialisable bags (booleans, a number, strings, and one nested `appInfo`
+ * of strings — no functions, no cycles), and a field list would silently stop
+ * covering a field the day one is added, with nothing to catch it. Cost is one
+ * `JSON.stringify` of a handful of scalars per render.
+ *
+ * Two honest limits: a host that reorders its object's keys between renders
+ * produces a different signature, and a host that MUTATES the object in place
+ * without changing the reference will now be noticed rather than ignored. Both
+ * degrade to the previous behaviour (a new context value), never to a stale one.
+ */
+function useValueStable<T>(value: T): T {
+  const signature = JSON.stringify(value);
+  // Keyed on the VALUE signature on purpose: `value`'s identity is precisely
+  // what this hook exists to discard, so listing it as a dep would defeat it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => value, [signature]);
+}
+
+/**
  * UI Bridge Native provider props
  */
 export interface UIBridgeNativeProviderProps {
@@ -190,8 +242,8 @@ function readWindowViewport(): { width: number; height: number } {
 
 export function UIBridgeNativeProvider({
   children,
-  features = {},
-  config = {},
+  features: featuresProp = EMPTY_FEATURES,
+  config: configProp = EMPTY_CONFIG,
   onEvent,
   serverAdapter,
   navigationProvider,
@@ -202,6 +254,11 @@ export function UIBridgeNativeProvider({
   enableMdnsAnnounce,
   deviceId,
 }: UIBridgeNativeProviderProps) {
+  // Identity held steady by VALUE — see `useValueStable`. Everything below,
+  // including the `contextValue` memo, reads these rather than the raw props.
+  const features = useValueStable(featuresProp);
+  const config = useValueStable(configProp);
+
   const registryRef = useRef<NativeUIBridgeRegistry | null>(null);
   const executorRef = useRef<NativeActionExecutor | null>(null);
   const modalDetectorRef = useRef<ModalDetector | null>(null);

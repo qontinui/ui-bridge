@@ -698,7 +698,9 @@ export class NativeUIBridgeServer {
 
   /**
    * Set a route provider for reporting the current navigation route.
-   * When set, `control/snapshot` responses include `currentRoute` and `segments`.
+   * When set, `control/snapshot` responses include `currentRoute` and
+   * `segments`, plus the canonical `route` / `activeTab` aliases the web SDK's
+   * `BridgeSnapshot` spells the same way.
    *
    * Also forwards the provider into the registry so the *default*
    * `getSnapshot` handler (and any other call site of
@@ -718,7 +720,14 @@ export class NativeUIBridgeServer {
 
       // If currentRouteOnly requested and no explicit route param, inject the current route
       if (currentRouteOnly && !ctx.query?.route && !(ctx.body as Record<string, unknown>)?.route) {
-        const currentRoute = provider.getCurrentRoute();
+        // Defensive for the same reason as `getSnapshot` below: a throwing
+        // provider must degrade to "no route filter", not 500 the route.
+        let currentRoute: string | null;
+        try {
+          currentRoute = provider.getCurrentRoute();
+        } catch {
+          currentRoute = null;
+        }
         if (currentRoute) {
           // Inject route into query so the base handler can filter by it
           ctx.query = { ...ctx.query, route: currentRoute };
@@ -734,11 +743,46 @@ export class NativeUIBridgeServer {
       const currentRouteOnly =
         ctx?.query?.currentRouteOnly === 'true' ||
         (ctx?.body as Record<string, unknown>)?.currentRouteOnly === true;
+      // Read the provider defensively. The registry's own fallback path wraps
+      // these same calls in a try/catch and degrades to a null route; without
+      // the same guard here a host whose provider throws mid-navigation turns
+      // the whole `control/snapshot` response into a 500 instead of a snapshot
+      // that simply does not know its route.
+      //
+      // THREE separate guards, not one, because the three facts fail
+      // independently and `currentRoute` is load-bearing: `createSnapshot`
+      // applies the `currentRouteOnly` filter only when `currentRoute` is
+      // truthy, so letting an optional `getSegments()` throw discard a route we
+      // successfully read would answer `?currentRouteOnly=true` with EVERY
+      // registered element in the app, labelled as the current route's. That
+      // turns a loud 500 into a silent wrong answer a runner would act on.
+      let currentRoute: string | null;
+      try {
+        currentRoute = provider.getCurrentRoute() ?? null;
+      } catch {
+        currentRoute = null;
+      }
+      let segments: string[] | undefined;
+      try {
+        segments = provider.getSegments?.();
+      } catch {
+        segments = undefined;
+      }
+      // Passed explicitly rather than left to the registry to resolve. The
+      // registry's `resolveActiveTab` reads whatever provider is registered on
+      // IT, which is not necessarily this one — a host that detaches with
+      // `registry.setRouteProvider(null)` (the documented HMR/teardown escape
+      // hatch) would leave this closure still reporting the right `route` while
+      // `activeTab` silently reverted to the segment derivation. Reading our own
+      // provider keeps the emitted snapshot internally consistent.
+      let activeTab: string | null | undefined;
+      try {
+        activeTab = provider.getActiveTab?.();
+      } catch {
+        activeTab = undefined;
+      }
       const snapshot = this.registry.createSnapshot(
-        {
-          currentRoute: provider.getCurrentRoute(),
-          segments: provider.getSegments?.(),
-        },
+        { currentRoute, segments, activeTab },
         { visibleOnly, currentRouteOnly }
       );
       return { success: true, data: snapshot, timestamp: Date.now() };
