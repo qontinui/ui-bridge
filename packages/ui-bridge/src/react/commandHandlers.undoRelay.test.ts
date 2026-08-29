@@ -150,6 +150,24 @@ describe('relay executeUndo/executeRedo', () => {
       expect(atField[0].target).toBe(field);
     });
 
+    it('still reaches a document-level listener (the old arm dispatched AT document)', async () => {
+      // The target moved from `document` to the focused element, so anything
+      // listening at the document level must keep seeing the event by
+      // bubbling. `buildKeyboardEventInit` sets `bubbles: true`; this pins the
+      // end-to-end consequence rather than the flag.
+      const atDocument: KeyboardEvent[] = [];
+      const onKeydown = (e: Event) => atDocument.push(e as KeyboardEvent);
+      document.addEventListener('keydown', onKeydown);
+      try {
+        await executeCommand('executeUndo', {}, emptyBridge);
+      } finally {
+        document.removeEventListener('keydown', onKeydown);
+      }
+
+      expect(atDocument).toHaveLength(1);
+      expect(atDocument[0].keyCode).toBe(90);
+    });
+
     it('reports whether an app handler consumed the shortcut', async () => {
       field.addEventListener('keydown', (e) => e.preventDefault());
 
