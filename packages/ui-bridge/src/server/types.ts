@@ -1211,6 +1211,8 @@ export interface UIBridgeServerHandlers {
   visibility: (params?: {
     minRatio?: number;
     includeExpected?: boolean;
+    /** Relay only: how fresh the underlying snapshot must be. */
+    recency?: string;
   }) => Promise<APIResponse<VisibilityReport>>;
 
   // API discovery
@@ -1779,7 +1781,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Occlusion sweep. POST so the filter knobs (`minRatio`,
   // `includeExpected`) ride in a body rather than a query string, matching
   // page-health's shape.
-  { method: 'POST', path: '/control/visibility', handler: 'visibility' },
+  // `bodyRequired` is what makes the adapter PASS the body. Without it the
+  // Next.js/express adapters treat a POST as a context-only handler and
+  // invoke `visibility()` with no arguments, so every knob below —
+  // `minRatio`, `includeExpected`, `recency` — is silently unreachable
+  // over HTTP while remaining fully functional in unit tests.
+  { method: 'POST', path: '/control/visibility', handler: 'visibility', bodyRequired: true },
 
   // Workflows
   { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },

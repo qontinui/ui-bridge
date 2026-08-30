@@ -5271,7 +5271,11 @@ export function createHandlers(
      * `minRatio` filters hairline overlaps (default 0.02). `includeExpected`
      * (default false) drops occlusions whose occluder is a tracked modal.
      */
-    visibility: async (params?: { minRatio?: number; includeExpected?: boolean }) => {
+    visibility: async (params?: {
+      minRatio?: number;
+      includeExpected?: boolean;
+      recency?: string;
+    }) => {
       try {
         const all = registry.getAllElements() as Array<{
           id: string;
