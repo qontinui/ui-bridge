@@ -49,6 +49,7 @@ import type {
 import { getGlobalEffectStore } from '../control/effect-store';
 import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
 import { diagnosePageHealth } from './page-health';
+import { buildVisibilityReport } from './visibility-report';
 import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
@@ -171,6 +172,7 @@ import type {
 import type { NavigationTracker } from '../navigation';
 import type { ShortcutTracker } from '../shortcuts';
 import type { ModalDetector } from '../modal';
+import type { SnapshotModalContext } from '../modal/types';
 import type { ToastCapture } from '../toast';
 import type { RelationshipTracker } from '../relationships';
 import type { DragDropDetector } from '../drag-drop';
@@ -398,6 +400,14 @@ export interface RegistryLike {
     timestamp: number;
   } | null;
   createSnapshot(): ControlSnapshot;
+  /**
+   * Tracked modal stack, for `/control/visibility`'s expected-overlay
+   * classification. Optional: a registry that does not implement it — or one
+   * with no `modalDetector` enricher — yields `undefined`, which the report
+   * surfaces as `expectedOverlayDetection: 'unavailable'` rather than
+   * silently claiming no overlay was expected.
+   */
+  getModalContext?(): SnapshotModalContext | undefined;
   getRenderLog?(): RenderLogEntry[];
   clearRenderLog?(): void;
   captureSnapshot?(): unknown;
@@ -5252,34 +5262,17 @@ export function createHandlers(
      * hiding something?". Answering it needs the DIRECTED relation —
      * occluder -> occluded.
      *
-     * Sourced entirely from the registry's own `elementFromPoint` hit-test
-     * (`state.occludedBy` / `occludedPct`, computed in `getElementState`).
+     * The sweep itself lives in `./visibility-report`, shared with the relay
+     * twin in `relay-handlers.ts` so the two surfaces cannot drift. This
+     * handler's only job is to supply the LIVE inputs: element state read
+     * straight off the registry, and the tracked modal stack. Read that
+     * module for which occlusion arm this is and why it is the only one.
      *
-     * That is deliberate, and not a reduced version of something better.
-     * ui-bridge-auto's `computeVisibility` models stacking geometrically,
-     * but ui-bridge-auto DEPENDS ON THIS PACKAGE — importing it here would
-     * make the two mutually dependent, which is why it is not imported.
-     * The geometric arm stays available to ui-bridge-auto's own consumers
-     * (`crossCheckText` uses it), on the correct side of the layering.
-     *
-     * The hit-test is also the stronger signal of the two: it observes what
-     * the compositor actually painted, so it sees `clip-path`, transformed
-     * ancestors and scroll clipping that a bounding-box model cannot derive.
-     *
-     * §4.6 redaction disposition: the response echoes `text`, which is the
-     * covered element's `state.textContent`. That field is minted through
-     * `scrubContentByVerdict` in `getElementState` (core/registry.ts), so a
-     * redacted element reaches this handler already scrubbed and no
-     * additional scrubbing happens — or is needed — here. Echoing the text
-     * is the point: "something is covered" is not actionable, "the string
-     * `Zone 8: qontinui-web` is covered" is.
-     *
-     * `minRatio` filters hairline overlaps (default 0.02).
+     * `minRatio` filters hairline overlaps (default 0.02). `includeExpected`
+     * (default false) drops occlusions whose occluder is a tracked modal.
      */
     visibility: async (params?: { minRatio?: number; includeExpected?: boolean }) => {
       try {
-        const minRatio = params?.minRatio ?? 0.02;
-        const includeExpected = params?.includeExpected ?? false;
         const all = registry.getAllElements() as Array<{
           id: string;
           label?: string;
@@ -5290,45 +5283,23 @@ export function createHandlers(
           };
         }>;
 
-        const occlusions = [];
-        for (const el of all) {
-          const state = el.getState();
-          if (!state?.occludedBy) continue;
-          const ratio = (state.occludedPct ?? 0) / 100;
-          if (ratio < minRatio) continue;
-          const text = typeof state.textContent === 'string' ? state.textContent.trim() : '';
-          occlusions.push({
-            element: el.id,
-            label: el.label,
-            text: text || undefined,
-            occludedBy: state.occludedBy,
-            ratio,
-            isExpectedOverlay: false,
-            hidesText: text.length > 0,
-            source: 'hit-test' as const,
-          });
-        }
-
-        // Worst first, and text-hiding occlusions outrank blank ones: a
-        // covered label destroys information the reader cannot recover.
-        occlusions.sort(
-          (a, b) => Number(b.hidesText) - Number(a.hidesText) || b.ratio - a.ratio
+        return success(
+          buildVisibilityReport({
+            elements: all.map((el) => {
+              const state = el.getState();
+              return {
+                id: el.id,
+                label: el.label,
+                occludedBy: state?.occludedBy,
+                occludedPct: state?.occludedPct,
+                textContent: state?.textContent,
+              };
+            }),
+            modalContext: registry.getModalContext?.(),
+            minRatio: params?.minRatio,
+            includeExpected: params?.includeExpected,
+          })
         );
-
-        return success({
-          occlusions,
-          elementCount: all.length,
-          minRatio,
-          includeExpected,
-          // An empty list from a registry with no elements is UNKNOWN,
-          // not "nothing is covered" — say which one this is.
-          verdict:
-            all.length === 0
-              ? ('unknown_empty_registry' as const)
-              : occlusions.length === 0
-                ? ('clear' as const)
-                : ('occlusions_found' as const),
-        });
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');
       }
@@ -6002,6 +5973,22 @@ export function createHandlers(
                   method: 'POST',
                   path: '/ai/analyze/cross-app-compare',
                   description: 'Compare data across apps',
+                },
+              ],
+            },
+            diagnostics: {
+              description: 'Page-level health and occlusion diagnostics',
+              endpoints: [
+                {
+                  method: 'POST',
+                  path: '/control/page-health',
+                  description:
+                    'Diagnose empty content areas, broken layout, and stuck loading states',
+                },
+                {
+                  method: 'POST',
+                  path: '/control/visibility',
+                  description: 'Occlusion sweep — which elements are covering which',
                 },
               ],
             },

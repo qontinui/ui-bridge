@@ -36,6 +36,7 @@ import type {
   ElementBbox,
   IREffect,
 } from './types';
+import type { SnapshotModalContext } from '../modal/types';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
@@ -1187,6 +1188,32 @@ export class UIBridgeRegistry {
    */
   setEnrichers(e: Partial<SnapshotEnrichers>): void {
     this.enrichers = { ...this.enrichers, ...e };
+  }
+
+  /**
+   * The tracked modal stack right now, or `undefined` when no `modalDetector`
+   * enricher is registered.
+   *
+   * Same source as `snapshot.modalStack`, reachable without minting a whole
+   * snapshot — `/control/visibility` needs the modal set to classify
+   * occluders, and building the full element array to get it would be pure
+   * waste.
+   *
+   * `undefined` also covers a detector that threw, matching `runEnrichers`:
+   * a misbehaving tracker degrades the field, never the caller. It means
+   * "nobody is watching for modals", NOT "no modals are open" — callers must
+   * keep those apart.
+   */
+  getModalContext(): SnapshotModalContext | undefined {
+    if (!this.enrichers.modalDetector) return undefined;
+    try {
+      return this.enrichers.modalDetector.getSnapshotModalContext();
+    } catch (error) {
+      if (this.options.verbose) {
+        console.warn(`[ui-bridge] modalStack enricher threw:`, error);
+      }
+      return undefined;
+    }
   }
 
   /**
