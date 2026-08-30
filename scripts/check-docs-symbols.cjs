@@ -594,17 +594,31 @@ function resolveSubpath(pkg, subpath) {
 /**
  * The `entry` map of a package's tsup config, as `dist stem -> src file`.
  *
- * Read for ONE reason: tsup's `entry` is the only place that records a build
- * that RENAMES its source. `distTargetToSource` mirrors dist onto src by name,
- * which is right for almost every dist-backed subpath here and wrong for any
- * whose entry is renamed on the way out — `"./ctr/migrate"` publishes
- * `./dist/ctr/migrate.d.ts` and is built from `src/ctr/migrate-specs-to-ctr.ts`.
- * A mirror miss is not a soft miss: it reaches `unverifiable-entry`, which
- * FAILS a block naming symbols that all exist, so the gate was rejecting a
- * correct example. Guessing at the rename (fuzzy stems, a src-wide scan) would
- * trade that false failure for a false pass; the config is the build's own
- * declaration, so it is read rather than guessed. (No count of affected
- * subpaths is given: it would be stale on the next entry anyone adds.)
+ * This is the build's OWN DECLARATION of what it emits, and it answers two
+ * different questions. Both readers are below and neither may be dropped for
+ * the other, because they are not the same question:
+ *
+ * 1. WHICH SRC FILE IS THIS ENTRY — `distTargetToSource`. tsup's `entry` is the
+ *    only place that records a build that RENAMES its source. The mirror maps
+ *    dist onto src by name, which is right for almost every dist-backed subpath
+ *    here and wrong for any renamed on the way out: `"./ctr/migrate"` publishes
+ *    `./dist/ctr/migrate.d.ts` and is built from
+ *    `src/ctr/migrate-specs-to-ctr.ts`. A mirror miss is not a soft miss — it
+ *    reaches `unverifiable-entry`, which FAILS a block naming symbols that all
+ *    exist, so the gate was rejecting a correct example. Guessing at the rename
+ *    (fuzzy stems, a src-wide scan) would trade that false failure for a false
+ *    pass, so the declaration is read rather than guessed, and it is read
+ *    FIRST: the mirror is the fallback for a build that declares nothing.
+ * 2. DOES THE BUILD EMIT THIS FILE AT ALL — `unbuiltSubpaths`. A published
+ *    subpath whose target no entry produces resolves to nothing in an
+ *    installed package, and the mirror cannot see that, because the mirror
+ *    reads `src`, which is exactly where such a subpath still looks healthy.
+ *    See unbuiltSubpaths for the instance that was live when this was written.
+ *
+ * The two lookups differ, deliberately, on an `outExtension` build — see
+ * unbuiltSubpaths — and neither may adopt the other's matching rule.
+ * (No count of affected subpaths is given for either: it would be stale on the
+ * next entry anyone adds.)
  *
  * Parsed as an AST, never executed — the gate must stay a read of the checkout,
  * and `tsup.config.ts` here calls `realpathSync.native` at module scope.
@@ -627,6 +641,10 @@ const TSUP_CONFIG_NAMES = [
   'tsup.config.cjs',
 ];
 const tsupEntryCache = new Map();
+// Which of TSUP_CONFIG_NAMES the map above was actually read from, so a failure
+// sends the author to the file that exists rather than to the first name on a
+// list of six. Populated by tsupEntryMap; read only after it has run.
+const tsupConfigPath = new Map();
 function tsupEntryMap(pkg) {
   const cached = tsupEntryCache.get(pkg.dir);
   if (cached) return cached;
@@ -668,6 +686,7 @@ function tsupEntryMap(pkg) {
   }
 
   tsupEntryCache.set(pkg.dir, map);
+  tsupConfigPath.set(pkg.dir, configFile ?? null);
   return map;
 }
 
@@ -675,12 +694,19 @@ function tsupEntryMap(pkg) {
  * Map a published `dist/…` target back to the `src` file it is built from.
  *
  * The `exports` maps all point at build output, which does not exist on a
- * clean checkout — and the gate must not require a build to run. src mirrors
- * dist one-for-one for almost every entry here, so the mapping is mechanical:
+ * clean checkout — and the gate must not require a build to run. So the answer
+ * comes from the build's own `entry` declaration where there is one (see
+ * tsupEntryMap), and from the src-mirrors-dist convention where there is not:
  * `./dist/server/express.d.ts` -> `src/server/express.ts`,
- * `./dist/react/index.mjs` -> `src/react/index.ts`. Where the build renames,
- * the mirror cannot know it, so the build's own `entry` map is consulted second
- * — see tsupEntryMap.
+ * `./dist/react/index.mjs` -> `src/react/index.ts`.
+ *
+ * The declaration is consulted FIRST and the mirror second, which is the order
+ * their evidence deserves — one is what the build says it does, the other is a
+ * convention that happens to hold. Reversed, a package that renames its entry
+ * ONTO a path the mirror also finds would be name-checked against the file it
+ * does not publish, silently. `unbuiltSubpaths` guarantees a declared entry
+ * exists for every dist-backed subpath, so the mirror is now the fallback for a
+ * package that declares no build at all rather than the ordinary path.
  *
  * `dist/injected/bundle.global.js` still resolves to nothing, and that stays
  * correct rather than being a residual miss. Its `outExtension` puts `.global`
@@ -690,20 +716,34 @@ function tsupEntryMap(pkg) {
  * named import to be checked against. `unverifiable-entry` describes it exactly.
  */
 function distTargetToSource(pkg, target) {
-  if (typeof target !== 'string') return null;
-  let relTarget = target.replace(/^\.\//, '');
-  if (!relTarget.startsWith('dist/')) return null;
-  let stem = relTarget.slice('dist/'.length).replace(/\.(d\.ts|d\.mts|d\.cts|mjs|cjs|js|ts)$/, '');
+  const stem = distStem(target);
+  if (stem === null) return null;
   const srcRoot = path.join(pkg.dir, 'src');
   const candidates = [];
+  // The build's own declaration first; the src-mirrors-dist convention after.
+  const declared = tsupEntryMap(pkg).get(stem);
+  if (declared) candidates.push(path.join(pkg.dir, declared));
   for (const ext of SRC_EXTENSIONS) candidates.push(path.join(srcRoot, stem + ext));
   for (const ext of SRC_EXTENSIONS) candidates.push(path.join(srcRoot, stem, 'index' + ext));
-  const renamed = tsupEntryMap(pkg).get(stem);
-  if (renamed) candidates.push(path.join(pkg.dir, renamed));
   for (const candidate of candidates) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
   }
   return null;
+}
+
+/**
+ * A published `dist/…` target as the stem the build names it by, or null when
+ * the target is not build output at all (`"./package.json"`).
+ *
+ * Shared by the resolver and by unbuiltSubpaths so the two cannot disagree
+ * about what a target IS while disagreeing — deliberately, and only — about
+ * what counts as a match for it.
+ */
+function distStem(target) {
+  if (typeof target !== 'string') return null;
+  const relTarget = target.replace(/^\.\//, '');
+  if (!relTarget.startsWith('dist/')) return null;
+  return relTarget.slice('dist/'.length).replace(/\.(d\.ts|d\.mts|d\.cts|mjs|cjs|js|ts)$/, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -1516,6 +1556,79 @@ function unfulfilledReadmePromises() {
   return out;
 }
 
+/** Every string target under an `exports` value, across conditions and arrays. */
+function exportTargets(value, out = []) {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) for (const item of value) exportTargets(item, out);
+  else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) exportTargets(item, out);
+  }
+  return out;
+}
+
+/**
+ * Published subpaths whose `dist/…` target the build never emits.
+ *
+ * The counterpart of unfulfilledReadmePromises one level in, and this gate's
+ * own defect class — a name that resolves to nothing — on the surface that
+ * matters most: `exports` is the package's public API, so a subpath whose
+ * target the build does not produce is an `ERR_MODULE_NOT_FOUND` in every
+ * installed copy. Nothing else in this repository looks: the build emits what
+ * its `entry` says and never consults `exports`, and `npm publish` ships an
+ * `exports` map without checking that any of it exists.
+ *
+ * WHY IT BELONGS TO THIS GATE RATHER THAN SOMEWHERE ELSE. distTargetToSource
+ * answers every dist target out of `src`, which is precisely where an unbuilt
+ * subpath still looks healthy — so such a subpath is not merely unnoticed here,
+ * it is CERTIFIED. Measured 2026-08-30, on the commit that added tsupEntryMap:
+ * `@qontinui/ui-bridge` published `"./discovery"` -> `./dist/discovery/index.*`
+ * with no `discovery/index` entry in tsup.config.ts, and the `@example` in
+ * `src/discovery/index.ts` importing `discoverWebApps` from
+ * `@qontinui/ui-bridge/discovery` was reported by this gate as FULLY VERIFIED —
+ * an example a reader can copy out of their IDE hover and cannot run. Reading
+ * the build declaration for renames put the one fact needed to see that in
+ * reach; this is the reader that uses it.
+ *
+ * MATCHING IS DELIBERATELY LOOSER HERE THAN IN THE RESOLVER, and the asymmetry
+ * is the point rather than an oversight. `outExtension` rewrites the published
+ * stem's tail — `injected/bundle` is emitted as `dist/injected/bundle.global.js`
+ * — so this check accepts a stem that is an entry key plus a `.`-suffix: the
+ * file IS emitted, which is all this check asks. The resolver keeps an EXACT
+ * lookup, because the question it asks is which src file the entry is, and for
+ * that same subpath the honest answer is none: it is an IIFE for a bare page
+ * realm with no module surface a named import could be checked against, and
+ * `unverifiable-entry` describes it exactly. Letting either lookup adopt the
+ * other's rule breaks one of them.
+ *
+ * A package whose build declares NOTHING readable is skipped, not failed. An
+ * empty entry map means the config is absent, is not tsup, or states its
+ * entries in a form no AST read can settle — that is UNKNOWN, and rendering it
+ * as "emits nothing" would fail every dist target in the package on the
+ * strength of a read that did not happen.
+ */
+function unbuiltSubpaths(packages) {
+  const out = [];
+  for (const [name, pkg] of packages) {
+    const exportsMap = pkg.json.exports;
+    if (!exportsMap || typeof exportsMap !== 'object' || Array.isArray(exportsMap)) continue;
+
+    const declared = [...tsupEntryMap(pkg).keys()];
+    if (!declared.length) continue;
+    const emitted = (stem) => declared.some((key) => stem === key || stem.startsWith(`${key}.`));
+
+    for (const [subpath, value] of Object.entries(exportsMap)) {
+      const missing = exportTargets(value).filter((t) => {
+        const stem = distStem(t);
+        return stem !== null && !emitted(stem);
+      });
+      if (missing.length) {
+        out.push({ name, config: tsupConfigPath.get(pkg.dir), subpath, missing, declared });
+      }
+    }
+  }
+  return out;
+}
+
 function main() {
   const packages = readWorkspacePackages();
 
@@ -1582,6 +1695,32 @@ function main() {
         'npm renders "ERROR: No README data found!" on that package page — this gate\'s own\n' +
         'defect class (a name resolving to nothing) on the most published surface there is.\n' +
         'Write the README, or drop "README.md" from the manifest\'s "files" array.\n'
+    );
+    process.exit(1);
+  }
+
+  // The same promise one level in: an `exports` subpath whose target the build
+  // never emits. See unbuiltSubpaths — this gate resolves every dist target out
+  // of `src`, which is exactly where such a subpath still looks healthy, so
+  // without this check it is not merely missed but certified.
+  const unbuilt = unbuiltSubpaths(packages);
+  if (unbuilt.length) {
+    process.stderr.write(
+      `${unbuilt.length} published subpath(s) resolve to build output that is never built:\n` +
+        unbuilt
+          .map(
+            ({ name, config, subpath, missing, declared }) =>
+              `   - ${name} publishes "${subpath}" -> ${missing.join(', ')}, but ` +
+              `${rel(config)} declares no entry that emits it\n` +
+              `     entries: ${declared.join(', ')}\n`
+          )
+          .join('') +
+        '`exports` is the package\'s public API, so this is ERR_MODULE_NOT_FOUND in every\n' +
+        'installed copy — this gate\'s own defect class, a name resolving to nothing, on the\n' +
+        'most published surface there is. It is invisible to the rest of this check by\n' +
+        'construction: every dist target is resolved back to `src`, which is where an unbuilt\n' +
+        'subpath still looks healthy, so an @example importing it is reported as VERIFIED.\n' +
+        'Add the entry to the tsup config, or drop the subpath from the "exports" map.\n'
     );
     process.exit(1);
   }
@@ -2001,4 +2140,37 @@ function dumpSurface(packages, spec) {
   for (const o of surface.opaque) process.stdout.write(`  ! unfollowable: ${o}\n`);
 }
 
-main();
+// Run the CLI only when invoked as one. Requiring this module — which
+// check-docs-symbols.test.cjs does, to exercise the parsers directly rather
+// than only through a whole-repo run — must not start a check or set an exit
+// code. Same split, and the same reasoning, as check-runner-contract.mjs.
+const isEntry = require.main === module;
+
+// If that detection ever went wrong the gate would do NOTHING and exit 0 —
+// silent green, which is the one outcome this file may not produce, and the
+// worst possible bug to introduce while adding a way to import it. A real
+// invocation of this script is `node scripts/check-docs-symbols.cjs [flags]`,
+// so argv[1] pointing at this file while `require.main` does not is the shape
+// of a misfire, and it refuses rather than passing.
+if (!isEntry && process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  throw new Error(
+    `check-docs-symbols.cjs was invoked as ${JSON.stringify(process.argv[1])} but did not ` +
+      'detect itself as the entry module. Refusing to exit 0 without running the check.'
+  );
+}
+
+// The parsers and roster checks, for the test beside this file. Exported rather
+// than re-implemented there: a test that reimplements the rule it is pinning
+// pins the reimplementation. Assigned BEFORE the run below, so the exported
+// shape does not depend on how a check that may `process.exit` ended.
+module.exports = {
+  distStem,
+  distTargetToSource,
+  extractCodeBlocks,
+  extractCommentCodeBlocks,
+  tsupEntryMap,
+  unbuiltSubpaths,
+  unfencedExamples,
+};
+
+if (isEntry) main();

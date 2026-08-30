@@ -62,6 +62,17 @@ jobs:
         # is reintroducible by a single hand edit.
         run: npm run deps:check-ranges
 
+      - name: Documentation symbol ratchet self-test
+        # Pins the parsers and roster checks of the step below against fixtures.
+        # It runs FIRST on purpose: a regression in that gate does not turn it
+        # red, it turns it QUIET — every silent pass found there so far (a fence
+        # trailing an `@example` tag, a `//` comment run split by a blank line)
+        # was ACCEPTED while its siblings in the same file failed correctly, and
+        # nothing about a green run distinguishes a gate that checked 496 blocks
+        # from one that checked 495. So a broken gate is reported as a broken
+        # gate rather than as a clean repository.
+        run: npm run docs:check-symbols:test
+
       - name: Documentation symbol ratchet
         # Name-checks every import in every fenced ts/tsx/js block on every
         # guarded documentation surface — docs-site/docs, docs, packages/,
@@ -83,6 +94,14 @@ jobs:
         # own: an `@example` carrying no fence — or one trailing the tag, which
         # opens no block — is read by nothing, so the step fails and names it
         # rather than passing over a blind spot in silence.
+        #
+        # It also refuses a published subpath the build never emits. `exports`
+        # is a package's public API, so a subpath whose `dist/…` target no tsup
+        # `entry` produces is ERR_MODULE_NOT_FOUND in every installed copy —
+        # and it is invisible to the check above by construction, which resolves
+        # every dist target back to `src`, exactly where such a subpath still
+        # looks healthy. `@qontinui/ui-bridge` published "./discovery" that way,
+        # and the `@example` importing it was reported as fully VERIFIED.
         #
         # The roster is also checked for COMPLETENESS: every .md/.mdx file the
         # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS

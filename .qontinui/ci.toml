@@ -196,6 +196,16 @@ name = "dep-range-ratchet"
 command = ["npm", "run", "deps:check-ranges"]
 
 [[steps]]
+name = "docs-symbol-ratchet-self-test"
+# parity: ci.yml lint-and-test "Documentation symbol ratchet self-test"
+# ci.yml "Documentation symbol ratchet self-test" → `docs:check-symbols:test` =
+# `node scripts/check-docs-symbols.test.cjs`. Pins the parsers and roster checks
+# of the step below against fixtures, and runs BEFORE it: a regression in that
+# gate does not turn it red, it turns it QUIET, and every silent pass found in
+# it so far was accepted while its siblings in the same file failed correctly.
+command = ["npm", "run", "docs:check-symbols:test"]
+
+[[steps]]
 name = "docs-symbol-ratchet"
 # parity: ci.yml lint-and-test "Documentation symbol ratchet"
 # ci.yml "Documentation symbol ratchet" → `docs:check-symbols` =
@@ -211,6 +221,11 @@ name = "docs-symbol-ratchet"
 # Reading FENCED blocks gives that surface a roster of its own: an `@example`
 # with no fence, or with one trailing the tag so that no block opens, is read by
 # nothing — the step fails and names it instead of passing over a blind spot.
+# It also refuses a published subpath the build never emits: `exports` is a
+# package's public API, so a subpath whose `dist/…` target no tsup `entry`
+# produces is ERR_MODULE_NOT_FOUND in every installed copy — and it is invisible
+# to the rest of the check, which resolves every dist target back to `src`,
+# exactly where such a subpath still looks healthy.
 # It also fails when a tracked .md/.mdx file sits on no surface and on no
 # declared exemption, so a new documentation tree cannot land unchecked. It sits
 # in THIS job rather than in `docs` because the `docs` job installs only

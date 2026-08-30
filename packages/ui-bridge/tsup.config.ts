@@ -64,6 +64,7 @@ export default defineConfig([
       'idle/index': 'src/idle/index.ts',
       'annotations/index': 'src/annotations/index.ts',
       'specs/index': 'src/specs/index.ts',
+      'discovery/index': 'src/discovery/index.ts',
       'contracts/index': 'src/contracts/index.ts',
       'ctr/index': 'src/ctr/index.ts',
       'ctr/migrate': 'src/ctr/migrate-specs-to-ctr.ts',

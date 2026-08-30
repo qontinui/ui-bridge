@@ -280,6 +280,25 @@ adaptation PR with a `coord:` dep-edge label so the check resolves that tree
 instead of the pin, or — for genuinely intentional divergence — add a line to
 `.github/peer-contract-baseline.conf` **with a reason**.
 
+### Adding a subpath to a package's `exports` map
+
+`exports` is the package's public API and the build's `entry` is what actually
+produces the files it names — two lists, in two files, that nothing reconciles
+on its own. A subpath whose `dist/…` target no `entry` emits is not a build
+error and not a publish error: `npm publish` ships the map either way, and the
+subpath then throws `ERR_MODULE_NOT_FOUND` in every installed copy.
+
+So a new subpath is **two edits**: the `exports` entry in `package.json`, and
+the matching entry in that package's `tsup.config.ts`.
+`npm run docs:check-symbols` fails if you make only the first, and names both
+files.
+
+That gate is also the reason the mistake is worth spelling out: it resolves
+every published target back to `src` — which is exactly where an unbuilt
+subpath still looks healthy — so before this check an `@example` importing one
+was reported as *verified*. `@qontinui/ui-bridge` shipped `"./discovery"` in
+precisely that state.
+
 ### PR Description
 
 - Clearly describe what the PR does
