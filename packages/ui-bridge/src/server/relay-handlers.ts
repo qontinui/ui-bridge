@@ -30,6 +30,7 @@ import type {
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { diagnosePageHealth } from './page-health';
+import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
 import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
@@ -1906,20 +1907,28 @@ export function createRelayHandlers(
 
     // Occlusion sweep over the cached snapshot.
     //
-    // The relay variant uses ONLY the hit-test half. `computeVisibility`'s
-    // geometric arm needs live `HTMLElement`s to walk stacking contexts and
-    // ancestors, and the relay has element RECORDS, not DOM nodes — there is
-    // no browser here to query. The in-page handler runs both arms.
+    // The sweep is `buildVisibilityReport` in `./visibility-report`, the same
+    // function the in-page handler calls. This variant only supplies different
+    // inputs: the cached snapshot's elements and its `modalStack`, rather than
+    // a live registry.
     //
-    // The hit-test half survives the trip because the page already ran it and
+    // Both surfaces run the SAME single arm — the `elementFromPoint` hit-test.
+    // The in-page handler does not run a second, geometric one: that model
+    // lives in ui-bridge-auto, which depends on this package, so importing it
+    // would make the two mutually dependent. Relay findings are therefore
+    // equivalent to the in-page endpoint's over the same snapshot, not a
+    // subset of them.
+    //
+    // (This comment previously claimed the in-page handler ran "both arms" and
+    // that relay findings were a SUBSET of it. Neither was ever true. The two
+    // implementations were hand-duplicated, so nothing forced the description
+    // to track the code; sharing one function is what fixes that.)
+    //
+    // The hit-test survives the trip because the page already ran it and
     // stamped `occludedBy` / `occludedPct` onto each element's state, so this
-    // is a projection of a measurement, not a re-derivation of one. Findings
-    // are therefore a SUBSET of what the in-page endpoint reports; the
-    // verdict says so rather than implying parity.
+    // is a projection of a measurement, not a re-derivation of one.
     async visibility(params?: { minRatio?: number; includeExpected?: boolean }) {
       try {
-        const minRatio = params?.minRatio ?? 0.02;
-        const includeExpected = params?.includeExpected ?? false;
         const snapshot = latestControlSnapshot as ControlSnapshot;
         const elements = (snapshot?.elements ?? []) as Array<{
           id: string;
@@ -1931,40 +1940,20 @@ export function createRelayHandlers(
           };
         }>;
 
-        const occlusions = [];
-        for (const el of elements) {
-          const st = el.state;
-          if (!st?.occludedBy) continue;
-          const ratio = (st.occludedPct ?? 0) / 100;
-          if (ratio < minRatio) continue;
-          const text = st.textContent?.trim() ?? '';
-          occlusions.push({
-            element: el.id,
-            label: el.label,
-            text: text || undefined,
-            occludedBy: st.occludedBy,
-            ratio,
-            isExpectedOverlay: false,
-            hidesText: text.length > 0,
-            source: 'hit-test' as const,
-          });
-        }
-        occlusions.sort(
-          (a, b) => Number(b.hidesText) - Number(a.hidesText) || b.ratio - a.ratio
+        return success(
+          buildVisibilityReport({
+            elements: elements.map((el) => ({
+              id: el.id,
+              label: el.label,
+              occludedBy: el.state?.occludedBy,
+              occludedPct: el.state?.occludedPct,
+              textContent: el.state?.textContent,
+            })),
+            modalContext: snapshot?.modalStack,
+            minRatio: params?.minRatio,
+            includeExpected: params?.includeExpected,
+          })
         );
-
-        return success({
-          occlusions,
-          elementCount: elements.length,
-          minRatio,
-          includeExpected,
-          verdict:
-            elements.length === 0
-              ? ('unknown_empty_registry' as const)
-              : occlusions.length === 0
-                ? ('clear' as const)
-                : ('occlusions_found' as const),
-        });
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');
       }

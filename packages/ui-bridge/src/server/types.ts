@@ -2420,7 +2420,20 @@ export interface VisibilityOcclusionEntry {
   occludedBy: string;
   /** Fraction of the covered element's area that is hidden, 0..1. */
   ratio: number;
-  /** True when the occluder is a tracked modal/dropdown — expected, not a bug. */
+  /**
+   * True when the occluder is a tracked modal/dropdown — expected, not a bug.
+   *
+   * Resolved against the snapshot's `modalStack` (the `modalDetector`
+   * enricher). Only identity-bearing matches count — the occluder registered
+   * under the modal's own id, or an unregistered occluder whose DOM id is the
+   * modal's. Class and bare-tag descriptors are not identities and never
+   * match, because an entry marked expected is dropped from the default
+   * response and a loose rule would hide real regressions.
+   *
+   * Always `false` when the report's `expectedOverlayDetection` is
+   * `unavailable`: no modal stack means nothing could be classified, which is
+   * not the same as nothing being an expected overlay.
+   */
   isExpectedOverlay: boolean;
   /** True when the covered element has text. Ranks above blank occlusions. */
   hidesText: boolean;
@@ -2438,7 +2451,28 @@ export interface VisibilityReport {
   occlusions: VisibilityOcclusionEntry[];
   elementCount: number;
   minRatio: number;
+  /** Echo of the request's `includeExpected` (default `false`). */
   includeExpected: boolean;
+  /**
+   * Whether expected-overlay classification could run at all.
+   *
+   * `modal-stack` — a `modalDetector` enricher is registered and its tracked
+   * modals were used to classify every occluder.
+   *
+   * `unavailable` — no modal stack, so nothing was classified: every
+   * `isExpectedOverlay` is `false` and `includeExpected` filtered nothing.
+   * This is UNKNOWN, not "no expected overlays" — the same
+   * absence-is-not-zero distinction `unknown_empty_registry` draws for an
+   * empty registry.
+   */
+  expectedOverlayDetection: 'modal-stack' | 'unavailable';
+  /**
+   * How many occlusions were dropped as expected overlays.
+   *
+   * Always `0` when `includeExpected` is true or detection is `unavailable`.
+   * Without it a filtered list is indistinguishable from a clean one.
+   */
+  expectedOverlaysFiltered: number;
   /**
    * `unknown_empty_registry` exists so an empty `occlusions` list from a
    * registry with no elements cannot be read as "nothing is covered".
