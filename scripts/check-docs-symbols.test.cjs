@@ -39,8 +39,10 @@ const path = require('node:path');
 const {
   distStem,
   distTargetToSource,
+  extractCodeBlocks,
+  extractCommentCodeBlocks,
   tsupEntryMap,
-  unbuiltSubpaths,
+  unbuiltTargets,
   unfencedExamples,
 } = require('./check-docs-symbols.cjs');
 
@@ -221,7 +223,7 @@ test('distStem returns null for a target that is not build output', () => {
 });
 
 // ---------------------------------------------------------------------------
-// unbuiltSubpaths — a published subpath the build never emits
+// unbuiltTargets — a published target the build never emits
 // ---------------------------------------------------------------------------
 
 const TSUP = (entries) =>
@@ -238,7 +240,7 @@ test('a subpath whose entry the build declares is clean', () => {
     },
     tsup: TSUP([['index', 'src/index.ts']]),
   });
-  assert.deepEqual(unbuiltSubpaths(new Map([pkg])), []);
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
 });
 
 test('an outExtension build is clean: the published stem may suffix the entry key', () => {
@@ -253,7 +255,7 @@ test('an outExtension build is clean: the published stem may suffix the entry ke
     },
     tsup: TSUP([['injected/bundle', 'src/injected/bootstrap.ts']]),
   });
-  assert.deepEqual(unbuiltSubpaths(new Map([pkg])), []);
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
 });
 
 test('a subpath no entry emits is reported, with every target it names', () => {
@@ -274,9 +276,9 @@ test('a subpath no entry emits is reported, with every target it names', () => {
     tsup: TSUP([['index', 'src/index.ts']]),
     files: { 'src/discovery/index.ts': 'export const discoverWebApps = 1;\n' },
   });
-  const out = unbuiltSubpaths(new Map([pkg]));
+  const out = unbuiltTargets(new Map([pkg]));
   assert.equal(out.length, 1);
-  assert.equal(out[0].subpath, './discovery');
+  assert.equal(out[0].field, '"exports"."./discovery"');
   assert.deepEqual(out[0].missing, ['./dist/discovery/index.d.ts', './dist/discovery/index.mjs']);
   assert.match(out[0].config, /tsup\.config\.ts$/);
 });
@@ -289,7 +291,7 @@ test('a package whose build declares nothing readable is skipped, not failed', (
     name: '@x/no-config',
     json: { name: '@x/no-config', exports: { '.': './dist/index.js' } },
   });
-  assert.deepEqual(unbuiltSubpaths(new Map([pkg])), []);
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
 });
 
 test('a non-dist target is not build output and is ignored', () => {
@@ -298,7 +300,7 @@ test('a non-dist target is not build output and is ignored', () => {
     json: { name: '@x/manifest', exports: { './package.json': './package.json' } },
     tsup: TSUP([['index', 'src/index.ts']]),
   });
-  assert.deepEqual(unbuiltSubpaths(new Map([pkg])), []);
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -337,7 +339,7 @@ test('the declaration wins over a mirror path that also exists', () => {
 });
 
 test("the resolver does NOT adopt the roster check's suffix match", () => {
-  // unbuiltSubpaths accepts `injected/bundle.global` against the entry key
+  // unbuiltTargets accepts `injected/bundle.global` against the entry key
   // `injected/bundle` because the file is emitted. The resolver must not: the
   // question it asks is which src file the entry IS, and for an IIFE built for
   // a bare page realm the honest answer is none. Matching here would let a doc
@@ -370,6 +372,240 @@ test('tsupEntryMap collects through a call wrapper and rejects a non-src value',
       '});\n',
   });
   assert.deepEqual([...tsupEntryMap(pkg).entries()], [['index', 'src/index.ts']]);
+});
+
+// ---------------------------------------------------------------------------
+// unbuiltTargets — the manifest fields beyond `exports`
+// ---------------------------------------------------------------------------
+//
+// `exports` is the field the check was born on, but a promise of a built file
+// is the same promise wherever the manifest makes it, and the fields below are
+// where the earlier reading let one through. Each case is a shape this
+// repository actually ships.
+
+test('a bin whose target no entry emits is reported, named by its command', () => {
+  // `@qontinui/ui-bridge` ships `"bin": { "ui-bridge": "./dist/cli.js" }` from a
+  // second tsup config block. Lose that block and `npx @qontinui/ui-bridge`
+  // fails on the first command a new user runs — while every `exports` subpath
+  // in the same manifest stays perfectly resolvable, so an exports-only reading
+  // reports the package clean.
+  const pkg = fixturePackage({
+    name: '@x/bin',
+    json: {
+      name: '@x/bin',
+      exports: { '.': './dist/index.js' },
+      bin: { 'x-tool': './dist/cli.js' },
+    },
+    tsup: TSUP([['index', 'src/index.ts']]),
+  });
+  const out = unbuiltTargets(new Map([pkg]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, '"bin"."x-tool"');
+  assert.deepEqual(out[0].missing, ['./dist/cli.js']);
+});
+
+test('a bin given as a bare string is read too', () => {
+  const pkg = fixturePackage({
+    name: '@x/binstr',
+    json: { name: '@x/binstr', bin: './dist/cli.js' },
+    tsup: TSUP([['index', 'src/index.ts']]),
+  });
+  const out = unbuiltTargets(new Map([pkg]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, '"bin"');
+});
+
+test('a package with NO exports map is checked, not skipped', () => {
+  // `create-ui-bridge-wrapper` publishes its entry point the legacy way —
+  // `main` plus `bin`, no `exports` at all — so the early-out this replaces
+  // (`if (!exportsMap) continue`) skipped every target the package has.
+  // Measured on the commit that added this check: with its `cli` entry renamed,
+  // that reading exits 0 on the whole repository.
+  const pkg = fixturePackage({
+    name: '@x/legacy',
+    json: { name: '@x/legacy', main: './dist/cli.js', bin: { legacy: './dist/cli.js' } },
+    tsup: TSUP([['other', 'src/cli.ts']]),
+  });
+  const out = unbuiltTargets(new Map([pkg]));
+  assert.deepEqual(
+    out.map((f) => f.field),
+    ['"main"', '"bin"."legacy"']
+  );
+});
+
+test('main/module/types are read, and each reports under its own field', () => {
+  const pkg = fixturePackage({
+    name: '@x/legacy3',
+    json: {
+      name: '@x/legacy3',
+      main: './dist/index.js',
+      module: './dist/index.mjs',
+      types: './dist/index.d.ts',
+    },
+    tsup: TSUP([['other', 'src/index.ts']]),
+  });
+  assert.deepEqual(
+    unbuiltTargets(new Map([pkg])).map((f) => f.field),
+    ['"main"', '"module"', '"types"']
+  );
+});
+
+test('the exports string sugar publishes a target like any other', () => {
+  // `"exports": "./dist/index.js"` was skipped outright by the earlier
+  // `typeof exportsMap !== 'object'` guard.
+  const pkg = fixturePackage({
+    name: '@x/sugar',
+    json: { name: '@x/sugar', exports: './dist/index.js' },
+    tsup: TSUP([['other', 'src/index.ts']]),
+  });
+  const out = unbuiltTargets(new Map([pkg]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, '"exports"');
+});
+
+test('a condition map with no "." key is the root, not a map of subpaths', () => {
+  const pkg = fixturePackage({
+    name: '@x/rootcond',
+    json: {
+      name: '@x/rootcond',
+      exports: { types: './dist/index.d.ts', default: './dist/index.js' },
+    },
+    tsup: TSUP([['other', 'src/index.ts']]),
+  });
+  const out = unbuiltTargets(new Map([pkg]));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].field, '"exports"');
+  assert.deepEqual(out[0].missing, ['./dist/index.d.ts', './dist/index.js']);
+});
+
+test('a pattern key publishes a glob, which no entry map can answer', () => {
+  // `resolveSubpath` supports `"./*"` so that adding one does not silently turn
+  // every subpath into a false failure. It must not turn into one HERE either:
+  // `entry` names concrete stems, so whether a glob is emitted is UNKNOWN, and
+  // an unknown is skipped for the same reason an unreadable entry map is.
+  const pkg = fixturePackage({
+    name: '@x/pattern',
+    json: { name: '@x/pattern', exports: { './*': './dist/*.js' } },
+    tsup: TSUP([['index', 'src/index.ts']]),
+  });
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
+});
+
+test('a "browser" field is not read: its keys are sources, not published targets', () => {
+  // The object form maps a source path to a replacement, so walking it like the
+  // other fields would report a file the build is not asked to emit. Reading it
+  // correctly is a separate job; reading it wrongly is a false failure.
+  const pkg = fixturePackage({
+    name: '@x/browser',
+    json: { name: '@x/browser', browser: { './dist/node.js': './dist/browser.js' } },
+    tsup: TSUP([['index', 'src/index.ts']]),
+  });
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
+});
+
+// ---------------------------------------------------------------------------
+// extractCodeBlocks — which blocks the gate reads at all
+// ---------------------------------------------------------------------------
+//
+// This parser decides the gate's COVERAGE, which is the one property a green
+// run cannot report on: a block it fails to open is not checked, and nothing
+// says so. Both silent passes found while this gate was being built were
+// failures of block extraction, one surface up. It was exported for these cases
+// and had none.
+
+test('a longer fence wraps an inner ``` block instead of splitting on it', () => {
+  const blocks = extractCodeBlocks(
+    ['````md', '```ts', "import { a } from 'x';", '```', '````'].join('\n')
+  );
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].lang, 'md');
+  assert.deepEqual(blocks[0].lines, ['```ts', "import { a } from 'x';", '```']);
+});
+
+test('a Docusaurus info string yields the language, not its attributes', () => {
+  const blocks = extractCodeBlocks(['```ts title="x.ts" {1,3}', 'const a = 1;', '```'].join('\n'));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].lang, 'ts');
+});
+
+test('a closing fence carrying an info string does not close the block', () => {
+  // Only a bare fence closes. Treating an info-string fence as a closer would
+  // end the block early and drop everything after it, unchecked.
+  const blocks = extractCodeBlocks(['```ts', 'const a = 1;', '```ts', 'const b = 2;'].join('\n'));
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].lines, ['const a = 1;', '```ts', 'const b = 2;']);
+});
+
+test('an indented fence has its indent stripped from the body', () => {
+  const blocks = extractCodeBlocks(['  ```ts', '  const a = 1;', '  ```'].join('\n'));
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].lines, ['const a = 1;']);
+});
+
+test('an unterminated fence still yields its content rather than dropping it', () => {
+  const blocks = extractCodeBlocks(['```ts', "import { a } from 'x';"].join('\n'));
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].lines, ["import { a } from 'x';"]);
+});
+
+test('startLine is the 1-based line of the first line of code', () => {
+  const blocks = extractCodeBlocks(['# Title', '', '```ts', 'const a = 1;', '```'].join('\n'));
+  assert.equal(blocks[0].startLine, 4);
+});
+
+test('a ~~~ fence is read, and a ``` inside it is content', () => {
+  const blocks = extractCodeBlocks(['~~~ts', '```', 'const a = 1;', '~~~'].join('\n'));
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].lines, ['```', 'const a = 1;']);
+});
+
+// ---------------------------------------------------------------------------
+// extractCommentCodeBlocks — the same reading, inside source comments
+// ---------------------------------------------------------------------------
+
+test('a JSDoc fence is read with its gutter stripped and its source line kept', () => {
+  const source = [
+    'const before = 1;',
+    '/**',
+    ' * @example',
+    ' * ```ts',
+    " * import { a } from 'x';",
+    ' * ```',
+    ' */',
+    'export const a = 1;',
+  ].join('\n');
+  const blocks = extractCommentCodeBlocks('fixture.ts', source);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(
+    blocks[0].lines.map((l) => l.trim()),
+    ["import { a } from 'x';"]
+  );
+  // 1-based line of the import in the SOURCE file, not within the comment.
+  assert.equal(blocks[0].startLine, 5);
+});
+
+test('a `//` run carrying an inline block comment does not swallow the parse', () => {
+  // stripCommentMarkers blanks a trailing `*/` only on the last line of a BLOCK
+  // comment. Blanking it inside a `//` run instead was a measured silent pass:
+  // the line loses its closer, the surviving `/*` eats the rest of the parse,
+  // and every import below goes unchecked while the gate reports a pass.
+  const source = [
+    '// ```ts',
+    "// import { a } from 'x'; /* trailing */",
+    "// import { b } from 'y';",
+    '// ```',
+    'export const a = 1;',
+  ].join('\n');
+  const blocks = extractCommentCodeBlocks('fixture.ts', source);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(
+    blocks[0].lines.map((l) => l.trim()),
+    ["import { a } from 'x'; /* trailing */", "import { b } from 'y';"]
+  );
+});
+
+test('a source with no fence at all is skipped without an AST', () => {
+  assert.deepEqual(extractCommentCodeBlocks('fixture.ts', '// just prose\nexport const a = 1;'), []);
 });
 
 // ---------------------------------------------------------------------------
