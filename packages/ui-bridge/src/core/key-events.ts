@@ -170,8 +170,19 @@ export function keyToCode(key: string): string {
  * answer this module rejects everywhere else, so we populate them.
  *
  * This is the ONE table; `keyToKeyCode` below is its only reader.
+ *
+ * COVERAGE RULE: every name in `KNOWN_KEY_NAMES` that the legacy model actually
+ * assigns a virtual-key code to appears here, so a key the string grammar
+ * ACCEPTS never dispatches with `keyCode: 0` for want of a table entry — that
+ * would be the same silent no-op this table exists to prevent, reached through
+ * the front door. The remaining accepted names (`Undo`, `Redo`, `Copy`, `Cut`,
+ * `Paste`, `Fn`, `Symbol`) are deliberately absent: the legacy model assigns
+ * them no code, so browsers report 0 for them and `keyToKeyCode` returning 0 is
+ * the honest answer rather than a gap. `key-events.legacy-keycode.test.ts` pins
+ * both halves of that rule.
  */
 const NAMED_KEY_CODES: Readonly<Record<string, number>> = {
+  Cancel: 3,
   Backspace: 8,
   Tab: 9,
   Clear: 12,
@@ -194,6 +205,7 @@ const NAMED_KEY_CODES: Readonly<Record<string, number>> = {
   PrintScreen: 44,
   Insert: 45,
   Delete: 46,
+  Help: 47,
   Meta: 91,
   ContextMenu: 93,
   NumLock: 144,

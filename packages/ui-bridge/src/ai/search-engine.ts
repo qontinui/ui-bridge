@@ -301,6 +301,47 @@ function analyzeFuzzyTokenCoverage(query: string, target: string): TokenAlignmen
 }
 
 /**
+ * The alignment verdict for ONE (query, target-text) pair: the exact ladder's
+ * answer, upgraded by the fuzzy coverage re-ask when the exact answer would
+ * have capped and fuzzy matching is enabled.
+ *
+ * WHY THIS IS SHARED RATHER THAN INLINE. The gate is only as good as its
+ * coverage of the criteria that can carry a candidate over the threshold.
+ * `scoreTextMatch` computed this inline, so `criteria.text` was gated while its
+ * two peer text criteria — `accessibleName` and `textContains`, which the rest
+ * of this repo treats as interchangeable with it (`registry.ts` picks
+ * `text || textContains || accessibleName` as "the search text") — were not.
+ * `scoreAccessibilityMatch` in particular scores a WHOLE-STRING fuzzy
+ * similarity, which is exactly the generous arm the gate exists to hold back:
+ * measured on a page whose only button is labelled "Export Report", the query
+ * "Export Warehouse" returned `found: true` at 0.733 through `accessibleName`
+ * at the same moment `text` correctly returned nothing. Routing every
+ * text-bearing scorer through one helper is what makes "alignment is a gate"
+ * true of the criterion set rather than of one criterion.
+ *
+ * `exact` lets a caller that already ran `analyzeTokenAlignment` for its own
+ * scoring pass the result in rather than recompute it.
+ */
+function alignmentForSource(
+  query: string,
+  targetText: string,
+  fuzzy: boolean,
+  exact?: TokenAlignmentResult
+): TokenAlignmentKind {
+  const analysis = exact ?? analyzeTokenAlignment(query, targetText);
+
+  // TYPO TOLERANCE MUST SURVIVE THE GATE. The ladder is exact-substring based,
+  // so a misspelling ("Sumbit Buton") aligns as `none` even though the user
+  // clearly named this element. Re-ask the same question fuzzily, but only when
+  // the exact answer would have capped — this is the expensive arm and it can
+  // only ever improve the verdict.
+  if (fuzzy && analysis.kind !== 'prefix-aligned' && analysis.kind !== 'all-tokens-present') {
+    return strongerAlignment(analysis.kind, analyzeFuzzyTokenCoverage(query, targetText));
+  }
+  return analysis.kind;
+}
+
+/**
  * Internal export for unit tests — exposes the alignment helper without
  * leaking the broader `SearchableElement` shape. Test-only consumers should
  * import this name explicitly.
@@ -1084,7 +1125,12 @@ export class SearchEngine {
     const matchReasons: string[] = [];
     let totalWeight = 0;
     let weightedScore = 0;
-    // Best token-alignment verdict seen across the text-bearing criteria.
+    // Best token-alignment verdict seen across the text-bearing criteria —
+    // ALL of them: `text`, `textContent`, `textContains` and `accessibleName`.
+    // Gating only `text` left the other three able to clear the threshold on an
+    // unaligned query, which is the same defect on a sibling criterion rather
+    // than a different one.
+    //
     // `null` means the caller supplied no text criterion at all, in which case
     // there is nothing to align against and the cap below must not fire —
     // a structured `{ role: 'button' }` search is not an unaligned match.
@@ -1174,10 +1220,12 @@ export class SearchEngine {
         const containsScore = this.scoreContainsMatch(searchable, alt, criteria.fuzzy !== false);
         // Any ONE alternative aligning is enough — `"Connected|Disconnected"`
         // is satisfied by either side, so the best verdict across the
-        // alternatives is the honest one.
+        // alternatives is the honest one. Both scorers now report a real
+        // verdict, so take the stronger of the two rather than inferring one
+        // from which score happened to win.
         textAlignment = strongerAlignment(
           textAlignment,
-          containsScore.score > exactScore.score ? 'all-tokens-present' : exactScore.alignment
+          strongerAlignment(exactScore.alignment, containsScore.alignment)
         );
         const altBest = Math.max(exactScore.score, containsScore.score);
         if (altBest > bestScore) {
@@ -1203,6 +1251,7 @@ export class SearchEngine {
         criteria.fuzzy !== false
       );
       scores.text = Math.max(scores.text || 0, containsScore.score);
+      textAlignment = strongerAlignment(textAlignment, containsScore.alignment);
       if (containsScore.score > 0 && containsScore.reasons.length > 0) {
         matchReasons.push(...containsScore.reasons);
       }
@@ -1219,6 +1268,7 @@ export class SearchEngine {
         fuzzyConfig.threshold
       );
       scores.accessibility = accessibilityScore.score;
+      textAlignment = strongerAlignment(textAlignment, accessibilityScore.alignment);
       if (accessibilityScore.score > 0) {
         matchReasons.push(...accessibilityScore.reasons);
       }
@@ -1401,20 +1451,10 @@ export class SearchEngine {
       // ("Export Report" scores 92% against "Export Warehouse"), so letting a
       // high score imply good alignment would put the gate back where it was.
       const tokenAnalysis = analyzeTokenAlignment(text, targetText);
-      alignment = strongerAlignment(alignment, tokenAnalysis.kind);
-
-      // TYPO TOLERANCE MUST SURVIVE THE GATE. The ladder above is exact-substring
-      // based, so a misspelling ("Sumbit Buton") aligns as `none` even though the
-      // user clearly named this element. Re-ask the same question fuzzily, but
-      // only when the exact answer would have capped — this is the expensive arm
-      // and it can only ever improve the verdict.
-      if (
-        fuzzy &&
-        tokenAnalysis.kind !== 'prefix-aligned' &&
-        tokenAnalysis.kind !== 'all-tokens-present'
-      ) {
-        alignment = strongerAlignment(alignment, analyzeFuzzyTokenCoverage(text, targetText));
-      }
+      alignment = strongerAlignment(
+        alignment,
+        alignmentForSource(text, targetText, fuzzy, tokenAnalysis)
+      );
 
       // Exact match
       if (targetText.toLowerCase() === text.toLowerCase()) {
@@ -1505,9 +1545,13 @@ export class SearchEngine {
     searchable: SearchableElement,
     text: string,
     fuzzy: boolean
-  ): { score: number; reasons: string[] } {
+  ): { score: number; reasons: string[]; alignment: TokenAlignmentKind } {
     const reasons: string[] = [];
     let maxScore = 0;
+    // Reported so `textContains` is gated on the same terms as `text` — it is a
+    // text criterion, and leaving it out meant a `{ textContains: … }` search
+    // disabled the gate entirely rather than passing it.
+    let alignment: TokenAlignmentKind = 'none';
 
     const textsToMatch = [
       searchable.textContent,
@@ -1520,8 +1564,12 @@ export class SearchEngine {
       if (targetText.toLowerCase().includes(text.toLowerCase())) {
         maxScore = Math.max(maxScore, 0.9);
         reasons.push('text contains match');
+        // A literal substring hit IS full coverage of the query.
+        alignment = strongerAlignment(alignment, 'all-tokens-present');
         continue;
       }
+
+      alignment = strongerAlignment(alignment, alignmentForSource(text, targetText, fuzzy));
 
       // Fuzzy contains
       if (fuzzy && fuzzyContains(targetText, text)) {
@@ -1530,7 +1578,7 @@ export class SearchEngine {
       }
     }
 
-    return { score: maxScore, reasons };
+    return { score: maxScore, reasons, alignment };
   }
 
   /**
@@ -1541,9 +1589,15 @@ export class SearchEngine {
     name: string,
     fuzzy: boolean,
     threshold: number
-  ): { score: number; reasons: string[] } {
+  ): { score: number; reasons: string[]; alignment: TokenAlignmentKind } {
     const reasons: string[] = [];
     let maxScore = 0;
+    // Reported for the same reason `scoreTextMatch` reports it: the fuzzy arm
+    // below compares the query to the accessible name AS WHOLE STRINGS, so it
+    // scores 66% on "Export Warehouse" vs "Export Report" and would carry an
+    // element the query's second word names nothing on over the threshold.
+    // See `alignmentForSource`.
+    let alignment: TokenAlignmentKind = 'none';
 
     const accessibleNames = [
       searchable.ariaLabel,
@@ -1557,8 +1611,14 @@ export class SearchEngine {
       if (accessibleName.toLowerCase() === name.toLowerCase()) {
         maxScore = Math.max(maxScore, 1.0);
         reasons.push('exact accessible name match');
+        // The query IS this accessible name — full coverage by definition.
+        alignment = strongerAlignment(alignment, 'all-tokens-present');
         continue;
       }
+
+      // Computed for EVERY accessible name, independently of which scoring arm
+      // wins, exactly as in `scoreTextMatch`.
+      alignment = strongerAlignment(alignment, alignmentForSource(name, accessibleName, fuzzy));
 
       // Fuzzy match
       if (fuzzy) {
@@ -1570,7 +1630,7 @@ export class SearchEngine {
       }
     }
 
-    return { score: maxScore, reasons };
+    return { score: maxScore, reasons, alignment };
   }
 
   /**

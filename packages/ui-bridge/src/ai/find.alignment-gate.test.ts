@@ -138,6 +138,94 @@ describe('ai/find — token alignment is a GATE, not only a reward', () => {
   });
 });
 
+/**
+ * The gate has to cover the CRITERION SET, not one criterion.
+ *
+ * `text` was gated; its two peer text criteria were not. `accessibleName` is
+ * the one that mattered: `scoreAccessibilityMatch` compares the query to the
+ * accessible name as WHOLE STRINGS, which is precisely the generous arm the
+ * gate exists to hold back. Measured on a page whose only button is labelled
+ * "Export Report", at the threshold `find()` itself runs at (it passes its
+ * default `confidenceThreshold` of 0.5 straight through as `fuzzyThreshold`):
+ *
+ *   { text:           'Export Warehouse' }  ->  none          (gated)
+ *   { accessibleName: 'Export Warehouse' }  ->  FOUND @ 0.733 (ungated)
+ *
+ * Same defect, same page, same query — a sibling criterion. `findByRole(role,
+ * name)` and `findByAccessibleName(name)` route exclusively through it, so the
+ * whole role+name addressing surface was outside the gate.
+ */
+describe('ai/find — the alignment gate covers every text criterion, not just `text`', () => {
+  // `find()` passes `confidenceThreshold` (0.5 by default) down as
+  // `fuzzyThreshold`, so this is the engine's real operating point.
+  const AT_FIND_THRESHOLD = { fuzzy: true, fuzzyThreshold: 0.5 } as const;
+
+  function labelled(text: string): SearchEngine {
+    const engine = new SearchEngine();
+    document.body.innerHTML = '';
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.setAttribute('aria-label', text);
+    document.body.appendChild(b);
+    engine.updateElements([makeRegistered('btn-0', b)]);
+    return engine;
+  }
+
+  it('accessibleName: does NOT report a confident match for an unaligned query', () => {
+    const engine = labelled('Export Report');
+    const response = engine.search({
+      accessibleName: 'Export Warehouse',
+      ...AT_FIND_THRESHOLD,
+    });
+    // Was `found` at 0.733 on the strength of a 66% whole-string similarity
+    // plus a synonym hit on the ONE word that did line up.
+    expect(response.bestMatch).toBeNull();
+  });
+
+  it('accessibleName: still finds when every query token IS answered for', () => {
+    const engine = labelled('Export Report');
+    const response = engine.search({ accessibleName: 'Export Report', ...AT_FIND_THRESHOLD });
+    expect(response.bestMatch).not.toBeNull();
+    expect(response.bestMatch!.element.id).toBe('btn-0');
+  });
+
+  it('accessibleName: an exact accessible name is never capped', () => {
+    // Full coverage by definition — the query IS the accessible name. Capping
+    // here would break `findByRole(role, name)` outright.
+    const engine = labelled('Export Report');
+    const [best] = engine.findByAccessibleName('Export Report');
+    expect(best).toBeDefined();
+    expect(best.matchReasons.join(' | ')).not.toContain('capped');
+    expect(best.confidence).toBeGreaterThan(0.5);
+  });
+
+  it('accessibleName: a narrowing query the element fully answers still finds', () => {
+    // "Save" against "Save changes" — every query token is present, so this is
+    // an aligned match and must survive the gate.
+    const engine = labelled('Save changes');
+    const response = engine.search({ accessibleName: 'Save', ...AT_FIND_THRESHOLD });
+    expect(response.bestMatch).not.toBeNull();
+  });
+
+  it('textContains: a literal substring hit is full coverage and is not capped', () => {
+    const engine = labelled('Export Report');
+    const response = engine.search({ textContains: 'Export', ...AT_FIND_THRESHOLD });
+    expect(response.bestMatch).not.toBeNull();
+    expect(response.bestMatch!.matchReasons.join(' | ')).not.toContain('capped');
+  });
+
+  it('a structured search carrying no text criterion is still never capped', () => {
+    // Re-pinned here because three more criteria now feed `textAlignment`; the
+    // `null` "no text criterion at all" case must survive all of them.
+    const engine = labelled('Export Report');
+    const response = engine.search({ type: 'button' });
+    expect(response.results.length).toBeGreaterThan(0);
+    for (const r of response.results) {
+      expect(r.matchReasons.join(' | ')).not.toContain('capped');
+    }
+  });
+});
+
 describe('ai/find — matchReasons are deduped (display only)', () => {
   it('lists a repeated synonym pair once, not once per alias that contains it', () => {
     const engine = page('Refresh Data');

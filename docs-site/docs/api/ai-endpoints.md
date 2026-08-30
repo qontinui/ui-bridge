@@ -71,6 +71,32 @@ required; all are optional and combined with AND.
 > for content, `role`/`type` for shape, and post-filter the `results`
 > array client-side if you need a result cap.
 
+> **A query whose words the element does not answer for is capped, not
+> returned.** Confidence is a weighted average, so an element could clear the
+> threshold on partial evidence — a query naming two things matching an element
+> that answers for one of them and nothing for the other came back at 74.5%.
+> Token alignment is therefore a **gate**: when the best alignment across the
+> scored text is only partial (or nothing), confidence is capped at **0.45**,
+> below the 0.5 default, so the match cannot be reported as a find.
+>
+> This applies to every text criterion — `text`, `textContent`, `textContains`
+> and `accessibleName` — so `role` + `accessibleName` addressing is gated on the
+> same terms as a plain text query. Structured searches carrying no text
+> criterion at all (`{ role: "button" }`) are never capped: there is nothing to
+> align against.
+>
+> The near miss stays **visible rather than silent**. A capped candidate is
+> still returned in `results` (and in `/ai/find`'s `partialMatches` /
+> `alternatives`) carrying an explicit
+> `"capped at 45%: query tokens only partially align with this element"` entry
+> in `matchReasons` — so "considered and rejected" is distinguishable from
+> "never scanned". Typo tolerance is unaffected: a misspelling is re-checked
+> fuzzily and still matches.
+>
+> Practical effect: loose multi-word queries that used to return a confident
+> wrong element now return no match. Drop the words the page does not use, or
+> read `matchReasons` to see which token failed to align.
+
 ### Response shape
 
 The response is the runner's standard `{ success, data }` envelope

@@ -28,6 +28,7 @@ import {
   keyToKeyCode,
   dispatchKeySequence,
   normalizeKeyDescriptors,
+  NON_PRINTABLE_KEYS,
 } from './key-events';
 import { UIBridgeRegistry, getGlobalRegistry } from './registry';
 import { DefaultActionExecutor } from '../control/action-executor';
@@ -102,6 +103,47 @@ describe('buildKeyboardEventInit — legacy keyCode/which/charCode', () => {
   it('returns 0 rather than a fabricated code for a key it cannot place', () => {
     expect(keyToKeyCode('LaunchMediaPlayer')).toBe(0);
     expect(keyToKeyCode('')).toBe(0);
+  });
+
+  // The legacy model assigns these accepted names no virtual-key code at all,
+  // so browsers report 0 for them and 0 is the honest answer — not a gap.
+  const NO_LEGACY_CODE = new Set(['Undo', 'Redo', 'Copy', 'Cut', 'Paste', 'Fn', 'Symbol']);
+
+  it('every named key the GRAMMAR accepts carries a legacy code, or is a declared exception', () => {
+    // The accepted vocabulary and the legacy table must not drift apart. A key
+    // `normalizeKeyDescriptors` ACCEPTS that then dispatches with `keyCode: 0`
+    // for want of a table entry is the same silent no-op this module exists to
+    // prevent — reached through the front door instead of a hand-rolled init.
+    // `Help` and `Cancel` were exactly that: accepted by the grammar, absent
+    // from the table.
+    const acceptedNames = [
+      ...NON_PRINTABLE_KEYS,
+      'ContextMenu',
+      'Clear',
+      'Pause',
+      'PrintScreen',
+      'Help',
+      'AltGraph',
+      'Cancel',
+      'Select',
+      ...NO_LEGACY_CODE,
+    ];
+
+    for (const key of acceptedNames) {
+      expect(normalizeKeyDescriptors(key).ok, `grammar must accept "${key}"`).toBe(true);
+      if (NO_LEGACY_CODE.has(key)) {
+        expect(keyToKeyCode(key), `"${key}" has no legacy code by design`).toBe(0);
+      } else {
+        expect(keyToKeyCode(key), `"${key}" is accepted, so it must carry a code`).toBeGreaterThan(
+          0
+        );
+      }
+    }
+  });
+
+  it('places the two accepted keys the table had omitted', () => {
+    expect(keyToKeyCode('Help')).toBe(47);
+    expect(keyToKeyCode('Cancel')).toBe(3);
   });
 
   it('mirrors the browsers on keypress: keyCode == which == charCode == the character', () => {
