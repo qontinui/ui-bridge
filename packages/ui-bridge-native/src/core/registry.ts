@@ -102,12 +102,78 @@ export interface RegisterComponentOptions {
      * argument is the `ActionHandlerOptions` bag carrying the cancellation
      * signal. A 1-arity handler stays assignable.
      */
-    handler: (
-      params?: unknown,
-      options?: { signal?: AbortSignal }
-    ) => unknown | Promise<unknown>;
+    handler: (params?: unknown, options?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
   }>;
   elementIds?: string[];
+}
+
+/**
+ * Options for {@link NativeUIBridgeRegistry.updateComponentMeta}.
+ *
+ * Every field is optional and `undefined` means "leave the registered value
+ * alone" — the same partial-update semantics {@link RegisterComponentOptions}'s
+ * sister {@link NativeUIBridgeRegistry.updateElementMeta} uses. A consequence
+ * worth stating: a `description` cannot be CLEARED through this door, only
+ * replaced. Pass `actions: []` to publish an empty action list; that is
+ * distinguishable from omitting the field.
+ */
+export interface UpdateComponentMetaOptions {
+  name?: string;
+  description?: string;
+  actions?: RegisterComponentOptions['actions'];
+  elementIds?: string[];
+}
+
+/**
+ * Map declared component actions into the registry's stored shape.
+ *
+ * ⚠ CLOSED FIELD LIST. Any `ComponentAction` field not named here is dropped at
+ * registration time, silently: the literal stays assignable, the serializer
+ * still runs, the field is simply never there. `paramSchema` was exactly that
+ * until Phase 2, and `effect` is the Phase 4 addition that would have gone the
+ * same way.
+ *
+ * It lives in ONE place on purpose. `registerComponent` and
+ * `updateComponentMeta` both publish actions, and a second hand-rolled copy of
+ * this list is precisely how the two Phase-2/Phase-4 drops happened — a field
+ * added to the declaration type stays assignable at every re-wrap site and
+ * simply never arrives.
+ */
+function toRegisteredComponentActions(
+  actions: NonNullable<RegisterComponentOptions['actions']>
+): RegisteredNativeComponent['actions'] {
+  return actions.map((a) => ({
+    id: a.id,
+    label: a.label,
+    description: a.description,
+    paramSchema: a.paramSchema,
+    effect: a.effect,
+    handler: a.handler,
+  }));
+}
+
+/**
+ * Value signature of everything about an action list that reaches a bridge
+ * consumer.
+ *
+ * `handler` is excluded deliberately: it is a function, so it is not
+ * serialisable, it is never published, and call sites pass inline closures that
+ * are freshly allocated on every render — including it would make
+ * `updateComponentMeta` report a change every single time and defeat its
+ * idempotence. Order is significant, because published order is the order an
+ * agent reads the actions in.
+ */
+function publishedActionSignature(actions: RegisteredNativeComponent['actions']): string {
+  return JSON.stringify(
+    actions.map((a) => [a.id, a.label, a.description, a.paramSchema, a.effect])
+  );
+}
+
+/** Positional equality for the optional `elementIds` list. */
+function sameElementIds(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
 /**
@@ -1162,7 +1228,8 @@ export class NativeUIBridgeRegistry {
     const nextTestId = meta.testId !== undefined ? meta.testId : currentIdentifier.testId;
 
     const labelChanged = nextLabel !== element.label;
-    const accessibilityLabelChanged = nextAccessibilityLabel !== currentIdentifier.accessibilityLabel;
+    const accessibilityLabelChanged =
+      nextAccessibilityLabel !== currentIdentifier.accessibilityLabel;
     const testIdChanged = nextTestId !== currentIdentifier.testId;
 
     if (!labelChanged && !accessibilityLabelChanged && !testIdChanged) {
@@ -1309,19 +1376,8 @@ export class NativeUIBridgeRegistry {
       id,
       name,
       description,
-      actions: actions.map((a) => ({
-        id: a.id,
-        label: a.label,
-        description: a.description,
-        // ⚠ CLOSED FIELD LIST. Any `ComponentAction` field not named here is
-        // dropped at registration time, silently: the literal stays assignable,
-        // the serializer still runs, the field is simply never there.
-        // `paramSchema` was exactly that until Phase 2, and `effect` is the
-        // Phase 4 addition that would have gone the same way.
-        paramSchema: a.paramSchema,
-        effect: a.effect,
-        handler: a.handler,
-      })),
+      // Closed field list, applied once — see `toRegisteredComponentActions`.
+      actions: toRegisteredComponentActions(actions),
       elementIds,
       registeredAt: Date.now(),
       mounted: true,
@@ -1336,6 +1392,81 @@ export class NativeUIBridgeRegistry {
     }
 
     return registered;
+  }
+
+  /**
+   * Update a registered component's declaration in place — name, description,
+   * actions, elementIds.
+   *
+   * Sister to {@link updateElementMeta}, and it exists for the same reason one
+   * level up. `registerComponent` publishes the declaration exactly once, and
+   * `useUIComponent` registers on mount and never again, so an action whose
+   * `label` carries a count, an action that only exists while a row is
+   * selected, a `paramSchema` that widens once options load, or an `elementIds`
+   * list that grows after mount, all published their mount-time shape to
+   * `/control/components` forever. PR #176 closed that hole for an ELEMENT's
+   * label; this closes it for a COMPONENT's declaration.
+   *
+   * **Idempotent by VALUE over the PUBLISHED shape.** `handler` identity is
+   * excluded from the comparison — call sites pass inline closures that are
+   * freshly allocated every render, so including it would report a change on
+   * every call and make the door useless for a render-path publisher. The
+   * newest handlers are still STORED whenever `actions` is supplied, which is
+   * the other half of the same defect: without it the registry keeps the
+   * closure from the render that registered the component, so a handler reading
+   * component state read the state as it was at mount.
+   *
+   * Returns `true` when the published shape changed and an event was emitted,
+   * `false` otherwise — the same contract as `updateElementMeta`, so a caller
+   * can gate a warning or a state write on a real change.
+   */
+  updateComponentMeta(id: string, meta: UpdateComponentMetaOptions): boolean {
+    const component = this.components.get(id);
+    if (!component) return false;
+
+    const nextName = meta.name !== undefined ? meta.name : component.name;
+    const nextDescription =
+      meta.description !== undefined ? meta.description : component.description;
+    const nextActions =
+      meta.actions !== undefined ? toRegisteredComponentActions(meta.actions) : component.actions;
+    const nextElementIds = meta.elementIds !== undefined ? meta.elementIds : component.elementIds;
+
+    const changed =
+      nextName !== component.name ||
+      nextDescription !== component.description ||
+      !sameElementIds(nextElementIds, component.elementIds) ||
+      publishedActionSignature(nextActions) !== publishedActionSignature(component.actions);
+
+    // Nothing published changed AND no fresh handlers were offered: leave the
+    // stored entry untouched so its identity stays stable for consumers holding
+    // a reference.
+    if (!changed && meta.actions === undefined) return false;
+
+    // Store even when `changed` is false, provided actions were supplied: the
+    // handlers in `nextActions` are the CURRENT render's closures. Keeping the
+    // old ones is exactly how a component action ends up reading state from the
+    // render it was first declared in.
+    this.components.set(id, {
+      ...component,
+      name: nextName,
+      description: nextDescription,
+      actions: nextActions,
+      elementIds: nextElementIds,
+    });
+
+    if (!changed) return false;
+
+    // Reuse `component:registered` rather than minting a
+    // 'component:metaChanged' BridgeEventType — same reasoning as
+    // `updateElementMeta`'s reuse of `element:registered`: a new event type is a
+    // breaking change for every consumer switching exhaustively over the union.
+    this.emit('component:registered', { id, name: nextName });
+
+    if (this.config.verbose) {
+      console.log(`[ui-bridge-native] Updated component: ${id} (${nextName})`);
+    }
+
+    return true;
   }
 
   /**
@@ -1538,9 +1669,7 @@ export class NativeUIBridgeRegistry {
     // return 0 elements on a populated screen. Each element in the
     // payload carries a `visibility` field so agents can branch on
     // measured vs unmeasured.
-    let elements = options?.visibleOnly
-      ? this.getMountedVisibleElements()
-      : this.getAllElements();
+    let elements = options?.visibleOnly ? this.getMountedVisibleElements() : this.getAllElements();
 
     // Filter to elements that belong on the current route. Route-agnostic
     // elements (no `registrationRoute`) pass through too — see the
