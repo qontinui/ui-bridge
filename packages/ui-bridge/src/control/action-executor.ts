@@ -2084,6 +2084,15 @@ export class DefaultActionExecutor implements ActionExecutor {
    * Get control snapshot
    */
   async getSnapshot(): Promise<ControlSnapshot> {
+    // Fourth snapshot path — re-derive DOM-scraped labels first, same as
+    // `registry.createSnapshot()` does, or this one emits a `label` frozen at
+    // first discovery beside an `ariaLabel` read live. See
+    // `UIBridgeRegistry.refreshLabels`.
+    try {
+      this.registry.refreshLabels();
+    } catch {
+      // Non-fatal: fall through with the labels the registry already holds.
+    }
     const elements = this.registry.getAllElements();
     const components = this.registry.getAllComponents();
     const workflows = this.registry.getAllWorkflows();

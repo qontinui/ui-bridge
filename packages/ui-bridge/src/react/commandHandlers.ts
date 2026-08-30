@@ -952,6 +952,39 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
   'executeElementAction',
 ]);
 
+/**
+ * Actions that EMIT or MATCH ON `RegisteredElement.label`, and therefore must
+ * re-derive DOM-scraped labels before reading the registry.
+ *
+ * `label` is copied out of the DOM at registration and every scanner is
+ * idempotent by element identity, so a node discovered once is never
+ * re-labelled — an `aria-label` that changes afterwards is served stale
+ * forever, including on an explicit `discover`. `registry.refreshLabels()`
+ * closes that; see its doc-comment for what it touches and why it is scoped to
+ * this set rather than run on every command (the action paths must stay
+ * layout-free).
+ *
+ * `getControlSnapshot` is here because the relay builds its element array from
+ * the `elements` captured below rather than going through
+ * `registry.createSnapshot()`, which refreshes on its own.
+ */
+const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
+  'getControlSnapshot',
+  'captureSnapshot',
+  'find',
+  'discover',
+  'findByText',
+  'getElementTree',
+  'expectElement',
+  'assert_element',
+  'aiFind',
+  'aiSearch',
+  'aiExecute',
+  'aiSemanticSearch',
+  'getSemanticSnapshot',
+  'getPageSummary',
+]);
+
 export async function executeCommand(
   action: string,
   payload: P,
@@ -982,6 +1015,15 @@ export async function executeCommand(
   // AutoRegisterProvider registers elements, because registry mutations
   // don't trigger React re-renders.
   const registry = getGlobalRegistry();
+  // Re-derive DOM-scraped labels before the element array is captured — see
+  // LABEL_REFRESH_ACTIONS. Non-fatal: a throwing refresh must not fail the read.
+  if (LABEL_REFRESH_ACTIONS.has(action)) {
+    try {
+      registry.refreshLabels();
+    } catch {
+      // Fall through with whatever labels the registry already holds.
+    }
+  }
   const elements = registry.getAllElements();
   const components = registry.getAllComponents();
   const workflows = registry.getAllWorkflows();

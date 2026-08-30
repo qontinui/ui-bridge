@@ -1030,6 +1030,16 @@ function inferElementType(element: HTMLElement): ElementType {
  */
 export const DEFAULT_REMOUNT_CACHE_WINDOW_MS = 2000;
 
+/**
+ * Hidden (non-enumerable) property holding a registered element's label
+ * re-derivation closure. See `registerElement({ labelSource })` and
+ * {@link UIBridgeRegistry.refreshLabels}.
+ */
+const LABEL_SOURCE_KEY = '__labelSource';
+
+/** A registry entry that may carry the hidden label re-derivation closure. */
+type WithLabelSource = RegisteredElement & { __labelSource?: () => string | undefined };
+
 export interface RegistryOptions {
   /** Enable verbose logging */
   verbose?: boolean;
@@ -1467,6 +1477,72 @@ export class UIBridgeRegistry {
   }
 
   /**
+   * Re-derive every DOM-SCRAPED `label` from the live DOM and write back the
+   * ones that changed. Returns how many entries moved.
+   *
+   * ## Why this exists
+   *
+   * `RegisteredElement.label` is a value COPIED out of the DOM at
+   * `registerElement` time. Every scanner that produces one is idempotent by
+   * element identity — the injected seeder skips nodes already in its `tracked`
+   * map, `useAutoRegister` returns early on `registeredElementsRef.has(element)`
+   * — so a node discovered once is never re-labelled, no matter how many times
+   * it is re-scanned or how explicitly a client asks to `discover`. An
+   * `aria-label` that changes after first discovery therefore leaves the
+   * registry serving a plausible-looking WRONG string forever, while
+   * `ariaLabel` and `accessibleName` on the same snapshot entry
+   * (`serializeRegisteredElement`) are re-derived live on every read. A
+   * verification instrument that fabricates a stale value is worse than one
+   * that fails, so the read paths call this first.
+   *
+   * ## What it touches
+   *
+   * ONLY entries whose registration supplied a `labelSource` closure — i.e.
+   * labels that were scraped out of the DOM in the first place. A
+   * developer-SET label (`useUIElement({ label })`, any direct
+   * `registerElement` call) carries no closure and is left verbatim: it is not
+   * a DOM mirror and must not be overwritten. Detached nodes are skipped
+   * (`isConnected === false`) so a mid-unmount read cannot blank a label; a
+   * throwing closure is skipped rather than allowed to break the read.
+   *
+   * ## Cost
+   *
+   * O(scraped elements), one closure call each, and it runs only on the
+   * label-emitting read paths — `createSnapshot`/`createSnapshotAsync` and the
+   * find/discover/AI command handlers. Those paths already call `getState()`
+   * (`getComputedStyle` + `getBoundingClientRect`), `computeVisibleText`
+   * (`innerText`) and the full `dom-accessibility-api` name algorithm PER
+   * ELEMENT, so a label re-derivation — which short-circuits on `aria-label`
+   * before any layout-forcing read — is a small fraction of work already being
+   * done there. It is deliberately NOT wired into `getAllElements()` or the
+   * action paths, which must stay layout-free.
+   */
+  refreshLabels(): number {
+    let changed = 0;
+    for (const bucket of this.elementsByWindow.values()) {
+      for (const entry of bucket.values()) {
+        const source = (entry as WithLabelSource).__labelSource;
+        if (!source) continue;
+        const node = entry.element;
+        // A node being torn down can report an empty accessible name; keeping
+        // the last known label is strictly better than blanking it.
+        if (!node || node.isConnected === false) continue;
+        let next: string | undefined;
+        try {
+          next = source();
+        } catch {
+          continue;
+        }
+        if (next !== entry.label) {
+          entry.label = next;
+          changed++;
+        }
+      }
+    }
+    return changed;
+  }
+
+  /**
    * Update the live viewport-relative bounding box and visibility for a
    * registered element. Called by `useUIElement`'s ResizeObserver + scroll
    * listeners and MUST NOT emit events or bump `storeVersion` — bbox updates
@@ -1544,6 +1620,30 @@ export class UIBridgeRegistry {
       category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
       mediaMetadata?: MediaMetadata;
+      /**
+       * Re-derivation closure for a DOM-SCRAPED `label`, supplied by whichever
+       * scanner scraped it (the injected seeder, `useAutoRegister`).
+       *
+       * `label` above is a *copy* of a DOM-derived value taken at registration.
+       * Nothing in the registry re-reads it, so an `aria-label` that changes
+       * after the element was first discovered leaves the cached `label`
+       * permanently wrong — while `ariaLabel` / `accessibleName` in the SAME
+       * snapshot entry (`serializeRegisteredElement`) are re-derived live. That
+       * asymmetry is the stale-label defect: a snapshot showing
+       * `"Section: Account Usage (0 accounts)"` beside a live DOM reading
+       * `"(2 accounts)"`.
+       *
+       * Supplying this closure opts the element into {@link refreshLabels},
+       * which the snapshot / find / discover read paths call so the emitted
+       * `label` is current. Registrations that do NOT pass it (every
+       * developer-set `useUIElement` label) keep their value verbatim forever —
+       * a dev-authored label is not a DOM mirror and must never be overwritten.
+       *
+       * The closure MUST reproduce the same derivation (and the same §4.6
+       * CONTENT scrub) the initial scrape used, so a refresh can only remove
+       * staleness, never change the labelling algorithm.
+       */
+      labelSource?: () => string | undefined;
       /** Component that owns this element (set by <UIBridgeComponentScope>). */
       ownedByComponent?: string;
       /**
@@ -1723,6 +1823,20 @@ export class UIBridgeRegistry {
       configurable: true,
     });
 
+    // Same hidden-hook pattern for the label re-derivation closure. Held
+    // NON-enumerably so it can never reach the wire: `serializeRegisteredElement`
+    // and every `{...el}` spread skip it, and `JSON.stringify` cannot see it.
+    // Re-registering an id installs a fresh entry (and therefore a fresh
+    // closure over the new node), so the hook can never outlive its element.
+    if (options.labelSource) {
+      Object.defineProperty(registered, LABEL_SOURCE_KEY, {
+        value: options.labelSource,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
+
     // If this id is already registered IN THE SAME WINDOW, reverse the
     // previous entry's route bookkeeping so we don't double-count an
     // overwrite. The same id in a different window is a distinct entry.
@@ -1786,6 +1900,13 @@ export class UIBridgeRegistry {
       contentMetadata: ContentMetadata;
       label?: string;
       /**
+       * Re-derivation closure for a DOM-scraped `label` — see
+       * `registerElement({ labelSource })`. The content scanner scrapes
+       * `data-content-label` / `textContent`, so its labels go stale the same
+       * way an interactive element's do.
+       */
+      labelSource?: () => string | undefined;
+      /**
        * Full normalized text content (whitespace-collapsed, trimmed). Surfaced
        * verbatim on the snapshot element's `content` field. Populated by the
        * heading/paragraph/table-cell auto-register path so consumers can
@@ -1800,6 +1921,7 @@ export class UIBridgeRegistry {
     return this.registerElement(id, element, {
       type: options.contentType as ElementType,
       label: options.label,
+      labelSource: options.labelSource,
       actions: [],
       category: 'content',
       contentMetadata: options.contentMetadata,
@@ -3321,6 +3443,11 @@ export class UIBridgeRegistry {
       activeWindowLabel?: string;
     } = {}
   ): BridgeSnapshot {
+    // DOM-scraped labels are copies taken at registration — re-derive them
+    // before serializing or the snapshot ships a label that contradicts the
+    // `ariaLabel`/`accessibleName` re-derived live in the same entry. See
+    // `refreshLabels`.
+    this.refreshLabels();
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
     const visibility = captureDocumentVisibility();
@@ -3376,6 +3503,8 @@ export class UIBridgeRegistry {
       activeWindowLabel?: string;
     } = {}
   ): Promise<BridgeSnapshot> {
+    // See `createSnapshot` — same freshness contract on the batched path.
+    this.refreshLabels();
     const allElements = this.getAllElements();
     const elementSnapshots: BridgeSnapshot['elements'] = [];
 

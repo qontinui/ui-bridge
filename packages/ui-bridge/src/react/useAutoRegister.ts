@@ -946,6 +946,12 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         type,
         actions,
         label,
+        // `label` is scraped from the DOM once, here. This callback never runs
+        // again for `element` (the `registeredElementsRef` guard at the top of
+        // this function), so without a re-derivation closure an `aria-label`
+        // that changes later leaves the registry serving the FIRST value
+        // forever. Same algorithm, so a refresh can only remove staleness.
+        labelSource: () => getAccessibleLabel(element),
         origin: 'auto',
       });
 
@@ -1032,19 +1038,31 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // beside the emission scrub). `data-content-label` is developer-authored,
       // so it survives outside the CONTENT boundary but is dropped inside one
       // (a dev who wraps a subtree intends it hidden).
+      // Single definition of the content label derivation so the initial
+      // scrape and the `refreshLabels()` re-derivation cannot drift.
+      const deriveContentLabel = (el: HTMLElement): string | undefined => {
+        if (isContentRedacted(el)) return undefined;
+        const raw = el.textContent?.trim();
+        const normalized = raw ? raw.replace(/\s+/g, ' ') : undefined;
+        return (
+          el.getAttribute('data-content-label') ||
+          (normalized ? truncateCodePoints(normalized, 50) : undefined) ||
+          undefined
+        );
+      };
       const redacted = isContentRedacted(element);
       const rawText = redacted ? undefined : element.textContent?.trim();
       const normalizedText = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
-      const label = redacted
-        ? undefined
-        : element.getAttribute('data-content-label') ||
-          (normalizedText ? truncateCodePoints(normalizedText, 50) : undefined) ||
-          undefined;
+      const label = deriveContentLabel(element);
 
       bridge.registry.registerContentElement(id, element, {
         contentType,
         contentMetadata: metadata,
         label,
+        // Content ids are deterministic and this function returns early for an
+        // already-registered id, so the scrape below never repeats for this
+        // node — see `registerElement`'s `labelSource`.
+        labelSource: () => deriveContentLabel(element),
         content: normalizedText,
       });
 
@@ -1115,6 +1133,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // Label defaults to the first 50 chars of the normalized text so the
       // snapshot has something human-readable in the `label` slot for tools
       // that don't render `content` yet.
+      const deriveSemanticLabel = (el: HTMLElement): string | undefined => {
+        if (isContentRedacted(el)) return undefined;
+        const text = (readInnerText(el) ?? el.textContent ?? '').trim().replace(/\s+/g, ' ');
+        return text ? truncateCodePoints(text, 50) : undefined;
+      };
       const label = content ? truncateCodePoints(content, 50) : undefined;
 
       bridge.registry.registerElement(id, element, {
@@ -1124,6 +1147,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         type: 'generic',
         actions: [],
         label,
+        // This function returns early both on `registeredContentElementsRef`
+        // and on an already-taken id, so the scrape above never repeats for
+        // this node — see `registerElement`'s `labelSource`.
+        labelSource: () => deriveSemanticLabel(element),
         category: 'content',
         content,
         role: roleAttr,
