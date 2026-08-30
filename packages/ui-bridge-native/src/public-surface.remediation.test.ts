@@ -82,4 +82,64 @@ describe('the package root barrel lists the Phase 2-4 surface', () => {
     expect(source).toContain('type IREffect');
     expect(source).toContain('type ActionHandlerOptions');
   });
+
+  /**
+   * qontinui/ui-bridge#175 added the visibility projection to
+   * `core/registry.ts` and did not touch this barrel — the same omission, one
+   * feature later. A consumer reading `visibility` / `visibilityReason` off a
+   * snapshot could not name either union from the package root, and a non-React
+   * host could not reproduce a verdict for an element it holds.
+   */
+  it('exports the visibility projection and its vocabulary', () => {
+    expect(source).toContain('computeVisibility');
+    expect(source).toContain('pageRectOf');
+    expect(source).toContain('intersectRects');
+    expect(source).toContain('isEmptyRect');
+    // The trailing commas are load-bearing. `toContain('type NativeVisibility')`
+    // is satisfied by the `type NativeVisibilityReason,` line, so dropping
+    // `NativeVisibility` from the barrel would leave this test green while a
+    // root-importing consumer lost the ability to name the union `visibility`
+    // holds — the exact defect class this file exists to catch, reproduced
+    // inside the check meant to catch it.
+    expect(source).toContain('type NativePageRect,');
+    expect(source).toContain('type NativeVisibility,');
+    expect(source).toContain('type NativeVisibilityReason,');
+  });
+
+  it('exports the status mapping the ServerAdapter contract needs', () => {
+    expect(source).toContain('httpStatusForResponse');
+  });
+});
+
+describe('the ./core barrel exposes the visibility projection too', () => {
+  it('exports the helpers as callable functions, not just as types', () => {
+    expect(typeof nativeCoreSubpath.computeVisibility).toBe('function');
+    expect(typeof nativeCoreSubpath.pageRectOf).toBe('function');
+    expect(typeof nativeCoreSubpath.intersectRects).toBe('function');
+    expect(typeof nativeCoreSubpath.isEmptyRect).toBe('function');
+  });
+
+  it('the exported computeVisibility demotes an element scrolled past the fold', () => {
+    // Scope, stated so the title cannot over-claim: this drives the exported
+    // HELPER directly and asserts nothing about `createSnapshot` wiring it up.
+    // The snapshot path is covered by `server/__tests__/snapshot-viewport-clipping.test.ts`;
+    // what is checked here is that a consumer calling the newly-reachable
+    // export gets the same verdict, which is the point of exporting it.
+    const state = {
+      mounted: true,
+      visible: true,
+      enabled: true,
+      focused: false,
+      layout: { x: 0, y: 900, width: 100, height: 40, pageX: 0, pageY: 900 },
+    };
+    const viewport = { left: 0, top: 0, right: 390, bottom: 844 };
+
+    expect(nativeCoreSubpath.computeVisibility(state, viewport)).toEqual({
+      visibility: 'hidden',
+      visibilityReason: 'off-screen',
+    });
+    // An UNKNOWN clip must never demote — absence of evidence is not evidence
+    // of off-screen.
+    expect(nativeCoreSubpath.computeVisibility(state, null)).toEqual({ visibility: 'visible' });
+  });
 });
