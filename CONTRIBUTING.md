@@ -266,8 +266,12 @@ npm run contract:runner            # finds ../qontinui-runner automatically
 npm run contract:runner -- --runner /path/to/qontinui-runner
 ```
 
-It prints which runner ref it compared against — a green from a stale local
-checkout is not a green against the ref CI will use, so read that line.
+It prints which runner ref it compared against, and how that tree was resolved
+(`resolved by:`) — a green from a stale local checkout is not a green against
+the ref CI will use, so read those two lines. Locally `resolved by:` reports
+`UNKNOWN`, because provenance only exists when CI's sibling resolver produced
+it; in CI it names the pin, a declared adaptation PR, or a default-branch
+fall-through, and the job asserts which of those it was expecting.
 
 If it fails, there are three legitimate answers and the allow-list is only one
 of them; the failure message spells out all three. In short: land the runner

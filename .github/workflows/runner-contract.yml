@@ -23,9 +23,24 @@ name: Runner Contract
 # TWO MODES, AND THE SPLIT IS THE SAFETY PROPERTY:
 #
 #   pull_request                    -> pinned runner tree, GATING.
-#   push / schedule / dispatch      -> advisory only, never fails the job.
+#   push / schedule / dispatch      -> advisory for anything the PEER can cause
+#                                      (route drift, extraction failure).
 #   schedule / workflow_dispatch    -> additionally BYPASS the pin and compare
 #                                      against qontinui-runner's default branch.
+#
+#   "Advisory" is scoped to the peer, NOT to the job. Two failures are still
+#   hard on every event, because neither is a peer's doing: a usage error, and
+#   a sibling-provenance violation — the run being handed a runner tree this
+#   repo did not ask for. A provenance violation is only reachable through a
+#   commit to THIS repo (deleting the pin manifest, dropping its
+#   qontinui-runner line, breaking the `mode` step), and each of those fails
+#   the PR gate first, on the PR that does it.
+#
+#   Consequence worth knowing: removing the qontinui-runner entry from
+#   .github/sibling-pins.conf is now an ERROR here, not the silent
+#   per-sibling opt-out the action documents generically. Floating the GATING
+#   job is the hazard this workflow exists to prevent, so opting out means
+#   changing the `mode` step too — deliberately, in a reviewable diff.
 #
 #   The gating job must never float on the runner's `main`: a runner land that
 #   exposed a route this repo does not declare would then red THIS repo's main —
@@ -75,12 +90,30 @@ jobs:
         # (The `--advisory` flag below is safe as an inline ternary only
         # because its empty branch sits on the `||` side, where falsiness is
         # the intended result.)
+        #
+        # `expect_sibling` is the same decision stated as an ASSERTION, and the
+        # checker enforces it against the resolver's actual outputs. Computing
+        # both here keeps them one decision rather than two that can drift: if
+        # this step regresses, the assertion regresses with it and the run says
+        # so, instead of quietly comparing against the wrong tree.
+        #
+        # `pins_file` is the manifest's LOCATION and is emitted unconditionally;
+        # `pin_file` is whether this run USES it, and is empty on the radar. Two
+        # questions, one literal — the checker needs the path even on a run that
+        # bypasses the pin, and hardcoding it a second time in the checker would
+        # re-create the drift this step exists to avoid: move the manifest and
+        # the action would follow while the checker read the old path,
+        # red-lighting a correct run and naming the wrong file.
         run: |
+          PINS=".github/sibling-pins.conf"
+          echo "pins_file=${PINS}" >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Drift radar: bypass the pin, look at the runner as it is today.
             echo "pin_file=" >> "$GITHUB_OUTPUT"
+            echo "expect_sibling=floating" >> "$GITHUB_OUTPUT"
           else
-            echo "pin_file=.github/sibling-pins.conf" >> "$GITHUB_OUTPUT"
+            echo "pin_file=${PINS}" >> "$GITHUB_OUTPUT"
+            echo "expect_sibling=pinned" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Use Node.js
@@ -90,6 +123,14 @@ jobs:
           # `npm ci` here on purpose — this job must stay cheap enough to run on
           # every PR, including the pure-docs ones.
           node-version: 22.x
+
+      - name: Provenance unit tests
+        # Runs BEFORE the sibling is fetched: it needs no runner tree, and a
+        # broken provenance check should be reported as such rather than as a
+        # contract verdict. Zero dependencies, so no `npm ci` — same constraint
+        # the checker itself is written under. Always gating, on every event:
+        # these assert THIS repo's own logic, so no peer land can turn them red.
+        run: node scripts/check-runner-contract.test.mjs
 
       - name: Check out sibling qontinui-runner
         id: sibling
@@ -127,6 +168,17 @@ jobs:
           # sibling with `git init` + a depth-1 fetch, so the checker only ever
           # sees a detached HEAD and cannot tell those three apart on its own.
           # On a PR this should report the pin; on the nightly it must NOT.
+          #
+          # `--expect-sibling` below is what ENFORCES that last sentence. Until
+          # it existed these three values were exported and only echoed, so
+          # every way the pin can quietly stop applying — the manifest deleted
+          # or renamed, the qontinui-runner line dropped from it, this file's
+          # own `mode` step regressing to an empty `pin_file` — left the GATING
+          # job floating on the runner's `main` while still printing a clean
+          # verdict. Each of those is a LOG LINE inside the action, not an
+          # error: it says "resolving by default branch" and returns 0. That is
+          # the defect this workflow exists to close, pointed the other way, so
+          # the assertion fails closed and `--advisory` does not soften it.
           SIBLING_SOURCE: ${{ steps.sibling.outputs.source }}
           SIBLING_REF: ${{ steps.sibling.outputs.ref }}
           SIBLING_SHA: ${{ steps.sibling.outputs.sha }}
@@ -134,4 +186,6 @@ jobs:
           echo "sibling resolved by: ${SIBLING_SOURCE:-<none reported>} (ref=${SIBLING_REF:-?} sha=${SIBLING_SHA:-?})"
           node scripts/check-runner-contract.mjs \
             --runner "${{ github.workspace }}/qontinui-runner" \
+            --expect-sibling "${{ steps.mode.outputs.expect_sibling }}" \
+            --pins "${{ steps.mode.outputs.pins_file }}" \
             ${{ github.event_name != 'pull_request' && '--advisory' || '' }}
