@@ -62,6 +62,15 @@
 // is judged by, which is the point: the gate's coverage must not depend on
 // which file a reader happens to be reading the example in.
 //
+// That surface has a roster of its own, for the reason UNGUARDED_DOCS gives for
+// markdown: reading only FENCED blocks means an `@example` written without a
+// fence — or with one trailing the tag, which opens no block — is read by
+// nothing, and nothing says so. `unfencedExamples` fails on exactly that, so
+// the convention the gate depends on is enforced rather than merely written
+// down. The alternative, teaching the parser to guess an unfenced example's
+// extent, buys coverage from a heuristic instead of from a marker the author
+// typed.
+//
 // THE DEBT LEDGER (docs-site/docs-symbol-debt.json)
 //
 // THE LEDGER IS CURRENTLY EMPTY, AND THE FILE IS ABSENT. That is the paid-off
@@ -139,15 +148,12 @@
 //   - Property access on an imported value (`bridge.doesNotExist()`), JSX
 //     component props, and anything in a non-TypeScript fence (python, bash,
 //     http, json, rust, vue, svelte, html).
-//   - An `@example` body carrying no fence at all. JSDoc permits it; this repo
-//     had exactly one, `debug/browser-capture.ts`, fenced in the same commit
-//     that added this surface — so the convention is uniform and teaching
-//     extractCodeBlocks to guess where an unfenced example starts and stops
-//     would buy no coverage while starting to parse prose as code. A fence is
-//     cheap; the remedy for an unfenced example is to fence it, not to widen
-//     the parser. (No tally is given on purpose: a count here would be stale on
-//     the next `@example` anyone writes, which is the defect class this gate
-//     exists to catch.)
+//   - What an unfenced `@example` CONTAINS. The parser is not widened to guess
+//     where such an example starts and stops — that would begin reading prose
+//     as code, and a fence is one line. But the example is no longer passed
+//     over in silence either: an `@example` the gate cannot read is a blind
+//     spot, so `unfencedExamples` fails the run and names it. The convention is
+//     enforced instead of the parser being widened, which is the whole trade.
 //   - Source comments OUTSIDE this repository's tracked TypeScript-family
 //     files — `.py`, `.rs`, `.java` and the rest. The resolver is a TypeScript
 //     one; a Python docstring showing a `ui-bridge` import is a real surface
@@ -586,13 +592,102 @@ function resolveSubpath(pkg, subpath) {
 }
 
 /**
+ * The `entry` map of a package's tsup config, as `dist stem -> src file`.
+ *
+ * Read for ONE reason: tsup's `entry` is the only place that records a build
+ * that RENAMES its source. `distTargetToSource` mirrors dist onto src by name,
+ * which is right for almost every dist-backed subpath here and wrong for any
+ * whose entry is renamed on the way out — `"./ctr/migrate"` publishes
+ * `./dist/ctr/migrate.d.ts` and is built from `src/ctr/migrate-specs-to-ctr.ts`.
+ * A mirror miss is not a soft miss: it reaches `unverifiable-entry`, which
+ * FAILS a block naming symbols that all exist, so the gate was rejecting a
+ * correct example. Guessing at the rename (fuzzy stems, a src-wide scan) would
+ * trade that false failure for a false pass; the config is the build's own
+ * declaration, so it is read rather than guessed. (No count of affected
+ * subpaths is given: it would be stale on the next entry anyone adds.)
+ *
+ * Parsed as an AST, never executed — the gate must stay a read of the checkout,
+ * and `tsup.config.ts` here calls `realpathSync.native` at module scope.
+ * Collection is scoped to the subtree under an `entry:` property so an
+ * unrelated `src/…` string elsewhere in the config cannot enter the map;
+ * `entry: realEntries({ … })` is covered because the scope is the initializer's
+ * whole subtree, call wrapper included.
+ *
+ * Only string-literal keys and values are collected. An `entry` given as an
+ * ARRAY carries no rename (tsup derives the stem from the path), and a computed
+ * key or value is not statically knowable — both are absent from the map, which
+ * leaves the mirror as the answer, which is what it already was.
+ */
+const TSUP_CONFIG_NAMES = [
+  'tsup.config.ts',
+  'tsup.config.mts',
+  'tsup.config.cts',
+  'tsup.config.js',
+  'tsup.config.mjs',
+  'tsup.config.cjs',
+];
+const tsupEntryCache = new Map();
+function tsupEntryMap(pkg) {
+  const cached = tsupEntryCache.get(pkg.dir);
+  if (cached) return cached;
+
+  const map = new Map();
+  const configFile = TSUP_CONFIG_NAMES.map((n) => path.join(pkg.dir, n)).find((f) =>
+    fs.existsSync(f)
+  );
+  if (configFile) {
+    const text = fs.readFileSync(configFile, 'utf8');
+    const sf = ts.createSourceFile(
+      configFile,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindFor(configFile)
+    );
+    const keyOf = (name) => {
+      if (ts.isStringLiteralLike(name)) return name.text;
+      if (ts.isIdentifier(name)) return name.text;
+      return null;
+    };
+    const walk = (node, inEntry) => {
+      if (ts.isPropertyAssignment(node)) {
+        const key = keyOf(node.name);
+        if (!inEntry && key === 'entry') {
+          walk(node.initializer, true);
+          return;
+        }
+        if (inEntry && key && ts.isStringLiteralLike(node.initializer)) {
+          const value = node.initializer.text;
+          if (value.startsWith('src/')) map.set(key, value);
+          return;
+        }
+      }
+      node.forEachChild((child) => walk(child, inEntry));
+    };
+    walk(sf, false);
+  }
+
+  tsupEntryCache.set(pkg.dir, map);
+  return map;
+}
+
+/**
  * Map a published `dist/…` target back to the `src` file it is built from.
  *
  * The `exports` maps all point at build output, which does not exist on a
  * clean checkout — and the gate must not require a build to run. src mirrors
- * dist one-for-one in every package here, so the mapping is mechanical:
+ * dist one-for-one for almost every entry here, so the mapping is mechanical:
  * `./dist/server/express.d.ts` -> `src/server/express.ts`,
- * `./dist/react/index.mjs` -> `src/react/index.ts`.
+ * `./dist/react/index.mjs` -> `src/react/index.ts`. Where the build renames,
+ * the mirror cannot know it, so the build's own `entry` map is consulted second
+ * — see tsupEntryMap.
+ *
+ * `dist/injected/bundle.global.js` still resolves to nothing, and that stays
+ * correct rather than being a residual miss. Its `outExtension` puts `.global`
+ * into the PUBLISHED stem, so `injected/bundle.global` is not the `entry` key
+ * `injected/bundle` and no lookup finds it — which is the right answer twice
+ * over: it is an IIFE built for a bare page realm, with no module surface for a
+ * named import to be checked against. `unverifiable-entry` describes it exactly.
  */
 function distTargetToSource(pkg, target) {
   if (typeof target !== 'string') return null;
@@ -603,6 +698,8 @@ function distTargetToSource(pkg, target) {
   const candidates = [];
   for (const ext of SRC_EXTENSIONS) candidates.push(path.join(srcRoot, stem + ext));
   for (const ext of SRC_EXTENSIONS) candidates.push(path.join(srcRoot, stem, 'index' + ext));
+  const renamed = tsupEntryMap(pkg).get(stem);
+  if (renamed) candidates.push(path.join(pkg.dir, renamed));
   for (const candidate of candidates) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
   }
@@ -932,6 +1029,119 @@ function extractCommentCodeBlocks(file, text) {
     }
   }
   return blocks;
+}
+
+/**
+ * Every `@example` in one source file whose body carries no fence, as 1-based
+ * source lines.
+ *
+ * THIS IS THE COMMENT SURFACE'S ROSTER CHECK — the exact counterpart of
+ * UNGUARDED_DOCS for markdown, and it exists for the same reason. The gate above
+ * reads FENCED blocks in comments. An `@example` written without a fence is
+ * therefore documentation that ships, renders in the IDE hover, and is checked
+ * by nothing — and nothing says so, which is the shape of every silent pass this
+ * file exists to refuse.
+ *
+ * The remedy is deliberately the convention and not a wider parser. Teaching
+ * extractCodeBlocks to guess where an unfenced example starts and stops would
+ * start reading prose as code, and would buy coverage that depends on a
+ * heuristic instead of on a marker the author typed. A fence is one line; this
+ * check is what makes "fence your examples" enforced rather than merely
+ * written down. The repo had exactly one unfenced `@example` and it was fenced
+ * by hand in the commit that added this surface, with nothing left behind to
+ * stop the next one — which is verbatim the defect class that commit was
+ * written to close, one level down.
+ *
+ * Not quarantinable, and that is the point: the debt ledger records a KNOWN
+ * broken import on a surface the gate can still read. A blind spot is not debt
+ * whose size is known — it is coverage the gate does not have — so it fails
+ * here alongside the roster checks rather than being available to declare away.
+ *
+ * What counts as a fence is extractCodeBlocks' judgement, not a second regex,
+ * so an `@example` that merely SHOWS this convention inside a fenced block is
+ * content rather than a finding, and an author cannot be failed by one rule for
+ * writing what another rule accepts.
+ *
+ * Deferring to that judgement means also reporting where an author's fence is
+ * not one. extractCodeBlocks opens a block only on a marker that STARTS its
+ * line, so `@example ```ts` — the fence trailing the tag — opens nothing. The
+ * damage is not merely that the example goes unread: the parse skews, the
+ * intended CLOSING fence is read as an opening one, and the example's own
+ * import then precedes a fence inside its own block and is dropped. That is a
+ * silent pass, and it was measured on this check's first draft — a bogus symbol
+ * imported in a tag-line-fenced example was ACCEPTED while its two siblings in
+ * the same file failed correctly. A marker anywhere in the example's body that
+ * does not start its line is therefore its own finding. The scan is confined to
+ * the body precisely because prose ABOUT fences (this file is full of it) is
+ * ordinary writing everywhere else.
+ */
+const BLOCK_TAG = /^\s*@[a-zA-Z]/;
+const EXAMPLE_TAG = /^\s*@example\b/;
+const FENCE_ANYWHERE = /(`{3,}|~{3,})/;
+const FENCE_STARTS_LINE = /^\s*(`{3,}|~{3,})/;
+function unfencedExamples(file, text) {
+  // `user@example.com` in prose is far more common than the tag, so the tag is
+  // only ever recognised at the start of a (marker-blanked) line. This early-out
+  // keeps the AST build off the great majority of sources, which mention it in
+  // neither form.
+  if (!text.includes('@example')) return [];
+
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKindFor(file));
+  const found = [];
+  for (const range of commentRanges(sf, text)) {
+    const body = text.slice(range.pos, range.end);
+    if (!body.includes('@example')) continue;
+    const isBlockComment = range.kind === ts.SyntaxKind.MultiLineCommentTrivia;
+    const stripped = stripCommentMarkers(body, isBlockComment);
+    const lines = stripped.split('\n');
+    // 0-based line of the comment's first character — the same translation
+    // extractCommentCodeBlocks makes, so both surfaces cite the same line.
+    const commentLine = sf.getLineAndCharacterOfPosition(range.pos).line;
+
+    // A fence's extent in this comment's own 0-based lines. extractCodeBlocks
+    // returns the first CONTENT line 1-based, so `startLine - 2` is the opening
+    // fence and `startLine - 1 + lines.length` is the closing one (or, for an
+    // unterminated fence, one line past its content — which still covers
+    // everything the block swallowed).
+    const fences = extractCodeBlocks(stripped).map((b) => ({
+      open: b.startLine - 2,
+      close: b.startLine - 1 + b.lines.length,
+    }));
+    const insideFence = (i) => fences.some((f) => i >= f.open && i <= f.close);
+
+    let open = null;
+    const settle = (end) => {
+      if (open === null) return;
+      const at = (i) => commentLine + i + 1;
+      const stray = [];
+      for (let i = open; i <= end; i += 1) {
+        if (insideFence(i)) continue;
+        if (FENCE_ANYWHERE.test(lines[i]) && !FENCE_STARTS_LINE.test(lines[i])) stray.push(i);
+      }
+      if (stray.length) {
+        found.push({
+          line: at(stray[0]),
+          why: 'its fence marker does not start its own line, so nothing reads it as a fence',
+        });
+      } else if (!fences.some((f) => f.open >= open && f.open <= end)) {
+        found.push({ line: at(open), why: 'it carries no fence' });
+      }
+      open = null;
+    };
+    for (let i = 0; i < lines.length; i += 1) {
+      if (insideFence(i)) continue;
+      if (EXAMPLE_TAG.test(lines[i])) {
+        settle(i - 1);
+        open = i;
+        continue;
+      }
+      // Any other block tag ends the example's body; a fence opened after it
+      // belongs to `@returns`, not to the example.
+      if (open !== null && BLOCK_TAG.test(lines[i])) settle(i - 1);
+    }
+    settle(lines.length - 1);
+  }
+  return found;
 }
 
 /**
@@ -1390,16 +1600,41 @@ function main() {
     process.exit(1);
   }
 
+  // One read per source, feeding both passes: the comment surface's own roster
+  // check (an `@example` no fence makes readable — see unfencedExamples for why
+  // that is a hard failure rather than quarantinable debt) and its blocks.
+  const unfenced = [];
+  const sourceDocuments = sources.map((f) => {
+    const file = path.join(REPO_ROOT, f);
+    const text = fs.readFileSync(file, 'utf8');
+    for (const finding of unfencedExamples(file, text)) {
+      unfenced.push(`${rel(file)}:${finding.line} — ${finding.why}`);
+    }
+    return { file, source: true, blocks: extractCommentCodeBlocks(file, text) };
+  });
+  if (unfenced.length) {
+    process.stderr.write(
+      `${unfenced.length} JSDoc @example block(s) are outside this gate's reach:\n` +
+        unfenced.map((w) => `   - ${w}\n`).join('') +
+        'This gate reads FENCED blocks, so such an @example ships to every IDE hover\n' +
+        'name-checked by nothing — coverage the gate silently does not have, which is the one\n' +
+        'outcome it may not produce. Open the fence on its OWN line directly under the tag:\n\n' +
+        '     * @example\n' +
+        '     * ```ts\n' +
+        '     * import { UIBridgeProvider } from "@qontinui/ui-bridge/react";\n' +
+        '     * ```\n\n' +
+        'Widening the parser to guess where an unfenced example ends would start reading\n' +
+        'prose as code, and a fence is one line.\n'
+    );
+    process.exit(1);
+  }
+
   const documents = [
     ...files.map((file) => ({
       file,
       blocks: extractCodeBlocks(fs.readFileSync(file, 'utf8')),
     })),
-    ...sources.map((f) => {
-      const file = path.join(REPO_ROOT, f);
-      const blocks = extractCommentCodeBlocks(file, fs.readFileSync(file, 'utf8'));
-      return { file, source: true, blocks };
-    }),
+    ...sourceDocuments,
   ];
 
   const failures = [];

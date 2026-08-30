@@ -79,6 +79,10 @@ jobs:
         # blocks importing `@anthropic-ai/ui-bridge-sdk`, a scope this project
         # has never owned, and fixed them by hand because nothing was looking;
         # the same rule now judges a fenced block wherever a reader meets it.
+        # Because it reads FENCED blocks, that surface has a roster check of its
+        # own: an `@example` carrying no fence — or one trailing the tag, which
+        # opens no block — is read by nothing, so the step fails and names it
+        # rather than passing over a blind spot in silence.
         #
         # The roster is also checked for COMPLETENESS: every .md/.mdx file the
         # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS
