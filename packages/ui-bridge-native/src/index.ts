@@ -59,6 +59,22 @@ export {
   setGlobalRegistry,
   getGlobalRegistry,
   resetGlobalRegistry,
+  // The visibility projection (qontinui/ui-bridge#175). `visibility` and
+  // `visibilityReason` are on every snapshot element, and the registry's
+  // `setViewportProvider` / `getViewportRect` / `getClipRectFor` are public
+  // methods a non-React host must call to arm the clipping at all. Without
+  // these a root-importing consumer cannot name the union it is reading, and
+  // cannot reproduce the verdict for an element it holds. Reachable from the
+  // `./core` subpath since it landed, and from the package root only now —
+  // this file uses an explicit export list and was not updated, which is the
+  // defect `public-surface.remediation.test.ts` exists to catch.
+  computeVisibility,
+  pageRectOf,
+  intersectRects,
+  isEmptyRect,
+  type NativePageRect,
+  type NativeVisibility,
+  type NativeVisibilityReason,
   type RegisterElementOptions,
   type RegisterComponentOptions,
   type NativeRegistryConfig,
@@ -242,6 +258,14 @@ export { createServerHandlers } from './server/handlers';
 export {
   NativeUIBridgeServer,
   createNativeServer,
+  // The envelope-code → HTTP-status mapping `handleRequest` uses. Exported on
+  // BOTH native surfaces deliberately: a consumer implementing `ServerAdapter`
+  // for their chosen RN HTTP library needs the same mapping to answer
+  // consistently, and this package ships that interface too. It was
+  // module-private here while the parent exported it — an asymmetry with no
+  // reason behind it, since the argument for exporting applies to whichever
+  // package the consumer happens to be holding.
+  httpStatusForResponse,
   type HTTPRequest,
   type HTTPResponse,
   type RequestHandler,

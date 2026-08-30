@@ -185,6 +185,12 @@ export { createServerHandlers } from './server/handlers';
 export {
   NativeUIBridgeServer,
   createNativeServer,
+  // The envelope-code → HTTP-status mapping the built-in `handleRequest` uses.
+  // Exported because this package's whole server story is BYO transport: a
+  // consumer implementing `ServerAdapter` for their chosen RN HTTP library
+  // needs the same mapping to answer consistently, and without it they would
+  // re-derive the blanket 400 this surface just stopped sending.
+  httpStatusForResponse,
   type HTTPRequest,
   type HTTPResponse,
   type RequestHandler,
