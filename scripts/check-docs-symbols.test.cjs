@@ -32,6 +32,7 @@
  */
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -606,6 +607,49 @@ test('a `//` run carrying an inline block comment does not swallow the parse', (
 
 test('a source with no fence at all is skipped without an AST', () => {
   assert.deepEqual(extractCommentCodeBlocks('fixture.ts', '// just prose\nexport const a = 1;'), []);
+});
+
+// ---------------------------------------------------------------------------
+// The entry-point split — the guard that keeps a silent green impossible
+// ---------------------------------------------------------------------------
+//
+// `require.main === module` is what lets this file import the gate without
+// starting one. Both directions of that split are load-bearing and neither is
+// observable from a passing run, which is exactly why they are pinned here: if
+// the detection went wrong the gate would do NOTHING and exit 0 — silent green,
+// the one outcome this file may not produce.
+
+const GATE = path.resolve(__dirname, 'check-docs-symbols.cjs');
+
+test('requiring the gate does not run it', () => {
+  // The half this whole test file depends on. A `require` that started a
+  // whole-repo check would make every case below run the gate as a side effect.
+  const out = execFileSync(
+    process.execPath,
+    ['-e', `require(${JSON.stringify(GATE)}); console.log('quiet');`],
+    { encoding: 'utf8' }
+  );
+  assert.equal(out.trim(), 'quiet');
+});
+
+test('argv[1] naming the gate while require.main does not is refused, loudly', () => {
+  // The misfire shape: invoked as a script, but not detected as the entry
+  // module. It must throw rather than fall through to a clean exit 0.
+  let status = null;
+  let stderr = '';
+  try {
+    execFileSync(
+      process.execPath,
+      ['-e', `process.argv[1] = ${JSON.stringify(GATE)}; require(${JSON.stringify(GATE)});`],
+      { stdio: 'pipe' }
+    );
+  } catch (e) {
+    status = e.status;
+    stderr = String(e.stderr);
+  }
+  assert.equal(status, 1, 'the guard must fail the process, not pass silently');
+  assert.match(stderr, /did not detect itself as the entry module/);
+  assert.match(stderr, /Refusing to exit 0 without running the check/);
 });
 
 // ---------------------------------------------------------------------------
