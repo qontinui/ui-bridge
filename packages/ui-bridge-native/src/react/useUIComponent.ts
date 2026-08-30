@@ -19,10 +19,10 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
   /** Description */
   description?: string;
   /**
-   * Parameter schema â€” **serialized, published to agents, and VALIDATED.**
+   * Parameter schema — **serialized, published to agents, and VALIDATED.**
    *
    * It is spread onto `/control/components` and `/control/component/:id`, and
-   * four `qontinui-runner` consumers read it from there â€” including the LLM
+   * four `qontinui-runner` consumers read it from there — including the LLM
    * router that generates a slash command's args from it. Since Phase 2 of
    * plan `2026-08-20-ui-bridge-action-declaration-shape` the invocation seam
    * checks `params` against it BEFORE your handler runs, so a schema declared
@@ -35,35 +35,35 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    *
    * Two accepted shapes:
    *
-   * - **Object-schema form** â€” `{ type: 'object', properties: { ... },
+   * - **Object-schema form** — `{ type: 'object', properties: { ... },
    *   required: ['...'], additionalProperties: false }`. The only form that can
    *   express *requiredness*. `paramSchemaOf()` from
    *   `@qontinui/ui-bridge-wrapper` emits it for you.
-   * - **Map form** â€” `{ paramName: 'string', other: { type: 'number' } }`. A
+   * - **Map form** — `{ paramName: 'string', other: { type: 'number' } }`. A
    *   TYPE hint only: it cannot mark anything required, and a string that is
    *   not one of the seven JSON Schema primitive names (`string`, `number`,
    *   `integer`, `boolean`, `object`, `array`, `null`) is read as prose and
-   *   constrains nothing â€” which is what keeps the fleet's many
+   *   constrains nothing — which is what keeps the fleet's many
    *   `{ count: 'number (>= 1, defaults to 1)' }` hint maps working.
    *
    * Recognised keywords: `type`, `enum`, `const`, `properties`, `required`,
    * `additionalProperties: false`, `items`, `minimum`/`maximum`,
    * `minLength`/`maxLength`, `pattern`. **Anything else is ignored, never
-   * rejected** â€” a schema richer than the subset is still valid JSON Schema,
+   * rejected** — a schema richer than the subset is still valid JSON Schema,
    * it just expresses fewer enforced constraints. No type coercion: `"5"` does
    * not satisfy `{ type: 'number' }`.
    *
-   * Enforcement is a deployment setting and defaults to `'warn'` â€” violations
+   * Enforcement is a deployment setting and defaults to `'warn'` — violations
    * are logged and the handler still runs until someone calls
    * `setDefaultParamValidationMode('enforce')`. The full grammar, and why warn
    * is the default, are documented at `core/param-schema.ts`.
    */
   paramSchema?: Record<string, unknown>;
   /**
-   * Safety annotation â€” `'read' | 'write' | 'destructive'` (Phase 4 of plan
+   * Safety annotation — `'read' | 'write' | 'destructive'` (Phase 4 of plan
    * `2026-08-20-ui-bridge-action-declaration-shape`).
    *
-   * **Declare `'destructive'` on anything irreversible** â€” a delete, a send, a
+   * **Declare `'destructive'` on anything irreversible** — a delete, a send, a
    * charge, a deploy. It is the one value nothing can infer for you: the
    * static verb map behind this field never produces `'destructive'`, because
    * destructiveness depends on what your control does, not on what it is
@@ -73,8 +73,8 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * **Precedence:** what you write here wins, and it is the **only** thing
    * that reaches the wire. `NATIVE_STANDARD_ACTION_EFFECTS` supplies a default
    * when the action `id` happens to be one of the native standard verbs
-   * (`press`, `longPress`, `swipe`, â€¦), but that default is applied **by the
-   * consumer**, via the exported `resolveActionEffect()` â€” the SDK does *not*
+   * (`press`, `longPress`, `swipe`, …), but that default is applied **by the
+   * consumer**, via the exported `resolveActionEffect()` — the SDK does *not*
    * stamp it onto the response. Leave this undefined and the field is simply
    * **absent** from every projection, which is the honest encoding of "nobody
    * classified this action" (see `core/action-effect.ts` for why a
@@ -88,7 +88,7 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * aborted when the caller cancels or the request's `timeoutMs` elapses
    * (Phase 3 of plan `2026-08-20-ui-bridge-action-declaration-shape`).
    * Observing it is optional: the executor races this promise against the
-   * abort, so an unobservant handler is abandoned anyway â€” observing it is how
+   * abort, so an unobservant handler is abandoned anyway — observing it is how
    * a handler releases its own in-flight work instead of leaving it detached.
    */
   handler: (params?: TParams, options?: { signal?: AbortSignal }) => TResult | Promise<TResult>;
@@ -132,9 +132,9 @@ export interface UseUIComponentReturn {
    *
    * **Not required for the common case any more.** The `actions` OPTION passed
    * to `useUIComponent({ id, actions })` is now auto-re-published whenever its
-   * published shape changes, so a state-derived action list â€” a label carrying
+   * published shape changes, so a state-derived action list — a label carrying
    * a count, an action that only exists while a row is selected, a
-   * `paramSchema` that widens once options load â€” reaches
+   * `paramSchema` that widens once options load — reaches
    * `/control/components` without a call site doing anything. This is the
    * escape hatch for actions the hook does not own, the same role `updateLabel`
    * plays for `useUIElement`.
@@ -146,7 +146,7 @@ export interface UseUIComponentReturn {
   updateActions: (actions: ComponentActionDef[]) => void;
   /**
    * Add an element ID to this component. Published to the registry
-   * immediately â€” this used to write to a private ref and stop there, so the
+   * immediately — this used to write to a private ref and stop there, so the
    * ownership list an agent read never moved.
    *
    * Survives re-renders. It is replaced only when the DECLARED `elementIds`
@@ -157,7 +157,7 @@ export interface UseUIComponentReturn {
   /** Remove an element ID from this component. Same publishing rules as {@link addElement}. */
   removeElement: (elementId: string) => void;
   /**
-   * The registered component as the registry currently holds it â€” `null` until
+   * The registered component as the registry currently holds it — `null` until
    * registration commits, then refreshed on every republish that changes the
    * published shape.
    */
@@ -215,7 +215,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // `registeredRef` is authoritative for the register/unregister guard (same
   // rationale as `useUIElement`: threading the state into the register
   // callback's deps builds a cleanup/run feedback loop). `registered` is the
-  // rendered mirror â€” the value this hook RETURNS, which used to be
+  // rendered mirror — the value this hook RETURNS, which used to be
   // `registeredRef.current` and so was read during render before any effect had
   // set it: it was `false` on the first render and only ever changed if
   // something unrelated re-rendered the consumer.
@@ -225,7 +225,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   //
   // A version counter rather than holding the entry itself in state, and that is
   // load-bearing. `registerComponent` returns a FRESH object every call, so
-  // storing it would re-render on every registration â€” and a provider whose
+  // storing it would re-render on every registration — and a provider whose
   // context value churns per render re-registers every element on every render,
   // which would then be an unbounded loop instead of the bounded registry churn
   // it is today. PR #179 fixed that churn at the provider, but this hook should
@@ -244,7 +244,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // allocated on essentially every render at every call site, so their identity
   // says nothing; these say whether anything a bridge consumer can SEE moved.
   // `handler` is excluded for the same reason the registry excludes it (see
-  // `publishedActionSignature`) â€” it is never published, and it changes every
+  // `publishedActionSignature`) — it is never published, and it changes every
   // render.
   const actionsSignature = JSON.stringify(
     (options.actions ?? []).map((a) => [a.id, a.label, a.description, a.paramSchema, a.effect])
@@ -253,7 +253,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
 
   // Track the declared `actions` on every render, so the trampoline below always
   // resolves to the CURRENT closure. Only when the option is actually SUPPLIED:
-  // overwriting unconditionally â€” which is what `options.actions || []` did â€”
+  // overwriting unconditionally — which is what `options.actions || []` did —
   // wipes an action list installed through the imperative `updateActions` lane
   // on the very next render of a call site that declares no `actions` option.
   useEffect(() => {
@@ -263,7 +263,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // `elementIds` carries no closures, so it is re-asserted only when the
   // DECLARED value actually changes. Doing it every render instead would undo
   // `addElement` / `removeElement` on the next render of any call site that
-  // declares an `elementIds` option AND adds to it â€” the two lanes would fight,
+  // declares an `elementIds` option AND adds to it — the two lanes would fight,
   // and the imperative one would appear to work and then silently revert.
   useEffect(() => {
     if (options.elementIds !== undefined) elementIdsRef.current = options.elementIds;
@@ -276,7 +276,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   //
   // The handler is a trampoline that resolves through `actionsRef.current` at
   // INVOKE time. Without it the registry holds the closure from the render that
-  // registered the component, for the life of the mount â€” so an action handler
+  // registered the component, for the life of the mount — so an action handler
   // reading component state read that state as it was at mount, and
   // `updateActions` was the only escape from a staleness nothing announced.
   //
@@ -313,7 +313,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     setRegistered(true);
     // Only when the id this hook has PUBLISHED actually moved. A re-registration
     // under the same id produces an entry a consumer cannot tell apart from the
-    // one it already has, so it is not worth a render â€” and skipping it is what
+    // one it already has, so it is not worth a render — and skipping it is what
     // keeps a churning provider from spinning this hook forever.
     if (publishedIdRef.current !== id) {
       publishedIdRef.current = id;
@@ -331,7 +331,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     setRegistered(false);
     // `publishedIdRef` is deliberately NOT cleared here. It records the id whose
     // registration the render-phase read has already been told about, and
-    // clearing it would re-arm the bump in `register()` — which is exactly the
+    // clearing it would re-arm the bump in `register()` � which is exactly the
     // unbounded loop this guard exists to prevent, since a provider with a
     // churning context value runs unregister+register on every render. Going
     // un-registered is already visible through `registered` flipping to false.
@@ -362,7 +362,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   );
 
   // Publish whatever `elementIdsRef` now holds. Shared by `addElement` and
-  // `removeElement`, which BOTH used to mutate the ref and stop there â€” the
+  // `removeElement`, which BOTH used to mutate the ref and stop there — the
   // registry kept its mount-time `elementIds` and the component's ownership
   // list, as read from `/control/components`, was a fossil. The hook returned
   // two functions that did nothing observable.
@@ -383,7 +383,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
 
       // Publish in place. This used to unregister and re-register, which emitted
       // a spurious `component:unregistered`/`component:registered` pair and left
-      // the component ABSENT from the registry for the width of the call â€” a
+      // the component ABSENT from the registry for the width of the call — a
       // snapshot taken in that window reported a component the app had not
       // stopped rendering.
       if (registeredRef.current && bridge) {
@@ -436,11 +436,11 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // never re-ran on an id change, so the OLD id stayed registered forever and
   // the NEW id was never registered at all. `registeredIdRef` existed to name
   // the old id during teardown and could never actually differ from `id`,
-  // because nothing re-ran the effect â€” the field was dead for want of this dep.
+  // because nothing re-ran the effect — the field was dead for want of this dep.
   //
   // Ordering on an id-change render: the cleanup runs first, closing over the
-  // PREVIOUS `unregisterRef.current`, which removes `registeredIdRef.current` â€”
-  // the OLD id â€” and resets the guard. The ref-sync effect above is declared
+  // PREVIOUS `unregisterRef.current`, which removes `registeredIdRef.current` —
+  // the OLD id — and resets the guard. The ref-sync effect above is declared
   // first, so by the time this body re-runs, `registerRef.current` registers the
   // NEW id.
   useEffect(() => {
@@ -455,16 +455,16 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
     };
   }, [autoRegister, bridge, id]);
 
-  // Keep the registry's copy of the declaration in step with the OPTIONS â€”
+  // Keep the registry's copy of the declaration in step with the OPTIONS —
   // automatically.
   //
   // ROOT CAUSE this closes, and it is PR #176's defect one level up:
   // `register()` publishes name / description / actions / elementIds exactly
   // once and is guarded by `registeredRef`, while the auto-register effect
   // re-runs only on `[autoRegister, bridge, id]`. So a component whose
-  // declaration is derived from state â€” an action label carrying a count, an
+  // declaration is derived from state — an action label carrying a count, an
   // action that exists only while a row is selected, a `paramSchema` that widens
-  // once options load â€” published its mount-time shape to `/control/components`
+  // once options load — published its mount-time shape to `/control/components`
   // for the life of the mount. `updateActions` was the manual escape hatch, the
   // same shape `updateLabel` was for elements before #176 auto-published the
   // `label` option.
@@ -508,7 +508,7 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
   // entry into state.
   //
   // The registry is the owner; a copy held in state is a second one that can
-  // disagree. `publishVersion` is what makes this read re-run — it is bumped
+  // disagree. `publishVersion` is what makes this read re-run � it is bumped
   // exactly when the registry's copy demonstrably changed, so this value is as
   // fresh as the last publish and costs one `Map.get` per render.
   //
