@@ -71,7 +71,7 @@ const ERROR_CODE_HTTP_STATUS = new Map<string, number>([
  * to answer. The envelope's `code` already carries the distinction; this maps
  * it onto the status line so a caller reading only the status gets the truth.
  */
-function httpStatusForResponse(response: APIResponse): number {
+export function httpStatusForResponse(response: APIResponse): number {
   if (response.success) return 200;
   const mapped = response.code ? ERROR_CODE_HTTP_STATUS.get(response.code) : undefined;
   return mapped ?? 400;
