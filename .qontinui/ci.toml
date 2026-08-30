@@ -208,6 +208,9 @@ name = "docs-symbol-ratchet"
 # hover, it is the copy a reader is most likely to paste, and no markdown glob
 # reaches it — #160 found two blocks importing a scope this project has never
 # owned and had to fix them by hand with nothing left behind to stop the next.
+# Reading FENCED blocks gives that surface a roster of its own: an `@example`
+# with no fence, or with one trailing the tag so that no block opens, is read by
+# nothing — the step fails and names it instead of passing over a blind spot.
 # It also fails when a tracked .md/.mdx file sits on no surface and on no
 # declared exemption, so a new documentation tree cannot land unchecked. It sits
 # in THIS job rather than in `docs` because the `docs` job installs only

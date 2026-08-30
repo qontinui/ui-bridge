@@ -150,6 +150,12 @@ ui-bridge/
 - Prefer `interface` over `type` for object shapes
 - Use meaningful variable and function names
 - Add JSDoc comments for public APIs
+- Put every `@example` body in a fenced block, with the fence opening on its own
+  line under the tag — as below. `npm run docs:check-symbols` name-checks the
+  imports inside those fences against the real `exports` maps and export
+  surfaces, so an example that drifts from the code fails CI; an example the
+  fence does not enclose is read by nothing, and the same check fails on that
+  too rather than passing over it in silence.
 
 ````typescript
 /**
