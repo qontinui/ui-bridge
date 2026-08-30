@@ -1953,7 +1953,7 @@ export function createRelayHandlers(
         // registered elements while /control/visibility reported 0 on the very
         // same page. With the refresh, the same first call reports 25 and the
         // expected findings.
-        const recency = resolveRecency(params as { recency?: string } | undefined);
+        const recency = resolveRecency(params);
         await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
 
         const snapshot = latestControlSnapshot as ControlSnapshot;
@@ -1979,7 +1979,12 @@ export function createRelayHandlers(
             modalContext: snapshot?.modalStack,
             minRatio: params?.minRatio,
             includeExpected: params?.includeExpected,
-          })
+          }),
+          // Report WHICH snapshot the finding came from. This endpoint's whole
+          // contract is that an UNKNOWN must not read as a PASS; a `clear`
+          // derived from a snapshot the relay could not refresh is exactly
+          // that trap, and `stale` is the only thing that distinguishes it.
+          staleMeta()
         );
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');
