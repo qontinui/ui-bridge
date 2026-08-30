@@ -1927,8 +1927,35 @@ export function createRelayHandlers(
     // The hit-test survives the trip because the page already ran it and
     // stamped `occludedBy` / `occludedPct` onto each element's state, so this
     // is a projection of a measurement, not a re-derivation of one.
-    async visibility(params?: { minRatio?: number; includeExpected?: boolean }) {
+    async visibility(params?: {
+      minRatio?: number;
+      includeExpected?: boolean;
+      recency?: string;
+    }) {
       try {
+        // Populate the cache before reading it. Every other cache-reading
+        // handler here (`getElements`, `rankElements`, `getComponents`, …)
+        // refreshes first; `visibility` did not, so it answered from whatever
+        // snapshot an EARLIER call happened to leave behind — and from the
+        // pristine empty one when it was called first. That is the normal case
+        // for an autonomous audit, which has no reason to take a snapshot
+        // before asking whether anything is covered.
+        //
+        // The failure shape is the bad one: not an error a caller notices, but
+        // `verdict: "unknown_empty_registry"` against a live page with a full
+        // registry — an UNKNOWN that reads like a considered answer, produced
+        // for a reason that has nothing to do with the page. The verdict field
+        // exists so UNKNOWN is not mistaken for a PASS; this made it mean
+        // "nobody asked the browser" instead.
+        //
+        // Measured end-to-end against a real Chromium tab driven through
+        // `@qontinui/ui-bridge-headless`: /control/discover reported 23
+        // registered elements while /control/visibility reported 0 on the very
+        // same page. With the refresh, the same first call reports 25 and the
+        // expected findings.
+        const recency = resolveRecency(params as { recency?: string } | undefined);
+        await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
+
         const snapshot = latestControlSnapshot as ControlSnapshot;
         const elements = (snapshot?.elements ?? []) as Array<{
           id: string;
