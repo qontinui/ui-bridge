@@ -17,7 +17,7 @@
  * does require the optional `@qontinui/ui-bridge-headless` peer plus a one-time
  * `npx playwright install chromium` (or `PLAYWRIGHT_BROWSERS_PATH`). See README.
  *
- *   ui-bridge-capture-specs --out D:/qontinui-root/spec-capture
+ *   ui-bridge-capture-specs --out ./spec-capture
  *   (creds via env UIB_LOGIN_EMAIL/PASSWORD or --email/--password)
  */
 
@@ -37,7 +37,7 @@ Required (one of):
 
 Options:
   --out <dir>                    Output dir for <slug>.snapshot.json files
-                                 (default D:/qontinui-root/spec-capture).
+                                 (default ./spec-capture, relative to cwd).
   --origin <url>                 App origin (default https://qontinui.io).
   --pages "slug=path,slug=path"  Pages to capture (paths joined to --origin;
                                  absolute http(s) URLs used verbatim). Default =
@@ -55,7 +55,11 @@ or set PLAYWRIGHT_BROWSERS_PATH).
 Exits non-zero if any capture bounced to login or errored.
 `;
 
-const DEFAULT_OUT = 'D:/qontinui-root/spec-capture';
+// Relative to the caller's cwd, which is what a published CLI must default to.
+// This was an absolute path on the author's drive -- baked into an npm package,
+// so it resolved on exactly one machine and silently wrote nowhere useful on
+// every other. A relative default is resolved by the fs calls downstream.
+const DEFAULT_OUT = 'spec-capture';
 const DEFAULT_ORIGIN = 'https://qontinui.io';
 // spaceship: gives the trees page real cards.
 const DEFAULT_DEVICE = 'c79a07d5-7e40-49b4-87fa-554c749f9644';

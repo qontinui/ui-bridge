@@ -20,7 +20,7 @@ afterEach(() => {
 describe('parseArgs', () => {
   it('defaults out/origin/timeout and parses creds', () => {
     const args = parseArgs([...CREDS]);
-    expect(args.out).toBe('D:/qontinui-root/spec-capture');
+    expect(args.out).toBe('spec-capture');
     expect(args.origin).toBe(ORIGIN);
     expect(args.timeoutMs).toBe(70000);
     expect(args.pages).toBeNull();
