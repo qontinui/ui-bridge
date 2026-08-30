@@ -61,6 +61,11 @@ export {
   resetGlobalRegistry,
   type RegisterElementOptions,
   type RegisterComponentOptions,
+  // The partial-update counterpart. Without it a consumer can call
+  // `registry.updateComponentMeta(...)` but cannot name the type of the bag it
+  // passes — the same gap `RegisterComponentOptions` would leave if it were
+  // unexported.
+  type UpdateComponentMetaOptions,
   type NativeRegistryConfig,
 } from './core/registry';
 
