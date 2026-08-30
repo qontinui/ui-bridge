@@ -280,23 +280,33 @@ adaptation PR with a `coord:` dep-edge label so the check resolves that tree
 instead of the pin, or — for genuinely intentional divergence — add a line to
 `.github/peer-contract-baseline.conf` **with a reason**.
 
-### Adding a subpath to a package's `exports` map
+### Adding an entry point to a package: `exports`, `bin`, `main`
 
-`exports` is the package's public API and the build's `entry` is what actually
+A package's manifest is its public API and the build's `entry` is what actually
 produces the files it names — two lists, in two files, that nothing reconciles
-on its own. A subpath whose `dist/…` target no `entry` emits is not a build
-error and not a publish error: `npm publish` ships the map either way, and the
-subpath then throws `ERR_MODULE_NOT_FOUND` in every installed copy.
+on its own. A target no `entry` emits is not a build error and not a publish
+error: `npm publish` ships the manifest either way, and the name then throws
+`ERR_MODULE_NOT_FOUND` in every installed copy — or, for a `bin`, fails `npx`
+on the first command a new user runs.
 
-So a new subpath is **two edits**: the `exports` entry in `package.json`, and
+So a new entry point is **two edits**: the manifest field in `package.json`, and
 the matching entry in that package's `tsup.config.ts`.
 `npm run docs:check-symbols` fails if you make only the first, and names both
-files.
+files plus the field it is complaining about.
+
+Every field that names a built file is read, not just `exports`:
+
+| field | what a missing target breaks |
+|---|---|
+| `exports` | `import '<pkg>/<subpath>'` in an installed copy |
+| `bin` | `npx <pkg>` / the installed command |
+| `main`, `module`, `types` | node10 resolvers, bundlers predating `exports`, and TypeScript under `moduleResolution: node` |
+| `unpkg`, `jsdelivr` | the CDN URL the README hands a reader |
 
 That gate is also the reason the mistake is worth spelling out: it resolves
-every published target back to `src` — which is exactly where an unbuilt
-subpath still looks healthy — so before this check an `@example` importing one
-was reported as *verified*. `@qontinui/ui-bridge` shipped `"./discovery"` in
+every published target back to `src` — which is exactly where an unbuilt target
+still looks healthy — so before this check an `@example` importing one was
+reported as *verified*. `@qontinui/ui-bridge` shipped `"./discovery"` in
 precisely that state.
 
 ### PR Description

@@ -221,11 +221,15 @@ name = "docs-symbol-ratchet"
 # Reading FENCED blocks gives that surface a roster of its own: an `@example`
 # with no fence, or with one trailing the tag so that no block opens, is read by
 # nothing — the step fails and names it instead of passing over a blind spot.
-# It also refuses a published subpath the build never emits: `exports` is a
-# package's public API, so a subpath whose `dist/…` target no tsup `entry`
-# produces is ERR_MODULE_NOT_FOUND in every installed copy — and it is invisible
-# to the rest of the check, which resolves every dist target back to `src`,
-# exactly where such a subpath still looks healthy.
+# It also refuses a published target the build never emits: a package's manifest
+# is its public API, so a target whose `dist/…` file no tsup `entry` produces is
+# ERR_MODULE_NOT_FOUND in every installed copy — or, for a `bin`, `npx` failing
+# on the first command a new user runs — and it is invisible to the rest of the
+# check, which resolves every dist target back to `src`, exactly where such a
+# target still looks healthy. Every manifest field that names a built file is
+# read, not `exports` alone: `bin`, `main`, `module`, `types`, `unpkg`,
+# `jsdelivr` — so a package publishing its entry points the legacy way, with no
+# `exports` map at all, is checked rather than skipped.
 # It also fails when a tracked .md/.mdx file sits on no surface and on no
 # declared exemption, so a new documentation tree cannot land unchecked. It sits
 # in THIS job rather than in `docs` because the `docs` job installs only

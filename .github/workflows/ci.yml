@@ -95,13 +95,18 @@ jobs:
         # opens no block — is read by nothing, so the step fails and names it
         # rather than passing over a blind spot in silence.
         #
-        # It also refuses a published subpath the build never emits. `exports`
-        # is a package's public API, so a subpath whose `dist/…` target no tsup
-        # `entry` produces is ERR_MODULE_NOT_FOUND in every installed copy —
-        # and it is invisible to the check above by construction, which resolves
-        # every dist target back to `src`, exactly where such a subpath still
-        # looks healthy. `@qontinui/ui-bridge` published "./discovery" that way,
-        # and the `@example` importing it was reported as fully VERIFIED.
+        # It also refuses a published target the build never emits. A
+        # package's manifest is its public API, so a target whose `dist/…` file
+        # no tsup `entry` produces is ERR_MODULE_NOT_FOUND in every installed
+        # copy — or, for a `bin`, `npx` failing on the first command a new user
+        # runs — and it is invisible to the check above by construction, which
+        # resolves every dist target back to `src`, exactly where such a target
+        # still looks healthy. `@qontinui/ui-bridge` published "./discovery"
+        # that way, and the `@example` importing it was reported as fully
+        # VERIFIED. Every manifest field that names a built file is read, not
+        # `exports` alone: `bin`, `main`, `module`, `types`, `unpkg`, `jsdelivr`
+        # — so a package publishing its entry points the legacy way, with no
+        # `exports` map at all, is checked rather than skipped.
         #
         # The roster is also checked for COMPLETENESS: every .md/.mdx file the
         # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS

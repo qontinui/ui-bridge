@@ -609,15 +609,16 @@ function resolveSubpath(pkg, subpath) {
  *    (fuzzy stems, a src-wide scan) would trade that false failure for a false
  *    pass, so the declaration is read rather than guessed, and it is read
  *    FIRST: the mirror is the fallback for a build that declares nothing.
- * 2. DOES THE BUILD EMIT THIS FILE AT ALL — `unbuiltSubpaths`. A published
- *    subpath whose target no entry produces resolves to nothing in an
- *    installed package, and the mirror cannot see that, because the mirror
- *    reads `src`, which is exactly where such a subpath still looks healthy.
- *    See unbuiltSubpaths for the instance that was live when this was written.
+ * 2. DOES THE BUILD EMIT THIS FILE AT ALL — `unbuiltTargets`. A file the
+ *    manifest publishes — an `exports` subpath, a `bin`, a `main` — whose
+ *    target no entry produces resolves to nothing in an installed package, and
+ *    the mirror cannot see that, because the mirror reads `src`, which is
+ *    exactly where such a target still looks healthy. See unbuiltTargets for
+ *    the instance that was live when this was written.
  *
  * The two lookups differ, deliberately, on an `outExtension` build — see
- * unbuiltSubpaths — and neither may adopt the other's matching rule.
- * (No count of affected subpaths is given for either: it would be stale on the
+ * unbuiltTargets — and neither may adopt the other's matching rule.
+ * (No count of affected targets is given for either: it would be stale on the
  * next entry anyone adds.)
  *
  * Parsed as an AST, never executed — the gate must stay a read of the checkout,
@@ -704,9 +705,10 @@ function tsupEntryMap(pkg) {
  * their evidence deserves — one is what the build says it does, the other is a
  * convention that happens to hold. Reversed, a package that renames its entry
  * ONTO a path the mirror also finds would be name-checked against the file it
- * does not publish, silently. `unbuiltSubpaths` guarantees a declared entry
- * exists for every dist-backed subpath, so the mirror is now the fallback for a
- * package that declares no build at all rather than the ordinary path.
+ * does not publish, silently. `unbuiltTargets` guarantees a declared entry
+ * exists for every dist-backed target the manifest names, so the mirror is now
+ * the fallback for a package that declares no build at all rather than the
+ * ordinary path.
  *
  * `dist/injected/bundle.global.js` still resolves to nothing, and that stays
  * correct rather than being a residual miss. Its `outExtension` puts `.global`
@@ -735,7 +737,7 @@ function distTargetToSource(pkg, target) {
  * A published `dist/…` target as the stem the build names it by, or null when
  * the target is not build output at all (`"./package.json"`).
  *
- * Shared by the resolver and by unbuiltSubpaths so the two cannot disagree
+ * Shared by the resolver and by unbuiltTargets so the two cannot disagree
  * about what a target IS while disagreeing — deliberately, and only — about
  * what counts as a match for it.
  */
@@ -1556,7 +1558,7 @@ function unfulfilledReadmePromises() {
   return out;
 }
 
-/** Every string target under an `exports` value, across conditions and arrays. */
+/** Every string target under a manifest value, across conditions and arrays. */
 function exportTargets(value, out = []) {
   if (typeof value === 'string') out.push(value);
   else if (Array.isArray(value)) for (const item of value) exportTargets(item, out);
@@ -1567,19 +1569,94 @@ function exportTargets(value, out = []) {
 }
 
 /**
- * Published subpaths whose `dist/…` target the build never emits.
+ * The manifest fields that NAME A FILE THE BUILD MUST PRODUCE, as plain
+ * single-file pointers.
+ *
+ * `exports` and `bin` are read separately in publishedTargets because each is a
+ * MAP whose keys belong in the failure message — the subpath a consumer
+ * imports, the command name a consumer runs.
+ *
+ * `browser` is deliberately ABSENT, and its absence is a reading of the field
+ * rather than an omission. Its object form maps a source path to a replacement
+ * (`{"./dist/node.js": "./dist/browser.js"}`), so its KEYS are not published
+ * targets at all; walking it like the others would report a file the build is
+ * not asked to emit. No package here sets it, and a package that does needs its
+ * own reading of it, not this one's.
+ */
+const SIMPLE_TARGET_FIELDS = ['main', 'module', 'types', 'typings', 'unpkg', 'jsdelivr'];
+
+/**
+ * Every `dist/…` file a manifest publishes, as `{ field, target }` — `field`
+ * being the manifest path a reader can go and edit.
+ *
+ * ONE MANIFEST, ONE QUESTION. `exports` is the field this check was born on,
+ * but it is not the only place a package promises a built file, and the promise
+ * is identical wherever it is made: npm ships the manifest as written and
+ * nothing reconciles any of it against the build. `bin` is the sharpest of the
+ * rest — a bin whose target no entry emits is not a subtle import failure, it
+ * is `npx <pkg>` exiting "cannot find module" on the first thing a new user
+ * runs — and `main`/`module`/`types` are what every node10 resolver, every
+ * bundler predating `exports`, and TypeScript under `moduleResolution: node`
+ * actually read. Checking one field and not the others would have made this
+ * gate a statement about which SPELLING of a promise it happened to look at.
+ *
+ * Reading `exports` alone also left a whole PUBLISHED PACKAGE out, which is the
+ * hole worth naming rather than merely closing: `create-ui-bridge-wrapper`
+ * declares no `exports` map at all — only `main` and `bin` — so the early-out
+ * this replaces (`if (!exportsMap) continue`) skipped every target it has. A
+ * package that publishes its entry points the legacy way is not a package with
+ * nothing to check; it is the one where this check is the only thing looking.
+ */
+function publishedTargets(json) {
+  const out = [];
+  const push = (field, value) => {
+    for (const target of exportTargets(value)) out.push({ field, target });
+  };
+
+  for (const field of SIMPLE_TARGET_FIELDS) {
+    if (json[field] !== undefined) push(`"${field}"`, json[field]);
+  }
+
+  // `bin` is either a single string (the command takes the package's name) or a
+  // map of command name -> file.
+  if (typeof json.bin === 'string') push('"bin"', json.bin);
+  else if (json.bin && typeof json.bin === 'object' && !Array.isArray(json.bin)) {
+    for (const [command, value] of Object.entries(json.bin)) push(`"bin"."${command}"`, value);
+  }
+
+  // `exports` is a subpath map, or the string / condition-object sugar for the
+  // root alone. Both sugar forms were skipped outright before this; they
+  // publish a target like any other.
+  const exportsMap = json.exports;
+  if (typeof exportsMap === 'string' || Array.isArray(exportsMap)) push('"exports"', exportsMap);
+  else if (exportsMap && typeof exportsMap === 'object') {
+    const subpaths = Object.keys(exportsMap).filter((k) => k.startsWith('.'));
+    if (subpaths.length) {
+      for (const subpath of subpaths) push(`"exports"."${subpath}"`, exportsMap[subpath]);
+    } else {
+      // A map with no `.` key is the root's conditions, not a map of subpaths —
+      // the same reading resolveSubpath makes of the same shape.
+      push('"exports"', exportsMap);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Published files whose `dist/…` target the build never emits.
  *
  * The counterpart of unfulfilledReadmePromises one level in, and this gate's
  * own defect class — a name that resolves to nothing — on the surface that
- * matters most: `exports` is the package's public API, so a subpath whose
- * target the build does not produce is an `ERR_MODULE_NOT_FOUND` in every
- * installed copy. Nothing else in this repository looks: the build emits what
- * its `entry` says and never consults `exports`, and `npm publish` ships an
- * `exports` map without checking that any of it exists.
+ * matters most: the manifest IS the package's public API, so a target the build
+ * does not produce is `ERR_MODULE_NOT_FOUND` in every installed copy. Nothing
+ * else in this repository looks: the build emits what its `entry` says and
+ * never consults the manifest, and `npm publish` ships `exports`, `bin` and
+ * `main` alike without checking that any of them exists.
  *
  * WHY IT BELONGS TO THIS GATE RATHER THAN SOMEWHERE ELSE. distTargetToSource
  * answers every dist target out of `src`, which is precisely where an unbuilt
- * subpath still looks healthy — so such a subpath is not merely unnoticed here,
+ * target still looks healthy — so such a target is not merely unnoticed here,
  * it is CERTIFIED. Measured 2026-08-30, on the commit that added tsupEntryMap:
  * `@qontinui/ui-bridge` published `"./discovery"` -> `./dist/discovery/index.*`
  * with no `discovery/index` entry in tsup.config.ts, and the `@example` in
@@ -1588,6 +1665,11 @@ function exportTargets(value, out = []) {
  * an example a reader can copy out of their IDE hover and cannot run. Reading
  * the build declaration for renames put the one fact needed to see that in
  * reach; this is the reader that uses it.
+ *
+ * WHICH FIELDS ARE READ, and why it is not `exports` alone, is
+ * publishedTargets' business — see it. One rule is applied to all of them, and
+ * that is the point: a promise of a built file is the same promise wherever the
+ * manifest makes it.
  *
  * MATCHING IS DELIBERATELY LOOSER HERE THAN IN THE RESOLVER, and the asymmetry
  * is the point rather than an oversight. `outExtension` rewrites the published
@@ -1606,24 +1688,30 @@ function exportTargets(value, out = []) {
  * as "emits nothing" would fail every dist target in the package on the
  * strength of a read that did not happen.
  */
-function unbuiltSubpaths(packages) {
+function unbuiltTargets(packages) {
   const out = [];
   for (const [name, pkg] of packages) {
-    const exportsMap = pkg.json.exports;
-    if (!exportsMap || typeof exportsMap !== 'object' || Array.isArray(exportsMap)) continue;
-
     const declared = [...tsupEntryMap(pkg).keys()];
     if (!declared.length) continue;
     const emitted = (stem) => declared.some((key) => stem === key || stem.startsWith(`${key}.`));
 
-    for (const [subpath, value] of Object.entries(exportsMap)) {
-      const missing = exportTargets(value).filter((t) => {
-        const stem = distStem(t);
-        return stem !== null && !emitted(stem);
-      });
-      if (missing.length) {
-        out.push({ name, config: tsupConfigPath.get(pkg.dir), subpath, missing, declared });
-      }
+    // Grouped by manifest field, so one broken subpath reports its three
+    // condition targets as a single finding rather than as three.
+    const byField = new Map();
+    for (const { field, target } of publishedTargets(pkg.json)) {
+      // A pattern key (`"./*": "./dist/*.js"`) publishes a GLOB, not a file.
+      // `entry` names concrete stems, so it cannot answer whether a glob is
+      // emitted — that is UNKNOWN, and the same reasoning that skips a package
+      // declaring no readable entries skips this. resolveSubpath supports
+      // pattern keys, so one can appear here without also becoming a failure.
+      if (target.includes('*')) continue;
+      const stem = distStem(target);
+      if (stem === null || emitted(stem)) continue;
+      if (!byField.has(field)) byField.set(field, []);
+      byField.get(field).push(target);
+    }
+    for (const [field, missing] of byField) {
+      out.push({ name, config: tsupConfigPath.get(pkg.dir), field, missing, declared });
     }
   }
   return out;
@@ -1699,28 +1787,29 @@ function main() {
     process.exit(1);
   }
 
-  // The same promise one level in: an `exports` subpath whose target the build
-  // never emits. See unbuiltSubpaths — this gate resolves every dist target out
-  // of `src`, which is exactly where such a subpath still looks healthy, so
-  // without this check it is not merely missed but certified.
-  const unbuilt = unbuiltSubpaths(packages);
+  // The same promise one level in: a manifest target the build never emits.
+  // See unbuiltTargets — this gate resolves every dist target out of `src`,
+  // which is exactly where such a target still looks healthy, so without this
+  // check it is not merely missed but certified.
+  const unbuilt = unbuiltTargets(packages);
   if (unbuilt.length) {
     process.stderr.write(
-      `${unbuilt.length} published subpath(s) resolve to build output that is never built:\n` +
+      `${unbuilt.length} published target(s) resolve to build output that is never built:\n` +
         unbuilt
           .map(
-            ({ name, config, subpath, missing, declared }) =>
-              `   - ${name} publishes "${subpath}" -> ${missing.join(', ')}, but ` +
+            ({ name, config, field, missing, declared }) =>
+              `   - ${name} publishes ${field} -> ${missing.join(', ')}, but ` +
               `${rel(config)} declares no entry that emits it\n` +
               `     entries: ${declared.join(', ')}\n`
           )
           .join('') +
-        '`exports` is the package\'s public API, so this is ERR_MODULE_NOT_FOUND in every\n' +
-        'installed copy — this gate\'s own defect class, a name resolving to nothing, on the\n' +
-        'most published surface there is. It is invisible to the rest of this check by\n' +
+        'A package\'s manifest is its public API, so this is ERR_MODULE_NOT_FOUND in every\n' +
+        'installed copy — or, for a "bin", `npx` failing on the first command a new user\n' +
+        'runs. It is this gate\'s own defect class, a name resolving to nothing, on the most\n' +
+        'published surface there is, and it is invisible to the rest of this check by\n' +
         'construction: every dist target is resolved back to `src`, which is where an unbuilt\n' +
-        'subpath still looks healthy, so an @example importing it is reported as VERIFIED.\n' +
-        'Add the entry to the tsup config, or drop the subpath from the "exports" map.\n'
+        'target still looks healthy, so an @example importing it is reported as VERIFIED.\n' +
+        'Add the entry to the tsup config, or drop the target from the manifest.\n'
     );
     process.exit(1);
   }
@@ -2169,7 +2258,7 @@ module.exports = {
   extractCodeBlocks,
   extractCommentCodeBlocks,
   tsupEntryMap,
-  unbuiltSubpaths,
+  unbuiltTargets,
   unfencedExamples,
 };
 
