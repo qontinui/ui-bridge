@@ -1916,10 +1916,28 @@ export function createRelayHandlers(
     // is a projection of a measurement, not a re-derivation of one. Findings
     // are therefore a SUBSET of what the in-page endpoint reports; the
     // verdict says so rather than implying parity.
-    async visibility(params?: { minRatio?: number; includeExpected?: boolean }) {
+    async visibility(params?: {
+      minRatio?: number;
+      includeExpected?: boolean;
+      recency?: string;
+    }) {
       try {
         const minRatio = params?.minRatio ?? 0.02;
         const includeExpected = params?.includeExpected ?? false;
+
+        // Populate the cache before reading it. Every other cache-reading
+        // handler (`getElements`, `rankElements`, `pageHealth`, …) does this;
+        // omitting it made `visibility` answer from whatever snapshot some
+        // EARLIER call happened to leave behind — and from the pristine empty
+        // one when it was called first, which is the normal case for an
+        // autonomous audit. The verdict was then `unknown_empty_registry`
+        // against a live page with a full registry: an UNKNOWN that looks like
+        // a considered answer but is really "nobody asked the browser".
+        // Caught end-to-end against a real Chromium tab: /control/discover
+        // reported 23 elements while /control/visibility reported 0.
+        const recency = resolveRecency(params as { recency?: string } | undefined);
+        await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
+
         const snapshot = latestControlSnapshot as ControlSnapshot;
         const elements = (snapshot?.elements ?? []) as Array<{
           id: string;
