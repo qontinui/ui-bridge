@@ -15,6 +15,7 @@
 import type { UIBridgeRegistry } from '../core/registry';
 import {
   scanDOMForInteractiveElementsWithRefs,
+  computeDomFallbackLabel,
   type DOMFallbackElementWithRef,
 } from '../server/dom-fallback';
 
@@ -75,8 +76,17 @@ export function seedRegistryFromDom(
       id = `${id}-${suffix}`;
     }
 
-    const reg = registry.registerElement(id, item.element, {
+    const node = item.element;
+    const reg = registry.registerElement(id, node, {
       label: item.label || undefined,
+      // `label` above is the value scraped on THIS pass and is never touched
+      // again — the `tracked` short-circuit at the top of this loop means a
+      // node discovered once is never re-labelled, so an `aria-label` that
+      // changes later would be served stale forever (including on an explicit
+      // `discover`). Hand the registry the same derivation, with the same
+      // `|| undefined` normalization, so `refreshLabels()` can re-read it on
+      // the snapshot / find / discover paths.
+      labelSource: () => computeDomFallbackLabel(node) || undefined,
       origin: 'auto',
     });
 

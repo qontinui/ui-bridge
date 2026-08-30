@@ -7,7 +7,13 @@
  * regardless of how the app integrates the SDK.
  */
 
-import { readScrubbedText, readScrubbedValue, REDACTED_VALUE, verdictOf } from '../core/redaction';
+import {
+  readScrubbedText,
+  readScrubbedValue,
+  REDACTED_VALUE,
+  verdictOf,
+  type RedactionVerdict,
+} from '../core/redaction';
 import { truncateCodePoints } from '../core/text';
 import {
   computeVisibleText,
@@ -138,6 +144,24 @@ function getLabel(el: HTMLElement): string {
   // Direct text content (capped for perf)
   const text = computeVisibleText(el) ?? '';
   return text.length > 200 ? truncateCodePoints(text, 200) + '…' : text;
+}
+
+/**
+ * The DOM-fallback label derivation **with** the §4.6 CONTENT scrub applied —
+ * exactly what the scan below writes into `DOMFallbackElement.label`.
+ *
+ * Exported so the injected registry seeder can hand the registry a
+ * re-derivation closure (`registerElement({ labelSource })`). Without that,
+ * `RegisteredElement.label` stays frozen at the value scraped on the FIRST
+ * discovery pass while the same snapshot's `ariaLabel`/`accessibleName` fields
+ * are re-derived live — the stale-label defect. One definition here so the
+ * refresh can never drift from the initial scrape.
+ */
+export function computeDomFallbackLabel(
+  el: HTMLElement,
+  verdict: RedactionVerdict = verdictOf(el)
+): string {
+  return verdict.content ? REDACTED_VALUE : getLabel(el);
 }
 
 /** Check if element is visible (not hidden/zero-size). */
@@ -274,7 +298,7 @@ export function scanDOMForInteractiveElementsWithRefs(
     elements.push({
       id,
       type,
-      label: verdict.content ? REDACTED_VALUE : getLabel(el),
+      label: computeDomFallbackLabel(el, verdict),
       actions: inferActions(type),
       visible: isVisible(el),
       tagName: el.tagName.toLowerCase(),

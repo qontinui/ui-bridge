@@ -54,6 +54,29 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
   --exec-stdin                 Read NDJSON lines from stdin; each line is
                                {"action":"...","payload":{...}}
 
+  Waiting BETWEEN exec steps (CLI-side actions, not in-page ones):
+    Exec steps run back to back with nothing between them, so state that
+    arrives AFTER ready()/settle — a row fetched by a request the previous
+    step kicked off, a panel that mounts a tick later — cannot be awaited.
+    Two action ids are handled by the CLI itself for exactly that:
+
+      waitForSelector {"selector":"<css>","timeoutMs":10000,"state":"attached"}
+        Wait until the selector reaches 'state' in the page. 'state' is one of
+        attached (DEFAULT — the same "exists in the DOM" test --expect-selector
+        applies) | visible | hidden | detached. 'timeoutMs' defaults to 10000.
+        On timeout the step FAILS like any other: an "error" line on stdout and
+        exit 1 at the end.
+        Result: {"waited":true,"selector":..,"state":..,"elapsedMs":..}
+
+      sleep {"ms":250}
+        Unconditional pause. 'ms' is required, 0..600000. Prefer
+        waitForSelector — a sleep encodes a guess, not a condition.
+        Result: {"slept":250}
+
+    Both go through the same one-line-per-action channel as an in-page action,
+    so an N-step run still prints N lines in order. Neither shadows an in-page
+    action id — the injected dispatcher defines neither.
+
   Exec output & exit code:
     One JSON line per action, in order, on stdout — ALWAYS one line per action,
     including failures. An action that succeeded prints {"action":..,"result":..}.
@@ -119,6 +142,11 @@ Examples:
   # Variant A: find a control and act on it
   ui-bridge-inject --url https://example.com/login \\
     --exec 'find {"text":"Sign in"}'
+
+  # Variant A: wait for a late-arriving row, THEN read it (no --expect-selector)
+  ui-bridge-inject --url https://example.com/account \
+    --exec 'waitForSelector {"selector":"[data-row=account]","timeoutMs":15000}' \
+    --exec 'discover {}'
 
   # Reuse a saved login: drive a login-walled page with a captured auth artifact
   ui-bridge-login-web --url "https://qontinui.io/login?next=%2Fadmin" \\
@@ -518,6 +546,156 @@ export function buildTransportOptions(args: InjectCliArgs): Record<string, unkno
   return options;
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * CLI-side wait actions
+ * ---------------------------------------------------------------------------
+ *
+ * Variant A runs its `--exec` steps back to back with nothing in between, and
+ * the only wait the CLI had was the one-shot `--expect-selector` gate applied
+ * ONCE, before the first step. So a driver could not await anything that
+ * arrives after settle — a row fetched by a request an earlier step kicked
+ * off, a panel that mounts a tick later. The workaround was to re-invoke the
+ * whole CLI (a fresh browser, a fresh page load) per wait, which discards the
+ * page state the earlier steps produced.
+ *
+ * `waitForSelector` and `sleep` close that. They are dispatched through the
+ * SAME `transport.dispatch` channel as an in-page action so the
+ * one-line-per-action contract and the failure/exit-code convention hold
+ * unchanged, but they execute in the CLI process against the Playwright
+ * `page` on the transport context rather than in the page realm — no `eval`,
+ * no in-page runtime dependency, and a timeout surfaces as a real thrown
+ * failure rather than a returned envelope.
+ */
+
+/** Action ids the CLI handles itself instead of forwarding to the page. */
+export const CLI_WAIT_ACTIONS = ['waitForSelector', 'sleep'] as const;
+
+/** Playwright selector states `waitForSelector` accepts. */
+export const WAIT_SELECTOR_STATES = ['attached', 'detached', 'visible', 'hidden'] as const;
+export type WaitSelectorState = (typeof WAIT_SELECTOR_STATES)[number];
+
+/** Default bound on `waitForSelector` when the payload omits `timeoutMs`. */
+export const DEFAULT_WAIT_SELECTOR_TIMEOUT_MS = 10_000;
+
+/** Upper bound on `sleep`'s `ms` — a longer pause is a wedged run, not a wait. */
+export const MAX_SLEEP_MS = 600_000;
+
+/** Validated `waitForSelector` payload. */
+export interface WaitForSelectorPayload {
+  selector: string;
+  timeoutMs: number;
+  state: WaitSelectorState;
+}
+
+function asRecord(payload: unknown, action: string): Record<string, unknown> {
+  if (payload === undefined || payload === null) return {};
+  if (typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new InjectCliArgError(`${action} payload must be a JSON object`);
+  }
+  return payload as Record<string, unknown>;
+}
+
+/**
+ * Validate a `waitForSelector` payload. Exported so the grammar is unit-tested
+ * without launching a browser.
+ */
+export function parseWaitForSelectorPayload(payload: unknown): WaitForSelectorPayload {
+  const obj = asRecord(payload, 'waitForSelector');
+  const selector = obj['selector'];
+  if (typeof selector !== 'string' || selector.trim().length === 0) {
+    throw new InjectCliArgError(`waitForSelector payload requires a non-empty 'selector' string`);
+  }
+  let timeoutMs = DEFAULT_WAIT_SELECTOR_TIMEOUT_MS;
+  if (obj['timeoutMs'] !== undefined) {
+    const raw = obj['timeoutMs'];
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+      throw new InjectCliArgError(
+        `waitForSelector 'timeoutMs' must be a non-negative number (got ${JSON.stringify(raw)})`
+      );
+    }
+    timeoutMs = raw;
+  }
+  let state: WaitSelectorState = 'attached';
+  if (obj['state'] !== undefined) {
+    const raw = obj['state'];
+    if (typeof raw !== 'string' || !WAIT_SELECTOR_STATES.includes(raw as WaitSelectorState)) {
+      throw new InjectCliArgError(
+        `waitForSelector 'state' must be one of ${WAIT_SELECTOR_STATES.join(' | ')} ` +
+          `(got ${JSON.stringify(raw)})`
+      );
+    }
+    state = raw as WaitSelectorState;
+  }
+  return { selector: selector.trim(), timeoutMs, state };
+}
+
+/** Validate a `sleep` payload. Exported for the same reason. */
+export function parseSleepPayload(payload: unknown): { ms: number } {
+  const obj = asRecord(payload, 'sleep');
+  const raw = obj['ms'];
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > MAX_SLEEP_MS) {
+    throw new InjectCliArgError(
+      `sleep payload requires 'ms' as a number in 0..${MAX_SLEEP_MS} (got ${JSON.stringify(raw)})`
+    );
+  }
+  return { ms: raw };
+}
+
+/**
+ * Validate the payload of every CLI-side wait action in `actions`, throwing
+ * {@link InjectCliArgError} on the first bad one.
+ *
+ * Runs BEFORE the browser launches: a typo in a `waitForSelector` payload
+ * should cost an argument error, not a Chromium launch followed by a failed
+ * step several actions into the run.
+ */
+export function validateWaitActions(actions: readonly ExecAction[]): void {
+  for (const { action, payload } of actions) {
+    if (action === 'waitForSelector') parseWaitForSelectorPayload(payload);
+    else if (action === 'sleep') parseSleepPayload(payload);
+  }
+}
+
+/** The minimal slice of the transport context the wait actions need. */
+interface PageLike {
+  waitForSelector(
+    selector: string,
+    options: { state: WaitSelectorState; timeout: number }
+  ): Promise<unknown>;
+}
+
+/**
+ * Register `waitForSelector` + `sleep` on `registrar`.
+ *
+ * Called BEFORE the exec loop's forward-anything-else fallback, so these ids
+ * resolve to the CLI implementations rather than being forwarded into the page
+ * (where they are not actions at all and would fail with an unknown-action
+ * error). Exported so a test can register against a stub registry.
+ */
+export function registerWaitActions(registrar: {
+  register(action: string, fn: (params: unknown, ctx: unknown) => unknown): void;
+}): void {
+  registrar.register('sleep', async (params: unknown) => {
+    const { ms } = parseSleepPayload(params);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return { slept: ms };
+  });
+
+  registrar.register('waitForSelector', async (params: unknown, ctx: unknown) => {
+    const { selector, timeoutMs, state } = parseWaitForSelectorPayload(params);
+    const page = (ctx as { page?: PageLike } | null | undefined)?.page;
+    if (!page || typeof page.waitForSelector !== 'function') {
+      throw new InjectCliArgError(
+        `waitForSelector needs the transport's page handle, which this context does not expose`
+      );
+    }
+    const startedAt = Date.now();
+    await page.waitForSelector(selector, { state, timeout: timeoutMs });
+    return { waited: true, selector, state, elapsedMs: Date.now() - startedAt };
+  });
+}
+
 function die(msg: string): never {
   process.stderr.write(`${msg}\n`);
   process.exit(2);
@@ -621,6 +799,16 @@ async function runExec(
   if (actions.length === 0) {
     die('Variant A (exec) selected but no actions were provided');
   }
+  try {
+    validateWaitActions(actions);
+  } catch (err) {
+    if (err instanceof InjectCliArgError) die(err.message);
+    throw err;
+  }
+
+  // CLI-side waits must win the id lookup below, which forwards anything
+  // unregistered into the page realm.
+  registerWaitActions(transport);
 
   log(args.quiet, `[ui-bridge-inject] launching injected transport (exec mode)`);
   try {
