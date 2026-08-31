@@ -129,17 +129,86 @@ export interface RouteDefinition {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   description: string;
+  /**
+   * True when the route is mounted only if the server config sets
+   * `testHooks`. A production build (the default, `testHooks: false`) does not
+   * serve it at all — `routeRequest` and `buildRoutesPayload` both drop it, so
+   * the honest answer there is a bare 404 with no `Allow`.
+   *
+   * This field exists because the table is a static constant with no config to
+   * consult, so it published the gated routes unconditionally and the only
+   * signal was the free-text `(testHooks)` in `description` — which a consumer
+   * code-generating a client from this table cannot read. It would call
+   * `POST /ui-bridge/control/keep-awake` against a release build, get a bare
+   * 404, and have no way to tell it from a typo. `route-table-parity.test.ts`
+   * asserts this flag against the flag-off route set, so a fourth gated route —
+   * or one of these three accidentally un-gated — cannot change the production
+   * surface with the tests still green.
+   */
+  requiresTestHooks?: boolean;
 }
 
 /**
- * All UI Bridge Native routes
+ * Every HTTP route this package serves.
+ *
+ * This is the contract an external consumer reads off the package root
+ * (`src/index.ts` exports it) to learn what `@qontinui/ui-bridge-native`
+ * answers. It is a SECOND declaration of a surface whose single source of
+ * truth is `WS_ROUTES` in `./http-server.ts`, which is what `routeRequest`
+ * iterates and what `/ui-bridge/_routes` publishes at runtime. Nothing in this
+ * package reads the constant below, so nothing made the two agree.
+ *
+ * They had stopped agreeing. Measured 2026-08-31 against `_routes` with
+ * `testHooks: true`: the router served **56** method+path pairs and this table
+ * published **36** — every entry here was reachable, but twenty routes the
+ * package serves were absent, among them `control/tap`, `control/screenshot`,
+ * `ai/find`, the five `control/page/*` interaction endpoints (`click-by-text`,
+ * `click-by-selector`, `type-into`, `read-value`, `find-by-text`), the four
+ * `design/evaluate*` endpoints and the two discovery endpoints (`_help`,
+ * `_routes`) a consumer would use to find the rest. The twenty were added and
+ * `route-table-parity.test.ts` now asserts SET EQUALITY with `_routes` in both
+ * directions, so neither declaration can move without the other.
+ *
+ * KEEP IN SYNC with `WS_ROUTES`. That comment used to be the whole mechanism;
+ * it is now a pointer to the test that enforces it.
+ *
+ * The sibling surface (`@qontinui/ui-bridge/native`) exports a constant of the
+ * same name over a smaller route set, and there `routeRequest` READS it — the
+ * wrong-verb arm derives its 405 from it (qontinui/ui-bridge#189). Do not
+ * assume an entry present in one is present in the other; the two packages
+ * publish different surfaces and only the status mapping is pinned equal
+ * (`packages/ui-bridge/src/native/server/http-status-parity.test.ts`).
+ *
+ * Multi-verb routes appear once PER VERB, because `RouteDefinition.method` is
+ * singular — `control/discover`, `control/page-health` and `control/screenshot`
+ * each take GET and POST, and `design/style-guide` takes GET and DELETE.
  */
 export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
+  // Discovery / introspection — the two endpoints an agent hits first to learn
+  // the rest of this table without reading docs. Special-cased in
+  // `routeRequest` rather than living in `WS_ROUTES`, and appended by
+  // `buildRoutesPayload` so `_routes` describes itself.
+  HELP: {
+    method: 'GET',
+    path: '/ui-bridge/_help',
+    description: 'Route index + action reference + tips (rich discovery payload)',
+  },
+  ROUTES: {
+    method: 'GET',
+    path: '/ui-bridge/_routes',
+    description: 'Minimal {method, path} route list, matching the runner /_routes shape',
+  },
+
   // Control - Elements
   GET_ELEMENTS: {
     method: 'GET',
     path: '/ui-bridge/control/elements',
     description: 'List all registered elements',
+  },
+  GET_ELEMENTS_FLAT: {
+    method: 'GET',
+    path: '/ui-bridge/elements',
+    description: 'List all registered elements (flat alias matching the runner path)',
   },
   GET_ELEMENT: {
     method: 'GET',
@@ -180,6 +249,11 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/find',
     description: 'Find elements matching criteria',
   },
+  AI_FIND: {
+    method: 'POST',
+    path: '/ui-bridge/ai/find',
+    description: 'Find elements matching criteria (runner-parity alias for /control/find)',
+  },
   GET_SNAPSHOT: {
     method: 'GET',
     path: '/ui-bridge/control/snapshot',
@@ -190,11 +264,83 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     path: '/ui-bridge/control/discover',
     description: 'Discover elements (alias for snapshot; web/runner parity)',
   },
+  DISCOVER_POST: {
+    method: 'POST',
+    path: '/ui-bridge/control/discover',
+    description: 'Discover elements over POST (same handler as the GET form; web/runner parity)',
+  },
   PAGE_HEALTH: {
     method: 'POST',
     path: '/ui-bridge/control/page-health',
     description:
       'Holistic page health diagnostic: spatial coverage, layout regions, text signals, interactive readiness, anomalies + ASCII heatmap',
+  },
+  PAGE_HEALTH_GET: {
+    method: 'GET',
+    path: '/ui-bridge/control/page-health',
+    description: 'Page health diagnostic over GET, for ad-hoc curls with no body',
+  },
+
+  // Screenshots — GET and POST both accepted so a curl works either way.
+  //
+  // Both keys carry an explicit verb suffix. The pre-existing multi-verb pairs
+  // do not agree on what an UNSUFFIXED key means — `DISCOVER` is the GET and
+  // `PAGE_HEALTH` is the POST — so a consumer reading `ROUTES.<NAME>.method`
+  // off a bare name gets opposite verbs from equally unmarked keys. Those two
+  // names are load-bearing for existing consumers and are left alone; new
+  // multi-verb entries name their verb rather than entrenching the ambiguity.
+  SCREENSHOT_GET: {
+    method: 'GET',
+    path: '/ui-bridge/control/screenshot',
+    description: 'PNG screenshot of the current screen',
+  },
+  SCREENSHOT_POST: {
+    method: 'POST',
+    path: '/ui-bridge/control/screenshot',
+    description: 'PNG screenshot of the current screen (POST form)',
+  },
+
+  // Coordinate-based interaction
+  CONTROL_TAP: {
+    method: 'POST',
+    path: '/ui-bridge/control/tap',
+    description:
+      'Synthesize a press at screen coords by matching registered element layout rects: body { x, y, action? }',
+  },
+
+  // App-agnostic interaction parity with the web/runner surface. The
+  // selector-based pair has no RN analog and answers NOT_SUPPORTED (501).
+  PAGE_CLICK_BY_TEXT: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/click-by-text',
+    description: 'Press the first element matching free text: body { text, visibleOnly? }',
+  },
+  PAGE_CLICK_BY_SELECTOR: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/click-by-selector',
+    description: 'Selector-based press (web-only; mobile returns NOT_SUPPORTED)',
+  },
+  PAGE_TYPE_INTO: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/type-into',
+    description: 'Type into the input matching a label: body { label, text, clear?, visibleOnly? }',
+  },
+  PAGE_READ_VALUE: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/read-value',
+    description: 'Selector-based value read (web-only; mobile returns NOT_SUPPORTED)',
+  },
+  PAGE_FIND_BY_TEXT: {
+    method: 'POST',
+    path: '/ui-bridge/control/page/find-by-text',
+    description: 'List elements matching free text without pressing: body { text, visibleOnly? }',
+  },
+
+  // Meta
+  META_METHODS: {
+    method: 'GET',
+    path: '/ui-bridge/meta/methods',
+    description: 'List every handler name (legacy introspection; prefer /_routes)',
   },
 
   // Workflows
@@ -278,6 +424,28 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Clear loaded style guide',
   },
 
+  // Quality Evaluation
+  DESIGN_EVALUATE: {
+    method: 'POST',
+    path: '/ui-bridge/design/evaluate',
+    description: 'Score the current UI against a quality context',
+  },
+  DESIGN_EVALUATE_CONTEXTS: {
+    method: 'GET',
+    path: '/ui-bridge/design/evaluate/contexts',
+    description: 'List available quality evaluation contexts',
+  },
+  DESIGN_EVALUATE_BASELINE: {
+    method: 'POST',
+    path: '/ui-bridge/design/evaluate/baseline',
+    description: 'Save a quality baseline snapshot',
+  },
+  DESIGN_EVALUATE_DIFF: {
+    method: 'POST',
+    path: '/ui-bridge/design/evaluate/diff',
+    description: 'Diff the current UI against a saved baseline',
+  },
+
   // AI helpers
   AI_FILL_FORM: {
     method: 'POST',
@@ -311,18 +479,35 @@ export const UI_BRIDGE_NATIVE_ROUTES: Record<string, RouteDefinition> = {
     description: 'Wait for element predicate via HTTP (runner-only; mobile returns NOT_SUPPORTED — use WS waitForElement instead)',
   },
 
-  // Test hooks — drive ModalDetector state from outside the React tree
-  // (gated by `features.testHooks`). Mirrors `pushModal` / `dismissModal`
-  // calls that components normally make in-process.
+  // Test hooks — drive ModalDetector state and the screen lock from outside
+  // the React tree (gated by `features.testHooks`). Mirrors `pushModal` /
+  // `dismissModal` calls that components normally make in-process.
+  //
+  // These are LISTED unconditionally — this table is a static constant with no
+  // config to consult — but each carries `requiresTestHooks: true`, which is
+  // the machine-readable form of the `(testHooks)` in its description. With the
+  // flag off `routeRequest` and `buildRoutesPayload` both drop them and the
+  // route answers a bare 404. `route-table-parity.test.ts` compares the whole
+  // table against `_routes` at `testHooks: true`, and the flagged subset
+  // against `_routes` at `testHooks: false`, so both surfaces are pinned.
   PUSH_MODAL: {
     method: 'POST',
     path: '/ui-bridge/control/modal/push',
     description: 'Push a modal onto the modal stack (testHooks)',
+    requiresTestHooks: true,
   },
   DISMISS_MODAL: {
     method: 'POST',
     path: '/ui-bridge/control/modal/dismiss/:id',
     description: 'Dismiss a modal by id (testHooks)',
+    requiresTestHooks: true,
+  },
+  KEEP_AWAKE: {
+    method: 'POST',
+    path: '/ui-bridge/control/keep-awake',
+    description:
+      'Keep the device screen awake via the injected keepAwakeProvider: body { enabled, durationMs? } (testHooks)',
+    requiresTestHooks: true,
   },
 
   // Observability — last-N ring buffers (always mounted; `installed:false`

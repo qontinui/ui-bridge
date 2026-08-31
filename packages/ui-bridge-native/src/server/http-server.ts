@@ -302,6 +302,58 @@ const WS_ROUTES: readonly WsRoute[] = [
   },
 ];
 
+/**
+ * The two discovery endpoints, which `routeRequest` special-cases rather than
+ * dispatching through `WS_ROUTES` — there is no handler to dispatch to. Both
+ * are GET-only.
+ *
+ * ⚠️ This is the DISPATCH-adjacent copy, not the only one. The same two path
+ * strings are also written out in `buildRoutesPayload` (which appends them to
+ * the `_routes` manifest) and in the two serving branches of `routeRequest`,
+ * and their `HELP` / `ROUTES` entries live in `types.ts`. Adding a third
+ * discovery endpoint means touching all four. Only the `types.ts` ↔
+ * `buildRoutesPayload` pair is ratcheted, by `route-table-parity.test.ts`;
+ * forgetting THIS set silently downgrades the new endpoint's wrong-verb answer
+ * to 404 and nothing fails. Collapsing the four into one declaration is a
+ * worthwhile follow-up and is not attempted here.
+ */
+const DISCOVERY_PATHS = new Set(['_help', '_routes']);
+
+/**
+ * The verbs this surface serves for a path, in table order.
+ *
+ * Fills the `Allow` header that RFC 9110 §15.5.6 makes mandatory on a 405, and
+ * that the wrong-verb arm answered without: a caller told only "method not
+ * allowed" has to guess which verb to retry, which is the guessing game the
+ * status mapping exists to end. Read off `WS_ROUTES` — the array `routeRequest`
+ * itself iterates — plus `DISCOVERY_PATHS`, which is the other thing
+ * `routeRequest` dispatches on, so the header cannot come to disagree with the
+ * status about what this surface accepts.
+ *
+ * `testHooks` is honoured for the same reason `routeRequest` honours it: a
+ * production build must not advertise a gated verb it will not serve. `path` is
+ * the full request path; the `/ui-bridge/` prefix is stripped here. Empty for a
+ * path no route matches, in which case no header is set — that path answers
+ * 404, where `Allow` would be meaningless.
+ */
+function allowedMethodsForPath(path: string, testHooks: boolean): string[] {
+  const PREFIX = '/ui-bridge/';
+  if (!path.startsWith(PREFIX)) return [];
+  const stripped = path.slice(PREFIX.length);
+
+  const methods: string[] = [];
+  if (DISCOVERY_PATHS.has(stripped)) methods.push('GET');
+  for (const route of WS_ROUTES) {
+    if (!route.httpMethods) continue;
+    if (route.requiresTestHooks && !testHooks) continue;
+    if (parsePath(route.pattern, stripped) === null) continue;
+    for (const verb of route.httpMethods) {
+      if (!methods.includes(verb)) methods.push(verb);
+    }
+  }
+  return methods;
+}
+
 // ── _help payload ───────────────────────────────────────────────────────────
 
 /**
@@ -1581,6 +1633,18 @@ export class NativeUIBridgeServer {
 
     try {
       const response = await this.routeRequest(request);
+      // A 405 must name the verbs that ARE accepted, or the caller is left
+      // guessing exactly as it was under the blanket 400. `Allow` is not a
+      // CORS-safelisted response header, so without `Access-Control-Expose-
+      // Headers` a cross-origin browser caller — a web page or a browser-based
+      // agent — reads `null` from it and gets nothing from this at all.
+      if (response.code === 'METHOD_NOT_ALLOWED') {
+        const allow = allowedMethodsForPath(request.path, this.config.testHooks === true);
+        if (allow.length > 0) {
+          headers['Allow'] = allow.join(', ');
+          if (this.config.cors) headers['Access-Control-Expose-Headers'] = 'Allow';
+        }
+      }
       return {
         status: httpStatusForResponse(response),
         headers,
@@ -1650,7 +1714,15 @@ export class NativeUIBridgeServer {
       };
     }
 
-    let patternMatchedButWrongVerb = false;
+    // Reaching here with a discovery path means the PATH was right and the VERB
+    // was not — the two branches above are the only ones that serve them, and
+    // both are GET-only. They live outside `WS_ROUTES` (there is no handler to
+    // dispatch to), so the loop below cannot notice them, and `POST
+    // /ui-bridge/_routes` used to answer "no such route" about a route
+    // `buildRoutesPayload` publishes one line up. Seeding the flag here keeps
+    // "wrong verb on a path we publish → 405" true for every entry in
+    // `UI_BRIDGE_NATIVE_ROUTES`, including these two.
+    let patternMatchedButWrongVerb = DISCOVERY_PATHS.has(stripped);
 
     for (const route of WS_ROUTES) {
       const pathParams = parsePath(route.pattern, stripped);
@@ -1675,10 +1747,21 @@ export class NativeUIBridgeServer {
       return this.handlers[route.handler](ctx);
     }
 
+    // The verbs go in the ENVELOPE as well as the `Allow` header, because
+    // almost nothing in this tree reads headers: `CloudRelayClient` relays the
+    // whole response, but the skills, the cheatsheets and every documented
+    // probe read the JSON body (`curl … | jq .error`). A caller doing that saw
+    // "Method not allowed: POST /ui-bridge/health" and still had to guess.
+    const allowed = patternMatchedButWrongVerb
+      ? allowedMethodsForPath(path, testHooks)
+      : ([] as string[]);
+
     return {
       success: false,
       error: patternMatchedButWrongVerb
-        ? `Method not allowed: ${method} ${path}`
+        ? `Method not allowed: ${method} ${path}${
+            allowed.length > 0 ? ` (allowed: ${allowed.join(', ')})` : ''
+          }`
         : `Route not found: ${method} ${path}`,
       code: patternMatchedButWrongVerb ? 'METHOD_NOT_ALLOWED' : 'NOT_FOUND',
       timestamp: Date.now(),

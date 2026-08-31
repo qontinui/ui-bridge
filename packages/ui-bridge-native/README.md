@@ -196,16 +196,35 @@ The package includes an embedded HTTP server for external control. Configure wit
 
 ### API Endpoints
 
-| Method | Path                                                | Description              |
-| ------ | --------------------------------------------------- | ------------------------ |
-| GET    | `/ui-bridge/health`                                 | Health check             |
-| GET    | `/ui-bridge/control/elements`                       | List all elements        |
-| GET    | `/ui-bridge/control/element/:id`                    | Get element details      |
-| POST   | `/ui-bridge/control/element/:id/action`             | Execute action           |
-| GET    | `/ui-bridge/control/components`                     | List all components      |
-| POST   | `/ui-bridge/control/component/:id/action/:actionId` | Execute component action |
-| POST   | `/ui-bridge/control/find`                           | Find elements            |
-| GET    | `/ui-bridge/control/snapshot`                       | Get full snapshot        |
+The bridge serves **56** method+path pairs. Two of them tell you about the other
+54, so this README does not try to be the list — it went stale at 7 rows while
+the surface grew, and a partial table read as a complete one is worse than no
+table:
+
+| Method | Path                  | Description                                                  |
+| ------ | --------------------- | ------------------------------------------------------------ |
+| GET    | `/ui-bridge/_routes`  | Every mounted route as `{method, path}` — ask the live server |
+| GET    | `/ui-bridge/_help`    | The same list plus per-handler descriptions, actions and tips |
+
+```bash
+curl -s http://localhost:8087/ui-bridge/_routes | jq '.data.routes'
+```
+
+Statically, the same contract is the exported `UI_BRIDGE_NATIVE_ROUTES`:
+
+```ts
+import { UI_BRIDGE_NATIVE_ROUTES } from '@qontinui/ui-bridge-native';
+```
+
+Entries carrying `requiresTestHooks: true` are mounted only when the server
+config sets `testHooks`; a production build answers those with a plain 404.
+`route-table-parity.test.ts` pins the exported table against `_routes` in both
+directions, and separately at `testHooks: false`, so neither can drift from the
+router.
+
+A wrong verb on a path the bridge does publish answers **405** with an `Allow`
+header naming the verbs it accepts (and the same verbs in the JSON envelope's
+`error`); a path it does not publish answers **404**.
 
 ### Custom Server Adapter
 

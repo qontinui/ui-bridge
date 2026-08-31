@@ -43,7 +43,8 @@ interface ParsedResponse {
  * but only because `handlers.find` threw a TypeError into `handleRequest`'s
  * catch and answered 500 — which is not a route miss, so the assertion held
  * for the wrong reason. A handler exception must not be able to masquerade as
- * routing success, which is why `expectRouted` rejects INTERNAL_ERROR too.
+ * routing success, which is why the `is routed` case below rejects
+ * INTERNAL_ERROR too.
  */
 function stubExecutor() {
   return {

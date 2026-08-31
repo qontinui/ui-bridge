@@ -85,6 +85,59 @@ export function httpStatusForResponse(response: APIResponse): number {
   return mapped ?? 400;
 }
 
+// ── Path pattern matching ───────────────────────────────────────────────────
+
+/**
+ * Match an actual path against a pattern with `:name` placeholders.
+ * Returns the extracted params, or null if the pattern does not match.
+ *
+ * Module-level rather than a closure rebuilt inside `routeRequest` on every
+ * request, because two callers now need it: the router, and
+ * `allowedMethodsForPath` below. Same shape as the sibling package's.
+ */
+function parsePath(pattern: string, actual: string): Record<string, string> | null {
+  const patternParts = pattern.split('/');
+  const actualParts = actual.split('/');
+
+  if (patternParts.length !== actualParts.length) {
+    return null;
+  }
+
+  const params: Record<string, string> = {};
+
+  for (let i = 0; i < patternParts.length; i++) {
+    if (patternParts[i].startsWith(':')) {
+      params[patternParts[i].slice(1)] = actualParts[i];
+    } else if (patternParts[i] !== actualParts[i]) {
+      return null;
+    }
+  }
+
+  return params;
+}
+
+/**
+ * The verbs `UI_BRIDGE_NATIVE_ROUTES` publishes for a path, in table order.
+ *
+ * Fills the `Allow` header that RFC 9110 §15.5.6 makes mandatory on a 405, and
+ * that the 405 arm shipped without: a caller told only "method not allowed" has
+ * to guess which verb to retry, which is the same guessing game the blanket 400
+ * caused and that this whole mapping exists to end. Read off the published table
+ * for the reason `routeRequest`'s wrong-verb arm reads it — the header and the
+ * status must not be able to disagree about what the surface accepts.
+ *
+ * Empty for a path the table does not publish, in which case no header is set;
+ * that path answers 404, where `Allow` would be meaningless.
+ */
+function allowedMethodsForPath(path: string): string[] {
+  const methods: string[] = [];
+  for (const route of Object.values(UI_BRIDGE_NATIVE_ROUTES)) {
+    if (parsePath(route.path, path) === null) continue;
+    if (!methods.includes(route.method)) methods.push(route.method);
+  }
+  return methods;
+}
+
 /**
  * HTTP Request interface (library-agnostic)
  */
@@ -226,6 +279,18 @@ export class NativeUIBridgeServer {
 
     try {
       const response = await this.routeRequest(request);
+      // A 405 must name the verbs that ARE accepted, or the caller is left
+      // guessing exactly as it was under the blanket 400. `Allow` is not a
+      // CORS-safelisted response header, so without `Access-Control-Expose-
+      // Headers` a cross-origin browser caller — a web page or a browser-based
+      // agent — reads `null` from it and gets nothing from this at all.
+      if (response.code === 'METHOD_NOT_ALLOWED') {
+        const allow = allowedMethodsForPath(request.path);
+        if (allow.length > 0) {
+          headers['Allow'] = allow.join(', ');
+          if (this.config.cors) headers['Access-Control-Expose-Headers'] = 'Allow';
+        }
+      }
       return {
         status: httpStatusForResponse(response),
         headers,
@@ -251,28 +316,6 @@ export class NativeUIBridgeServer {
    */
   private async routeRequest(request: HTTPRequest): Promise<APIResponse> {
     const { method, path, query, body } = request;
-
-    // Parse path parameters
-    const parsePath = (pattern: string, actual: string): Record<string, string> | null => {
-      const patternParts = pattern.split('/');
-      const actualParts = actual.split('/');
-
-      if (patternParts.length !== actualParts.length) {
-        return null;
-      }
-
-      const params: Record<string, string> = {};
-
-      for (let i = 0; i < patternParts.length; i++) {
-        if (patternParts[i].startsWith(':')) {
-          params[patternParts[i].slice(1)] = actualParts[i];
-        } else if (patternParts[i] !== actualParts[i]) {
-          return null;
-        }
-      }
-
-      return params;
-    };
 
     // Health check
     if (method === 'GET' && path === '/ui-bridge/health') {
@@ -385,13 +428,25 @@ export class NativeUIBridgeServer {
     // disagree with the published contract about which verb a path takes. A
     // path absent from the table degrades to 404, which is the honest answer
     // for a route this package does not publish.
-    const publishedUnderAnotherVerb = Object.values(UI_BRIDGE_NATIVE_ROUTES).some(
-      (route) => route.method !== method && parsePath(route.path, path) !== null
-    );
-    if (publishedUnderAnotherVerb) {
+    //
+    // One traversal, not two: `allowedMethodsForPath` already collects the
+    // distinct verbs of every table entry whose path matches, so "published
+    // under another verb" is exactly "some collected verb is not this one" —
+    // the same predicate as the `.some(r => r.method !== method && matches)`
+    // this replaced, and now guaranteed to agree with the verbs the answer
+    // names, because it IS them.
+    const allowed = allowedMethodsForPath(path);
+    if (allowed.some((verb) => verb !== method)) {
+      // The verbs go in the ENVELOPE as well as the `Allow` header, because
+      // almost nothing reads headers: the skills, the cheatsheets and every
+      // documented probe read the JSON body (`curl … | jq .error`). A caller
+      // doing that saw "Method not allowed: POST /ui-bridge/health" and still
+      // had to guess.
       return {
         success: false,
-        error: `Method not allowed: ${method} ${path}`,
+        error: `Method not allowed: ${method} ${path}${
+          allowed.length > 0 ? ` (allowed: ${allowed.join(', ')})` : ''
+        }`,
         code: 'METHOD_NOT_ALLOWED',
         timestamp: Date.now(),
       };
