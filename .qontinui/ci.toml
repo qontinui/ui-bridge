@@ -230,6 +230,14 @@ name = "docs-symbol-ratchet"
 # read, not `exports` alone: `bin`, `main`, `module`, `types`, `unpkg`,
 # `jsdelivr` — so a package publishing its entry points the legacy way, with no
 # `exports` map at all, is checked rather than skipped.
+# A declared entry does not guarantee a DECLARATION, so a `types` target is
+# asked one question further: an entry in a `dts: false` tsup block emits the
+# JavaScript and no `.d.ts`, so it passes the check above while a TypeScript
+# consumer still gets TS2307 in every installed copy. `dts: false` counts as
+# evidence only for a package whose `build` script runs no `tsc` pass —
+# anything else is UNKNOWN and skipped rather than guessed at — and known
+# instances are enumerated in UNDECLARED_TYPE_WAIVERS with a reason, exact and
+# shrink-only, so a waiver that waives nothing fails.
 # It also fails when a tracked .md/.mdx file sits on no surface and on no
 # declared exemption, so a new documentation tree cannot land unchecked. It sits
 # in THIS job rather than in `docs` because the `docs` job installs only

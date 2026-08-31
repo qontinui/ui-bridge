@@ -303,6 +303,13 @@ Every field that names a built file is read, not just `exports`:
 | `main`, `module`, `types` | node10 resolvers, bundlers predating `exports`, and TypeScript under `moduleResolution: node` |
 | `unpkg`, `jsdelivr` | the CDN URL the README hands a reader |
 
+A `types` target is asked one question further, because a declared entry does
+not guarantee a declaration: an entry in a `dts: false` tsup block emits the
+JavaScript and no `.d.ts`, so it satisfies the rule above while a TypeScript
+consumer still gets `TS2307` in every installed copy. If your package's
+`build` script runs a `tsc` pass, `dts: false` says nothing about the
+published `.d.ts` and the check skips it rather than guessing.
+
 That gate is also the reason the mistake is worth spelling out: it resolves
 every published target back to `src` — which is exactly where an unbuilt target
 still looks healthy — so before this check an `@example` importing one was

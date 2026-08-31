@@ -38,12 +38,14 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  declarationlessStems,
   distStem,
   distTargetToSource,
   extractCodeBlocks,
   extractCommentCodeBlocks,
   tsupEntryMap,
   unbuiltTargets,
+  undeclaredTypeTargets,
   unfencedExamples,
 } = require('./check-docs-symbols.cjs');
 
@@ -502,6 +504,198 @@ test('a "browser" field is not read: its keys are sources, not published targets
     tsup: TSUP([['index', 'src/index.ts']]),
   });
   assert.deepEqual(unbuiltTargets(new Map([pkg])), []);
+});
+
+// ---------------------------------------------------------------------------
+// undeclaredTypeTargets — the extension the stem check cannot see
+// ---------------------------------------------------------------------------
+//
+// unbuiltTargets asks whether the build declares an ENTRY for a target's stem,
+// which every one of these fixtures satisfies. The declaration is the one file
+// a declared entry does not guarantee, so each case below is CLEAN under that
+// check and is the whole reason this reader exists.
+
+/** A multi-block tsup config: `[[dts, [[stem, src], …]], …]`. */
+const TSUP_BLOCKS = (blocks) =>
+  `import { defineConfig } from 'tsup';\nexport default defineConfig([\n${blocks
+    .map(
+      ([dts, entries]) =>
+        `  {\n    entry: {\n${entries
+          .map(([k, v]) => `      '${k}': '${v}',`)
+          .join('\n')}\n    },\n    format: ['cjs', 'esm'],\n    dts: ${dts},\n  },`
+    )
+    .join('\n')}\n]);\n`;
+
+const NATIVE_SUBPATHS = ['.', './core', './react', './control', './server', './debug'];
+const nativeStem = (subpath) => `native${subpath === '.' ? '' : subpath.slice(1)}/index`;
+
+test('a "types" target whose entry sits in a `dts: false` block is reported', () => {
+  // The live instance, measured on 8ba7354: `@qontinui/ui-bridge` publishes
+  // `./dist/native/index.d.ts` against an entry in its `dts: false` native
+  // block. The `.js`/`.mjs` beside it ARE emitted, so the stem check passes and
+  // a TypeScript consumer still gets TS2307 in every installed copy.
+  const pkg = fixturePackage({
+    name: '@x/rn',
+    json: {
+      name: '@x/rn',
+      scripts: { build: 'tsup' },
+      exports: {
+        './native': {
+          types: './dist/native/index.d.ts',
+          import: './dist/native/index.mjs',
+          require: './dist/native/index.js',
+        },
+      },
+    },
+    tsup: TSUP_BLOCKS([['false', [['native/index', 'src/native/index.ts']]]]),
+  });
+  assert.deepEqual(unbuiltTargets(new Map([pkg])), [], 'clean under the stem check');
+  const { findings, stale } = undeclaredTypeTargets(new Map([pkg]));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].field, '"exports"."./native"');
+  // Only the declaration. The JavaScript in the same block is emitted, and
+  // reporting it would be the false failure this reader must not introduce.
+  assert.deepEqual(findings[0].missing, ['./dist/native/index.d.ts']);
+  // Staleness is computed over the package set it is GIVEN, which in main()
+  // is the whole workspace; a fixture set naturally leaves the real waivers
+  // uncredited, and that is not a property of this package.
+  assert.ok(
+    stale.every((s) => s.package !== '@x/rn'),
+    'no waiver claims this package'
+  );
+});
+
+test('a `tsc` pass in the build script makes `dts: false` say nothing', () => {
+  // Four packages here set `dts: false` and still ship declarations, from a
+  // separate `tsc -p tsconfig.build.json`. The flag is evidence about tsup, not
+  // about the tarball, so a build that runs tsc is UNKNOWN and must not fail.
+  const pkg = fixturePackage({
+    name: '@x/tsc-pass',
+    json: {
+      name: '@x/tsc-pass',
+      scripts: { build: 'tsup && tsc -p tsconfig.build.json' },
+      exports: { '.': { types: './dist/index.d.ts', import: './dist/index.mjs' } },
+    },
+    tsup: TSUP_BLOCKS([['false', [['index', 'src/index.ts']]]]),
+  });
+  assert.equal(declarationlessStems(pkg[1]), null, 'UNKNOWN, not an empty set');
+  assert.deepEqual(undeclaredTypeTargets(new Map([pkg])).findings, []);
+});
+
+test('a build that delegates to another npm script is UNKNOWN too', () => {
+  // `tsc` in the build string is only the visible half. `npm run build:types`
+  // hides whatever that script runs behind a name this read cannot follow, so
+  // treating it as tsup-only would be a false failure on a correct package —
+  // the one direction this reader must not fail in, because a `types` target
+  // that IS emitted has nothing for its author to fix.
+  const pkg = fixturePackage({
+    name: '@x/delegated',
+    json: {
+      name: '@x/delegated',
+      scripts: { build: 'tsup && npm run build:types', 'build:types': 'tsc -p tsconfig.build.json' },
+      exports: { '.': { types: './dist/index.d.ts', import: './dist/index.mjs' } },
+    },
+    tsup: TSUP_BLOCKS([['false', [['index', 'src/index.ts']]]]),
+  });
+  assert.equal(declarationlessStems(pkg[1]), null);
+  assert.deepEqual(undeclaredTypeTargets(new Map([pkg])).findings, []);
+});
+
+test('a package with no build script is UNKNOWN, not declarationless', () => {
+  const pkg = fixturePackage({
+    name: '@x/no-build',
+    json: {
+      name: '@x/no-build',
+      exports: { '.': { types: './dist/index.d.ts', import: './dist/index.mjs' } },
+    },
+    tsup: TSUP_BLOCKS([['false', [['index', 'src/index.ts']]]]),
+  });
+  assert.equal(declarationlessStems(pkg[1]), null);
+  assert.deepEqual(undeclaredTypeTargets(new Map([pkg])).findings, []);
+});
+
+test('only the `dts: false` block contributes its own entries', () => {
+  // The reason this is a per-BLOCK read rather than a wider tsupEntryMap: a
+  // config's blocks disagree about `dts`, and flattening them would report the
+  // declaring block's targets as undeclared.
+  const pkg = fixturePackage({
+    name: '@x/mixed',
+    json: {
+      name: '@x/mixed',
+      scripts: { build: 'tsup' },
+      exports: {
+        '.': { types: './dist/index.d.ts', import: './dist/index.mjs' },
+        './native': { types: './dist/native/index.d.ts', import: './dist/native/index.mjs' },
+      },
+    },
+    tsup: TSUP_BLOCKS([
+      ['true', [['index', 'src/index.ts']]],
+      ['false', [['native/index', 'src/native/index.ts']]],
+    ]),
+  });
+  assert.deepEqual(
+    undeclaredTypeTargets(new Map([pkg])).findings.map((f) => f.field),
+    ['"exports"."./native"']
+  );
+});
+
+test('a waived target is not reported, and is credited to its waiver', () => {
+  // Reproduces UNDECLARED_TYPE_WAIVERS' one entry against a fixture rather than
+  // against the real tree, so this pins the WAIVER MECHANISM and not the state
+  // of the repository on the day it was written.
+  const pkg = fixturePackage({
+    name: '@qontinui/ui-bridge',
+    json: {
+      name: '@qontinui/ui-bridge',
+      scripts: { build: 'tsup' },
+      exports: Object.fromEntries(
+        NATIVE_SUBPATHS.map((s) => [
+          `./native${s === '.' ? '' : s.slice(1)}`,
+          {
+            types: `./dist/${nativeStem(s)}.d.ts`,
+            import: `./dist/${nativeStem(s)}.mjs`,
+          },
+        ])
+      ),
+    },
+    tsup: TSUP_BLOCKS([
+      ['false', NATIVE_SUBPATHS.map((s) => [nativeStem(s), `src/${nativeStem(s)}.ts`])],
+    ]),
+  });
+  const { findings, stale } = undeclaredTypeTargets(new Map([pkg]));
+  assert.deepEqual(findings, [], 'every one is waived');
+  assert.deepEqual(stale, [], 'and every waiver is credited');
+});
+
+test('a waiver that no longer reproduces fails, so the list can only shrink', () => {
+  // The same package with the six `types` conditions dropped — the fix the
+  // waiver is holding a place for. Every waiver then waives nothing, and the
+  // check demands their deletion rather than leaving them ready to
+  // re-authorise whatever moves back into those targets.
+  const pkg = fixturePackage({
+    name: '@qontinui/ui-bridge',
+    json: {
+      name: '@qontinui/ui-bridge',
+      scripts: { build: 'tsup' },
+      exports: Object.fromEntries(
+        NATIVE_SUBPATHS.map((s) => [
+          `./native${s === '.' ? '' : s.slice(1)}`,
+          { import: `./dist/${nativeStem(s)}.mjs` },
+        ])
+      ),
+    },
+    tsup: TSUP_BLOCKS([
+      ['false', NATIVE_SUBPATHS.map((s) => [nativeStem(s), `src/${nativeStem(s)}.ts`])],
+    ]),
+  });
+  const { findings, stale } = undeclaredTypeTargets(new Map([pkg]));
+  assert.deepEqual(findings, []);
+  assert.equal(stale.length, 6);
+  assert.deepEqual(
+    [...new Set(stale.map((s) => s.package))],
+    ['@qontinui/ui-bridge'],
+    'staleness is keyed on package AND target, not on target alone'
+  );
 });
 
 // ---------------------------------------------------------------------------

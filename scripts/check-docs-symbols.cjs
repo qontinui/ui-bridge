@@ -616,8 +616,15 @@ function resolveSubpath(pkg, subpath) {
  *    exactly where such a target still looks healthy. See unbuiltTargets for
  *    the instance that was live when this was written.
  *
- * The two lookups differ, deliberately, on an `outExtension` build — see
- * unbuiltTargets — and neither may adopt the other's matching rule.
+ * 3. DOES THE BUILD EMIT THIS EXTENSION — `undeclaredTypeTargets`. A stem
+ *    that IS declared still answers nothing about a `.d.ts`, because a
+ *    `dts: false` block emits the JavaScript alone — so a `types` condition
+ *    into one passes both lookups above while resolving to nothing. That
+ *    reader is per-BLOCK and this map is deliberately flat, which is why it
+ *    is a third reader rather than a widening of this one.
+ *
+ * The first two lookups differ, deliberately, on an `outExtension` build —
+ * see unbuiltTargets — and neither may adopt the other's matching rule.
  * (No count of affected targets is given for either: it would be stale on the
  * next entry anyone adds.)
  *
@@ -1717,6 +1724,239 @@ function unbuiltTargets(packages) {
   return out;
 }
 
+/**
+ * The published extensions that are DECLARATIONS, which is the question
+ * `dts: false` answers. Nothing else in a manifest names one.
+ */
+const DECLARATION_TARGET = /\.d\.(ts|mts|cts)$/;
+
+const declarationlessCache = new Map();
+
+/**
+ * A package's tsup entry stems declared in a block that emits NO declarations
+ * — or `null` when that cannot be read, which is a different answer and must
+ * not collapse into it.
+ *
+ * WHY A SECOND READER RATHER THAN A WIDER tsupEntryMap. That map deliberately
+ * flattens every block in a config into one, because both of its readers ask a
+ * question about the config as a whole: which src file is this entry, and is
+ * this stem emitted at all. `dts` is not a property of the config, it is a
+ * property of ONE BLOCK, so folding it in would mean either losing which block
+ * an entry came from or changing the shape both existing readers depend on. A
+ * different question gets its own reader, which is the split unbuiltTargets and
+ * distTargetToSource already make.
+ *
+ * WHAT IT CLOSES. unbuiltTargets asks whether the build declares an ENTRY for a
+ * target's stem. That is the right question for a `.js`/`.mjs` target and the
+ * WRONG one for a `.d.ts`: an entry in a `dts: false` block emits the
+ * JavaScript and no declaration at all, so a `types` condition pointing into it
+ * passes a check whose whole purpose is to refuse a name that resolves to
+ * nothing. Measured on 8ba7354 — the commit that widened that check from
+ * `exports` to every manifest field — `@qontinui/ui-bridge` publishes six
+ * `types` targets whose entries all live in its `dts: false` native block, and
+ * all six were reported clean. A TypeScript consumer of
+ * `@qontinui/ui-bridge/native` gets TS2307 in every installed copy.
+ *
+ * WHY `dts: false` IS NOT ITSELF THE ANSWER, and how that is settled by a read
+ * rather than a guess. Four packages here set it and still ship declarations,
+ * from a separate `tsc -p tsconfig.build.json` pass in their `build` script;
+ * for them the flag says nothing about whether a `.d.ts` exists, and failing on
+ * it would be a false failure on a correct package. That is not a reason to
+ * leave the question unasked — it is a reason to read the other half of the
+ * evidence, which sits in the same manifest this check already parses. A build
+ * script that invokes `tsc`, or that delegates to another npm script whose
+ * contents are out of this read's reach, emits declarations from a pass this
+ * reader cannot see: its answer is UNKNOWN and it returns null. A build script
+ * that does neither is a build whose only declaration source IS tsup, and there
+ * the flag is decisive.
+ *
+ * Everything unreadable renders UNKNOWN for the reason a package declaring no
+ * readable entries is skipped by unbuiltTargets: a missing config, a config
+ * that is not tsup, a `dts` given as anything but the literal `false`, or a
+ * package with no `build` script at all is a read that did not happen, and
+ * rendering it as "emits no declarations" would fail correct targets on the
+ * strength of it.
+ */
+function declarationlessStems(pkg) {
+  const cached = declarationlessCache.get(pkg.dir);
+  if (cached !== undefined) return cached;
+
+  const answer = (value) => {
+    declarationlessCache.set(pkg.dir, value);
+    return value;
+  };
+
+  // Warms tsupConfigPath, which records which of the six config names exists.
+  tsupEntryMap(pkg);
+  const configFile = tsupConfigPath.get(pkg.dir);
+  if (!configFile) return answer(null);
+
+  // `dts: false` is evidence about the published `.d.ts` only when tsup is the
+  // build's ONLY declaration source. A `tsc` invocation says outright that it is
+  // not; so does a delegation to another npm script, because what THAT script
+  // runs is not in reach of this read and reporting it as declarationless would
+  // be a false failure on a correct package. Both render UNKNOWN.
+  const OTHER_DECLARATION_SOURCE =
+    /(^|[\s&|;(])(tsc|npm run|pnpm run|yarn run|run-s|run-p|npm-run-all)(\s|$)/;
+  const build = pkg.json.scripts && pkg.json.scripts.build;
+  if (typeof build !== 'string' || OTHER_DECLARATION_SOURCE.test(build)) return answer(null);
+
+  const text = fs.readFileSync(configFile, 'utf8');
+  const sf = ts.createSourceFile(
+    configFile,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindFor(configFile)
+  );
+  const keyOf = (name) => {
+    if (ts.isStringLiteralLike(name)) return name.text;
+    if (ts.isIdentifier(name)) return name.text;
+    return null;
+  };
+  const propertyNamed = (object, key) => {
+    for (const property of object.properties) {
+      if (ts.isPropertyAssignment(property) && keyOf(property.name) === key) return property;
+    }
+    return null;
+  };
+
+  const stems = new Set();
+  const walk = (node) => {
+    if (ts.isObjectLiteralExpression(node)) {
+      const dts = propertyNamed(node, 'dts');
+      const entry = propertyNamed(node, 'entry');
+      if (dts && entry && dts.initializer.kind === ts.SyntaxKind.FalseKeyword) {
+        // Scoped to this block's `entry` subtree, exactly as tsupEntryMap
+        // scopes its own collection, so the call wrapper in
+        // `entry: realEntries({ ... })` is covered and an unrelated `src/...`
+        // string elsewhere in the block is not.
+        const collect = (n) => {
+          if (
+            ts.isPropertyAssignment(n) &&
+            ts.isStringLiteralLike(n.initializer) &&
+            n.initializer.text.startsWith('src/')
+          ) {
+            const key = keyOf(n.name);
+            if (key) stems.add(key);
+            return;
+          }
+          n.forEachChild(collect);
+        };
+        collect(entry.initializer);
+      }
+    }
+    node.forEachChild(walk);
+  };
+  walk(sf);
+  return answer(stems);
+}
+
+/**
+ * Published `types` targets the build emits no declaration for, KNOWN,
+ * ENUMERATED AND SHRINK-ONLY.
+ *
+ * Same discipline as UNGUARDED_DOCS and the debt ledger, for the same reason: a
+ * waiver that waives nothing is itself a failure, so this list cannot rot into
+ * a set of targets that once existed and quietly re-authorises whatever moves
+ * back into them.
+ *
+ * A waiver here does not say "this is fine". It says "this is a real defect
+ * whose fix is not this gate's to make", and it exists so the check can be ON
+ * while that decision is open. A check held back until a pending decision lands
+ * is a check that never turns on, and it would let the SEVENTH instance through
+ * as silently as the first six.
+ */
+const UNDECLARED_TYPE_WAIVERS = [
+  {
+    package: '@qontinui/ui-bridge',
+    targets: [
+      './dist/native/index.d.ts',
+      './dist/native/core/index.d.ts',
+      './dist/native/react/index.d.ts',
+      './dist/native/control/index.d.ts',
+      './dist/native/server/index.d.ts',
+      './dist/native/debug/index.d.ts',
+    ],
+    why:
+      'The build and the manifest contradict each other, and WHICH ONE IS WRONG is not '  +
+      'settled. The native tsup block sets `dts: false` and '                             +
+      'packages/ui-bridge/src/native/native-type-gate.followup.test.ts reads that as a '  +
+      'deliberate choice — "the React Native surface deliberately ships none". But the ' +
+      'plan 2026-08-23-ui-bridge-native-subtree-has-no-type-gate records that that '      +
+      "test's stated rationale is FALSE (it claims the main tsconfig emits declarations "+
+      'while that config sets `noEmit: true`), and that the merged-program option which ' +
+      'would let this subtree emit was never evaluated. So the fix is either direction: ' +
+      'emit the six declarations, or drop the `types` condition from the six ./native* '  +
+      'subpaths and leave import/require so TypeScript reports the surface as untyped. '  +
+      'Both edit a released package: one its build, one its published exports contract. ' +
+      'That is a product call surfaced rather than self-adopted — coord finding '         +
+      'c13a22bd-8bdf-4ec6-acc7-78e9cd350d0c, which recommends the manifest direction on ' +
+      'the strength of that same test. Delete these six lines in the same commit that '   +
+      'resolves it: this list fails once they stop reproducing.',
+  },
+];
+
+/**
+ * The third question about a published target, and the waivers above that no
+ * longer waive anything.
+ *
+ * After "which src file is this" (distTargetToSource) and "is its stem emitted
+ * at all" (unbuiltTargets) comes DOES THE BUILD EMIT THIS EXTENSION. The first
+ * two are satisfied by any target whose entry exists, which is precisely why a
+ * `types` condition into a declaration-free block passes both while resolving
+ * to nothing in an installed copy.
+ *
+ * Only declarations are asked about, and the narrowness is deliberate. `dts` is
+ * the one emission switch a tsup block states as a plain literal a static read
+ * can settle. `format` interacts with `outExtension`, with the package's `type`
+ * field, and with tsup's own extension defaults, so reading it the same way
+ * would trade this false pass for a false failure -- that question is left
+ * unasked rather than guessed at, which is the judgement the pattern-key skip
+ * in unbuiltTargets already makes.
+ */
+function undeclaredTypeTargets(packages) {
+  const found = [];
+  for (const [name, pkg] of packages) {
+    const declarationless = declarationlessStems(pkg);
+    if (!declarationless || !declarationless.size) continue;
+    for (const { field, target } of publishedTargets(pkg.json)) {
+      if (target.includes('*') || !DECLARATION_TARGET.test(target)) continue;
+      const stem = distStem(target);
+      if (stem === null || !declarationless.has(stem)) continue;
+      found.push({ name, config: tsupConfigPath.get(pkg.dir), field, target });
+    }
+  }
+
+  // Waived at (package, target) granularity rather than by field: one field can
+  // name several targets, and waiving the undeclared one must not also waive a
+  // sibling that is genuinely unbuilt.
+  const waived = new Set();
+  for (const waiver of UNDECLARED_TYPE_WAIVERS) {
+    for (const target of waiver.targets) waived.add(`${waiver.package} ${target}`);
+  }
+  const reproduced = new Set(found.map(({ name, target }) => `${name} ${target}`));
+
+  const byField = new Map();
+  for (const finding of found) {
+    if (waived.has(`${finding.name} ${finding.target}`)) continue;
+    const key = `${finding.name} ${finding.field}`;
+    if (!byField.has(key)) byField.set(key, { ...finding, missing: [] });
+    byField.get(key).missing.push(finding.target);
+  }
+
+  const stale = [];
+  for (const waiver of UNDECLARED_TYPE_WAIVERS) {
+    for (const target of waiver.targets) {
+      if (!reproduced.has(`${waiver.package} ${target}`)) {
+        stale.push({ package: waiver.package, target });
+      }
+    }
+  }
+
+  return { findings: [...byField.values()], stale };
+}
+
 function main() {
   const packages = readWorkspacePackages();
 
@@ -1810,6 +2050,45 @@ function main() {
         'construction: every dist target is resolved back to `src`, which is where an unbuilt\n' +
         'target still looks healthy, so an @example importing it is reported as VERIFIED.\n' +
         'Add the entry to the tsup config, or drop the target from the manifest.\n'
+    );
+    process.exit(1);
+  }
+
+  // The same promise one extension in: a `types` target whose entry is emitted
+  // without declarations. See undeclaredTypeTargets — an entry in a
+  // `dts: false` block satisfies both checks above while its `.d.ts` is never
+  // written, so this is the one question that separates "the build names this
+  // stem" from "the build writes this file".
+  const undeclared = undeclaredTypeTargets(packages);
+  if (undeclared.stale.length) {
+    process.stderr.write(
+      `${undeclared.stale.length} declaration waiver(s) in UNDECLARED_TYPE_WAIVERS no longer waive anything:\n` +
+        undeclared.stale
+          .map(({ package: name, target }) => `   - ${name} ${target}\n`)
+          .join('') +
+        'Each of these is either now emitted or no longer published, so the waiver is doing\n' +
+        'nothing except standing ready to re-authorise whatever moves back into that target.\n' +
+        'The list is exact and shrink-only, like UNGUARDED_DOCS and the debt ledger: delete\n' +
+        'these lines from scripts/check-docs-symbols.cjs.\n'
+    );
+    process.exit(1);
+  }
+  if (undeclared.findings.length) {
+    process.stderr.write(
+      `${undeclared.findings.length} published "types" target(s) name a declaration the build never emits:\n` +
+        undeclared.findings
+          .map(
+            ({ name, config, field, missing }) =>
+              `   - ${name} publishes ${field} -> ${missing.join(', ')}, but ` +
+              `${rel(config)} declares that entry in a \`dts: false\` block\n`
+          )
+          .join('') +
+        'The JavaScript is emitted and the declaration is not, so the stem check above passes\n' +
+        'and a TypeScript consumer still gets TS2307 in every installed copy. Either the build\n' +
+        'should emit declarations for that entry, or the manifest should stop promising them —\n' +
+        'and which of those is right is a decision about the package, not about this gate. If\n' +
+        'it is the manifest, drop the "types" condition and leave import/require; if the\n' +
+        'decision is genuinely open, add the target to UNDECLARED_TYPE_WAIVERS with a reason.\n'
     );
     process.exit(1);
   }
@@ -2253,12 +2532,14 @@ if (!isEntry && process.argv[1] && path.resolve(process.argv[1]) === __filename)
 // pins the reimplementation. Assigned BEFORE the run below, so the exported
 // shape does not depend on how a check that may `process.exit` ended.
 module.exports = {
+  declarationlessStems,
   distStem,
   distTargetToSource,
   extractCodeBlocks,
   extractCommentCodeBlocks,
   tsupEntryMap,
   unbuiltTargets,
+  undeclaredTypeTargets,
   unfencedExamples,
 };
 

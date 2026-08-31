@@ -108,6 +108,16 @@ jobs:
         # — so a package publishing its entry points the legacy way, with no
         # `exports` map at all, is checked rather than skipped.
         #
+        # A declared entry does not guarantee a DECLARATION, so a `types`
+        # target is asked one question further: an entry in a `dts: false`
+        # tsup block emits the JavaScript and no `.d.ts`, so the target above
+        # passes while a TypeScript consumer still gets TS2307 in every
+        # installed copy. `dts: false` is only read as evidence for a package
+        # whose `build` script runs no `tsc` pass; anything else is UNKNOWN
+        # and is skipped rather than guessed at. Known instances are
+        # enumerated in UNDECLARED_TYPE_WAIVERS with a reason, and that list
+        # is exact and shrink-only — a waiver that waives nothing fails.
+        #
         # The roster is also checked for COMPLETENESS: every .md/.mdx file the
         # repo tracks must be on a guarded surface or named in UNGUARDED_DOCS
         # with a reason, so a new documentation tree cannot land unchecked. The
