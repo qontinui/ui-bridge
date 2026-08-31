@@ -84,4 +84,17 @@ describe('the ./native root barrel lists the Phase 2-4 surface', () => {
     expect(source).toContain('type IREffect');
     expect(source).toContain('type ActionHandlerOptions');
   });
+
+  // The status mapping is the newest thing on this barrel and was the only new
+  // export #189 added to it. The sibling package pinned its own copy in the
+  // same change (`packages/ui-bridge-native/src/public-surface.remediation.test.ts`,
+  // "exports the status mapping the ServerAdapter contract needs") and this
+  // half was left unpinned — so the next edit to this explicit export list
+  // could drop it with nothing failing, which is precisely the defect class
+  // this file exists to catch. `ServerAdapter` is BYO transport: a consumer
+  // implementing it writes the status line themselves, and without this export
+  // they re-derive the blanket 400 the surface just stopped sending.
+  it('exports the status mapping the ServerAdapter contract needs', () => {
+    expect(source).toContain('httpStatusForResponse');
+  });
 });

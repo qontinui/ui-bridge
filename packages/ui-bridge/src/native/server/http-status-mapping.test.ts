@@ -47,17 +47,40 @@ function stubExecutor() {
   };
 }
 
-function buildServer(): NativeUIBridgeServer {
-  return new NativeUIBridgeServer(new NativeUIBridgeRegistry(), stubExecutor() as never);
+function buildServer(config?: Record<string, unknown>): NativeUIBridgeServer {
+  return new NativeUIBridgeServer(
+    new NativeUIBridgeRegistry(),
+    stubExecutor() as never,
+    config as never
+  );
+}
+
+async function probeWithConfig(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  config: Record<string, unknown>
+): Promise<{ status: number; headers: Record<string, string> }> {
+  const res = await buildServer(config).handleRequest({
+    method,
+    path,
+    headers: {},
+    query: {},
+    body: {},
+  });
+  return { status: res.status, headers: res.headers };
 }
 
 async function probe(
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: unknown
-): Promise<{ status: number; parsed: ParsedResponse }> {
+): Promise<{ status: number; parsed: ParsedResponse; headers: Record<string, string> }> {
   const res = await buildServer().handleRequest({ method, path, headers: {}, query: {}, body });
-  return { status: res.status, parsed: JSON.parse(res.body) as ParsedResponse };
+  return {
+    status: res.status,
+    parsed: JSON.parse(res.body) as ParsedResponse,
+    headers: res.headers,
+  };
 }
 
 describe('HTTP status mapping — the status line matches the envelope code', () => {
@@ -131,6 +154,58 @@ describe('HTTP status mapping — the status line matches the envelope code', ()
     const { status, parsed } = await probe('GET', '/ui-bridge/health');
     expect(parsed.success).toBe(true);
     expect(status).toBe(200);
+  });
+});
+
+/**
+ * A 405 without `Allow` tells the caller its verb was wrong and not which verb
+ * is right — the same guessing game the blanket 400 caused, one status code
+ * later. RFC 9110 §15.5.6 makes the header mandatory on a 405, and the verbs are
+ * read off `UI_BRIDGE_NATIVE_ROUTES`, the same table the 405 itself is derived
+ * from, so the header and the status cannot disagree.
+ */
+describe('the 405 says which verbs ARE allowed', () => {
+  it('names the published verb for a wrong-verb request', async () => {
+    const { status, parsed, headers } = await probe('POST', '/ui-bridge/health', {});
+    expect(status).toBe(405);
+    expect(headers.Allow).toBe('GET');
+    // In the ENVELOPE too. Almost nothing reads headers — the skills, the
+    // cheatsheets and every documented probe read the JSON body — so a
+    // header-only fix would be invisible to the likeliest caller.
+    expect(parsed.error).toBe('Method not allowed: POST /ui-bridge/health (allowed: GET)');
+  });
+
+  it('makes Allow readable cross-origin when CORS is on', async () => {
+    // `Allow` is not a CORS-safelisted response header, so without
+    // `Access-Control-Expose-Headers` a browser caller reads `null` from it —
+    // the guessing game this is meant to end, for exactly the caller class this
+    // BYO-transport surface is documented for.
+    const on = await probeWithConfig('POST', '/ui-bridge/health', { cors: true });
+    expect(on.headers['Access-Control-Expose-Headers']).toBe('Allow');
+
+    const off = await probeWithConfig('POST', '/ui-bridge/health', { cors: false });
+    expect(off.headers.Allow).toBe('GET');
+    expect(off.headers['Access-Control-Expose-Headers']).toBeUndefined();
+  });
+
+  it('names the published verb for a parameterised path', async () => {
+    // Exercises the `:id` arm of `parsePath` from the header's side: the path
+    // resolves through a placeholder segment, not a literal match.
+    const { status, headers } = await probe('DELETE', '/ui-bridge/control/element/anything', {});
+    expect(status).toBe(405);
+    expect(headers.Allow).toBe('GET');
+  });
+
+  it('sets no Allow header on a 404, where it would mean nothing', async () => {
+    const { status, headers } = await probe('GET', '/ui-bridge/control/visibility');
+    expect(status).toBe(404);
+    expect(headers.Allow).toBeUndefined();
+  });
+
+  it('sets no Allow header on a 200', async () => {
+    const { status, headers } = await probe('GET', '/ui-bridge/health');
+    expect(status).toBe(200);
+    expect(headers.Allow).toBeUndefined();
   });
 });
 
