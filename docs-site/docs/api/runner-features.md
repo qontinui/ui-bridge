@@ -1186,6 +1186,14 @@ curl -sX POST http://localhost:3001/api/ui-bridge/control/page-health | jq '.dat
 The page-health Claude skill (`.claude/skills/page-health/SKILL.md`)
 reads the same payload — no transport-aware branching is required.
 
+**The other route in this category is web-SDK only.**
+`POST /control/visibility` — the occlusion sweep, reporting which elements
+cover which — shares the `diagnostics` category with page-health in
+`GET /capabilities`, but the runner does **not** implement it: only
+`@qontinui/ui-bridge` does, so it answers against the web SDK's base URL and
+not against `localhost:9876`. It is documented with the SDK control endpoints:
+[Occlusion Sweep](control-endpoints.md#occlusion-sweep).
+
 ## Console & network monitoring
 
 ```http
