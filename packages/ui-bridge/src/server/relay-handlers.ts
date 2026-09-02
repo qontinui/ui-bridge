@@ -71,6 +71,68 @@ function error(message: string, code?: string, suggestions?: string[]): APIRespo
   };
 }
 
+/**
+ * Read a browser-reported FAILURE off a resolved relay result.
+ *
+ * THE DEFECT this closes: `relayCommand` used to wrap every resolved result in
+ * `success(result)`. The browser-side dispatcher
+ * (`react/commandHandlers.ts`) reports a failed command by RESOLVING with
+ * `{ success: false, error, failureDetails }` — it does not throw — so a
+ * genuine failure reached the caller as
+ * `{ success: true, data: { success: false, … } }`: HTTP 200, outer success,
+ * failure buried one level down. Every consumer that checks the envelope (and
+ * that is all of them — it is the documented contract) was told the command
+ * worked. The runner's `handle_element_action` reads exactly that top-level
+ * `success` field, so a no-op write was recorded as a successful one.
+ *
+ * This is deliberately NOT per-action. The seam is shared by every relayed
+ * command, so a hole here is a hole for all of them; a `sendKeys`-shaped patch
+ * would leave the same lie in place for the other eighteen element verbs, for
+ * `executeBatchAction`, `executeComponentAction`, the workflow commands, and
+ * everything else routed through this function.
+ *
+ * Returns `undefined` for anything that is not an object carrying a literal
+ * `success: false`, which is the overwhelming majority of relay results
+ * (snapshots, element lists, find responses — none of them have a `success`
+ * field at all), so their envelopes are untouched.
+ *
+ * The verdict is not a new contract, it is parity: the sibling package
+ * `@qontinui/ui-bridge-server` (`src/handlers.ts`, the `executeElementAction`
+ * failure arm) already returns `{success:false, error, code, data}` for an
+ * inner failure, with the comment "don't wrap in success() which creates
+ * double-wrapping: {success: true, data: {success: false}}". That fix was
+ * never carried back to this seam.
+ */
+function readRelayInnerFailure(result: unknown): { message: string; code: string } | undefined {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return undefined;
+  const r = result as Record<string, unknown>;
+  if (r.success !== false) return undefined;
+  const message =
+    typeof r.error === 'string' && r.error.length > 0
+      ? r.error
+      : `The browser reported the command failed but supplied no error message.`;
+
+  // A HOISTED `code` is a custom-action handler's OWN machine-readable code
+  // (`TERMINAL_EXITED`, …), hoisted by the same rule the executor path applies.
+  // It is propagated VERBATIM: the handler's vocabulary is not the SDK
+  // taxonomy, so `mapInternalErrorCode` would flatten it to `UB-UNKNOWN-ERROR`
+  // and the only surviving signal would be prose. Same reasoning as the
+  // `WRONG_TYPE_PARAM` / `TAB_NOT_FOUND` envelopes below, which also bypass the
+  // mapper because their codes are contract surface.
+  if (typeof r.code === 'string' && r.code.length > 0) return { message, code: r.code };
+
+  // Otherwise the code came from the SDK's own vocabulary — a hoisted
+  // `errorCode`, or `failureDetails.errorCode` (what `createActionFailure`
+  // emits). Those DO map onto the canonical `UB-*` family.
+  const details = r.failureDetails as { errorCode?: unknown } | undefined;
+  const internal =
+    (typeof r.errorCode === 'string' && r.errorCode.length > 0 ? r.errorCode : undefined) ??
+    (details && typeof details.errorCode === 'string' && details.errorCode.length > 0
+      ? details.errorCode
+      : undefined);
+  return { message, code: mapInternalErrorCode(internal, message) };
+}
+
 /** Maximum allowed response size for fallback screenshots (10 MB) */
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
 
@@ -318,6 +380,21 @@ export function createRelayHandlers(
         : undefined;
     try {
       const result = await relay.queueCommand<T>(action, cleaned, effectiveOpts);
+      // An inner `success: false` is a FAILURE — it must never surface as an
+      // outer success. See `readRelayInnerFailure`. The payload is preserved
+      // verbatim under `data` so nothing that reads `failureDetails`,
+      // `elementState` or the handler's own fields loses information; only the
+      // envelope's verdict changes.
+      const innerFailure = readRelayInnerFailure(result);
+      if (innerFailure) {
+        return {
+          success: false,
+          error: innerFailure.message,
+          code: innerFailure.code as APIResponse['code'],
+          data: result,
+          timestamp: Date.now(),
+        } as APIResponse<T>;
+      }
       return success(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

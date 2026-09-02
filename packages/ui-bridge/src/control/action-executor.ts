@@ -567,7 +567,7 @@ const RESERVED_ERROR_FIELDS = new Set(['name', 'message', 'stack', 'cause']);
 /**
  * The typed payload a custom-action handler attached to the error it threw.
  */
-interface HandlerErrorEnvelope {
+export interface HandlerErrorEnvelope {
   /** The handler's own machine-readable code, propagated verbatim. */
   code: string;
   /** Every other own enumerable property the handler attached. */
@@ -588,8 +588,14 @@ interface HandlerErrorEnvelope {
  * Returns `undefined` unless the value carries a non-empty **string** `code`,
  * which keeps ordinary `Error`s (and `DOMException`, whose `code` is a number)
  * on the historical generic shape.
+ *
+ * Exported because the RELAY/injected dispatch path
+ * (`react/commandHandlers.ts` → `case 'executeElementAction'`) is a wholly
+ * separate implementation that also invokes custom-action handlers. Two copies
+ * of "how do I read a handler's typed throw?" would drift, and a driver cannot
+ * pattern-match a code whose survival depends on which transport it reached.
  */
-function readHandlerErrorEnvelope(error: unknown): HandlerErrorEnvelope | undefined {
+export function readHandlerErrorEnvelope(error: unknown): HandlerErrorEnvelope | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const code = (error as { code?: unknown }).code;
   if (typeof code !== 'string' || code.length === 0) return undefined;

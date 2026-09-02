@@ -1640,10 +1640,35 @@ export function createHandlers(
             }
           );
 
-          return success({
-            ...actionResult,
-            failureDetails,
-          }) as unknown as APIResponse<ControlActionResponse>;
+          // An inner `success: false` must NOT surface as an outer success.
+          // This used to be `success({...actionResult, failureDetails})`, i.e.
+          // `{ success: true, data: { success: false, … } }` — HTTP 200, outer
+          // success, failure buried one level down. Every consumer branches on
+          // the envelope, so a refused action was reported as a completed one.
+          // Same defect, same fix, as `relayCommand` in `relay-handlers.ts`:
+          // the verdict flips, the payload is preserved verbatim under `data`.
+          //
+          // This is not a new contract — it is parity. The sibling package
+          // `@qontinui/ui-bridge-server` (`src/handlers.ts`, the
+          // `executeElementAction` failure arm) already returns exactly this
+          // envelope, with the comment "don't wrap in success() which creates
+          // double-wrapping: {success: true, data: {success: false}}". That fix
+          // was simply never carried back to this copy, nor to the relay seam.
+          const rawCode = (actionResult as unknown as { code?: unknown }).code;
+          const preservedCode =
+            typeof rawCode === 'string' && rawCode.length > 0
+              ? (rawCode as UiBridgeErrorCode)
+              : errorCode;
+          return {
+            success: false,
+            error: actionResult.error || 'Action failed',
+            code: preservedCode,
+            data: {
+              ...actionResult,
+              failureDetails,
+            },
+            timestamp: Date.now(),
+          } as unknown as APIResponse<ControlActionResponse>;
         }
 
         // Compute changes diff when captureAfter was requested
