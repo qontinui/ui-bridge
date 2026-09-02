@@ -37,8 +37,10 @@ import {
   findHoverableAncestor,
   dispatchHoverEnter,
   nextAnimationFrame,
+  readHandlerErrorEnvelope,
   DefaultActionExecutor,
 } from '../control/action-executor';
+import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest } from '../control/types';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
@@ -1232,6 +1234,10 @@ export async function executeCommand(
         request.action === 'scroll' && (id === 'document' || id === 'body' || id === 'window');
 
       let dom: HTMLElement;
+      // The element's own registration, kept so the custom-action lookup below
+      // can consult it. A page sentinel has no registration and therefore no
+      // custom actions.
+      let registered: RegisteredElement | undefined;
       if (isPageScrollSentinel) {
         dom = document.documentElement;
       } else {
@@ -1266,9 +1272,50 @@ export async function executeCommand(
             startTime
           );
         dom = domEl;
+        registered = el;
       }
 
       try {
+        // Custom-action precedence — a registered handler wins over a
+        // same-named built-in. This is the SAME defect, and the same fix, as
+        // the block in `control/action-executor.ts` `performAction`; that fix
+        // landed on the executor path only, so this transport still dispatched
+        // the SDK's DOM synthesis over the top of a registered handler.
+        //
+        // THE DEFECT this closes: the runner's terminal pane registers a
+        // `sendKeys` custom action whose handler writes to the pty. `sendKeys`
+        // is ALSO a built-in verb in the switch below, so driving it through
+        // the relay ran the built-in KeyboardEvent synthesis, the registered
+        // handler never ran, no bytes reached the pty — and the call still
+        // returned `success: true`. An instrument that reports success while
+        // doing nothing is worse than one that fails loudly.
+        //
+        // Precedence is decided on THIS element's own registration, never on a
+        // global name check: an element that does not register `sendKeys` still
+        // gets the built-in. The options bag is ALWAYS supplied because
+        // `ActionHandlerOptions` promises it and a handler written the
+        // documented way (`(params, { signal }) => …`) throws on `undefined`;
+        // an element action carries no cancellation source, so the signal is
+        // inert (see `inertAbortSignal`). A handler throw falls to the outer
+        // catch, which preserves its typed `code`.
+        const customAction = registered?.customActions?.[request.action];
+        if (customAction) {
+          const handlerResult = await customAction.handler(request.params, {
+            signal: inertAbortSignal(),
+          });
+          return {
+            success: true,
+            action: request.action,
+            elementId: id,
+            // Additive: `JSON.stringify` drops it when the handler returned
+            // nothing, so a void handler's envelope is unchanged.
+            result: handlerResult,
+            snapshotFreshness,
+            durationMs: performance.now() - startTime,
+            timestamp: Date.now(),
+          };
+        }
+
         switch (request.action) {
           case 'click':
             dispatchRealClick(dom);
@@ -1671,12 +1718,33 @@ export async function executeCommand(
             );
         }
       } catch (err) {
-        return createActionFailure(
+        // A custom-action handler's typed throw carries its own
+        // machine-readable code (+ any fields it attached) — preserve it
+        // instead of flattening to prose, exactly as the executor path does.
+        // `readHandlerErrorEnvelope` returns undefined for an ordinary `Error`,
+        // so every pre-existing failure keeps its historical shape.
+        const handlerError = readHandlerErrorEnvelope(err);
+        const failure = createActionFailure(
           id,
           'ACTION_REJECTED',
           `Action failed: ${(err as Error).message}`,
           startTime
         );
+        if (!handlerError) return failure;
+        return {
+          ...failure,
+          // Hoisted so callers can match on `code` without walking
+          // `failureDetails.context` — parity with the executor path.
+          code: handlerError.code,
+          failureDetails: {
+            ...failure.failureDetails,
+            context: {
+              action: request.action,
+              code: handlerError.code,
+              ...handlerError.fields,
+            },
+          },
+        };
       }
       return {
         success: true,

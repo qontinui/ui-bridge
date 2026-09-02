@@ -154,6 +154,40 @@ Execute an action on an element.
 }
 ```
 
+**Failure response:**
+
+An action that could not be performed is an **outer** failure. The envelope's
+`success` is `false`, `code` carries the machine-readable reason, and the full
+executor payload (including `failureDetails`) is preserved under `data`:
+
+```json
+{
+  "success": false,
+  "error": "Element terminal-pane exists but is not visible",
+  "code": "UB-ELEM-NOT-VISIBLE",
+  "data": {
+    "success": false,
+    "error": "Element terminal-pane exists but is not visible",
+    "failureDetails": {
+      "errorCode": "UB-ELEM-NOT-VISIBLE",
+      "elementId": "terminal-pane",
+      "suggestedActions": [],
+      "retryRecommended": true
+    }
+  }
+}
+```
+
+Branch on the **envelope**. A failure is never reported as
+`{"success": true, "data": {"success": false}}` — that shape told every caller
+that checks the envelope (which is all of them) that a refused action had
+completed. It is identical on every transport: direct, relay, and the
+`@qontinui/ui-bridge-server` adapters all emit the same verdict.
+
+When a custom action handler throws with its own `code` (e.g.
+`TERMINAL_EXITED`), that code is propagated **verbatim** rather than mapped into
+the `UB-*` family — a handler's vocabulary is not the SDK taxonomy.
+
 #### Action Types
 
 **click**
