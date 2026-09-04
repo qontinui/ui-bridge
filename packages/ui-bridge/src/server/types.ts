@@ -22,6 +22,8 @@ import type {
   PageNavigationResponse,
   FillFormRequest,
   EffectRecordEntry,
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
 } from '../control';
 import type { FillResult } from '../core/types';
 import type { PageHealthReport } from './page-health';
@@ -549,6 +551,27 @@ export interface UIBridgeServerHandlers {
     request: ComponentActionRequest,
     context?: HandlerContext
   ) => Promise<APIResponse<ComponentActionResponse>>;
+  /**
+   * `POST /control/component/:id/action/:actionId/predict` — ask the effect
+   * twin what invoking the action WOULD do, without invoking it (Phase 6 of
+   * plan `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * **The parameter list is `(id, actionId, request, context)` — four
+   * positional args, not the three `executeComponentAction` takes**, and that
+   * is deliberate. Both adapters push each `params` entry in declaration order
+   * before the body (`server/express.ts` `createRouteHandler`,
+   * `server/nextjs.ts` `handleRequest`), so a route declaring
+   * `params: ['id','actionId']` hands a four-arg handler exactly the arguments
+   * its signature names. `executeComponentAction` predates that alignment and
+   * pays for it in `relay-handlers.ts`, which has to sniff whether its second
+   * argument is an `actionId` string or a request object. This one does not.
+   */
+  predictComponentAction: (
+    id: string,
+    actionId: string,
+    request?: ComponentActionPredictRequest & Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ComponentActionPredictResponse>>;
 
   // Find endpoints
   find: (
@@ -1758,6 +1781,30 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/control/component/:id/action/:actionId',
     handler: 'executeComponentAction',
+    params: ['id', 'actionId'],
+    bodyRequired: true,
+  },
+  // D3 Effect Calculus (Phase 6 of plan
+  // `2026-09-04-effect-calculus-joins-the-component-action-registry`) — ask
+  // the twin what this action WOULD do, without invoking it. Deliberately the
+  // invocation path plus a `/predict` tail rather than a route of its own, so
+  // it inherits the `:actionId` template already published on every component
+  // (`core/registry.ts` `actionInvocationPath`, `server/handlers.ts`
+  // `annotateComponentWithInvocationPaths`): a caller that can build the
+  // invocation URL can build this one by appending eight characters.
+  //
+  // POST, not GET, for two reasons that both matter: the prediction is a
+  // function of the params the caller intends to invoke WITH (a signature may
+  // predict different deltas per param bag), and a param bag does not belong
+  // in a query string. `bodyRequired` is what makes every adapter actually
+  // PASS that body — without it the Express/Next.js adapters treat a POST as
+  // a context-only handler and the params are silently unreachable over HTTP
+  // while still working in unit tests (the bug `/control/visibility` records
+  // just above).
+  {
+    method: 'POST',
+    path: '/control/component/:id/action/:actionId/predict',
+    handler: 'predictComponentAction',
     params: ['id', 'actionId'],
     bodyRequired: true,
   },

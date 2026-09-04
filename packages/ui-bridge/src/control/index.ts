@@ -59,6 +59,19 @@ export {
   describeSignatureDisagreement,
 } from './effect-authoring';
 export type { SignatureArmSummary, SignatureDisagreement } from './effect-authoring';
+// D3 Effect Calculus — Phase 6: query the twin before acting.
+export {
+  buildComponentActionPrediction,
+  unresolvedComponentActionPrediction,
+  UNCLASSIFIED_CAVEAT_PREFIX,
+} from './effect-predict';
+export type {
+  ComponentActionPrediction,
+  ComponentActionPredictionInputs,
+  ComponentActionPredictionStatus,
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
+} from './effect-predict';
 // D3 Effect Calculus — Phase 2 (settle-window attribution + effect store)
 export {
   ActionWindowRegistry,

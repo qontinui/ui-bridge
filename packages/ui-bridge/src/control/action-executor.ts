@@ -134,8 +134,18 @@ import {
   normalizeDeclaredComponentSignature,
 } from './effect-signatures';
 import { describeSignatureDisagreement } from './effect-authoring';
+import {
+  buildComponentActionPrediction,
+  unresolvedComponentActionPrediction,
+} from './effect-predict';
+import type {
+  ComponentActionPrediction,
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
+} from './effect-predict';
 import { createSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
+import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
 import type {
   ActionParams,
@@ -949,15 +959,33 @@ export class DefaultActionExecutor implements ActionExecutor {
   private getEffectVerifier(): EffectVerifier {
     if (!this.effectVerifier) {
       this.effectVerifier = new EffectVerifier({
-        captureSnapshot: async (_scope: ObservabilityScope) => {
-          const control = await this.getSnapshot();
-          if (!this.snapshotManager) this.snapshotManager = createSnapshotManager();
-          return this.snapshotManager.createSnapshot(control);
-        },
+        captureSnapshot: (scope: ObservabilityScope) => this.captureSemanticSnapshot(scope),
         settle: (ms: number) => sleep(ms),
       });
     }
     return this.effectVerifier;
+  }
+
+  /**
+   * Capture the semantic snapshot the calculus predicts and verifies against.
+   *
+   * Extracted from {@link getEffectVerifier}'s dependency bag (Phase 6) so the
+   * predict route captures through the SAME path verification does. A second
+   * capture pipeline would mean a prediction made against a differently shaped
+   * world than the one it is later checked against — the difference would then
+   * surface as a bogus verification outcome and be blamed on the signature.
+   *
+   * Read-only: `getSnapshot()` re-derives labels off the live DOM and reads the
+   * registry; nothing here mutates registry state, opens a settle window or
+   * touches the effect store.
+   *
+   * The scope arg is accepted for future scoped capture; today the capture is
+   * whole-page (coverage stays 1), exactly as Phase 1 left it.
+   */
+  private async captureSemanticSnapshot(_scope: ObservabilityScope): Promise<SemanticSnapshot> {
+    const control = await this.getSnapshot();
+    if (!this.snapshotManager) this.snapshotManager = createSnapshotManager();
+    return this.snapshotManager.createSnapshot(control);
   }
 
   /**
@@ -1601,18 +1629,49 @@ export class DefaultActionExecutor implements ActionExecutor {
       declaredHere !== undefined;
     if (!wanted) return undefined;
 
+    // `componentSignatureArms` normalizes the declared signature again. That
+    // repetition is deliberate: the GATE has to know whether a declaration
+    // exists before deciding to resolve at all, and the resolver has to fill
+    // the declared arm in for a caller-supplied registry that does not know
+    // where declarations live. `normalizeDeclaredComponentSignature` is pure
+    // and allocation-light, and threading a precomputed value through would
+    // couple the ungated resolver to this gate's control flow.
+    return this.componentSignatureArms(componentId, action, request.params);
+  }
+
+  /**
+   * Resolve both arms of a component action's signature, UNGATED (Phase 6).
+   *
+   * Split out of {@link resolveComponentEffectArms} because the two callers ask
+   * different questions. That one asks *"should this invocation also verify?"*
+   * and is rightly gated on the executor-wide switch plus `verifyEffect`. The
+   * predict route asks *"what does the twin say?"*, which IS the request — a
+   * verification switch is not its cost control, and gating it there would make
+   * `/predict` answer `unclassified` for an action that has a perfectly good
+   * signature, which is the exact "null reads as harmless" failure Phase 6
+   * exists to prevent.
+   *
+   * Returns `undefined` when nothing resolves. No fabricated prediction, ever.
+   */
+  private componentSignatureArms(
+    componentId: string,
+    action: { id: string; signature?: EffectSignature },
+    params?: Record<string, unknown>
+  ): ComponentSignatureArms | undefined {
+    const declaredHere = normalizeDeclaredComponentSignature(
+      action.signature,
+      componentId,
+      action.id
+    );
+
     const resolved: ComponentSignatureArms = this.signatureRegistry
       .resolveComponentSignatureArms
-      ? this.signatureRegistry.resolveComponentSignatureArms(
-          componentId,
-          action.id,
-          request.params
-        )
+      ? this.signatureRegistry.resolveComponentSignatureArms(componentId, action.id, params)
       : {
           signature: this.signatureRegistry.resolveComponentSignature(
             componentId,
             action.id,
-            request.params
+            params
           ),
         };
 
@@ -1624,6 +1683,156 @@ export class DefaultActionExecutor implements ActionExecutor {
     const signature = declared ?? resolved.signature ?? inferred;
     if (!signature) return undefined;
     return { signature, declared, inferred };
+  }
+
+  /**
+   * Query the twin before acting — `POST
+   * /control/component/:id/action/:actionId/predict` (Phase 6 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * Resolves the action's signature, captures a pre-snapshot, runs
+   * `predicts(params, omegaPre)` and returns the answer. **The handler is
+   * never invoked.** The precedent is `composeSignatures`
+   * (`./effect-composition`), documented as *"composes predictions only; it
+   * captures NOTHING"*; this is the same discipline for one action.
+   *
+   * State-neutrality is structural, not promised:
+   *   - the handler is not referenced anywhere in this method;
+   *   - no settle window is opened (`ActionWindowRegistry` is untouched), so
+   *     concurrent background observations are not attributed to a call that
+   *     did nothing;
+   *   - nothing is written to the effect store — a store entry is a record of a
+   *     predict-then-VERIFY cycle, and no verification happened here;
+   *   - the only capture is the read-only semantic snapshot the prediction is
+   *     computed against, taken through the same path verification uses.
+   *
+   * The three answers it can give are distinguished by
+   * {@link ComponentActionPrediction.status}, never by an absent field —
+   * `'unclassified'` (nobody described this action) is a SUCCESSFUL answer and
+   * must not be read as "harmless"
+   * [policy: unknown-must-not-render-as-a-default].
+   */
+  async predictComponentAction(
+    componentId: string,
+    actionId: string,
+    request: ComponentActionPredictRequest = {}
+  ): Promise<ComponentActionPredictResponse> {
+    const startTime = performance.now();
+    const ok = (prediction: ComponentActionPrediction): ComponentActionPredictResponse => ({
+      ...prediction,
+      success: true,
+      durationMs: performance.now() - startTime,
+    });
+    const fail = (
+      prediction: ComponentActionPrediction,
+      error: string,
+      code: string
+    ): ComponentActionPredictResponse => ({
+      ...prediction,
+      success: false,
+      error,
+      code,
+      durationMs: performance.now() - startTime,
+    });
+
+    const component = this.registry.getComponent(componentId);
+    if (!component) {
+      const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'COMPONENT_NOT_FOUND'
+      );
+    }
+
+    const action = component.actions.find((a) => a.id === actionId);
+    if (!action) {
+      const available = component.actions.map((a) => a.id).join(', ');
+      const message = `Action "${actionId}" not found on component "${componentId}". Available actions: ${available}`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'ACTION_NOT_FOUND'
+      );
+    }
+
+    const arms = this.componentSignatureArms(componentId, action, request.params);
+
+    // No signature → no capture. Capturing a snapshot only to throw it away is
+    // pure cost, and a `predictedAgainstSnapshotAt` on an answer that predicted
+    // nothing would imply a prediction was attempted against it.
+    if (!arms) {
+      return ok(
+        buildComponentActionPrediction({
+          componentId,
+          actionId,
+          effect: action.effect,
+          params: request.params,
+          requestId: request.requestId,
+        })
+      );
+    }
+
+    let pre: SemanticSnapshot;
+    try {
+      pre = await this.captureSemanticSnapshot(arms.signature?.scope ?? {});
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `Could not capture a pre-snapshot to predict "${componentId}.${actionId}" against (${detail}).`;
+      // NOT reported as `unclassified`: a signature DID resolve, and reporting
+      // a capture failure as "nobody described this action" would blame the
+      // author for an infrastructure fault and hide the real one.
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'SNAPSHOT_CAPTURE_FAILED'
+      );
+    }
+
+    try {
+      return ok(
+        buildComponentActionPrediction({
+          componentId,
+          actionId,
+          effect: action.effect,
+          arms,
+          params: request.params,
+          requestId: request.requestId,
+          pre,
+        })
+      );
+    } catch (err) {
+      // The author's own `predicts` closure threw. That is an authoring bug in
+      // the signature, and it is reported as one — never smoothed into a `null`
+      // prediction, which would be indistinguishable from "no signature".
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `The effect signature for "${componentId}.${actionId}" threw while predicting: ${detail}`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'SIGNATURE_PREDICT_FAILED'
+      );
+    }
   }
 
   /**

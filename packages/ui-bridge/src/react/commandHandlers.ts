@@ -2138,6 +2138,37 @@ export async function executeCommand(
       });
     }
 
+    /**
+     * Phase 6 — the relay/IPC arm of the predict route.
+     *
+     * Deliberately reuses the SAME `ipcActionExecutor` the invocation case
+     * above uses, so the twin answers from the registry, the signatures and
+     * the DOM the handler would actually run against. A second, hand-rolled
+     * resolution here would be a fourth inline copy of exactly the drift the
+     * comment above warns about.
+     *
+     * Unlike its twin it does NOT pre-check the component / action: the
+     * executor's own `'unresolved'` answer is richer (it lists the available
+     * action ids) and it is the shape every other transport already returns,
+     * so short-circuiting here would give the relay path a different payload
+     * for the same condition.
+     */
+    case 'predictComponentAction': {
+      const { id, actionId, request } = payload as {
+        id: string;
+        actionId: string;
+        request?: { params?: P; requestId?: string };
+      };
+      const prediction = await ipcActionExecutor(registry).predictComponentAction(id, actionId, {
+        params: request?.params as Record<string, unknown> | undefined,
+        requestId: request?.requestId,
+      });
+      // Spread verbatim: every field of the prediction is part of the answer,
+      // and a hand-written field list here is how `coverageCaveat` would go
+      // missing on exactly the transport that most needs it.
+      return { ...prediction };
+    }
+
     // ======================================================================
     // Control — Workflows
     // ======================================================================
