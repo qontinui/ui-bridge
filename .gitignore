@@ -52,3 +52,8 @@ cookies.txt
 # Dependency twin resolver output (scripts/dependency-twin-resolver.mjs)
 # — a generated artifact; uploaded by CI, never committed.
 dependency-resolution-observations.json
+
+# coord-mcp device credential (nonce/JWT) is written into the worktree as
+# .mcp.json at launch. It is a live credential and must never be committed.
+# (Was previously only in .git/info/exclude — local-only, lost on fresh clone/CI.)
+.mcp.json
