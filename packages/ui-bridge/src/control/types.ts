@@ -179,6 +179,31 @@ export interface ComponentActionRequest {
    * `normalizeActionTimeoutMs`.
    */
   timeoutMs?: number;
+  /**
+   * D3 effect-calculus: control predict-then-verify for THIS component action
+   * (Phase 5 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * The component path uses the **same** executor-wide switch as the element
+   * path — `enableEffectVerification` / `setEffectVerificationEnabled` — so
+   * the two surfaces can never disagree about whether verification is on. This
+   * is the per-request override on top of it, and it is symmetric:
+   *
+   *   - `true`  — verify this call even with the executor-wide flag off, the
+   *     same meaning `ControlActionRequest.verifyEffect` has on the element
+   *     path.
+   *   - `false` — do NOT verify this call, even though something else would
+   *     have. This arm exists only on the component path, because only there
+   *     can an author's declared `ComponentAction.signature` turn verification
+   *     on by itself; a declaration is an author's default, and a caller that
+   *     needs the two extra snapshots back has to be able to say no.
+   *   - omitted — the executor-wide flag, or the action's own declared
+   *     signature, decides.
+   *
+   * Verification runs only when a signature actually resolves. Nothing is
+   * predicted for an action nobody described.
+   */
+  verifyEffect?: boolean;
 }
 
 /**
@@ -229,6 +254,17 @@ export interface ComponentActionResponse {
   failureDetails?: ActionFailureDetails;
   /** Stack trace if failed */
   stack?: string;
+  /**
+   * D3 effect-calculus verification: predicted-vs-observed outcome for this
+   * action (present only when a signature resolved).
+   *
+   * The component twin of `ActionResponse.effectVerification`, added by Phase 5
+   * of plan `2026-09-04-effect-calculus-joins-the-component-action-registry`.
+   * Before it, the response type had no verification field at all, so the whole
+   * component surface was outside the calculus no matter what an author
+   * declared.
+   */
+  effectVerification?: EffectVerification;
   /** Duration of the action */
   durationMs: number;
   /** Timestamp when completed */

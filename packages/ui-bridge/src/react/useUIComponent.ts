@@ -6,6 +6,7 @@
 
 import { useEffect, useCallback, useRef, useMemo } from 'react';
 import type { IREffect, RegisteredComponent } from '../core/types';
+import type { EffectSignature } from '../control/effect-types';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 
 /**
@@ -85,6 +86,24 @@ export interface ComponentActionDef<TParams = unknown, TResult = unknown> {
    * `get_components` / `get_component` commands.
    */
   effect?: IREffect;
+  /**
+   * D3 effect-calculus signature — what this action **predicts** will change
+   * (Phase 5 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * `effect` above is the coarse three-value safety label; this is the fine
+   * calculus. Declare one and every invocation of this action is wrapped in a
+   * predict-then-verify cycle — pre-snapshot, handler, settle window,
+   * post-snapshot — and the response carries an `effectVerification` saying
+   * whether what you predicted is what happened. **Declaring it is itself the
+   * opt-in**: no server-wide switch has to be flipped, because a prediction
+   * nobody checks is not a prediction. A caller that needs the cost back can
+   * send `verifyEffect: false` on the single request.
+   *
+   * Runtime-only, like `handler`: it holds a closure, so it never reaches the
+   * wire. What reaches the wire is the outcome it produced.
+   */
+  signature?: EffectSignature;
   /**
    * Handler function.
    *
@@ -268,9 +287,11 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           label: a.label,
           description: a.description,
           paramSchema: a.paramSchema,
-          // ⚠ RE-WRAP SITE with a CLOSED field list. Phase 4's `effect` dies
-          // here if it is not named — the wrapper type-checks either way.
+          // ⚠ RE-WRAP SITE with a CLOSED field list. Phase 4's `effect` and
+          // Phase 5's `signature` die here if they are not named — the
+          // wrapper type-checks either way.
           effect: a.effect,
+          signature: a.signature,
           // Stable wrapper: always delegates to the latest handler in actionsRef
           // so that handlers closing over React state see current values, not
           // the stale closure captured at registration time.
@@ -408,9 +429,10 @@ export function useUIComponent(options: UseUIComponentOptions): UseUIComponentRe
           description: a.description,
           paramSchema: a.paramSchema,
           // ⚠ RE-WRAP SITE with a CLOSED field list — the update-path twin of
-          // the register path above. Phase 4's `effect` dies here if it is not
-          // named.
+          // the register path above. Phase 4's `effect` and Phase 5's
+          // `signature` die here if they are not named.
           effect: a.effect,
+          signature: a.signature,
           // Forwards BOTH arguments. Dropping `options` here would silently
           // strip the Phase 3 cancellation signal on its way to the author's
           // handler — the wrapper type-checks either way.

@@ -9,7 +9,9 @@
  * Pure bookkeeping: no DOM access, no timers.
  */
 
+import type { IREffect } from '../react/ir-types';
 import type { EffectCause, EffectOutcome, EffectVerification } from './effect-types';
+import type { SignatureDisagreement } from './effect-authoring';
 
 /**
  * One recorded predict-then-verify cycle.
@@ -17,16 +19,51 @@ import type { EffectCause, EffectOutcome, EffectVerification } from './effect-ty
 export interface EffectRecordEntry {
   /** The action's request id, when one was supplied. */
   requestId?: string;
-  /** The action name (e.g. `click`, `navigate`). */
+  /** The action name (e.g. `click`, `navigate`, or a component action's id). */
   action: string;
   /** The target element id, when the action targeted an element. */
   elementId?: string;
+  /**
+   * The component id, when the record came from a COMPONENT action (Phase 5).
+   *
+   * The record carried neither this nor `effect` before: every field was
+   * element-shaped, so a component action's cycle — once one could happen at
+   * all — would have landed here indistinguishable from an element action that
+   * merely shared its name. `elementId` and `componentId` are mutually
+   * exclusive in practice; which one is set is what says which surface the
+   * cycle came from.
+   */
+  componentId?: string;
+  /**
+   * The coarse safety annotation the action declared, echoed verbatim (Phase
+   * 5). `undefined` means nobody classified the action — it is NOT defaulted
+   * through the verb map here, for the same reason no projection defaults it:
+   * "unclassified" is a distinct, load-bearing state, and a store that
+   * invented `'write'` for every unannotated action would make the reader
+   * unable to find the ones nobody has looked at.
+   */
+  effect?: IREffect;
   /** The terminal classification of the cycle. */
   outcome: EffectOutcome;
   /** Attribution of the observed delta to the action (`causal`/`mixed`/…). */
   cause: EffectCause;
   /** The full verification result. */
   verification: EffectVerification;
+  /**
+   * Set when BOTH the declared and the inferred arm resolved for this action
+   * and they predicted different things (Phase 5).
+   *
+   * **This is signal, not an error.** It means the inference twin — built from
+   * what the app was actually observed to do — disagrees with what the author
+   * declared it would do. One of the two is wrong and the record is how anyone
+   * finds out which. It is never thrown on, never suppressed, and never
+   * allowed to fail the action that produced it: an action whose author
+   * annotation is stale still worked.
+   *
+   * Absent when only one arm resolved (nothing to compare) or when both
+   * resolved and agreed.
+   */
+  disagreement?: SignatureDisagreement;
   /** Record time, ms (epoch). */
   timestamp: number;
 }

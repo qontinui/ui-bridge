@@ -32,6 +32,7 @@ export type {
   ObservabilityScope,
   ActionParams,
   EffectSignature,
+  EffectSignatureId,
   ObservedDelta,
   EffectVerification,
 } from './effect-types';
@@ -40,11 +41,24 @@ export { DEFAULT_SETTLE_MS, FALLBACK_SETTLE_MS, settleMsForAction } from './sett
 export {
   createDefaultSignatureRegistry,
   resolveSignature,
+  componentSignatureId,
+  normalizeDeclaredComponentSignature,
 } from './effect-signatures';
-export type { SignatureLookup, SignatureLookupElement } from './effect-signatures';
+export type {
+  SignatureLookup,
+  SignatureLookupElement,
+  ComponentSignatureArms,
+  DeclaredComponentSignatureSource,
+  DefaultSignatureRegistryOptions,
+} from './effect-signatures';
 export { EffectVerifier } from './effect-verifier';
 export type { EffectVerifierDeps } from './effect-verifier';
-export { assertSignatureEffectConsistency } from './effect-authoring';
+export {
+  assertSignatureEffectConsistency,
+  assertComponentActionEffectConsistency,
+  describeSignatureDisagreement,
+} from './effect-authoring';
+export type { SignatureArmSummary, SignatureDisagreement } from './effect-authoring';
 // D3 Effect Calculus — Phase 2 (settle-window attribution + effect store)
 export {
   ActionWindowRegistry,

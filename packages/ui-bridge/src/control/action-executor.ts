@@ -129,11 +129,20 @@ import { getGlobalCtr } from '../ctr/registry';
 import { buildActionFailureDetails } from '../diagnostics';
 import { EffectVerifier } from './effect-verifier';
 import { getGlobalEffectStore } from './effect-store';
-import { createDefaultSignatureRegistry } from './effect-signatures';
+import {
+  createDefaultSignatureRegistry,
+  normalizeDeclaredComponentSignature,
+} from './effect-signatures';
+import { describeSignatureDisagreement } from './effect-authoring';
 import { createSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
-import type { SignatureLookup } from './effect-signatures';
-import type { ActionParams, EffectVerification, ObservabilityScope } from './effect-types';
+import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
+import type {
+  ActionParams,
+  EffectSignature,
+  EffectVerification,
+  ObservabilityScope,
+} from './effect-types';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -903,7 +912,17 @@ export class DefaultActionExecutor implements ActionExecutor {
   ) {
     this.maxDiscoveryCacheSize = options?.maxDiscoveryCacheSize ?? 500;
     this.effectVerificationEnabled = options?.enableEffectVerification ?? false;
-    this.signatureRegistry = options?.signatureRegistry ?? createDefaultSignatureRegistry();
+    this.signatureRegistry =
+      options?.signatureRegistry ??
+      // Phase 5: give the default registry a component-action arm by telling
+      // it where declared signatures live. Injected as a closure rather than
+      // by importing the registry, so `control/effect-signatures` keeps
+      // depending on `core`'s TYPES and never on a live registry instance.
+      createDefaultSignatureRegistry({
+        declaredComponentSignature: (componentId, actionId) =>
+          this.registry.getComponent(componentId)?.actions.find((a) => a.id === actionId)
+            ?.signature,
+      });
     // Initialize impact assessor if we're in a browser environment
     if (typeof document !== 'undefined') {
       this.impactAssessor = new ErrorImpactAssessor({
@@ -1536,6 +1555,78 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * Resolve both arms of a component action's effect signature, or `undefined`
+   * when this call is not verifying at all (Phase 5).
+   *
+   * **The switch is the executor-wide one, reused.** `enableEffectVerification`
+   * / `setEffectVerificationEnabled` govern the element path and this one
+   * together; a second flag would let the two paths disagree about whether
+   * verification is on, which is the bug this deliberately does not have.
+   *
+   * On top of that shared switch there are two component-only arms, and they
+   * are here because a component action can carry something an element action
+   * cannot — an author-declared signature:
+   *
+   *   - A declared `ComponentAction.signature` turns verification on for that
+   *     action by itself. The alternative is a capability that ships dark: an
+   *     author writes down what their action predicts, and nothing checks it
+   *     until an operator flips a server-wide switch they may not know exists.
+   *     A prediction nobody verifies is not a prediction
+   *     [policy: capability-ships-enabled].
+   *   - `verifyEffect: false` turns it back off for one call. Verification
+   *     costs two extra snapshots plus a settle window, so the caller paying
+   *     that cost gets to decline it. The per-request opt-in is the COST
+   *     control; the signature-resolves gate is the safeguard.
+   *
+   * Returns `undefined` when nothing resolves. Nothing is predicted for an
+   * action nobody described — no fabricated prediction, ever.
+   */
+  private resolveComponentEffectArms(
+    componentId: string,
+    action: { id: string; signature?: EffectSignature },
+    request: ComponentActionRequest
+  ): ComponentSignatureArms | undefined {
+    // Explicit per-request opt-out wins over everything, including the
+    // executor-wide flag — it is the cost control.
+    if (request.verifyEffect === false) return undefined;
+
+    const declaredHere = normalizeDeclaredComponentSignature(
+      action.signature,
+      componentId,
+      action.id
+    );
+    const wanted =
+      this.effectVerificationEnabled ||
+      request.verifyEffect === true ||
+      declaredHere !== undefined;
+    if (!wanted) return undefined;
+
+    const resolved: ComponentSignatureArms = this.signatureRegistry
+      .resolveComponentSignatureArms
+      ? this.signatureRegistry.resolveComponentSignatureArms(
+          componentId,
+          action.id,
+          request.params
+        )
+      : {
+          signature: this.signatureRegistry.resolveComponentSignature(
+            componentId,
+            action.id,
+            request.params
+          ),
+        };
+
+    // A caller-supplied `signatureRegistry` need not know where declared
+    // signatures live; the one on the action in hand is authoritative either
+    // way, so fill it in rather than losing it.
+    const declared = resolved.declared ?? declaredHere;
+    const inferred = resolved.inferred;
+    const signature = declared ?? resolved.signature ?? inferred;
+    if (!signature) return undefined;
+    return { signature, declared, inferred };
+  }
+
+  /**
    * Execute an action on a component
    */
   async executeComponentAction(
@@ -1669,14 +1760,81 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
       }
 
+      // D3 effect calculus, Phase 5: resolve the component action's signature
+      // and, when one resolves, wrap the handler in a predict-then-verify
+      // cycle. Structurally the same block as the element path above; the
+      // difference is only how the signature is found, because a component
+      // action's id is free-form and the element verb switch cannot classify
+      // it. The verifier never throws on a bad prediction (the outcome is
+      // data); a genuine handler failure still propagates to the catch below.
+      const arms = this.resolveComponentEffectArms(componentId, action, request);
+      const signature = arms?.signature;
+      // The second arm, evaluated against the SAME pre-snapshot so a reported
+      // difference is the arms disagreeing rather than the world moving.
+      const otherArm =
+        arms?.declared !== undefined && arms.inferred !== undefined && signature === arms.declared
+          ? arms.inferred
+          : undefined;
+
       // The handler is *given* a signal (cooperative cancellation) and is
       // *raced* against it (enforced abandonment) — a handler that ignores its
       // signal must still be abandonable at the caller. Phase 3 of plan
       // 2026-08-20-ui-bridge-action-declaration-shape.
-      const outcome = await runAbortable((signal) => action.handler(request.params, { signal }), {
-        signal: options.signal,
-        timeoutMs,
-      });
+      const runHandler = () =>
+        runAbortable((signal) => action.handler(request.params, { signal }), {
+          signal: options.signal,
+          timeoutMs,
+        });
+
+      let outcome: Awaited<ReturnType<typeof runHandler>>;
+      let effectVerification: EffectVerification | undefined;
+      if (signature) {
+        const effectParams: ActionParams = {
+          // A component action has no element, so `elementId` stays absent.
+          // The settle-window band is picked from this action name exactly as
+          // it is for an element action.
+          action: request.action,
+          params: request.params,
+          requestId: request.requestId,
+        };
+        const verified = await this.getEffectVerifier().verifyAction(
+          effectParams,
+          signature,
+          runHandler,
+          otherArm ? { alsoPredict: otherArm } : undefined
+        );
+        outcome = verified.result;
+        effectVerification = verified.verification;
+
+        // Two arms resolved and predicted different things → record it. A
+        // disagreement is SIGNAL (the inference twin caught a mismatch between
+        // the author's declaration and the observed history), never an error:
+        // nothing here throws, suppresses it, or changes the action's outcome.
+        const disagreement =
+          arms?.declared !== undefined && otherArm !== undefined && verified.alsoPredicted
+            ? describeSignatureDisagreement(
+                { signature: arms.declared, predicted: effectVerification.predicted },
+                { signature: otherArm, predicted: verified.alsoPredicted }
+              )
+            : undefined;
+
+        getGlobalEffectStore().record({
+          requestId: request.requestId,
+          action: request.action,
+          // `componentId` rather than `elementId` — which one is set is what
+          // says which surface the cycle came from.
+          componentId,
+          // Echoed verbatim; never resolved through the verb map here.
+          effect: action.effect,
+          outcome: effectVerification.outcome,
+          cause: effectVerification.cause,
+          verification: effectVerification,
+          disagreement,
+          timestamp: Date.now(),
+        });
+      } else {
+        outcome = await runHandler();
+      }
 
       if (outcome.aborted) {
         // Two arms, two codes. The timeout arm gets the catalog's dedicated
@@ -1712,6 +1870,11 @@ export class DefaultActionExecutor implements ActionExecutor {
                   : undefined,
             }
           ),
+          // An abandoned action still changed the page or did not, and the
+          // cycle already observed which. Reporting the verification here is
+          // how a caller learns that the handler it gave up on had in fact
+          // fired — dropping it would hide exactly the case worth seeing.
+          effectVerification,
           durationMs: performance.now() - startTime,
           timestamp: Date.now(),
           requestId: request.requestId,
@@ -1721,6 +1884,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       return {
         success: true,
         result: outcome.result,
+        effectVerification,
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,

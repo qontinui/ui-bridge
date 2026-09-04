@@ -28,6 +28,7 @@ import type {
   EffectVerification,
   ObservabilityScope,
   ObservedDelta,
+  PredictedDelta,
 } from './effect-types';
 
 /** Monotonic counter for synthesizing a window id when no requestId is given. */
@@ -69,12 +70,26 @@ export class EffectVerifier {
    * Run `executeFn` inside a predict-then-verify cycle. Returns both the
    * action result and the verification. Does NOT throw on a bad prediction
    * outcome; rethrows only if `executeFn` itself throws.
+   *
+   * `options.alsoPredict` (Phase 5) evaluates a SECOND signature against the
+   * same `pre` snapshot and returns its prediction alongside, without
+   * verifying against it. That is what makes a declared-vs-inferred
+   * disagreement measurable: two predictions compared across two different
+   * snapshots would report the world moving as if it were the arms
+   * disagreeing. It costs one extra `predicts()` call and no extra capture.
+   * Its failure is contained — a throwing second `predicts` must not sink the
+   * action or the real verification, so it is caught and dropped.
    */
   async verifyAction<T>(
     params: ActionParams,
     signature: EffectSignature,
     executeFn: () => Promise<T>,
-  ): Promise<{ result: T; verification: EffectVerification }> {
+    options?: { alsoPredict?: EffectSignature },
+  ): Promise<{
+    result: T;
+    verification: EffectVerification;
+    alsoPredicted?: PredictedDelta;
+  }> {
     const startTime = Date.now();
 
     // Settle window length (override → per-action band → fallback). Resolved up
@@ -86,6 +101,18 @@ export class EffectVerifier {
 
     // 2. Prediction.
     const predicted = signature.predicts(params, pre);
+
+    // 2b. The second arm's prediction, against the SAME pre-snapshot.
+    let alsoPredicted: PredictedDelta | undefined;
+    if (options?.alsoPredict !== undefined) {
+      try {
+        alsoPredicted = options.alsoPredict.predicts(params, pre);
+      } catch {
+        // A second-arm prediction is diagnostic. Its author bug is not
+        // allowed to change the outcome of the action under test.
+        alsoPredicted = undefined;
+      }
+    }
 
     // 3. Open the settle window so concurrent background observations (flagged
     //    by the BackgroundObserver) can be attributed to this action. The
@@ -136,7 +163,7 @@ export class EffectVerifier {
         durationMs,
       );
 
-      return { result, verification };
+      return { result, verification, alsoPredicted };
     } finally {
       registry.end(windowId);
     }

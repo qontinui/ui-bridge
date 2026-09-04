@@ -36,6 +36,7 @@ import type {
   ElementBbox,
   IREffect,
 } from './types';
+import type { EffectSignature } from '../control/effect-types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { ElementEventLog } from '../debug/element-event-log';
 import { createElementIdentifier } from './element-identifier';
@@ -326,6 +327,16 @@ export function serializeRegisteredComponent(
       // undefined keys, so an un-annotated app's snapshot is byte-identical
       // to before.
       effect: a.effect,
+      // Phase 5's `signature` is DELIBERATELY absent here, and this omission
+      // is load-bearing rather than an oversight of the closed-field-list
+      // kind the comment above warns about. A signature holds a closure
+      // (`predicts`), so naming it would put an unserializable value in the
+      // snapshot object: `JSON.stringify` drops it, but an in-process
+      // consumer reading the snapshot would see a function it has no contract
+      // for, and structured-clone transports (postMessage, a worker) would
+      // THROW on it. The wire fact a signature produces is the verification
+      // outcome on `ComponentActionResponse.effectVerification`, not the
+      // signature itself. Pinned by `core/component-action-signature.phase5.test.ts`.
     })),
     // Tell the caller exactly how to invoke any action on this component
     // without having to grep docs or guess the route shape.
@@ -2449,6 +2460,16 @@ export class UIBridgeRegistry {
          */
         effect?: IREffect;
         /**
+         * Phase 5 (plan
+         * `2026-09-04-effect-calculus-joins-the-component-action-registry`):
+         * the D3 effect signature — what this action predicts will change.
+         * Runtime-only (it holds a closure), so it never reaches the wire;
+         * it must still be named in this inlined signature or an author
+         * simply cannot pass one, and named in the map below or it is
+         * dropped at registration time.
+         */
+        signature?: EffectSignature;
+        /**
          * Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape): the
          * second argument is the `ActionHandlerOptions` bag carrying the
          * cancellation signal. Kept structural (not `ActionHandler`) to match
@@ -2481,9 +2502,11 @@ export class UIBridgeRegistry {
         // listed here is dropped at registration time, silently: the literal
         // stays assignable, the serializer still runs, the field is simply
         // never there. Phase 3 added no field (it changed `handler`'s arity,
-        // and `handler` is already copied); Phase 4's `effect` is the next one
-        // and is carried below. Prove additions by round-trip, not typecheck.
+        // and `handler` is already copied); Phase 4's `effect` and Phase 5's
+        // `signature` are the next two and are carried below. Prove additions
+        // by round-trip, not typecheck.
         effect: a.effect,
+        signature: a.signature,
         handler: a.handler,
       }));
     }
@@ -2514,6 +2537,16 @@ export class UIBridgeRegistry {
          * importing `ComponentAction`.
          */
         effect?: IREffect;
+        /**
+         * Phase 5 (plan
+         * `2026-09-04-effect-calculus-joins-the-component-action-registry`):
+         * the D3 effect signature — what this action predicts will change.
+         * Runtime-only (it holds a closure), so it never reaches the wire;
+         * it must still be named in this inlined signature or an author
+         * simply cannot pass one, and named in the map below or it is
+         * dropped at registration time.
+         */
+        signature?: EffectSignature;
         /**
          * Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape): the
          * second argument is the `ActionHandlerOptions` bag carrying the
@@ -2552,6 +2585,7 @@ export class UIBridgeRegistry {
           // above. A new `ComponentAction` field must be added here too or it
           // never reaches `RegisteredComponent`.
           effect: a.effect,
+          signature: a.signature,
           handler: a.handler,
         })) ?? [],
       elementIds: options.elementIds,

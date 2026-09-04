@@ -9,7 +9,7 @@ import type { CapturedError, AnyCapturedEvent } from '../debug/browser-capture-t
 export type { CapturedError } from '../debug/browser-capture-types';
 import type { ErrorSeverity } from '../debug/error-severity';
 import type { ErrorImpact } from '../debug/error-impact';
-import type { EffectVerification } from '../control/effect-types';
+import type { EffectSignature, EffectVerification } from '../control/effect-types';
 import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotModalContext } from '../modal/types';
 import type { SnapshotToastContext } from '../toast/types';
@@ -948,6 +948,39 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
    * `BridgeSnapshot` projection — see {@link SerializedComponentAction}.
    */
   effect?: IREffect;
+  /**
+   * D3 effect-calculus signature — what invoking this action **predicts** will
+   * change (Phase 5 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * **This is the fine calculus; `effect` above is the coarse one.** `effect`
+   * is a three-value safety label an autonomous walker reads to decide whether
+   * to press the button at all. This is the machinery that presses it and then
+   * checks whether what the author said would happen actually happened: the
+   * executor captures a pre-snapshot, runs the handler, awaits the settle
+   * window, captures a post-snapshot, and classifies the observed delta
+   * against {@link EffectSignature.predicts} into one of the five
+   * {@link ../control/effect-types#EffectOutcome}s, returned on
+   * `ComponentActionResponse.effectVerification`.
+   *
+   * **Runtime-only — never serialized, exactly like `handler`.** It holds a
+   * function (`predicts`), so `JSON.stringify` drops it from every response
+   * body, and it is deliberately absent from
+   * {@link SerializedComponentAction}. A signature is a *local* prediction
+   * engine, not a wire fact; the wire fact it produces is the verification
+   * outcome. `core/component-action-signature.phase5.test.ts` pins the
+   * projected key set so a future widening has to be deliberate.
+   *
+   * **Declaring one opts this action into verification** without a
+   * server-wide switch — see `executeComponentAction`. Leave it undefined and
+   * the resolver falls back to an inferred signature when the inference table
+   * has one for this component action, and to `undefined` (no verification,
+   * no fabricated prediction) when it does not.
+   *
+   * `id` may be omitted; the resolver stamps `` `${componentId}.${actionId}` ``
+   * so the signature can be named downstream.
+   */
+  signature?: EffectSignature;
   /** Action handler function */
   handler: ActionHandler<TParams, TResult>;
 }
@@ -956,9 +989,16 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
  * Wire-serializable subset of a {@link ComponentAction} — a superset of the
  * canonical `qontinui-types::ui_bridge::ComponentActionInfo` shape.
  *
- * **`handler` is the only runtime-only field.** It is a function, so
- * `JSON.stringify` drops it from every response body; it is deliberately
- * absent from this type.
+ * **Two fields are runtime-only: `handler` and `signature`.** Both hold
+ * functions (`handler` itself; `signature.predicts`), so `JSON.stringify`
+ * drops them from every response body, and both are deliberately absent from
+ * this type. Phase 5 of plan
+ * `2026-09-04-effect-calculus-joins-the-component-action-registry` added
+ * `signature` and kept it off the wire on purpose: an effect signature is a
+ * local prediction engine, and what a consumer needs over the wire is the
+ * outcome it produced (`ComponentActionResponse.effectVerification`), not the
+ * closure that produced it. The comment this replaces said `handler` was the
+ * only one.
  *
  * **`paramSchema` IS serialized** — it is not runtime-only. The
  * `/control/components` and `/control/component/:id` handlers spread the whole

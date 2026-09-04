@@ -2014,6 +2014,9 @@ export async function executeCommand(
             // the declaration would be the same self-contradiction the plan
             // is fixing on the HTTP side.
             paramSchema: a.paramSchema,
+            // Phase 5's `signature` is deliberately NOT emitted here: it holds
+            // a closure, and this is an IPC projection that gets structured-
+            // cloned. See the note on `serializeRegisteredComponent`.
           })),
           elementIds: c.elementIds,
           state: c.getState?.() ?? {},
@@ -2045,6 +2048,7 @@ export async function executeCommand(
           effect: a.effect,
           // `paramSchema` — see the `get_components` twin above.
           paramSchema: a.paramSchema,
+          // `signature` deliberately absent — see the `get_components` twin.
         })),
         elementIds: comp.elementIds,
         state: comp.getState?.() ?? {},

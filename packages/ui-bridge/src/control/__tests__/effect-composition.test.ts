@@ -59,6 +59,11 @@ function fixedRegistry(map: Record<string, EffectSignature | undefined>): Signat
     resolve(action: string): EffectSignature | undefined {
       return map[action];
     },
+    // Composition is an element-path concern; this fixture has no component
+    // actions, so the Phase 5 arm honestly answers `undefined`.
+    resolveComponentSignature(): EffectSignature | undefined {
+      return undefined;
+    },
   };
 }
 

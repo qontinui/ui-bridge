@@ -136,9 +136,40 @@ export interface ActionParams {
 // ---------------------------------------------------------------------------
 
 /**
+ * The name of an {@link EffectSignature}.
+ *
+ * Signatures were anonymous closures until Phase 5 of plan
+ * `2026-09-04-effect-calculus-joins-the-component-action-registry`: nothing
+ * downstream could say *which* signature produced a prediction, so a predict
+ * route could not name one and a disagreement between the declared and the
+ * inferred arm could not be attributed. It is a plain string rather than an
+ * opaque brand because both defaults are already-meaningful identifiers a
+ * human reads (`"<componentId>.<actionId>"` for a declared component-action
+ * signature; the inference table's own `keyFor(action, targetFingerprint)` for
+ * an inferred one), and a brand would force every consumer through a cast to
+ * print one.
+ */
+export type EffectSignatureId = string;
+
+/**
  * A hand-authored (Phase 1) declaration of an action's predicted effect.
  */
 export interface EffectSignature {
+  /**
+   * Stable name for this signature (Phase 5).
+   *
+   * Optional because a hand-written signature literal need not name itself —
+   * the resolver stamps the default when it hands the signature out:
+   * `` `${componentId}.${actionId}` `` for a signature declared on a
+   * {@link ../core/types#ComponentAction}, and the inferred table's
+   * `keyFor(action, targetFingerprint)` for one synthesized from recording
+   * history. An author-supplied `id` is never overwritten.
+   *
+   * `undefined` here means "nobody named this signature" and is left
+   * `undefined` — never defaulted to a fabricated name, for the same reason
+   * `ComponentAction.effect` is left absent when nothing was declared.
+   */
+  id?: EffectSignatureId;
   /** Produces the predicted delta from the params and the pre-snapshot. */
   predicts: (params: ActionParams, omegaPre: SemanticSnapshot) => PredictedDelta;
   /** Which part of the page this signature observes. */
