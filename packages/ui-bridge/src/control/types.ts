@@ -24,6 +24,11 @@ import type { SnapshotRelationshipContext } from '../relationships/types';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { EffectVerification } from './effect-types';
+// Phase 6 (plan 2026-09-04-effect-calculus-joins-the-component-action-registry).
+import type {
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
+} from './effect-predict';
 import type { Scrubbed } from '../core/redaction';
 import type { SnapshotSignature } from '../core/snapshot-signature';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
@@ -1306,6 +1311,26 @@ export interface ActionExecutor {
     action: ComponentActionRequest,
     options?: ComponentActionInvokeOptions
   ): Promise<ComponentActionResponse>;
+
+  /**
+   * Ask the effect twin what invoking a component action WOULD do, **without
+   * invoking it** (Phase 6 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * Resolves the action's {@link EffectSignature}, captures a pre-snapshot and
+   * evaluates `predicts(params, omegaPre)`. The handler is never called, no
+   * settle window is opened, and nothing is written to the effect store.
+   *
+   * A `predicted: null` answer means UNCLASSIFIED — nobody described the
+   * action — and never "harmless"; the response says so in `status` and in
+   * `coverageCaveat` rather than leaving it to be inferred from an absent
+   * field [policy: unknown-must-not-render-as-a-default].
+   */
+  predictComponentAction(
+    componentId: string,
+    actionId: string,
+    request?: ComponentActionPredictRequest
+  ): Promise<ComponentActionPredictResponse>;
 
   /** Wait for a condition */
   waitFor(elementId: string, options: WaitOptions): Promise<WaitResult>;

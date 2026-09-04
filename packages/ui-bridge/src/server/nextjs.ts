@@ -452,6 +452,36 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         return jsonResponse(result);
       },
     },
+    /**
+     * `POST /control/component/:id/action/:actionId/predict` (Phase 6) — ask
+     * the twin, do not invoke.
+     *
+     * A sibling of `component.POST` rather than a branch inside it: the two
+     * differ in what they DO, not in how they are addressed, and folding a
+     * "predict or execute" flag into the invocation handler is how a caller
+     * ends up invoking a destructive action while believing it asked a
+     * question. A missing / unparseable body is an empty request, not an
+     * error — predicting with no params is a legitimate question.
+     */
+    componentActionPredict: {
+      async POST(
+        request: NextRequest,
+        context: { params: { id: string; actionId: string } }
+      ): Promise<Response> {
+        let body: Record<string, unknown>;
+        try {
+          body = (await request.json()) as Record<string, unknown>;
+        } catch {
+          body = {};
+        }
+        const result = await handlers.predictComponentAction(
+          context.params.id,
+          context.params.actionId,
+          body
+        );
+        return jsonResponse(result);
+      },
+    },
     find: {
       async POST(request: NextRequest): Promise<Response> {
         const body = (await request.json()) as FindRequest;
