@@ -1245,56 +1245,35 @@ otherwise empty.
 curl -X POST $BASE/control/page/evaluate \
   -H "Content-Type: application/json" \
   -d '{"expression":"document.title"}'
+# -> { "data": { "value": "Qontinui Runner", "type": "scalar" } }
 ```
 
 Returns the value of the expression. Async expressions are awaited.
 
-The default response shape is conditional: scalars come back as
-`{ result: { value } }`, objects as `{ result }`. Pass `unwrap: true`
-for a uniform shape that doesn't depend on the expression's return
-type — preferred for new code.
+`data` is always the one discriminated shape `{ value, type }`, where
+`type` is one of `scalar | object | null | undefined | function`. There
+is no opt-in and no opt-out — an `unwrap` field on the request is
+accepted and ignored, so old callers keep working, but it changes
+nothing.
 
-```bash
-curl -X POST $BASE/control/page/evaluate \
-  -H "Content-Type: application/json" \
-  -d '{"expression":"document.title","unwrap":true}'
-```
+`type` is the load-bearing key, not `value`. An expression evaluating to
+`undefined` answers `{ "type": "undefined" }` with **no `value` key at
+all** — `value: undefined` is dropped by JSON serialisation — so read
+`type` to tell "returned undefined" apart from "returned an empty
+object". The direct-eval fallback emits the same shape plus
+`source: "direct_eval"`.
 
-`unwrap=true` response: `{ value: <result>, type: "scalar" | "object" | "undefined" | "function" | "null" }`. The legacy
-conditional shape is still emitted when `unwrap` is omitted or false.
+**Statement-form expressions return their last value.** A body such as
+`var q = 1 + 1; q` is compiled through a guarded transform: the rewritten
+body is compiled first and discarded unless it parses. Where the
+transform cannot safely find the completion value — a trailing comment,
+a semicolon inside a string/template/regex literal, ASI, or a final
+block statement — the call degrades to `type: "undefined"` rather than
+returning a silently wrong value.
 
 **Security filter:** the evaluator rejects expressions matching
 `\bfetch\s*\(`. Use `window["fet"+"ch"]("/url")` for fetch tests
 (see "Network stubs" above).
-
-### Response-shape gotcha — wrap returns in `JSON.stringify`
-
-The default response shape varies by what the IIFE returns:
-
-- **Primitive** (`document.body.children.length`):
-  `{ "data": { "result": { "value": 2 } } }`
-- **Object** (`({x:1, y:2})`):
-  `{ "data": { "result": { "x": 1, "y": 2 } } }` — the object's keys
-  sit directly on `result`; there is no wrapping `value` field.
-- **Null / early return**: `{ "data": { "result": null } }` — `value`
-  is absent entirely.
-
-Callers that hard-code `data.result.value` get burned the moment an
-expression starts returning an object instead of a scalar. The cheap
-fix is a convention: **wrap the IIFE return in `JSON.stringify(...)`**
-so the response is uniformly `{ result: { value: "<json string>" } }`,
-then `JSON.parse(value)` on the client side.
-
-```js
-// Avoid: shape varies
-"({ phase: r.dataset.pipelinePhase })"
-// Prefer: shape uniform — { result: { value: "<json string>" } }
-"JSON.stringify({ phase: r.dataset.pipelinePhase })"
-```
-
-This is a recommendation, not enforced — old callers continue to work,
-and `unwrap: true` (above) is the other way out. Pick one and stick to
-it per call site.
 
 ### Tauri command errors — JSON.stringify, not String
 
