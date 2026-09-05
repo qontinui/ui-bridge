@@ -26,6 +26,9 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
+import { createRelayHandlers } from './relay-handlers';
+import { createNextRouteHandlers } from './nextjs';
+import { parseSSEDataBlock } from '../relay/relay-client';
 
 function freshRelay(
   options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
@@ -188,5 +191,56 @@ describe('relay · commandListenerCount observes open command transports', () =>
 
     expect(diag.staleHeartbeatMs).toBe(30_000);
     expect(diag.zombieTransportMs).toBe(300_000);
+  });
+});
+
+describe('relay · the command stream emits a client-actionable keep-alive', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sends a named `ping` event with a data payload, not a bare comment', async () => {
+    // The client cannot hold its own cadence in a hidden tab (setInterval is
+    // clamped to ~1/min), so the keep-alive has to be something it can act
+    // on. A bare `: heartbeat` comment is invisible to the SSE data parser.
+    const relay = freshRelay();
+    const handlers = createRelayHandlers(relay);
+    const route = createNextRouteHandlers(handlers, { relay });
+
+    const url = new URL('http://localhost/api/ui-bridge/commands/stream?tabId=tab-a');
+    const req = new Request(url.toString(), { method: 'GET' }) as unknown as Request & {
+      nextUrl: URL;
+    };
+    req.nextUrl = url;
+
+    const response = await route.GET(
+      req as never,
+      {
+        params: { path: ['commands', 'stream'] },
+      } as never
+    );
+
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+
+    // The stream opens with a `connected` handshake and may also carry a
+    // proactive snapshot command, so read forward until the keep-alive.
+    let keepAlive: string | null = null;
+    for (let i = 0; i < 6 && keepAlive === null; i++) {
+      await vi.advanceTimersByTimeAsync(15_000);
+      const frame = decoder.decode((await reader.read()).value);
+      if (frame.includes('ping')) keepAlive = frame;
+    }
+
+    expect(keepAlive).not.toBeNull();
+    expect(keepAlive!).toContain('event: ping');
+    const data = parseSSEDataBlock(keepAlive!.replace(/\n\n$/, ''));
+    expect(data).not.toBeNull();
+    expect(JSON.parse(data!).type).toBe('ping');
+
+    await reader.cancel();
   });
 });
