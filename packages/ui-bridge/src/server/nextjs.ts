@@ -255,12 +255,7 @@ export function createNextRouteHandlers(
           ) {
             (body as Record<string, unknown>).tabId = externalTabId;
           }
-          if (
-            callerUserId &&
-            body !== null &&
-            typeof body === 'object' &&
-            !Array.isArray(body)
-          ) {
+          if (callerUserId && body !== null && typeof body === 'object' && !Array.isArray(body)) {
             (body as Record<string, unknown>).__callerUserId = callerUserId;
           }
           args.push(body);
@@ -285,7 +280,11 @@ export function createNextRouteHandlers(
       // (it's a payload field many handlers read via `extractTabRouting`).
       if (method === 'GET') {
         const searchParams = Object.fromEntries(request.nextUrl.searchParams);
-        if (externalTabId && searchParams.tabId === undefined && searchParams.targetTabId === undefined) {
+        if (
+          externalTabId &&
+          searchParams.tabId === undefined &&
+          searchParams.targetTabId === undefined
+        ) {
           searchParams.tabId = externalTabId;
         }
         if (Object.keys(searchParams).length > 0) {
@@ -309,8 +308,7 @@ export function createNextRouteHandlers(
       );
       // Honor APIResponse.httpStatus for endpoints that need 4xx semantics
       // on logical failure (Phase 2.1 `/control/element/:id/expect` → 422).
-      const httpStatus =
-        typeof result.httpStatus === 'number' ? result.httpStatus : undefined;
+      const httpStatus = typeof result.httpStatus === 'number' ? result.httpStatus : undefined;
       if (httpStatus !== undefined) {
         const { httpStatus: _omit, ...body } = result;
         return jsonResponse(body, httpStatus);
@@ -717,8 +715,7 @@ function handleRelayRoute(
         );
       }
 
-      const heartbeatTabId =
-        typeof body?.tabId === 'string' ? (body.tabId as string) : undefined;
+      const heartbeatTabId = typeof body?.tabId === 'string' ? (body.tabId as string) : undefined;
 
       // Strict ownership metadata enforcement.
       const rawMeta = body?.registrationMetadata as
@@ -766,8 +763,7 @@ function handleRelayRoute(
       relay.receiveHeartbeat(heartbeatTabId, {
         url: typeof body?.url === 'string' ? (body.url as string) : undefined,
         title: typeof body?.title === 'string' ? (body.title as string) : undefined,
-        visibility:
-          typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
+        visibility: typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
       });
 
       // Report whether the server currently holds an SSE listener for this
@@ -810,9 +806,7 @@ function handleRelayRoute(
   // the `/tabs` gate.
   if (method === 'GET' && (path === '/health' || path === '/status')) {
     const healthCallerUserId =
-      request.headers.get('x-caller-user-id') ??
-      request.headers.get('X-Caller-User-Id') ??
-      null;
+      request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? null;
     const diagnostics = relay.getTransportDiagnostics(
       healthCallerUserId ? { ownerCheck: { userId: healthCallerUserId } } : undefined
     );
@@ -870,17 +864,13 @@ function handleRelayRoute(
       Number.parseInt(url.searchParams.get('pollMs') ?? '250', 10) || 250
     );
     const callerUserId =
-      request.headers.get('x-caller-user-id') ??
-      request.headers.get('X-Caller-User-Id') ??
-      null;
+      request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? null;
     return (async () => {
       const startedAt = Date.now();
       const deadline = startedAt + timeoutMs;
       while (Date.now() < deadline) {
         const diag = relay.getTransportDiagnostics();
-        const visibleIds = callerUserId
-          ? relay.listOwnedTabs(callerUserId)
-          : diag.connectedTabs;
+        const visibleIds = callerUserId ? relay.listOwnedTabs(callerUserId) : diag.connectedTabs;
         if (visibleIds.length > 0) {
           const tabs = visibleIds.map((tabId) => ({
             tabId,
@@ -929,9 +919,7 @@ function handleRelayRoute(
     const detailed = url.searchParams.get('detailed') === 'true';
     const activeOnly = url.searchParams.get('activeOnly') === 'true';
     const callerUserId =
-      request.headers.get('x-caller-user-id') ??
-      request.headers.get('X-Caller-User-Id') ??
-      null;
+      request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? null;
     const diag = relay.getTransportDiagnostics();
     const ownedSet = callerUserId ? new Set(relay.listOwnedTabs(callerUserId)) : null;
     const baseIds = activeOnly ? diag.activeTabs : diag.connectedTabs;
@@ -1050,11 +1038,29 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
         }
       }, tabId);
 
-      // Heartbeat to keep connection alive
+      // Keep-alive, and the client's throttle-immune heartbeat clock.
+      //
+      // This used to be an SSE comment (`: heartbeat`). It is now a NAMED
+      // `ping` event carrying a `data:` payload, because the client cannot
+      // keep its own reliable clock: its heartbeat is a `setInterval`, and
+      // browsers clamp timers in hidden tabs to ~1 firing per minute. Arriving
+      // bytes are not throttled, so the client beats in response to this ping
+      // instead of waiting on its timer (see `relay-client.ts`).
+      //
+      // Safe in both directions. An older `fetch`-based client parses the
+      // payload, matches neither `type === 'connected'` nor
+      // `commandId && action`, and ignores it. An `EventSource`-based client
+      // dispatches it as a `ping`-typed event, so its `onmessage` — which
+      // handles only unnamed `message` events — never sees it. Either way the
+      // bytes still serve the original keep-alive/dead-connection purpose.
       heartbeat = setInterval(() => {
         if (closed) return;
         try {
-          controller.enqueue(encoder.encode(`: heartbeat\n\n`));
+          controller.enqueue(
+            encoder.encode(
+              `event: ping\ndata: ${JSON.stringify({ type: 'ping', timestamp: Date.now() })}\n\n`
+            )
+          );
         } catch {
           cleanup();
         }

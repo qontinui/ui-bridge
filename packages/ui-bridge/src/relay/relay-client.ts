@@ -419,6 +419,13 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
               try {
                 const parsed = JSON.parse(data);
                 if (parsed.type === 'connected') continue;
+                // Throttle-immune heartbeat clock: arriving bytes are not
+                // subject to the background-tab timer clamp, so a hidden tab
+                // stays registered on the strength of these alone.
+                if (parsed.type === 'ping') {
+                  maybeSendHeartbeat();
+                  continue;
+                }
                 if (parsed.commandId && parsed.action) {
                   void processCommand(parsed as QueuedCommand);
                 }
@@ -465,7 +472,21 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Heartbeat -----
+  //
+  // `setInterval` alone cannot hold this cadence: browsers clamp timers in
+  // hidden tabs to ~1 firing per minute. So the beat is ALSO driven by the
+  // server's `ping` events, which arrive as bytes on the open command stream
+  // and are therefore not subject to timer throttling. `maybeSendHeartbeat`
+  // is the shared entry point both paths go through; it collapses them to a
+  // single cadence and prevents overlapping in-flight beats (a heartbeat POST
+  // has been measured at 1-8s on a loaded dev server).
+  let lastHeartbeatStartedAt = 0;
+  let heartbeatInFlight = false;
+
   const sendHeartbeat = async () => {
+    if (heartbeatInFlight) return;
+    heartbeatInFlight = true;
+    lastHeartbeatStartedAt = Date.now();
     try {
       const body: Record<string, unknown> = {
         timestamp: Date.now(),
@@ -501,7 +522,20 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       }
     } catch {
       /* non-fatal */
+    } finally {
+      heartbeatInFlight = false;
     }
+  };
+
+  /**
+   * Send a heartbeat unless one was started within the last interval. Called
+   * by the (throttleable) timer AND by every server `ping`, so whichever
+   * clock is actually running keeps the tab registered.
+   */
+  const maybeSendHeartbeat = () => {
+    if (stopped) return;
+    if (Date.now() - lastHeartbeatStartedAt < heartbeatIntervalMs) return;
+    void sendHeartbeat();
   };
 
   // ----- Boot -----
