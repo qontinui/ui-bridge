@@ -28,7 +28,17 @@
 // SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
 const SSE_RECONNECT_DELAY_MS = 10_000;
 
-// Heartbeat interval — kept alive even when the tab is hidden
+// Heartbeat interval.
+//
+// This is the REQUESTED period, not a guaranteed one: it is a plain
+// `setInterval`, and browsers throttle timers in backgrounded tabs. Chrome's
+// intensive throttling clamps them to roughly ONE FIRING PER MINUTE, so a
+// hidden-but-perfectly-healthy tab beats every ~60s, not every 10s.
+//
+// The server MUST NOT treat heartbeat age as transport liveness for that
+// reason — see `zombieTransportMs` in `server/command-relay.ts`, which is why
+// the relay's destructive prune is gated well above the throttling clamp
+// while `staleHeartbeatMs` keeps expressing staleness non-destructively.
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** sessionStorage key for the stable per-tab id. */

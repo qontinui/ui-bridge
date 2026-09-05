@@ -23,7 +23,9 @@ import { CommandRelay, TabRoutingError } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 import { createNextRouteHandlers } from './nextjs';
 
-function freshRelay(options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>): CommandRelay {
+function freshRelay(
+  options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
+): CommandRelay {
   // Each test gets its own globalThis-key prefix so persisted state does
   // not leak between tests.
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
@@ -35,7 +37,10 @@ function freshRelay(options?: Partial<ConstructorParameters<typeof CommandRelay>
  * fn (call to simulate the tab disconnecting cleanly) and a `dispatched`
  * array that captures commands the relay tried to deliver.
  */
-function registerTab(relay: CommandRelay, tabId: string): {
+function registerTab(
+  relay: CommandRelay,
+  tabId: string
+): {
   unsubscribe: () => void;
   dispatched: Array<{ commandId: string; action: string }>;
 } {
@@ -88,11 +93,9 @@ describe('relay · Item #4 — per-tab `targetTabId` routing', () => {
     // We don't await the queueCommand — it would hang waiting for a response
     // chunk back from the "browser". Instead, fire-and-forget the dispatch
     // and inspect which listener received the command.
-    void relay
-      .queueCommand('getElement', { id: 'foo' }, { targetTabId: 'tab-a' })
-      .catch(() => {
-        /* command will time out; that's fine for this routing assertion */
-      });
+    void relay.queueCommand('getElement', { id: 'foo' }, { targetTabId: 'tab-a' }).catch(() => {
+      /* command will time out; that's fine for this routing assertion */
+    });
 
     // Allow microtasks to settle so the listener callback fires
     await new Promise((r) => setTimeout(r, 10));
@@ -152,9 +155,7 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     const relay = freshRelay();
     registerTab(relay, 'tab-a');
     registerTab(relay, 'tab-b');
-    const spy = vi
-      .spyOn(relay, 'queueCommand')
-      .mockResolvedValue({ id: 'foo' } as unknown);
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({ id: 'foo' } as unknown);
     const handlers = createRelayHandlers(relay);
 
     // executeElementAction is the canonical /control/element/:id/action
@@ -207,9 +208,7 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
   it('honors targetTabId alias in payload (internal spelling)', async () => {
     const relay = freshRelay();
     registerTab(relay, 'tab-a');
-    const spy = vi
-      .spyOn(relay, 'queueCommand')
-      .mockResolvedValue({} as unknown);
+    const spy = vi.spyOn(relay, 'queueCommand').mockResolvedValue({} as unknown);
     const handlers = createRelayHandlers(relay);
 
     // aiFind passes the request straight through as the relay payload.
@@ -283,9 +282,12 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     }) as unknown as Request & { nextUrl: URL };
     req.nextUrl = url;
 
-    const response = await route.POST(req as never, {
-      params: { path: ['control', 'element', 'foo', 'action'] },
-    } as never);
+    const response = await route.POST(
+      req as never,
+      {
+        params: { path: ['control', 'element', 'foo', 'action'] },
+      } as never
+    );
 
     expect(response.status).toBe(404);
     const body = await response.json();
@@ -304,9 +306,7 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     const handlers = createRelayHandlers(relay);
     const route = createNextRouteHandlers(handlers);
 
-    const url = new URL(
-      'http://localhost/api/ui-bridge/control/element/foo/action?tabId=tab-a'
-    );
+    const url = new URL('http://localhost/api/ui-bridge/control/element/foo/action?tabId=tab-a');
     const req = new Request(url.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -314,9 +314,12 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
     }) as unknown as Request & { nextUrl: URL };
     req.nextUrl = url;
 
-    const response = await route.POST(req as never, {
-      params: { path: ['control', 'element', 'foo', 'action'] },
-    } as never);
+    const response = await route.POST(
+      req as never,
+      {
+        params: { path: ['control', 'element', 'foo', 'action'] },
+      } as never
+    );
 
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -360,8 +363,14 @@ describe('relay · Item #15 — stale-tab pruning', () => {
     vi.useRealTimers();
   });
 
-  it('pruneStaleTabs() drops tabs whose last heartbeat exceeds staleHeartbeatMs', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+  // NOTE: the DESTRUCTIVE prune is gated on `zombieTransportMs`, not on
+  // `staleHeartbeatMs` — the latter is the non-destructive activity threshold
+  // (`getActiveTabs`/`isTabActive`). These tests therefore set the zombie knob
+  // explicitly. See `relay-transport-liveness.test.ts` for why the two were
+  // split: a background-throttled tab beats every ~60s, so pruning at
+  // `staleHeartbeatMs` tore down healthy tabs' live SSE transports.
+  it('pruneStaleTabs() drops tabs whose last heartbeat exceeds zombieTransportMs', () => {
+    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     relay.receiveHeartbeat('tab-a');
 
@@ -390,7 +399,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('demotes primary and elects most-recently-heartbeated successor on prune', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     registerTab(relay, 'tab-b');
     registerTab(relay, 'tab-c');
@@ -417,7 +426,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('emits a structured tab.pruned log line', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     relay.receiveHeartbeat('tab-a');
 
