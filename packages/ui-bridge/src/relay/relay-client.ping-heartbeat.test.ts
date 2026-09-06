@@ -5,7 +5,7 @@
  * The relay no longer DESTROYS a hidden tab's transport when its heartbeat
  * goes stale (`zombieTransportMs`, see `server/command-relay.ts`), so a
  * throttled beat is no longer fatal. But it is still degraded: while the beat
- * is ~1/min, `staleHeartbeatMs` keeps reporting the tab inactive, so
+ * is ~1/min, `tabActiveWindowMs` keeps reporting the tab inactive, so
  * `activeTabs` / `isAppResponsive` / `isTabActive` all read false for a tab
  * that is working perfectly. Freshness stops meaning anything.
  *

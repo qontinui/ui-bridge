@@ -116,11 +116,15 @@ export interface TransportDiagnostics {
    * for ops diagnostics — it MUST NOT be forwarded to other users.
    */
   tabOwnership: Record<string, TabOwnership>;
-  /** Item #15 — heartbeat-staleness threshold currently in force, for ops visibility. */
-  staleHeartbeatMs: number;
+  /**
+   * The active-tab freshness window in force, for ops visibility. A tab whose
+   * heartbeat is older than this is absent from `activeTabs` — which does NOT
+   * mean it is unreachable; see `commandListenerCount`.
+   */
+  tabActiveWindowMs: number;
   /**
    * Destructive-prune threshold currently in force. Disclosed alongside
-   * `staleHeartbeatMs` so an operator reading `/health` can tell which of the
+   * `tabActiveWindowMs` so an operator reading `/health` can tell which of the
    * two governs a disconnect without reading the source.
    */
   zombieTransportMs: number;
@@ -137,34 +141,36 @@ export interface CommandRelayOptions {
   multiTabGraceMs?: number;
   /** Max pending commands before eviction (default: 200) */
   maxPendingCommands?: number;
-  /** Heartbeat stale threshold in ms (default: 30000) */
-  heartbeatStaleMs?: number;
   /** Time after which a demoted tab with no heartbeat is cleaned up (default: 60000) */
   tabDemotionTtlMs?: number;
   /**
-   * Threshold after which a tab whose heartbeat has gone silent is forcibly
-   * disconnected ("pruned") by the relay — its SSE listener / WebSocket
-   * entry are dropped, primary status is demoted, and `connectedTabs` no
-   * longer reports it. Distinct from `tabDemotionTtlMs`, which only purges
-   * the *metadata* of an already-disconnected tab.
+   * How recently a tab must have sent a heartbeat to count as ACTIVE.
+   *
+   * This is the relay's one non-destructive freshness window. It answers
+   * "did this tab beat recently?" and nothing else, for all four callers:
+   * `getActiveTabs()`, `isTabActive()`, `isAppResponsive()` (the `/health`
+   * `responsive` bit), and the re-promotion of a demoted tab in
+   * `getPrimaryTabId()`. Nothing is disconnected on the strength of it.
    *
    * Defaults to 30_000 ms (3 missed heartbeats at the SDK's 10s cadence —
-   * see `HEARTBEAT_INTERVAL_MS` in `relay/relay-client.ts`).
-   * Override via the `UI_BRIDGE_STALE_HEARTBEAT_MS` env var when bootstrapping
-   * from a runtime without a constructor option (e.g. `next dev`).
+   * see `HEARTBEAT_INTERVAL_MS` in `relay/relay-client.ts`). Override via
+   * `UI_BRIDGE_TAB_ACTIVE_WINDOW_MS` when bootstrapping from a runtime with
+   * no constructor option (e.g. `next dev`).
    *
-   * NOTE: this threshold governs the NON-destructive "is this tab currently
-   * active/dispatchable" judgement (`getActiveTabs`, `isTabActive`,
-   * `isAppResponsive`). It deliberately does NOT govern the destructive
-   * prune — see `zombieTransportMs`.
+   * Do not reach for this to decide whether a tab is REACHABLE. A hidden
+   * tab's beat is throttled to ~1/min by the browser, so it sits outside
+   * this window for most of every minute while its transport works fine —
+   * which is why the destructive prune is gated on `zombieTransportMs`
+   * instead, and why `commandListenerCount` counts transports rather than
+   * fresh tabs. The two thresholds are deliberately independent.
    */
-  staleHeartbeatMs?: number;
+  tabActiveWindowMs?: number;
   /**
    * Threshold after which a tab that still holds an OPEN command transport
    * (SSE listener or connected WebSocket) but has not sent a heartbeat is
    * treated as a genuine zombie and forcibly disconnected.
    *
-   * This is deliberately far larger than `staleHeartbeatMs`, because the
+   * This is deliberately far larger than `tabActiveWindowMs`, because the
    * client heartbeat is a `setInterval` timer and browsers throttle timers
    * in backgrounded tabs — Chrome's intensive throttling clamps them to
    * roughly ONE FIRING PER MINUTE. A hidden-but-perfectly-healthy tab
@@ -183,7 +189,7 @@ export interface CommandRelayOptions {
    * Interval between stale-tab sweep passes. Lower values prune zombie tabs
    * faster at the cost of more wake-ups. Defaults to 10_000 ms.
    */
-  staleHeartbeatSweepMs?: number;
+  pruneSweepIntervalMs?: number;
   /**
    * Optional cross-instance message bus (P0a). When provided, commands whose
    * target tab is NOT connected to THIS process instance are delivered to the
@@ -291,11 +297,10 @@ export class CommandRelay {
   private readonly sseTimeoutMs: number;
   private readonly multiTabGraceMs: number;
   private readonly maxPendingCommands: number;
-  private readonly heartbeatStaleMs: number;
   private readonly tabDemotionTtlMs: number;
-  private readonly staleHeartbeatMs: number;
+  private readonly tabActiveWindowMs: number;
   private readonly zombieTransportMs: number;
-  private readonly staleHeartbeatSweepMs: number;
+  private readonly pruneSweepIntervalMs: number;
 
   // All state lives on globalThis for HMR survival
   private readonly pendingCommands: Map<string, PendingCommand>;
@@ -341,18 +346,17 @@ export class CommandRelay {
     this.sseTimeoutMs = options?.sseTimeoutMs ?? 8_000;
     this.multiTabGraceMs = options?.multiTabGraceMs ?? 3_000;
     this.maxPendingCommands = options?.maxPendingCommands ?? 200;
-    this.heartbeatStaleMs = options?.heartbeatStaleMs ?? 30_000;
     this.tabDemotionTtlMs = options?.tabDemotionTtlMs ?? 60_000;
     // Item #15 — non-destructive activity threshold. Precedence: explicit
-    // option > UI_BRIDGE_STALE_HEARTBEAT_MS env > default 30s. Three missed
+    // option > UI_BRIDGE_TAB_ACTIVE_WINDOW_MS env > default 30s. Three missed
     // heartbeats at the SDK's 10s cadence.
-    this.staleHeartbeatMs =
-      options?.staleHeartbeatMs ?? envInt('UI_BRIDGE_STALE_HEARTBEAT_MS', 30_000);
+    this.tabActiveWindowMs =
+      options?.tabActiveWindowMs ?? envInt('UI_BRIDGE_TAB_ACTIVE_WINDOW_MS', 30_000);
     // Destructive prune threshold — must stay above the browser's background
     // timer clamp (~60s) or every hidden tab loses its working transport.
     this.zombieTransportMs =
       options?.zombieTransportMs ?? envInt('UI_BRIDGE_ZOMBIE_TRANSPORT_MS', 300_000);
-    this.staleHeartbeatSweepMs = options?.staleHeartbeatSweepMs ?? 10_000;
+    this.pruneSweepIntervalMs = options?.pruneSweepIntervalMs ?? 10_000;
     this.bus = options?.bus ?? null;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -394,7 +398,7 @@ export class CommandRelay {
     this.tabOwnership = g[key('TabOwnership')];
     this.buildId = g[key('BuildId')];
 
-    // Periodic cleanup. Runs at `staleHeartbeatSweepMs` cadence and performs
+    // Periodic cleanup. Runs at `pruneSweepIntervalMs` cadence and performs
     // two passes: (a) the legacy metadata GC for tabs that already lost their
     // transport, and (b) Item #15 — active prune of zombie tabs whose
     // heartbeat has gone stale despite the transport still appearing
@@ -418,7 +422,7 @@ export class CommandRelay {
             console.error('[ui-bridge] refreshBusTabPresence failed:', err);
           }
         }
-      }, this.staleHeartbeatSweepMs);
+      }, this.pruneSweepIntervalMs);
     }
     this.cleanupInterval = g[key('CleanupInterval')];
   }
@@ -429,7 +433,7 @@ export class CommandRelay {
 
   /**
    * Forcibly disconnect tabs whose heartbeat has gone silent for longer
-   * than `staleHeartbeatMs`. Removes their SSE listener entry, WebSocket
+   * than `tabActiveWindowMs`. Removes their SSE listener entry, WebSocket
    * client entry, heartbeat record, and metadata. If the pruned tab was
    * the current primary, demotes it and re-selects the most-recently
    * heartbeated alternative.
@@ -456,15 +460,15 @@ export class CommandRelay {
       if (lastBeat === undefined) continue;
       const ageMs = now - lastBeat;
       // Destructive pruning is gated on `zombieTransportMs`, NOT on the
-      // `staleHeartbeatMs` activity threshold.
+      // `tabActiveWindowMs` activity threshold.
       //
       // The client heartbeat is a `setInterval` timer, and browsers throttle
       // timers in backgrounded tabs — Chrome's intensive throttling clamps
-      // them to ~1 firing per minute. Pruning at `staleHeartbeatMs` (30s)
+      // them to ~1 firing per minute. Pruning at `tabActiveWindowMs` (30s)
       // therefore tore down the SSE command transport of every hidden tab on
       // a fixed cycle, even though that transport was open and working: the
       // relay would answer `SDK_DISCONNECTED` while bytes were still flowing
-      // down the stream. `staleHeartbeatMs` still expresses staleness — but
+      // down the stream. `tabActiveWindowMs` still expresses staleness — but
       // non-destructively, via `getActiveTabs()` / `isTabActive()`.
       //
       // Transport liveness is reported directly and more reliably by the
@@ -513,11 +517,11 @@ export class CommandRelay {
           id: tabId,
           lastHeartbeatAt: lastBeat,
           age_ms: ageMs,
-          // The threshold that actually fired. `staleHeartbeatMs` is kept
+          // The threshold that actually fired. `tabActiveWindowMs` is kept
           // alongside it so a log reader can see both without guessing which
           // one governed the decision.
           zombieTransportMs: this.zombieTransportMs,
-          staleHeartbeatMs: this.staleHeartbeatMs,
+          tabActiveWindowMs: this.tabActiveWindowMs,
         })}`
       );
     }
@@ -582,7 +586,7 @@ export class CommandRelay {
         active.push(id);
         return;
       }
-      if (now - lastBeat <= this.staleHeartbeatMs) {
+      if (now - lastBeat <= this.tabActiveWindowMs) {
         active.push(id);
       }
     };
@@ -603,7 +607,7 @@ export class CommandRelay {
     if (!hasTransport) return false;
     const lastBeat = this.tabHeartbeats.get(tabId);
     if (lastBeat === undefined) return true; // pre-heartbeat warmup
-    return Date.now() - lastBeat <= this.staleHeartbeatMs;
+    return Date.now() - lastBeat <= this.tabActiveWindowMs;
   }
 
   /**
@@ -669,7 +673,7 @@ export class CommandRelay {
     const now = Date.now();
     for (const tabId of Array.from(this.demotedTabs)) {
       const lastBeat = this.tabHeartbeats.get(tabId);
-      if (lastBeat && now - lastBeat < this.heartbeatStaleMs) {
+      if (lastBeat && now - lastBeat < this.tabActiveWindowMs) {
         if (this.tabListeners.has(tabId) || this.wsClients.has(tabId)) {
           this.demotedTabs.delete(tabId);
           console.log(`[ui-bridge] Re-promoted tab with fresh heartbeat: ${tabId}`);
@@ -896,7 +900,7 @@ export class CommandRelay {
           targetTabId,
           active,
           `tabId "${targetTabId}" is registered but its last heartbeat is ` +
-            `${ageMs}ms old (threshold ${this.staleHeartbeatMs}ms). ` +
+            `${ageMs}ms old (threshold ${this.tabActiveWindowMs}ms). ` +
             `Active tabs: [${active.join(', ')}]. ` +
             `The tab will be pruned on the next sweep — retry without pinning, or pick another tab.`
         );
@@ -1286,7 +1290,7 @@ export class CommandRelay {
    * between refreshes.
    */
   private busTabTtlSeconds(): number {
-    return Math.ceil(Math.max(this.staleHeartbeatMs * 2, this.staleHeartbeatSweepMs * 3) / 1000);
+    return Math.ceil(Math.max(this.tabActiveWindowMs * 2, this.pruneSweepIntervalMs * 3) / 1000);
   }
 
   /**
@@ -1731,7 +1735,7 @@ export class CommandRelay {
     const now = Date.now();
     for (const [tabId, lastBeat] of this.tabHeartbeats.entries()) {
       if (userId && !this.isOwnedBy(tabId, userId)) continue;
-      if (now - lastBeat < this.heartbeatStaleMs) return true;
+      if (now - lastBeat < this.tabActiveWindowMs) return true;
     }
     return false;
   }
@@ -1986,7 +1990,7 @@ export class CommandRelay {
       tabHeartbeats: Object.fromEntries(this.tabHeartbeats),
       tabMetadata: Object.fromEntries(this.tabMetadata),
       tabOwnership: Object.fromEntries(this.tabOwnership),
-      staleHeartbeatMs: this.staleHeartbeatMs,
+      tabActiveWindowMs: this.tabActiveWindowMs,
       zombieTransportMs: this.zombieTransportMs,
     };
 
@@ -2007,7 +2011,7 @@ export class CommandRelay {
       pendingCommandCount: full.pendingCommandCount,
       commandQueueLength: full.commandQueueLength,
       buildId: full.buildId,
-      staleHeartbeatMs: full.staleHeartbeatMs,
+      tabActiveWindowMs: full.tabActiveWindowMs,
       zombieTransportMs: full.zombieTransportMs,
 
       // Command ids are NOT attributable to a tab/owner, so they cannot be

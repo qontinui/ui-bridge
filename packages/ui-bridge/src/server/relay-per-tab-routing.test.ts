@@ -121,7 +121,7 @@ describe('relay · Item #4 — per-tab `targetTabId` routing', () => {
   });
 
   it('TAB_STALE error when targetTabId is registered but heartbeat is stale', async () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, staleHeartbeatSweepMs: 60_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, pruneSweepIntervalMs: 60_000 });
     registerTab(relay, 'tab-a');
 
     // Plant a stale heartbeat — 60s old, way past the 5s threshold.
@@ -327,7 +327,7 @@ describe('relay-handlers · Item #4 — relayCommand threads tabId through', () 
   });
 
   it('TAB_STALE envelope carries httpStatus=410 for adapter to translate', async () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, staleHeartbeatSweepMs: 60_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, pruneSweepIntervalMs: 60_000 });
     registerTab(relay, 'tab-a');
     const handlers = createRelayHandlers(relay);
 
@@ -364,13 +364,13 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   // NOTE: the DESTRUCTIVE prune is gated on `zombieTransportMs`, not on
-  // `staleHeartbeatMs` — the latter is the non-destructive activity threshold
+  // `tabActiveWindowMs` — the latter is the non-destructive activity threshold
   // (`getActiveTabs`/`isTabActive`). These tests therefore set the zombie knob
   // explicitly. See `relay-transport-liveness.test.ts` for why the two were
   // split: a background-throttled tab beats every ~60s, so pruning at
-  // `staleHeartbeatMs` tore down healthy tabs' live SSE transports.
+  // `tabActiveWindowMs` tore down healthy tabs' live SSE transports.
   it('pruneStaleTabs() drops tabs whose last heartbeat exceeds zombieTransportMs', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     relay.receiveHeartbeat('tab-a');
 
@@ -385,7 +385,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('does NOT prune tabs that have never sent a heartbeat (warmup window)', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000 });
     registerTab(relay, 'tab-a');
     // Intentionally no receiveHeartbeat — simulate the proactive-snapshot
     // window before the SDK's first beat.
@@ -399,7 +399,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('demotes primary and elects most-recently-heartbeated successor on prune', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     registerTab(relay, 'tab-b');
     registerTab(relay, 'tab-c');
@@ -426,7 +426,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('emits a structured tab.pruned log line', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, zombieTransportMs: 5_000 });
     registerTab(relay, 'tab-a');
     relay.receiveHeartbeat('tab-a');
 
@@ -448,7 +448,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('getActiveTabs() filters out stale tabs without mutating connectedTabs', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000 });
     registerTab(relay, 'tab-a');
     registerTab(relay, 'tab-b');
     relay.receiveHeartbeat('tab-a');
@@ -469,7 +469,7 @@ describe('relay · Item #15 — stale-tab pruning', () => {
   });
 
   it('isTabActive returns true for unknown-heartbeat tabs (warmup) and false for stale ones', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 5_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000 });
     registerTab(relay, 'tab-a');
     expect(relay.isTabActive('tab-a')).toBe(true); // no heartbeat yet → warmup
 
@@ -485,9 +485,9 @@ describe('relay · Item #15 — stale-tab pruning', () => {
     expect(relay.isTabActive('does-not-exist')).toBe(false);
   });
 
-  it('exposes staleHeartbeatMs in TransportDiagnostics', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 12_345 });
-    expect(relay.getTransportDiagnostics().staleHeartbeatMs).toBe(12_345);
+  it('exposes tabActiveWindowMs in TransportDiagnostics', () => {
+    const relay = freshRelay({ tabActiveWindowMs: 12_345 });
+    expect(relay.getTransportDiagnostics().tabActiveWindowMs).toBe(12_345);
     expect(relay.getTransportDiagnostics().activeTabs).toEqual([]);
   });
 });

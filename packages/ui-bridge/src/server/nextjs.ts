@@ -904,7 +904,7 @@ function handleRelayRoute(
   //   ?detailed=true     Issue a per-tab `getTabInfo` round-trip to enrich
   //                      each entry with the live URL/pathname/title.
   //   ?activeOnly=true   Item #15 — return only tabs whose last heartbeat
-  //                      falls within `staleHeartbeatMs`. Use this BEFORE
+  //                      falls within `tabActiveWindowMs`. Use this BEFORE
   //                      pinning a command with `?tabId=<id>` to avoid
   //                      racing the next stale-tab sweep.
   //
@@ -943,7 +943,7 @@ function handleRelayRoute(
         }));
         return jsonResponse({
           success: true,
-          data: { tabs, staleHeartbeatMs: diag.staleHeartbeatMs },
+          data: { tabs, tabActiveWindowMs: diag.tabActiveWindowMs },
           timestamp: Date.now(),
         });
       })();
@@ -958,7 +958,7 @@ function handleRelayRoute(
     }));
     return jsonResponse({
       success: true,
-      data: { tabs, staleHeartbeatMs: diag.staleHeartbeatMs },
+      data: { tabs, tabActiveWindowMs: diag.tabActiveWindowMs },
       timestamp: Date.now(),
     });
   }

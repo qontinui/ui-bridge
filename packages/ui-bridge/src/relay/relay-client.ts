@@ -38,7 +38,7 @@ const SSE_RECONNECT_DELAY_MS = 10_000;
 // The server MUST NOT treat heartbeat age as transport liveness for that
 // reason — see `zombieTransportMs` in `server/command-relay.ts`, which is why
 // the relay's destructive prune is gated well above the throttling clamp
-// while `staleHeartbeatMs` keeps expressing staleness non-destructively.
+// while `tabActiveWindowMs` keeps expressing staleness non-destructively.
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** sessionStorage key for the stable per-tab id. */

@@ -1814,7 +1814,7 @@ Response shape (`success:true`, tabs under `data.tabs`):
         "isActive": true
       }
     ],
-    "staleHeartbeatMs": 30000
+    "tabActiveWindowMs": 30000
   },
   "timestamp": 1718200000123
 }

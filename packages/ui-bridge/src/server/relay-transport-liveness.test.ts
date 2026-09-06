@@ -6,7 +6,7 @@
  * `POST /control/element/:id/action` failed with `SDK_DISCONNECTED`, on a
  * repeating ~60s cycle. The dev-server log showed 916 `tab.pruned` events for
  * a single tab, each with `age_ms` between 30_000 and 37_000 against
- * `staleHeartbeatMs: 30000`, and each followed immediately by the tab's SSE
+ * `tabActiveWindowMs: 30000`, and each followed immediately by the tab's SSE
  * stream disconnecting and reconnecting.
  *
  * Root cause: the client heartbeat is a `setInterval` (10s requested), and the
@@ -47,12 +47,12 @@ describe('relay · a throttled heartbeat must not destroy a live command transpo
   });
 
   it('keeps the SSE listener of a hidden tab beating at the ~60s throttled cadence', () => {
-    // Defaults on purpose: staleHeartbeatMs 30s, zombieTransportMs 5min.
+    // Defaults on purpose: tabActiveWindowMs 30s, zombieTransportMs 5min.
     const relay = freshRelay();
     relay.subscribeToCommands(() => {}, 'tab-hidden');
     relay.receiveHeartbeat('tab-hidden');
 
-    // +45s: past staleHeartbeatMs (30s), which is the whole point — a
+    // +45s: past tabActiveWindowMs (30s), which is the whole point — a
     // background-throttled tab is ALWAYS in this window between beats.
     vi.setSystemTime(new Date('2026-01-01T00:00:45Z'));
 
@@ -118,15 +118,15 @@ describe('relay · a throttled heartbeat must not destroy a live command transpo
     expect(relay.getConnectedTabs()).not.toContain('tab-frozen');
   });
 
-  it('prunes at zombieTransportMs, not at staleHeartbeatMs', () => {
+  it('prunes at zombieTransportMs, not at tabActiveWindowMs', () => {
     // Pins WHICH threshold governs the destructive path. Without this the
     // two could be silently re-coupled and every test above still passes
     // by virtue of the default 5min being large.
-    const relay = freshRelay({ staleHeartbeatMs: 5_000, zombieTransportMs: 60_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 5_000, zombieTransportMs: 60_000 });
     relay.subscribeToCommands(() => {}, 'tab-a');
     relay.receiveHeartbeat('tab-a');
 
-    // Well past staleHeartbeatMs, well short of zombieTransportMs.
+    // Well past tabActiveWindowMs, well short of zombieTransportMs.
     vi.setSystemTime(new Date('2026-01-01T00:00:30Z'));
     expect(relay.pruneStaleTabs()).toEqual([]);
 
@@ -186,10 +186,10 @@ describe('relay · commandListenerCount observes open command transports', () =>
   });
 
   it('discloses both thresholds so a reader can tell which governs a disconnect', () => {
-    const relay = freshRelay({ staleHeartbeatMs: 30_000, zombieTransportMs: 300_000 });
+    const relay = freshRelay({ tabActiveWindowMs: 30_000, zombieTransportMs: 300_000 });
     const diag = relay.getTransportDiagnostics();
 
-    expect(diag.staleHeartbeatMs).toBe(30_000);
+    expect(diag.tabActiveWindowMs).toBe(30_000);
     expect(diag.zombieTransportMs).toBe(300_000);
   });
 });
