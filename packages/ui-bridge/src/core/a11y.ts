@@ -103,6 +103,136 @@ export function computeAccessibleNameSafe(node: Element): string | undefined {
 }
 
 /**
+ * Which rung of the naming chain produced an element's accessible name.
+ *
+ * `'none'` is a STATEMENT, not an absence. Before this existed, an icon-only
+ * `<button>` with no `aria-label` and no `title` came back with `label`,
+ * `text`, `ariaLabel` and `accessibleName` all missing, and a reader could not
+ * tell "this element has no name" from "the name was not computed". Four
+ * silent nulls are the shape of an instrument that does not know what it does
+ * not know [`ux-priorities` `no-widget-may-hide-identifying-text`].
+ *
+ * `'derived'` says the name did NOT come from the accessibility tree at all —
+ * it was built from developer affordances already on the node (a `data-testid`,
+ * a bridge id, an icon token). Useful for addressing the element; NOT evidence
+ * that a screen-reader user can name it. Keeping the two distinguishable is the
+ * entire point of reporting the rung.
+ */
+export type AccessibleNameSource =
+  | 'aria-label'
+  | 'aria-labelledby'
+  | 'label'
+  | 'title'
+  | 'text'
+  | 'derived'
+  | 'none';
+
+/** An accessible name together with the rung that produced it. */
+export interface ResolvedAccessibleName {
+  /** The name. Absent only when `source` is `'none'`. */
+  name?: string;
+  source: AccessibleNameSource;
+}
+
+/** Attributes a developer stamps for addressing, in the order we prefer them. */
+const DERIVED_NAME_ATTRS = ['data-testid', 'data-test-id', 'data-cy', 'data-ui-bridge-id', 'name'];
+
+/** Icon-library class prefixes worth stripping to leave a readable token. */
+const ICON_CLASS_PREFIX = /^(?:lucide|icon|fa|fas|far|mdi|bi|material-icons)[-_]/;
+
+/**
+ * Build a name for an element the accessibility tree cannot name, from the
+ * developer affordances already present on the node.
+ *
+ * This is not an accessibility fix and must never be mistaken for one — an
+ * element that reaches this rung IS an a11y finding the page owner should act
+ * on. It exists so that such an element is still addressable and still
+ * REPORTABLE, instead of being invisible to every discovery path that does not
+ * already know its id.
+ */
+function deriveStructuralName(node: Element): string | undefined {
+  for (const attr of DERIVED_NAME_ATTRS) {
+    const value = node.getAttribute(attr)?.trim();
+    if (value) return value;
+  }
+
+  const id = (node as HTMLElement).id?.trim();
+  if (id) return id;
+
+  // An inline icon often carries the only human-meaningful token on the node.
+  const svgTitle = node.querySelector('svg > title')?.textContent?.trim();
+  if (svgTitle) return svgTitle;
+
+  const iconHost = node.matches('svg') ? node : node.querySelector('svg');
+  if (iconHost) {
+    // `SVGElement.className` is an SVGAnimatedString, not a string — read the
+    // attribute so both HTML and SVG hosts behave the same.
+    const classes = (iconHost.getAttribute('class') ?? '').split(/\s+/);
+    for (const token of classes) {
+      if (ICON_CLASS_PREFIX.test(token)) {
+        const stripped = token.replace(ICON_CLASS_PREFIX, '');
+        if (stripped) return stripped;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolve an element's accessible name AND say which rung produced it.
+ *
+ * The name itself is still the W3C algorithm's answer
+ * ({@link computeAccessibleNameSafe}) — this does not re-implement accname.
+ * The rung is then attributed by testing the standard inputs in W3C order and
+ * matching the one that produced the answer, so an authored `aria-label` is
+ * reported as authored and a name scraped out of descendant text is reported
+ * as scraped. When the algorithm yields nothing, {@link deriveStructuralName}
+ * gets one attempt, and failing that the answer is the explicit `'none'`.
+ */
+export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
+  const name = computeAccessibleNameSafe(node);
+
+  if (name) {
+    const matches = (candidate: string | undefined | null): boolean =>
+      !!candidate && normalizeWhitespace(candidate) === name;
+
+    if (matches(readAriaLabelAttr(node))) return { name, source: 'aria-label' };
+
+    const labelledBy = readAriaLabelledbyAttr(node);
+    if (labelledBy) {
+      const parts = labelledBy
+        .split(/\s+/)
+        .map((id) => node.ownerDocument?.getElementById(id)?.textContent ?? '')
+        .filter((t) => t.trim().length > 0);
+      if (parts.length > 0 && matches(parts.join(' '))) {
+        return { name, source: 'aria-labelledby' };
+      }
+    }
+
+    const id = (node as HTMLElement).id;
+    if (id) {
+      const labelEl = node.ownerDocument?.querySelector(`label[for="${CSS.escape(id)}"]`);
+      if (matches(labelEl?.textContent)) return { name, source: 'label' };
+    }
+    const wrappingLabel = node.closest?.('label');
+    if (wrappingLabel && matches(wrappingLabel.textContent)) {
+      return { name, source: 'label' };
+    }
+
+    if (matches(readTitleAttr(node))) return { name, source: 'title' };
+
+    // Everything left is the algorithm reading content out of the subtree.
+    return { name, source: 'text' };
+  }
+
+  const derived = deriveStructuralName(node);
+  if (derived) return { name: derived, source: 'derived' };
+
+  return { source: 'none' };
+}
+
+/**
  * Visible text content with whitespace collapsed and trimmed. Uses
  * `innerText` when available (it respects CSS visibility and
  * `<br>`-to-newline mapping), falling back to `textContent` (which

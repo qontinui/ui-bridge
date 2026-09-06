@@ -52,7 +52,7 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     document.body.innerHTML = '';
   });
 
-  it('refreshLabels() picks up an aria-label changed after registration', () => {
+  it('refreshScrapedText() picks up an aria-label changed after registration', () => {
     document.body.innerHTML = CARD_HTML;
     const registry = new UIBridgeRegistry();
     seedRegistryFromDom(registry, document.body);
@@ -65,7 +65,7 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
       .getElementById('usage-card')!
       .setAttribute('aria-label', 'Section: Account Usage (2 accounts)');
 
-    const changed = registry.refreshLabels();
+    const changed = registry.refreshScrapedText();
     expect(changed).toBe(1);
     expect(registry.getAllElements().find((e) => e.element.id === 'usage-card')!.label).toBe(
       'Section: Account Usage (2 accounts)'
@@ -147,7 +147,7 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     });
 
     document.getElementById('dev')!.setAttribute('aria-label', 'changed scraped name');
-    expect(registry.refreshLabels()).toBe(0);
+    expect(registry.refreshScrapedText()).toBe(0);
     expect(registry.getElement('dev-btn')!.label).toBe('Developer chosen label');
   });
 
@@ -158,7 +158,7 @@ describe('stale label — DOM-scraped labels are re-derived, not frozen at first
     const card = document.getElementById('usage-card')!;
     card.remove();
 
-    expect(registry.refreshLabels()).toBe(0);
+    expect(registry.refreshScrapedText()).toBe(0);
     expect(registry.getAllElements()[0]!.label).toBe('Section: Account Usage (0 accounts)');
   });
 

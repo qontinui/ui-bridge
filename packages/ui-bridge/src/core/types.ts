@@ -17,6 +17,7 @@ import type { SnapshotRelationshipContext } from '../relationships/types';
 import type { UiBridgeErrorCode, RecoverySuggestion } from '../diagnostics';
 export type { UiBridgeErrorCode, RecoverySuggestion } from '../diagnostics';
 import type { SnapshotDragDropContext } from '../drag-drop/types';
+import type { AccessibleNameSource } from './a11y';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
 import type { Scrubbed } from './redaction';
@@ -142,6 +143,8 @@ export interface ElementState {
    * `core/redaction` minters (`scrubContent`).
    */
   accessibleName?: Scrubbed<string>;
+  /** Which rung produced `accessibleName`. See the snapshot field of the same name. */
+  nameSource?: AccessibleNameSource;
   /** Bounding rectangle of the element */
   rect: {
     x: number;
@@ -1922,6 +1925,19 @@ export interface BridgeSnapshot {
      * §4.6 CONTENT-bearing — `Scrubbed<string>` (mint via `scrubContent`).
      */
     accessibleName?: Scrubbed<string>;
+    /**
+     * WHICH RUNG produced `accessibleName` — `'aria-label'`, `'aria-labelledby'`,
+     * `'label'`, `'title'`, `'text'`, `'derived'`, or `'none'`.
+     *
+     * Always present. `'none'` is an explicit statement that the element has no
+     * name, which is a finding the page owner should act on — before this field
+     * existed, that case was four silent absences (`label`, `text`, `ariaLabel`,
+     * `accessibleName` all missing) indistinguishable from "not computed".
+     * `'derived'` means the name was built from developer affordances
+     * (`data-testid`, a bridge id, an icon token), so it addresses the element
+     * but is NOT evidence a screen-reader user can name it.
+     */
+    nameSource?: AccessibleNameSource;
     /**
      * Visible text content with whitespace collapsed and trimmed.
      * `innerText`-equivalent on web (respects CSS visibility), falling

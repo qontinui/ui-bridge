@@ -43,7 +43,6 @@ import { createElementIdentifier } from './element-identifier';
 import { computeElementFingerprint } from './element-fingerprint';
 import {
   readAriaLabelAttr,
-  readAriaLabelledbyAttr,
   readTitleAttr,
   readPlaceholderAttr,
   isInteractionBlocked,
@@ -56,7 +55,6 @@ import {
   type SnapshotIdentity,
 } from './snapshot-signature';
 import { classList } from './class-name';
-import { truncateCodePoints } from './text';
 import { fuzzyMatch } from '../ai/fuzzy-matcher';
 import {
   verdictOf,
@@ -77,7 +75,7 @@ import { generateAliases, generateDescription } from '../ai/alias-generator';
 import type { SearchCriteria, SearchResult, AIDiscoveredElement } from '../ai/types';
 import {
   computeAriaLabel,
-  computeAccessibleNameSafe,
+  resolveAccessibleName,
   computeRoleSafe,
   computeVisibleText,
 } from './a11y';
@@ -191,10 +189,8 @@ export function serializeRegisteredElement(
   // CONTENT axis — a bare password keeps its label; a boundary redacts it.
   const serializeVerdict = verdictOf(el.element);
   const ariaLabel = scrubContentByVerdict(computeAriaLabel(el.element), serializeVerdict);
-  const accessibleName = scrubContentByVerdict(
-    computeAccessibleNameSafe(el.element),
-    serializeVerdict
-  );
+  const resolvedName = resolveAccessibleName(el.element);
+  const accessibleName = scrubContentByVerdict(resolvedName.name, serializeVerdict);
   const visibleText = scrubContentByVerdict(computeVisibleText(el.element), serializeVerdict);
   // Snapshot-time bbox refresh — see `measureFreshBbox`. Falls back to the
   // tracker's cached value when there's no fresh signal.
@@ -226,6 +222,7 @@ export function serializeRegisteredElement(
     role: ariaRole,
     ariaLabel,
     accessibleName,
+    nameSource: resolvedName.source,
     text: visibleText,
     contentMetadata: el.contentMetadata,
     // §4.6: a media element inside a boundary can carry the rendered secret in
@@ -443,46 +440,6 @@ function captureFormControlState(
 }
 
 /**
- * Compute the accessible name for an element (aria-label > aria-labelledby
- * > associated <label for=""> > title attribute > short text content fallback).
- */
-function computeAccessibleName(element: HTMLElement): string | undefined {
-  const ariaLabel = readAriaLabelAttr(element);
-  if (ariaLabel) return ariaLabel;
-
-  const labelledBy = readAriaLabelledbyAttr(element);
-  if (labelledBy) {
-    const parts = labelledBy
-      .split(/\s+/)
-      .map((id) => document.getElementById(id)?.textContent?.trim())
-      .filter((t): t is string => !!t);
-    if (parts.length > 0) return parts.join(' ');
-  }
-
-  if (
-    element instanceof HTMLInputElement ||
-    element instanceof HTMLSelectElement ||
-    element instanceof HTMLTextAreaElement
-  ) {
-    if (element.id) {
-      const label = document.querySelector<HTMLLabelElement>(`label[for="${element.id}"]`);
-      const labelText = label?.textContent?.trim();
-      if (labelText) return labelText;
-    }
-  }
-
-  const title = readTitleAttr(element);
-  if (title) return title;
-
-  const rawText = element.textContent?.trim();
-  if (rawText) {
-    return truncateCodePoints(rawText, 80);
-  }
-
-  return undefined;
-}
-
-/**
  * Get the current state of an element
  */
 function getElementState(element: HTMLElement): ElementState {
@@ -517,7 +474,13 @@ function getElementState(element: HTMLElement): ElementState {
   const verdict = verdictOf(element);
 
   const roleAttr = element.getAttribute('role') || undefined;
-  const accessibleName = scrubContentByVerdict(computeAccessibleName(element), verdict);
+  // ONE accessible-name algorithm for the whole package. This used to be a
+  // second, hand-rolled chain that truncated at 80 code points, so
+  // `state.accessibleName` and the snapshot entry's `accessibleName` — two
+  // fields with the same name, read by the same consumers — could disagree on
+  // the same element. That is the defect class this plan exists to close.
+  const resolvedName = resolveAccessibleName(element);
+  const accessibleName = scrubContentByVerdict(resolvedName.name, verdict);
 
   // The interaction blockers, unfolded once (`enabled` below is the derived
   // fold). Same helper in every serializer AND in the click-path pre-check —
@@ -547,6 +510,7 @@ function getElementState(element: HTMLElement): ElementState {
     focused: document.activeElement === element,
     role: roleAttr,
     accessibleName,
+    nameSource: resolvedName.source,
     rect: {
       x: rect.x,
       y: rect.y,
@@ -1044,12 +1008,23 @@ export const DEFAULT_REMOUNT_CACHE_WINDOW_MS = 2000;
 /**
  * Hidden (non-enumerable) property holding a registered element's label
  * re-derivation closure. See `registerElement({ labelSource })` and
- * {@link UIBridgeRegistry.refreshLabels}.
+ * {@link UIBridgeRegistry.refreshScrapedText}.
  */
 const LABEL_SOURCE_KEY = '__labelSource';
 
-/** A registry entry that may carry the hidden label re-derivation closure. */
-type WithLabelSource = RegisteredElement & { __labelSource?: () => string | undefined };
+/**
+ * Hidden (non-enumerable) property holding a registered element's `content`
+ * re-derivation closure. `content` is frozen at registration by the IDENTICAL
+ * mechanism `label` was — see `registerContentElement({ contentSource })` and
+ * {@link UIBridgeRegistry.refreshScrapedText}.
+ */
+const CONTENT_SOURCE_KEY = '__contentSource';
+
+/** A registry entry that may carry the hidden re-derivation closures. */
+type WithScrapedTextSources = RegisteredElement & {
+  __labelSource?: () => string | undefined;
+  __contentSource?: () => string | undefined;
+};
 
 export interface RegistryOptions {
   /** Enable verbose logging */
@@ -1488,8 +1463,9 @@ export class UIBridgeRegistry {
   }
 
   /**
-   * Re-derive every DOM-SCRAPED `label` from the live DOM and write back the
-   * ones that changed. Returns how many entries moved.
+   * Re-derive every DOM-SCRAPED text field (`label` and `content`) from the
+   * live DOM and write back the ones that changed. Returns how many FIELDS
+   * moved.
    *
    * ## Why this exists
    *
@@ -1506,15 +1482,25 @@ export class UIBridgeRegistry {
    * verification instrument that fabricates a stale value is worse than one
    * that fails, so the read paths call this first.
    *
+   * `content` is frozen by the IDENTICAL mechanism — a `textContent` copy taken
+   * at `registerContentElement`, emitted beside a `text` that is re-derived
+   * live — and `cc9d534`, which fixed `label`, named it as the outstanding
+   * follow-up. Both are swept here rather than by two methods: a second sweep
+   * is a second thing to keep in step, which is the defect class this whole
+   * mechanism exists to close.
+   *
    * ## What it touches
    *
-   * ONLY entries whose registration supplied a `labelSource` closure — i.e.
-   * labels that were scraped out of the DOM in the first place. A
-   * developer-SET label (`useUIElement({ label })`, any direct
+   * ONLY entries whose registration supplied a `labelSource` / `contentSource`
+   * closure — i.e. values that were scraped out of the DOM in the first place.
+   * A developer-SET label or content (`useUIElement({ label })`, any direct
    * `registerElement` call) carries no closure and is left verbatim: it is not
    * a DOM mirror and must not be overwritten. Detached nodes are skipped
-   * (`isConnected === false`) so a mid-unmount read cannot blank a label; a
+   * (`isConnected === false`) so a mid-unmount read cannot blank a value; a
    * throwing closure is skipped rather than allowed to break the read.
+   *
+   * Returns the number of FIELDS changed, so an entry whose label and content
+   * both moved counts twice.
    *
    * ## Cost
    *
@@ -1528,29 +1514,47 @@ export class UIBridgeRegistry {
    * done there. It is deliberately NOT wired into `getAllElements()` or the
    * action paths, which must stay layout-free.
    */
-  refreshLabels(): number {
+  refreshScrapedText(): number {
     let changed = 0;
     for (const bucket of this.elementsByWindow.values()) {
       for (const entry of bucket.values()) {
-        const source = (entry as WithLabelSource).__labelSource;
-        if (!source) continue;
+        const withSources = entry as WithScrapedTextSources;
+        const labelSource = withSources.__labelSource;
+        const contentSource = withSources.__contentSource;
+        if (!labelSource && !contentSource) continue;
         const node = entry.element;
         // A node being torn down can report an empty accessible name; keeping
-        // the last known label is strictly better than blanking it.
+        // the last known value is strictly better than blanking it.
         if (!node || node.isConnected === false) continue;
-        let next: string | undefined;
-        try {
-          next = source();
-        } catch {
-          continue;
+        if (labelSource) {
+          changed += this.applyScraped(entry, 'label', labelSource);
         }
-        if (next !== entry.label) {
-          entry.label = next;
-          changed++;
+        if (contentSource) {
+          changed += this.applyScraped(entry, 'content', contentSource);
         }
       }
     }
     return changed;
+  }
+
+  /**
+   * Re-derive ONE scraped field on one entry. A throwing closure leaves the
+   * field verbatim rather than blanking it or breaking the sweep.
+   */
+  private applyScraped(
+    entry: RegisteredElement,
+    field: 'label' | 'content',
+    source: () => string | undefined
+  ): number {
+    let next: string | undefined;
+    try {
+      next = source();
+    } catch {
+      return 0;
+    }
+    if (next === entry[field]) return 0;
+    entry[field] = next;
+    return 1;
   }
 
   /**
@@ -1644,7 +1648,7 @@ export class UIBridgeRegistry {
        * `"Section: Account Usage (0 accounts)"` beside a live DOM reading
        * `"(2 accounts)"`.
        *
-       * Supplying this closure opts the element into {@link refreshLabels},
+       * Supplying this closure opts the element into {@link refreshScrapedText},
        * which the snapshot / find / discover read paths call so the emitted
        * `label` is current. Registrations that do NOT pass it (every
        * developer-set `useUIElement` label) keep their value verbatim forever —
@@ -1655,6 +1659,23 @@ export class UIBridgeRegistry {
        * staleness, never change the labelling algorithm.
        */
       labelSource?: () => string | undefined;
+      /**
+       * Re-derivation closure for a DOM-SCRAPED `content`, supplied by whichever
+       * scanner scraped it.
+       *
+       * Exactly the same defect and exactly the same contract as
+       * {@link labelSource}: `content` is a *copy* of `textContent` taken at
+       * registration, emitted by `serializeRegisteredElement` beside a `text`
+       * that IS re-derived live — so one snapshot entry could read
+       * `content: "Waiting for coord…"` beside `text: "No work units in this
+       * window"`. `cc9d534` fixed `label` and named this as the outstanding
+       * follow-up.
+       *
+       * Supplying this closure opts the element into
+       * {@link refreshScrapedText}. A developer-SET `content` carries no
+       * closure and is never overwritten.
+       */
+      contentSource?: () => string | undefined;
       /** Component that owns this element (set by <UIBridgeComponentScope>). */
       ownedByComponent?: string;
       /**
@@ -1847,6 +1868,14 @@ export class UIBridgeRegistry {
         configurable: true,
       });
     }
+    if (options.contentSource) {
+      Object.defineProperty(registered, CONTENT_SOURCE_KEY, {
+        value: options.contentSource,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
 
     // If this id is already registered IN THE SAME WINDOW, reverse the
     // previous entry's route bookkeeping so we don't double-count an
@@ -1918,6 +1947,13 @@ export class UIBridgeRegistry {
        */
       labelSource?: () => string | undefined;
       /**
+       * Re-derivation closure for the scraped `content` — see
+       * `registerElement({ contentSource })`. The content scanner scrapes
+       * `textContent`, so its `content` goes stale exactly the way its `label`
+       * did.
+       */
+      contentSource?: () => string | undefined;
+      /**
        * Full normalized text content (whitespace-collapsed, trimmed). Surfaced
        * verbatim on the snapshot element's `content` field. Populated by the
        * heading/paragraph/table-cell auto-register path so consumers can
@@ -1937,6 +1973,7 @@ export class UIBridgeRegistry {
       category: 'content',
       contentMetadata: options.contentMetadata,
       content: options.content,
+      contentSource: options.contentSource,
       origin: options.origin ?? 'auto',
     });
   }
@@ -3480,8 +3517,8 @@ export class UIBridgeRegistry {
     // DOM-scraped labels are copies taken at registration — re-derive them
     // before serializing or the snapshot ships a label that contradicts the
     // `ariaLabel`/`accessibleName` re-derived live in the same entry. See
-    // `refreshLabels`.
-    this.refreshLabels();
+    // `refreshScrapedText`.
+    this.refreshScrapedText();
     const takenAt = Date.now();
     const activeTab = this.resolveActiveTab(options.getActiveTab);
     const visibility = captureDocumentVisibility();
@@ -3538,7 +3575,7 @@ export class UIBridgeRegistry {
     } = {}
   ): Promise<BridgeSnapshot> {
     // See `createSnapshot` — same freshness contract on the batched path.
-    this.refreshLabels();
+    this.refreshScrapedText();
     const allElements = this.getAllElements();
     const elementSnapshots: BridgeSnapshot['elements'] = [];
 

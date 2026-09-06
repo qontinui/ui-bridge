@@ -1039,7 +1039,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       // so it survives outside the CONTENT boundary but is dropped inside one
       // (a dev who wraps a subtree intends it hidden).
       // Single definition of the content label derivation so the initial
-      // scrape and the `refreshLabels()` re-derivation cannot drift.
+      // scrape and the `refreshScrapedText()` re-derivation cannot drift.
       const deriveContentLabel = (el: HTMLElement): string | undefined => {
         if (isContentRedacted(el)) return undefined;
         const raw = el.textContent?.trim();
@@ -1050,9 +1050,15 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           undefined
         );
       };
-      const redacted = isContentRedacted(element);
-      const rawText = redacted ? undefined : element.textContent?.trim();
-      const normalizedText = rawText ? rawText.replace(/\s+/g, ' ') : undefined;
+      // Single definition of the content scrape so the initial read and the
+      // `refreshScrapedText()` re-derivation cannot drift — the same shape
+      // `deriveContentLabel` above uses, for the same reason.
+      const deriveContent = (el: HTMLElement): string | undefined => {
+        if (isContentRedacted(el)) return undefined;
+        const raw = el.textContent?.trim();
+        return raw ? raw.replace(/\s+/g, ' ') : undefined;
+      };
+      const normalizedText = deriveContent(element);
       const label = deriveContentLabel(element);
 
       bridge.registry.registerContentElement(id, element, {
@@ -1064,6 +1070,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         // node — see `registerElement`'s `labelSource`.
         labelSource: () => deriveContentLabel(element),
         content: normalizedText,
+        // …and `content` froze by the identical mechanism until this closure
+        // existed: it was emitted beside a live-derived `text`, so one entry
+        // could read `content: "Waiting for coord…"` next to
+        // `text: "No work units in this window"`.
+        contentSource: () => deriveContent(element),
       });
 
       registeredContentElementsRef.current.set(element, id);
@@ -1116,15 +1127,23 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       const existing = bridge.registry.getElement(id);
       if (existing) return;
 
+      // Single definition of the semantic-card content scrape so the initial
+      // read and the `refreshScrapedText()` re-derivation cannot drift.
+      //
       // §4.6 F7 — SOURCE gate: inside a `data-bridge-redact` boundary do not
       // scrape `innerText`/`textContent` into `content`/`label` at all
-      // (defense-in-depth beside the emission scrub).
-      const redacted = isContentRedacted(element);
+      // (defense-in-depth beside the emission scrub). The closure re-tests the
+      // boundary on every read, so a subtree that BECOMES redacted stops being
+      // scraped rather than keeping the pre-boundary text.
+      //
       // Normalized text: collapse runs of whitespace (including newlines
       // introduced by JSX formatting) so assertions don't need to know
       // exactly how the template wrapped its spans.
-      const rawText = redacted ? '' : (readInnerText(element) ?? element.textContent ?? '').trim();
-      const content = rawText.replace(/\s+/g, ' ');
+      const deriveSemanticContent = (el: HTMLElement): string => {
+        const raw = isContentRedacted(el) ? '' : (readInnerText(el) ?? el.textContent ?? '').trim();
+        return raw.replace(/\s+/g, ' ');
+      };
+      const content = deriveSemanticContent(element);
 
       // Role hint — `data-ui-bridge-role` wins, DOM `role` is the fallback.
       const roleAttr =
@@ -1139,7 +1158,6 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return text ? truncateCodePoints(text, 50) : undefined;
       };
       const label = content ? truncateCodePoints(content, 50) : undefined;
-
       bridge.registry.registerElement(id, element, {
         // `generic` is the closest ElementType we have for a semantic card.
         // The category='content' flag is the load-bearing signal — callers
@@ -1151,6 +1169,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         // and on an already-taken id, so the scrape above never repeats for
         // this node — see `registerElement`'s `labelSource`.
         labelSource: () => deriveSemanticLabel(element),
+        contentSource: () => deriveSemanticContent(element),
         category: 'content',
         content,
         role: roleAttr,

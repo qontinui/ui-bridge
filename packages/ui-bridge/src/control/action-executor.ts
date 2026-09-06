@@ -66,6 +66,12 @@ import { computeFingerprint, extractSourceLocation } from '../debug/error-finger
 import { fillSingleField } from './fill-form';
 import { applyValueMutation, readLiveValue } from './value-mutation';
 import {
+  comboboxSelect,
+  findDropdownOption,
+  findOpenDropdown,
+  isComboboxLike,
+} from './combobox-select';
+import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
   readTitleAttr,
@@ -2257,9 +2263,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Fourth snapshot path — re-derive DOM-scraped labels first, same as
     // `registry.createSnapshot()` does, or this one emits a `label` frozen at
     // first discovery beside an `ariaLabel` read live. See
-    // `UIBridgeRegistry.refreshLabels`.
+    // `UIBridgeRegistry.refreshScrapedText`.
     try {
-      this.registry.refreshLabels();
+      this.registry.refreshScrapedText();
     } catch {
       // Non-fatal: fall through with the labels the registry already holds.
     }
@@ -2911,11 +2917,17 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
     }
 
-    // Handle Radix/headless combobox elements (render as <button> with role="combobox")
+    // Handle Radix/headless combobox elements (render as <button> with
+    // role="combobox"). Shared with the React relay path so the two cannot
+    // disagree about the same element — see `control/combobox-select.ts`.
     if (!(element instanceof HTMLSelectElement)) {
-      const role = element.getAttribute('role');
-      if (role === 'combobox' || element.hasAttribute('aria-expanded')) {
-        await this.performComboboxSelect(element, options);
+      if (isComboboxLike(element)) {
+        const outcome = await comboboxSelect(element, options);
+        if (!outcome.ok) {
+          // A dead end is a typed failure, never a resolved promise the caller
+          // reports as success.
+          throw new Error(outcome.message);
+        }
         return;
       }
       throw new Error(
@@ -2992,162 +3004,6 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Handle select on combobox elements (Radix, headless UI, MUI, Select2, Ant Design, etc.)
-   * Strategy: click to open → find listbox/dropdown → find option → click option
-   */
-  private performComboboxSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
-    const targetValue = Array.isArray(options?.value) ? options.value[0] : options?.value;
-    if (!targetValue) {
-      throw new Error('Select action on combobox requires a value');
-    }
-
-    // Click to open the combobox dropdown
-    element.click();
-
-    // Wait for the dropdown to render, then find and click the option.
-    // Use a retry loop because some frameworks (MUI, Ant Design) render
-    // the dropdown asynchronously after a paint cycle.
-    return new Promise<void>((resolve) => {
-      let attempts = 0;
-      const maxAttempts = 5;
-      const attemptInterval = 50; // ms
-
-      const tryFindOption = (): void => {
-        attempts++;
-        const dropdown = this.findOpenDropdown(element);
-
-        if (!dropdown && attempts < maxAttempts) {
-          setTimeout(tryFindOption, attemptInterval);
-          return;
-        }
-
-        if (!dropdown) {
-          console.warn(
-            `[ui-bridge] performComboboxSelect: dropdown not found after ${maxAttempts} attempts for value "${targetValue}"`
-          );
-          resolve();
-          return;
-        }
-
-        // Find matching option across various frameworks
-        const matched = this.findDropdownOption(dropdown, targetValue, options?.byLabel);
-        if (matched) {
-          matched.click();
-        } else {
-          console.warn(
-            `[ui-bridge] performComboboxSelect: option "${targetValue}" not found in dropdown`
-          );
-        }
-        resolve();
-      };
-
-      requestAnimationFrame(tryFindOption);
-    });
-  }
-
-  /**
-   * Find the open dropdown/listbox associated with an element.
-   * Supports: ARIA listbox, Radix, MUI, Select2, Ant Design, Headless UI.
-   */
-  private findOpenDropdown(trigger: HTMLElement): Element | null {
-    // 1. ARIA listbox via aria-controls/aria-owns
-    const listboxId = trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
-    if (listboxId) {
-      const el = document.getElementById(listboxId);
-      if (el) return el;
-    }
-
-    // 2. Radix / shadcn popper
-    const radixListbox = document.querySelector(
-      '[data-radix-popper-content-wrapper] [role="listbox"], [data-state="open"] [role="listbox"]'
-    );
-    if (radixListbox) return radixListbox;
-
-    // 3. Generic ARIA listbox
-    const ariaListbox = document.querySelector('[role="listbox"]');
-    if (ariaListbox) return ariaListbox;
-
-    // 4. MUI Select (renders a popover with role="presentation" containing <ul role="listbox">)
-    const muiListbox = document.querySelector(
-      '.MuiPopover-root [role="listbox"], .MuiPopper-root [role="listbox"], .MuiMenu-list'
-    );
-    if (muiListbox) return muiListbox;
-
-    // 5. Select2 (jQuery-based, renders .select2-results__options)
-    const select2Dropdown = document.querySelector(
-      '.select2-container--open .select2-results__options'
-    );
-    if (select2Dropdown) return select2Dropdown;
-
-    // 6. Ant Design (renders .ant-select-dropdown with .ant-select-item)
-    const antDropdown = document.querySelector(
-      '.ant-select-dropdown:not(.ant-select-dropdown-hidden)'
-    );
-    if (antDropdown) return antDropdown;
-
-    // 7. Headless UI listbox
-    const headlessListbox = document.querySelector(
-      '[data-headlessui-state~="open"] [role="listbox"]'
-    );
-    if (headlessListbox) return headlessListbox;
-
-    // 8. Generic open dropdown (last resort)
-    const generic = document.querySelector('[role="menu"][data-state="open"], .dropdown-menu.show');
-    return generic;
-  }
-
-  /**
-   * Find a matching option element within a dropdown container.
-   * Handles various option patterns across frameworks.
-   */
-  private findDropdownOption(
-    dropdown: Element,
-    targetValue: string,
-    byLabel?: boolean
-  ): HTMLElement | null {
-    const targetLower = targetValue.toLowerCase();
-
-    // Selector patterns for option elements across frameworks
-    const optionSelectors = [
-      '[role="option"]', // ARIA standard
-      '.ant-select-item-option', // Ant Design
-      '.select2-results__option', // Select2
-      '.MuiMenuItem-root', // MUI
-      '[data-headlessui-state] [role="option"]', // Headless UI
-      'li[data-value]', // Generic data-value
-    ];
-
-    for (const selector of optionSelectors) {
-      const options = dropdown.querySelectorAll<HTMLElement>(selector);
-      if (options.length === 0) continue;
-
-      for (const opt of options) {
-        const optDataValue = opt.getAttribute('data-value') ?? '';
-        const optText = opt.textContent?.trim() ?? '';
-
-        // Match by data-value, text content, or aria-label
-        if (byLabel || !optDataValue) {
-          if (optText === targetValue || optText.toLowerCase() === targetLower) {
-            return opt;
-          }
-        } else {
-          if (optDataValue === targetValue || optDataValue.toLowerCase() === targetLower) {
-            return opt;
-          }
-        }
-
-        // Fallback: check aria-label
-        const ariaLabel = readAriaLabelAttr(opt);
-        if (ariaLabel && ariaLabel.toLowerCase() === targetLower) {
-          return opt;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  /**
    * Handle autocomplete inputs: type search text, wait for suggestions,
    * then click the matching suggestion.
    */
@@ -3176,10 +3032,10 @@ export class DefaultActionExecutor implements ActionExecutor {
       await new Promise((r) => setTimeout(r, pollInterval));
 
       // Look for suggestion containers
-      const dropdown = this.findOpenDropdown(element);
+      const dropdown = findOpenDropdown(element);
       if (!dropdown) continue;
 
-      const match = this.findDropdownOption(dropdown, selectValue);
+      const match = findDropdownOption(dropdown, selectValue);
       if (match) {
         match.click();
         return;
