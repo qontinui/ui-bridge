@@ -194,42 +194,63 @@ export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
   const name = computeAccessibleNameSafe(node);
 
   if (name) {
-    const matches = (candidate: string | undefined | null): boolean =>
-      !!candidate && normalizeWhitespace(candidate) === name;
-
-    if (matches(readAriaLabelAttr(node))) return { name, source: 'aria-label' };
-
-    const labelledBy = readAriaLabelledbyAttr(node);
-    if (labelledBy) {
-      const parts = labelledBy
-        .split(/\s+/)
-        .map((id) => node.ownerDocument?.getElementById(id)?.textContent ?? '')
-        .filter((t) => t.trim().length > 0);
-      if (parts.length > 0 && matches(parts.join(' '))) {
-        return { name, source: 'aria-labelledby' };
-      }
+    // Attribution is a NICETY; the name is not. `CSS.escape`, a malformed
+    // `label[for]` selector, or an exotic node must never take a snapshot read
+    // down — degrade to the catch-all rung instead. `computeAccessibleNameSafe`
+    // is already fault-isolated the same way.
+    try {
+      return { name, source: attributeNameSource(node, name) };
+    } catch {
+      return { name, source: 'text' };
     }
-
-    const id = (node as HTMLElement).id;
-    if (id) {
-      const labelEl = node.ownerDocument?.querySelector(`label[for="${CSS.escape(id)}"]`);
-      if (matches(labelEl?.textContent)) return { name, source: 'label' };
-    }
-    const wrappingLabel = node.closest?.('label');
-    if (wrappingLabel && matches(wrappingLabel.textContent)) {
-      return { name, source: 'label' };
-    }
-
-    if (matches(readTitleAttr(node))) return { name, source: 'title' };
-
-    // Everything left is the algorithm reading content out of the subtree.
-    return { name, source: 'text' };
   }
 
-  const derived = deriveStructuralName(node);
+  let derived: string | undefined;
+  try {
+    derived = deriveStructuralName(node);
+  } catch {
+    derived = undefined;
+  }
   if (derived) return { name: derived, source: 'derived' };
 
   return { source: 'none' };
+}
+
+/**
+ * Which standard input produced `name`? Tested in W3C order, matching on the
+ * normalized value. Never called with an empty `name`.
+ */
+function attributeNameSource(node: Element, name: string): AccessibleNameSource {
+  const matches = (candidate: string | undefined | null): boolean =>
+    !!candidate && normalizeWhitespace(candidate) === name;
+
+  if (matches(readAriaLabelAttr(node))) return 'aria-label';
+
+  const labelledBy = readAriaLabelledbyAttr(node);
+  if (labelledBy) {
+    const parts = labelledBy
+      .split(/\s+/)
+      .map((id) => node.ownerDocument?.getElementById(id)?.textContent ?? '')
+      .filter((t) => t.trim().length > 0);
+    if (parts.length > 0 && matches(parts.join(' '))) {
+      return 'aria-labelledby';
+    }
+  }
+
+  const id = (node as HTMLElement).id;
+  if (id) {
+    const labelEl = node.ownerDocument?.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (matches(labelEl?.textContent)) return 'label';
+  }
+  const wrappingLabel = node.closest?.('label');
+  if (wrappingLabel && matches(wrappingLabel.textContent)) {
+    return 'label';
+  }
+
+  if (matches(readTitleAttr(node))) return 'title';
+
+  // Everything left is the algorithm reading content out of the subtree.
+  return 'text';
 }
 
 /**
@@ -244,7 +265,7 @@ export function resolveAccessibleName(node: Element): ResolvedAccessibleName {
  */
 export function computeVisibleText(node: Element): string | undefined {
   const inner = (node as HTMLElement).innerText;
-  const raw = typeof inner === 'string' && inner.length > 0 ? inner : node.textContent ?? '';
+  const raw = typeof inner === 'string' && inner.length > 0 ? inner : (node.textContent ?? '');
   const normalized = normalizeWhitespace(raw);
   return normalized || undefined;
 }

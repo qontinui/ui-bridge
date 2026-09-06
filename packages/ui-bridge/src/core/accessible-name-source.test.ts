@@ -110,6 +110,39 @@ describe('accessible-name source — which rung named this element, and did anyt
     expect(derived.source).toBe('derived');
   });
 
+  it('a THROWING attribution degrades the RUNG, never the name or the read', () => {
+    document.body.innerHTML = `<button id="b" aria-label="Refresh plans">x</button>`;
+    const node = document.getElementById('b')!;
+    // `closest` is one of several DOM calls the attribution makes; any of them
+    // blowing up must not cost the caller the name it came for.
+    Object.defineProperty(node, 'closest', {
+      value: () => {
+        throw new Error('DOM blew up');
+      },
+      configurable: true,
+    });
+    // aria-label is attributed before `closest` is reached, so force the throw
+    // onto the path by removing the attribute the first rung matches.
+    node.removeAttribute('aria-label');
+    node.textContent = 'Refresh plans';
+
+    const resolved = resolveAccessibleName(node);
+    expect(resolved.name).toBe('Refresh plans');
+    expect(resolved.source).toBe('text');
+  });
+
+  it('a THROWING structural derivation yields none rather than breaking the read', () => {
+    document.body.innerHTML = `<button id="b"></button>`;
+    const node = document.getElementById('b')!;
+    Object.defineProperty(node, 'getAttribute', {
+      value: () => {
+        throw new Error('DOM blew up');
+      },
+      configurable: true,
+    });
+    expect(resolveAccessibleName(node)).toEqual({ source: 'none' });
+  });
+
   it('the snapshot entry carries nameSource beside accessibleName', () => {
     document.body.innerHTML = `<button id="b" data-testid="coord-plans-refresh"><svg></svg></button>`;
     const registry = new UIBridgeRegistry();
