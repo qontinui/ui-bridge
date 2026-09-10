@@ -131,8 +131,9 @@
 # trigger itself, minus an explicit NON_GATING exception list whose entries each
 # need a justification.
 #
-# SAME GUARD AS qontinui-runner's `.github/workflows/ci-integrity.yml`. The job is
-# identical line for line; only this header differs. Keep the two in step, and
+# SAME GUARD AS qontinui-runner's `.github/workflows/ci-integrity.yml`. Only this
+# header and the job's NON_GATING data (this repo's workflows README, which the
+# `**` trigger reaches and which is not YAML) differ. Keep the two in step, and
 # port a fix to both. Its tests are `scripts/tests/ci-integrity/`, run against
 # the PR's own copy of this file by `ci-integrity-selftest.yml` (this workflow
 # itself only ever runs main's copy).
@@ -191,7 +192,15 @@ jobs:
           # NOTE: everything between the markers is DATA, one path per line.
           # `run: |` dedents the block, so entries land at column 0. A `#` line
           # in there is NOT a comment — it becomes an entry that matches nothing.
+          #
+          # ui-bridge entries (the ONLY line of this job that differs from
+          # qontinui-runner's copy):
+          #   .github/workflows/README.md -- prose documentation of these
+          #     workflows. Nothing executes or parses it, and surface() cannot
+          #     parse it either, so without this entry ANY edit to it would be a
+          #     permanent !PARSE red that no label or body line can clear.
           read -r -d '' NON_GATING <<'NONGATING' || true
+          .github/workflows/README.md
           NONGATING
 
           # Changed files in this PR (paths only). No checkout of untrusted

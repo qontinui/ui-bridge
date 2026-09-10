@@ -125,6 +125,17 @@ new_fixture
 printf 'README.md\nsrc/main.rs\n' > "$FIXTURE/files.txt"
 run_case "A no .github change -> green, no notification" 0 no "No gating workflow modified"
 
+# ui-bridge: the workflows README sits under the `.github/workflows/**` trigger
+# but is prose, so it is NON_GATING. Without that entry surface() cannot parse it
+# and every README edit would be a permanent, undeclarable !PARSE red.
+new_fixture
+printf '.github/workflows/README.md\n' > "$FIXTURE/files.txt"
+run_case "A2 the workflows README alone is NON_GATING -> green" 0 no "No gating workflow modified"
+
+# ...and the exemption must not hide a real gate edited in the same PR.
+printf '.github/workflows/README.md\n.github/workflows/ci.yml\n' > "$FIXTURE/files.txt"
+run_case "A3 README exemption does not hide a gate edited alongside it" 1 no "without declaring it"
+
 # The scope is now the TRIGGER, not a hand-maintained allowlist. A workflow that
 # was never on the old list is guarded from the moment it exists — the allowlist
 # failed open for exactly these, which is how secret-scan.yml went unguarded.
