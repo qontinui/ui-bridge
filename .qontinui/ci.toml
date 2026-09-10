@@ -73,12 +73,18 @@
 #    "Verify npm script is wired up" wraps `node -e` in an `if !` shell block
 #    whose payload itself contains `||`.
 #
-# 3. ci-integrity.yml's `check-self-gating` job. It runs on
-#    `pull_request_target`, checks out BOTH the base and the head into separate
-#    directories, and diffs them with a ~60-line bash program (`find … | while
-#    read`, `diff -q`, `yq eval`, a here-string loop). It is a check ABOUT a
+# 3. ci-integrity.yml's `guard-gating-workflows` job. It runs on
+#    `pull_request_target` and checks out nothing: it reads the PR's changed-file
+#    list, labels and body, and the gating files at the merge base and the head,
+#    through the GitHub API with the run's GITHUB_TOKEN. It is a check ABOUT a
 #    pull request's relationship to its base; this lane dispatches a single SHA
-#    and has neither ref pair nor a shell to compare them with.
+#    and has no PR number, no ref pair and no token to ask with.
+#
+#    ci-integrity-selftest.yml, which tests that guard, is omitted for item 2's
+#    reason and more: its two steps (`bash scripts/tests/ci-integrity/run-
+#    scenarios.sh`, `python3 scripts/tests/ci-integrity/test-surface.py`) need
+#    `bash`, `python3` AND PyYAML on PATH, none of which this lane provisions,
+#    and the executor cannot make a step conditional.
 #
 # 4. secret-scan.yml — its gitleaks step is `curl … | grep -oP … ` into
 #    `curl … | tar -xz` (pipes are banned in argv) and then scopes the scan with
