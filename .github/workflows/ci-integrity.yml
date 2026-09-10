@@ -131,10 +131,10 @@
 # trigger itself, minus an explicit NON_GATING exception list whose entries each
 # need a justification.
 #
-# SAME GUARD AS qontinui-runner's `.github/workflows/ci-integrity.yml`. Only this
-# header and the job's NON_GATING data (this repo's workflows README, which the
-# `**` trigger reaches and which is not YAML) differ. Keep the two in step, and
-# port a fix to both. Its tests are `scripts/tests/ci-integrity/`, run against
+# SAME GUARD AS qontinui-runner's `.github/workflows/ci-integrity.yml`. What
+# differs: this header, one NON_GATING data entry (this repo's workflows README,
+# which the `**` trigger reaches and which is not YAML), and the comment block
+# explaining that entry. Keep the two in step, and port a fix to both. Its tests are `scripts/tests/ci-integrity/`, run against
 # the PR's own copy of this file by `ci-integrity-selftest.yml` (this workflow
 # itself only ever runs main's copy).
 #
@@ -193,8 +193,9 @@ jobs:
           # `run: |` dedents the block, so entries land at column 0. A `#` line
           # in there is NOT a comment — it becomes an entry that matches nothing.
           #
-          # ui-bridge entries (the ONLY line of this job that differs from
-          # qontinui-runner's copy):
+          # ui-bridge entries. The entry below is the only DATA line of this job
+          # that differs from qontinui-runner's copy; this comment block differs
+          # too, and nothing else does:
           #   .github/workflows/README.md -- prose documentation of these
           #     workflows. Nothing executes or parses it, and surface() cannot
           #     parse it either, so without this entry ANY edit to it would be a
