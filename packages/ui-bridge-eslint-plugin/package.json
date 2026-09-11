@@ -1,7 +1,7 @@
 {
   "name": "@qontinui/ui-bridge-eslint-plugin",
-  "version": "0.1.0",
-  "description": "ESLint plugin for the UI Bridge IR — flags conditional rendering at configuration boundaries that the IR builder cannot statically pick up.",
+  "version": "0.2.0",
+  "description": "ESLint plugin for the UI Bridge IR — requires an `effect` safety class on every registered component action, and flags conditional rendering at configuration boundaries that the IR builder cannot statically pick up.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -29,7 +29,8 @@
     "eslint-plugin",
     "lint",
     "ir",
-    "state-machine"
+    "state-machine",
+    "effect"
   ],
   "license": "MIT",
   "repository": {
