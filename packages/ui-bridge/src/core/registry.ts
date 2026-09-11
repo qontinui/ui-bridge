@@ -79,6 +79,7 @@ import {
   computeRoleSafe,
   computeVisibleText,
 } from './a11y';
+import { serializeElementCustomActions } from './element-actions';
 
 /**
  * The attribute that opts an element (and its subtree) out of the
@@ -213,7 +214,7 @@ export function serializeRegisteredElement(
     registeredAt: el.registeredAt,
     mounted: el.mounted,
     actions: el.actions,
-    customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+    customActions: serializeElementCustomActions(el.customActions),
     category: el.category,
     kind,
     // §4.6: `el.content` is scraped `textContent` on auto-registered content
