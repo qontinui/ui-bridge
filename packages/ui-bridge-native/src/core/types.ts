@@ -83,21 +83,63 @@ export type ActionHandler<TParams = unknown, TResult = unknown> = (
 export type IREffect = 'read' | 'write' | 'destructive';
 
 /**
+ * An element's custom action as it appears ON THE WIRE.
+ *
+ * DUPLICATE of `@qontinui/ui-bridge` `SerializedElementAction`, for the same
+ * reason every other type in this file is duplicated: this package must not
+ * import from `@qontinui/ui-bridge` (an optional peer). Both mirror the
+ * canonical `qontinui-types::ui_bridge::ElementActionInfo`. KEEP IN SYNC.
+ *
+ * `id` is the REGISTRY KEY — the name a caller must send, since the executor
+ * dispatches by key. `paramSchema` exists for parity with the canonical struct
+ * and is never emitted: {@link CustomAction} declares no such field.
+ */
+export interface SerializedElementAction {
+  id: string;
+  label?: string;
+  description?: string;
+  paramSchema?: Record<string, unknown>;
+  /**
+   * Safety annotation, echoed verbatim from the registration. **Undefaulted:**
+   * absent means UNCLASSIFIED, not `'read'`.
+   */
+  effect?: IREffect;
+}
+
+/**
  * Element-level custom action.
  *
- * **No `effect` here — removed 2026-08-23**, in step with the canonical
- * `@qontinui/ui-bridge` `CustomAction`. Every projection of an element's
- * custom actions emits the KEYS only (`Object.keys(el.customActions)` —
- * `core/registry.ts`, `server/handlers.ts`), because the canonical
- * `UIBridgeElement.custom_actions` is a list of names, so a declared `effect`
- * reached no consumer. An unreachable safety annotation fails OPEN, which is
- * strictly worse than an absent one. Component actions keep it — they are
- * projected as objects. See the full note on the web declaration.
+ * **`effect` is BACK — added 2026-09-11**, in step with the canonical
+ * `@qontinui/ui-bridge` `CustomAction`, by plan
+ * `2026-09-04-effect-calculus-joins-the-component-action-registry` Design
+ * decision 4 step 3.
+ *
+ * It was removed on 2026-08-23 because every projection of an element's custom
+ * actions emitted the KEYS only (`Object.keys(el.customActions)`), so a declared
+ * `effect` reached no consumer — and an unreachable safety annotation fails
+ * OPEN, which is strictly worse than an absent one. That removal note closed by
+ * demanding the ordering which has now been honoured: **the wire projection was
+ * widened FIRST** (canonical `UIBridgeElement.custom_actions` is now
+ * `Option<Vec<ElementActionInfo>>`, and this package's `core/registry.ts`
+ * `getSnapshot` plus `server/handlers.ts` `getElements`/`getElement` emit
+ * {@link SerializedElementAction} objects), **and the field added second.**
+ *
+ * Carried UNDEFAULTED — an un-annotated action serializes with `effect` absent,
+ * never defaulted to `'read'`. Absent means UNCLASSIFIED, not safe.
+ *
+ * KEEP IN SYNC with the web declaration, which carries the long-form rationale.
  */
 export interface CustomAction<TParams = unknown, TResult = unknown> {
   id: string;
   label?: string;
   description?: string;
+  /**
+   * Safety class — `read`, `write` or `destructive`. An autonomous walk MUST
+   * NOT fire an action annotated `'destructive'`; that exclusion is the
+   * annotation's only job. Classify with the three-dimension test in served
+   * policy `operating-rules` `what-makes-an-action-destructive`.
+   */
+  effect?: IREffect;
   handler: ActionHandler<TParams, TResult>;
 }
 
@@ -526,7 +568,14 @@ export interface NativeBridgeSnapshot {
     identifier: NativeElementIdentifier;
     state: NativeElementState;
     actions: NativeStandardAction[];
-    customActions?: string[];
+    /**
+     * Custom (application-defined) actions as {@link SerializedElementAction}
+     * objects carrying the author's `effect` safety class. **Widened from
+     * `string[]` on 2026-09-11** by plan
+     * `2026-09-04-effect-calculus-joins-the-component-action-registry`.
+     * Undefaulted: absent `effect` means UNCLASSIFIED, not `'read'`.
+     */
+    customActions?: SerializedElementAction[];
     /** Handler names actually registered via updateElementProps (e.g. ['onPress', 'onChangeText']) */
     registeredHandlers?: string[];
     /** Route path where this element was registered (for page-scoped filtering) */
