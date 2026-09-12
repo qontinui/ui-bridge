@@ -389,6 +389,31 @@ export interface DiscoveredElement {
   accessibleName?: Scrubbed<string>;
   /** Available actions */
   actions: string[];
+  /**
+   * Custom (application-defined) action ids this element dispatches.
+   *
+   * The SAME shape the canonical serializer emits — `core/registry.ts`
+   * `serializeRegisteredElement` builds it as
+   * `el.customActions ? Object.keys(el.customActions) : undefined`, and so do
+   * `server/handlers.ts` `materializeElements`, `native/server/handlers.ts`
+   * and `native/core/registry.ts`. Keys only, never the handler objects: the
+   * canonical `qontinui-types::ui_bridge::UIBridgeElement` types
+   * `custom_actions` as a list of names (see `CustomAction` in `core/types.ts`
+   * for why widening that is a published-schema break).
+   *
+   * **Kept SEPARATE from `actions`, deliberately** — the same split
+   * `getSnapshot()` was moved onto the canonical serializer to get. A consumer
+   * that wants one flat list folds the two itself (the runner's
+   * `advertise_custom_actions_in_payload` does exactly that); a consumer that
+   * needs to tell a built-in `click` from an app-defined `writeToTerminal`
+   * cannot un-merge them once they are merged.
+   *
+   * **Absent — not `[]` — for an element with no custom actions**, and absent
+   * for an unregistered DOM-scanned node, which has no registration to carry
+   * them. Matching the serializer's undefined-vs-empty convention exactly is
+   * what lets a consumer compare the two payloads for the same element.
+   */
+  customActions?: string[];
   /** Current state */
   state: ElementState;
   /** Whether registered with UI Bridge */
