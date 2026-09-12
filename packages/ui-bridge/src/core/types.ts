@@ -610,34 +610,48 @@ export type ActionHandler<TParams = unknown, TResult = unknown> = (
  *
  * ---
  *
- * **No `effect` here, deliberately — removed 2026-08-23.** Phase 4 originally
- * put the safety annotation on this type too. It was dead: **no projection
- * emits an element's custom actions as objects.** Every one of them emits the
- * *keys* only —
+ * **`effect` is BACK — added 2026-09-11**, by plan
+ * `2026-09-04-effect-calculus-joins-the-component-action-registry`,
+ * Design decision 4 step 3.
+ *
+ * Phase 4 of `2026-08-20-ui-bridge-action-declaration-shape` originally put the
+ * safety annotation here and then REMOVED it on 2026-08-23, because it was
+ * dead: no projection emitted an element's custom actions as objects. Every one
+ * emitted the *keys* only (`Object.keys(el.customActions)`), so a declared
+ * `effect` reached no consumer, and an unreachable safety annotation fails
+ * **open** — the author believes the delete button is marked and it gets walked
+ * anyway.
+ *
+ * That removal note closed with the ordering it demanded: *"If element custom
+ * actions ever need it, widen the wire projection FIRST and add the field
+ * second."* **That ordering has now been honoured.** The canonical
+ * `qontinui-types::ui_bridge::UIBridgeElement.custom_actions` was widened from
+ * `Vec<String>` to `Vec<ElementActionInfo>` (qontinui-schemas #164, with a
+ * transitional deserializer that still accepts a bare name as `{id}` so no
+ * SDK/runner version pairing has a broken window), and **all eight** wire
+ * projections in this repo now emit {@link SerializedElementAction} objects:
  *
  * - `core/registry.ts` `serializeRegisteredElement`
  * - `server/handlers.ts` `getElements`
- * - `native/server/handlers.ts` `getElements` / `getElement` (and the twins in
- *   `@qontinui/ui-bridge-native`)
- * - `native/core/registry.ts` snapshot
+ * - `native/core/registry.ts` `getSnapshot`
+ * - `native/server/handlers.ts` `getElements` / `getElement`
+ * - and the three twins in `@qontinui/ui-bridge-native`
+ *   (`core/registry.ts` `getSnapshot`, `server/handlers.ts`
+ *   `getElements` / `getElement`)
  *
- * — all as `el.customActions ? Object.keys(el.customActions) : undefined`,
- * because the canonical `qontinui-types::ui_bridge::UIBridgeElement` types
- * `custom_actions` as a list of names. So a declared `effect` reached no
- * consumer at all.
+ * So the field reaches a consumer, and the annotation can do its one job.
  *
- * Widening that field from `string[]` to objects is a **published-schema
- * break** in another repo plus every runner consumer that reads it, which is
- * not this plan's scope. And an unreachable safety annotation is worse than an
- * absent one: the annotation's single job is to let an autonomous walk exclude
- * `'destructive'` actions, so one the walker cannot see fails **open** — the
- * author believes the delete button is marked and it gets walked anyway.
+ * **It is carried UNDEFAULTED.** An action that declares nothing serializes
+ * with `effect` **absent**, never defaulted to `read` — see
+ * `core/action-effect.ts` for why the verb map is applied at the CONSUMER and
+ * never at the projection: *a default rendered as a declaration is a fail-open
+ * lie on exactly the surface the annotation exists to protect.* Absent means
+ * UNCLASSIFIED, not safe.
  *
- * Component actions do carry it ({@link ComponentAction.effect}); they are
- * projected as objects on `/control/components`, `/control/component/:id` and
- * the snapshot. **If element custom actions ever need it, widen the wire
- * projection FIRST and add the field second** — that ordering is the whole
- * lesson of the plan this type belongs to.
+ * Keep this in lockstep with the twin declaration in
+ * `@qontinui/ui-bridge-native` `src/core/types.ts` — that package cannot import
+ * from this one (optional peer), so the two are duplicated by construction and
+ * both go stale the moment one moves.
  */
 export interface CustomAction<TParams = unknown, TResult = unknown> {
   /** Action identifier */
@@ -646,6 +660,22 @@ export interface CustomAction<TParams = unknown, TResult = unknown> {
   label?: string;
   /** Description of what the action does */
   description?: string;
+  /**
+   * Safety class of this action — `read`, `write` or `destructive`.
+   *
+   * **A safety annotation, not a hint.** An autonomous walk MUST NOT fire an
+   * action annotated `'destructive'`; that exclusion is the annotation's only
+   * job. Author-declared, because only the app author knows that a particular
+   * custom action writes raw bytes into a live shell.
+   *
+   * **Absent means UNCLASSIFIED, not safe.** Nothing defaults it on the way
+   * out — the projections emit this value verbatim, so an un-annotated action
+   * goes over the wire with `effect` missing rather than with a manufactured
+   * `'read'`. Classify with the three-dimension test in served policy
+   * `operating-rules` `what-makes-an-action-destructive`: can the information
+   * be reconstructed, who owns the state, and would the loss be noticed.
+   */
+  effect?: IREffect;
   /** Action handler function */
   handler: ActionHandler<TParams, TResult>;
 }
@@ -1018,6 +1048,63 @@ export interface ComponentAction<TParams = unknown, TResult = unknown> {
  * since Phase 4, `effect`. `effect` is the one added field that BOTH
  * projections carry; the reason is on the field itself.
  */
+/**
+ * An element's custom action as it appears ON THE WIRE — the element-level twin
+ * of {@link SerializedComponentAction}.
+ *
+ * Mirrors the canonical `qontinui-types::ui_bridge::ElementActionInfo`
+ * (`qontinui-schemas/rust/src/ui_bridge.rs`), which `UIBridgeElement.custom_actions`
+ * carries as `Option<Vec<ElementActionInfo>>`. Before plan
+ * `2026-09-04-effect-calculus-joins-the-component-action-registry` Design
+ * decision 4, both sides were a list of bare NAMES, which is why
+ * {@link CustomAction} could not carry a safety class at all — see that type's
+ * doc block for the ordering that had to be honoured first.
+ *
+ * **`id` is the REGISTRY KEY, not `CustomAction.id`.** The executor dispatches
+ * by key (`owner.customActions[action]` in `control/action-executor.ts`), so the
+ * key is the name a caller must send. The two are the same string for every
+ * in-tree registration, but where an author lets them diverge, the key is the
+ * invocable one and the projections emit it — a wire `id` a caller could not
+ * invoke would be worse than useless.
+ *
+ * The canonical Rust struct also carries `param_schema`. It is declared here for
+ * shape parity, but nothing populates it today: {@link CustomAction} has no
+ * `paramSchema` field, so element custom actions never emit one. Component
+ * actions do.
+ */
+export interface SerializedElementAction {
+  /**
+   * The invocable action name — the key under which this action is registered
+   * in `RegisteredElement.customActions`.
+   */
+  id: string;
+  /** Human-readable label, echoed verbatim from the registration. */
+  label?: string;
+  /** Description of what the action does, echoed verbatim. */
+  description?: string;
+  /**
+   * Free-form parameter declaration. Present for shape parity with the
+   * canonical `ElementActionInfo`; never emitted today (see the type doc).
+   */
+  paramSchema?: Record<string, unknown>;
+  /**
+   * Safety annotation, echoed verbatim from the registration.
+   *
+   * **Undefaulted, deliberately.** `undefined` here means *nobody classified
+   * this action*, and it must not be read as `'read'`. The projections never
+   * call `resolveActionEffect` on the way out, for the reason
+   * `core/action-effect.ts` states at length: a default rendered as a
+   * declaration is a fail-open lie on exactly the surface the annotation exists
+   * to protect. A consumer that wants the default can apply the verb map
+   * itself, and then it *knows* it is defaulting.
+   *
+   * `JSON.stringify` drops undefined keys, so an app that annotates nothing
+   * emits `[{"id":"sendKeys"}]` — one key, exactly the information the old
+   * bare-name projection carried.
+   */
+  effect?: IREffect;
+}
+
 export interface SerializedComponentAction {
   /** Action identifier */
   id: string;
@@ -1879,7 +1966,20 @@ export interface BridgeSnapshot {
     /** Whether the element's React component is currently mounted. */
     mounted: boolean;
     actions: StandardAction[];
-    customActions?: string[];
+    /**
+     * Custom (application-defined) actions, as {@link SerializedElementAction}
+     * objects carrying the author's `effect` safety class.
+     *
+     * **Widened from `string[]` on 2026-09-11** by plan
+     * `2026-09-04-effect-calculus-joins-the-component-action-registry` Design
+     * decision 4 step 3, in step with the canonical
+     * `qontinui-types::ui_bridge::UIBridgeElement.custom_actions`
+     * (`Option<Vec<ElementActionInfo>>`, qontinui-schemas #164). An older
+     * runner reading this field parses it through a transitional deserializer
+     * that also accepts a bare name; that tolerance is scheduled for deletion
+     * once no emitter produces names.
+     */
+    customActions?: SerializedElementAction[];
     category?: 'interactive' | 'content' | 'media';
     /**
      * High-level element kind — `"interactive"` for clickable/typeable/etc.
