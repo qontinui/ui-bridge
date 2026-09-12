@@ -24,6 +24,7 @@ import {
 } from './alias-generator';
 import { getGlobalAnnotationStore } from '../annotations';
 import { getGlobalRegistry } from '../core/registry';
+import { serializeElementCustomActions } from '../core/element-actions';
 import { truncateCodePoints } from '../core/text';
 import {
   verdictOf,
@@ -2035,17 +2036,21 @@ export class SearchEngine {
             role: searchable.role,
             accessibleName: scrubContentByVerdict(searchable.ariaLabel, verdict),
             actions: registeredSource.actions,
-            // Custom action ids, keys only — the canonical projection. The
-            // OTHER arm of this ternary passes a `DiscoveredElement` straight
-            // through, and that one now carries them, so omitting them here
-            // made the two arms of one type disagree: an AI search hit built
-            // from the registry advertised fewer actions than the identical
-            // hit built from a find payload. Names are developer-declared, not
-            // scraped content, so they need no scrub (`serializeRegisteredElement`
-            // emits them unscrubbed for the same reason).
-            customActions: registeredSource.customActions
-              ? Object.keys(registeredSource.customActions)
-              : undefined,
+            // The element's custom actions, via the ONE canonical projection.
+            // The OTHER arm of this ternary passes a `DiscoveredElement`
+            // straight through, and that one carries them, so omitting them
+            // here made the two arms of one type disagree: an AI search hit
+            // built from the registry advertised fewer actions than the
+            // identical hit built from a find payload. Building the projection
+            // inline would reopen the same gap one shape change later — it is
+            // how this arm went stale when the wire shape widened from bare
+            // names to `SerializedElementAction` objects on 2026-09-11, and it
+            // is why this arm and `AIDiscoveredElement.customActions` (already
+            // declared as the object shape) can now be the same type at all.
+            // Names and labels are developer-declared, not scraped content, so
+            // they need no scrub — `serializeRegisteredElement` emits them
+            // unscrubbed for the same reason.
+            customActions: serializeElementCustomActions(registeredSource.customActions),
             state: searchable.state,
             registered: true,
           }
