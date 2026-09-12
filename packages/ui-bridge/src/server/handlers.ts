@@ -232,6 +232,8 @@ import {
   type ElementSnapshot,
 } from '../ai/wait-for-element';
 import type { RegisteredElement } from '../core/types';
+import { serializeElementCustomActions } from '../core/element-actions';
+import type { CustomAction } from '../core/types';
 
 /**
  * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
@@ -310,7 +312,12 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       type?: string;
       label?: string;
       actions?: unknown[];
-      customActions?: Record<string, unknown>;
+      // Narrowed from `Record<string, unknown>` on 2026-09-11: the projection
+      // now reads each entry's `label`/`description`/`effect` rather than only
+      // its key, so the cast has to admit those fields. `Partial<CustomAction>`
+      // rather than `CustomAction` because a DOM-fallback scan entry carries no
+      // handler.
+      customActions?: Record<string, Partial<CustomAction> | undefined>;
       category?: string;
       contentMetadata?: unknown;
       mediaMetadata?: unknown;
@@ -371,7 +378,7 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       registeredAt: el.registeredAt ?? materializedAt,
       mounted: el.mounted ?? true,
       actions: el.actions,
-      customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+      customActions: serializeElementCustomActions(el.customActions),
       category: el.category,
       contentMetadata: el.contentMetadata,
       // §4.6: a redacted media element's src/srcset/altText/poster ARE the
