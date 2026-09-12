@@ -390,6 +390,62 @@ export interface DiscoveredElement {
   accessibleName?: Scrubbed<string>;
   /** Available actions */
   actions: string[];
+  /**
+   * The element's custom (application-defined) actions, as
+   * {@link SerializedElementAction} objects.
+   *
+   * **The shape every producer must agree on is whatever
+   * `core/element-actions.ts` `serializeElementCustomActions` returns — and
+   * the only supported way to produce it is to CALL that function.** It is the
+   * single wire projection of `RegisteredElement.customActions`, and
+   * `core/registry.ts` `serializeRegisteredElement`, `server/handlers.ts`
+   * `materializeElements`, `react/commandHandlers.ts` `elementToFindResult`,
+   * `control/action-executor.ts` `find()` (all three category blocks),
+   * `ai/search-engine.ts` `toAIDiscoveredElement` and both `native/` handlers
+   * all go through it. Do not open-code the projection here or anywhere else.
+   *
+   * **Why that is stated so bluntly.** This field was declared as `string[]`
+   * for one day. Until 2026-09-11 every producer spelled
+   * `el.customActions ? Object.keys(el.customActions) : undefined` inline, and
+   * plan `2026-09-04-effect-calculus-joins-the-component-action-registry`
+   * (Design decision 4 step 3) then widened the canonical projection to
+   * objects — mirroring `qontinui-types::ui_bridge::ElementActionInfo`
+   * (`Option<Vec<ElementActionInfo>>`, qontinui-schemas #164, whose
+   * transitional deserializer still accepts a bare name as `{id}`, so no
+   * SDK/runner pairing has a broken window). Every inline copy of the old
+   * expression became a silent divergence at that instant: right ids, wrong
+   * shape, and the author's `effect` safety class dropped on the floor. The
+   * inline copies are gone for that reason, not for tidiness.
+   *
+   * **`id` is the REGISTRY KEY** — the name a caller must send, because
+   * `executeAction` dispatches on `owner.customActions[action]`. `label`,
+   * `description` and `effect` are echoed VERBATIM from the registration, and
+   * `effect` is **undefaulted**: an un-annotated action arrives with the key
+   * absent, which means UNCLASSIFIED, never `'read'`. A consumer that wants
+   * the verb-map default applies it itself, and then it knows it is
+   * defaulting.
+   *
+   * **Kept SEPARATE from `actions`, deliberately** — the same split
+   * `getSnapshot()` was moved onto the canonical serializer to get. A consumer
+   * that wants one flat list folds the two itself (the runner's
+   * `advertise_custom_actions_in_payload` does exactly that); a consumer that
+   * needs to tell a built-in `click` from an app-defined `writeToTerminal`
+   * cannot un-merge them once they are merged. Note that the runner's fold
+   * reads NAMES, so it sees this field's `id`s and discards the rest — a
+   * reason to read this field directly rather than the folded `actions`.
+   *
+   * **Absent — not `[]` — for an element with no custom actions**, and absent
+   * for an unregistered DOM-scanned node, which has no registration to carry
+   * them. (An element that registered an EMPTY record projects to `[]`, which
+   * is the one case the two conventions distinguish.) Matching the
+   * serializer's undefined-vs-empty convention exactly is what lets a consumer
+   * compare two payloads for the same element.
+   *
+   * Enforced by `control/find-payload-custom-actions.test.ts`, which compares
+   * each producer's `{actions, customActions}` projection against the
+   * canonical serializer's for the SAME element.
+   */
+  customActions?: SerializedElementAction[];
   /** Current state */
   state: ElementState;
   /** Whether registered with UI Bridge */

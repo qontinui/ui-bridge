@@ -49,6 +49,7 @@ function getCanonicalPerformAction(): PerformActionFn | null {
 
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
+import { serializeElementCustomActions } from '../core/element-actions';
 import type {
   WaitOptions,
   ElementState,
@@ -2284,6 +2285,21 @@ export class DefaultActionExecutor implements ActionExecutor {
           role: el.getAttribute('role') || undefined,
           accessibleName: scrubContent(this.getAccessibleName(el), el),
           actions: registered?.actions || this.inferActions(el),
+          // The element's APP-DEFINED actions, kept in their own field rather
+          // than merged into `actions` — the canonical split. Without this a
+          // discover consumer reads `actions: []` off a pane that in fact
+          // dispatches five custom actions and concludes it supports nothing;
+          // `POST /element/<id>/action` was executing them the whole time.
+          // Absent for a DOM-scanned node: it has no registration to carry
+          // them.
+          //
+          // Routed through the ONE canonical projection rather than spelled
+          // inline: the wire shape widened from bare names to
+          // `SerializedElementAction` objects on 2026-09-11, and every inline
+          // copy of `Object.keys(...)` became a silent divergence the moment it
+          // did. Calling the helper is what keeps this producer correct across
+          // the NEXT such change.
+          customActions: serializeElementCustomActions(registered?.customActions),
           state,
           registered: !!registered,
           // WHICH MOUNT this element belongs to — the only field that makes a
@@ -2344,6 +2360,12 @@ export class DefaultActionExecutor implements ActionExecutor {
           role: el.element.getAttribute('role') || undefined,
           accessibleName: scrubbedContentLabel ?? state.textContent,
           actions: [],
+          // A content element carries no BUILT-IN actions, but a consumer may
+          // still have declared custom ones on it, and `executeAction`
+          // dispatches those. Same canonical projection as the interactive
+          // block and as `serializeRegisteredElement`, which emits this for
+          // every category.
+          customActions: serializeElementCustomActions(el.customActions),
           state,
           registered: true,
           // See the interactive block above — mount identity, always real here
@@ -2429,6 +2451,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           // its src/srcset/poster ARE the rendered secret (scrubbed below).
           accessibleName: scrubContent(el.label || meta?.altText, el.element),
           actions: [],
+          // See the content block above — no built-in actions, but declared
+          // custom ones are dispatchable and must be advertised.
+          customActions: serializeElementCustomActions(el.customActions),
           state,
           registered: true,
           // See the interactive block above — mount identity, always real here

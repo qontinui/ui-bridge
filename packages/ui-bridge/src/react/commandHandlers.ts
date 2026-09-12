@@ -18,6 +18,7 @@ import {
   serializeRegisteredElement,
   serializeRegisteredComponent,
 } from '../core/registry';
+import { serializeElementCustomActions } from '../core/element-actions';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
 import { buildKeyboardEventInit } from '../core/key-events';
@@ -444,6 +445,19 @@ function inProcessComponentNotFoundMessage(id: string): string {
  * Both were missing here while the direct path emitted them, which made the
  * whole staleness story silently inert on exactly the consumers that are not
  * the runner's own frontend.
+ *
+ * - **`customActions`** — the element's APP-DEFINED actions. Same class of
+ *   defect, found the same way: this producer and the executor's `find()` both
+ *   emitted `actions` alone, so a discover consumer read `actions: []` off a
+ *   pane that dispatches five custom actions and concluded it supported
+ *   nothing — while `POST /element/<id>/action` executed all five. Kept in its
+ *   own field rather than merged into `actions`, and produced by the ONE
+ *   canonical projection (`core/element-actions.ts`
+ *   `serializeElementCustomActions`) rather than an inline expression of its
+ *   own — including the undefined-for-none convention, and the
+ *   `SerializedElementAction` object shape the projection widened to on
+ *   2026-09-11. An inline copy here would have to be re-found and re-fixed on
+ *   every future shape change; a call cannot drift.
  */
 function elementToFindResult(e: RegisteredElement) {
   const state = e.getState();
@@ -457,6 +471,7 @@ function elementToFindResult(e: RegisteredElement) {
     // (and the label fallback) against the element's boundary.
     accessibleName: scrubContent(readAriaLabelAttr(e.element) ?? e.label, e.element),
     actions: e.actions,
+    customActions: serializeElementCustomActions(e.customActions),
     state,
     registered: true,
     registeredAt: e.registeredAt,
