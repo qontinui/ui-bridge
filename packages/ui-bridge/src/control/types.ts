@@ -15,6 +15,7 @@ import type {
   ContentMetadata,
   MediaMetadata,
   FillResult,
+  SerializedElementAction,
 } from '../core/types';
 import type { SnapshotPageContext } from '../navigation/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
@@ -649,11 +650,19 @@ export interface ControlSnapshot {
     label?: Scrubbed<string>;
     actions: string[];
     /**
-     * Custom (application-defined) action ids. Since 0.22.0 the executor
-     * path emits the canonical shape, which keeps custom actions here
-     * rather than merged into `actions` (the registry paths always did).
+     * Custom (application-defined) actions. Since 0.22.0 the executor path
+     * emits the canonical shape, which keeps custom actions here rather than
+     * merged into `actions` (the registry paths always did).
+     *
+     * **Widened from `string[]` to {@link SerializedElementAction} objects on
+     * 2026-09-11** by plan
+     * `2026-09-04-effect-calculus-joins-the-component-action-registry`, so an
+     * element's custom action can carry the author's `effect` safety class —
+     * the thing a snapshot consumer needs to exclude a `'destructive'` action
+     * from an automatic walk. Undefaulted: an un-annotated action arrives with
+     * `effect` absent, which means UNCLASSIFIED, not `'read'`.
      */
-    customActions?: string[];
+    customActions?: SerializedElementAction[];
     state: ElementState;
     /**
      * Identifier bundle for locating the element (xpath/selector always
