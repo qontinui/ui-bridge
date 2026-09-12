@@ -16,3 +16,6 @@ export * from './param-schema';
 export * from './action-effect';
 export * from './registry';
 export * from './element-identifier';
+
+// Element custom-action wire projection — see the web twin.
+export { serializeElementCustomActions } from './element-actions';

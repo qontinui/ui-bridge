@@ -22,6 +22,7 @@ import type {
   BridgeEventListener,
   IREffect,
 } from './types';
+import { serializeElementCustomActions } from '../../core/element-actions';
 
 /**
  * Options for registering an element
@@ -567,7 +568,7 @@ export class NativeUIBridgeRegistry {
           identifier,
           state,
           actions: e.actions,
-          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          customActions: serializeElementCustomActions(e.customActions),
           // Live bbox/visibility maintained by `useUIElement`'s onLayout.
           // Parity with the web snapshot so runners can dispatch taps by
           // coords without VLM grounding for SDK-registered elements.
