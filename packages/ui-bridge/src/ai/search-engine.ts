@@ -2023,16 +2023,29 @@ export class SearchEngine {
     // (generated portion emptied via `scrubAliases` when redacted, dev-set
     // survive), so what remains is trusted and branded wholesale.
     const verdict = verdictFromState(searchable.state);
+    const registeredSource =
+      'getState' in searchable.element ? (searchable.element as RegisteredElement) : undefined;
     const discoveredBase: DiscoveredElement =
-      'getState' in searchable.element
+      registeredSource !== undefined
         ? {
             id: searchable.id,
             type: searchable.type,
-            label: scrubContentByVerdict((searchable.element as RegisteredElement).label, verdict),
+            label: scrubContentByVerdict(registeredSource.label, verdict),
             tagName: searchable.tagName,
             role: searchable.role,
             accessibleName: scrubContentByVerdict(searchable.ariaLabel, verdict),
-            actions: (searchable.element as RegisteredElement).actions,
+            actions: registeredSource.actions,
+            // Custom action ids, keys only — the canonical projection. The
+            // OTHER arm of this ternary passes a `DiscoveredElement` straight
+            // through, and that one now carries them, so omitting them here
+            // made the two arms of one type disagree: an AI search hit built
+            // from the registry advertised fewer actions than the identical
+            // hit built from a find payload. Names are developer-declared, not
+            // scraped content, so they need no scrub (`serializeRegisteredElement`
+            // emits them unscrubbed for the same reason).
+            customActions: registeredSource.customActions
+              ? Object.keys(registeredSource.customActions)
+              : undefined,
             state: searchable.state,
             registered: true,
           }

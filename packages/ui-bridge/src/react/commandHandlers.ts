@@ -444,6 +444,15 @@ function inProcessComponentNotFoundMessage(id: string): string {
  * Both were missing here while the direct path emitted them, which made the
  * whole staleness story silently inert on exactly the consumers that are not
  * the runner's own frontend.
+ *
+ * - **`customActions`** — the element's APP-DEFINED action ids. Same class of
+ *   defect, found the same way: this producer and the executor's `find()` both
+ *   emitted `actions` alone, so a discover consumer read `actions: []` off a
+ *   pane that dispatches five custom actions and concluded it supported
+ *   nothing — while `POST /element/<id>/action` executed all five. Kept in its
+ *   own field rather than merged into `actions`, matching
+ *   `serializeRegisteredElement` (`core/registry.ts`) exactly, including the
+ *   undefined-for-none convention.
  */
 function elementToFindResult(e: RegisteredElement) {
   const state = e.getState();
@@ -457,6 +466,7 @@ function elementToFindResult(e: RegisteredElement) {
     // (and the label fallback) against the element's boundary.
     accessibleName: scrubContent(readAriaLabelAttr(e.element) ?? e.label, e.element),
     actions: e.actions,
+    customActions: e.customActions ? Object.keys(e.customActions) : undefined,
     state,
     registered: true,
     registeredAt: e.registeredAt,
