@@ -93,7 +93,7 @@ async function main(): Promise<void> {
       targetUrl: cfg.targetUrl,
       ...(cfg.viewportWidth !== undefined ? { viewportWidth: cfg.viewportWidth } : {}),
       ...(cfg.viewportHeight !== undefined ? { viewportHeight: cfg.viewportHeight } : {}),
-      // Forward browser console to the Node stderr/stdout — handy when a
+      // Forward browser console to the Node process stderr — handy when a
       // page error breaks an action and you want to see what happened.
       forwardConsole: true,
     },

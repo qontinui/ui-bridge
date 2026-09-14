@@ -77,7 +77,7 @@ describe('launchHeadlessTab · console forwarding goes to stderr, never stdout',
     vi.restoreAllMocks();
   });
 
-  it('(n) log, info, debug, warning and error all reach stderr with their prefix; stdout stays empty', async () => {
+  it('log, info, debug, warning and error all reach stderr with their prefix; stdout stays empty', async () => {
     const { page, emit } = makeFakePage();
     fake.page = page;
 
