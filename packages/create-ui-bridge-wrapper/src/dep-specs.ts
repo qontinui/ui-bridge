@@ -30,18 +30,24 @@
  * which is correct, because a low floor is merely generous rather than wrong.
  * `^0.1.0` was caught because its ceiling is `<0.2.0`.
  *
- * NOTE: these ranges resolve to `@qontinui/ui-bridge-wrapper@0.7.1` and
- * `@qontinui/ui-bridge-headless@0.4.0`, and both of those published tarballs
- * declare `@qontinui/ui-bridge-cli-args`, which has never been published. Until
- * that first publish happens a standalone scaffold cannot `npm install` at all.
- * That break is not caused by these specs — it hits every direct consumer of
- * wrapper and headless identically — but the old stale `^0.1.0` did MASK it,
- * because wrapper 0.1.5 / headless 0.1.0 predate the cli-args dependency.
+ * RESOLVED: the wrapper and headless tarballs these ranges resolve to declare
+ * `@qontinui/ui-bridge-cli-args`, which was unpublished when this file was
+ * written, so a standalone scaffold could not `npm install` at all. That
+ * package published as 0.1.0 (`npm view`, read back 2026-09-20), so the break
+ * is gone. The history is kept because the old stale `^0.1.0` specs MASKED it:
+ * wrapper 0.1.5 / headless 0.1.0 predate the cli-args dependency, so fixing
+ * the ceiling is what exposed it.
  */
 export const REGISTRY_DEP_SPECS: Readonly<Record<string, string>> = {
   '@qontinui/ui-bridge': '>=0.22.0 <1',
   '@qontinui/ui-bridge-wrapper': '>=0.7.0 <1',
-  '@qontinui/ui-bridge-headless': '>=0.4.0 <1',
+  // 0.5.0, not 0.4.0: `@qontinui/ui-bridge-wrapper` floors its optional peer
+  // there, because that is the first headless release whose launcher keeps
+  // forwarded browser console lines off stdout (ui-bridge #219). A scaffold
+  // emitting both packages must not emit a headless range its own wrapper
+  // range rejects — the generated project would fail `npm install` on an
+  // ERESOLVE peer conflict the moment anything resolved 0.4.x.
+  '@qontinui/ui-bridge-headless': '>=0.5.0 <1',
 };
 
 /**
