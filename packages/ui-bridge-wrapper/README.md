@@ -107,6 +107,30 @@ When installing the wrapper standalone you must therefore also:
 > bare-bin examples below assume a local/global/dev install where the peer is
 > already on the module path.
 
+> **Peer version floor:** `@qontinui/ui-bridge-headless` **>= 0.5.0**, which is
+> what the wrapper's `peerDependencies` range declares. Up to 0.4.1 the
+> launcher wrote `log` / `info` / `debug` browser console lines to **stdout**,
+> so any page that logs — React's DevTools banner is the usual one — dropped a
+> non-JSON line into the middle of a bin's result stream and broke the caller's
+> parse. Installing a 0.4.x peer against this wrapper is an `ERESOLVE` conflict
+> rather than a silent corruption.
+
+### Output streams
+
+Every bin here reserves **stdout for machine output**: `ui-bridge-inject`
+writes one `{action,result}` / `{action,error}` JSON line per exec action,
+`ui-bridge-login-web` one JSON result line, `ui-bridge-capture-specs` one JSON
+line per page. A caller may parse every non-blank stdout line as JSON.
+
+Everything else goes to **stderr** — each bin's own `[ui-bridge-inject]` /
+`[login-web]` / `[capture]` progress lines (which `--quiet` suppresses), and
+the browser's forwarded output: `[browser.<type>] <text>` for every page
+`console.*` call and `[browser.pageerror] <message>` for an uncaught page
+error. `--quiet` does **not** silence the forwarded browser lines, and no bin
+exposes a flag that does — a programmatic caller turns them off with
+`forwardConsole: false` in the transport options. They are on stderr, so they
+never reach a stdout parse either way.
+
 Credentials for the login/capture bins come from `--email`/`--password` or the
 env vars `UIB_LOGIN_EMAIL` / `UIB_LOGIN_PASSWORD`. Git Bash callers should
 prefix `MSYS_NO_PATHCONV=1` so a leading-slash `--success` / path value is not
