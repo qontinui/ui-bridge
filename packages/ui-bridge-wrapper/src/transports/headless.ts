@@ -84,6 +84,16 @@ interface LaunchHeadlessTabArgs {
   initScripts?: string[];
   launchArgs?: string[];
   storageStatePath?: string;
+  /**
+   * Relay credentials for the launcher's NODE-side `<uiBridgeBase>/tabs`
+   * registration poll (see `relayAuth()` below). `onReady` has always passed
+   * these; they were missing from this local type, and because the call site
+   * spreads them conditionally, TypeScript's excess-property check does not
+   * fire on a spread — so a rename in the peer would have silently dropped the
+   * bearer instead of failing the build.
+   */
+  authToken?: string;
+  callerUserId?: string;
 }
 
 interface LaunchedHeadlessTab {

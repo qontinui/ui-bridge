@@ -133,8 +133,24 @@ Optional:
                                (--disable-features=LocalNetworkAccessChecks,...) are
                                auto-appended — Chromium otherwise blocks the
                                https-page → loopback-relay fetch (Local Network Access).
-  --quiet                      Suppress human-readable logs (JSON results still print)
+  --quiet                      Suppress this CLI's human-readable stderr logs (the JSON
+                               result lines still print). It does NOT silence forwarded
+                               browser console lines — see "Output streams" below.
   --help, -h                   Print this help and exit
+
+Output streams:
+  stdout carries MACHINE OUTPUT ONLY — the exec result lines described above, and
+  nothing else. A caller may therefore parse every non-blank stdout line as JSON.
+  Everything human-readable goes to stderr: this CLI's own '[ui-bridge-inject] …'
+  logs, and the browser's forwarded output — '[browser.<type>] <text>' for every
+  page console.* call and '[browser.pageerror] <message>' for an uncaught page
+  error.
+
+  That split needs '@qontinui/ui-bridge-headless' >= 0.5.0, which is why the
+  optional peer range floors there. Up to 0.4.1 the launcher wrote 'log'/'info'/
+  'debug' console lines to STDOUT, so any page that logs (React's DevTools banner
+  is the common one) put a non-JSON line in the middle of the result stream and
+  broke the caller's parse.
 
 Examples:
   # Variant B: register an injected tab against a relay and stay alive
