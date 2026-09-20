@@ -139,20 +139,23 @@ Optional:
   --help, -h                   Print this help and exit
 
 Output streams:
-  On a run, stdout carries MACHINE OUTPUT ONLY — the exec result lines described
-  above, and nothing else, so a caller may parse every non-blank stdout line as
-  JSON. (--help is the one exception: it prints this text to stdout and exits
-  without running anything.)
+  On a run, stdout carries MACHINE OUTPUT ONLY, so a caller may parse every
+  non-blank stdout line as JSON. In Variant A that is the exec result lines
+  described above; in Variant B it is one line, {"tabId":..,"uiBridgeRegistered":..,
+  "url":..}, printed once the relay tab is up. (--help is the one exception: it
+  prints this text to stdout and exits without running anything.)
+
   Everything human-readable goes to stderr: this CLI's own '[ui-bridge-inject] …'
   logs, and the browser's forwarded output — '[browser.<type>] <text>' for every
   page console.* call and '[browser.pageerror] <message>' for an uncaught page
   error.
 
   That split needs '@qontinui/ui-bridge-headless' >= 0.5.0, which is why the
-  optional peer range floors there. Up to 0.4.1 the launcher wrote 'log'/'info'/
-  'debug' console lines to STDOUT, so any page that logs (React's DevTools banner
-  is the common one) put a non-JSON line in the middle of the result stream and
-  broke the caller's parse.
+  optional peer range floors there. Up to 0.4.1 the launcher sent EVERY console
+  type except 'error' and 'warning' to STDOUT — 'log', 'info', 'debug', 'trace',
+  'table', 'timeEnd' and the rest — so any page that logs (React's DevTools
+  banner is the common one) put a non-JSON line in the middle of the result
+  stream and broke the caller's parse.
 
 Examples:
   # Variant B: register an injected tab against a relay and stay alive

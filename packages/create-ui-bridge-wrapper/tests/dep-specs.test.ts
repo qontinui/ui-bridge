@@ -80,3 +80,60 @@ describe('scaffolded dependency specs', () => {
     expect(() => depSpecFor('@qontinui/not-a-package', false)).toThrow(/no dep spec declared/);
   });
 });
+
+// The scaffold writes a wrapper dep and a headless dep into ONE generated
+// manifest, and the wrapper declares headless as a peer. So the scaffold's
+// headless range is not free: any version it admits that the wrapper's peer
+// range rejects is an ERESOLVE failure on the generated project's first
+// install. Nothing checked that before — `scripts/check-dep-ranges.cjs` reads
+// manifests and these specs live in TypeScript, and the cases above judge each
+// spec alone.
+describe('scaffolded specs agree with the wrapper they are emitted beside', () => {
+  function wrapperPeerRange(name: string): string {
+    const manifest = join(PACKAGES, 'ui-bridge-wrapper', 'package.json');
+    const peers = (JSON.parse(readFileSync(manifest, 'utf8')) as {
+      peerDependencies: Record<string, string>;
+    }).peerDependencies;
+    const range = peers[name];
+    if (!range) throw new Error(`ui-bridge-wrapper declares no peer range for ${name}`);
+    return range;
+  }
+
+  for (const name of ['@qontinui/ui-bridge', '@qontinui/ui-bridge-headless']) {
+    it(`emits a ${name} range the wrapper's peer range accepts whole`, () => {
+      const scaffold = REGISTRY_DEP_SPECS[name] as string;
+      const peer = wrapperPeerRange(name);
+      expect(
+        subset(scaffold, peer),
+        `scaffold emits "${scaffold}" for ${name}, but @qontinui/ui-bridge-wrapper ` +
+          `peers it at "${peer}" — a generated project could resolve a version the ` +
+          `wrapper rejects`
+      ).toBe(true);
+    });
+  }
+
+  // The floor itself, pinned by the defect that set it rather than by its
+  // number. `@qontinui/ui-bridge-headless` 0.4.1 and everything before it sent
+  // every browser console type except error/warning to STDOUT, which corrupts
+  // the one-JSON-line-per-action stream all three wrapper bins promise
+  // (ui-bridge #219). A peer range that readmits 0.4.1 readmits that bug
+  // silently: every rule in check-dep-ranges.cjs is floor-agnostic, so nothing
+  // else fails when the floor slips back.
+  const HEADLESS_LAST_STDOUT_CORRUPTING = '0.4.1';
+
+  it('keeps the broken headless releases out of both ranges', () => {
+    const peer = wrapperPeerRange('@qontinui/ui-bridge-headless');
+    const scaffold = REGISTRY_DEP_SPECS['@qontinui/ui-bridge-headless'] as string;
+    expect(
+      satisfies(HEADLESS_LAST_STDOUT_CORRUPTING, peer),
+      `@qontinui/ui-bridge-wrapper peers headless at "${peer}", which admits ` +
+        `${HEADLESS_LAST_STDOUT_CORRUPTING} — that release writes browser console ` +
+        `lines to stdout and corrupts the bins' result stream`
+    ).toBe(false);
+    expect(
+      satisfies(HEADLESS_LAST_STDOUT_CORRUPTING, scaffold),
+      `the scaffold emits "${scaffold}" for headless, which admits ` +
+        `${HEADLESS_LAST_STDOUT_CORRUPTING} — see above`
+    ).toBe(false);
+  });
+});

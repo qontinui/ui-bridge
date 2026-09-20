@@ -87,10 +87,16 @@ interface LaunchHeadlessTabArgs {
   /**
    * Relay credentials for the launcher's NODE-side `<uiBridgeBase>/tabs`
    * registration poll (see `relayAuth()` below). `onReady` has always passed
-   * these; they were missing from this local type, and because the call site
-   * spreads them conditionally, TypeScript's excess-property check does not
-   * fire on a spread — so a rename in the peer would have silently dropped the
-   * bearer instead of failing the build.
+   * these; they were missing from this local type, so the only written record
+   * of the call's true shape was the call itself.
+   *
+   * Declaring them buys documentation, NOT a compile-time guard: the call site
+   * spreads them conditionally and a spread is exempt from TypeScript's
+   * excess-property check, so a misspelling inside that spread compiles either
+   * way — and this type is deliberately local (see the note above), with the
+   * dynamic import `as`-cast to it, so the peer's own declarations are never
+   * consulted. Keep the names in step with `LaunchHeadlessTabOptions` in
+   * `@qontinui/ui-bridge-headless` by hand.
    */
   authToken?: string;
   callerUserId?: string;

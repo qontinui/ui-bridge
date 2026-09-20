@@ -108,20 +108,28 @@ When installing the wrapper standalone you must therefore also:
 > already on the module path.
 
 > **Peer version floor:** `@qontinui/ui-bridge-headless` **>= 0.5.0**, which is
-> what the wrapper's `peerDependencies` range declares. Up to 0.4.1 the
-> launcher wrote `log` / `info` / `debug` browser console lines to **stdout**,
-> so any page that logs — React's DevTools banner is the usual one — dropped a
+> what the wrapper's `peerDependencies` range declares. Up to 0.4.1 the launcher
+> sent **every** browser console type except `error` and `warning` to **stdout**
+> — `log`, `info`, `debug`, `trace`, `table`, `timeEnd` and the rest — so any
+> page that logs, React's DevTools banner being the usual one, dropped a
 > non-JSON line into the middle of a bin's result stream and broke the caller's
 > parse. Installing a 0.4.x peer against this wrapper is an `ERESOLVE` conflict
 > rather than a silent corruption.
 
 ### Output streams
 
-Every bin here reserves **stdout for machine output**: `ui-bridge-inject`
-writes one `{action,result}` / `{action,error}` JSON line per exec action,
-`ui-bridge-login-web` one JSON result line, `ui-bridge-capture-specs` one JSON
-line per page. A caller may parse every non-blank stdout line as JSON. (`--help`
-is the one exception — it prints usage to stdout and exits without running.)
+Every bin here reserves **stdout for machine output**, so a caller may parse
+every non-blank stdout line as JSON:
+
+- `ui-bridge-inject` — one `{action,result}` / `{action,error}` line per exec
+  action in Variant A; in Variant B (relay) a single
+  `{tabId,uiBridgeRegistered,url}` line once the tab is up.
+- `ui-bridge-login-web` — one JSON result line.
+- `ui-bridge-capture-specs` — one JSON line per captured page, or a single JSON
+  object when the run produced no page list.
+
+(`--help` is the one exception — it prints usage to stdout and exits without
+running.)
 
 Everything else goes to **stderr** — each bin's own `[ui-bridge-inject]` /
 `[login-web]` / `[capture]` progress lines (which `--quiet` suppresses), and
