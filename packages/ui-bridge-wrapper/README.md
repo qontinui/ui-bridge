@@ -120,7 +120,8 @@ When installing the wrapper standalone you must therefore also:
 Every bin here reserves **stdout for machine output**: `ui-bridge-inject`
 writes one `{action,result}` / `{action,error}` JSON line per exec action,
 `ui-bridge-login-web` one JSON result line, `ui-bridge-capture-specs` one JSON
-line per page. A caller may parse every non-blank stdout line as JSON.
+line per page. A caller may parse every non-blank stdout line as JSON. (`--help`
+is the one exception — it prints usage to stdout and exits without running.)
 
 Everything else goes to **stderr** — each bin's own `[ui-bridge-inject]` /
 `[login-web]` / `[capture]` progress lines (which `--quiet` suppresses), and

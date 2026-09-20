@@ -139,8 +139,10 @@ Optional:
   --help, -h                   Print this help and exit
 
 Output streams:
-  stdout carries MACHINE OUTPUT ONLY — the exec result lines described above, and
-  nothing else. A caller may therefore parse every non-blank stdout line as JSON.
+  On a run, stdout carries MACHINE OUTPUT ONLY — the exec result lines described
+  above, and nothing else, so a caller may parse every non-blank stdout line as
+  JSON. (--help is the one exception: it prints this text to stdout and exits
+  without running anything.)
   Everything human-readable goes to stderr: this CLI's own '[ui-bridge-inject] …'
   logs, and the browser's forwarded output — '[browser.<type>] <text>' for every
   page console.* call and '[browser.pageerror] <message>' for an uncaught page
