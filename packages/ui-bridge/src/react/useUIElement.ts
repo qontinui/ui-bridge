@@ -22,6 +22,7 @@ import { useOwningComponent } from './UIBridgeComponentScope';
 import { useUIBridgeWindowLabel } from './UIBridgeWindowContext';
 import { pollForTaggedElement, trackElementBbox, UI_BRIDGE_ID_ATTR } from './bbox-tracker';
 import { UI_BRIDGE_PERSIST_ATTR } from './useAutoRegister';
+import { serializeElementCustomActions } from '../core/element-actions';
 
 /**
  * useUIElement options
@@ -405,8 +406,30 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   // In-place option sync — see useUIState for rationale. Treats an `id`
   // change as a re-registration (registry is keyed by id); all other
   // changes go through `updateElement` which skips the re-register emit.
-  // `customActions` holds function references; we exclude it from the key
-  // and mirror the latest object into the registry on each sync.
+  //
+  // `customActions` holds FUNCTION REFERENCES, so it cannot go into the key
+  // whole: consumers pass the object inline, a fresh identity every render, and
+  // `JSON.stringify` drops function values anyway — the key would churn or say
+  // nothing. It used to be excluded outright, which was correct while the only
+  // thing a projection emitted was the KEYS: an entry's shape could not change
+  // without its key changing.
+  //
+  // That stopped being true on 2026-09-11. Plan
+  // `2026-09-04-effect-calculus-joins-the-component-action-registry` gave
+  // `CustomAction` an `effect` safety class, and the projections now emit it —
+  // so an author flipping `effect: 'write'` to `'destructive'` mid-lifecycle
+  // changed a SAFETY annotation that this key could not see, and the registry
+  // went on advertising the old class. That is a fail-open miss on exactly the
+  // annotation whose one job is to keep an autonomous walk off a destructive
+  // action.
+  //
+  // Fix: key on the WIRE PROJECTION of the custom actions rather than on the
+  // object. `serializeElementCustomActions` yields only the serializable
+  // fields (`id`/`label`/`description`/`effect`) and drops the handlers, so the
+  // key moves when a declaration changes and stays put when only a handler's
+  // identity does — which is the churn the exclusion existed to prevent. The
+  // latest object (handlers included) is still mirrored into the registry by
+  // the `updateElement` call below.
   const elementKey =
     bridge && registeredRef.current
       ? JSON.stringify({
@@ -425,6 +448,8 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
           // Reveals is a plain string array — include it so mid-lifecycle
           // updates (e.g. dynamic reveal targets) propagate into the registry.
           reveals: reveals ?? null,
+          // Declarations only — handlers deliberately excluded. See above.
+          customActions: serializeElementCustomActions(customActions) ?? null,
         })
       : null;
   useEffect(() => {
@@ -467,7 +492,9 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
       reveals,
     });
     if (logLevel) bridge.registry.setElementLogLevel(id, logLevel);
-    // customActions excluded from key — see comment above.
+    // `customActions` enters the key as its wire projection, not by identity —
+    // see the comment above. The object itself is still read here (handlers and
+    // all) and mirrored into the registry on each sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, elementKey]);
 

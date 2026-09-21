@@ -45,6 +45,8 @@ import type {
   BatchActionRequest,
   BatchActionResponse,
   EffectRecordEntry,
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
 import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
@@ -230,6 +232,8 @@ import {
   type ElementSnapshot,
 } from '../ai/wait-for-element';
 import type { RegisteredElement } from '../core/types';
+import { serializeElementCustomActions } from '../core/element-actions';
+import type { CustomAction } from '../core/types';
 
 /**
  * Minimal structural type for the optional `@qontinui/ui-bridge-headless`
@@ -308,7 +312,12 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       type?: string;
       label?: string;
       actions?: unknown[];
-      customActions?: Record<string, unknown>;
+      // Narrowed from `Record<string, unknown>` on 2026-09-11: the projection
+      // now reads each entry's `label`/`description`/`effect` rather than only
+      // its key, so the cast has to admit those fields. `Partial<CustomAction>`
+      // rather than `CustomAction` because a DOM-fallback scan entry carries no
+      // handler.
+      customActions?: Record<string, Partial<CustomAction> | undefined>;
       category?: string;
       contentMetadata?: unknown;
       mediaMetadata?: unknown;
@@ -369,7 +378,7 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       registeredAt: el.registeredAt ?? materializedAt,
       mounted: el.mounted ?? true,
       actions: el.actions,
-      customActions: el.customActions ? Object.keys(el.customActions) : undefined,
+      customActions: serializeElementCustomActions(el.customActions),
       category: el.category,
       contentMetadata: el.contentMetadata,
       // §4.6: a redacted media element's src/srcset/altText/poster ARE the
@@ -475,8 +484,73 @@ export interface ActionExecutorLike {
       timeoutMs?: number;
     }
   ): Promise<unknown>;
+  /**
+   * Phase 6 — the predict route's executor arm.
+   *
+   * **Optional on purpose, and the absence is reported rather than defaulted.**
+   * `ActionExecutorLike` is the structural contract a host supplies; several
+   * hosts (the Next.js server-side stub, every test double) implement only the
+   * two invocation methods. Making this required would break them, and making
+   * the handler synthesize a `predicted: null` answer when it is missing would
+   * be far worse: the caller cannot distinguish "this executor cannot predict"
+   * from "nobody described this action", and the second reads as a coverage gap
+   * rather than a wiring gap. The handler answers a canonical
+   * `UB-UNSUPPORTED-ACTION` error envelope instead, naming the host
+   * [policy: unknown-must-not-render-as-a-default].
+   */
+  predictComponentAction?(
+    componentId: string,
+    actionId: string,
+    request?: ComponentActionPredictRequest
+  ): Promise<ComponentActionPredictResponse>;
   fillForm?(request: FillFormRequest): Promise<FillResult>;
   executeBatch?(request: BatchActionRequest): Promise<BatchActionResponse>;
+}
+
+/**
+ * Request-level keys on a predict body that are NOT action params.
+ *
+ * The predict route accepts both the wrapped shape (`{"params":{…}}`) and the
+ * bare shape an action's `paramSchema` advertises (`{"layoutId":"single"}`) —
+ * parity with the invocation route's flat-format handling in
+ * `relay-handlers.ts`. Without this list, `{"requestId":"abc"}` would arrive at
+ * `signature.predicts` as a *parameter* named `requestId`, and a signature that
+ * branches on its param bag would be asked to predict for a bag the caller
+ * never intended to invoke with.
+ *
+ * `tabId` / `targetTabId` / `__callerUserId` are adapter-spliced routing
+ * fields (see `server/express.ts` and `server/nextjs.ts`), never params.
+ */
+const PREDICT_REQUEST_LEVEL_KEYS = new Set([
+  'params',
+  'requestId',
+  'tabId',
+  'targetTabId',
+  '__callerUserId',
+]);
+
+/**
+ * Normalize a predict body into `{ params, requestId }`.
+ *
+ * An explicit `params` object wins over flat top-level keys on collision — the
+ * caller that spelled it out meant it.
+ */
+export function normalizePredictBody(
+  body: (ComponentActionPredictRequest & Record<string, unknown>) | undefined
+): ComponentActionPredictRequest {
+  if (!body) return {};
+  const explicit = body.params;
+  const flat = Object.fromEntries(
+    Object.entries(body).filter(([k]) => !PREDICT_REQUEST_LEVEL_KEYS.has(k))
+  );
+  const params = { ...flat, ...(explicit ?? {}) };
+  return {
+    // An empty bag is passed as `undefined`, not `{}` — `ActionParams.params`
+    // is optional and a signature that tests `params === undefined` must see
+    // the same thing an in-process caller passing nothing would produce.
+    params: Object.keys(params).length > 0 ? params : undefined,
+    requestId: typeof body.requestId === 'string' ? body.requestId : undefined,
+  };
 }
 
 /**
@@ -1983,6 +2057,45 @@ export function createHandlers(
         return success(result) as APIResponse<ComponentActionResponse>;
       } catch (err) {
         return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
+      }
+    },
+
+    // D3 Effect Calculus, Phase 6 — `POST
+    // /control/component/:id/action/:actionId/predict`. Delegates to the
+    // executor; this handler owns only the body normalization and the
+    // envelope, because everything that decides the ANSWER (signature
+    // resolution, the pre-snapshot, the lint) needs the registry and the
+    // snapshot pipeline the executor already owns.
+    predictComponentAction: async (
+      id: string,
+      actionId: string,
+      request?: ComponentActionPredictRequest & Record<string, unknown>
+    ) => {
+      if (!actionExecutor.predictComponentAction) {
+        // A wiring gap, said as one. See `ActionExecutorLike` for why this is
+        // never smoothed into a `predicted: null` answer.
+        return error(
+          'This UI Bridge host does not support effect prediction: its action executor ' +
+            'implements no `predictComponentAction`. This is NOT a statement about the ' +
+            `action "${id}.${actionId}" — nothing was evaluated, so nothing here says it ` +
+            'is safe to invoke.',
+          // Canonical code, not an ad-hoc `PREDICT_UNSUPPORTED`: `error()`
+          // runs every code through `mapInternalErrorCode`, and an unknown
+          // one that does not end in `_ERROR` degrades to
+          // `UB-UNKNOWN-ERROR` — which would report a KNOWN, precisely
+          // diagnosed wiring gap as an unknown fault.
+          'UB-UNSUPPORTED-ACTION'
+        );
+      }
+      try {
+        const result = await actionExecutor.predictComponentAction(
+          id,
+          actionId,
+          normalizePredictBody(request)
+        );
+        return success(result) as APIResponse<ComponentActionPredictResponse>;
+      } catch (err) {
+        return error((err as Error).message, 'COMPONENT_ACTION_PREDICT_ERROR');
       }
     },
 

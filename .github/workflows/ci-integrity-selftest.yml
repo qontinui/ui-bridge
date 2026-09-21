@@ -1,0 +1,49 @@
+# CI-integrity guard self-test.
+#
+# ci-integrity.yml decides whether a gating-workflow change is honest, so a bug
+# in it either wedges every workflow PR (the defect it replaced) or -- much
+# worse -- lets a gate be weakened silently. This runs the guard's own tests
+# against the guard AS COMMITTED IN THIS TREE: the run-block and the Python
+# helpers are extracted from .github/workflows/ci-integrity.yml at test time,
+# never copied, so the tests cannot drift from the code they test. No network,
+# no runner, a stubbed `gh`; a few seconds.
+#
+# Note the asymmetry with the guard itself: ci-integrity.yml runs from the BASE
+# branch (pull_request_target), so a PR changing it is judged by main's copy.
+# This workflow runs the PR's copy -- which is exactly what tests a proposed
+# change to the guard before it lands.
+#
+# Why a separate workflow and not a ci.yml job: scripts/check-ci-manifest.cjs
+# fails on any ci.yml job that is neither mirrored into .qontinui/ci.toml nor
+# excused there, and this harness (bash + python3 + PyYAML) cannot run on the
+# local-CI lane -- see that manifest's header, item 3.
+name: CI Integrity self-test
+
+on:
+  # Same shape as ci.yml: coord pushes the rebased candidate tip to the
+  # merge-candidate* refs before it lands, and an unfiltered pull_request keeps
+  # stacked PRs covered.
+  push:
+    branches:
+      - main
+      - 'merge-candidate/**'
+      - 'merge-candidate-spec/**'
+      - 'merge-candidate-batch/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard-tests:
+    name: CI-integrity guard tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Shell decision logic (real run-block, stubbed gh)
+        run: bash scripts/tests/ci-integrity/run-scenarios.sh
+
+      - name: Surface differ (surface / digest / alias refusal)
+        run: python3 scripts/tests/ci-integrity/test-surface.py

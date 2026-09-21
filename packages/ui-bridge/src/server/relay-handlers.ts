@@ -1041,6 +1041,28 @@ export function createRelayHandlers(
       );
     },
 
+    /**
+     * Phase 6 — relay arm of `POST
+     * /control/component/:id/action/:actionId/predict`.
+     *
+     * No argument sniffing here, unlike its invocation twin above: the route
+     * declares `params: ['id','actionId']` and this handler's signature names
+     * both, so the Express and Next.js adapters hand it exactly the arguments
+     * it expects and the third slot is unambiguously the body.
+     *
+     * The prediction is computed browser-side (that is where the registry, the
+     * signatures and the DOM to snapshot live), so this forwards rather than
+     * answering — the relay tab's `predictComponentAction` command in
+     * `react/commandHandlers.ts` is the other end.
+     */
+    async predictComponentAction(id, actionId, request, context) {
+      return relayCommand(
+        'predictComponentAction',
+        { id, actionId, request: request ?? {} },
+        ctxOpts(context)
+      );
+    },
+
     // ========================================================================
     // Find / Discovery
     // ========================================================================

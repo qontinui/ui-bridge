@@ -50,11 +50,12 @@ export type {
   CustomAction,
   ComponentAction,
   IREffect,
+  SerializedElementAction,
 } from '../../core/types';
 
 // Local bindings for the `NativeComponentAction` / `NativeCustomAction`
 // aliases below (a re-export does not put the name in this module's scope).
-import type { ComponentAction, CustomAction } from '../../core/types';
+import type { ComponentAction, CustomAction, SerializedElementAction } from '../../core/types';
 
 export type WorkflowStepType =
   | 'element-action'
@@ -410,7 +411,14 @@ export interface NativeBridgeSnapshot {
     identifier: NativeElementIdentifier;
     state: NativeElementState;
     actions: NativeStandardAction[];
-    customActions?: string[];
+    /**
+     * Custom (application-defined) actions as {@link SerializedElementAction}
+     * objects carrying the author's `effect` safety class. **Widened from
+     * `string[]` on 2026-09-11** — see the web twin in `core/types.ts` and plan
+     * `2026-09-04-effect-calculus-joins-the-component-action-registry`.
+     * Undefaulted: absent `effect` means UNCLASSIFIED, not `'read'`.
+     */
+    customActions?: SerializedElementAction[];
     /**
      * Live screen-absolute bounding box maintained by `useUIElement`'s
      * `onLayout`. Parity with the web snapshot's `elements[].bbox`.

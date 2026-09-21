@@ -26,6 +26,7 @@
  * calling `main()`.
  */
 
+import { readFileSync } from 'node:fs';
 import { createTransport } from './create-transport.js';
 import { consumeValue } from './cli-args.js';
 import { returnedFailureError, thrownError } from './action-outcome.js';
@@ -39,7 +40,12 @@ Required:
 Relay (Variant B — the default mode; --relay is REQUIRED in this mode):
   --relay <uiBridgeBase>       UI Bridge relay base; the injected runtime registers
                                as a relay tab. Example: http://localhost:3001/api/ui-bridge
-  --auth-token <T>             Bearer token for an auth-gated relay
+  --auth-token <T>             Bearer token for an auth-gated relay. Puts the token on THIS
+                               process's command line, which any local process/user can read
+                               (Task Manager, /proc, WMI) for the process's whole lifetime —
+                               prefer --auth-token-file or $UI_BRIDGE_AUTH_TOKEN instead.
+  --auth-token-file <path>     Read the bearer token from a file (trimmed) instead of argv.
+                               Takes priority over $UI_BRIDGE_AUTH_TOKEN, loses to --auth-token.
   --registration-metadata <json>
                                JSON {"userId":"...","sessionId":"..."} for per-user
                                tab-scoping on relay heartbeats
@@ -135,6 +141,10 @@ Examples:
   ui-bridge-inject --url https://example.com/login \\
     --relay http://localhost:3001/api/ui-bridge --app-name "example login"
 
+  # Variant B against an auth-gated relay, without putting the token on argv
+  ui-bridge-inject --url https://qontinui.io/admin/coord/fleet \\
+    --relay https://qontinui.io/api/ui-bridge --auth-token-file "$HOME/.idtok"
+
   # Variant A: snapshot the controls on a page, then exit
   ui-bridge-inject --url https://example.com/login \\
     --exec 'getControlSnapshot {}'
@@ -166,6 +176,8 @@ export interface InjectCliArgs {
   url: string;
   relay: string | null;
   authToken: string | null;
+  /** Path to a file holding the bearer token (trimmed on read); see --auth-token-file. */
+  authTokenFile: string | null;
   registrationMetadata: { userId: string; sessionId: string } | null;
   headed: boolean;
   readyTimeoutMs: number | null;
@@ -236,6 +248,7 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     url: '',
     relay: null,
     authToken: null,
+    authTokenFile: null,
     registrationMetadata: null,
     headed: false,
     readyTimeoutMs: null,
@@ -285,6 +298,16 @@ export function parseArgs(argv: string[]): InjectCliArgs {
       case '--auth-token':
         args.authToken = consumeValue('--auth-token', argv[++i], mkError);
         break;
+      case '--auth-token-file': {
+        const raw = consumeValue('--auth-token-file', argv[++i], mkError);
+        if (raw === null || raw.length === 0) {
+          throw new InjectCliArgError(
+            `--auth-token-file expects a path to a file holding the bearer token (got <missing>)`
+          );
+        }
+        args.authTokenFile = raw;
+        break;
+      }
       case '--app-id':
         args.appId = consumeValue('--app-id', argv[++i], mkError);
         break;
@@ -518,6 +541,35 @@ export function buildLaunchArgs(
   }
 
   return { launchArgs, lnaAutoAppended };
+}
+
+/**
+ * Resolve the effective bearer token from, in priority order: an explicit
+ * `--auth-token` (unchanged for backward compat), `--auth-token-file` (read via
+ * `readFile`, trimmed), then the `UI_BRIDGE_AUTH_TOKEN` env var. Returns `null`
+ * when none apply. `readFile` and `env` are injected so this stays testable
+ * without touching the real filesystem/environment.
+ */
+export function resolveAuthToken(
+  args: Pick<InjectCliArgs, 'authToken' | 'authTokenFile'>,
+  env: Readonly<Record<string, string | undefined>>,
+  readFile: (path: string) => string
+): string | null {
+  if (args.authToken) return args.authToken;
+  if (args.authTokenFile) {
+    const raw = readFile(args.authTokenFile).trim();
+    if (raw.length === 0) {
+      throw new InjectCliArgError(`--auth-token-file '${args.authTokenFile}' is empty`);
+    }
+    return raw;
+  }
+  // Trimmed the same way as the file branch above: secret-injection tooling
+  // (Docker/K8s envFrom, .env loaders, CI secret managers) commonly delivers
+  // env values with a trailing newline, which would otherwise reach the
+  // WebSocket upgrade's Authorization header and throw a raw "invalid
+  // character in header content" error instead of failing cleanly here.
+  const fromEnv = env.UI_BRIDGE_AUTH_TOKEN?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : null;
 }
 
 /**
@@ -759,6 +811,25 @@ async function main(): Promise<void> {
   }
 
   const mode = selectMode(args);
+
+  // authToken is only ever consumed by relay registration (Variant B) — resolve
+  // it (with its file/env I/O and possible failure) only in that mode, so a
+  // stale/unreadable --auth-token-file never fails an exec-only (Variant A)
+  // invocation that was never going to use it.
+  let resolvedAuthToken: string | null = args.authToken;
+  if (mode === 'relay') {
+    try {
+      resolvedAuthToken = resolveAuthToken(args, process.env, (p) => readFileSync(p, 'utf8'));
+    } catch (err) {
+      // A data problem with the token's content ("file is empty"/unreadable),
+      // not a CLI-syntax mistake — the ~80-line USAGE block wouldn't help fix
+      // it, so skip the usual argument-error USAGE dump.
+      if (err instanceof InjectCliArgError) die(err.message);
+      const msg = err instanceof Error ? err.message : String(err);
+      die(`--auth-token-file '${args.authTokenFile}': cannot read it (${msg})`);
+    }
+  }
+
   const { launchArgs, lnaAutoAppended } = buildLaunchArgs(args);
   if (lnaAutoAppended) {
     log(
@@ -769,7 +840,10 @@ async function main(): Promise<void> {
         `(effective launch args: ${JSON.stringify(launchArgs)})`
     );
   }
-  const transport = createTransport({ kind: 'injected', options: buildTransportOptions(args) });
+  const transport = createTransport({
+    kind: 'injected',
+    options: buildTransportOptions({ ...args, authToken: resolvedAuthToken }),
+  });
 
   // The public-surface way to reach the InjectedContext (tabId / registration
   // flag / execute) is to register a handler and dispatch it.

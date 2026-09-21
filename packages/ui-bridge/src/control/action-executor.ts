@@ -49,6 +49,7 @@ function getCanonicalPerformAction(): PerformActionFn | null {
 
 import type { UIBridgeRegistry } from '../core/registry';
 import { serializeRegisteredElement, serializeRegisteredComponent } from '../core/registry';
+import { serializeElementCustomActions } from '../core/element-actions';
 import type {
   WaitOptions,
   ElementState,
@@ -65,6 +66,12 @@ import { classifyEvent, filterBySeverity } from '../debug/error-severity';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { fillSingleField } from './fill-form';
 import { applyValueMutation, readLiveValue } from './value-mutation';
+import {
+  comboboxSelect,
+  findDropdownOption,
+  findOpenDropdown,
+  isComboboxLike,
+} from './combobox-select';
 import {
   readAriaLabelAttr,
   readAriaLabelledbyAttr,
@@ -134,8 +141,18 @@ import {
   normalizeDeclaredComponentSignature,
 } from './effect-signatures';
 import { describeSignatureDisagreement } from './effect-authoring';
+import {
+  buildComponentActionPrediction,
+  unresolvedComponentActionPrediction,
+} from './effect-predict';
+import type {
+  ComponentActionPrediction,
+  ComponentActionPredictRequest,
+  ComponentActionPredictResponse,
+} from './effect-predict';
 import { createSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
+import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
 import type {
   ActionParams,
@@ -949,15 +966,33 @@ export class DefaultActionExecutor implements ActionExecutor {
   private getEffectVerifier(): EffectVerifier {
     if (!this.effectVerifier) {
       this.effectVerifier = new EffectVerifier({
-        captureSnapshot: async (_scope: ObservabilityScope) => {
-          const control = await this.getSnapshot();
-          if (!this.snapshotManager) this.snapshotManager = createSnapshotManager();
-          return this.snapshotManager.createSnapshot(control);
-        },
+        captureSnapshot: (scope: ObservabilityScope) => this.captureSemanticSnapshot(scope),
         settle: (ms: number) => sleep(ms),
       });
     }
     return this.effectVerifier;
+  }
+
+  /**
+   * Capture the semantic snapshot the calculus predicts and verifies against.
+   *
+   * Extracted from {@link getEffectVerifier}'s dependency bag (Phase 6) so the
+   * predict route captures through the SAME path verification does. A second
+   * capture pipeline would mean a prediction made against a differently shaped
+   * world than the one it is later checked against — the difference would then
+   * surface as a bogus verification outcome and be blamed on the signature.
+   *
+   * Read-only: `getSnapshot()` re-derives labels off the live DOM and reads the
+   * registry; nothing here mutates registry state, opens a settle window or
+   * touches the effect store.
+   *
+   * The scope arg is accepted for future scoped capture; today the capture is
+   * whole-page (coverage stays 1), exactly as Phase 1 left it.
+   */
+  private async captureSemanticSnapshot(_scope: ObservabilityScope): Promise<SemanticSnapshot> {
+    const control = await this.getSnapshot();
+    if (!this.snapshotManager) this.snapshotManager = createSnapshotManager();
+    return this.snapshotManager.createSnapshot(control);
   }
 
   /**
@@ -1601,18 +1636,49 @@ export class DefaultActionExecutor implements ActionExecutor {
       declaredHere !== undefined;
     if (!wanted) return undefined;
 
+    // `componentSignatureArms` normalizes the declared signature again. That
+    // repetition is deliberate: the GATE has to know whether a declaration
+    // exists before deciding to resolve at all, and the resolver has to fill
+    // the declared arm in for a caller-supplied registry that does not know
+    // where declarations live. `normalizeDeclaredComponentSignature` is pure
+    // and allocation-light, and threading a precomputed value through would
+    // couple the ungated resolver to this gate's control flow.
+    return this.componentSignatureArms(componentId, action, request.params);
+  }
+
+  /**
+   * Resolve both arms of a component action's signature, UNGATED (Phase 6).
+   *
+   * Split out of {@link resolveComponentEffectArms} because the two callers ask
+   * different questions. That one asks *"should this invocation also verify?"*
+   * and is rightly gated on the executor-wide switch plus `verifyEffect`. The
+   * predict route asks *"what does the twin say?"*, which IS the request — a
+   * verification switch is not its cost control, and gating it there would make
+   * `/predict` answer `unclassified` for an action that has a perfectly good
+   * signature, which is the exact "null reads as harmless" failure Phase 6
+   * exists to prevent.
+   *
+   * Returns `undefined` when nothing resolves. No fabricated prediction, ever.
+   */
+  private componentSignatureArms(
+    componentId: string,
+    action: { id: string; signature?: EffectSignature },
+    params?: Record<string, unknown>
+  ): ComponentSignatureArms | undefined {
+    const declaredHere = normalizeDeclaredComponentSignature(
+      action.signature,
+      componentId,
+      action.id
+    );
+
     const resolved: ComponentSignatureArms = this.signatureRegistry
       .resolveComponentSignatureArms
-      ? this.signatureRegistry.resolveComponentSignatureArms(
-          componentId,
-          action.id,
-          request.params
-        )
+      ? this.signatureRegistry.resolveComponentSignatureArms(componentId, action.id, params)
       : {
           signature: this.signatureRegistry.resolveComponentSignature(
             componentId,
             action.id,
-            request.params
+            params
           ),
         };
 
@@ -1624,6 +1690,156 @@ export class DefaultActionExecutor implements ActionExecutor {
     const signature = declared ?? resolved.signature ?? inferred;
     if (!signature) return undefined;
     return { signature, declared, inferred };
+  }
+
+  /**
+   * Query the twin before acting — `POST
+   * /control/component/:id/action/:actionId/predict` (Phase 6 of plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry`).
+   *
+   * Resolves the action's signature, captures a pre-snapshot, runs
+   * `predicts(params, omegaPre)` and returns the answer. **The handler is
+   * never invoked.** The precedent is `composeSignatures`
+   * (`./effect-composition`), documented as *"composes predictions only; it
+   * captures NOTHING"*; this is the same discipline for one action.
+   *
+   * State-neutrality is structural, not promised:
+   *   - the handler is not referenced anywhere in this method;
+   *   - no settle window is opened (`ActionWindowRegistry` is untouched), so
+   *     concurrent background observations are not attributed to a call that
+   *     did nothing;
+   *   - nothing is written to the effect store — a store entry is a record of a
+   *     predict-then-VERIFY cycle, and no verification happened here;
+   *   - the only capture is the read-only semantic snapshot the prediction is
+   *     computed against, taken through the same path verification uses.
+   *
+   * The three answers it can give are distinguished by
+   * {@link ComponentActionPrediction.status}, never by an absent field —
+   * `'unclassified'` (nobody described this action) is a SUCCESSFUL answer and
+   * must not be read as "harmless"
+   * [policy: unknown-must-not-render-as-a-default].
+   */
+  async predictComponentAction(
+    componentId: string,
+    actionId: string,
+    request: ComponentActionPredictRequest = {}
+  ): Promise<ComponentActionPredictResponse> {
+    const startTime = performance.now();
+    const ok = (prediction: ComponentActionPrediction): ComponentActionPredictResponse => ({
+      ...prediction,
+      success: true,
+      durationMs: performance.now() - startTime,
+    });
+    const fail = (
+      prediction: ComponentActionPrediction,
+      error: string,
+      code: string
+    ): ComponentActionPredictResponse => ({
+      ...prediction,
+      success: false,
+      error,
+      code,
+      durationMs: performance.now() - startTime,
+    });
+
+    const component = this.registry.getComponent(componentId);
+    if (!component) {
+      const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'COMPONENT_NOT_FOUND'
+      );
+    }
+
+    const action = component.actions.find((a) => a.id === actionId);
+    if (!action) {
+      const available = component.actions.map((a) => a.id).join(', ');
+      const message = `Action "${actionId}" not found on component "${componentId}". Available actions: ${available}`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'ACTION_NOT_FOUND'
+      );
+    }
+
+    const arms = this.componentSignatureArms(componentId, action, request.params);
+
+    // No signature → no capture. Capturing a snapshot only to throw it away is
+    // pure cost, and a `predictedAgainstSnapshotAt` on an answer that predicted
+    // nothing would imply a prediction was attempted against it.
+    if (!arms) {
+      return ok(
+        buildComponentActionPrediction({
+          componentId,
+          actionId,
+          effect: action.effect,
+          params: request.params,
+          requestId: request.requestId,
+        })
+      );
+    }
+
+    let pre: SemanticSnapshot;
+    try {
+      pre = await this.captureSemanticSnapshot(arms.signature?.scope ?? {});
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `Could not capture a pre-snapshot to predict "${componentId}.${actionId}" against (${detail}).`;
+      // NOT reported as `unclassified`: a signature DID resolve, and reporting
+      // a capture failure as "nobody described this action" would blame the
+      // author for an infrastructure fault and hide the real one.
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'SNAPSHOT_CAPTURE_FAILED'
+      );
+    }
+
+    try {
+      return ok(
+        buildComponentActionPrediction({
+          componentId,
+          actionId,
+          effect: action.effect,
+          arms,
+          params: request.params,
+          requestId: request.requestId,
+          pre,
+        })
+      );
+    } catch (err) {
+      // The author's own `predicts` closure threw. That is an authoring bug in
+      // the signature, and it is reported as one — never smoothed into a `null`
+      // prediction, which would be indistinguishable from "no signature".
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `The effect signature for "${componentId}.${actionId}" threw while predicting: ${detail}`;
+      return fail(
+        unresolvedComponentActionPrediction(
+          componentId,
+          actionId,
+          message,
+          request.requestId
+        ),
+        message,
+        'SIGNATURE_PREDICT_FAILED'
+      );
+    }
   }
 
   /**
@@ -2069,6 +2285,21 @@ export class DefaultActionExecutor implements ActionExecutor {
           role: el.getAttribute('role') || undefined,
           accessibleName: scrubContent(this.getAccessibleName(el), el),
           actions: registered?.actions || this.inferActions(el),
+          // The element's APP-DEFINED actions, kept in their own field rather
+          // than merged into `actions` — the canonical split. Without this a
+          // discover consumer reads `actions: []` off a pane that in fact
+          // dispatches five custom actions and concludes it supports nothing;
+          // `POST /element/<id>/action` was executing them the whole time.
+          // Absent for a DOM-scanned node: it has no registration to carry
+          // them.
+          //
+          // Routed through the ONE canonical projection rather than spelled
+          // inline: the wire shape widened from bare names to
+          // `SerializedElementAction` objects on 2026-09-11, and every inline
+          // copy of `Object.keys(...)` became a silent divergence the moment it
+          // did. Calling the helper is what keeps this producer correct across
+          // the NEXT such change.
+          customActions: serializeElementCustomActions(registered?.customActions),
           state,
           registered: !!registered,
           // WHICH MOUNT this element belongs to — the only field that makes a
@@ -2129,6 +2360,12 @@ export class DefaultActionExecutor implements ActionExecutor {
           role: el.element.getAttribute('role') || undefined,
           accessibleName: scrubbedContentLabel ?? state.textContent,
           actions: [],
+          // A content element carries no BUILT-IN actions, but a consumer may
+          // still have declared custom ones on it, and `executeAction`
+          // dispatches those. Same canonical projection as the interactive
+          // block and as `serializeRegisteredElement`, which emits this for
+          // every category.
+          customActions: serializeElementCustomActions(el.customActions),
           state,
           registered: true,
           // See the interactive block above — mount identity, always real here
@@ -2214,6 +2451,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           // its src/srcset/poster ARE the rendered secret (scrubbed below).
           accessibleName: scrubContent(el.label || meta?.altText, el.element),
           actions: [],
+          // See the content block above — no built-in actions, but declared
+          // custom ones are dispatchable and must be advertised.
+          customActions: serializeElementCustomActions(el.customActions),
           state,
           registered: true,
           // See the interactive block above — mount identity, always real here
@@ -2257,9 +2497,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     // Fourth snapshot path — re-derive DOM-scraped labels first, same as
     // `registry.createSnapshot()` does, or this one emits a `label` frozen at
     // first discovery beside an `ariaLabel` read live. See
-    // `UIBridgeRegistry.refreshLabels`.
+    // `UIBridgeRegistry.refreshScrapedText`.
     try {
-      this.registry.refreshLabels();
+      this.registry.refreshScrapedText();
     } catch {
       // Non-fatal: fall through with the labels the registry already holds.
     }
@@ -2911,11 +3151,17 @@ export class DefaultActionExecutor implements ActionExecutor {
       );
     }
 
-    // Handle Radix/headless combobox elements (render as <button> with role="combobox")
+    // Handle Radix/headless combobox elements (render as <button> with
+    // role="combobox"). Shared with the React relay path so the two cannot
+    // disagree about the same element — see `control/combobox-select.ts`.
     if (!(element instanceof HTMLSelectElement)) {
-      const role = element.getAttribute('role');
-      if (role === 'combobox' || element.hasAttribute('aria-expanded')) {
-        await this.performComboboxSelect(element, options);
+      if (isComboboxLike(element)) {
+        const outcome = await comboboxSelect(element, options);
+        if (!outcome.ok) {
+          // A dead end is a typed failure, never a resolved promise the caller
+          // reports as success.
+          throw new Error(outcome.message);
+        }
         return;
       }
       throw new Error(
@@ -2992,162 +3238,6 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Handle select on combobox elements (Radix, headless UI, MUI, Select2, Ant Design, etc.)
-   * Strategy: click to open → find listbox/dropdown → find option → click option
-   */
-  private performComboboxSelect(element: HTMLElement, options?: SelectAction): Promise<void> {
-    const targetValue = Array.isArray(options?.value) ? options.value[0] : options?.value;
-    if (!targetValue) {
-      throw new Error('Select action on combobox requires a value');
-    }
-
-    // Click to open the combobox dropdown
-    element.click();
-
-    // Wait for the dropdown to render, then find and click the option.
-    // Use a retry loop because some frameworks (MUI, Ant Design) render
-    // the dropdown asynchronously after a paint cycle.
-    return new Promise<void>((resolve) => {
-      let attempts = 0;
-      const maxAttempts = 5;
-      const attemptInterval = 50; // ms
-
-      const tryFindOption = (): void => {
-        attempts++;
-        const dropdown = this.findOpenDropdown(element);
-
-        if (!dropdown && attempts < maxAttempts) {
-          setTimeout(tryFindOption, attemptInterval);
-          return;
-        }
-
-        if (!dropdown) {
-          console.warn(
-            `[ui-bridge] performComboboxSelect: dropdown not found after ${maxAttempts} attempts for value "${targetValue}"`
-          );
-          resolve();
-          return;
-        }
-
-        // Find matching option across various frameworks
-        const matched = this.findDropdownOption(dropdown, targetValue, options?.byLabel);
-        if (matched) {
-          matched.click();
-        } else {
-          console.warn(
-            `[ui-bridge] performComboboxSelect: option "${targetValue}" not found in dropdown`
-          );
-        }
-        resolve();
-      };
-
-      requestAnimationFrame(tryFindOption);
-    });
-  }
-
-  /**
-   * Find the open dropdown/listbox associated with an element.
-   * Supports: ARIA listbox, Radix, MUI, Select2, Ant Design, Headless UI.
-   */
-  private findOpenDropdown(trigger: HTMLElement): Element | null {
-    // 1. ARIA listbox via aria-controls/aria-owns
-    const listboxId = trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
-    if (listboxId) {
-      const el = document.getElementById(listboxId);
-      if (el) return el;
-    }
-
-    // 2. Radix / shadcn popper
-    const radixListbox = document.querySelector(
-      '[data-radix-popper-content-wrapper] [role="listbox"], [data-state="open"] [role="listbox"]'
-    );
-    if (radixListbox) return radixListbox;
-
-    // 3. Generic ARIA listbox
-    const ariaListbox = document.querySelector('[role="listbox"]');
-    if (ariaListbox) return ariaListbox;
-
-    // 4. MUI Select (renders a popover with role="presentation" containing <ul role="listbox">)
-    const muiListbox = document.querySelector(
-      '.MuiPopover-root [role="listbox"], .MuiPopper-root [role="listbox"], .MuiMenu-list'
-    );
-    if (muiListbox) return muiListbox;
-
-    // 5. Select2 (jQuery-based, renders .select2-results__options)
-    const select2Dropdown = document.querySelector(
-      '.select2-container--open .select2-results__options'
-    );
-    if (select2Dropdown) return select2Dropdown;
-
-    // 6. Ant Design (renders .ant-select-dropdown with .ant-select-item)
-    const antDropdown = document.querySelector(
-      '.ant-select-dropdown:not(.ant-select-dropdown-hidden)'
-    );
-    if (antDropdown) return antDropdown;
-
-    // 7. Headless UI listbox
-    const headlessListbox = document.querySelector(
-      '[data-headlessui-state~="open"] [role="listbox"]'
-    );
-    if (headlessListbox) return headlessListbox;
-
-    // 8. Generic open dropdown (last resort)
-    const generic = document.querySelector('[role="menu"][data-state="open"], .dropdown-menu.show');
-    return generic;
-  }
-
-  /**
-   * Find a matching option element within a dropdown container.
-   * Handles various option patterns across frameworks.
-   */
-  private findDropdownOption(
-    dropdown: Element,
-    targetValue: string,
-    byLabel?: boolean
-  ): HTMLElement | null {
-    const targetLower = targetValue.toLowerCase();
-
-    // Selector patterns for option elements across frameworks
-    const optionSelectors = [
-      '[role="option"]', // ARIA standard
-      '.ant-select-item-option', // Ant Design
-      '.select2-results__option', // Select2
-      '.MuiMenuItem-root', // MUI
-      '[data-headlessui-state] [role="option"]', // Headless UI
-      'li[data-value]', // Generic data-value
-    ];
-
-    for (const selector of optionSelectors) {
-      const options = dropdown.querySelectorAll<HTMLElement>(selector);
-      if (options.length === 0) continue;
-
-      for (const opt of options) {
-        const optDataValue = opt.getAttribute('data-value') ?? '';
-        const optText = opt.textContent?.trim() ?? '';
-
-        // Match by data-value, text content, or aria-label
-        if (byLabel || !optDataValue) {
-          if (optText === targetValue || optText.toLowerCase() === targetLower) {
-            return opt;
-          }
-        } else {
-          if (optDataValue === targetValue || optDataValue.toLowerCase() === targetLower) {
-            return opt;
-          }
-        }
-
-        // Fallback: check aria-label
-        const ariaLabel = readAriaLabelAttr(opt);
-        if (ariaLabel && ariaLabel.toLowerCase() === targetLower) {
-          return opt;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  /**
    * Handle autocomplete inputs: type search text, wait for suggestions,
    * then click the matching suggestion.
    */
@@ -3176,10 +3266,10 @@ export class DefaultActionExecutor implements ActionExecutor {
       await new Promise((r) => setTimeout(r, pollInterval));
 
       // Look for suggestion containers
-      const dropdown = this.findOpenDropdown(element);
+      const dropdown = findOpenDropdown(element);
       if (!dropdown) continue;
 
-      const match = this.findDropdownOption(dropdown, selectValue);
+      const match = findDropdownOption(dropdown, selectValue);
       if (match) {
         match.click();
         return;

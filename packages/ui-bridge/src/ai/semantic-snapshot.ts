@@ -296,6 +296,14 @@ export class SemanticSnapshotManager {
       accessibleName:
         scrubContentByVerdict(element.label, redactionVerdict) ?? element.state.textContent,
       actions: element.actions,
+      // Custom actions travel in their OWN field, carrying the author's
+      // `effect` safety class — they are NOT merged into `actions`. Merging is
+      // what `qontinui-runner`'s background-observer snapshot builder used to
+      // do (the plan's ninth emitter), and it both misrepresented them as
+      // standard verbs and discarded everything but the name. Passed through
+      // verbatim: an un-annotated action keeps `effect` absent, which means
+      // UNCLASSIFIED rather than `'read'`.
+      customActions: element.customActions,
       state: element.state,
       registered: true,
       description: scrubContentRequired(finalDescription, redactionVerdict),

@@ -151,6 +151,7 @@
     "POST /control/clipboard -> setClipboard",
     "POST /control/clipboard/write -> clipboardWrite",
     "POST /control/component/:id/action/:actionId -> executeComponentAction",
+    "POST /control/component/:id/action/:actionId/predict -> predictComponentAction",
     "POST /control/console-errors/clear -> clearConsoleErrors",
     "POST /control/design/audit -> runDesignAudit",
     "POST /control/design/element/:id/state-styles -> getElementStateStyles",

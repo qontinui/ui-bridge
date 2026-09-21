@@ -176,3 +176,10 @@ export type {
   KeyTargetFailure,
   KeyTargetResult,
 } from './key-events';
+
+// Element custom-action wire projection (plan
+// 2026-09-04-effect-calculus-joins-the-component-action-registry, Design
+// decision 4 step 3). The ONE place `RegisteredElement.customActions` becomes
+// its wire shape — exported because the runner's background-observer snapshot
+// builder is a ninth emitter outside this repo and must not re-implement it.
+export { serializeElementCustomActions } from './element-actions';

@@ -28,6 +28,7 @@ import type {
   IREffect,
 } from './types';
 import { projectVisionFields } from './vision-fields';
+import { serializeElementCustomActions } from './element-actions';
 
 /**
  * Options for registering an element
@@ -1714,7 +1715,7 @@ export class NativeUIBridgeRegistry {
           identifier: e.getIdentifier(),
           state,
           actions: e.actions,
-          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          customActions: serializeElementCustomActions(e.customActions),
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,

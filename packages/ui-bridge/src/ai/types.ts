@@ -5,7 +5,12 @@
  * search criteria, natural language actions, assertions, and semantic snapshots.
  */
 
-import type { ElementState, ElementType, ContentMetadata } from '../core/types';
+import type {
+  ElementState,
+  ElementType,
+  ContentMetadata,
+  SerializedElementAction,
+} from '../core/types';
 import type { DiscoveredElement } from '../control/types';
 import type { RecoverySuggestion, UiBridgeErrorCode } from '../diagnostics';
 import type { Scrubbed } from '../core/redaction';
@@ -148,6 +153,26 @@ export interface AIDiscoveredElement extends DiscoveredElement {
   category?: 'interactive' | 'content' | 'media';
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
+  /**
+   * The element's custom (application-defined) actions, carrying the author's
+   * `effect` safety class.
+   *
+   * **Added 2026-09-11** by plan
+   * `2026-09-04-effect-calculus-joins-the-component-action-registry` Design
+   * decision 4 step 3. Until then this projection dropped an element's custom
+   * actions ENTIRELY — `convertElement` copied `element.actions` and never
+   * looked at `element.customActions` — so the only way a custom action reached
+   * a semantic snapshot at all was `qontinui-runner`'s background-observer
+   * snapshot builder flattening the NAMES into `actions`, which both
+   * misrepresented them as standard verbs and discarded everything but the name.
+   * That flatten was the ninth emitter the plan names, and this field is the
+   * channel it was missing.
+   *
+   * Undefaulted, like every other projection of this annotation: an
+   * un-annotated action arrives with `effect` absent, which means UNCLASSIFIED,
+   * not `'read'`.
+   */
+  customActions?: SerializedElementAction[];
 }
 
 /**

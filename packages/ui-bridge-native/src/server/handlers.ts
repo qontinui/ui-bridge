@@ -42,6 +42,7 @@ import type {
 import { createDesignHandlers } from './design-handlers';
 import type { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
 import { diagnosePageHealth, type PageHealthElement } from './page-health';
+import { serializeElementCustomActions } from '../core/element-actions';
 
 /**
  * Registry-based text/label match used by the app-agnostic interaction
@@ -487,7 +488,7 @@ export function createServerHandlers(
           identifier: e.getIdentifier(),
           state,
           actions: e.actions,
-          customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+          customActions: serializeElementCustomActions(e.customActions),
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: e.registrationRoute,
           visibility,
@@ -518,7 +519,7 @@ export function createServerHandlers(
           identifier: element.getIdentifier(),
           state: resolveElementState(element),
           actions: element.actions,
-          customActions: element.customActions ? Object.keys(element.customActions) : undefined,
+          customActions: serializeElementCustomActions(element.customActions),
           registeredHandlers: handlers.length > 0 ? handlers : undefined,
           registrationRoute: element.registrationRoute,
         },

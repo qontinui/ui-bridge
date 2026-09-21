@@ -3,8 +3,12 @@
  *
  * Launches a real browser (headful or headless), navigates to the target
  * URL, and optionally blocks until the UI Bridge relay reports that a tab
- * has connected. Console messages and page errors are forwarded to stdout
+ * has connected. Console messages and page errors are forwarded to stderr
  * so debugging failures doesn't require opening the visible browser.
+ *
+ * Output contract: this module never writes to stdout. stdout belongs to the
+ * embedding process's machine output (e.g. inject-cli's `{action,result}`
+ * NDJSON lines), so every forwarded `[browser.<type>]` line goes to stderr.
  */
 
 import { readFileSync } from 'node:fs';
@@ -81,6 +85,12 @@ export interface LaunchHeadlessTabOptions {
   /**
    * Whether to forward page `console.*` messages and uncaught errors to
    * the Node process's stderr. Default `true`.
+   *
+   * Every console type (`log`, `info`, `debug`, `warning`, `error`, …) is
+   * written to **stderr** as `[browser.<type>] <text>`, and uncaught page
+   * errors as `[browser.pageerror] <message>`. Nothing is forwarded to stdout:
+   * stdout is reserved for the embedding process's machine output, which a
+   * browser `console.log` would otherwise corrupt.
    */
   forwardConsole?: boolean;
 
@@ -304,15 +314,11 @@ export async function launchHeadlessTab(
   const page = await context.newPage();
 
   if (forwardConsole) {
+    // Every type goes to stderr. stdout is reserved for machine output: a
+    // caller such as inject-cli emits one JSON line per action there, and a
+    // `[browser.log]` line interleaved with them breaks its consumer's parse.
     page.on('console', (msg) => {
-      const type = msg.type();
-      const text = msg.text();
-      const prefix = `[browser.${type}]`;
-      if (type === 'error' || type === 'warning') {
-        process.stderr.write(`${prefix} ${text}\n`);
-      } else {
-        process.stdout.write(`${prefix} ${text}\n`);
-      }
+      process.stderr.write(`[browser.${msg.type()}] ${msg.text()}\n`);
     });
     page.on('pageerror', (err) => {
       process.stderr.write(`[browser.pageerror] ${err.message}\n`);

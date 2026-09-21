@@ -49,6 +49,29 @@ it reports a registered tab — so the moment the CLI prints
 Exit: `Ctrl+C` cleanly closes the browser. `--keep-alive <secs>` auto-
 exits after the given window.
 
+## Output streams
+
+Browser console forwarding (on by default; `forwardConsole: false`
+programmatically, `--quiet` on the CLI) writes **only to stderr**:
+
+- every page `console.*` call, whatever its type, as `[browser.<type>] <text>`
+  (`[browser.log]`, `[browser.info]`, `[browser.debug]`, `[browser.warning]`,
+  `[browser.error]`, …);
+- every uncaught page error as `[browser.pageerror] <message>`.
+
+The launcher never writes to stdout. stdout is reserved for the embedding
+process's machine output — for example `ui-bridge-wrapper`'s inject-cli, which
+emits one `{action,result}` / `{action,error}` JSON line per action there. A
+consumer can therefore parse stdout without filtering browser noise.
+
+The `ui-bridge-tab` CLI itself still prints its own `[ui-bridge-tab]` progress
+lines (`launching`, `url:`, `navigated:`, `UI Bridge tab registered`) to
+stdout, so on a terminal the forwarded browser lines appear beside them on
+stderr.
+
+Since 0.5.0. Up to 0.4.1, `log` / `info` / `debug` (every type except `error`
+and `warning`) went to stdout.
+
 ## Programmatic
 
 ```ts

@@ -6,6 +6,7 @@ import {
   isLoopbackHost,
   LNA_DISABLE_FEATURES,
   selectMode,
+  resolveAuthToken,
   InjectCliArgError,
   USAGE,
 } from '../src/inject-cli.js';
@@ -193,6 +194,116 @@ describe('parseArgs / buildTransportOptions', () => {
     expect(() =>
       parseArgs(['--url', 'https://qontinui.io/admin', '--storage-state', '--headed'])
     ).toThrow(/--storage-state expects a value/);
+  });
+
+  it('maps --auth-token-file to args.authTokenFile (does not itself populate options.authToken)', () => {
+    const args = parseArgs([
+      '--url',
+      'https://qontinui.io/admin',
+      '--relay',
+      'http://r',
+      '--auth-token-file',
+      '/home/u/.idtok',
+    ]);
+    expect(args.authTokenFile).toBe('/home/u/.idtok');
+    // buildTransportOptions is unaware of --auth-token-file — resolution happens
+    // via resolveAuthToken() in main(), so raw args.authToken stays null here.
+    expect('authToken' in buildTransportOptions(args)).toBe(false);
+  });
+
+  it('rejects --auth-token-file with a flag-shaped value', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://qontinui.io/admin', '--auth-token-file', '--headed'])
+    ).toThrow(/--auth-token-file expects a value/);
+  });
+
+  it('rejects a bare --auth-token-file with no value', () => {
+    expect(() =>
+      parseArgs(['--url', 'https://qontinui.io/admin', '--auth-token-file'])
+    ).toThrow(/--auth-token-file expects a path/);
+  });
+});
+
+describe('resolveAuthToken', () => {
+  const noFile = (): never => {
+    throw new Error('readFile should not have been called');
+  };
+
+  it('prefers an explicit --auth-token over file and env', () => {
+    const token = resolveAuthToken(
+      { authToken: 'explicit', authTokenFile: '/should/not/be/read' },
+      { UI_BRIDGE_AUTH_TOKEN: 'from-env' },
+      noFile
+    );
+    expect(token).toBe('explicit');
+  });
+
+  it('reads and trims --auth-token-file when no explicit token is given', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: '/home/u/.idtok' },
+      {},
+      (p) => {
+        expect(p).toBe('/home/u/.idtok');
+        return '  tok-from-file  \n';
+      }
+    );
+    expect(token).toBe('tok-from-file');
+  });
+
+  it('--auth-token-file takes priority over UI_BRIDGE_AUTH_TOKEN', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: '/home/u/.idtok' },
+      { UI_BRIDGE_AUTH_TOKEN: 'from-env' },
+      () => 'from-file'
+    );
+    expect(token).toBe('from-file');
+  });
+
+  it('throws when --auth-token-file resolves to an empty/whitespace-only file', () => {
+    expect(() =>
+      resolveAuthToken({ authToken: null, authTokenFile: '/home/u/.idtok' }, {}, () => '   \n')
+    ).toThrow(/'\/home\/u\/\.idtok' is empty/);
+  });
+
+  it('falls back to UI_BRIDGE_AUTH_TOKEN when neither flag is given', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: null },
+      { UI_BRIDGE_AUTH_TOKEN: 'from-env' },
+      noFile
+    );
+    expect(token).toBe('from-env');
+  });
+
+  it('returns null when nothing is configured', () => {
+    const token = resolveAuthToken({ authToken: null, authTokenFile: null }, {}, noFile);
+    expect(token).toBeNull();
+  });
+
+  it('treats an empty UI_BRIDGE_AUTH_TOKEN as unset', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: null },
+      { UI_BRIDGE_AUTH_TOKEN: '' },
+      noFile
+    );
+    expect(token).toBeNull();
+  });
+
+  it('trims UI_BRIDGE_AUTH_TOKEN (secret-injection tooling commonly appends a trailing newline)', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: null },
+      { UI_BRIDGE_AUTH_TOKEN: '  tok-from-env\n' },
+      noFile
+    );
+    expect(token).toBe('tok-from-env');
+  });
+
+  it('treats a whitespace-only UI_BRIDGE_AUTH_TOKEN as unset', () => {
+    const token = resolveAuthToken(
+      { authToken: null, authTokenFile: null },
+      { UI_BRIDGE_AUTH_TOKEN: '   \n' },
+      noFile
+    );
+    expect(token).toBeNull();
   });
 });
 

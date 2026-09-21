@@ -12,6 +12,7 @@ import type {
   ControlActionResponse,
 } from '../control/types';
 import type { APIResponse, HandlerContext, NativeServerHandlers } from './types';
+import { serializeElementCustomActions } from '../../core/element-actions';
 
 /**
  * Result of executing a single workflow step
@@ -283,7 +284,7 @@ export function createServerHandlers(
         identifier: e.getIdentifier(),
         state: e.getState(),
         actions: e.actions,
-        customActions: e.customActions ? Object.keys(e.customActions) : undefined,
+        customActions: serializeElementCustomActions(e.customActions),
       }));
 
       return success({ elements });
@@ -305,7 +306,7 @@ export function createServerHandlers(
           identifier: element.getIdentifier(),
           state: element.getState(),
           actions: element.actions,
-          customActions: element.customActions ? Object.keys(element.customActions) : undefined,
+          customActions: serializeElementCustomActions(element.customActions),
         },
       });
     },

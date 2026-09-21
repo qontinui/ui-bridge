@@ -8,7 +8,7 @@ This directory contains CI workflows for the UI Bridge monorepo.
 
 Node + Python test matrix plus docs build. Runs on every push/PR to `main`.
 
-### `docs.yml` / `publish.yml` / `release.yml`
+### `docs.yml` / `publish.yml` / `publish-pypi.yml`
 
 Documentation deploy and npm/package publishing. See each file for details.
 
@@ -69,6 +69,33 @@ gating on every event, since it asserts only this repo's own logic.
 Run it locally before pushing a route change: see
 [CONTRIBUTING.md](../../CONTRIBUTING.md) → "Adding or removing a route in
 `UI_BRIDGE_ROUTES`".
+
+### `ci-integrity.yml` — guard gating workflows from self-edits
+
+Runs on `pull_request_target` (so `main`'s copy judges every PR) whenever a PR
+touches `.github/workflows/**` or `.github/actions/**`. Every such file counts as
+a gate, except this README (listed in the guard's `NON_GATING`, with the reason).
+The guard never checks out PR code; it reads the diff through the API.
+
+| The PR... | It needs |
+|---|---|
+| touches no workflow or action | nothing |
+| only ADDS (a new job or file; nothing existing altered) | label `ci:gate-change=declared` |
+| ALTERS or REMOVES an existing job, or changes anything outside `jobs:` | label `ci:gate-change=alters-a-gate`, plus one line per finding in the PR body |
+
+Body lines are matched as WHOLE lines, each on its own line starting at column
+0: `Gate-Change: <file-stem>#<job-key>`, `Gate-Removal: <file-stem>#<job-key>`,
+or `Gate-Change: <file-stem>#workflow` for a change outside `jobs:` — for
+example `Gate-Change: secret-scan#gitleaks`. The failure message lists the lines
+it needs indented by two spaces; drop that indentation when you paste them, or
+they will not match. Adding a label does not re-trigger the workflow: add it,
+then re-run the job. On a pass the guard posts a PR comment
+recording what changed. It is the same guard as qontinui-runner's; the header of
+`ci-integrity.yml` states what it does and does NOT detect.
+
+`ci-integrity-selftest.yml` runs the guard's tests (`scripts/tests/ci-integrity/`)
+against the guard as committed in the PR, since the guard itself only ever runs
+`main`'s copy.
 
 ### `smoke-test.yml` — UI Bridge smoke test
 

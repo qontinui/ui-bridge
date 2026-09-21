@@ -84,7 +84,7 @@ export function seedRegistryFromDom(
       // node discovered once is never re-labelled, so an `aria-label` that
       // changes later would be served stale forever (including on an explicit
       // `discover`). Hand the registry the same derivation, with the same
-      // `|| undefined` normalization, so `refreshLabels()` can re-read it on
+      // `|| undefined` normalization, so `refreshScrapedText()` can re-read it on
       // the snapshot / find / discover paths.
       labelSource: () => computeDomFallbackLabel(node) || undefined,
       origin: 'auto',

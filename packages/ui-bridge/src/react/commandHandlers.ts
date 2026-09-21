@@ -18,6 +18,7 @@ import {
   serializeRegisteredElement,
   serializeRegisteredComponent,
 } from '../core/registry';
+import { serializeElementCustomActions } from '../core/element-actions';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
 import { buildKeyboardEventInit } from '../core/key-events';
@@ -42,6 +43,7 @@ import {
 } from '../control/action-executor';
 import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest } from '../control/types';
+import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -443,6 +445,19 @@ function inProcessComponentNotFoundMessage(id: string): string {
  * Both were missing here while the direct path emitted them, which made the
  * whole staleness story silently inert on exactly the consumers that are not
  * the runner's own frontend.
+ *
+ * - **`customActions`** — the element's APP-DEFINED actions. Same class of
+ *   defect, found the same way: this producer and the executor's `find()` both
+ *   emitted `actions` alone, so a discover consumer read `actions: []` off a
+ *   pane that dispatches five custom actions and concluded it supported
+ *   nothing — while `POST /element/<id>/action` executed all five. Kept in its
+ *   own field rather than merged into `actions`, and produced by the ONE
+ *   canonical projection (`core/element-actions.ts`
+ *   `serializeElementCustomActions`) rather than an inline expression of its
+ *   own — including the undefined-for-none convention, and the
+ *   `SerializedElementAction` object shape the projection widened to on
+ *   2026-09-11. An inline copy here would have to be re-found and re-fixed on
+ *   every future shape change; a call cannot drift.
  */
 function elementToFindResult(e: RegisteredElement) {
   const state = e.getState();
@@ -456,6 +471,7 @@ function elementToFindResult(e: RegisteredElement) {
     // (and the label fallback) against the element's boundary.
     accessibleName: scrubContent(readAriaLabelAttr(e.element) ?? e.label, e.element),
     actions: e.actions,
+    customActions: serializeElementCustomActions(e.customActions),
     state,
     registered: true,
     registeredAt: e.registeredAt,
@@ -961,7 +977,7 @@ const SETTLE_BEFORE_READ_ACTIONS: ReadonlySet<string> = new Set([
  * `label` is copied out of the DOM at registration and every scanner is
  * idempotent by element identity, so a node discovered once is never
  * re-labelled — an `aria-label` that changes afterwards is served stale
- * forever, including on an explicit `discover`. `registry.refreshLabels()`
+ * forever, including on an explicit `discover`. `registry.refreshScrapedText()`
  * closes that; see its doc-comment for what it touches and why it is scoped to
  * this set rather than run on every command (the action paths must stay
  * layout-free).
@@ -1021,7 +1037,7 @@ export async function executeCommand(
   // LABEL_REFRESH_ACTIONS. Non-fatal: a throwing refresh must not fail the read.
   if (LABEL_REFRESH_ACTIONS.has(action)) {
     try {
-      registry.refreshLabels();
+      registry.refreshScrapedText();
     } catch {
       // Fall through with whatever labels the registry already holds.
     }
@@ -1542,11 +1558,28 @@ export async function executeCommand(
             if (dom instanceof HTMLSelectElement) {
               dom.value = request.value || '';
               dom.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (isComboboxLike(dom)) {
+              // A Radix/shadcn `<SelectTrigger>` is a `<button role="combobox">`.
+              // The snapshot reports it as `role: "combobox"`, and the HTTP
+              // action-executor has serviced it for months — this path used to
+              // answer `Cannot select on BUTTON` for the SAME element, so the
+              // payload advertised a contract only one of the two action paths
+              // honoured. Both now call one implementation.
+              const outcome = await comboboxSelect(dom, {
+                value: (request.value ?? (request.params?.value as string)) as string,
+                byLabel: request.params?.byLabel as boolean | undefined,
+              });
+              if (!outcome.ok) {
+                // Typed failure, not a resolved no-op: a `success: true` over a
+                // control that never opened is a false green.
+                return createActionFailure(id, 'UB-ACTION-FAILED', outcome.message, startTime);
+              }
             } else
               return createActionFailure(
                 id,
                 'UNSUPPORTED_ACTION',
-                `Cannot select on ${dom.tagName}`,
+                `Cannot select on ${dom.tagName}. Use a <select> element or a combobox ` +
+                  `(role="combobox").`,
                 startTime
               );
             break;
@@ -2136,6 +2169,37 @@ export async function executeCommand(
         params: request.params as Record<string, unknown> | undefined,
         timeoutMs: request.timeoutMs,
       });
+    }
+
+    /**
+     * Phase 6 — the relay/IPC arm of the predict route.
+     *
+     * Deliberately reuses the SAME `ipcActionExecutor` the invocation case
+     * above uses, so the twin answers from the registry, the signatures and
+     * the DOM the handler would actually run against. A second, hand-rolled
+     * resolution here would be a fourth inline copy of exactly the drift the
+     * comment above warns about.
+     *
+     * Unlike its twin it does NOT pre-check the component / action: the
+     * executor's own `'unresolved'` answer is richer (it lists the available
+     * action ids) and it is the shape every other transport already returns,
+     * so short-circuiting here would give the relay path a different payload
+     * for the same condition.
+     */
+    case 'predictComponentAction': {
+      const { id, actionId, request } = payload as {
+        id: string;
+        actionId: string;
+        request?: { params?: P; requestId?: string };
+      };
+      const prediction = await ipcActionExecutor(registry).predictComponentAction(id, actionId, {
+        params: request?.params as Record<string, unknown> | undefined,
+        requestId: request?.requestId,
+      });
+      // Spread verbatim: every field of the prediction is part of the answer,
+      // and a hand-written field list here is how `coverageCaveat` would go
+      // missing on exactly the transport that most needs it.
+      return { ...prediction };
     }
 
     // ======================================================================
