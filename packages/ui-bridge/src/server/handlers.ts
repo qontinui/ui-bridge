@@ -73,7 +73,9 @@ import {
   computeAccessibleNameSafe,
   computeRoleSafe,
   computeVisibleText,
+  isInteractionBlocked,
   readAriaLabelAttr,
+  readInteractionBlockers,
   readTitleAttr,
 } from '../core/a11y';
 import { measureFreshBbox } from '../core/registry';
@@ -6449,9 +6451,9 @@ export function createHandlers(
             if (domEl.offsetParent === null) return false;
             const rect = domEl.getBoundingClientRect();
             if (rect.width <= 0 || rect.height <= 0) return false;
-            if ((domEl as HTMLButtonElement | HTMLInputElement).disabled) return false;
-            if (domEl.getAttribute('aria-disabled') === 'true') return false;
-            return true;
+            // Same predicate as `ElementState.enabled` and the click-path
+            // pre-check, so "clickable" means the next click is not refused.
+            return !isInteractionBlocked(readInteractionBlockers(domEl));
           }
 
           case 'text-matches': {

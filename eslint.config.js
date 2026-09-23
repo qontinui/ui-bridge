@@ -77,8 +77,8 @@ export default tseslint.config(
   //
   // NOTE ON FLAT-CONFIG SEMANTICS: ESLint flat config does NOT merge the
   // options of a rule configured in multiple matching config objects — the LAST
-  // matching object's value REPLACES earlier ones. So the two guard families
-  // below (SVG `.className` safety + §4.6 redaction) must be composed into
+  // matching object's value REPLACES earlier ones. So the guard families below
+  // (SVG `.className` safety, §4.6 redaction, interaction predicate) must be composed into
   // shared selector arrays and re-declared together in every block that a given
   // file matches, or one family would silently disable the other. That is why
   // the projection-module block repeats the package-wide selectors and appends
@@ -159,6 +159,61 @@ export default tseslint.config(
       },
     ];
 
+    // ---- Interaction-predicate guard (plan 2026-08-23-single-source-derived-facts, 12a)
+    // "Is this element enabled / clickable?" has ONE answer in this package:
+    // `core/a11y`'s `readDisabledSignals` (native `disabled` + `aria-disabled`)
+    // and `readInteractionBlockers` (those two plus effective computed
+    // `pointer-events: none`), folded by `isInteractionBlocked`. Every
+    // `ElementState.enabled` producer, the click-path pre-check and
+    // `UIQuery.enabled()` read those helpers, so the reader and the actor
+    // cannot disagree about the same element. A hand-inlined copy of one of the
+    // three inputs is how that disagreement came back last time (UIQuery kept
+    // the pre-#166 `disabled || aria-disabled` predicate). Only core/a11y.ts
+    // (exempt below) reads them raw; the fix for a flagged read is to call the
+    // helper — never an eslint-disable.
+    const INTERACTION_PREDICATE_MESSAGE_TAIL =
+      ' Read it via core/a11y — readDisabledSignals(el) for the DOM disabled signals, readInteractionBlockers(el) for the full blocking surface — and fold with isInteractionBlocked, so every reader agrees with the click path.';
+    const INTERACTION_PREDICATE_SELECTORS = [
+      {
+        // The native-disabled probe shape: `'disabled' in el && el.disabled`
+        // or `'disabled' in el ? el.disabled : false`.
+        selector: "BinaryExpression[operator='in'][left.value='disabled']",
+        message:
+          "Interaction predicate: a raw `'disabled' in el` native-disabled probe re-implements readDisabledSignals." +
+          INTERACTION_PREDICATE_MESSAGE_TAIL,
+      },
+      {
+        // The cast-then-read shape: `(el as HTMLButtonElement).disabled`.
+        // Assignments (`(el as HTMLButtonElement).disabled = true`) are writes,
+        // not predicate reads, and stay allowed. Reads off an already-typed
+        // form control (`input.disabled` in a form projection) are not flagged.
+        selector:
+          "MemberExpression[computed=false][property.name='disabled'][object.type='TSAsExpression']:not(AssignmentExpression > .left)",
+        message:
+          'Interaction predicate: casting an element to read its native `.disabled` re-implements readDisabledSignals.' +
+          INTERACTION_PREDICATE_MESSAGE_TAIL,
+      },
+      {
+        selector:
+          "CallExpression[callee.property.name=/^(getAttribute|hasAttribute)$/][arguments.0.value='aria-disabled']",
+        message:
+          'Interaction predicate: a raw aria-disabled attribute read re-implements readDisabledSignals.' +
+          INTERACTION_PREDICATE_MESSAGE_TAIL,
+      },
+      {
+        // `.pointerEvents` read straight off a `getComputedStyle(...)` /
+        // `window.getComputedStyle(...)` call. Rooted at the CALL on purpose:
+        // `blockers.pointerEvents` / `signals.pointerEvents` off the struct the
+        // helper returns, and a serializer projecting an already-read style
+        // object into `computedStyles`, are legitimate and must not fire.
+        selector:
+          "MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.name='getComputedStyle'], MemberExpression[property.name='pointerEvents'][object.type='CallExpression'][object.callee.property.name='getComputedStyle']",
+        message:
+          'Interaction predicate: reading pointer-events straight off getComputedStyle() re-implements readInteractionBlockers (use its pointerEventsNone).' +
+          INTERACTION_PREDICATE_MESSAGE_TAIL,
+      },
+    ];
+
     // LAYER 2 — projection modules only: raw `.value`/`.textContent` READS.
     // Package-wide these two property names are far too common on the SDK's own
     // domain types (ElementState.value/.textContent, Searchable.*, the redaction
@@ -211,7 +266,8 @@ export default tseslint.config(
       {
         files: ['packages/ui-bridge/src/**/*.ts', 'packages/ui-bridge/src/**/*.tsx'],
         // redaction-surface:package-guard-exemptions:start
-        // Every entry here is EXEMPT from all §4.6 Layer-1 rules, so this list
+        // Every entry here is EXEMPT from all §4.6 Layer-1 rules (and from the
+        // interaction-predicate guard — core/a11y.ts is its sole raw reader), so this list
         // is itself redaction surface: enrolling a file beside the sanctioned
         // readers would silently open a raw-read channel. Mirrored into
         // packages/ui-bridge/redaction-surface.manifest.json and drift-checked
@@ -228,7 +284,12 @@ export default tseslint.config(
         ],
         // redaction-surface:package-guard-exemptions:end
         rules: {
-          'no-restricted-syntax': ['error', ...CLASSNAME_SELECTORS, ...REDACTION_L1_SELECTORS],
+          'no-restricted-syntax': [
+            'error',
+            ...CLASSNAME_SELECTORS,
+            ...REDACTION_L1_SELECTORS,
+            ...INTERACTION_PREDICATE_SELECTORS,
+          ],
         },
       },
       // Projection modules: same package-wide selectors PLUS the Layer-2
@@ -269,6 +330,7 @@ export default tseslint.config(
             'error',
             ...CLASSNAME_SELECTORS,
             ...REDACTION_L1_SELECTORS,
+            ...INTERACTION_PREDICATE_SELECTORS,
             ...REDACTION_L2_SELECTORS,
           ],
         },

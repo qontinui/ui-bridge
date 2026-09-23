@@ -15,6 +15,13 @@
  * actually click (a predicate that answered "blocked" for everything would pass
  * every other case in this file).
  *
+ * The matrix also carries a THIRD arm: `UIQuery.enabled()`, the public SDK
+ * query filter. It used to inline the pre-#166 `disabled || aria-disabled`
+ * predicate, so a query could return an element the next `click()` refused
+ * (plan 2026-08-23-single-source-derived-facts, item 3). It now reads the same
+ * `core/a11y` helpers, and the matrix pins membership == `state.enabled` ==
+ * "the click is not refused" for every fixture.
+ *
  * jsdom note: `getComputedStyle().pointerEvents` in jsdom DOES resolve CSS
  * inheritance — a child of a `pointer-events: none` parent computes to `none`,
  * from both an inline style and a stylesheet rule — which is what makes the
@@ -23,6 +30,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry } from '../core/registry';
+import { UIQuery } from '../core/query-builder';
 import { DefaultActionExecutor } from './action-executor';
 import type { ElementState } from '../core/types';
 
@@ -201,7 +209,7 @@ describe('ElementState.enabled agrees with the click-path guard', () => {
     expect(clicked).toBe(false);
   });
 
-  it('the reader and the guard reach the same verdict across the whole matrix', async () => {
+  it('the reader, UIQuery.enabled() and the guard reach the same verdict across the whole matrix', async () => {
     const cases: Array<{ id: string; build: () => HTMLElement; clickable: boolean }> = [
       {
         id: 'm-plain',
@@ -209,6 +217,21 @@ describe('ElementState.enabled agrees with the click-path guard', () => {
         build: () => {
           const b = document.createElement('button');
           container.appendChild(b);
+          return b;
+        },
+      },
+      {
+        // Explicit `pointer-events: auto` on the element and its wrapper — a
+        // second clickable fixture, so the negative control is not one case.
+        id: 'm-pe-auto',
+        clickable: true,
+        build: () => {
+          const wrap = document.createElement('div');
+          wrap.style.pointerEvents = 'auto';
+          container.appendChild(wrap);
+          const b = document.createElement('button');
+          b.style.pointerEvents = 'auto';
+          wrap.appendChild(b);
           return b;
         },
       },
@@ -256,13 +279,54 @@ describe('ElementState.enabled agrees with the click-path guard', () => {
       },
     ];
 
-    for (const c of cases) {
+    const built = cases.map((c) => {
       const el = c.build();
       el.setAttribute('data-testid', c.id);
-      const state = readState(c.id, el);
+      return { ...c, el, state: readState(c.id, el) };
+    });
+
+    // QUERY arm — evaluated over the whole registry at once, BEFORE any click,
+    // so membership reflects exactly the state the reader published.
+    const enabledIds = new Set(
+      UIQuery.from(registry)
+        .enabled()
+        .all()
+        .map((r) => r.element.id)
+    );
+    // Negative control inside the arm: a filter that excluded everything (or
+    // included everything) would satisfy every blocked (or clickable) case, so
+    // pin that the arm returns exactly the clickable fixtures — non-empty, and
+    // not the whole set.
+    const expectedIds = built.filter((c) => c.clickable).map((c) => c.id);
+    expect(expectedIds.length).toBeGreaterThan(0);
+    expect(expectedIds.length).toBeLessThan(built.length);
+    expect([...enabledIds].sort()).toEqual([...expectedIds].sort());
+
+    for (const c of built) {
       const result = await executor.executeAction(c.id, { action: 'click' });
-      expect(state.enabled, `reader disagreed for ${c.id}`).toBe(c.clickable);
+      expect(c.state.enabled, `reader disagreed for ${c.id}`).toBe(c.clickable);
+      expect(enabledIds.has(c.id), `UIQuery.enabled() disagreed for ${c.id}`).toBe(c.clickable);
       expect(result.success, `actor disagreed for ${c.id}: ${result.error}`).toBe(c.clickable);
     }
+  });
+
+  it('UIQuery.enabled() on its own: returns the plain button and drops a pointer-events:none one', () => {
+    // Standalone negative control for the query arm: the element that the
+    // PRE-#166 predicate (`disabled || aria-disabled`) would have wrongly
+    // included is the pointer-events-blocked one.
+    const plain = document.createElement('button');
+    container.appendChild(plain);
+    const blocked = document.createElement('button');
+    blocked.style.pointerEvents = 'none';
+    container.appendChild(blocked);
+    registry.registerElement('q-plain', plain, { type: 'button', label: 'q-plain' });
+    registry.registerElement('q-blocked', blocked, { type: 'button', label: 'q-blocked' });
+
+    const all = UIQuery.from(registry).allDom();
+    expect(all).toContain(plain);
+    expect(all).toContain(blocked);
+
+    const enabled = UIQuery.from(registry).enabled().allDom();
+    expect(enabled).toEqual([plain]);
   });
 });

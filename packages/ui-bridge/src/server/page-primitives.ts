@@ -43,6 +43,7 @@ import {
   readScrubbedValue,
   readScrubbedText,
 } from '../core/redaction';
+import { readDisabledSignals } from '../core/a11y';
 import {
   findElementsByText,
   findElementBySelector,
@@ -323,7 +324,7 @@ export function findByTextPrimitive(
           width: Math.round(rect.width),
           height: Math.round(rect.height),
         },
-        disabled: 'disabled' in el ? !!(el as HTMLButtonElement).disabled : false,
+        disabled: readDisabledSignals(el).disabled,
         visible: el.offsetParent !== null || getComputedStyle(el).position === 'fixed',
       };
     });

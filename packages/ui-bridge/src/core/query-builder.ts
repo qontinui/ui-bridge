@@ -11,6 +11,7 @@
  *   const items = q.select('[data-testid="list"]').children().withRole('listitem').all();
  */
 
+import { isInteractionBlocked, readInteractionBlockers } from './a11y';
 import type { UIBridgeRegistry } from './registry';
 import type { RegisteredElement, ElementState, ElementType } from './types';
 
@@ -283,16 +284,27 @@ export class UIQuery {
   }
 
   /**
-   * Filter to elements that are enabled (not disabled).
+   * Filter to elements that are enabled — i.e. that the click path would NOT
+   * refuse.
+   *
+   * This is the SAME predicate every `ElementState.enabled` producer and the
+   * action executor's click-path pre-check consult:
+   * `!isInteractionBlocked(readInteractionBlockers(el))` from `core/a11y`. An
+   * element is therefore excluded when it is natively `disabled`, carries
+   * `aria-disabled="true"`, OR computes to `pointer-events: none` (including
+   * inherited from an ancestor). A query result is thus exactly the set a
+   * subsequent `click()` will act on — the reader and the actor cannot
+   * disagree about the same element.
+   *
+   * The wide reading is deliberate: a query filter named `enabled()` is used to
+   * pick something to interact with, so it answers the actor's question. A
+   * caller who wants only the DOM disabled signals should filter on
+   * `readDisabledSignals` from `core/a11y` via {@link UIQuery.filter}.
    */
   enabled(): UIQuery {
     const parent = this.resolveElements;
     return new UIQuery(this.registry, () =>
-      parent().filter((el) => {
-        if ('disabled' in el && (el as HTMLInputElement).disabled) return false;
-        if (el.getAttribute('aria-disabled') === 'true') return false;
-        return true;
-      })
+      parent().filter((el) => !isInteractionBlocked(readInteractionBlockers(el)))
     );
   }
 

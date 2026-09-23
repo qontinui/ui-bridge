@@ -68,7 +68,14 @@ import {
   readScrubbedText,
   REDACTED_VALUE,
 } from '../core/redaction';
-import { readAriaLabelAttr, readTitleAttr, computeVisibleText } from '../core/a11y';
+import {
+  computeVisibleText,
+  isInteractionBlocked,
+  readAriaLabelAttr,
+  readDisabledSignals,
+  readInteractionBlockers,
+  readTitleAttr,
+} from '../core/a11y';
 import { readLiveValue, readLiveText } from '../control/value-mutation';
 import {
   pollWaitForElement,
@@ -1280,7 +1287,10 @@ export async function executeCommand(
             `Element ${id} exists but is not visible`,
             startTime
           );
-        if ((domEl as HTMLButtonElement).disabled)
+        // Native `disabled` only: this pre-check guards EVERY action (type,
+        // scroll, hoverClick…), and a hover-revealed `pointer-events:none`
+        // target must still reach the hoverClick arm below.
+        if (readDisabledSignals(domEl).disabled)
           return createActionFailure(
             id,
             'ELEMENT_NOT_ENABLED',
@@ -2888,9 +2898,9 @@ export async function executeCommand(
             if (domEl.offsetParent === null) return false;
             const rect = domEl.getBoundingClientRect();
             if (rect.width <= 0 || rect.height <= 0) return false;
-            if ((domEl as HTMLButtonElement | HTMLInputElement).disabled) return false;
-            if (domEl.getAttribute('aria-disabled') === 'true') return false;
-            return true;
+            // Same predicate as `ElementState.enabled` and the click-path
+            // pre-check, so "clickable" means the next click is not refused.
+            return !isInteractionBlocked(readInteractionBlockers(domEl));
           }
           case 'text-matches': {
             if (!text_match) return true;

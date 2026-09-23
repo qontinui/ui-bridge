@@ -751,14 +751,10 @@ export function findHoverableAncestor(element: HTMLElement): HTMLElement | null 
     }
 
     // Remember the first pointer-events:none ancestor as a fallback.
-    if (!pointerNoneCandidate) {
-      try {
-        if (window.getComputedStyle(current).pointerEvents === 'none') {
-          pointerNoneCandidate = current;
-        }
-      } catch {
-        // getComputedStyle can throw in degraded environments — ignore.
-      }
+    // `readInteractionBlockers` guards a throwing `getComputedStyle` itself
+    // (an unreadable value is never treated as `none`).
+    if (!pointerNoneCandidate && readInteractionBlockers(current).pointerEventsNone) {
+      pointerNoneCandidate = current;
     }
 
     current = current.parentElement;

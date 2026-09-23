@@ -14,7 +14,12 @@
 
 import type { UndoElementInfo, UndoDetectorConfig } from './types';
 import { classString } from '../core/class-name';
-import { readAriaLabelAttr, readTitleAttr } from '../core/a11y';
+import {
+  isInteractionBlocked,
+  readAriaLabelAttr,
+  readInteractionBlockers,
+  readTitleAttr,
+} from '../core/a11y';
 
 // ---------------------------------------------------------------------------
 // Selectors for common undo/redo patterns
@@ -108,8 +113,9 @@ function buildSelector(el: Element): string {
  * Check if an element is disabled.
  */
 function isDisabled(el: Element): boolean {
-  if ((el as HTMLButtonElement).disabled) return true;
-  if (el.getAttribute('aria-disabled') === 'true') return true;
+  // The shared reader/actor predicate: native `disabled`, `aria-disabled`, or
+  // effective `pointer-events: none` — the control the click path would refuse.
+  if (isInteractionBlocked(readInteractionBlockers(el))) return true;
   if (classString(el).toLowerCase().includes('disabled')) return true;
   return false;
 }
