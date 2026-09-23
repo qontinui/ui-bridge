@@ -435,6 +435,98 @@ describe('DefaultActionExecutor - param validation', () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/'keys' array/);
   });
+
+  // UI-3 (plan 2026-09-23-conductor-e2e-phase1-defects): the dispatch loop
+  // destructured `{ key }` from each element and `continue`d when it was
+  // missing, so a bare-string element was skipped and the action still
+  // reported success while delivering nothing.
+  it('sendKeys accepts a bare string element as shorthand for { key } and dispatches it', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('cmd-bar', input, { type: 'input', label: 'Command' });
+
+    const seen: string[] = [];
+    input.addEventListener('keydown', (e) => seen.push(`keydown:${e.key}:${e.keyCode}`));
+    input.addEventListener('keyup', (e) => seen.push(`keyup:${e.key}`));
+
+    const result = await executor.executeAction('cmd-bar', {
+      action: 'sendKeys',
+      params: { keys: ['Enter'] },
+    });
+
+    expect(result.success).toBe(true);
+    expect(seen).toEqual(['keydown:Enter:13', 'keyup:Enter']);
+  });
+
+  it('sendKeys applies the modifiers of a bare-string combo element', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('cmd-bar', input, { type: 'input', label: 'Command' });
+
+    const seen: string[] = [];
+    input.addEventListener('keydown', (e) => seen.push(`${e.key}:ctrl=${e.ctrlKey}`));
+
+    const result = await executor.executeAction('cmd-bar', {
+      action: 'sendKeys',
+      params: { keys: ['ctrl+a'] },
+    });
+
+    expect(result.success).toBe(true);
+    expect(seen).toEqual(['a:ctrl=true']);
+  });
+
+  it('sendKeys types a bare-string space element into an input', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('cmd-bar', input, { type: 'input', label: 'Command' });
+
+    const result = await executor.executeAction('cmd-bar', {
+      action: 'sendKeys',
+      params: { keys: ['h', 'i', ' ', 'x'] },
+    });
+
+    expect(result.success).toBe(true);
+    expect(input.value).toBe('hi x');
+  });
+
+  it('sendKeys fails on a non-string, non-object key element instead of skipping it', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('cmd-bar', input, { type: 'input', label: 'Command' });
+
+    const seen: string[] = [];
+    input.addEventListener('keydown', (e) => seen.push(e.key));
+
+    const result = await executor.executeAction('cmd-bar', {
+      action: 'sendKeys',
+      params: { keys: [{ key: 'a' }, 42] } as unknown as { keys: { key: string }[] },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/key entry must be a string or a \{ key, modifiers\? \} object/);
+    // Validation runs before dispatch, so the valid leading element is not
+    // delivered either — no half-applied sequence.
+    expect(seen).toEqual([]);
+  });
+
+  it('sendKeys fails on an object element with no usable key instead of skipping it', async () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    container.appendChild(input);
+    registry.registerElement('cmd-bar', input, { type: 'input', label: 'Command' });
+
+    const result = await executor.executeAction('cmd-bar', {
+      action: 'sendKeys',
+      params: { keys: [{ modifiers: { ctrl: true } }] } as unknown as { keys: { key: string }[] },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/non-empty string 'key'/);
+  });
 });
 
 describe('DefaultActionExecutor - waitOptions precondition', () => {

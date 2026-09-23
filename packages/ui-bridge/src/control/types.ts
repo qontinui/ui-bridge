@@ -971,8 +971,12 @@ export interface KeyboardAction {
  * games, custom editors).
  */
 export interface SendKeysAction {
-  /** Sequence of key descriptors to dispatch */
-  keys: KeyboardAction[];
+  /**
+   * Sequence of keys to dispatch. Each element is a descriptor, or a bare
+   * key-name string (`"Enter"`, `"ctrl+a"`) as shorthand for one. Any other
+   * element is rejected rather than skipped.
+   */
+  keys: Array<KeyboardAction | string>;
   /** Delay between each key (ms, default 0) */
   delay?: number;
 }

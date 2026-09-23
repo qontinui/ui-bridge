@@ -302,6 +302,10 @@ export type KeyNormalizeResult = { ok: true; keys: KeyDescriptor[] } | { ok: fal
  * prefixes followed by a key name (`"Escape"`, `"ctrl+Enter"`, `"a"`, `"+"`).
  */
 function parseKeyCombo(token: string): KeyNormalizeResult {
+  // A lone space is the space key, which `trim()` below would erase into an
+  // "empty key token". Check it before trimming, so splitting typed text
+  // into single characters works on every path that uses this grammar.
+  if (token === ' ') return { ok: true, keys: [{ key: ' ', modifiers: {} }] };
   const raw = token.trim();
   if (!raw) return { ok: false, error: 'empty key token' };
   // `"+"` (and any all-separator token) is the literal plus key, not a combo.

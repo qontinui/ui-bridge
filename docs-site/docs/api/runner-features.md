@@ -329,7 +329,7 @@ failure mode.
 | `type`     | `text: string`              | Sending `value` (used by `select`/`setValue`)                                |
 | `select`   | `value: string \| string[]` | Sending `text` (used by `type`)                                              |
 | `setValue` | `value: string`             | Sending `text`                                                               |
-| `sendKeys` | `keys: [{key, modifiers?}]` | Sending `value: "Enter"` (it's an array of descriptors, not a single string) |
+| `sendKeys` | `keys: [{key, modifiers?}]` (a bare string element such as `"Enter"`, `"ctrl+a"` or a single character is shorthand for a descriptor, and is checked against the known key names, so an unusual key needs the `{key}` form; any other element fails the action) | Sending `value: "Enter"` (`keys` is an array, not a single string) |
 
 If an action returns `success: false` with `error: "... requires a 'X' parameter ..."`, the param key was wrong or missing. Sending the wrong key for `type` triggers a hint pointing at the correct one.
 

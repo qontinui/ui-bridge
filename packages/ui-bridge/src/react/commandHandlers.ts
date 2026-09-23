@@ -21,7 +21,11 @@ import {
 import { serializeElementCustomActions } from '../core/element-actions';
 import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
-import { buildKeyboardEventInit } from '../core/key-events';
+import {
+  buildKeyboardEventInit,
+  normalizeKeyDescriptors,
+  type KeyDescriptor,
+} from '../core/key-events';
 import {
   computeSnapshotSignature,
   evaluateSnapshotFreshness,
@@ -1708,8 +1712,25 @@ export async function executeCommand(
             break;
           }
           case 'sendKeys': {
-            dom.focus();
             const rawKeys = request.params?.keys;
+            // Normalize an array through the ONE shared key grammar before
+            // anything is dispatched: a bare string is shorthand for
+            // `{ key }`, and any other malformed element fails the action.
+            // This loop used to `continue` past an element with no usable
+            // `key`, so `keys: [42]` dispatched nothing and reported success.
+            let arrayKeys: KeyDescriptor[] | undefined;
+            if (Array.isArray(rawKeys)) {
+              const normalized = normalizeKeyDescriptors(rawKeys);
+              if (!normalized.ok)
+                return createActionFailure(
+                  id,
+                  'INVALID_PARAMS',
+                  `sendKeys: ${normalized.error}`,
+                  startTime
+                );
+              arrayKeys = normalized.keys;
+            }
+            dom.focus();
             // Helper: determine if a key should produce a keypress event.
             // Only printable characters (single char, no ctrl/alt/meta modifiers) generate keypress.
             const shouldKeypress = (
@@ -1722,12 +1743,11 @@ export async function executeCommand(
             // `keyCode`/`which`/`charCode` fields. Hand-rolled inits here used
             // to omit all four, so an app handler reading `e.keyCode` saw 0
             // and the dispatch reached nothing.
-            if (Array.isArray(rawKeys)) {
+            if (arrayKeys) {
               // Spec-compliant: array of KeyboardAction objects [{key: "a", modifiers?: {...}}, ...]
-              for (const keyDesc of rawKeys) {
-                const key = typeof keyDesc === 'string' ? keyDesc : keyDesc?.key;
-                if (!key) continue;
-                const mods = (typeof keyDesc === 'object' && keyDesc?.modifiers) || {};
+              // or key-name strings, already normalized above.
+              for (const { key, modifiers } of arrayKeys) {
+                const mods = modifiers || {};
                 dom.dispatchEvent(
                   new KeyboardEvent('keydown', buildKeyboardEventInit(key, mods, 'keydown'))
                 );

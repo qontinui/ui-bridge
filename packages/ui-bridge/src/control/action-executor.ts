@@ -119,7 +119,11 @@ import {
 // Shared key grammar — the ONE copy, also behind the document-scoped
 // `sendKeysToPage` page primitive. Keeping a private copy here is how the two
 // key paths would drift.
-import { NON_PRINTABLE_KEYS, buildKeyboardEventInit } from '../core/key-events';
+import {
+  NON_PRINTABLE_KEYS,
+  buildKeyboardEventInit,
+  normalizeKeyDescriptors,
+} from '../core/key-events';
 import {
   elementRedaction,
   verdictOf,
@@ -3130,17 +3134,28 @@ export class DefaultActionExecutor implements ActionExecutor {
     // mistake), making the misuse undebuggable.
     if (!Array.isArray(options?.keys) || options.keys.length === 0) {
       throw new Error(
-        "sendKeys action requires a non-empty 'keys' array of {key: '<KeyName>', modifiers?} descriptors. (Example: { keys: [{ key: 'Enter' }] }.)"
+        "sendKeys action requires a non-empty 'keys' array of {key: '<KeyName>', modifiers?} descriptors or key-name strings. (Example: { keys: [{ key: 'Enter' }] } or { keys: ['Enter'] }.)"
       );
+    }
+
+    // Normalize through the ONE shared key grammar (`core/key-events`), the
+    // same one behind the document-scoped `sendKeysToPage` primitive. A bare
+    // string element (`"Enter"`, `"ctrl+a"`) is shorthand for a descriptor,
+    // and any other malformed element is an ERROR. The loop used to
+    // destructure `{ key }` and `continue` past anything without one, so
+    // `keys: ["Enter"]` dispatched nothing and still reported success.
+    // Normalizing up front also means a bad element fails the whole action
+    // before any key is dispatched, never half-way through the sequence.
+    const normalized = normalizeKeyDescriptors(options.keys);
+    if (!normalized.ok) {
+      throw new Error(`sendKeys: ${normalized.error}`);
     }
 
     element.focus();
     const delay = options.delay || 0;
 
-    for (const keyDesc of options.keys) {
-      const { key } = keyDesc;
-      if (!key || typeof key !== 'string') continue;
-      const mods = keyDesc.modifiers || {};
+    for (const { key, modifiers } of normalized.keys) {
+      const mods = modifiers || {};
       // The event init comes from the ONE shared builder so this path carries
       // the legacy `keyCode`/`which`/`charCode` fields too — without them an
       // app handler reading `e.keyCode` sees 0 and silently no-ops. The

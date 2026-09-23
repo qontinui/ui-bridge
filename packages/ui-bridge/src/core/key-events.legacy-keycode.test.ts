@@ -342,3 +342,18 @@ describe('call site 4 — undo/redo keyboard fallback', () => {
     expect(seen[0].ctrlKey || seen[0].metaKey).toBe(true);
   });
 });
+
+describe('normalizeKeyDescriptors · the space character', () => {
+  // `parseKeyCombo` trims its token, which used to erase a lone space into
+  // an "empty key token" error on every path that shares this grammar.
+  it('accepts a lone space, bare or inside an array, as the space key', () => {
+    expect(normalizeKeyDescriptors(' ')).toEqual({ ok: true, keys: [{ key: ' ', modifiers: {} }] });
+    expect(normalizeKeyDescriptors(['a', ' '])).toEqual({
+      ok: true,
+      keys: [
+        { key: 'a', modifiers: {} },
+        { key: ' ', modifiers: {} },
+      ],
+    });
+  });
+});
