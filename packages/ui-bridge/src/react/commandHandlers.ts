@@ -45,7 +45,7 @@ import {
   dispatchMiddleClick,
 } from '../control/action-executor';
 import { inertAbortSignal } from '../core/abortable';
-import type { ComponentActionRequest } from '../control/types';
+import type { ComponentActionRequest, MouseAction } from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
@@ -1553,10 +1553,10 @@ export async function executeCommand(
             dom.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
             break;
           case 'rightClick':
-            dispatchRightClick(dom);
+            dispatchRightClick(dom, request.params as MouseAction | undefined);
             break;
           case 'middleClick':
-            dispatchMiddleClick(dom);
+            dispatchMiddleClick(dom, request.params as MouseAction | undefined);
             break;
           case 'type': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {

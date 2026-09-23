@@ -3019,10 +3019,10 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performRightClick(element: HTMLElement, options?: MouseAction): void {
     dispatchRightClick(element, options);
   }
+
   private performMiddleClick(element: HTMLElement, options?: MouseAction): void {
     dispatchMiddleClick(element, options);
   }
-
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
