@@ -32,7 +32,11 @@ const emptyBridge: BridgeAccess = {
 type ActionResult = {
   success?: boolean;
   error?: string;
-  failureDetails?: { errorCode?: string; elementState?: Record<string, unknown> };
+  failureDetails?: {
+    errorCode?: string;
+    elementState?: Record<string, unknown>;
+    suggestedActions?: Array<{ command?: string }>;
+  };
 };
 
 describe('relay click-like pre-check agrees with ElementState.enabled', () => {
@@ -144,6 +148,8 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
         expect(clicked).toBe(true);
       } else {
         expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
+        // Every refusal names its signal, native `disabled` included.
+        expect(result.error).toMatch(/aria-disabled=true|disabled property|pointer-events:none/);
         // A native-disabled element is dispatched no click by the browser
         // itself; the others would fire the handler if the relay let them.
         expect(clicked).toBe(false);
@@ -197,4 +203,96 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
     expect(result.success).toBe(true);
     expect(document.activeElement).toBe(b);
   });
+
+  it('a pointer-events:none refusal leads its recovery advice with hoverClick', async () => {
+    const b = button('hover-gated');
+    b.style.pointerEvents = 'none';
+    container.appendChild(b);
+    getGlobalRegistry().registerElement('el-hover-gated', b, { type: 'button' });
+
+    const result = await relay('el-hover-gated', 'click');
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.suggestedActions?.[0]?.command).toBe('hoverClick');
+  });
+
+  it('an aria-disabled refusal does not suggest hoverClick', async () => {
+    const b = button('aria-only');
+    b.setAttribute('aria-disabled', 'true');
+    container.appendChild(b);
+    getGlobalRegistry().registerElement('el-aria-only', b, { type: 'button' });
+
+    const result = await relay('el-aria-only', 'click');
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.suggestedActions?.map((a) => a.command)).not.toContain(
+      'hoverClick'
+    );
+  });
+
+  it('the guard runs before custom-action precedence, as on the executor path', async () => {
+    let handlerRuns = 0;
+    const customActions = {
+      toggle: {
+        handler: () => {
+          handlerRuns += 1;
+        },
+      },
+    };
+
+    // Positive control: on an unblocked element the custom handler wins.
+    const free = button('custom-free');
+    container.appendChild(free);
+    getGlobalRegistry().registerElement('el-custom-free', free, { type: 'button', customActions });
+    expect((await relay('el-custom-free', 'toggle')).success).toBe(true);
+    expect(handlerRuns).toBe(1);
+
+    const blocked = button('custom-blocked');
+    blocked.setAttribute('aria-disabled', 'true');
+    container.appendChild(blocked);
+    getGlobalRegistry().registerElement('el-custom-blocked', blocked, {
+      type: 'button',
+      customActions,
+    });
+
+    const result = await relay('el-custom-blocked', 'toggle');
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
+    expect(handlerRuns).toBe(1);
+  });
+
+  for (const [action, event] of [
+    ['rightClick', 'contextmenu'],
+    ['middleClick', 'auxclick'],
+  ] as const) {
+    it(`${action} dispatches ${event} over the relay, and is refused on a blocked control`, async () => {
+      const ok = button(`${action}-ok`);
+      container.appendChild(ok);
+      getGlobalRegistry().registerElement(`el-${action}-ok`, ok, { type: 'button' });
+      let fired = false;
+      ok.addEventListener(event, () => {
+        fired = true;
+      });
+
+      const okResult = await relay(`el-${action}-ok`, action);
+      expect(okResult.error).toBeUndefined();
+      expect(okResult.success).toBe(true);
+      expect(fired).toBe(true);
+
+      const blocked = button(`${action}-blocked`);
+      blocked.setAttribute('aria-disabled', 'true');
+      container.appendChild(blocked);
+      getGlobalRegistry().registerElement(`el-${action}-blocked`, blocked, { type: 'button' });
+      let blockedFired = false;
+      blocked.addEventListener(event, () => {
+        blockedFired = true;
+      });
+
+      const blockedResult = await relay(`el-${action}-blocked`, action);
+      expect(blockedResult.success).toBe(false);
+      expect(blockedResult.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
+      expect(blockedFired).toBe(false);
+    });
+  }
 });

@@ -41,6 +41,8 @@ import {
   readHandlerErrorEnvelope,
   DefaultActionExecutor,
   getClickRefusal,
+  dispatchRightClick,
+  dispatchMiddleClick,
 } from '../control/action-executor';
 import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest } from '../control/types';
@@ -1288,28 +1290,42 @@ export async function executeCommand(
             `Element ${id} exists but is not visible`,
             startTime
           );
-        // Native `disabled` only: this pre-check guards EVERY action (type,
-        // scroll, hoverClick…), and a hover-revealed `pointer-events:none`
-        // target must still reach the hoverClick arm below.
+        // Click-like actions refuse `aria-disabled`, native `disabled` and
+        // effective `pointer-events: none` (waived for `hoverClick`) — the
+        // SAME verdict the HTTP executor reaches and `ElementState.enabled`
+        // publishes, so a relay click cannot report success on a control the
+        // executor refuses. It runs before custom-action precedence, as in the
+        // executor.
+        const clickRefusal = getClickRefusal(domEl, request.action);
+        if (clickRefusal) {
+          const failure = createActionFailure(
+            id,
+            'ELEMENT_NOT_ENABLED',
+            `Element ${id} is disabled (${clickRefusal.reasons.join(', ')}); ${request.action} was not dispatched`,
+            startTime,
+            clickRefusal.signals
+          );
+          // Waiting never clears a hover-gated `pointer-events: none`; the
+          // verb that drives it is `hoverClick`. Lead with that advice.
+          if (clickRefusal.reasons.includes('pointer-events:none')) {
+            failure.failureDetails.suggestedActions.unshift({
+              suggestion:
+                'The control is pointer-events:none — if it is revealed on hover, use the hoverClick action',
+              command: 'hoverClick',
+              confidence: 0.9,
+              retryable: true,
+            });
+          }
+          return failure;
+        }
+        // Every other action: native `disabled` only. A hover-revealed
+        // `pointer-events:none` target must still be focusable, typeable, etc.
         if (readDisabledSignals(domEl).disabled)
           return createActionFailure(
             id,
             'ELEMENT_NOT_ENABLED',
             `Element ${id} is disabled`,
             startTime
-          );
-        // Click-like actions additionally refuse `aria-disabled` and effective
-        // `pointer-events: none` (waived for `hoverClick`) — the SAME verdict
-        // the HTTP executor reaches and `ElementState.enabled` publishes, so a
-        // relay click cannot report success on a control the executor refuses.
-        const clickRefusal = getClickRefusal(domEl, request.action);
-        if (clickRefusal)
-          return createActionFailure(
-            id,
-            'ELEMENT_NOT_ENABLED',
-            `Element ${id} is disabled (${clickRefusal.reasons.join(', ')}); click was not dispatched`,
-            startTime,
-            clickRefusal.signals
           );
         dom = domEl;
         registered = el;
@@ -1535,6 +1551,12 @@ export async function executeCommand(
           }
           case 'doubleClick':
             dom.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+            break;
+          case 'rightClick':
+            dispatchRightClick(dom);
+            break;
+          case 'middleClick':
+            dispatchMiddleClick(dom);
             break;
           case 'type': {
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {

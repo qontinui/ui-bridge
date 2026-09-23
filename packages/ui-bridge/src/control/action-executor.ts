@@ -476,6 +476,34 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
 const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
 
 /**
+ * Secondary-button click: the pointer pair around the mouse pair (so
+ * pointer-only handlers fire first), then `contextmenu`. Exported so the React
+ * IPC relay dispatches the same sequence as the HTTP executor.
+ */
+export function dispatchRightClick(element: HTMLElement, options?: MouseAction): void {
+  const opts = { ...options, button: 'right' as const };
+  element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
+  element.dispatchEvent(createMouseEvent('mousedown', element, opts));
+  element.dispatchEvent(createPointerEvent('pointerup', element, opts));
+  element.dispatchEvent(createMouseEvent('mouseup', element, opts));
+  element.dispatchEvent(createMouseEvent('contextmenu', element, opts));
+}
+
+/**
+ * Middle-button click. Browsers fire `auxclick` (not `click`) for a
+ * non-primary button, which is what React's `onAuxClick` listens for. Exported
+ * for the React IPC relay, as `dispatchRightClick`.
+ */
+export function dispatchMiddleClick(element: HTMLElement, options?: MouseAction): void {
+  const opts = { ...options, button: 'middle' as const };
+  element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
+  element.dispatchEvent(createMouseEvent('mousedown', element, opts));
+  element.dispatchEvent(createPointerEvent('pointerup', element, opts));
+  element.dispatchEvent(createMouseEvent('mouseup', element, opts));
+  element.dispatchEvent(createMouseEvent('auxclick', element, opts));
+}
+
+/**
  * The click-like refusal verdict, shared by BOTH dispatch paths — the HTTP
  * action executor below and the React IPC relay (`react/commandHandlers.ts`).
  *
@@ -496,10 +524,13 @@ export function getClickRefusal(
   const blockers = readInteractionBlockers(element);
   const ignorePointerEvents = POINTER_EVENTS_TOLERANT_ACTIONS.has(action);
   if (!isInteractionBlocked(blockers, { ignorePointerEvents })) return null;
+  // A waived signal is not a reason: fold the waiver into the struct once, so
+  // the verdict above and the reasons below cannot disagree.
+  const signals = ignorePointerEvents ? { ...blockers, pointerEventsNone: false } : blockers;
   const reasons: string[] = [];
-  if (blockers.ariaDisabled) reasons.push('aria-disabled=true');
-  if (blockers.disabled) reasons.push('disabled property');
-  if (!ignorePointerEvents && blockers.pointerEventsNone) reasons.push('pointer-events:none');
+  if (signals.ariaDisabled) reasons.push('aria-disabled=true');
+  if (signals.disabled) reasons.push('disabled property');
+  if (signals.pointerEventsNone) reasons.push('pointer-events:none');
   return {
     signals: {
       disabled: true,
@@ -2986,26 +3017,12 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performRightClick(element: HTMLElement, options?: MouseAction): void {
-    const opts = { ...options, button: 'right' as const };
-    // Pointer pair around mouse pair so pointer-only handlers fire first.
-    element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
-    element.dispatchEvent(createMouseEvent('mousedown', element, opts));
-    element.dispatchEvent(createPointerEvent('pointerup', element, opts));
-    element.dispatchEvent(createMouseEvent('mouseup', element, opts));
-    element.dispatchEvent(createMouseEvent('contextmenu', element, opts));
+    dispatchRightClick(element, options);
+  }
+  private performMiddleClick(element: HTMLElement, options?: MouseAction): void {
+    dispatchMiddleClick(element, options);
   }
 
-  private performMiddleClick(element: HTMLElement, options?: MouseAction): void {
-    const opts = { ...options, button: 'middle' as const };
-    // Pointer pair around mouse pair so pointer-only handlers fire first.
-    element.dispatchEvent(createPointerEvent('pointerdown', element, opts));
-    element.dispatchEvent(createMouseEvent('mousedown', element, opts));
-    element.dispatchEvent(createPointerEvent('pointerup', element, opts));
-    element.dispatchEvent(createMouseEvent('mouseup', element, opts));
-    // Browsers fire 'auxclick' (not 'click') for non-primary button clicks.
-    // React's onAuxClick handler listens for this event type.
-    element.dispatchEvent(createMouseEvent('auxclick', element, opts));
-  }
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
