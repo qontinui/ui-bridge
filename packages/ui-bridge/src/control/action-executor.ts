@@ -3539,11 +3539,11 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performSubmit(element: HTMLElement): void {
     const form = element instanceof HTMLFormElement ? element : element.closest('form');
     if (form) {
-      // Dispatch submit event first (allows preventDefault)
-      const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
-      if (form.dispatchEvent(submitEvent)) {
-        form.requestSubmit();
-      }
+      // `requestSubmit()` fires the one cancelable `submit` event itself (and
+      // runs constraint validation), so a handler's `preventDefault` is
+      // honoured. A hand-dispatched `submit` before it made every handler run
+      // twice — the relay (`react/commandHandlers.ts`) fires it once.
+      form.requestSubmit();
     } else {
       throw new Error('No form found for submit action');
     }
@@ -3552,8 +3552,9 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performReset(element: HTMLElement): void {
     const form = element instanceof HTMLFormElement ? element : element.closest('form');
     if (form) {
+      // `reset()` fires the `reset` event itself; dispatching another made
+      // every handler run twice.
       form.reset();
-      form.dispatchEvent(new Event('reset', { bubbles: true }));
     } else {
       throw new Error('No form found for reset action');
     }

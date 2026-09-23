@@ -325,6 +325,23 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
     expect(result.error).toContain('submit was not dispatched');
     expect(result.failureDetails?.suggestedActions?.[0]?.command).toBe('hoverClick');
     expect(blockedClicked).toBe(false);
+
+    // The aria-disabled arm: refused too, and it is not hover advice.
+    const aria = button('submit-aria');
+    aria.setAttribute('aria-disabled', 'true');
+    container.appendChild(aria);
+    getGlobalRegistry().registerElement('el-submit-aria', aria, { type: 'button' });
+    let ariaClicked = false;
+    aria.addEventListener('click', () => {
+      ariaClicked = true;
+    });
+    const ariaResult = await relay('el-submit-aria', 'submit');
+    expect(ariaResult.success).toBe(false);
+    expect(ariaResult.error).toContain('aria-disabled=true');
+    expect(ariaResult.failureDetails?.suggestedActions?.map((a) => a.command)).not.toContain(
+      'hoverClick'
+    );
+    expect(ariaClicked).toBe(false);
   });
 
   it('submit inside a form still submits; reset outside a form is refused, not a silent success', async () => {
