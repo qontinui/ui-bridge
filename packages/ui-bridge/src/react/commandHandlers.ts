@@ -42,6 +42,7 @@ import {
   DefaultActionExecutor,
   getClickRefusal,
   requestFormSubmit,
+  resolveOwnerForm,
   dispatchRightClick,
   dispatchMiddleClick,
 } from '../control/action-executor';
@@ -1671,7 +1672,7 @@ export async function executeCommand(
             break;
           }
           case 'submit': {
-            const form = dom.closest('form');
+            const form = resolveOwnerForm(dom);
             if (form) {
               const refused = requestFormSubmit(form, dom);
               if (refused)
@@ -1693,7 +1694,7 @@ export async function executeCommand(
             break;
           }
           case 'reset': {
-            const form = dom.closest('form');
+            const form = resolveOwnerForm(dom);
             if (!form)
               // Matches the executor's `performReset` "No form found" arm;
               // falling through reported success with nothing reset.

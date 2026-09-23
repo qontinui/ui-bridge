@@ -111,4 +111,71 @@ describe('DefaultActionExecutor — submit/reset event count', () => {
     expect(result.success, `submit failed: ${result.error}`).toBe(true);
     expect(submitter).toBe(btn);
   });
+
+  it('a novalidate form skips the check and submits, as the browser does', async () => {
+    // react-hook-form's default: the app validates itself on submit, so an
+    // empty `required` field must not turn the submit into a refusal.
+    form.noValidate = true;
+    input.required = true;
+    let submits = 0;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submits += 1;
+    });
+
+    const result = await executor.executeAction('the-form', { action: 'submit' });
+
+    expect(result.success, `submit failed: ${result.error}`).toBe(true);
+    expect(submits).toBe(1);
+  });
+
+  it('a formnovalidate submitter skips the check', async () => {
+    // jsdom's requestSubmit does not honour `formnovalidate` (it fires no
+    // event here), so this pins only OUR half: no validity refusal.
+    input.required = true;
+    const btn = document.createElement('button');
+    btn.type = 'submit';
+    btn.formNoValidate = true;
+    form.appendChild(btn);
+    registry.registerElement('the-skip-button', btn, { type: 'button', label: 'Skip' });
+
+    const result = await executor.executeAction('the-skip-button', { action: 'submit' });
+
+    expect(result.error ?? '').not.toContain('constraint validation');
+    expect(result.success, `submit failed: ${result.error}`).toBe(true);
+  });
+
+  it('a button owned by another form via form="…" submits its owner', async () => {
+    const other = document.createElement('form');
+    other.id = 'other-form';
+    document.body.appendChild(other);
+    const btn = document.createElement('button');
+    btn.type = 'submit';
+    btn.setAttribute('form', 'other-form');
+    form.appendChild(btn);
+    registry.registerElement('the-owned-button', btn, { type: 'button', label: 'Other' });
+    let enclosing = 0;
+    let owner = 0;
+    let submitter: HTMLElement | null = null;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      enclosing += 1;
+    });
+    other.addEventListener('submit', (e) => {
+      e.preventDefault();
+      owner += 1;
+      submitter = (e as SubmitEvent).submitter;
+    });
+
+    try {
+      const result = await executor.executeAction('the-owned-button', { action: 'submit' });
+
+      expect(result.success, `submit failed: ${result.error}`).toBe(true);
+      expect(owner).toBe(1);
+      expect(enclosing).toBe(0);
+      expect(submitter).toBe(btn);
+    } finally {
+      other.remove();
+    }
+  });
 });

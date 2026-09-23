@@ -504,33 +504,55 @@ export function dispatchMiddleClick(element: HTMLElement, options?: MouseAction)
 }
 
 /**
+ * The form `element` submits or resets: itself, else its OWNER form — which a
+ * control's `form="…"` attribute can point away from its `closest('form')` —
+ * else the enclosing one. Shared by the HTTP executor and the React IPC relay.
+ */
+export function resolveOwnerForm(element: HTMLElement): HTMLFormElement | null {
+  if (element instanceof HTMLFormElement) return element;
+  const owner = (element as { form?: unknown }).form;
+  if (owner instanceof HTMLFormElement) return owner;
+  return element.closest('form');
+}
+
+type ValidatableControl = HTMLElement & { validity: ValidityState; name?: string };
+
+/**
  * Submit `form` as a user would, shared by the HTTP executor and the React IPC
  * relay. Returns `null` when the submit was dispatched, otherwise why not.
  *
  * `requestSubmit()` runs constraint validation first and, on an invalid form,
- * fires no `submit` event and reports nothing — so without the explicit
- * `checkValidity()` a submit on a form with an empty `required` field would
- * report success with nothing submitted. When `target` is one of the form's
- * own submit controls it is passed as the submitter, so `event.submitter` and
- * the button's `name`/`value` in the form data match a real click.
+ * fires no `submit` event and reports nothing — so without an explicit check a
+ * submit on a form with an empty `required` field would report success with
+ * nothing submitted. The check is skipped exactly where the browser skips it:
+ * a `novalidate` form (react-hook-form's default — the app validates itself)
+ * or a `formnovalidate` submitter. `checkValidity()` fires `invalid` events on
+ * the failing controls, as the browser's own submit-time validation does.
+ *
+ * When `target` is one of the form's own submit controls it is passed as the
+ * submitter, so `event.submitter` and the button's `name`/`value` in the form
+ * data match a real click.
  */
 export function requestFormSubmit(form: HTMLFormElement, target: HTMLElement): string | null {
-  if (!form.checkValidity()) {
+  const submitter =
+    ((target instanceof HTMLButtonElement && target.type === 'submit') ||
+      (target instanceof HTMLInputElement &&
+        (target.type === 'submit' || target.type === 'image'))) &&
+    target.form === form
+      ? target
+      : null;
+  const skipValidation = form.noValidate || (submitter?.formNoValidate ?? false);
+  if (!skipValidation && !form.checkValidity()) {
     const invalid = Array.from(form.elements)
       .filter(
-        (el): el is HTMLInputElement => 'validity' in el && !(el as HTMLInputElement).validity.valid
+        (el): el is ValidatableControl =>
+          'validity' in el && !(el as ValidatableControl).validity.valid
       )
       .map((el) => el.name || el.id || el.tagName.toLowerCase());
     return `form failed constraint validation (${invalid.join(', ') || 'unnamed field'}); submit was not dispatched`;
   }
-  const isSubmitter =
-    (target instanceof HTMLButtonElement && target.type === 'submit') ||
-    (target instanceof HTMLInputElement && (target.type === 'submit' || target.type === 'image'));
-  if (isSubmitter && (target as HTMLButtonElement | HTMLInputElement).form === form) {
-    form.requestSubmit(target);
-  } else {
-    form.requestSubmit();
-  }
+  if (submitter) form.requestSubmit(submitter);
+  else form.requestSubmit();
   return null;
 }
 
@@ -3568,7 +3590,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performSubmit(element: HTMLElement): void {
-    const form = element instanceof HTMLFormElement ? element : element.closest('form');
+    const form = resolveOwnerForm(element);
     if (form) {
       // `requestSubmit()` fires the one cancelable `submit` event itself, so a
       // handler's `preventDefault` is honoured. A hand-dispatched `submit`
@@ -3581,7 +3603,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   private performReset(element: HTMLElement): void {
-    const form = element instanceof HTMLFormElement ? element : element.closest('form');
+    const form = resolveOwnerForm(element);
     if (form) {
       // `reset()` fires the `reset` event itself; dispatching another made
       // every handler run twice.
