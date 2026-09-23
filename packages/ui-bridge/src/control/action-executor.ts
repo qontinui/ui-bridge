@@ -504,6 +504,37 @@ export function dispatchMiddleClick(element: HTMLElement, options?: MouseAction)
 }
 
 /**
+ * Submit `form` as a user would, shared by the HTTP executor and the React IPC
+ * relay. Returns `null` when the submit was dispatched, otherwise why not.
+ *
+ * `requestSubmit()` runs constraint validation first and, on an invalid form,
+ * fires no `submit` event and reports nothing — so without the explicit
+ * `checkValidity()` a submit on a form with an empty `required` field would
+ * report success with nothing submitted. When `target` is one of the form's
+ * own submit controls it is passed as the submitter, so `event.submitter` and
+ * the button's `name`/`value` in the form data match a real click.
+ */
+export function requestFormSubmit(form: HTMLFormElement, target: HTMLElement): string | null {
+  if (!form.checkValidity()) {
+    const invalid = Array.from(form.elements)
+      .filter(
+        (el): el is HTMLInputElement => 'validity' in el && !(el as HTMLInputElement).validity.valid
+      )
+      .map((el) => el.name || el.id || el.tagName.toLowerCase());
+    return `form failed constraint validation (${invalid.join(', ') || 'unnamed field'}); submit was not dispatched`;
+  }
+  const isSubmitter =
+    (target instanceof HTMLButtonElement && target.type === 'submit') ||
+    (target instanceof HTMLInputElement && (target.type === 'submit' || target.type === 'image'));
+  if (isSubmitter && (target as HTMLButtonElement | HTMLInputElement).form === form) {
+    form.requestSubmit(target);
+  } else {
+    form.requestSubmit();
+  }
+  return null;
+}
+
+/**
  * The click-like refusal verdict, shared by BOTH dispatch paths — the HTTP
  * action executor below and the React IPC relay (`react/commandHandlers.ts`).
  *
@@ -3539,11 +3570,11 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performSubmit(element: HTMLElement): void {
     const form = element instanceof HTMLFormElement ? element : element.closest('form');
     if (form) {
-      // `requestSubmit()` fires the one cancelable `submit` event itself (and
-      // runs constraint validation), so a handler's `preventDefault` is
-      // honoured. A hand-dispatched `submit` before it made every handler run
-      // twice — the relay (`react/commandHandlers.ts`) fires it once.
-      form.requestSubmit();
+      // `requestSubmit()` fires the one cancelable `submit` event itself, so a
+      // handler's `preventDefault` is honoured. A hand-dispatched `submit`
+      // before it made every handler run twice.
+      const refused = requestFormSubmit(form, element);
+      if (refused) throw new Error(refused);
     } else {
       throw new Error('No form found for submit action');
     }

@@ -48,7 +48,7 @@ describe('DefaultActionExecutor — submit/reset event count', () => {
     expect(submits).toBe(1);
   });
 
-  it('a cancelling submit handler still sees exactly one event', async () => {
+  it('a cancelling submit handler sees exactly one event (control: passed before the fix too)', async () => {
     let submits = 0;
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -74,5 +74,41 @@ describe('DefaultActionExecutor — submit/reset event count', () => {
     expect(result.success, `reset failed: ${result.error}`).toBe(true);
     expect(resets).toBe(1);
     expect(input.value).toBe('initial');
+  });
+
+  it('an invalid form is refused, not reported as a success with nothing submitted', async () => {
+    input.name = 'email';
+    input.required = true;
+    let submits = 0;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submits += 1;
+    });
+
+    const result = await executor.executeAction('the-form', { action: 'submit' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('constraint validation');
+    expect(result.error).toContain('email');
+    expect(submits).toBe(0);
+  });
+
+  it("a submit button target is passed as the event's submitter", async () => {
+    const btn = document.createElement('button');
+    btn.type = 'submit';
+    btn.name = 'intent';
+    btn.value = 'save';
+    form.appendChild(btn);
+    registry.registerElement('the-button', btn, { type: 'button', label: 'Save' });
+    let submitter: HTMLElement | null = null;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitter = (e as SubmitEvent).submitter;
+    });
+
+    const result = await executor.executeAction('the-button', { action: 'submit' });
+
+    expect(result.success, `submit failed: ${result.error}`).toBe(true);
+    expect(submitter).toBe(btn);
   });
 });

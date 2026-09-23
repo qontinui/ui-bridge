@@ -365,4 +365,27 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
     expect(result.success).toBe(false);
     expect(result.failureDetails?.errorCode).toBe('UNSUPPORTED_ACTION');
   });
+
+  it('submit on an invalid form is refused over the relay', async () => {
+    const form = document.createElement('form');
+    const field = document.createElement('input');
+    field.name = 'email';
+    field.required = true;
+    const submitBtn = button('invalid-form');
+    form.append(field, submitBtn);
+    container.appendChild(form);
+    let submitted = false;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitted = true;
+    });
+    getGlobalRegistry().registerElement('el-invalid-form', submitBtn, { type: 'button' });
+
+    const result = await relay('el-invalid-form', 'submit');
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('ACTION_REJECTED');
+    expect(result.error).toContain('email');
+    expect(submitted).toBe(false);
+  });
 });

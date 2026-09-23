@@ -41,6 +41,7 @@ import {
   readHandlerErrorEnvelope,
   DefaultActionExecutor,
   getClickRefusal,
+  requestFormSubmit,
   dispatchRightClick,
   dispatchMiddleClick,
 } from '../control/action-executor';
@@ -1671,8 +1672,16 @@ export async function executeCommand(
           }
           case 'submit': {
             const form = dom.closest('form');
-            if (form) form.requestSubmit();
-            else {
+            if (form) {
+              const refused = requestFormSubmit(form, dom);
+              if (refused)
+                return createActionFailure(
+                  id,
+                  'ACTION_REJECTED',
+                  `Element ${id}: ${refused}`,
+                  startTime
+                );
+            } else {
               // No form: the fallback IS a click, so it answers to the same
               // refusal verdict as a plain `click` — otherwise `submit` is a
               // route around the guard above on an aria-disabled /
