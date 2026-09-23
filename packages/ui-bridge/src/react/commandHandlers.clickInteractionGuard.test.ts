@@ -295,4 +295,57 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
       expect(blockedFired).toBe(false);
     });
   }
+
+  it("submit's no-form click fallback answers to the same refusal as click", async () => {
+    // Positive control: an unblocked form-less control is clicked.
+    const free = button('submit-free');
+    container.appendChild(free);
+    getGlobalRegistry().registerElement('el-submit-free', free, { type: 'button' });
+    let freeClicked = false;
+    free.addEventListener('click', () => {
+      freeClicked = true;
+    });
+    expect((await relay('el-submit-free', 'submit')).success).toBe(true);
+    expect(freeClicked).toBe(true);
+
+    const blocked = button('submit-blocked');
+    blocked.style.pointerEvents = 'none';
+    container.appendChild(blocked);
+    getGlobalRegistry().registerElement('el-submit-blocked', blocked, { type: 'button' });
+    let blockedClicked = false;
+    blocked.addEventListener('click', () => {
+      blockedClicked = true;
+    });
+
+    const result = await relay('el-submit-blocked', 'submit');
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
+    expect(result.error).toContain('pointer-events:none');
+    expect(result.error).toContain('submit was not dispatched');
+    expect(result.failureDetails?.suggestedActions?.[0]?.command).toBe('hoverClick');
+    expect(blockedClicked).toBe(false);
+  });
+
+  it('submit inside a form still submits; reset outside a form is refused, not a silent success', async () => {
+    const form = document.createElement('form');
+    const submitBtn = button('in-form');
+    form.appendChild(submitBtn);
+    container.appendChild(form);
+    let submitted = false;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitted = true;
+    });
+    getGlobalRegistry().registerElement('el-in-form', submitBtn, { type: 'button' });
+    expect((await relay('el-in-form', 'submit')).success).toBe(true);
+    expect(submitted).toBe(true);
+
+    const loose = button('reset-loose');
+    container.appendChild(loose);
+    getGlobalRegistry().registerElement('el-reset-loose', loose, { type: 'button' });
+    const result = await relay('el-reset-loose', 'reset');
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('UNSUPPORTED_ACTION');
+  });
 });

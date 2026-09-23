@@ -298,6 +298,38 @@ function createActionFailure(
 }
 
 /**
+ * The relay's refusal envelope for a click `getClickRefusal` blocked — shared
+ * by the pre-dispatch guard and `submit`'s no-form click fallback so both name
+ * the same signals and give the same advice.
+ */
+function createClickRefusalFailure(
+  id: string,
+  action: string,
+  refusal: NonNullable<ReturnType<typeof getClickRefusal>>,
+  startTime: number
+) {
+  const failure = createActionFailure(
+    id,
+    'ELEMENT_NOT_ENABLED',
+    `Element ${id} is disabled (${refusal.reasons.join(', ')}); ${action} was not dispatched`,
+    startTime,
+    refusal.signals
+  );
+  // Waiting never clears a hover-gated `pointer-events: none`; the verb that
+  // drives it is `hoverClick`. Lead with that advice.
+  if (refusal.reasons.includes('pointer-events:none')) {
+    failure.failureDetails.suggestedActions.unshift({
+      suggestion:
+        'The control is pointer-events:none — if it is revealed on hover, use the hoverClick action',
+      command: 'hoverClick',
+      confidence: 0.9,
+      retryable: true,
+    });
+  }
+  return failure;
+}
+
+/**
  * Fallback resolution chain for stale element IDs.
  *
  * When an action targets an element ID that no longer exists in the registry
@@ -1297,27 +1329,8 @@ export async function executeCommand(
         // executor refuses. It runs before custom-action precedence, as in the
         // executor.
         const clickRefusal = getClickRefusal(domEl, request.action);
-        if (clickRefusal) {
-          const failure = createActionFailure(
-            id,
-            'ELEMENT_NOT_ENABLED',
-            `Element ${id} is disabled (${clickRefusal.reasons.join(', ')}); ${request.action} was not dispatched`,
-            startTime,
-            clickRefusal.signals
-          );
-          // Waiting never clears a hover-gated `pointer-events: none`; the
-          // verb that drives it is `hoverClick`. Lead with that advice.
-          if (clickRefusal.reasons.includes('pointer-events:none')) {
-            failure.failureDetails.suggestedActions.unshift({
-              suggestion:
-                'The control is pointer-events:none — if it is revealed on hover, use the hoverClick action',
-              command: 'hoverClick',
-              confidence: 0.9,
-              retryable: true,
-            });
-          }
-          return failure;
-        }
+        if (clickRefusal)
+          return createClickRefusalFailure(id, request.action, clickRefusal, startTime);
         // Every other action: native `disabled` only. A hover-revealed
         // `pointer-events:none` target must still be focusable, typeable, etc.
         if (readDisabledSignals(domEl).disabled)
@@ -1659,12 +1672,29 @@ export async function executeCommand(
           case 'submit': {
             const form = dom.closest('form');
             if (form) form.requestSubmit();
-            else dispatchRealClick(dom);
+            else {
+              // No form: the fallback IS a click, so it answers to the same
+              // refusal verdict as a plain `click` — otherwise `submit` is a
+              // route around the guard above on an aria-disabled /
+              // pointer-events:none control.
+              const refusal = getClickRefusal(dom, 'click');
+              if (refusal) return createClickRefusalFailure(id, 'submit', refusal, startTime);
+              dispatchRealClick(dom);
+            }
             break;
           }
           case 'reset': {
             const form = dom.closest('form');
-            if (form) form.reset();
+            if (!form)
+              // Matches the executor's `performReset` "No form found" arm;
+              // falling through reported success with nothing reset.
+              return createActionFailure(
+                id,
+                'UNSUPPORTED_ACTION',
+                `Cannot reset ${dom.tagName}: no form found`,
+                startTime
+              );
+            form.reset();
             break;
           }
           case 'sendKeys': {
