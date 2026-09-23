@@ -248,7 +248,7 @@ function getElementState(element: HTMLElement): ElementState {
   const style = window.getComputedStyle(element);
 
   // The interaction blockers, unfolded once (`enabled` below is the derived
-  // fold). Same helper in every serializer AND in `getClickDisabledSignals`
+  // fold). Same helper in every serializer AND in `getClickRefusal`
   // below — see `core/a11y` — so this reader publishes exactly the verdict the
   // click path will reach.
   const disabledSignals = readInteractionBlockers(element, style);
@@ -431,32 +431,20 @@ function isDisabled(element: HTMLElement): boolean {
 }
 
 /**
- * Click-time disabled signals.
- *
- * The SAME predicate the `ElementState` readers fold into `state.enabled`
- * (`core/a11y`'s `readInteractionBlockers` / `isInteractionBlocked`) — a
- * second, click-only copy is precisely how the reader and the actor drifted
- * apart before (a `pointer-events: none` control read `enabled: true` and then
- * had its click refused). This wrapper only RESHAPES that verdict into the
- * per-signal envelope the error surfaces so callers can disambiguate, and
- * returns `null` when nothing blocks interaction.
+ * Click-time disabled signals — the per-signal envelope `getClickRefusal`
+ * (below) surfaces on `ElementDisabledError` so callers can disambiguate WHICH
+ * signal refused the click. It only RESHAPES `core/a11y`'s
+ * `readInteractionBlockers`; the verdict itself is `isInteractionBlocked`, the
+ * same fold the `ElementState` readers publish as `state.enabled` — a second,
+ * click-only copy is precisely how the reader and the actor drifted apart
+ * before (a `pointer-events: none` control read `enabled: true` and then had
+ * its click refused).
  */
 interface ClickDisabledSignals {
   disabled: true;
   ariaDisabled: boolean;
   nativeDisabled: boolean;
   pointerEvents: string;
-}
-
-function getClickDisabledSignals(element: HTMLElement): ClickDisabledSignals | null {
-  const blockers = readInteractionBlockers(element);
-  if (!isInteractionBlocked(blockers)) return null;
-  return {
-    disabled: true,
-    ariaDisabled: blockers.ariaDisabled,
-    nativeDisabled: blockers.disabled,
-    pointerEvents: blockers.pointerEvents,
-  };
 }
 
 /**
@@ -486,6 +474,42 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
  * the pointer-events discriminator is waived.
  */
 const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
+
+/**
+ * The click-like refusal verdict, shared by BOTH dispatch paths — the HTTP
+ * action executor below and the React IPC relay (`react/commandHandlers.ts`).
+ *
+ * Returns `null` when `action` is not click-like or nothing blocks it;
+ * otherwise the per-signal envelope plus the human-readable reasons. The fold
+ * is `core/a11y`'s `isInteractionBlocked`, with the pointer-events waiver for
+ * `POINTER_EVENTS_TOLERANT_ACTIONS` passed as its option — so the executor,
+ * the relay and `ElementState.enabled` answer from one predicate. Before this
+ * lived here the relay refused native `disabled` only, and a relay `click` on
+ * an `aria-disabled` / `pointer-events: none` control reported success while
+ * the executor path (and the element's own `enabled: false`) refused it.
+ */
+export function getClickRefusal(
+  element: HTMLElement,
+  action: string
+): { signals: ClickDisabledSignals; reasons: string[] } | null {
+  if (!CLICK_LIKE_ACTIONS.has(action)) return null;
+  const blockers = readInteractionBlockers(element);
+  const ignorePointerEvents = POINTER_EVENTS_TOLERANT_ACTIONS.has(action);
+  if (!isInteractionBlocked(blockers, { ignorePointerEvents })) return null;
+  const reasons: string[] = [];
+  if (blockers.ariaDisabled) reasons.push('aria-disabled=true');
+  if (blockers.disabled) reasons.push('disabled property');
+  if (!ignorePointerEvents && blockers.pointerEventsNone) reasons.push('pointer-events:none');
+  return {
+    signals: {
+      disabled: true,
+      ariaDisabled: blockers.ariaDisabled,
+      nativeDisabled: blockers.disabled,
+      pointerEvents: blockers.pointerEvents,
+    },
+    reasons,
+  };
+}
 
 /**
  * Error subclass used to carry structured disabled-state details out through
@@ -2700,29 +2724,12 @@ export class DefaultActionExecutor implements ActionExecutor {
           visibilityReason
         );
       }
-      const signals = getClickDisabledSignals(element);
-      if (signals) {
-        // For pointer-events-tolerant actions (`hoverClick`), a base-state
-        // `pointer-events: none` is the very condition the action is built to
-        // overcome — don't treat it as a blocker. We still block on a real
-        // `aria-disabled`/native `disabled`, both of which survive hover.
-        const pointerTolerant = POINTER_EVENTS_TOLERANT_ACTIONS.has(action);
-        const blockingDisabled =
-          signals.ariaDisabled ||
-          signals.nativeDisabled ||
-          (!pointerTolerant && signals.pointerEvents === 'none');
-        if (blockingDisabled) {
-          const reasons: string[] = [];
-          if (signals.ariaDisabled) reasons.push('aria-disabled=true');
-          if (signals.nativeDisabled) reasons.push('disabled property');
-          if (!pointerTolerant && signals.pointerEvents === 'none') {
-            reasons.push('pointer-events:none');
-          }
-          throw new ElementDisabledError(
-            `element is disabled (${reasons.join(', ')}); click was not dispatched`,
-            signals
-          );
-        }
+      const refusal = getClickRefusal(element, action);
+      if (refusal) {
+        throw new ElementDisabledError(
+          `element is disabled (${refusal.reasons.join(', ')}); click was not dispatched`,
+          refusal.signals
+        );
       }
     }
 

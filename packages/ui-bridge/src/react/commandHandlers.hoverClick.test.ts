@@ -16,7 +16,8 @@
  * hover the nearest hoverable ancestor and the target, yield an animation
  * frame, then `dispatchRealClick`. These tests assert that a hover-gated
  * element is successfully clicked via `hoverClick`, and that a plain `click`
- * on the same element still behaves as before.
+ * on the same element is refused (`pointer-events:none`, the same verdict the
+ * HTTP executor and `ElementState.enabled` reach) until it is interactive.
  *
  * jsdom note: jsdom does not run a stylesheet `:hover` recalc, so to model the
  * real-browser reveal we attach a `mouseenter` listener on the `.group`
@@ -132,8 +133,34 @@ describe('relay hoverClick → reveal-then-click', () => {
     expect(button.style.pointerEvents).toBe('none');
   });
 
-  it('plain "click" on the same hover-gated element still behaves as before', async () => {
+  it('plain "click" on the same hover-gated element is refused — hoverClick is the verb for it', async () => {
+    // A plain click performs no hover, so nothing flips the base-state
+    // `pointer-events:none`: the relay refuses it exactly as the HTTP
+    // executor does and as the element's own `state.enabled: false` says
+    // (plan 2026-08-23-single-source-derived-facts, post-#222 follow-up).
+    // Before, the relay dispatched it and reported success.
     getGlobalRegistry().registerElement('el-plain', button, { type: 'button' });
+
+    let clicked = false;
+    button.addEventListener('click', () => {
+      clicked = true;
+    });
+
+    const result = (await executeCommand(
+      'executeElementAction',
+      { id: 'el-plain', request: { action: 'click' } },
+      emptyBridge,
+    )) as { success?: boolean; error?: string; failureDetails?: { errorCode?: string } };
+
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('ELEMENT_NOT_ENABLED');
+    expect(result.error).toContain('pointer-events:none');
+    expect(clicked).toBe(false);
+  });
+
+  it('plain "click" once the button is pointer-events:auto dispatches the normal pointer sequence', async () => {
+    button.style.pointerEvents = 'auto';
+    getGlobalRegistry().registerElement('el-plain-auto', button, { type: 'button' });
 
     const seen: string[] = [];
     for (const t of ['pointerdown', 'pointerup', 'click']) {
@@ -142,7 +169,7 @@ describe('relay hoverClick → reveal-then-click', () => {
 
     const result = (await executeCommand(
       'executeElementAction',
-      { id: 'el-plain', request: { action: 'click' } },
+      { id: 'el-plain-auto', request: { action: 'click' } },
       emptyBridge,
     )) as { success?: boolean; action?: string };
 

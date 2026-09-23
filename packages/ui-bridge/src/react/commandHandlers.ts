@@ -40,6 +40,7 @@ import {
   nextAnimationFrame,
   readHandlerErrorEnvelope,
   DefaultActionExecutor,
+  getClickRefusal,
 } from '../control/action-executor';
 import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest } from '../control/types';
@@ -1296,6 +1297,19 @@ export async function executeCommand(
             'ELEMENT_NOT_ENABLED',
             `Element ${id} is disabled`,
             startTime
+          );
+        // Click-like actions additionally refuse `aria-disabled` and effective
+        // `pointer-events: none` (waived for `hoverClick`) — the SAME verdict
+        // the HTTP executor reaches and `ElementState.enabled` publishes, so a
+        // relay click cannot report success on a control the executor refuses.
+        const clickRefusal = getClickRefusal(domEl, request.action);
+        if (clickRefusal)
+          return createActionFailure(
+            id,
+            'ELEMENT_NOT_ENABLED',
+            `Element ${id} is disabled (${clickRefusal.reasons.join(', ')}); click was not dispatched`,
+            startTime,
+            clickRefusal.signals
           );
         dom = domEl;
         registered = el;

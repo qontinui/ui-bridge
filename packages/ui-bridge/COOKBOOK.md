@@ -180,7 +180,9 @@ Conditions:
 - `clickable` — visible AND the click path would not refuse it: not
   `disabled`, not `aria-disabled="true"`, AND computed `pointer-events` is not
   `none` (including `none` inherited from an ancestor). This is the same
-  predicate as `ElementState.enabled` and `UIQuery.enabled()`. A hover-revealed
+  predicate as `ElementState.enabled` and `UIQuery.enabled()`, and the one a
+  click-like action (`click`, `doubleClick`, `toggle`, …) is refused on, over
+  both the HTTP executor and the React IPC relay. A hover-revealed
   control (e.g. a `group-hover:pointer-events-auto` close button) is therefore
   NOT `clickable` until it is hovered — use a `hoverClick` action for it
   rather than waiting on `clickable`.

@@ -415,8 +415,22 @@ export function readInteractionBlockers(
 
 /**
  * The ONE fold consulted by every `ElementState.enabled` producer AND by the
- * click-path pre-check. `enabled` is `!isInteractionBlocked(...)`.
+ * click-path pre-checks (the HTTP action executor and the React IPC relay).
+ * `enabled` is `!isInteractionBlocked(...)`.
+ *
+ * `ignorePointerEvents` waives ONLY the pointer-events discriminator, for an
+ * actor that overcomes it itself (`hoverClick` hovers a `group-hover` gate
+ * open before clicking). Native `disabled` and `aria-disabled` survive a hover,
+ * so they always block. Passing the option — rather than re-folding the struct
+ * at the call site — keeps the waiver inside the one predicate.
  */
-export function isInteractionBlocked(blockers: InteractionBlockers): boolean {
-  return blockers.disabled || blockers.ariaDisabled || blockers.pointerEventsNone;
+export function isInteractionBlocked(
+  blockers: InteractionBlockers,
+  options?: { ignorePointerEvents?: boolean }
+): boolean {
+  return (
+    blockers.disabled ||
+    blockers.ariaDisabled ||
+    (!options?.ignorePointerEvents && blockers.pointerEventsNone)
+  );
 }
