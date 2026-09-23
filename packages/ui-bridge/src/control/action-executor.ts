@@ -510,8 +510,12 @@ export function dispatchMiddleClick(element: HTMLElement, options?: MouseAction)
  */
 export function resolveOwnerForm(element: HTMLElement): HTMLFormElement | null {
   if (element instanceof HTMLFormElement) return element;
-  const owner = (element as { form?: unknown }).form;
-  if (owner instanceof HTMLFormElement) return owner;
+  // A `form="…"` attribute decides the owner outright — one naming a missing
+  // id means NO owner (the browser submits nothing), not the enclosing form.
+  if ('form' in element && element.hasAttribute('form')) {
+    const owner = (element as { form?: unknown }).form;
+    return owner instanceof HTMLFormElement ? owner : null;
+  }
   return element.closest('form');
 }
 

@@ -388,4 +388,46 @@ describe('relay click-like pre-check agrees with ElementState.enabled', () => {
     expect(result.error).toContain('email');
     expect(submitted).toBe(false);
   });
+
+  it('submit and reset act on the form="…" owner, and a dangling form="…" is no form', async () => {
+    const enclosing = document.createElement('form');
+    const owner = document.createElement('form');
+    owner.id = 'relay-owner-form';
+    const field = document.createElement('input');
+    field.defaultValue = 'initial';
+    owner.appendChild(field);
+    const btn = button('owned');
+    btn.setAttribute('form', 'relay-owner-form');
+    enclosing.appendChild(btn);
+    container.append(enclosing, owner);
+    const seen: string[] = [];
+    for (const [name, f] of [
+      ['enclosing', enclosing],
+      ['owner', owner],
+    ] as const) {
+      f.addEventListener('submit', (e) => {
+        e.preventDefault();
+        seen.push(`${name}:submit`);
+      });
+      f.addEventListener('reset', () => seen.push(`${name}:reset`));
+    }
+    getGlobalRegistry().registerElement('el-owned', btn, { type: 'button' });
+
+    expect((await relay('el-owned', 'submit')).success).toBe(true);
+    field.value = 'edited';
+    expect((await relay('el-owned', 'reset')).success).toBe(true);
+    expect(seen).toEqual(['owner:submit', 'owner:reset']);
+    expect(field.value).toBe('initial');
+
+    // A form="…" naming no element: no owner, so reset is refused rather
+    // than resetting the enclosing form.
+    const dangling = button('dangling');
+    dangling.setAttribute('form', 'no-such-form');
+    enclosing.appendChild(dangling);
+    getGlobalRegistry().registerElement('el-dangling', dangling, { type: 'button' });
+    const result = await relay('el-dangling', 'reset');
+    expect(result.success).toBe(false);
+    expect(result.failureDetails?.errorCode).toBe('UNSUPPORTED_ACTION');
+    expect(seen).toEqual(['owner:submit', 'owner:reset']);
+  });
 });
