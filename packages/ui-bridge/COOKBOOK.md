@@ -177,7 +177,13 @@ Conditions:
 
 - `present` — element is registered (exists in the registry).
 - `visible` — attached, non-zero size, `offsetParent !== null`.
-- `clickable` — visible AND not `disabled` AND not `aria-disabled="true"`.
+- `clickable` — visible AND the click path would not refuse it: not
+  `disabled`, not `aria-disabled="true"`, AND computed `pointer-events` is not
+  `none` (including `none` inherited from an ancestor). This is the same
+  predicate as `ElementState.enabled` and `UIQuery.enabled()`. A hover-revealed
+  control (e.g. a `group-hover:pointer-events-auto` close button) is therefore
+  NOT `clickable` until it is hovered — use a `hoverClick` action for it
+  rather than waiting on `clickable`.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 

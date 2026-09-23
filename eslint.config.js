@@ -168,9 +168,27 @@ export default tseslint.config(
     // `UIQuery.enabled()` read those helpers, so the reader and the actor
     // cannot disagree about the same element. A hand-inlined copy of one of the
     // three inputs is how that disagreement came back last time (UIQuery kept
-    // the pre-#166 `disabled || aria-disabled` predicate). Only core/a11y.ts
-    // (exempt below) reads them raw; the fix for a flagged read is to call the
-    // helper — never an eslint-disable.
+    // the pre-#166 `disabled || aria-disabled` predicate). Of the modules
+    // exempt below, core/a11y.ts is the one that owns these reads (the other
+    // two, core/class-name.ts and core/redaction.ts, are exempt for the
+    // className/redaction families and read none of these inputs). The fix for
+    // a flagged read is to call the helper — never an eslint-disable.
+    //
+    // KNOWN GAPS — shapes these selectors cannot see without type information,
+    // left to review (each is a raw read of an interaction-predicate input):
+    //   - a native `.disabled` read off an already-TYPED binding (`b.disabled`
+    //     where `b: HTMLButtonElement`): syntactically identical to a form
+    //     projection's legitimate `input.disabled`, so only a typed rule could
+    //     tell a predicate from a projection.
+    //   - `.pointerEvents` off a STORED computed style
+    //     (`const st = getComputedStyle(el); st.pointerEvents`): the selector is
+    //     rooted at the call, and a stored style object looks like the
+    //     serializers' legitimate `computedStyles` projections.
+    //   - `el.matches(':disabled')` / `querySelector(':disabled')` and
+    //     `[aria-disabled]` CSS selectors: the signal is inside a string.
+    //   - `.ariaDisabled` read off a variable whose name is in the struct
+    //     allowlist below (a DOM element bound to e.g. `s`) — the allowlist is
+    //     what keeps reads of the helper's own returned struct legal.
     const INTERACTION_PREDICATE_MESSAGE_TAIL =
       ' Read it via core/a11y — readDisabledSignals(el) for the DOM disabled signals, readInteractionBlockers(el) for the full blocking surface — and fold with isInteractionBlocked, so every reader agrees with the click path.';
     const INTERACTION_PREDICATE_SELECTORS = [
@@ -183,14 +201,29 @@ export default tseslint.config(
           INTERACTION_PREDICATE_MESSAGE_TAIL,
       },
       {
-        // The cast-then-read shape: `(el as HTMLButtonElement).disabled`.
-        // Assignments (`(el as HTMLButtonElement).disabled = true`) are writes,
-        // not predicate reads, and stay allowed. Reads off an already-typed
-        // form control (`input.disabled` in a form projection) are not flagged.
+        // The cast-then-read shapes: `(el as HTMLButtonElement).disabled`,
+        // `(<HTMLButtonElement>el).disabled`, and the non-null-cast
+        // `(el as HTMLButtonElement)!.disabled`. Assignments
+        // (`(el as HTMLButtonElement).disabled = true`) are writes, not
+        // predicate reads, and stay allowed. Reads off an already-typed form
+        // control (`input.disabled` in a form projection) are not flagged —
+        // see KNOWN GAPS above.
         selector:
-          "MemberExpression[computed=false][property.name='disabled'][object.type='TSAsExpression']:not(AssignmentExpression > .left)",
+          "MemberExpression[computed=false][property.name='disabled'][object.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left), MemberExpression[computed=false][property.name='disabled'][object.type='TSNonNullExpression'][object.expression.type=/^(TSAsExpression|TSTypeAssertion)$/]:not(AssignmentExpression > .left)",
         message:
           'Interaction predicate: casting an element to read its native `.disabled` re-implements readDisabledSignals.' +
+          INTERACTION_PREDICATE_MESSAGE_TAIL,
+      },
+      {
+        // The ARIA reflection IDL property `el.ariaDisabled` — the same signal
+        // as the attribute. Reads of the helper's returned struct and of
+        // ElementState carriers (`disabledSignals.ariaDisabled`,
+        // `blockers.ariaDisabled`, `state.ariaDisabled`, `x.state.ariaDisabled`,
+        // …) are allowlisted by object name; everything else is flagged.
+        selector:
+          "MemberExpression[computed=false][property.name='ariaDisabled']:not(AssignmentExpression > .left):not([object.name=/^(disabledSignals|signals|sig|blockers|s|state)$/]):not([object.property.name='state'])",
+        message:
+          'Interaction predicate: reading the ariaDisabled IDL property off an element re-implements readDisabledSignals.' +
           INTERACTION_PREDICATE_MESSAGE_TAIL,
       },
       {
@@ -266,8 +299,9 @@ export default tseslint.config(
       {
         files: ['packages/ui-bridge/src/**/*.ts', 'packages/ui-bridge/src/**/*.tsx'],
         // redaction-surface:package-guard-exemptions:start
-        // Every entry here is EXEMPT from all §4.6 Layer-1 rules (and from the
-        // interaction-predicate guard — core/a11y.ts is its sole raw reader), so this list
+        // Every entry here is EXEMPT from all §4.6 Layer-1 rules and from the
+        // interaction-predicate guard (of these, core/a11y.ts is the one that
+        // owns the interaction-predicate reads), so this list
         // is itself redaction surface: enrolling a file beside the sanctioned
         // readers would silently open a raw-read channel. Mirrored into
         // packages/ui-bridge/redaction-surface.manifest.json and drift-checked

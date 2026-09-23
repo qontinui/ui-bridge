@@ -66,6 +66,28 @@ describe('UndoDetector', () => {
       expect(result.undoElement!.enabled).toBe(false);
     });
 
+    it('detects an undo button blocked by an ancestor pointer-events:none as not enabled', () => {
+      // isDisabled reads core/a11y's readInteractionBlockers, so an undo
+      // control the click path would refuse (inherited computed
+      // pointer-events:none) reports enabled:false like a disabled one.
+      document.body.innerHTML =
+        '<div style="pointer-events: none"><button aria-label="Undo">↩</button></div>';
+
+      const result = detector.detect();
+
+      expect(result.undoElement).toBeDefined();
+      expect(result.undoElement!.enabled).toBe(false);
+    });
+
+    it('detects a plain undo button as enabled (negative control)', () => {
+      document.body.innerHTML = '<button aria-label="Undo">↩</button>';
+
+      const result = detector.detect();
+
+      expect(result.undoElement).toBeDefined();
+      expect(result.undoElement!.enabled).toBe(true);
+    });
+
     it('detects undo by title attribute', () => {
       document.body.innerHTML = '<button title="Undo (Ctrl+Z)">↩</button>';
 
