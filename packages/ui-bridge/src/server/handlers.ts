@@ -55,6 +55,7 @@ import { buildVisibilityReport } from './visibility-report';
 import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
+import { describeInnerFailure } from './inner-failure';
 import {
   readValuePrimitive,
   findByTextPrimitive,
@@ -3294,6 +3295,25 @@ export function createHandlers(
       try {
         refreshElements();
         const result = await changeTracker.executeWithDiff(request);
+        // The action's verdict is the response's verdict. `success(result)`
+        // alone made the envelope say `success: true` for any action that
+        // RETURNED, burying a failed one in `data.actionSuccess` — the same
+        // double-wrap `executeElementAction` and `relayCommand` shed (see
+        // `readRelayInnerFailure`). The full result stays under `data`: the
+        // diff around a failed action is diagnostic, not noise.
+        if (result.actionSuccess !== true) {
+          const inner = describeInnerFailure(
+            result.actionResult,
+            'The action did not report success and supplied no error message.'
+          );
+          return {
+            success: false,
+            error: inner.message,
+            code: inner.code as UiBridgeErrorCode,
+            data: result,
+            timestamp: Date.now(),
+          };
+        }
         return success(result);
       } catch (err) {
         return error((err as Error).message, 'EXECUTE_WITH_DIFF_ERROR');

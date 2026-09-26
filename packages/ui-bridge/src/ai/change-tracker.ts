@@ -245,7 +245,9 @@ export class ChangeTracker {
     if (request.instruction && this.deps.executeNLAction) {
       const nlResult = await this.deps.executeNLAction(request.instruction);
       actionResult = nlResult;
-      actionSuccess = nlResult.success;
+      // Strict: only a literal `true` is success. An absent or non-boolean
+      // verdict is not a success, and must not read as one downstream.
+      actionSuccess = nlResult?.success === true;
     } else if (request.elementAction && this.deps.executeElementAction) {
       const result = await this.deps.executeElementAction(request.elementAction.elementId, {
         action: request.elementAction.action,
@@ -255,8 +257,7 @@ export class ChangeTracker {
       actionSuccess =
         result !== null &&
         typeof result === 'object' &&
-        'success' in result &&
-        (result as { success: boolean }).success;
+        (result as { success?: unknown }).success === true;
     } else {
       throw new Error(
         'Either instruction (with executeNLAction) or elementAction (with executeElementAction) must be provided'

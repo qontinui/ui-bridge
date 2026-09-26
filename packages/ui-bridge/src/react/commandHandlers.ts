@@ -2677,9 +2677,43 @@ export async function executeCommand(
       }
       await new Promise((r) => setTimeout(r, 100)); // Brief wait for DOM to settle
       const after = elements.map(elementToSnapshot);
+      const diff = { before: before.length, after: after.length, timestamp: Date.now() };
+      // The action's verdict, strictly: only an object carrying a literal
+      // `success: true` succeeded. Same field the in-process producer
+      // (`ChangeTracker.executeWithDiff`) emits, so a consumer reads one name
+      // whichever transport answered.
+      const inner =
+        actionResult !== null && typeof actionResult === 'object' && !Array.isArray(actionResult)
+          ? (actionResult as Record<string, unknown>)
+          : undefined;
+      const actionSuccess = inner?.success === true;
+      if (actionSuccess) return { actionSuccess, actionResult, diff };
+      // A failed action is a failed command. This payload used to carry no
+      // verdict at all, so `relayCommand`'s inner-failure lift
+      // (`readRelayInnerFailure`, keyed on a literal `success: false`) never
+      // fired and the caller got an outer success. Report it the way every
+      // other relay command does — `success: false` plus the inner action's
+      // `error` and code carriers, hoisted so the lift can read them — while
+      // keeping `actionResult` and `diff`, which are diagnostic.
+      const hoist = (key: 'code' | 'errorCode'): Record<string, string> =>
+        typeof inner?.[key] === 'string' && (inner[key] as string).length > 0
+          ? { [key]: inner[key] as string }
+          : {};
+      const nestedErrorCode = [inner?.failureDetails, inner?.failureInfo]
+        .map((h) => (h as { errorCode?: unknown } | undefined)?.errorCode)
+        .find((c): c is string => typeof c === 'string' && c.length > 0);
       return {
+        success: false,
+        error:
+          typeof inner?.error === 'string' && inner.error.length > 0
+            ? inner.error
+            : 'The action did not report success and supplied no error message.',
+        ...hoist('code'),
+        ...(nestedErrorCode ? { errorCode: nestedErrorCode } : {}),
+        ...hoist('errorCode'),
+        actionSuccess,
         actionResult,
-        diff: { before: before.length, after: after.length, timestamp: Date.now() },
+        diff,
       };
     }
 

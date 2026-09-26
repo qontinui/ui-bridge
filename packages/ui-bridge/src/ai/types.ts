@@ -869,9 +869,18 @@ export interface ActionWithDiffRequest {
   analyzeStructured?: boolean;
 }
 
-/** Result from action-integrated diffing */
+/**
+ * Result from action-integrated diffing.
+ *
+ * Over the wire (`POST /ai/execute-with-diff`) the envelope's `success` IS
+ * `actionSuccess`: a failed action answers `{ success: false, error, code,
+ * data: ActionDiffResult }`, keeping the diff around the failure under `data`.
+ */
 export interface ActionDiffResult {
-  /** Whether the action succeeded */
+  /**
+   * Whether the action succeeded — strictly: `true` only when the action
+   * result carried a literal `success: true`. Absent or non-boolean is `false`.
+   */
   actionSuccess: boolean;
   /** Action result details */
   actionResult: unknown;

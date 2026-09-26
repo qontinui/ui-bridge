@@ -128,6 +128,12 @@ Over HTTP: `GET /ai/diff` (diff since the previous call),
 `POST /ai/execute-with-diff` to perform an action and get its diff in one
 round trip.
 
+The response's `success` is the action's verdict. A failed action answers
+`{ success: false, error, code, data }`, with the inner action's error and
+code on the envelope and the full result — `actionSuccess: false`,
+`actionResult`, and the diff around the failure — kept under `data`. Both the
+in-process server and the relay path answer this way.
+
 ## Configuration
 
 `SemanticSnapshotConfig` — merged over `DEFAULT_SNAPSHOT_CONFIG`:

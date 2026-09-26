@@ -12,6 +12,7 @@
 import type { CommandRelay } from './command-relay';
 import { mapInternalErrorCode } from '../diagnostics';
 import { buildComponentNotFoundError } from './handlers';
+import { describeInnerFailure } from './inner-failure';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
@@ -106,32 +107,13 @@ function error(message: string, code?: string, suggestions?: string[]): APIRespo
  */
 function readRelayInnerFailure(result: unknown): { message: string; code: string } | undefined {
   if (result === null || typeof result !== 'object' || Array.isArray(result)) return undefined;
-  const r = result as Record<string, unknown>;
-  if (r.success !== false) return undefined;
-  const message =
-    typeof r.error === 'string' && r.error.length > 0
-      ? r.error
-      : `The browser reported the command failed but supplied no error message.`;
-
-  // A HOISTED `code` is a custom-action handler's OWN machine-readable code
-  // (`TERMINAL_EXITED`, …), hoisted by the same rule the executor path applies.
-  // It is propagated VERBATIM: the handler's vocabulary is not the SDK
-  // taxonomy, so `mapInternalErrorCode` would flatten it to `UB-UNKNOWN-ERROR`
-  // and the only surviving signal would be prose. Same reasoning as the
-  // `WRONG_TYPE_PARAM` / `TAB_NOT_FOUND` envelopes below, which also bypass the
-  // mapper because their codes are contract surface.
-  if (typeof r.code === 'string' && r.code.length > 0) return { message, code: r.code };
-
-  // Otherwise the code came from the SDK's own vocabulary — a hoisted
-  // `errorCode`, or `failureDetails.errorCode` (what `createActionFailure`
-  // emits). Those DO map onto the canonical `UB-*` family.
-  const details = r.failureDetails as { errorCode?: unknown } | undefined;
-  const internal =
-    (typeof r.errorCode === 'string' && r.errorCode.length > 0 ? r.errorCode : undefined) ??
-    (details && typeof details.errorCode === 'string' && details.errorCode.length > 0
-      ? details.errorCode
-      : undefined);
-  return { message, code: mapInternalErrorCode(internal, message) };
+  if ((result as Record<string, unknown>).success !== false) return undefined;
+  // The message / code derivation (a handler's own `code` verbatim, else the
+  // SDK `errorCode` mapped onto `UB-*`) is shared with the direct transport.
+  return describeInnerFailure(
+    result,
+    `The browser reported the command failed but supplied no error message.`
+  );
 }
 
 /** Maximum allowed response size for fallback screenshots (10 MB) */

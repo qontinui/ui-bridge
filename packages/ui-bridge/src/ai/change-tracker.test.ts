@@ -713,6 +713,26 @@ describe('ChangeTracker', () => {
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     });
 
+    it('reads the action verdict strictly — only a literal `true` is success', async () => {
+      for (const verdict of [1, 'true', undefined]) {
+        const testTracker = new ChangeTracker({
+          ...deps,
+          executeElementAction: vi.fn().mockResolvedValue({ success: verdict }),
+          executeNLAction: vi.fn().mockResolvedValue({ success: verdict }),
+        });
+        const viaElement = await testTracker.executeWithDiff({
+          elementAction: { elementId: 'btn-1', action: 'click' },
+          settleMinStable: 1,
+        });
+        const viaInstruction = await testTracker.executeWithDiff({
+          instruction: 'click save',
+          settleMinStable: 1,
+        });
+        expect(viaElement.actionSuccess).toBe(false);
+        expect(viaInstruction.actionSuccess).toBe(false);
+      }
+    });
+
     it('should use idle detector when available', async () => {
       const mockIdleDetector = {
         waitForIdle: vi.fn().mockResolvedValue(undefined),
