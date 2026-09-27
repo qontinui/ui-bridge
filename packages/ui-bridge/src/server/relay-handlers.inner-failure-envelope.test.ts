@@ -179,6 +179,37 @@ describe('relayCommand · a browser-reported failure is an OUTER failure', () =>
     expect(result.success).toBe(false);
     expect(String(result.error).length).toBeGreaterThan(0);
   });
+
+  it("aiExecute: an NL failure's `failureInfo.errorCode` surfaces as the envelope code", async () => {
+    // An `NLActionResponse` failure whose ONLY code carrier is the structured
+    // `failureInfo` (no hoisted `code` / `errorCode`). The prose carries none
+    // of the mapper's heuristic keywords, so the code can only come from
+    // `failureInfo`.
+    const relay = freshRelay();
+    registerRespondingTab(relay, 'tab-a', () => ({
+      success: false,
+      executedAction: 'click save',
+      error: 'nothing matched "save"',
+      failureInfo: {
+        errorCode: 'ELEMENT_NOT_FOUND',
+        message: 'nothing matched "save"',
+        retryRecommended: true,
+      },
+      durationMs: 2,
+      timestamp: Date.now(),
+    }));
+    const handlers = createRelayHandlers(relay);
+
+    const result = await handlers.aiExecute!({ instruction: 'click save' });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('UB-ELEM-NOT-FOUND');
+    expect(String(result.error)).toBe('nothing matched "save"');
+    // The NL response is preserved verbatim under `data`.
+    expect((result.data as { failureInfo?: { errorCode?: string } }).failureInfo?.errorCode).toBe(
+      'ELEMENT_NOT_FOUND'
+    );
+  });
 });
 
 describe('relayCommand · genuine successes are untouched', () => {

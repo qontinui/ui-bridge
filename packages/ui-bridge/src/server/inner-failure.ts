@@ -41,8 +41,10 @@ export function describeInnerFailure(
 
   // Otherwise the code came from the SDK's own vocabulary — a hoisted
   // `errorCode`, `failureDetails.errorCode` (what `createActionFailure`
-  // emits) or `failureInfo.errorCode` (the NL executor's structured failure).
-  // Those DO map onto the canonical `UB-*` family.
+  // emits) or `failureInfo.errorCode` (`NLActionResponse`'s declared
+  // structured-failure field — no producer in this package fills it today,
+  // but an app-supplied NL executor may). Those DO map onto the canonical
+  // `UB-*` family.
   const nestedCode = (holder: unknown): string | undefined => {
     const c = (holder as { errorCode?: unknown } | undefined)?.errorCode;
     return typeof c === 'string' && c.length > 0 ? c : undefined;
