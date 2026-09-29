@@ -16,11 +16,23 @@
  * option there and this file is the gate's documentation instead. Two choices
  * in it are load-bearing and both are asserted below:
  *
- * - **A second PROJECT, not a widened `include`.** The main config emits
- *   declarations; the React Native surface deliberately ships none (its
- *   ambient RN shim, `src/native/react-native.d.ts`, stands in for types the
- *   SDK does not depend on), which is exactly why tsup sets `dts: false` for
- *   those entries.
+ * - **A second PROJECT, not a widened `include`.** (The rationale first
+ *   written here — "the main config emits declarations" — was false: the main
+ *   config is `noEmit: true`, and tsup does the emitting.) The real reason was
+ *   measured by plan `2026-09-20-ui-bridge-observations-…` Phase 4, which
+ *   tried folding `src/native/**` into `tsconfig.json`: react-native's types
+ *   DO resolve, but `react-native/types/index.d.ts` pulls in
+ *   `react-native/src/types/globals.d.ts`, whose `declare global` block is
+ *   program-wide and cannot be scoped to the native files. In one program it
+ *   (1) re-types `fetch` / `XMLHttpRequest.open` / `RequestInfo` over the DOM
+ *   lib, raising 7 TS2345 errors in correct WEB code (`debug/captures/
+ *   network.ts`, `debug/network-chain.ts`, `idle/network-idle.ts`,
+ *   `network/tracker.ts`, `react/commandHandlers.ts`), and — worse — (2)
+ *   declares RN-only globals (`__DEV__`, `HermesInternal`, `ErrorUtils`,
+ *   …) for the web code too: a web module reading `__DEV__`
+ *   type-checks green in the merged program and throws a ReferenceError in
+ *   a browser, where the DOM-only project reports TS2304. Two programs keep
+ *   the web build checked against the environment it actually runs in.
  * - **`src/**\/*.d.ts` in the include is not decoration.** `src/native/**`
  *   reaches web `core` modules transitively, and those rely on ambient
  *   declarations that live beside them (`src/core/dom-accessibility-api.d.ts`).
@@ -64,9 +76,9 @@ describe('the native subtree has a type gate at all', () => {
   });
 
   it('the package typecheck script actually runs it', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
-    ) as { scripts: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
 
     // The gate is worthless if only a human runs it by hand. CI invokes the
     // root `npm run typecheck`, which fans out to this script.
