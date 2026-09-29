@@ -219,3 +219,48 @@ describe('constructors refuse what the Rust canon refuses', () => {
     ).toThrow(/non-negative integer/);
   });
 });
+
+describe('timestamps and cache inputs are checked like the Rust canon', () => {
+  const good = () => Observation.provenance({ producer });
+
+  it('refuses a non-RFC3339 evaluatedAt / observedAt handed to a constructor', () => {
+    for (const bad of ['yesterday', '2026-09-30', '2026-09-30T12:00:00', '2026-13-40T99:00:00Z']) {
+      expect(() => Observation.measured(1, { ...good(), evaluatedAt: bad })).toThrow(/evaluatedAt/);
+      expect(() => Observation.measured(1, { ...good(), observedAt: bad })).toThrow(/observedAt/);
+    }
+  });
+
+  it('accepts Z and numeric offsets, with or without fractions', () => {
+    for (const ok of [
+      '2026-09-30T12:00:00Z',
+      '2026-09-30T12:00:00.123Z',
+      '2026-09-30T14:00:00+02:00',
+      '2026-09-30T12:00:00.5-05:30',
+    ]) {
+      expect(Observation.measured(1, { ...good(), observedAt: ok, evaluatedAt: ok }).status).toBe(
+        'measured'
+      );
+    }
+  });
+
+  it('refuses a non-RFC3339 cache.storedAt and non-string keyInputs', () => {
+    expect(() =>
+      Observation.measured(1, {
+        ...good(),
+        cache: { hit: true, storedAt: 'last tuesday', keyInputs: ['mutation_id'] },
+      })
+    ).toThrow(/storedAt/);
+    expect(() =>
+      Observation.measured(1, {
+        ...good(),
+        cache: { hit: true, storedAt: null, keyInputs: ['mutation_id', 7 as never] },
+      })
+    ).toThrow(/keyInputs/);
+    expect(() =>
+      Observation.provenance({
+        producer,
+        cache: { hit: false, storedAt: null, keyInputs: [{} as never] },
+      })
+    ).toThrow(/keyInputs/);
+  });
+});

@@ -34,7 +34,13 @@ const HEADER =
 
 function expected() {
   const source = readFileSync(SOURCE, 'utf8');
-  if (/^\s*import\s/m.test(source)) {
+  // Any module edge at all: a static `import`, a re-`export … from` (one-line
+  // or the closing `} from '…'` of a multi-line one), a dynamic `import(…)` or
+  // a `require(…)`. Comments are stripped first so prose cannot trip it.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const MODULE_EDGE =
+    /\b(import|require)\s*\(|^\s*import\s|^\s*(import|export)\b[^;\n]*\bfrom\s|^\s*\}\s*from\s/m;
+  if (MODULE_EDGE.test(code)) {
     // The copy is imported by relative path from native, so the canonical
     // file must stay self-contained.
     throw new Error(`${relative(ROOT, SOURCE)} must have zero imports to be vendored`);
