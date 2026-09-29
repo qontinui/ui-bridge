@@ -414,6 +414,3 @@ export function diagnosePageHealth(
     visible_count: visible.length,
   };
 }
-
-// DELIBERATE TYPE ERROR (bite proof, do not merge)
-export const __nativeGateBiteProof: number = "not a number";
