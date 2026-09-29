@@ -5419,7 +5419,12 @@ export function createHandlers(
           )
         );
       }
-      const raw = snapshot as { elements?: unknown; components?: unknown; timestamp?: number };
+      const raw = snapshot as {
+        elements?: unknown;
+        components?: unknown;
+        timestamp?: number;
+        snapshotId?: unknown;
+      };
       return success(
         diagnosePageHealth({
           // Handed over as received: a missing `elements` key must reach the
@@ -5427,6 +5432,9 @@ export function createHandlers(
           elements: raw.elements,
           registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
           observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+          // Attribute the answer to the snapshot it analyzed when the
+          // registry stamped one.
+          source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
         })
       );
     },

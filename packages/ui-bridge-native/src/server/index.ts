@@ -47,4 +47,4 @@ export {
   type MeasuredObservation,
   type AbsentObservation,
   type UnknownObservation,
-} from '@qontinui/ui-bridge/observation';
+} from '../observation';

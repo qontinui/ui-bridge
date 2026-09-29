@@ -141,6 +141,12 @@ export interface ExtractValue {
  * text and every block fell under the floor (see `value`-less
  * `provenance.coverage.unmeasured`); `unknown{model_reply_unparseable}` /
  * `producer_failed` / `input_missing` for the failure arms.
+ *
+ * **Runner build requirement:** this shape matches qontinui-runner builds
+ * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
+ * not-present-and-carry-provenance Phase 2. Older runners serve the previous
+ * bare shape (`{ blocks, aggregateText, model, cached, captureBackend? }`),
+ * so check the runner build before relying on this type.
  */
 export type VisionExtractResponse = Observation<ExtractValue>;
 
@@ -192,7 +198,13 @@ export interface DescribeValue {
   structured: Observation<VlmStructuredSummary>;
 }
 
-/** `vision/describe` — producer `runner/vision-describe`. */
+/** `vision/describe` — producer `runner/vision-describe`. *
+ * **Runner build requirement:** this shape matches qontinui-runner builds
+ * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
+ * not-present-and-carry-provenance Phase 2. Older runners serve the previous
+ * bare shape (`{ description, structured?, tokens, model, cached }`),
+ * so check the runner build before relying on this type.
+ */
 export type VisionDescribeResponse = Observation<DescribeValue>;
 
 // ============================================================================
@@ -257,7 +269,15 @@ export type SnapshotAttribution =
   | { state: 'unattributed' }
   | { state: 'absent' };
 
-/** `vision/analyze`. */
+/**
+ * `vision/analyze`.
+ *
+ * **Runner build requirement:** this shape matches qontinui-runner builds
+ * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
+ * not-present-and-carry-provenance Phase 2. Older runners serve the previous
+ * bare shape (`frame?` + `frameError?`, no `provenance`, an uncoded verdict),
+ * so check the runner build before relying on this type.
+ */
 export interface VisionAnalyzeResponse {
   analyzer: VisionAnalyzer;
   findings: VisionFinding[];
@@ -323,7 +343,15 @@ export interface VisionAssertionResult {
   assertion: VisionAssertion;
 }
 
-/** `vision/assert`. */
+/**
+ * `vision/assert`.
+ *
+ * **Runner build requirement:** this shape matches qontinui-runner builds
+ * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
+ * not-present-and-carry-provenance Phase 2. Older runners serve the previous
+ * bare shape (`allPassed` + `frameError?` + `frame?`, no `outcomeCounts`/`outcome`/`provenance`),
+ * so check the runner build before relying on this type.
+ */
 export interface VisionAssertResponse {
   results: VisionAssertionResult[];
   /** How many results landed in each outcome. */

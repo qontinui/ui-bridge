@@ -242,8 +242,99 @@ function fullCoverage(n: number): ObservationCoverage {
   return { considered: n, measured: n, unmeasured: [] };
 }
 
+/** A count on the wire is a `u64` in the Rust canon: a non-negative safe integer. */
+function assertCount(value: unknown, what: string): asserts value is number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ObservationError(`${what} must be a non-negative integer, got ${String(value)}`);
+  }
+}
+
+function assertCoverage(coverage: ObservationCoverage): void {
+  if (!coverage || typeof coverage !== 'object') {
+    throw new ObservationError('coverage must be an object');
+  }
+  assertCount(coverage.considered, 'coverage.considered');
+  assertCount(coverage.measured, 'coverage.measured');
+  if (!Array.isArray(coverage.unmeasured)) {
+    throw new ObservationError('coverage.unmeasured must be an array');
+  }
+  coverage.unmeasured.forEach((u, i) => {
+    if (!u || typeof u.dimension !== 'string') {
+      throw new ObservationError(`coverage.unmeasured[${i}].dimension must be a string`);
+    }
+    assertCount(u.count, `coverage.unmeasured[${i}].count`);
+    if (!isUnknownCode(u.code)) {
+      throw new ObservationError(
+        `coverage.unmeasured[${i}].code is not an UnknownCode: ${String(u.code)}`
+      );
+    }
+  });
+}
+
+/** `source` is a JSON object or `null` — never an array, a primitive, or `undefined`. */
+function assertSource(source: unknown): asserts source is Record<string, unknown> | null {
+  if (source === null) return;
+  if (typeof source !== 'object' || Array.isArray(source)) {
+    throw new ObservationError('source must be a JSON object or null');
+  }
+}
+
+/**
+ * Re-check a provenance block the constructors are handed — it may have been
+ * built by hand rather than by {@link Observation.provenance}.
+ */
+function assertProvenance(prov: ObservationProvenance): void {
+  if (!prov || typeof prov !== 'object') throw new ObservationError('provenance is required');
+  if (
+    !prov.producer ||
+    typeof prov.producer.id !== 'string' ||
+    typeof prov.producer.version !== 'string'
+  ) {
+    throw new ObservationError('producer must carry a string id and version');
+  }
+  if (typeof prov.evaluatedAt !== 'string') {
+    throw new ObservationError('evaluatedAt must be an RFC3339 string');
+  }
+  if (prov.observedAt !== null && typeof prov.observedAt !== 'string') {
+    throw new ObservationError('observedAt must be an RFC3339 string or null');
+  }
+  assertCoverage(prov.coverage);
+  if (
+    prov.confidence !== null &&
+    (typeof prov.confidence !== 'number' ||
+      !Number.isFinite(prov.confidence) ||
+      prov.confidence < 0 ||
+      prov.confidence > 1)
+  ) {
+    throw new ObservationError(
+      `confidence must be in [0, 1] or null, got ${String(prov.confidence)}`
+    );
+  }
+  if (prov.cache !== null) {
+    if (
+      typeof prov.cache !== 'object' ||
+      typeof prov.cache.hit !== 'boolean' ||
+      (prov.cache.storedAt !== null && typeof prov.cache.storedAt !== 'string') ||
+      !Array.isArray(prov.cache.keyInputs)
+    ) {
+      throw new ObservationError('cache must be { hit, storedAt, keyInputs } or null');
+    }
+  }
+  assertSource(prov.source);
+}
+
 function provenance(init: ObservationProvenanceInit): ObservationProvenance {
+  if (
+    !init.producer ||
+    typeof init.producer.id !== 'string' ||
+    typeof init.producer.version !== 'string'
+  ) {
+    throw new ObservationError('producer must carry a string id and version');
+  }
   const coverage = init.coverage ?? fullCoverage(0);
+  assertCoverage(coverage);
+  const source = init.source ?? null;
+  assertSource(source);
   return {
     producer: { id: init.producer.id, version: init.producer.version },
     observedAt:
@@ -266,11 +357,22 @@ function provenance(init: ObservationProvenanceInit): ObservationProvenance {
           keyInputs: [...init.cache.keyInputs],
         }
       : null,
-    source: init.source ?? null,
+    source,
   };
 }
 
+/**
+ * The producer looked and saw `value`. THROWS {@link ObservationError} on
+ * `undefined`: a measured observation whose `value` key would vanish from
+ * the wire is exactly the missing-key shape the Rust canon refuses.
+ */
 function measured<T>(value: T, prov: ObservationProvenance): Observation<T> {
+  if (value === undefined) {
+    throw new ObservationError(
+      'measured requires a value; report "nothing there" as absent and "could not look" as unknown'
+    );
+  }
+  assertProvenance(prov);
   return { status: 'measured', value, provenance: prov };
 }
 
@@ -280,6 +382,7 @@ function measured<T>(value: T, prov: ObservationProvenance): Observation<T> {
  * region the producer did not measure.
  */
 function absent<T = never>(prov: ObservationProvenance): Observation<T> {
+  assertProvenance(prov);
   if (prov.coverage.unmeasured.length > 0) {
     const dims = prov.coverage.unmeasured
       .map((u) => `${u.dimension} x${u.count} (${u.code})`)
@@ -300,6 +403,10 @@ function unknown<T = never>(
   if (!isUnknownCode(code)) {
     throw new ObservationError(`not an UnknownCode: ${String(code)}`);
   }
+  if (typeof detail !== 'string') {
+    throw new ObservationError('unknown requires a string detail');
+  }
+  assertProvenance(prov);
   return { status: 'unknown', unknown: { code, detail }, provenance: prov };
 }
 
