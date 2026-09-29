@@ -27,7 +27,7 @@
  * `native-type-gate.followup.test.ts`.
  */
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import ts from 'typescript';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,9 @@ const FIXTURE_REL = join('src', 'native', 'core', '__native-type-gate-probe__.ts
  *   subtree's own declarations under the gate's module resolution.
  * - TS7006 (implicit `any`) exists only under `strict`/`noImplicitAny` — so a
  *   gate that silently drops strictness stops reporting it.
+ * - TS2322 on a `number | null` assigned to `number` exists only under
+ *   `strictNullChecks` — so `"strict": false` with `noImplicitAny` kept, or a
+ *   bare `"strictNullChecks": false`, is caught too.
  */
 const FIXTURE_SOURCE = [
   "import type { NativeBridgeSnapshot } from './types';",
@@ -54,6 +57,8 @@ const FIXTURE_SOURCE = [
   'export function probeImplicitAny(value) {',
   '  return value;',
   '}',
+  '',
+  'export const probeNull: number = null as number | null;',
   '',
 ].join('\n');
 
@@ -90,7 +95,7 @@ function nativeSourceFiles(dir: string): string[] {
 }
 
 describe('the native type gate reports a deliberate error', () => {
-  it('compiles an in-memory fixture with tsconfig.native.json and reports both planted errors', () => {
+  it('compiles an in-memory fixture with tsconfig.native.json and reports all three planted errors', () => {
     const parsed = parseConfig(join(PACKAGE_DIR, GATE_CONFIG));
     expect(parsed.errors.map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))).toEqual(
       []
@@ -135,15 +140,22 @@ describe('the native type gate reports a deliberate error', () => {
     expect(reported).toEqual([
       { code: 2322, line: 3 },
       { code: 7006, line: 5 },
+      { code: 2322, line: 9 },
     ]);
   });
 });
 
 describe('the native type gate can see the files it is meant to gate', () => {
-  const mirrorDir = mkdtempSync(join(tmpdir(), 'native-type-gate-'));
+  // Created in beforeAll, not at collection time: vitest skips afterAll when
+  // every test in the block is filtered out, which would leak the directory.
+  let mirrorDir = '';
+
+  beforeAll(() => {
+    mirrorDir = mkdtempSync(join(tmpdir(), 'native-type-gate-'));
+  });
 
   afterAll(() => {
-    rmSync(mirrorDir, { recursive: true, force: true });
+    if (mirrorDir) rmSync(mirrorDir, { recursive: true, force: true });
   });
 
   it("admits the fixture's path under the config's include/exclude", () => {

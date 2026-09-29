@@ -83,6 +83,9 @@ describe('the native subtree has a type gate at all', () => {
     // The gate is worthless if only a human runs it by hand. CI invokes the
     // root `npm run typecheck`, which fans out to this script.
     expect(pkg.scripts.typecheck).toContain('tsconfig.native.json');
+    // A command-line override would blind the gate while the config file (which
+    // native-type-gate.bites.test.ts parses) still reads strict.
+    expect(pkg.scripts.typecheck).not.toMatch(/--(strict|noImplicitAny|strictNullChecks)\s+false/);
   });
 });
 
