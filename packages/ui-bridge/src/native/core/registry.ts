@@ -654,3 +654,6 @@ export function resetGlobalRegistry(): void {
   globalRegistry?.clear();
   globalRegistry = null;
 }
+
+// DELIBERATE TYPE ERROR (bite proof, do not merge)
+export const __nativeGateBiteProof: number = "not a number";
