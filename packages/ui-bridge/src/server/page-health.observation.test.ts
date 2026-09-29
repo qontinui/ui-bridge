@@ -172,6 +172,23 @@ describe('in-page pageHealth handler', () => {
     if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('input_missing');
   });
 
+  it('carries the snapshot id the registry stamped as provenance.source', async () => {
+    const handlers = createHandlers(
+      registryReturning({
+        timestamp: T,
+        snapshotId: 'snap_123',
+        elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 })],
+        components: [],
+        workflows: [],
+      }),
+      executor as never,
+      NO_IDLE
+    );
+    const res = await handlers.pageHealth();
+    expect(res.data?.status).toBe('measured');
+    expect(res.data?.provenance.source).toEqual({ snapshotId: 'snap_123' });
+  });
+
   it('an empty registry answers unknown{producer_not_run}, not a critical finding', async () => {
     const handlers = createHandlers(
       registryReturning({ timestamp: T, elements: [], components: [], workflows: [] }),
@@ -227,10 +244,29 @@ describe('relay pageHealth handler', () => {
     expect(JSON.stringify(res)).not.toContain('CRITICAL');
   });
 
-  it('a snapshot with no elements key answers unknown{input_missing}', async () => {
+  it('a snapshot with no elements key answers unknown{input_missing} — on the SECOND call too', async () => {
     vi.spyOn(relay, 'queueCommand').mockResolvedValue({ timestamp: T } as never);
+    const handlers = createRelayHandlers(relay);
+    const first = await handlers.pageHealth();
+    expect(first.data?.status).toBe('unknown');
+    if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
+    // The first call cached a snapshot with no `elements` key; the second
+    // call used to throw reading `.length` of it (a rejection, not an answer).
+    const second = await handlers.pageHealth();
+    expect(second.success).toBe(true);
+    expect(second.data?.status).toBe('unknown');
+    if (second.data?.status === 'unknown') expect(second.data.unknown.code).toBe('input_missing');
+  });
+
+  it('carries the cached snapshot id as provenance.source', async () => {
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue({
+      timestamp: T,
+      snapshotId: 'snap_abc',
+      elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 })],
+      components: [],
+      workflows: [],
+    } as never);
     const res = await createRelayHandlers(relay).pageHealth();
-    expect(res.data?.status).toBe('unknown');
-    if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('input_missing');
+    expect(res.data?.provenance.source).toEqual({ snapshotId: 'snap_abc' });
   });
 });

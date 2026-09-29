@@ -161,3 +161,61 @@ describe('UnknownCode', () => {
     expect(isUnknownCode('healthy')).toBe(false);
   });
 });
+
+describe('constructors refuse what the Rust canon refuses', () => {
+  const cov = (over: Partial<Record<string, unknown>>) =>
+    ({ considered: 1, measured: 1, unmeasured: [], ...over }) as never;
+
+  it('refuses negative or non-integer counts', () => {
+    for (const bad of [
+      cov({ considered: -1 }),
+      cov({ measured: 1.5 }),
+      cov({ unmeasured: [{ dimension: 'geometry', count: -2, code: 'input_missing' }] }),
+      cov({ unmeasured: [{ dimension: 'geometry', count: 0.5, code: 'input_missing' }] }),
+    ]) {
+      expect(() => Observation.provenance({ producer, coverage: bad })).toThrow(ObservationError);
+    }
+  });
+
+  it('refuses an unmeasured entry whose code is not an UnknownCode', () => {
+    expect(() =>
+      Observation.provenance({
+        producer,
+        coverage: cov({ unmeasured: [{ dimension: 'geometry', count: 1, code: 'nope' }] }),
+      })
+    ).toThrow(/not an UnknownCode/);
+  });
+
+  it('refuses a source that is not an object or null', () => {
+    for (const bad of [[], 'snap-1', 3]) {
+      expect(() => Observation.provenance({ producer, source: bad as never })).toThrow(
+        /source must be a JSON object or null/
+      );
+    }
+    expect(Observation.provenance({ producer, source: { snapshotId: 's' } }).source).toEqual({
+      snapshotId: 's',
+    });
+  });
+
+  it('refuses measured(undefined) — the value key would vanish from the wire', () => {
+    expect(() => Observation.measured(undefined, Observation.provenance({ producer }))).toThrow(
+      ObservationError
+    );
+    // null is a value and stays legal.
+    expect(Observation.measured(null, Observation.provenance({ producer })).status).toBe(
+      'measured'
+    );
+  });
+
+  it('re-checks a hand-built provenance handed to a constructor', () => {
+    const good = Observation.provenance({ producer });
+    expect(() => Observation.measured(1, { ...good, confidence: 2 })).toThrow(/confidence/);
+    expect(() => Observation.absent({ ...good, source: [] as never })).toThrow(/source/);
+    expect(() =>
+      Observation.unknown('input_missing', 'x', {
+        ...good,
+        coverage: { considered: -1, measured: 0, unmeasured: [] },
+      })
+    ).toThrow(/non-negative integer/);
+  });
+});
