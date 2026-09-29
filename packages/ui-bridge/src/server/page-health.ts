@@ -12,14 +12,14 @@
  * snapshot relayed from the browser.
  *
  * ONE implementation for both web SDK transports: the in-page handler
- * (`server/handlers.ts`), the relay handler (`server/relay-handlers.ts`) and
- * `@qontinui/ui-bridge-server` all call {@link diagnosePageHealth}; only the
- * producer id differs. (`ui-bridge-server` used to carry its own divergent
- * port — different finding keys, a vertical off-screen rule this file had
- * deliberately dropped, a `healthy/degraded/unhealthy` status — and was
- * collapsed onto this one.) The React Native variant stays separate because
- * its geometry input is different (pixel `state.layout`, not
- * `normalizedRect`).
+ * (`server/handlers.ts`) and the relay handler (`server/relay-handlers.ts`)
+ * both call {@link diagnosePageHealth}. `@qontinui/ui-bridge-server` does
+ * NOT use it: it carries its own, different analyzer (triggered-only
+ * findings keyed `low-spatial-coverage` etc., a `healthy/degraded/unhealthy`
+ * roll-up) answering in the same envelope under producer
+ * `sdk-server/page-health`. The two were deliberately not collapsed. The
+ * React Native variant is also separate because its geometry input is
+ * different (pixel `state.layout`, not `normalizedRect`).
  *
  * The answer is an {@link Observation}: the report rides in `value` only when
  * the analyzer could actually look. "Could not look" is `unknown` with a typed

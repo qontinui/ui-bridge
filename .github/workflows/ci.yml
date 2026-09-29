@@ -46,6 +46,15 @@ jobs:
         # own CI (it is not checked out here).
         run: npm run diagnostics:check
 
+      - name: Observation envelope vendoring check
+        # Re-runs scripts/sync-observation.mjs in --check mode and fails if
+        # ui-bridge-native's vendored copy of the Observation envelope
+        # (src/observation/observation.ts) is not byte-for-byte what the
+        # canonical packages/ui-bridge/src/observation/observation.ts
+        # generates. Native vendors it rather than importing
+        # @qontinui/ui-bridge, which is only an optional peer there.
+        run: npm run observation:check
+
       - name: Redaction surface ratchet
         # §4.6 Layer-3: fails if the UI Bridge route surface or the Layer-2
         # projection-module list drifts from redaction-surface.manifest.json —

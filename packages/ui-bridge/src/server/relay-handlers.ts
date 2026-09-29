@@ -2147,32 +2147,54 @@ export function createRelayHandlers(
     // `provenance.observedAt` is the cached snapshot's own (old) timestamp,
     // with `_meta` carrying the stale flag.
     async pageHealth() {
-      await refreshSnapshotIfNeeded(
-        resolveRecency(undefined),
-        latestControlSnapshot.elements.length === 0
-      );
-      const raw = latestControlSnapshot as {
-        elements?: unknown;
-        components?: unknown;
-        timestamp?: number;
-      };
-      if (snapshotStaleSince !== null && Array.isArray(raw.elements) && raw.elements.length === 0) {
+      try {
+        // The cached snapshot is whatever the browser last sent, so its
+        // `elements` may be missing: read it through `Array.isArray`, never
+        // `.length` directly (a previous refresh that cached a snapshot with
+        // no `elements` key made the NEXT call throw here).
+        const cachedElements = (latestControlSnapshot as { elements?: unknown }).elements;
+        await refreshSnapshotIfNeeded(
+          resolveRecency(undefined),
+          !Array.isArray(cachedElements) || cachedElements.length === 0
+        );
+        const raw = latestControlSnapshot as {
+          elements?: unknown;
+          components?: unknown;
+          timestamp?: number;
+          snapshotId?: unknown;
+        };
+        if (
+          snapshotStaleSince !== null &&
+          Array.isArray(raw.elements) &&
+          raw.elements.length === 0
+        ) {
+          return success(
+            pageHealthUnknown(
+              'app_unreachable',
+              'the relay could not fetch a snapshot from the browser tab and holds none cached'
+            ),
+            staleMeta()
+          );
+        }
         return success(
-          pageHealthUnknown(
-            'app_unreachable',
-            'the relay could not fetch a snapshot from the browser tab and holds none cached'
-          ),
+          diagnosePageHealth({
+            elements: raw.elements,
+            registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
+            observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+            source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
+          }),
           staleMeta()
         );
+      } catch (err) {
+        // An unknown is an answer: never let a malformed cache turn into a
+        // rejected handler.
+        return success(
+          pageHealthUnknown(
+            'producer_failed',
+            `relay page-health failed: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
       }
-      return success(
-        diagnosePageHealth({
-          elements: raw.elements,
-          registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
-          observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
-        }),
-        staleMeta()
-      );
     },
 
     // ========================================================================

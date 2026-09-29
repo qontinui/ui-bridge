@@ -60,7 +60,7 @@ import {
   type ObservationProvenanceInit,
   type ObservationTime,
   type UnmeasuredDimension,
-} from '@qontinui/ui-bridge/observation';
+} from '../observation';
 import type { NativeElementState } from '../core/types';
 
 declare const __SDK_VERSION__: string;
