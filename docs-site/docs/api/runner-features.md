@@ -1124,13 +1124,28 @@ visual anomalies. The same `POST /control/page-health` route is exposed
 by both the runner (Rust, `qontinui-runner/src-tauri/src/mcp/ui_bridge/
 screenshots.rs::ui_bridge_page_health_handler`) and the web SDK
 (TypeScript, `@qontinui/ui-bridge` `packages/ui-bridge/src/server/
-page-health.ts`). The output shape is byte-equivalent across both
-transports so the `page-health` Claude skill works identically against
-either base URL.
+page-health.ts`), and the report shape is the same on both so the
+`page-health` Claude skill works against either base URL.
 
 Body is optional and reserved for future per-check toggles
 (`{ options: { … } }`); current builds accept an empty body or none at
 all.
+
+**The answer is an observation envelope.** Read `data.status` FIRST:
+
+| `data.status` | Meaning |
+|---|---|
+| `measured` | The analyzer looked; the report is in `data.value`. `data.provenance.coverage.unmeasured` lists visible elements it could NOT place (no geometry) — a non-empty list means the report is degraded, not that the page is empty. |
+| `unknown` | The analyzer could not look. `data.unknown.code` says why; there is no `value` and no severity. Never read this as a healthy page OR a broken one. |
+
+`unknown.code` values page-health emits:
+
+| Code | Cause | Next action |
+|---|---|---|
+| `input_missing` | The snapshot carried no `elements` array, every visible element lacks geometry, or (mobile) the viewport is unknown | Re-snapshot once the page has settled; on mobile supply `viewport` |
+| `producer_not_run` | Zero registered elements and zero registered components — nothing has registered yet | Wait for the page to load / the UI Bridge provider to mount |
+| `app_unreachable` | (Relay) the browser tab could not be reached and nothing is cached | Reconnect the tab |
+| `producer_failed` | The snapshot or the analyzer threw; `unknown.detail` names it | Retry once, then read the detail |
 
 Response shape:
 
@@ -1138,26 +1153,64 @@ Response shape:
 {
   "success": true,
   "data": {
-    "summary": "OK" | "WARNING" | "CRITICAL",   // worst severity across findings
-    "findings": [
-      {
-        "check": "spatial_coverage",
-        "severity": "OK" | "WARNING" | "CRITICAL",
-        "detail": "Elements cover 47% of viewport. Left=58%, Right=36%",
-        "data": { "coverage_pct": 47, "left_half_pct": 58, "right_half_pct": 36 }
+    "status": "measured",
+    "value": {
+      "summary": "OK" | "WARNING" | "CRITICAL",   // worst severity across findings
+      "findings": [
+        {
+          "check": "spatial_coverage",
+          "severity": "OK" | "WARNING" | "CRITICAL",
+          "detail": "Elements cover 47% of viewport. Left=58%, Right=36%",
+          "data": { "coverage_pct": 47, "left_half_pct": 58, "right_half_pct": 36 }
+        },
+        { "check": "layout_regions",       ... },
+        { "check": "element_diversity",    ... },
+        { "check": "text_signals",         ... },
+        { "check": "interactive_readiness", ... },
+        { "check": "visual_anomalies",     ... }
+      ],
+      "heatmap": [ "....######....", ... ],         // 20 rows of 20 chars each
+      "element_count": 184,
+      "visible_count": 117                          // visible AND carrying geometry
+    },
+    "provenance": {
+      "producer": { "id": "sdk/page-health", "version": "0.28.0" },
+      "observedAt": "2026-09-30T12:00:00.000Z",    // snapshot time
+      "evaluatedAt": "2026-09-30T12:00:00.012Z",   // analyzer run time
+      "coverage": {
+        "considered": 120,                          // visible elements
+        "measured": 117,                            // ... of which carried geometry
+        "unmeasured": [{ "dimension": "geometry", "count": 3, "code": "input_missing" }]
       },
-      { "check": "layout_regions",       ... },
-      { "check": "element_diversity",    ... },
-      { "check": "text_signals",         ... },
-      { "check": "interactive_readiness", ... },
-      { "check": "visual_anomalies",     ... }
-    ],
-    "heatmap": [ "....######....", ... ],         // 20 rows of 20 chars each
-    "element_count": 184,
-    "visible_count": 117
+      "confidence": null,                           // a deduction, not an estimate
+      "cache": null,                                // no cache
+      "source": null
+    }
   }
 }
 ```
+
+An `unknown` answer is still `success: true` — it is an answer, not a
+transport error:
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "unknown",
+    "unknown": { "code": "producer_not_run", "detail": "the bridge reports zero registered elements and zero registered components — …" },
+    "provenance": { "producer": { "id": "sdk/page-health", "version": "0.28.0" }, "observedAt": "…", "evaluatedAt": "…",
+                    "coverage": { "considered": 0, "measured": 0, "unmeasured": [] },
+                    "confidence": null, "cache": null, "source": null }
+  }
+}
+```
+
+`provenance.producer.id` names which implementation answered:
+`sdk/page-health` (web SDK, in-page and relay), `sdk-server/page-health`
+(`@qontinui/ui-bridge-server` — a different analyzer with triggered-only
+findings and a `status: healthy | degraded | unhealthy` roll-up inside
+`value`), `sdk-native/page-health` (React Native), `runner/page-health`.
 
 **Heuristics.** Both implementations agree on these thresholds:
 
@@ -1173,13 +1226,15 @@ Response shape:
 Smoke test:
 
 ```bash
-curl -sX POST http://localhost:9876/ui-bridge/control/page-health | jq '.data.summary, (.data.findings | length)'
-# OK
+curl -sX POST http://localhost:9876/ui-bridge/control/page-health | jq '.data.status, .data.value.summary, (.data.value.findings | length)'
+# "measured"
+# "OK"
 # 6
 
 # Web SDK route (after pairing a browser tab)
-curl -sX POST http://localhost:3001/api/ui-bridge/control/page-health | jq '.data.summary, (.data.findings | length)'
-# OK
+curl -sX POST http://localhost:3001/api/ui-bridge/control/page-health | jq '.data.status, .data.value.summary, (.data.value.findings | length)'
+# "measured"
+# "OK"
 # 6
 ```
 

@@ -71,3 +71,6 @@ export * from './verification-layers';
 
 // Artifacts module - immutable verification result records
 export * from './artifacts';
+
+// Observation module - the measured/absent/unknown envelope + SDK producers
+export * from './observation';
