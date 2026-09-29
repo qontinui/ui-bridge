@@ -91,7 +91,10 @@ describe('the native subtree has a type gate at all', () => {
     expect(pkg.scripts.typecheck).not.toMatch(
       /--(strict\w*|noImplicit\w*|useUnknownInCatchVariables|alwaysStrict)\s+false/
     );
-    expect(pkg.scripts.typecheck).not.toMatch(/\|\|\s*(true|:|exit 0)/);
+    // Positive shape, not a blocklist: plain `&&`-chained tsc calls, the native
+    // gate LAST, and no `||` / `;` that could swallow its exit code.
+    expect(pkg.scripts.typecheck).not.toMatch(/\|\||;/);
+    expect(pkg.scripts.typecheck.trim()).toMatch(/tsc -p tsconfig\.native\.json --noEmit$/);
   });
 });
 
