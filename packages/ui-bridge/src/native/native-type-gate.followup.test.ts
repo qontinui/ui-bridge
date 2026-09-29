@@ -85,7 +85,13 @@ describe('the native subtree has a type gate at all', () => {
     expect(pkg.scripts.typecheck).toContain('tsconfig.native.json');
     // A command-line override would blind the gate while the config file (which
     // native-type-gate.bites.test.ts parses) still reads strict.
-    expect(pkg.scripts.typecheck).not.toMatch(/--(strict|noImplicitAny|strictNullChecks)\s+false/);
+    // Any strict-family flag set false (--strict, --noImplicitAny, --strictNullChecks,
+    // --strictFunctionTypes, --strictBindCallApply, --strictPropertyInitialization,
+    // --useUnknownInCatchVariables, --alwaysStrict …), or a swallowed exit code.
+    expect(pkg.scripts.typecheck).not.toMatch(
+      /--(strict\w*|noImplicit\w*|useUnknownInCatchVariables|alwaysStrict)\s+false/
+    );
+    expect(pkg.scripts.typecheck).not.toMatch(/\|\|\s*(true|:|exit 0)/);
   });
 });
 

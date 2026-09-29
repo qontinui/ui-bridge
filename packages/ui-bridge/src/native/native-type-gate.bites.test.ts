@@ -40,7 +40,7 @@ const BASE_CONFIG = 'tsconfig.json';
 const FIXTURE_REL = join('src', 'native', 'core', '__native-type-gate-probe__.ts');
 
 /**
- * Two deliberate errors, each pinned to what it proves:
+ * Three deliberate errors, each pinned to what it proves:
  * - TS2322 against a REAL native type — the fixture resolves the native
  *   subtree's own declarations under the gate's module resolution.
  * - TS7006 (implicit `any`) exists only under `strict`/`noImplicitAny` — so a
@@ -135,7 +135,7 @@ describe('the native type gate reports a deliberate error', () => {
       line: d.file ? d.file.getLineAndCharacterOfPosition(d.start ?? 0).line + 1 : -1,
     }));
 
-    // Exactly the two planted errors, at their lines — no more (an extra one
+    // Exactly the three planted errors, at their lines — no more (an extra one
     // would mean the fixture's own import stopped resolving), no fewer.
     expect(reported).toEqual([
       { code: 2322, line: 3 },
