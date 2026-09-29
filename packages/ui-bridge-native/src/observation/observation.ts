@@ -284,6 +284,17 @@ function assertSource(source: unknown): asserts source is Record<string, unknown
 }
 
 /**
+ * RFC3339 date-time as chrono's `DateTime<Utc>` deserializer accepts it:
+ * full date, `T` (or `t`/space), full time with optional fraction, and a `Z`
+ * or `±HH:MM` offset — plus a calendar-valid instant.
+ */
+const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
+
+function isRfc3339(value: unknown): value is string {
+  return typeof value === 'string' && RFC3339.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+/**
  * Re-check a provenance block the constructors are handed — it may have been
  * built by hand rather than by {@link Observation.provenance}.
  */
@@ -296,11 +307,15 @@ function assertProvenance(prov: ObservationProvenance): void {
   ) {
     throw new ObservationError('producer must carry a string id and version');
   }
-  if (typeof prov.evaluatedAt !== 'string') {
-    throw new ObservationError('evaluatedAt must be an RFC3339 string');
+  if (!isRfc3339(prov.evaluatedAt)) {
+    throw new ObservationError(
+      `evaluatedAt must be an RFC3339 date-time, got ${String(prov.evaluatedAt)}`
+    );
   }
-  if (prov.observedAt !== null && typeof prov.observedAt !== 'string') {
-    throw new ObservationError('observedAt must be an RFC3339 string or null');
+  if (prov.observedAt !== null && !isRfc3339(prov.observedAt)) {
+    throw new ObservationError(
+      `observedAt must be an RFC3339 date-time or null, got ${String(prov.observedAt)}`
+    );
   }
   assertCoverage(prov.coverage);
   if (
@@ -318,10 +333,17 @@ function assertProvenance(prov: ObservationProvenance): void {
     if (
       typeof prov.cache !== 'object' ||
       typeof prov.cache.hit !== 'boolean' ||
-      (prov.cache.storedAt !== null && typeof prov.cache.storedAt !== 'string') ||
-      !Array.isArray(prov.cache.keyInputs)
+      !Array.isArray(prov.cache.keyInputs) ||
+      !prov.cache.keyInputs.every((k) => typeof k === 'string')
     ) {
-      throw new ObservationError('cache must be { hit, storedAt, keyInputs } or null');
+      throw new ObservationError(
+        'cache must be { hit: boolean, storedAt, keyInputs: string[] } or null'
+      );
+    }
+    if (prov.cache.storedAt !== null && !isRfc3339(prov.cache.storedAt)) {
+      throw new ObservationError(
+        `cache.storedAt must be an RFC3339 date-time or null, got ${String(prov.cache.storedAt)}`
+      );
     }
   }
   assertSource(prov.source);
@@ -339,7 +361,7 @@ function provenance(init: ObservationProvenanceInit): ObservationProvenance {
   assertCoverage(coverage);
   const source = init.source ?? null;
   assertSource(source);
-  return {
+  const built: ObservationProvenance = {
     producer: { id: init.producer.id, version: init.producer.version },
     observedAt:
       init.observedAt === undefined || init.observedAt === null ? null : toRfc3339(init.observedAt),
@@ -363,6 +385,8 @@ function provenance(init: ObservationProvenanceInit): ObservationProvenance {
       : null,
     source,
   };
+  assertProvenance(built);
+  return built;
 }
 
 /**
@@ -421,8 +445,7 @@ function unknown<T = never>(
  *
  * @example
  * ```ts
- * import { Observation } from '@qontinui/ui-bridge/observation';
- *
+ * // `Observation` is exported by the package that ships this module.
  * const prov = Observation.provenance({
  *   producer: { id: 'sdk/page-health', version: '0.28.0' },
  *   observedAt: Date.now(),

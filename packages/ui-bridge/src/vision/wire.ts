@@ -198,7 +198,9 @@ export interface DescribeValue {
   structured: Observation<VlmStructuredSummary>;
 }
 
-/** `vision/describe` — producer `runner/vision-describe`. *
+/**
+ * `vision/describe` — producer `runner/vision-describe`.
+ *
  * **Runner build requirement:** this shape matches qontinui-runner builds
  * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
  * not-present-and-carry-provenance Phase 2. Older runners serve the previous
