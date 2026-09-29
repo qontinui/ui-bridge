@@ -17,6 +17,7 @@ export type {
 export { UI_BRIDGE_ERROR_CODES, DIAGNOSTICS } from './codes.generated';
 
 import type { UiBridgeErrorCode, RecoverySuggestion } from './codes.generated';
+import type { UnknownCode } from '../observation/observation';
 import { DIAGNOSTICS } from './codes.generated';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape). `param-schema`
 // has NO imports, so this type-only edge to `../core` creates no module cycle
@@ -183,16 +184,22 @@ export interface BuiltActionFailureDetails {
  * Resolution order: explicit code mapping → message heuristic →
  * `UB-UNKNOWN-ERROR`.
  */
-const INTERNAL_CODE_TO_CANONICAL: Record<string, UiBridgeErrorCode> = {
+export const INTERNAL_CODE_TO_CANONICAL: Readonly<Record<string, UiBridgeErrorCode>> = {
   NOT_FOUND: 'UB-ELEM-NOT-FOUND',
   ELEMENT_NOT_FOUND: 'UB-ELEM-NOT-FOUND',
   COMPONENT_NOT_FOUND: 'UB-ELEM-NOT-FOUND',
   INVALID_REQUEST: 'UB-VALIDATION-ERROR',
   VALIDATION_ERROR: 'UB-VALIDATION-ERROR',
   NOT_IMPLEMENTED: 'UB-UNSUPPORTED-ACTION',
-  RUNNER_REQUIRED: 'UB-ACTION-REJECTED',
-  RUNNER_UNAVAILABLE: 'UB-NET-ERROR',
-  RUNNER_ERROR: 'UB-NET-ERROR',
+  // The three runner-backing causes are three different facts and get three
+  // different codes (pinned by `diagnostics.runner-causes.test.ts`):
+  //   - the build does not serve the route at all → a CAPABILITY statement,
+  //     not an action rejection (nothing was attempted);
+  //   - the runner could not be reached;
+  //   - the runner was reached and answered with an error.
+  RUNNER_REQUIRED: 'UB-CAPABILITY-UNAVAILABLE',
+  RUNNER_UNAVAILABLE: 'UB-OBS-APP-UNREACHABLE',
+  RUNNER_ERROR: 'UB-OBS-PRODUCER-FAILED',
   COMMAND_FAILED: 'UB-ACTION-FAILED',
   HEADLESS_SPAWN_UNSUPPORTED_ON_RELAY: 'UB-UNSUPPORTED-ACTION',
   HEADLESS_SPAWN_DISABLED: 'UB-ACTION-REJECTED',
@@ -312,3 +319,21 @@ export function buildActionFailureDetails(
     invalidParams: options.invalidParams,
   };
 }
+
+/**
+ * The diagnostic-registry code for each observation {@link UnknownCode}:
+ * `UB-OBS-<CODE-IN-UPPER-KEBAB>`. One code per cause — the map is injective
+ * (pinned by test), so an agent reading a diagnostic code can recover exactly
+ * which `unknown.code` produced it.
+ */
+export const UNKNOWN_CODE_DIAGNOSTICS: Readonly<Record<UnknownCode, UiBridgeErrorCode>> = {
+  app_unreachable: 'UB-OBS-APP-UNREACHABLE',
+  capability_unavailable_in_build: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
+  producer_failed: 'UB-OBS-PRODUCER-FAILED',
+  producer_not_run: 'UB-OBS-PRODUCER-NOT-RUN',
+  input_missing: 'UB-OBS-INPUT-MISSING',
+  below_confidence_floor: 'UB-OBS-BELOW-CONFIDENCE-FLOOR',
+  model_reply_unparseable: 'UB-OBS-MODEL-REPLY-UNPARSEABLE',
+  needs_multi_frame_input: 'UB-OBS-NEEDS-MULTI-FRAME-INPUT',
+  stale_input: 'UB-OBS-STALE-INPUT',
+};

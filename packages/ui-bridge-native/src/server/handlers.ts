@@ -41,7 +41,7 @@ import type {
 } from './types';
 import { createDesignHandlers } from './design-handlers';
 import type { ConsoleErrorBuffer, NetworkRequestBuffer } from './observability';
-import { diagnosePageHealth, type PageHealthElement } from './page-health';
+import { diagnosePageHealth, pageHealthUnknown, type PageHealthElement } from './page-health';
 import { serializeElementCustomActions } from '../core/element-actions';
 
 /**
@@ -761,14 +761,20 @@ export function createServerHandlers(
     },
 
     getPageHealth: async (ctx: HandlerContext) => {
+      // Answers `Observation<PageHealthValue>` (producer
+      // `sdk-native/page-health`). "Could not look" is an ANSWER carried as
+      // `status: "unknown"` + a typed code on a success response — never a
+      // CRITICAL report over nothing.
+      //
       // Viewport resolution priority:
       //   1. Explicit body.viewport — for offline analysis, replaying a
       //      snapshot from a different device, or any caller that wants to
       //      override the device's reported viewport.
       //   2. `config.viewportProvider()` — injected by
       //      `UIBridgeNativeProvider` from `Dimensions.get('window')`.
-      //   3. `{0,0}` fallback (degenerates to a coverage_pct=0 report
-      //      rather than crashing).
+      //   3. Neither → `null`, which the producer answers as
+      //      `unknown{input_missing}`. (This used to fall back to `{0,0}`,
+      //      which rendered an unknown screen size as a blank screen.)
       //
       // The injection indirection exists because importing react-native
       // from this file (or `require('react-native')` with try/catch) both
@@ -776,15 +782,32 @@ export function createServerHandlers(
       // in `NativeServerConfig` and the project memory entry
       // `feedback_metro_require_gotcha.md`.
       const bodyViewport = (ctx.body as { viewport?: { width: number; height: number } })?.viewport;
-      const viewport = bodyViewport ?? config?.viewportProvider?.() ?? { width: 0, height: 0 };
+      let viewport: { width: number; height: number } | null;
+      try {
+        viewport = bodyViewport ?? config?.viewportProvider?.() ?? null;
+      } catch {
+        viewport = null;
+      }
 
-      const elements: PageHealthElement[] = registry.getAllElements().map((e) => ({
-        type: e.type,
-        state: e.getState(),
-      }));
+      const observedAt = Date.now();
+      let elements: PageHealthElement[];
+      let registeredComponents: number | null;
+      try {
+        elements = registry.getAllElements().map((e) => ({
+          type: e.type,
+          state: e.getState(),
+        }));
+        registeredComponents = registry.getAllComponents().length;
+      } catch (err) {
+        return success(
+          pageHealthUnknown(
+            'producer_failed',
+            `could not read the registry: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
+      }
 
-      const report = diagnosePageHealth(elements, viewport);
-      return success(report);
+      return success(diagnosePageHealth({ elements, registeredComponents, viewport, observedAt }));
     },
 
     // Workflows

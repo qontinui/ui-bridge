@@ -30,7 +30,7 @@ import type {
   EffectRecordEntry,
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
-import { diagnosePageHealth } from './page-health';
+import { diagnosePageHealth, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
@@ -2072,17 +2072,41 @@ export function createRelayHandlers(
       }
     },
 
+    // Answers `Observation<PageHealthValue>` over the relay's cached
+    // snapshot, refreshed first exactly as `visibility` is: answering from a
+    // never-refreshed cache would analyze the pristine empty snapshot and
+    // describe "nobody asked the browser", not the page. What the refresh
+    // could not fix stays visible: a failed refresh over an empty cache is
+    // `unknown{app_unreachable}`; over a populated one the analysis runs and
+    // `provenance.observedAt` is the cached snapshot's own (old) timestamp,
+    // with `_meta` carrying the stale flag.
     async pageHealth() {
-      try {
-        const snapshot = latestControlSnapshot as ControlSnapshot;
-        const elements = (snapshot?.elements ?? []) as unknown as Parameters<
-          typeof diagnosePageHealth
-        >[0];
-        const report = diagnosePageHealth(elements);
-        return success(report);
-      } catch (err) {
-        return error((err as Error).message, 'PAGE_HEALTH_ERROR');
+      await refreshSnapshotIfNeeded(
+        resolveRecency(undefined),
+        latestControlSnapshot.elements.length === 0
+      );
+      const raw = latestControlSnapshot as {
+        elements?: unknown;
+        components?: unknown;
+        timestamp?: number;
+      };
+      if (snapshotStaleSince !== null && Array.isArray(raw.elements) && raw.elements.length === 0) {
+        return success(
+          pageHealthUnknown(
+            'app_unreachable',
+            'the relay could not fetch a snapshot from the browser tab and holds none cached'
+          ),
+          staleMeta()
+        );
       }
+      return success(
+        diagnosePageHealth({
+          elements: raw.elements,
+          registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
+          observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+        }),
+        staleMeta()
+      );
     },
 
     // ========================================================================

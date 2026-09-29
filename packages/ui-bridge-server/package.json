@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-server",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "UI Bridge Server - HTTP/WebSocket server adapters for UI Bridge",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -47,7 +47,7 @@
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },
   "dependencies": {
-    "@qontinui/ui-bridge": ">=0.4.0 <1"
+    "@qontinui/ui-bridge": ">=0.28.0 <1"
   },
   "peerDependencies": {
     "express": "^4.18.0 || ^5.0.0",
