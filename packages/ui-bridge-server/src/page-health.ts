@@ -1,11 +1,39 @@
 /**
- * Page Health Diagnostics
+ * Page Health Diagnostics — `@qontinui/ui-bridge-server`'s producer
+ * (`sdk-server/page-health`).
  *
  * Analyzes discovered elements to produce a health report identifying
  * spatial coverage gaps, layout issues, loading/error signals, and more.
+ *
+ * NOTE: this is a different analyzer from the core SDK's
+ * (`@qontinui/ui-bridge/observation` `diagnosePageHealth`, which mirrors the
+ * runner): triggered-only findings keyed `low-spatial-coverage` etc., and a
+ * `healthy | degraded | unhealthy` status. Both answer in the same
+ * {@link Observation} envelope; `provenance.producer.id` says which one
+ * answered.
+ *
+ * "Could not look" is an answer, never a CRITICAL report over nothing:
+ *
+ *   - no `elements` array at all            → `unknown{input_missing}`
+ *   - zero elements AND zero components     → `unknown{producer_not_run}`
+ *   - visible elements, none with geometry  → `unknown{input_missing}`
+ *   - the analyzer threw                    → `unknown{producer_failed}`
+ *
+ * Visible elements without a `normalizedRect` are COUNTED into
+ * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped.
+ * `status` lives only inside a `measured` value.
  */
 
 import type { DiscoveredElement } from '@qontinui/ui-bridge/control';
+import {
+  Observation,
+  type ObservationProducer,
+  type ObservationProvenanceInit,
+  type ObservationTime,
+  type UnmeasuredDimension,
+} from '@qontinui/ui-bridge/observation';
+
+declare const __SDK_VERSION__: string;
 
 // ============================================================================
 // Types
@@ -24,8 +52,13 @@ export interface PageHealthFinding {
   details?: Record<string, unknown>;
 }
 
-export interface PageHealthReport {
-  /** Overall health score: 'healthy' | 'degraded' | 'unhealthy' */
+/**
+ * The report — the `value` of a `measured` page-health observation. How many
+ * visible elements carried geometry lives in `provenance.coverage`; when the
+ * report was computed lives in `provenance.evaluatedAt`.
+ */
+export interface PageHealthValue {
+  /** Overall roll-up: 'healthy' | 'degraded' | 'unhealthy'. Only ever inside a `measured` observation. */
   status: 'healthy' | 'degraded' | 'unhealthy';
   /** Individual findings */
   findings: PageHealthFinding[];
@@ -41,8 +74,53 @@ export interface PageHealthReport {
     contentElements: number;
     regionCounts: { sidebar: number; header: number; content: number };
   };
-  /** Timestamp */
-  timestamp: number;
+}
+
+/** What this producer answers with. */
+export type PageHealthObservation = Observation<PageHealthValue>;
+
+/** Producer id of `@qontinui/ui-bridge-server`'s page-health. */
+export const SERVER_PAGE_HEALTH_PRODUCER_ID = 'sdk-server/page-health';
+
+/** Inputs, handed over AS RECEIVED — a missing `elements` must reach here as missing, not `[]`. */
+export interface PageHealthInput {
+  /** The discover reply's / registry's `elements`, as received. */
+  elements: unknown;
+  /** Components the registry reports, or `null` when it keeps no such count. */
+  registeredComponents: number | null;
+  /** When the elements were sampled. */
+  observedAt: ObservationTime | null;
+}
+
+/** Options for {@link diagnosePageHealth}. */
+export interface PageHealthOptions {
+  /** Defaults to `sdk-server/page-health` at this package's version. */
+  producer?: ObservationProducer;
+  /** When the producer ran. Defaults to now. */
+  evaluatedAt?: ObservationTime;
+}
+
+function defaultProducer(): ObservationProducer {
+  return {
+    id: SERVER_PAGE_HEALTH_PRODUCER_ID,
+    version: typeof __SDK_VERSION__ === 'string' ? __SDK_VERSION__ : 'unknown',
+  };
+}
+
+/** An `unknown` page-health observation for a failure hit before inputs existed. */
+export function pageHealthUnknown(
+  code: 'producer_failed' | 'input_missing' | 'producer_not_run' | 'app_unreachable',
+  detail: string,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  return Observation.unknown(
+    code,
+    detail,
+    Observation.provenance({
+      producer: options.producer ?? defaultProducer(),
+      evaluatedAt: options.evaluatedAt,
+    })
+  );
 }
 
 // ============================================================================
@@ -90,22 +168,96 @@ const LOADING_CLASS_PATTERNS = ['spin', 'pulse', 'skeleton', 'loading', 'shimmer
 // ============================================================================
 
 /**
- * Diagnose page health from discovered elements.
+ * Diagnose page health from discovered elements. Never throws: an exception
+ * is itself an answer (`unknown{producer_failed}`).
  */
-export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthReport {
+export function diagnosePageHealth(
+  input: PageHealthInput,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  const producer = options.producer ?? defaultProducer();
+  try {
+    return observe(input, producer, options.evaluatedAt);
+  } catch (err) {
+    return Observation.unknown(
+      'producer_failed',
+      `page-health producer threw: ${err instanceof Error ? err.message : String(err)}`,
+      Observation.provenance({ producer })
+    );
+  }
+}
+
+function observe(
+  input: PageHealthInput,
+  producer: ObservationProducer,
+  evaluatedAt: ObservationTime | undefined
+): PageHealthObservation {
+  const base: ObservationProvenanceInit = {
+    producer,
+    observedAt: input.observedAt,
+    evaluatedAt,
+  };
+
+  if (!Array.isArray(input.elements)) {
+    return Observation.unknown(
+      'input_missing',
+      'the discover reply carried no `elements` array, so there was nothing to analyze; ' +
+        'this says nothing about the page itself',
+      Observation.provenance({ ...base, observedAt: null })
+    );
+  }
+  const elements = input.elements as DiscoveredElement[];
+
+  if (elements.length === 0 && (input.registeredComponents ?? 0) === 0) {
+    return Observation.unknown(
+      'producer_not_run',
+      'the registry reports zero elements and zero components — nothing has registered ' +
+        'yet, so there was nothing to look at',
+      Observation.provenance(base)
+    );
+  }
+
+  return analyze(elements, base);
+}
+
+function analyze(
+  elements: DiscoveredElement[],
+  base: ObservationProvenanceInit
+): PageHealthObservation {
   const findings: PageHealthFinding[] = [];
 
-  const visibleElements = elements.filter((el) => el.state.visible);
+  const visibleElements = elements.filter((el) => el.state?.visible === true);
+  // Visible elements that carry geometry; the rest are COUNTED as unmeasured.
+  const measuredElements = visibleElements.flatMap((el) => {
+    const nr = el.state.normalizedRect;
+    return nr ? [{ el, nr }] : [];
+  });
+  const withoutGeometry = visibleElements.length - measuredElements.length;
+  const unmeasured: UnmeasuredDimension[] =
+    withoutGeometry > 0
+      ? [{ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' }]
+      : [];
+  const coverage = {
+    considered: visibleElements.length,
+    measured: measuredElements.length,
+    unmeasured,
+  };
+
+  if (visibleElements.length > 0 && measuredElements.length === 0) {
+    return Observation.unknown(
+      'input_missing',
+      `all ${visibleElements.length} visible element(s) carry no normalizedRect, so spatial ` +
+        'coverage, layout regions and visual anomalies cannot be measured',
+      Observation.provenance({ ...base, coverage })
+    );
+  }
 
   // ---- Spatial Coverage (20x20 grid) ----
   const grid: boolean[][] = Array.from({ length: GRID_SIZE }, () =>
     Array.from({ length: GRID_SIZE }, () => false)
   );
 
-  for (const el of visibleElements) {
-    const nr = el.state.normalizedRect;
-    if (!nr) continue;
-
+  for (const { nr } of measuredElements) {
     const minCol = Math.max(0, Math.floor(nr.x * GRID_SIZE));
     const maxCol = Math.min(GRID_SIZE - 1, Math.floor((nr.x + nr.width) * GRID_SIZE));
     const minRow = Math.max(0, Math.floor(nr.y * GRID_SIZE));
@@ -167,9 +319,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   // ---- Layout Regions ----
   const regionCounts = { sidebar: 0, header: 0, content: 0 };
 
-  for (const el of visibleElements) {
-    const nr = el.state.normalizedRect;
-    if (!nr) continue;
+  for (const { nr } of measuredElements) {
     const cx = nr.x + nr.width / 2;
     const cy = nr.y + nr.height / 2;
 
@@ -291,10 +441,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   }
 
   // ---- Visual Anomalies ----
-  for (const el of visibleElements) {
-    const nr = el.state.normalizedRect;
-    if (!nr) continue;
-
+  for (const { el, nr } of measuredElements) {
     // Zero size
     if (nr.width === 0 || nr.height === 0) {
       findings.push({
@@ -331,19 +478,22 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   const hasWarning = findings.some((f) => f.severity === 'warning');
   const status = hasCritical ? 'unhealthy' : hasWarning ? 'degraded' : 'healthy';
 
-  return {
-    status,
-    findings,
-    heatmap,
-    stats: {
-      totalElements: elements.length,
-      visibleElements: visibleElements.length,
-      coveragePercent: Math.round(coveragePercent * 10) / 10,
-      interactiveCount: interactiveElements.length,
-      disabledCount,
-      contentElements: elements.filter((el) => el.category === 'content').length,
-      regionCounts,
+  return Observation.measured(
+    {
+      status,
+      findings,
+      heatmap,
+      stats: {
+        totalElements: elements.length,
+        visibleElements: visibleElements.length,
+        coveragePercent: Math.round(coveragePercent * 10) / 10,
+        interactiveCount: interactiveElements.length,
+        disabledCount,
+        contentElements: elements.filter((el) => el.category === 'content').length,
+        regionCounts,
+      },
     },
-    timestamp: Date.now(),
-  };
+    // A deduction over the discovered elements, not an estimate.
+    Observation.provenance({ ...base, coverage })
+  );
 }

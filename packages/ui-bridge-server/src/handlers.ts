@@ -15,8 +15,8 @@ import type {
   FindResponse,
   WorkflowRunResponse,
 } from '@qontinui/ui-bridge/control';
-import { diagnosePageHealth } from './page-health';
-import type { PageHealthReport } from './page-health';
+import { diagnosePageHealth, pageHealthUnknown } from './page-health';
+import type { PageHealthObservation } from './page-health';
 import type { RenderLogEntry } from '@qontinui/ui-bridge/render-log';
 import type {
   ActionFailureDetails,
@@ -1164,29 +1164,40 @@ export function createHandlers(
       }
     },
 
-    // Page health diagnostics
-    pageHealth: async (): Promise<APIResponse<PageHealthReport>> => {
+    // Page health diagnostics — answers `Observation<PageHealthValue>`
+    // (producer `sdk-server/page-health`). "Could not look" is an ANSWER:
+    // a discover reply with no `elements` array, an empty registry, or a
+    // thrown discover/analyzer is `success: true` carrying
+    // `status: "unknown"` + a typed `unknown.code` — never a CRITICAL report
+    // over zero elements, and never an error response.
+    pageHealth: async (): Promise<APIResponse<PageHealthObservation>> => {
+      let elements: unknown;
+      let observedAt: number;
       try {
-        // Get elements via discover/find (uses the same path as the discover handler)
-        let elements: DiscoveredElement[];
+        observedAt = Date.now();
         if (actionExecutor.find) {
-          const result = (await actionExecutor.find()) as { elements: DiscoveredElement[] };
-          elements = result.elements ?? [];
+          // Same path as the discover handler. Handed over AS RECEIVED: a
+          // reply with no `elements` key must reach the producer as missing.
+          const result = (await actionExecutor.find()) as { elements?: unknown } | undefined;
+          elements = result?.elements;
         } else {
-          elements = (registry.findElements?.() ??
-            registry.getAllElements()) as DiscoveredElement[];
+          elements = registry.findElements?.() ?? registry.getAllElements();
         }
-
-        const report = diagnosePageHealth(elements);
-        return { success: true, data: report, timestamp: Date.now() };
       } catch (err) {
-        return {
-          success: false,
-          error: (err as Error).message,
-          code: mapInternalErrorCode('PAGE_HEALTH_ERROR', (err as Error).message),
-          timestamp: Date.now(),
-        };
+        return success(
+          pageHealthUnknown(
+            'producer_failed',
+            `could not discover elements: ${(err as Error).message}`
+          )
+        );
       }
+      let registeredComponents: number | null;
+      try {
+        registeredComponents = registry.getAllComponents().length;
+      } catch {
+        registeredComponents = null;
+      }
+      return success(diagnosePageHealth({ elements, registeredComponents, observedAt }));
     },
 
     query: async (request: {

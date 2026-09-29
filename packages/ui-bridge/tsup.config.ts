@@ -50,6 +50,7 @@ export default defineConfig([
       index: 'src/index.ts',
       'core/index': 'src/core/index.ts',
       'diagnostics/index': 'src/diagnostics/index.ts',
+      'observation/index': 'src/observation/index.ts',
       'react/index': 'src/react/index.ts',
       'control/index': 'src/control/index.ts',
       'render-log/index': 'src/render-log/index.ts',

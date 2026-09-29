@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { NativeUIBridgeRegistry } from '../../core/registry';
 import { DefaultNativeActionExecutor } from '../../control/action-executor';
 import { NativeUIBridgeServer } from '../http-server';
-import { diagnosePageHealth, type PageHealthElement } from '../page-health';
+import { diagnosePageHealth, type PageHealthElement, type PageHealthValue } from '../page-health';
 import type { NativeElementRef } from '../../core/types';
 
 /**
@@ -26,6 +26,18 @@ function makeRef(): React.RefObject<NativeElementRef> {
 }
 
 const VIEWPORT = { width: 400, height: 800 };
+
+/** Run the producer over a populated registry and return the `measured` report. */
+function measuredValue(
+  elements: PageHealthElement[],
+  viewport: { width: number; height: number }
+): PageHealthValue {
+  const obs = diagnosePageHealth({ elements, registeredComponents: 1, viewport, observedAt: Date.now() });
+  if (obs.status !== 'measured') {
+    throw new Error(`expected a measured observation, got ${JSON.stringify(obs)}`);
+  }
+  return obs.value;
+}
 
 function el(
   type: string,
@@ -75,7 +87,7 @@ describe('diagnosePageHealth (mobile)', () => {
       laidOut('listItem', 16, 500, VIEWPORT.width - 32, 80, { textContent: 'Row C' }),
     ];
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     expect(report.summary).toBe('OK');
     expect(report.element_count).toBe(7);
@@ -98,7 +110,7 @@ describe('diagnosePageHealth (mobile)', () => {
       elements.push(laidOut('button', 0, i * 60, sidebarW, 50));
     }
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     const spatial = report.findings.find((f) => f.check === 'spatial_coverage');
     expect(spatial?.severity).toBe('CRITICAL');
@@ -117,7 +129,7 @@ describe('diagnosePageHealth (mobile)', () => {
       laidOut('text', 0, 40, VIEWPORT.width, 20),
     ];
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     const layout = report.findings.find((f) => f.check === 'layout_regions');
     expect(layout?.severity).toBe('CRITICAL');
@@ -139,7 +151,7 @@ describe('diagnosePageHealth (mobile)', () => {
       laidOut('listItem', 16, 420, 368, 60, { textContent: 'Item one' }),
     ];
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     const text = report.findings.find((f) => f.check === 'text_signals');
     expect(text?.severity).toBe('CRITICAL');
@@ -160,7 +172,7 @@ describe('diagnosePageHealth (mobile)', () => {
       el('text', { visible: false }),
     ];
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     expect(report.element_count).toBe(3);
     expect(report.visible_count).toBe(1);
@@ -176,7 +188,7 @@ describe('diagnosePageHealth (mobile)', () => {
     // anomaly the user can't reach.
 
     function anomaliesFinding(elements: PageHealthElement[]) {
-      const report = diagnosePageHealth(elements, VIEWPORT);
+      const report = measuredValue(elements, VIEWPORT);
       return {
         report,
         anomalies: report.findings.find((f) => f.check === 'visual_anomalies'),
@@ -279,7 +291,7 @@ describe('diagnosePageHealth (mobile)', () => {
         );
       }
 
-      const report = diagnosePageHealth(elements, VIEWPORT);
+      const report = measuredValue(elements, VIEWPORT);
       const anomalies = report.findings.find((f) => f.check === 'visual_anomalies');
 
       expect((anomalies?.data as { outside_viewport: number }).outside_viewport).toBe(0);
@@ -300,7 +312,7 @@ describe('diagnosePageHealth (mobile)', () => {
       laidOut('text', 16, 340, 368, 50, { textContent: 'caption' }),
     ];
 
-    const report = diagnosePageHealth(elements, VIEWPORT);
+    const report = measuredValue(elements, VIEWPORT);
 
     const interactive = report.findings.find((f) => f.check === 'interactive_readiness');
     expect(interactive?.severity).toBe('WARNING');
@@ -343,17 +355,23 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     const parsed = JSON.parse(res.body) as {
       success: boolean;
       data: {
-        summary: string;
-        findings: Array<{ check: string; severity: string }>;
-        heatmap: string[];
-        element_count: number;
-        visible_count: number;
+        status: string;
+        value: {
+          summary: string;
+          findings: Array<{ check: string; severity: string }>;
+          heatmap: string[];
+          element_count: number;
+          visible_count: number;
+        };
+        provenance: { producer: { id: string } };
       };
     };
     expect(parsed.success).toBe(true);
-    expect(parsed.data.element_count).toBe(2);
-    expect(parsed.data.visible_count).toBe(2);
-    expect(parsed.data.findings.map((f) => f.check)).toEqual([
+    expect(parsed.data.status).toBe('measured');
+    expect(parsed.data.provenance.producer.id).toBe('sdk-native/page-health');
+    expect(parsed.data.value.element_count).toBe(2);
+    expect(parsed.data.value.visible_count).toBe(2);
+    expect(parsed.data.value.findings.map((f) => f.check)).toEqual([
       'spatial_coverage',
       'layout_regions',
       'element_diversity',
@@ -361,7 +379,7 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
       'interactive_readiness',
       'visual_anomalies',
     ]);
-    expect(parsed.data.heatmap).toHaveLength(20);
+    expect(parsed.data.value.heatmap).toHaveLength(20);
   });
 
   it('honors body.viewport over any injected viewportProvider', async () => {
@@ -385,9 +403,9 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     });
 
     const parsed = JSON.parse(res.body) as {
-      data: { findings: Array<{ check: string; data: { coverage_pct?: number } }> };
+      data: { value: { findings: Array<{ check: string; data: { coverage_pct?: number } }> } };
     };
-    const spatial = parsed.data.findings.find((f) => f.check === 'spatial_coverage');
+    const spatial = parsed.data.value.findings.find((f) => f.check === 'spatial_coverage');
     // A 50x50 element on a 100x100 viewport covers ~25% of the grid.
     expect(spatial?.data.coverage_pct).toBe(25);
   });
@@ -401,9 +419,16 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
       query: {},
     });
     expect(res.status).toBe(200);
-    const parsed = JSON.parse(res.body) as { success: boolean; data: unknown };
+    const parsed = JSON.parse(res.body) as {
+      success: boolean;
+      data: { status: string; unknown: { code: string } };
+    };
     expect(parsed.success).toBe(true);
-    expect(parsed.data).toBeDefined();
+    // No viewport (no body.viewport, no provider): an unknown screen size is
+    // an UNKNOWN, never a 0x0 blank screen.
+    expect(parsed.data.status).toBe('unknown');
+    expect(parsed.data.unknown.code).toBe('input_missing');
+    expect(res.body).not.toContain('CRITICAL');
   });
 
   it('regression: handlers.ts must not import or require react-native', async () => {
@@ -464,10 +489,88 @@ describe('POST /ui-bridge/control/page-health — routing + viewport handling', 
     });
 
     const parsed = JSON.parse(res.body) as {
-      data: { findings: Array<{ check: string; data: { coverage_pct?: number } }> };
+      data: { value: { findings: Array<{ check: string; data: { coverage_pct?: number } }> } };
     };
-    const spatial = parsed.data.findings.find((f) => f.check === 'spatial_coverage');
+    const spatial = parsed.data.value.findings.find((f) => f.check === 'spatial_coverage');
     // Element fills the entire injected viewport → 100% coverage.
     expect(spatial?.data.coverage_pct).toBe(100);
+  });
+});
+
+describe('page-health observation envelope (sdk-native)', () => {
+  const T = Date.UTC(2026, 8, 30, 12, 0, 0);
+
+  it('no elements array → unknown{input_missing}; no severity word in the body', () => {
+    const obs = diagnosePageHealth({
+      elements: undefined,
+      registeredComponents: 2,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') expect(obs.unknown.code).toBe('input_missing');
+    expect(obs.provenance.observedAt).toBeNull();
+    expect(JSON.stringify(obs)).not.toMatch(/CRITICAL|unhealthy/);
+  });
+
+  it('an unknown viewport (null or 0x0) → unknown{input_missing}, never a blank screen', () => {
+    const elements = [laidOut('text', 0, 0, 400, 800)];
+    for (const viewport of [null, { width: 0, height: 0 }]) {
+      const obs = diagnosePageHealth({ elements, registeredComponents: 1, viewport, observedAt: T });
+      expect(obs.status).toBe('unknown');
+      if (obs.status === 'unknown') {
+        expect(obs.unknown.code).toBe('input_missing');
+        expect(obs.unknown.detail).toContain('viewport');
+      }
+      expect(JSON.stringify(obs)).not.toContain('CRITICAL');
+    }
+  });
+
+  it('zero elements and zero components → unknown{producer_not_run}', () => {
+    const obs = diagnosePageHealth({
+      elements: [],
+      registeredComponents: 0,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') expect(obs.unknown.code).toBe('producer_not_run');
+  });
+
+  it('5 visible elements, 3 not yet laid out → measured, coverage.unmeasured[0].count === 3', () => {
+    const elements = [
+      laidOut('text', 0, 0, 400, 100),
+      laidOut('text', 0, 200, 400, 100),
+      el('text'),
+      el('text'),
+      el('button'),
+    ];
+    const obs = diagnosePageHealth({
+      elements,
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.producer.id).toBe('sdk-native/page-health');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 5,
+      measured: 2,
+      unmeasured: [{ dimension: 'geometry', count: 3, code: 'input_missing' }],
+    });
+    expect(obs.provenance.confidence).toBeNull();
+    expect(obs.provenance.cache).toBeNull();
+    expect(obs.provenance.source).toBeNull();
+  });
+
+  it('every visible element unmeasured → unknown{input_missing}', () => {
+    const obs = diagnosePageHealth({
+      elements: [el('text'), el('text')],
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') expect(obs.unknown.code).toBe('input_missing');
   });
 });

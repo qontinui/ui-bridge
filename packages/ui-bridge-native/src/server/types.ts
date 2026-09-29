@@ -12,6 +12,7 @@ import type {
 } from '../core/types';
 import type { ComponentActionResponse, PageNavigationResponse } from '../control/types';
 import type { ElementDesignData, StateStyles, ResponsiveSnapshot } from '../design/design-types';
+import type { PageHealthObservation } from './page-health';
 
 /**
  * Navigation provider for React Native apps.
@@ -116,8 +117,9 @@ export interface NativeServerConfig extends NativeUIBridgeConfig {
    * thread (blank screen, React tree destroyed). The provider already has
    * a live import of `react-native`, so it's the safe injection point.
    *
-   * When absent: `page-health` falls back to `body.viewport`, then `{0,0}`
-   * (degenerate coverage report — no crash).
+   * When absent: `page-health` uses `body.viewport`; with neither, it answers
+   * `status: "unknown"`, `unknown.code: "input_missing"` — an unknown screen
+   * size is never reported as a blank screen.
    */
   viewportProvider?: () => { width: number; height: number };
 }
@@ -760,9 +762,10 @@ export interface NativeServerHandlers {
   find: HandlerFunction<NativeFindResponse>;
   getSnapshot: HandlerFunction<NativeBridgeSnapshot>;
   // Page health — structured diagnostic over the snapshot's elements +
-  // device viewport. Output shape mirrors the runner/web analyzer so the
-  // `page-health` skill is platform-neutral.
-  getPageHealth: HandlerFunction<unknown>;
+  // device viewport, as an `Observation<PageHealthValue>`. The value shape
+  // mirrors the runner/web analyzer so the `page-health` skill is
+  // platform-neutral.
+  getPageHealth: HandlerFunction<PageHealthObservation>;
 
   // Workflows
   getWorkflows: HandlerFunction<{ workflows: unknown[] }>;

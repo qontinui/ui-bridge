@@ -31,6 +31,11 @@
       "import": "./dist/diagnostics/index.mjs",
       "require": "./dist/diagnostics/index.js"
     },
+    "./observation": {
+      "types": "./dist/observation/index.d.ts",
+      "import": "./dist/observation/index.mjs",
+      "require": "./dist/observation/index.js"
+    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.mjs",

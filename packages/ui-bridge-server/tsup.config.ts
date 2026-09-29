@@ -1,5 +1,8 @@
 import { defineConfig } from 'tsup';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pkg = require('./package.json') as { version: string };
+
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
@@ -18,4 +21,9 @@ export default defineConfig({
   clean: true,
   external: ['express', 'next', 'ws', '@qontinui/ui-bridge'],
   treeshake: true,
+  // Inject the package.json version so `provenance.producer.version` of the
+  // `sdk-server/page-health` observation names the real installed version.
+  define: {
+    __SDK_VERSION__: JSON.stringify(pkg.version),
+  },
 });
