@@ -12,6 +12,24 @@
  * answer in the {@link Observation} envelope; `vision/analyze` and
  * `vision/assert` keep their own verdict vocabulary and carry the envelope's
  * provenance block beside it (plan 2026-09-20-ui-bridge-observations-…, D1).
+ *
+ * **Producer ids** (`provenance.producer.id`):
+ *
+ * | Route / field | Producer |
+ * |---|---|
+ * | `vision/extract` | `runner/vision-extract` |
+ * | `vision/describe` | `runner/vision-describe` |
+ * | `vision/analyze` | `vision-core/<analyzer>` (e.g. `vision-core/layout`) |
+ * | `vision/assert` | `vision-core/assertions` |
+ * | `frame` on analyze / assert | `runner/vision-frame` |
+ * | `control/page-health` (runner) | `runner/page-health` |
+ *
+ * **Code semantics shared by every frame-consuming route:**
+ *
+ * - a capture was ATTEMPTED and failed → `unknown{producer_failed}`;
+ * - no frame source could be resolved at all → `unknown{input_missing}`;
+ * - an unknown `target` (like an unknown `element`) is a MALFORMED REQUEST and
+ *   answers non-2xx — it is not an observation, so it carries no unknown code.
  */
 
 import type { Observation, ObservationProvenance, UnknownCode } from '../observation/observation';
@@ -136,11 +154,19 @@ export interface ExtractValue {
 }
 
 /**
- * `vision/extract` — producer `runner/vision-extract`. `absent` = the model
- * returned no text at all; `unknown{below_confidence_floor}` = it returned
- * text and every block fell under the floor (see `value`-less
- * `provenance.coverage.unmeasured`); `unknown{model_reply_unparseable}` /
- * `producer_failed` / `input_missing` for the failure arms.
+ * `vision/extract` — producer `runner/vision-extract`.
+ *
+ * - `absent` = the model returned no text at all, OR every block it returned
+ *   was whitespace-only or a duplicate — no text survived, and nothing was
+ *   dropped for low confidence.
+ * - `unknown{below_confidence_floor}` = it returned text and every surviving
+ *   block fell under the floor (see `provenance.coverage.unmeasured`).
+ * - `unknown{model_reply_unparseable}` = the OCR reply could not be parsed.
+ * - `unknown{producer_failed}` = the capture was attempted and failed, or the
+ *   OCR call failed (transport, HTTP status, timeout).
+ * - `unknown{input_missing}` = no frame source could be resolved.
+ * - An unknown `target` / `element` is a malformed request (non-2xx), not an
+ *   observation.
  *
  * **Runner build requirement:** this shape matches qontinui-runner builds
  * carrying plan 2026-09-20-ui-bridge-observations-distinguish-cannot-see-from-
@@ -287,14 +313,16 @@ export interface VisionAnalyzeResponse {
   /** Omitted when the analyzer takes no snapshot or none was supplied — read `snapshotAttribution`. */
   coverage?: SnapshotCoverage;
   /**
-   * The frame as an observation — one field, three states, replacing the old
-   * `frame` + `frameError` pair.
+   * The frame as an observation (producer `runner/vision-frame`) — one field,
+   * three states, replacing the old `frame` + `frameError` pair. A capture
+   * that was attempted and failed is `unknown{producer_failed}`; no
+   * resolvable frame source is `unknown{input_missing}`.
    */
   frame: Observation<AnalyzedFrameInfo>;
   /** RFC3339 — when the analyzer finished. Never absent. */
   evaluatedAt: string;
   snapshotAttribution: SnapshotAttribution;
-  /** Envelope provenance (`producer: vision-core/<analyzer>`). */
+  /** Envelope provenance (producer `vision-core/<analyzer>`). */
   provenance: ObservationProvenance;
 }
 
@@ -341,7 +369,11 @@ export interface VisionAssertionResult {
   /** `outcome === "passed"`. `unknown` is NOT a pass. */
   passed: boolean;
   outcome: AssertionOutcome;
+  /** Why the assertion could not be evaluated. Present iff `outcome === "unknown"`. */
+  code?: UnknownCode;
   detail?: string;
+  /** Always sent: finite in `[0, 1]`, or `null` = a deduction, not an estimate. */
+  confidence: number | null;
   assertion: VisionAssertion;
 }
 
@@ -360,14 +392,19 @@ export interface VisionAssertResponse {
   outcomeCounts: { passed: number; failed: number; unknown: number };
   /** Roll-up with fixed precedence failed > unknown > passed. */
   outcome: AssertionOutcome;
-  /** The frame this call captured, as an observation (no assertion reads it). */
+  /**
+   * The frame this call captured, as an observation (producer
+   * `runner/vision-frame`; no assertion reads it). Same codes as on analyze:
+   * attempted-and-failed capture → `producer_failed`, no resolvable frame
+   * source → `input_missing`.
+   */
   frame: Observation<AnalyzedFrameInfo>;
   /** Present exactly when a snapshot was supplied. */
   coverage?: SnapshotCoverage;
   /** RFC3339 — when the assertions finished evaluating. Never absent. */
   evaluatedAt: string;
   snapshotAttribution: SnapshotAttribution;
-  /** Envelope provenance. */
+  /** Envelope provenance (producer `vision-core/assertions`). */
   provenance: ObservationProvenance;
 }
 
