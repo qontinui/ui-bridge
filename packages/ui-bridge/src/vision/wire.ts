@@ -26,10 +26,16 @@
  *
  * **Code semantics shared by every frame-consuming route:**
  *
- * - a capture was ATTEMPTED and failed → `unknown{producer_failed}`;
- * - no frame source could be resolved at all → `unknown{input_missing}`;
+ * - a capture was ATTEMPTED and failed → `unknown{producer_failed}` (the
+ *   detail says "frame capture failed" vs. a model-call failure);
  * - an unknown `target` (like an unknown `element`) is a MALFORMED REQUEST and
- *   answers non-2xx — it is not an observation, so it carries no unknown code.
+ *   answers HTTP 404 on every vision route — it is not an observation, so it
+ *   carries no unknown code. A target that WAS valid but went away (device
+ *   unplugged, app heartbeat expired) also answers 404: re-list targets before
+ *   assuming a typo.
+ * - There is no frame-level `input_missing`: `input_missing` is reserved for
+ *   inputs the page or caller did not supply (no bbox, no `elements`, no
+ *   geometry).
  */
 
 import type { Observation, ObservationProvenance, UnknownCode } from '../observation/observation';
@@ -164,8 +170,7 @@ export interface ExtractValue {
  * - `unknown{model_reply_unparseable}` = the OCR reply could not be parsed.
  * - `unknown{producer_failed}` = the capture was attempted and failed, or the
  *   OCR call failed (transport, HTTP status, timeout).
- * - `unknown{input_missing}` = no frame source could be resolved.
- * - An unknown `target` / `element` is a malformed request (non-2xx), not an
+ * - An unknown `target` / `element` is a malformed request (HTTP 404), not an
  *   observation.
  *
  * **Runner build requirement:** this shape matches qontinui-runner builds
@@ -315,8 +320,8 @@ export interface VisionAnalyzeResponse {
   /**
    * The frame as an observation (producer `runner/vision-frame`) — one field,
    * three states, replacing the old `frame` + `frameError` pair. A capture
-   * that was attempted and failed is `unknown{producer_failed}`; no
-   * resolvable frame source is `unknown{input_missing}`.
+   * that was attempted and failed is `unknown{producer_failed}`; an unknown
+   * `target` never reaches this field — it is an HTTP 404.
    */
   frame: Observation<AnalyzedFrameInfo>;
   /** RFC3339 — when the analyzer finished. Never absent. */
@@ -395,8 +400,8 @@ export interface VisionAssertResponse {
   /**
    * The frame this call captured, as an observation (producer
    * `runner/vision-frame`; no assertion reads it). Same codes as on analyze:
-   * attempted-and-failed capture → `producer_failed`, no resolvable frame
-   * source → `input_missing`.
+   * attempted-and-failed capture → `producer_failed`; an unknown `target` is
+   * an HTTP 404.
    */
   frame: Observation<AnalyzedFrameInfo>;
   /** Present exactly when a snapshot was supplied. */
