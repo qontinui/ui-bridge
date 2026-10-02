@@ -13,7 +13,7 @@ and their recovery templates.
 ## Error Codes
 
 Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
-`action`, `assertion`, `network`, `system`. There are 41:
+`action`, `assertion`, `network`, `system`. There are 51:
 
 | Code | Category | Description |
 | ---- | -------- | ----------- |
@@ -27,6 +27,7 @@ Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
 | `UB-ASSERT-TEXT-MISMATCH` | assertion | An assertion about element text content failed (exact/contains/regex mismatch). |
 | `UB-ASSERT-TIMEOUT` | assertion | An assertion timed out waiting for its condition. |
 | `UB-ASSERT-VISIBILITY` | assertion | An assertion about element visibility failed. |
+| `UB-CAPABILITY-UNAVAILABLE` | system | The running build does not serve this capability (e.g. a runner-direct `/vision/*` route called on an SDK-only bridge). Nothing was attempted; this is not an action rejection. |
 | `UB-ELEM-BLOCKED` | element | The element is blocked by another element such as a modal, overlay, or popup. |
 | `UB-ELEM-DISABLED` | element | The element is disabled and cannot be interacted with. |
 | `UB-ELEM-NOT-ENABLED` | element | The element is present and visible but disabled, so it cannot be interacted with. |
@@ -49,6 +50,15 @@ Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
 | `UB-MULTIPLE-ELEMENTS` | element | Multiple elements match the description; the target is ambiguous. |
 | `UB-NAVIGATION-ERROR` | network | Navigation to the target page failed. |
 | `UB-NET-ERROR` | network | A network error occurred while performing the action or loading data. |
+| `UB-OBS-APP-UNREACHABLE` | network | The bridge, the runner, or the app behind it could not be reached, so nothing was attempted or observed (an observation carrying it is unknown, not empty). |
+| `UB-OBS-BELOW-CONFIDENCE-FLOOR` | system | Observation unknown: observations existed but every one fell under the caller's confidence floor. |
+| `UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD` | system | Observation unknown: the running build does not serve the capability this observation needs. |
+| `UB-OBS-INPUT-MISSING` | system | Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself. |
+| `UB-OBS-MODEL-REPLY-UNPARSEABLE` | system | Observation unknown: a model reply could not be parsed or failed strict validation. |
+| `UB-OBS-NEEDS-MULTI-FRAME-INPUT` | system | Observation unknown: the question needs more than one frame (e.g. animation_settled) and only one was available. |
+| `UB-OBS-PRODUCER-FAILED` | system | The producer (an observation producer, or the runner answering a proxied call) ran and failed: transport error, HTTP error status, timeout, or a thrown exception. An observation carrying it is unknown — nothing is known about the page. |
+| `UB-OBS-PRODUCER-NOT-RUN` | system | Observation unknown: the producer did not run because there was nothing to look at yet (e.g. zero registered elements and components). |
+| `UB-OBS-STALE-INPUT` | system | Observation unknown: the input is known to be stale, so an answer over it would describe a page that no longer exists. |
 | `UB-PAGE-LOAD-ERROR` | network | The page failed to load correctly. |
 | `UB-PARSE-ERROR` | system | Could not parse the natural language instruction. |
 | `UB-STALE-ELEMENT` | element | The element reference is no longer attached to the DOM. |
@@ -62,6 +72,15 @@ Every code is `UB-`-prefixed and belongs to one of five categories: `element`,
 The twelve `UB-HEALTH-*` codes are emitted by the page-health diagnostic
 (`POST /control/page-health`) rather than by an action, but they share the same
 vocabulary and the same recovery machinery.
+
+The nine `UB-OBS-*` codes are the diagnostic names of the observation
+envelope's `unknown.code` values (`input_missing` → `UB-OBS-INPUT-MISSING`, and
+so on — `UNKNOWN_CODE_DIAGNOSTICS` in `@qontinui/ui-bridge/diagnostics` is the
+map). An observation that could not look answers `status: "unknown"` with one
+of those codes rather than an empty result. `UB-CAPABILITY-UNAVAILABLE` is what
+a runner-direct route (`/vision/*`) answers on a bridge that has no runner: the
+build does not serve it, which is not the same fact as an action a guard
+rejected.
 
 To iterate the vocabulary or look a code up at runtime:
 

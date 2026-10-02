@@ -64,10 +64,13 @@ describe('iter-4 Item B — POST /control/page-health empty body', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.data).toBeDefined();
-    // The report shape: status + findings + heatmap + stats + timestamp.
-    expect(body.data.status).toMatch(/^(healthy|degraded|unhealthy)$/);
-    expect(Array.isArray(body.data.findings)).toBe(true);
-    expect(Array.isArray(body.data.heatmap)).toBe(true);
+    // The answer is an Observation envelope. This registry is EMPTY (zero
+    // elements, zero components), so the honest answer is "nothing to look
+    // at yet" — never a report that calls an empty registry unhealthy.
+    expect(body.data.status).toBe('unknown');
+    expect(body.data.unknown.code).toBe('producer_not_run');
+    expect(body.data.provenance.producer.id).toBe('sdk-server/page-health');
+    expect(JSON.stringify(body)).not.toContain('unhealthy');
   });
 
   it('200 OK with explicit "{}" body (regression — both shapes work)', async () => {

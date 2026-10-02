@@ -26,7 +26,21 @@ import type {
   ComponentActionPredictResponse,
 } from '../control';
 import type { FillResult } from '../core/types';
-import type { PageHealthReport } from './page-health';
+import type { PageHealthObservation } from './page-health';
+import type {
+  VisionAnalyzeResponse,
+  VisionAssertResponse,
+  VisionBaselineCreateResponse,
+  VisionBaselineListResponse,
+  VisionCacheStreamResponse,
+  VisionCaptureResponse,
+  VisionDescribeResponse,
+  VisionDiffResponse,
+  VisionExtractResponse,
+  VisionHealthResponse,
+  VisionMutationOccurredResponse,
+  VisionRawResponse,
+} from '../vision/wire';
 import type { RenderLogEntry, RenderLogEntryType } from '../render-log';
 import type {
   SearchCriteria,
@@ -615,49 +629,58 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<ControlSnapshot>>;
 
-  // Vision pipeline endpoints — runner-direct; SDK stubs only.
+  // Vision pipeline endpoints — runner-direct; SDK stubs only. The SDK stubs
+  // answer `RUNNER_REQUIRED` (→ `UB-CAPABILITY-UNAVAILABLE`); the success
+  // payloads typed here are what the runner serves (see `../vision/wire`).
   visionCapture: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionCaptureResponse>>;
   visionAnnotate: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionCaptureResponse>>;
   visionDiff: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionDiffResponse>>;
   visionRaw: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
-  visionCacheStream: (sha256: string, context?: HandlerContext) => Promise<APIResponse<unknown>>;
-  visionHealth: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionRawResponse>>;
+  visionCacheStream: (
+    sha256: string,
+    context?: HandlerContext
+  ) => Promise<APIResponse<VisionCacheStreamResponse>>;
+  visionHealth: (context?: HandlerContext) => Promise<APIResponse<VisionHealthResponse>>;
   // Phase 4 — text-bearing outputs.
   visionExtract: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionExtractResponse>>;
   visionDescribe: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionDescribeResponse>>;
   // Phase 6 — analyzers + assertion DSL + baselines + frontend mutation signal.
   visionAnalyze: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionAnalyzeResponse>>;
   visionAssert: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionAssertResponse>>;
   visionBaseline: (
     request?: Record<string, unknown>,
     context?: HandlerContext
-  ) => Promise<APIResponse<unknown>>;
-  visionBaselinesList: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
-  visionMutationOccurred: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  ) => Promise<APIResponse<VisionBaselineCreateResponse>>;
+  visionBaselinesList: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<VisionBaselineListResponse>>;
+  visionMutationOccurred: (
+    context?: HandlerContext
+  ) => Promise<APIResponse<VisionMutationOccurredResponse>>;
 
   // Workflow endpoints
   getWorkflows: (
@@ -1225,7 +1248,7 @@ export interface UIBridgeServerHandlers {
   // (qontinui-runner src-tauri/src/mcp/ui_bridge/screenshots.rs) but
   // server-side over the current snapshot. Pure data-over-elements; no
   // browser context required beyond a relayed snapshot.
-  pageHealth: () => Promise<APIResponse<PageHealthReport>>;
+  pageHealth: () => Promise<APIResponse<PageHealthObservation>>;
 
   // Occlusion sweep — WHAT IS COVERING WHAT, page-wide and directed.
   // `pageHealth` and `discover` both report per-element visibility, but
@@ -1818,11 +1841,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/control/state-summary', handler: 'getStateSummary' },
 
   // Page health diagnostics — runs the spatial-coverage / layout / text-
-  // signal heuristics defined in `./page-health.ts`. Byte-equivalent output
-  // shape to the runner's `/control/page-health` handler so the page-health
-  // skill (.claude/skills/page-health/SKILL.md) sees identical payloads
-  // regardless of transport. POST (matches runner) — body reserved for
-  // future per-check toggles (currently ignored).
+  // signal heuristics defined in `./page-health.ts` and answers an
+  // `Observation<PageHealthValue>` (producer `sdk/page-health`). The report
+  // inside `value` has the runner's `/control/page-health` shape so the
+  // page-health skill (.claude/skills/page-health/SKILL.md) reads the same
+  // payload regardless of transport. POST (matches runner) — body reserved
+  // for future per-check toggles (currently ignored).
   { method: 'POST', path: '/control/page-health', handler: 'pageHealth' },
 
   // Occlusion sweep. POST so the filter knobs (`minRatio`,

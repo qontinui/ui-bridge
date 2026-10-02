@@ -11,9 +11,29 @@
  * anomalies. No Tauri-specific calls — safe to run server-side over a
  * snapshot relayed from the browser.
  *
- * Output shape matches the runner's report exactly so MCP / agent tooling
- * (e.g. the page-health skill at .claude/skills/page-health/SKILL.md) gets
- * byte-equivalent payloads regardless of which transport answers.
+ * ONE implementation for both web SDK transports: the in-page handler
+ * (`server/handlers.ts`) and the relay handler (`server/relay-handlers.ts`)
+ * both call {@link diagnosePageHealth}. `@qontinui/ui-bridge-server` does
+ * NOT use it: it carries its own, different analyzer (triggered-only
+ * findings keyed `low-spatial-coverage` etc., a `healthy/degraded/unhealthy`
+ * roll-up) answering in the same envelope under producer
+ * `sdk-server/page-health`. The two were deliberately not collapsed. The
+ * React Native variant is also separate because its geometry input is
+ * different (pixel `state.layout`, not `normalizedRect`).
+ *
+ * The answer is an {@link Observation}: the report rides in `value` only when
+ * the analyzer could actually look. "Could not look" is `unknown` with a typed
+ * code, never a CRITICAL report over zero elements:
+ *
+ *   - no `elements` array at all            → `unknown{input_missing}`
+ *   - zero elements AND zero components     → `unknown{producer_not_run}`
+ *   - visible elements, none with geometry  → `unknown{input_missing}`
+ *   - the analyzer threw                    → `unknown{producer_failed}`
+ *
+ * Visible elements without a `normalizedRect` are no longer skipped silently:
+ * they are counted into `provenance.coverage.unmeasured` as
+ * `{ dimension: "geometry", code: "input_missing" }`, so a page whose
+ * elements carry no geometry reads as UNMEASURED, not as spatially empty.
  *
  * Fold semantics (see Step 7: Visual anomalies):
  *
@@ -30,6 +50,15 @@
 
 import type { DiscoveredElement } from '../control';
 import { truncateCodePoints } from '../core/text';
+import {
+  Observation,
+  type ObservationProducer,
+  type ObservationProvenanceInit,
+  type ObservationTime,
+  type UnmeasuredDimension,
+} from '../observation/observation';
+
+declare const __SDK_VERSION__: string;
 
 // ============================================================================
 // Types
@@ -48,8 +77,13 @@ export interface PageHealthFinding {
   data: Record<string, unknown>;
 }
 
-export interface PageHealthReport {
-  /** Worst severity across all findings */
+/**
+ * The page-health report — the `value` of a `measured` page-health
+ * observation. Coverage (how many visible elements carried geometry) lives in
+ * the observation's `provenance.coverage`, not here.
+ */
+export interface PageHealthValue {
+  /** Worst severity across all findings. Only ever present inside a `measured` observation. */
   summary: PageHealthSeverity;
   /** Per-check findings (one entry per heuristic family) */
   findings: PageHealthFinding[];
@@ -59,6 +93,82 @@ export interface PageHealthReport {
   element_count: number;
   /** Visible elements with a normalized rect */
   visible_count: number;
+}
+
+/** What the page-health producer answers with. */
+export type PageHealthObservation = Observation<PageHealthValue>;
+
+/** Producer id of the core SDK's page-health (in-page and relay handlers). */
+export const SDK_PAGE_HEALTH_PRODUCER_ID = 'sdk/page-health';
+
+/**
+ * The inputs the page-health producer reads.
+ *
+ * `elements` is typed `unknown` ON PURPOSE: the caller hands over whatever the
+ * snapshot / discover reply carried, and "there was no `elements` array" is
+ * one of the answers this producer must be able to give. Coercing it to `[]`
+ * at the call site (`snapshot.elements ?? []`) is exactly how "could not see"
+ * used to render as "the page is blank".
+ */
+export interface PageHealthInput {
+  /** The snapshot's / discover reply's `elements`, as received. */
+  elements: unknown;
+  /**
+   * Components the bridge reports as registered, or `null` when the surface
+   * keeps no such count. Zero elements plus zero components means nothing has
+   * registered yet — the producer has nothing to look at.
+   */
+  registeredComponents: number | null;
+  /** When the underlying snapshot was sampled. */
+  observedAt: ObservationTime | null;
+  /** Source attribution to carry in `provenance.source` (e.g. a snapshot id). */
+  source?: Record<string, unknown> | null;
+}
+
+/** Options for {@link diagnosePageHealth}. */
+export interface PageHealthOptions {
+  /** Which producer is answering. Defaults to `sdk/page-health` at this package's version. */
+  producer?: ObservationProducer;
+  /** When the producer ran. Defaults to now. */
+  evaluatedAt?: ObservationTime;
+}
+
+function defaultProducer(): ObservationProducer {
+  return {
+    id: SDK_PAGE_HEALTH_PRODUCER_ID,
+    version: typeof __SDK_VERSION__ === 'string' ? __SDK_VERSION__ : 'unknown',
+  };
+}
+
+type NormalizedRect = { x: number; y: number; width: number; height: number };
+
+function rectOf(el: DiscoveredElement): NormalizedRect | null {
+  const nr = (el.state as { normalizedRect?: NormalizedRect | null } | undefined)?.normalizedRect;
+  return nr && typeof nr === 'object' ? nr : null;
+}
+
+function isVisible(el: DiscoveredElement): boolean {
+  return (el.state as { visible?: boolean } | undefined)?.visible === true;
+}
+
+/**
+ * Build an `unknown` page-health observation for a failure the CALLER hit
+ * before it could hand inputs over (e.g. creating the snapshot threw).
+ */
+export function pageHealthUnknown(
+  code: 'producer_failed' | 'input_missing' | 'producer_not_run' | 'app_unreachable' | 'stale_input',
+  detail: string,
+  options: PageHealthOptions & { observedAt?: ObservationTime | null } = {}
+): PageHealthObservation {
+  return Observation.unknown(
+    code,
+    detail,
+    Observation.provenance({
+      producer: options.producer ?? defaultProducer(),
+      observedAt: options.observedAt ?? null,
+      evaluatedAt: options.evaluatedAt,
+    })
+  );
 }
 
 // ============================================================================
@@ -126,11 +236,14 @@ function worstSeverity(findings: PageHealthFinding[]): PageHealthSeverity {
 // ============================================================================
 
 /**
- * Run the page-health analyzer over a list of discovered elements.
+ * Run the page-health producer over a snapshot's elements and answer with an
+ * {@link Observation}. Never throws: an exception is itself an answer
+ * (`unknown{producer_failed}`).
  *
  * Mirrors `ui_bridge_page_health_handler` in screenshots.rs step-for-step:
  *
- *  1. Visible filter (state.visible && state.normalizedRect)
+ *  1. Visible filter (state.visible && state.normalizedRect); visible elements
+ *     WITHOUT a rect are counted into `coverage.unmeasured`
  *  2. Spatial coverage on a 20x20 grid + left/right halves
  *  3. Layout regions (sidebar/header/content) by center-point
  *  4. Element diversity (nav-only flag)
@@ -140,13 +253,85 @@ function worstSeverity(findings: PageHealthFinding[]): PageHealthSeverity {
  *  8. ASCII heatmap
  *  9. Overall summary = worst severity
  */
-export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthReport {
+export function diagnosePageHealth(
+  input: PageHealthInput,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  const producer = options.producer ?? defaultProducer();
+  try {
+    return observe(input, producer, options.evaluatedAt);
+  } catch (err) {
+    // Anything that threw — the analyzer, or an unparseable timestamp in the
+    // inputs — is a producer failure, reported as one. Timestamps are left
+    // out of this provenance because they may be what failed.
+    return Observation.unknown(
+      'producer_failed',
+      `page-health producer threw: ${err instanceof Error ? err.message : String(err)}`,
+      Observation.provenance({ producer })
+    );
+  }
+}
+
+function observe(
+  input: PageHealthInput,
+  producer: ObservationProducer,
+  evaluatedAt: ObservationTime | undefined
+): PageHealthObservation {
+  const base: ObservationProvenanceInit = {
+    producer,
+    observedAt: input.observedAt,
+    evaluatedAt,
+    source: input.source ?? null,
+  };
+
+  if (!Array.isArray(input.elements)) {
+    return Observation.unknown(
+      'input_missing',
+      'the snapshot carried no `elements` array, so there was nothing to analyze; ' +
+        'this says nothing about the page itself',
+      // No elements were sampled — `observedAt: null` states that.
+      Observation.provenance({ ...base, observedAt: null })
+    );
+  }
+  const elements = input.elements as DiscoveredElement[];
+
+  if (elements.length === 0 && (input.registeredComponents ?? 0) === 0) {
+    return Observation.unknown(
+      'producer_not_run',
+      'the bridge reports zero registered elements and zero registered components — ' +
+        'nothing has registered yet (not hydrated, not mounted, or an empty registry), ' +
+        'so there was nothing to look at',
+      Observation.provenance(base)
+    );
+  }
+
+  return analyze(elements, base);
+}
+
+function analyze(elements: DiscoveredElement[], base: ObservationProvenanceInit): PageHealthObservation {
   const findings: PageHealthFinding[] = [];
 
-  const visible = elements.filter((el) => {
-    const state = el.state as { visible?: boolean; normalizedRect?: unknown } | undefined;
-    return state?.visible === true && state?.normalizedRect !== undefined;
-  });
+  // Considered = every visible element; measured = the visible ones carrying
+  // a normalized rect. The difference is COUNTED, never silently dropped.
+  const considered = elements.filter(isVisible);
+  const visible = considered.filter((el) => rectOf(el) !== null);
+  const withoutGeometry = considered.length - visible.length;
+  const unmeasured: UnmeasuredDimension[] =
+    withoutGeometry > 0
+      ? [{ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' }]
+      : [];
+  const coverage = { considered: considered.length, measured: visible.length, unmeasured };
+
+  if (considered.length > 0 && visible.length === 0) {
+    // Every visible element lacks geometry: the spatial checks would run over
+    // nothing and report a CRITICAL blank page that no evidence supports.
+    return Observation.unknown(
+      'input_missing',
+      `all ${considered.length} visible element(s) carry no normalizedRect, so spatial ` +
+        'coverage, layout regions and visual anomalies cannot be measured',
+      Observation.provenance({ ...base, coverage })
+    );
+  }
 
   // --- Step 2: Spatial coverage ----------------------------------------------
   const grid: boolean[][] = Array.from({ length: GRID_SIZE }, () =>
@@ -154,9 +339,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   );
 
   for (const el of visible) {
-    const rect = (el.state as { normalizedRect?: { x: number; y: number; width: number; height: number } })
-      .normalizedRect;
-    if (!rect) continue;
+    const rect = rectOf(el) as NormalizedRect;
     const colStart = Math.max(0, Math.floor(rect.x * GRID_SIZE));
     const colEnd = Math.min(GRID_SIZE, Math.ceil((rect.x + rect.width) * GRID_SIZE));
     const rowStart = Math.max(0, Math.floor(rect.y * GRID_SIZE));
@@ -208,9 +391,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   let header = 0;
   let content = 0;
   for (const el of visible) {
-    const rect = (el.state as { normalizedRect?: { x: number; y: number; width: number; height: number } })
-      .normalizedRect;
-    if (!rect) continue;
+    const rect = rectOf(el) as NormalizedRect;
     const cx = rect.x + rect.width / 2;
     const cy = rect.y + rect.height / 2;
     if (cx < 0.2) sidebar++;
@@ -339,9 +520,7 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   let zeroSize = 0;
   let outsideViewport = 0;
   for (const el of visible) {
-    const rect = (el.state as { normalizedRect?: { x: number; y: number; width: number; height: number } })
-      .normalizedRect;
-    if (!rect) continue;
+    const rect = rectOf(el) as NormalizedRect;
     if (rect.width === 0 || rect.height === 0) zeroSize++;
     if (rect.x + rect.width < 0 || rect.x > 1) {
       outsideViewport++;
@@ -365,11 +544,15 @@ export function diagnosePageHealth(elements: DiscoveredElement[]): PageHealthRep
   // --- Step 9: Worst severity rollup ----------------------------------------
   const summary = worstSeverity(findings);
 
-  return {
-    summary,
-    findings,
-    heatmap,
-    element_count: elements.length,
-    visible_count: visible.length,
-  };
+  return Observation.measured(
+    {
+      summary,
+      findings,
+      heatmap,
+      element_count: elements.length,
+      visible_count: visible.length,
+    },
+    // A deduction over the snapshot, not an estimate: `confidence: null`.
+    Observation.provenance({ ...base, coverage })
+  );
 }

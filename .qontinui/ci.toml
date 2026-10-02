@@ -186,6 +186,14 @@ name = "diagnostics-check"
 command = ["npm", "run", "diagnostics:check"]
 
 [[steps]]
+name = "observation-vendoring-check"
+# parity: ci.yml lint-and-test "Observation envelope vendoring check"
+# ci.yml "Observation envelope vendoring check" → `observation:check` =
+# `node scripts/sync-observation.mjs --check`. Fails if ui-bridge-native's
+# vendored Observation envelope drifts from the canonical core file.
+command = ["npm", "run", "observation:check"]
+
+[[steps]]
 name = "redaction-surface-ratchet"
 # parity: ci.yml lint-and-test "Redaction surface ratchet"
 # ci.yml "Redaction surface ratchet" → `redaction:check-surface` =
