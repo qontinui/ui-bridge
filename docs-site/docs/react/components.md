@@ -331,7 +331,7 @@ The server side of this pairing is
 | `heartbeatInterval`    | `number`                                                 | `10000`                    | Heartbeat interval in ms                           |
 | `runnerUrl`            | `string`                                                 | `'http://127.0.0.1:9876'`  | Explicit runner URL for phone-home registration    |
 | `disablePhoneHome`     | `boolean`                                                | `false`                    | Opt out of phone-home registration entirely        |
-| `appId`                | `string`                                                 | hostname                   | Stable identity in the runner's registry           |
+| `appId`                | `string`                                                 | `location.host`            | Stable identity in the runner's registry           |
 | `appName`              | `string`                                                 | `document.title` or hostname | Display name                                     |
 | `appType`              | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'`                  | App classification                                 |
 | `framework`            | `string`                                                 | `'react'`                  | Framework hint                                     |

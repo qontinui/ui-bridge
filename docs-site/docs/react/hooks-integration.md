@@ -48,7 +48,7 @@ the other end.
 | `heartbeatInterval` | `number` | `10000` | Heartbeat period in ms |
 | `runnerUrl` | `string` | `'http://127.0.0.1:9876'` | Explicit runner URL for phone-home registration |
 | `disablePhoneHome` | `boolean` | `false` | Skip phone-home registration entirely |
-| `appId` | `string` | hostname | Stable identity in the runner's registry |
+| `appId` | `string` | `location.host` (port-inclusive, e.g. `localhost:3000`) | Stable identity in the runner's registry |
 | `appName` | `string` | `document.title \|\| location.hostname` | Display name |
 | `appType` | `'web' \| 'desktop' \| 'mobile' \| 'dashboard' \| 'other'` | `'web'` | App classification |
 | `framework` | `string` | `'react'` | Framework hint |
@@ -60,6 +60,12 @@ the other end.
 `runnerUrl` also changes *when* phone-home fires: with it set, registration is
 attempted regardless of hostname; without it, phone-home is gated to
 localhost-family hosts.
+
+The default `appId` is `location.host`, which includes the port, so two dev
+apps on `localhost:3000` and `localhost:3001` register as two apps. If the
+runner refuses the registration (HTTP 409 / 403, e.g. `UIB_REGISTRATION_HELD`
+when another live app already holds the id), the hook logs one `console.warn`
+per mount naming the refusal code; pass an explicit `appId` to resolve it.
 
 ### `authHeader`
 

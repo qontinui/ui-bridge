@@ -34,7 +34,7 @@ export interface CommandRelayListenerProps {
   runnerUrl?: string;
   /** Opt out of the phone-home registration entirely. */
   disablePhoneHome?: boolean;
-  /** Stable identity for this app in the runner's registry. Default: hostname. */
+  /** Stable identity for this app in the runner's registry. Default: `location.host` (port-inclusive). */
   appId?: string;
   /** Display name. Default: `document.title || location.hostname`. */
   appName?: string;

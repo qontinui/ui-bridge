@@ -39,7 +39,12 @@ export interface UseCommandRelayOptions {
   runnerUrl?: string;
   /** Opt out of the phone-home registration entirely. */
   disablePhoneHome?: boolean;
-  /** Stable identity for this app in the runner's registry. Default: hostname. */
+  /**
+   * Stable identity for this app in the runner's registry. Default:
+   * `location.host` (port-inclusive, e.g. `localhost:3000`), so two dev apps
+   * on the same hostname but different ports register as distinct apps
+   * instead of contending for one registry row.
+   */
   appId?: string;
   /** Display name. Default: `document.title || location.hostname`. */
   appName?: string;
@@ -115,6 +120,27 @@ export const __test_resolveAuthToken = resolveAuthToken;
 export const __test_transportHeaders = transportHeaders;
 export const __test_parseSSEDataBlock = parseSSEDataBlock;
 export const __test_resolveRegistrationMetadata = resolveRegistrationMetadata;
+
+/**
+ * Read the runner's machine-readable refusal code from a register response.
+ * The runner's `ApiResponse` envelope carries it top-level (`code`); older or
+ * other shapes nest it under `error.code` / `errorDetail.code`. Never throws:
+ * an unreadable body just yields `undefined`.
+ */
+async function readRefusalCode(resp: Response): Promise<string | undefined> {
+  try {
+    const body = (await resp.json()) as unknown;
+    if (!body || typeof body !== 'object') return undefined;
+    const b = body as Record<string, unknown>;
+    const pick = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.length > 0 ? v : undefined;
+    const nested = (v: unknown): string | undefined =>
+      v && typeof v === 'object' ? pick((v as Record<string, unknown>).code) : undefined;
+    return pick(b.code) ?? nested(b.error) ?? nested(b.errorDetail);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Hook that connects the browser to the server's command relay.
@@ -302,7 +328,11 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
 
     const origin = window.location.origin;
     const baseUrl = `${origin}${basePath}`;
-    const resolvedAppId = options?.appId ?? host;
+    // Port-inclusive default: `localhost:3000` and `localhost:3001` are
+    // different apps. A bare-hostname default made them claim the same
+    // registry row, which the runner's registration binding refuses with
+    // `UIB_REGISTRATION_HELD` for whichever registered second.
+    const resolvedAppId = options?.appId ?? window.location.host;
     const appName = options?.appName ?? (document.title || host);
     const appType = options?.appType ?? 'web';
     const framework = options?.framework ?? 'react';
@@ -320,14 +350,27 @@ export function useCommandRelay(options?: UseCommandRelayOptions): void {
     };
 
     let cancelled = false;
+    // One warning per mount: the register POST retries every 10s, and a
+    // refusal (another app holds this appId, or the origin does not match)
+    // is steady state until the operator changes something.
+    let refusalWarned = false;
 
     const register = async () => {
       try {
-        await fetch(`${runnerUrl}/ui-bridge/apps/register`, {
+        const resp = await fetch(`${runnerUrl}/ui-bridge/apps/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        if (!refusalWarned && (resp.status === 409 || resp.status === 403)) {
+          refusalWarned = true;
+          const code = await readRefusalCode(resp);
+          console.warn(
+            `[ui-bridge] runner refused phone-home registration of appId "${resolvedAppId}" ` +
+              `(HTTP ${resp.status}${code ? `, ${code}` : ''}). Set a distinct "appId" ` +
+              `option if another app already holds this id.`
+          );
+        }
       } catch {
         // Runner not reachable — silent. Expected when runner is down or
         // unreachable (e.g. DNS failure inside a container).
