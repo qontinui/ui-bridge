@@ -131,6 +131,40 @@ const config: InjectedRuntimeConfig = {
 };
 ```
 
+### Pinning The Tab
+
+By default each document resolves its own per-tab id. A driver that needs one
+stable identity across navigations, including a hop to another origin such as an
+OAuth sign-in, pins it with `tabId`. A loopback runner cannot bind a pinned tab
+to an origin, because the tab leaves that origin by design. Publish a `tabKey`
+next to the pin and the runner binds the tab to the key instead:
+
+```typescript
+import { randomBytes } from 'node:crypto';
+
+// Generate once per launch, keep it in the driver process, and publish the
+// same value on every document.
+const tabKey = randomBytes(32).toString('base64url');
+
+const config: InjectedRuntimeConfig = {
+  uiBridgeBase: 'http://127.0.0.1:9876/ui-bridge',
+  tabId: 'agent-login-flow',
+  tabKey,
+};
+```
+
+The relay client sends the key as `X-UI-Bridge-Tab-Key` on the command stream,
+the result POST and the heartbeat. It sends the key **only** when `uiBridgeBase`
+resolves to a loopback host (`localhost`, `127.0.0.1` or `[::1]`), so a remote
+relay never sees it. The key lives only in the injected global and is never
+written to `sessionStorage`. A page that learns the pinned id therefore still
+cannot attach as that tab.
+
+`ui-bridge-inject --tab-id` does all of this for you. A document with an opaque
+origin, such as the `about:blank` page a browser opens before the first
+navigation, makes no relay requests at all. The runner would refuse them, and
+the real document starts its own client.
+
 ## Building On The Pieces
 
 If you are writing your own tooling rather than using the bundle, the same
