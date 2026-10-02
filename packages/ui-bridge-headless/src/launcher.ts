@@ -189,21 +189,6 @@ export interface LaunchHeadlessTabResult extends HeadlessTab {
   tabId: string | null;
 }
 
-/**
- * Poll `<uiBridgeBase>/tabs` until it reports at least one connected tab.
- *
- * `authToken` is the SAME bearer the page-side relay client uses. Without it,
- * an auth-gated relay answers this poll with 401 — which the loop below cannot
- * distinguish from "not registered yet", so it spins to the deadline and
- * reports `tabId: null`. The tab HAD registered; only the poll was anonymous,
- * making a perfectly healthy launch look like a broken one.
- *
- * `callerUserId` is forwarded as `X-Caller-User-Id` when the driver supplied
- * registration metadata, so the relay's per-user tab scoping (§4.2) returns the
- * driver's OWN tab rather than an arbitrary first entry from the global list.
- *
- * @internal Exported for tests; not part of the package's public surface.
- */
 /** How {@link waitForUiBridgeRegistration} recognises the launch's own tab. */
 export interface RegistrationTabSelection {
   /** The tab id this launch pinned. When set, only that tab counts. */
@@ -259,6 +244,8 @@ function sameOrigin(a: string, b: string): boolean {
  *      navigated origin counts — a foreign tab never does.
  *   3. Otherwise (an older runner, a remote relay, or no known origin) the
  *      first tab, as before.
+ *
+ * @internal Exported for tests; not part of the package's public surface.
  */
 export function selectOwnTab(
   tabs: RegisteredTab[],
@@ -279,6 +266,26 @@ export function selectOwnTab(
   return tabs[0] ?? null;
 }
 
+/**
+ * Poll `<uiBridgeBase>/tabs` until it reports THIS launch's tab (see
+ * {@link selectOwnTab}): the pinned tab, or the tab bound to the navigated
+ * origin — never a foreign tab that happens to be registered on the relay.
+ *
+ * `authToken` is the SAME bearer the page-side relay client uses. Without it,
+ * an auth-gated relay answers this poll with 401 — which the loop below cannot
+ * distinguish from "not registered yet", so it spins to the deadline and
+ * reports `tabId: null`. The tab HAD registered; only the poll was anonymous,
+ * making a perfectly healthy launch look like a broken one.
+ *
+ * `callerUserId` is forwarded as `X-Caller-User-Id` when the driver supplied
+ * registration metadata, so the relay's per-user tab scoping (§4.2) returns the
+ * driver's OWN tab rather than an arbitrary first entry from the global list.
+ *
+ * `selection` narrows the pick further: `pinnedTabId` returns that tab only,
+ * and `expectedOrigin` matches the runner-served `verifiedOrigin`.
+ *
+ * @internal Exported for tests; not part of the package's public surface.
+ */
 export async function waitForUiBridgeRegistration(
   uiBridgeBase: string,
   timeoutMs: number,
