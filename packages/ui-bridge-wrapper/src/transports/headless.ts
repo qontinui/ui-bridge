@@ -229,6 +229,8 @@ export class HeadlessTransport extends BaseTransport {
     // relay an anonymous poll 401s and reports `tabId: null` on a launch that
     // actually succeeded.
     const relayAuth = this.relayAuth();
+    // A pinned launch must find ITS tab, not whichever tab registered first.
+    const pinnedTabId = this.pinnedTabId();
 
     let tab: Awaited<ReturnType<typeof launchHeadlessTab>>;
     try {
@@ -249,6 +251,7 @@ export class HeadlessTransport extends BaseTransport {
         storageStatePath: this.options.storageStatePath,
         ...(relayAuth.authToken ? { authToken: relayAuth.authToken } : {}),
         ...(relayAuth.callerUserId ? { callerUserId: relayAuth.callerUserId } : {}),
+        ...(pinnedTabId ? { pinnedTabId } : {}),
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
@@ -299,6 +302,14 @@ export class HeadlessTransport extends BaseTransport {
    */
   protected relayAuth(): { authToken?: string; callerUserId?: string } {
     return {};
+  }
+
+  /**
+   * Subclass hook: the tab id this launch pinned, so the registration poll
+   * returns that tab only. Default: none. Injected mode returns `--tab-id`.
+   */
+  protected pinnedTabId(): string | undefined {
+    return undefined;
   }
 
   /**

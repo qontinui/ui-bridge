@@ -24,6 +24,7 @@
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import type { Page } from 'playwright';
 import { HeadlessTransport, type HeadlessContext } from './headless.js';
 import { HandlerRegistry } from '../handler-registry.js';
@@ -167,6 +168,14 @@ export interface InjectedContext extends HeadlessContext {
 
 export class InjectedTransport extends HeadlessTransport {
   private readonly injected: InjectedExtraOptions;
+  /**
+   * The pinned tab's key: 32 random bytes, base64url, generated once per
+   * transport (one launch) and kept in this process. The runner binds a tab
+   * that presents it to the key's digest, so the pin survives an origin hop
+   * while a page that merely learns the pinned id cannot attach as the tab.
+   * Lives only in the injected global — never in a storage artifact.
+   */
+  private readonly tabKey = randomBytes(32).toString('base64url');
 
   constructor(config: TransportConfig, registry?: HandlerRegistry) {
     const raw = (config.options ?? {}) as Record<string, unknown>;
@@ -217,9 +226,12 @@ export class InjectedTransport extends HeadlessTransport {
     // page-side `resolveTabId()` reads it back on each document. Deliberately
     // OUTSIDE the `if (base)` block so the pin also reaches an app that embeds
     // the SDK itself (Variant A) — which resolves its own tab id.
-    if (this.injected.tabId) cfg.tabId = this.injected.tabId;
-    if (this.injected.settleQuietMs !== undefined)
-      cfg.settleQuietMs = this.injected.settleQuietMs;
+    if (this.injected.tabId) {
+      cfg.tabId = this.injected.tabId;
+      // The key always travels with the pin, on every document.
+      cfg.tabKey = this.tabKey;
+    }
+    if (this.injected.settleQuietMs !== undefined) cfg.settleQuietMs = this.injected.settleQuietMs;
     if (this.injected.settleTimeoutMs !== undefined)
       cfg.settleTimeoutMs = this.injected.settleTimeoutMs;
     if (this.injected.expectSelector !== undefined)
@@ -240,6 +252,10 @@ export class InjectedTransport extends HeadlessTransport {
         ? { callerUserId: this.injected.registrationMetadata.userId }
         : {}),
     };
+  }
+
+  protected override pinnedTabId(): string | undefined {
+    return this.injected.tabId;
   }
 
   protected override async buildInitScripts(): Promise<string[]> {
@@ -291,9 +307,8 @@ export class InjectedTransport extends HeadlessTransport {
       try {
         await page.waitForFunction(
           () =>
-            (
-              window as unknown as { __uiBridgeInjected?: { settled?: boolean } }
-            ).__uiBridgeInjected?.settled === true,
+            (window as unknown as { __uiBridgeInjected?: { settled?: boolean } }).__uiBridgeInjected
+              ?.settled === true,
           undefined,
           { timeout: this.injected.readyTimeoutMs }
         );

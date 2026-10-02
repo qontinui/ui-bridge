@@ -70,6 +70,13 @@ export interface LaunchHeadlessTabOptions {
    */
   callerUserId?: string;
 
+  /**
+   * The tab id the caller pinned on this launch (`ui-bridge-inject --tab-id`).
+   * When set, the registration poll returns THAT tab only, never another tab
+   * that happens to be registered on the same relay.
+   */
+  pinnedTabId?: string;
+
   /** Viewport width (px). Default 1280. */
   viewportWidth?: number;
 
@@ -197,10 +204,86 @@ export interface LaunchHeadlessTabResult extends HeadlessTab {
  *
  * @internal Exported for tests; not part of the package's public surface.
  */
+/** How {@link waitForUiBridgeRegistration} recognises the launch's own tab. */
+export interface RegistrationTabSelection {
+  /** The tab id this launch pinned. When set, only that tab counts. */
+  pinnedTabId?: string;
+  /**
+   * Origin of the page this launch navigated to. Against a runner that serves
+   * `verifiedOrigin` per tab, only a tab whose verified origin matches counts.
+   */
+  expectedOrigin?: string;
+}
+
+/** One entry of the relay's `GET <uiBridgeBase>/tabs` list, as far as the poll reads it. */
+interface RegisteredTab {
+  tabId?: string;
+  /**
+   * The origin the runner bound the tab to. Present (possibly `null`, for a
+   * key-bound or operator-trust tab) on a runner that binds relay tabs to their
+   * principal; absent on an older runner or a remote SDK relay.
+   */
+  verifiedOrigin?: string | null;
+}
+
+/** Same loopback spellings as the runner's origin guard. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Origin equality as the runner judges a principal: exact after URL
+ * normalisation, or the same scheme and port under two loopback spellings.
+ */
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    if (ua.origin === ub.origin) return true;
+    return (
+      ua.protocol === ub.protocol &&
+      ua.port === ub.port &&
+      LOOPBACK_HOSTS.has(ua.hostname) &&
+      LOOPBACK_HOSTS.has(ub.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick this launch's tab out of the relay's tab list, or `null` if it has not
+ * registered yet. Any tab in the operator's browser can be registered on the
+ * same runner, so `tabs[0]` is only a last resort:
+ *
+ *   1. A pinned launch returns the pinned tab only.
+ *   2. When the relay serves `verifiedOrigin`, only a tab bound to the
+ *      navigated origin counts — a foreign tab never does.
+ *   3. Otherwise (an older runner, a remote relay, or no known origin) the
+ *      first tab, as before.
+ */
+export function selectOwnTab(
+  tabs: RegisteredTab[],
+  selection?: RegistrationTabSelection
+): RegisteredTab | null {
+  if (selection?.pinnedTabId) {
+    return tabs.find((t) => t.tabId === selection.pinnedTabId) ?? null;
+  }
+  const servesVerifiedOrigin = tabs.some((t) => 'verifiedOrigin' in t);
+  if (servesVerifiedOrigin && selection?.expectedOrigin) {
+    const expected = selection.expectedOrigin;
+    return (
+      tabs.find(
+        (t) => typeof t.verifiedOrigin === 'string' && sameOrigin(t.verifiedOrigin, expected)
+      ) ?? null
+    );
+  }
+  return tabs[0] ?? null;
+}
+
 export async function waitForUiBridgeRegistration(
   uiBridgeBase: string,
   timeoutMs: number,
-  auth?: { authToken?: string; callerUserId?: string }
+  auth?: { authToken?: string; callerUserId?: string },
+  selection?: RegistrationTabSelection
 ): Promise<{ tabId: string | null; ok: boolean }> {
   const deadline = Date.now() + timeoutMs;
   const url = `${uiBridgeBase.replace(/\/$/, '')}/tabs`;
@@ -216,12 +299,10 @@ export async function waitForUiBridgeRegistration(
       });
       lastStatus = res.status;
       if (res.ok) {
-        const body = (await res.json()) as {
-          data?: { tabs?: Array<{ tabId?: string }> };
-        };
-        const tabs = body?.data?.tabs ?? [];
-        if (tabs.length > 0) {
-          return { tabId: tabs[0]?.tabId ?? null, ok: true };
+        const body = (await res.json()) as { data?: { tabs?: RegisteredTab[] } };
+        const own = selectOwnTab(body?.data?.tabs ?? [], selection);
+        if (own) {
+          return { tabId: own.tabId ?? null, ok: true };
         }
       }
     } catch {
@@ -239,6 +320,16 @@ export async function waitForUiBridgeRegistration(
     );
   }
   return { tabId: null, ok: false };
+}
+
+/** The origin of `url`, or `undefined` for an opaque or unparseable one. */
+function originOf(url: string): string | undefined {
+  try {
+    const origin = new URL(url).origin;
+    return origin === 'null' ? undefined : origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -264,6 +355,7 @@ export async function launchHeadlessTab(
     storageStatePath,
     authToken,
     callerUserId,
+    pinnedTabId,
   } = options;
 
   const browser = await chromium.launch({
@@ -339,10 +431,12 @@ export async function launchHeadlessTab(
   let uiBridgeRegistered = false;
   let tabId: string | null = null;
   if (uiBridgeBase) {
-    const result = await waitForUiBridgeRegistration(uiBridgeBase, waitForUiBridgeMs, {
-      authToken,
-      callerUserId,
-    });
+    const result = await waitForUiBridgeRegistration(
+      uiBridgeBase,
+      waitForUiBridgeMs,
+      { authToken, callerUserId },
+      { pinnedTabId, expectedOrigin: originOf(finalUrl) }
+    );
     uiBridgeRegistered = result.ok;
     tabId = result.tabId;
   }

@@ -89,6 +89,13 @@ export interface InjectedRuntimeConfig {
   registrationMetadata?: { userId: string; sessionId: string };
   /** Stable per-tab id override. Defaults to a persisted random uuid. */
   tabId?: string;
+  /**
+   * Random key the injector generates once per launch whenever it pins
+   * `tabId`, published beside the pin on every document. Sent as
+   * `X-UI-Bridge-Tab-Key` to a loopback relay only, so the runner binds the
+   * pinned tab to the key rather than to an origin it will cross.
+   */
+  tabKey?: string;
   /** App id reported to the relay registry. */
   appId?: string;
   /** Display name reported to the relay registry. */

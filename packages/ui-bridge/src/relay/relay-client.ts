@@ -18,6 +18,10 @@
  *   3. POST      `{basePath}/commands`   — result envelope
  *   4. POST      `{basePath}/heartbeat`  — every `heartbeatIntervalMs`
  *
+ * `X-UI-Bridge-Tab-Key` rides on all three when an injector published a tab
+ * key AND `basePath` is loopback; none of them is sent from an opaque-origin
+ * (`"null"`) document.
+ *
  * `Authorization: Bearer <token>` rides on all three requests when
  * `authHeader` resolves a token; `registrationMetadata` (the strict per-user
  * tab-scoping envelope) rides on every heartbeat when wired. Both are read
@@ -192,6 +196,70 @@ function readPinnedTabId(): string | null {
 }
 
 /**
+ * Read the injector's tab key published on THIS document, if any.
+ *
+ * `ui-bridge-inject --tab-id` generates a random key once per launch and
+ * publishes it as `window.__uiBridgeInjectedConfig.tabKey` beside the pinned
+ * id, on every document. A pinned tab spans origins by design (an OAuth hop),
+ * so the runner cannot bind it to an origin; it binds it to the key instead
+ * (trust on first use). Only the injector process knows the key, so a page
+ * that learns the pinned id still cannot attach as that tab.
+ *
+ * Never persisted: it lives only in the injected global, so no storage
+ * artifact can capture it.
+ */
+function readPinnedTabKey(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const injected = (window as unknown as { __uiBridgeInjectedConfig?: { tabKey?: unknown } })
+      .__uiBridgeInjectedConfig?.tabKey;
+    if (typeof injected === 'string' && injected.length > 0) return injected;
+  } catch {
+    /* hostile global / cross-realm access */
+  }
+  return null;
+}
+
+/** Header the runner reads a pinned tab's key from. */
+const TAB_KEY_HEADER = 'X-UI-Bridge-Tab-Key';
+
+/**
+ * The three spellings of the loopback interface a browser can put in a URL —
+ * the same set the runner's origin guard treats as loopback.
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Whether `basePath` resolves (against this document) to a loopback host. The
+ * tab key is a credential for the LOCAL runner only; a remote SDK relay (e.g.
+ * `https://qontinui.io/api/ui-bridge`) must never see it, and a custom header
+ * would also widen that relay's CORS preflight.
+ */
+export function isLoopbackBase(basePath: string): boolean {
+  try {
+    const href = typeof window !== 'undefined' ? window.location.href : undefined;
+    const url = href ? new URL(basePath, href) : new URL(basePath);
+    return LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this document has an opaque origin (`location.origin === "null"`):
+ * the pre-`goto` `about:blank` document an injector attaches to, a sandboxed
+ * iframe, a `data:` URL. The runner refuses every relay request from such a
+ * document (`UIB_OPAQUE_ORIGIN`), so the client does not send them.
+ */
+function isOpaqueOrigin(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.location.origin === 'null';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve a stable per-tab id. Precedence:
  *
  *   1. A caller-owned pin published on this document ({@link readPinnedTabId}).
@@ -250,6 +318,11 @@ export interface RelayClientConfig {
   execute: (action: string, payload: unknown) => Promise<unknown> | unknown;
   /** Stable per-tab id. Defaults to {@link resolveTabId}. */
   tabId?: string;
+  /**
+   * Pinned tab key sent as `X-UI-Bridge-Tab-Key` to a loopback `basePath`
+   * only. Defaults to `__uiBridgeInjectedConfig.tabKey` on this document.
+   */
+  tabKey?: string;
   /** Heartbeat interval in ms (default 10000). */
   heartbeatIntervalMs?: number;
   /** Auth-token hook — see {@link resolveAuthToken}. */
@@ -315,6 +388,16 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   // adopts it rather than minting a competing id.
   const tabId = config.tabId ?? resolveTabId();
   if (config.tabId) persistTabId(config.tabId);
+  // The tab key rides only to a loopback relay (the local runner); see
+  // `isLoopbackBase`. Resolved once: the injector republishes it on every
+  // document, and each document starts its own client.
+  const tabKey = config.tabKey ?? readPinnedTabKey();
+  const tabKeyHeader: Record<string, string> =
+    tabKey && isLoopbackBase(basePath) ? { [TAB_KEY_HEADER]: tabKey } : {};
+  const postHeaders = (): Record<string, string> => ({
+    ...transportHeaders(authHeader),
+    ...tabKeyHeader,
+  });
 
   let stopped = false;
   let abortController: AbortController | null = null;
@@ -323,10 +406,11 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
 
   // ----- Response sender -----
   const sendResponse = async (commandId: string, ok: boolean, result: unknown) => {
+    if (isOpaqueOrigin()) return;
     try {
       await fetch(`${basePath}/commands`, {
         method: 'POST',
-        headers: transportHeaders(authHeader),
+        headers: postHeaders(),
         body: safeJsonStringify({
           commandId,
           success: ok,
@@ -386,12 +470,15 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
 
   const connect = () => {
     if (stopped) return;
+    // An opaque-origin document is refused by the runner and is about to be
+    // replaced by the navigation; the real document starts its own client.
+    if (isOpaqueOrigin()) return;
     closeStream();
     const controller = new AbortController();
     abortController = controller;
 
     const url = `${basePath}/commands/stream${tabId ? `?tabId=${encodeURIComponent(tabId)}` : ''}`;
-    const headers: Record<string, string> = { Accept: 'text/event-stream' };
+    const headers: Record<string, string> = { Accept: 'text/event-stream', ...tabKeyHeader };
     const token = resolveAuthToken(authHeader);
     if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -484,7 +571,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   let heartbeatInFlight = false;
 
   const sendHeartbeat = async () => {
-    if (heartbeatInFlight) return;
+    if (heartbeatInFlight || isOpaqueOrigin()) return;
     heartbeatInFlight = true;
     lastHeartbeatStartedAt = Date.now();
     try {
@@ -506,7 +593,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
 
       const resp = await fetch(`${basePath}/heartbeat`, {
         method: 'POST',
-        headers: transportHeaders(authHeader),
+        headers: postHeaders(),
         body: JSON.stringify(body),
       });
       // Recovery: the server reports whether our tabId is a registered SSE

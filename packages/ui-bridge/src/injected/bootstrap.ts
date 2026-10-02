@@ -116,6 +116,7 @@ declare const __SDK_VERSION__: string;
         basePath: cfg.uiBridgeBase,
         execute: api.execute,
         tabId: cfg.tabId,
+        tabKey: cfg.tabKey,
         authHeader: () => cfg.authToken ?? null,
         registrationMetadata: () => cfg.registrationMetadata ?? null,
         appType: 'injected',
