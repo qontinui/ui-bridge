@@ -50,7 +50,7 @@ import type {
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
 import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
-import { diagnosePageHealth } from './page-health';
+import { diagnosePageHealth, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
@@ -2111,7 +2111,10 @@ export function createHandlers(
     // Vision pipeline (Phase 2 of plan 2026-05-13) — direct-mode stubs.
     // Real implementations live in the runner; the SDK exposes the routes
     // for type-completeness and returns `RUNNER_REQUIRED` when mounted
-    // without a runner backing.
+    // without a runner backing, which the diagnostics mapper turns into
+    // `UB-CAPABILITY-UNAVAILABLE` — this build does not serve the route; it
+    // is not an action a guard rejected. The success payloads the runner
+    // serves are typed in `../vision/wire` (see `UIBridgeServerHandlers`).
     visionCapture: async (_request?: Record<string, unknown>) => {
       return error('route is runner-direct, mount the runner', 'RUNNER_REQUIRED');
     },
@@ -5397,20 +5400,43 @@ export function createHandlers(
      * (qontinui-runner src-tauri/src/mcp/ui_bridge/screenshots.rs::
      * ui_bridge_page_health_handler) running over the SDK-side snapshot.
      *
-     * Pure data analysis over the registry's elements; no Tauri-specific
-     * calls. The output shape mirrors the runner's response byte-for-byte
-     * so the page-health skill works identically regardless of transport.
+     * Answers with an `Observation<PageHealthValue>` (producer
+     * `sdk/page-health`). "Could not look" is an ANSWER, not a transport
+     * error: a snapshot with no `elements` array, an empty registry, or a
+     * thrown snapshot/analyzer is `success: true` carrying
+     * `status: "unknown"` with a typed `unknown.code` — never a CRITICAL
+     * report over zero elements, and never an `error(...)`.
      */
     pageHealth: async () => {
+      let snapshot: ReturnType<typeof registry.createSnapshot>;
       try {
-        const snapshot = registry.createSnapshot();
-        const report = diagnosePageHealth(
-          (snapshot.elements ?? []) as unknown as DiscoveredElement[]
-        );
-        return success(report);
+        snapshot = registry.createSnapshot();
       } catch (err) {
-        return error((err as Error).message, 'PAGE_HEALTH_ERROR');
+        return success(
+          pageHealthUnknown(
+            'producer_failed',
+            `could not take the registry snapshot: ${(err as Error).message}`
+          )
+        );
       }
+      const raw = snapshot as {
+        elements?: unknown;
+        components?: unknown;
+        timestamp?: number;
+        snapshotId?: unknown;
+      };
+      return success(
+        diagnosePageHealth({
+          // Handed over as received: a missing `elements` key must reach the
+          // producer as missing, not as `[]`.
+          elements: raw.elements,
+          registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
+          observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+          // Attribute the answer to the snapshot it analyzed when the
+          // registry stamped one.
+          source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
+        })
+      );
     },
 
     /**

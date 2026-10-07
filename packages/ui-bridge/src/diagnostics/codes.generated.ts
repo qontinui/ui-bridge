@@ -17,6 +17,7 @@ export type UiBridgeErrorCode =
   | "UB-ASSERT-TEXT-MISMATCH"
   | "UB-ASSERT-TIMEOUT"
   | "UB-ASSERT-VISIBILITY"
+  | "UB-CAPABILITY-UNAVAILABLE"
   | "UB-ELEM-BLOCKED"
   | "UB-ELEM-DISABLED"
   | "UB-ELEM-NOT-ENABLED"
@@ -39,6 +40,15 @@ export type UiBridgeErrorCode =
   | "UB-MULTIPLE-ELEMENTS"
   | "UB-NAVIGATION-ERROR"
   | "UB-NET-ERROR"
+  | "UB-OBS-APP-UNREACHABLE"
+  | "UB-OBS-BELOW-CONFIDENCE-FLOOR"
+  | "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD"
+  | "UB-OBS-INPUT-MISSING"
+  | "UB-OBS-MODEL-REPLY-UNPARSEABLE"
+  | "UB-OBS-NEEDS-MULTI-FRAME-INPUT"
+  | "UB-OBS-PRODUCER-FAILED"
+  | "UB-OBS-PRODUCER-NOT-RUN"
+  | "UB-OBS-STALE-INPUT"
   | "UB-PAGE-LOAD-ERROR"
   | "UB-PARSE-ERROR"
   | "UB-STALE-ELEMENT"
@@ -61,6 +71,7 @@ export const UI_BRIDGE_ERROR_CODES: readonly UiBridgeErrorCode[] = [
   "UB-ASSERT-TEXT-MISMATCH",
   "UB-ASSERT-TIMEOUT",
   "UB-ASSERT-VISIBILITY",
+  "UB-CAPABILITY-UNAVAILABLE",
   "UB-ELEM-BLOCKED",
   "UB-ELEM-DISABLED",
   "UB-ELEM-NOT-ENABLED",
@@ -83,6 +94,15 @@ export const UI_BRIDGE_ERROR_CODES: readonly UiBridgeErrorCode[] = [
   "UB-MULTIPLE-ELEMENTS",
   "UB-NAVIGATION-ERROR",
   "UB-NET-ERROR",
+  "UB-OBS-APP-UNREACHABLE",
+  "UB-OBS-BELOW-CONFIDENCE-FLOOR",
+  "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD",
+  "UB-OBS-INPUT-MISSING",
+  "UB-OBS-MODEL-REPLY-UNPARSEABLE",
+  "UB-OBS-NEEDS-MULTI-FRAME-INPUT",
+  "UB-OBS-PRODUCER-FAILED",
+  "UB-OBS-PRODUCER-NOT-RUN",
+  "UB-OBS-STALE-INPUT",
   "UB-PAGE-LOAD-ERROR",
   "UB-PARSE-ERROR",
   "UB-STALE-ELEMENT",
@@ -252,6 +272,19 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       { suggestion: "Wait for the element to reach the expected visibility and re-assert", command: "wait for element", confidence: 0.6, retryable: true, priority: 1 },
     ],
     category: "assertion",
+  },
+  "UB-CAPABILITY-UNAVAILABLE": {
+    description: "The running build does not serve this capability (e.g. a runner-direct `/vision/*` route called on an SDK-only bridge). Nothing was attempted; this is not an action rejection.",
+    commonCauses: [
+      "The route is served only by the qontinui runner and no runner is mounted",
+      "The bridge build predates the capability",
+      "The capability is disabled in this build",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Call the route on the runner (http://127.0.0.1:9876/ui-bridge/...) instead of the SDK-only bridge", confidence: 0.8, retryable: false, priority: 1 },
+      { suggestion: "Upgrade the bridge/runner build to one that serves this capability", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
   },
   "UB-ELEM-BLOCKED": {
     description: "The element is blocked by another element such as a modal, overlay, or popup.",
@@ -533,6 +566,112 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
       { suggestion: "Check network connectivity", confidence: 0.5, retryable: false, priority: 2 },
     ],
     category: "network",
+  },
+  "UB-OBS-APP-UNREACHABLE": {
+    description: "The bridge, the runner, or the app behind it could not be reached, so nothing was attempted or observed (an observation carrying it is unknown, not empty).",
+    commonCauses: [
+      "The app or runner is not running",
+      "The browser tab / device is disconnected from the relay",
+      "Wrong host or port",
+      "The runner a proxied call needs is not running",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Check the app/runner is running and reachable, then observe again", command: "check health", confidence: 0.7, retryable: true, priority: 1 },
+    ],
+    category: "network",
+  },
+  "UB-OBS-BELOW-CONFIDENCE-FLOOR": {
+    description: "Observation unknown: observations existed but every one fell under the caller's confidence floor.",
+    commonCauses: [
+      "The confidence floor is set higher than the model's scores for this content",
+      "Low-contrast or small text",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Lower the confidence floor (e.g. `minConfidence`) or zoom/crop to the region", confidence: 0.6, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD": {
+    description: "Observation unknown: the running build does not serve the capability this observation needs.",
+    commonCauses: [
+      "An SDK-only bridge was asked for a runner-only observation",
+      "The build predates the observation producer",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Ask a build that serves the capability (usually the runner)", confidence: 0.7, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-INPUT-MISSING": {
+    description: "Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself.",
+    commonCauses: [
+      "The snapshot/discover reply carried no elements",
+      "Elements carry no normalized geometry yet",
+      "No frame could be captured",
+      "The device viewport is unknown",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Re-take the snapshot once the page has settled, then observe again", command: "wait for page to load", confidence: 0.6, retryable: true, priority: 1 },
+      { suggestion: "Supply the missing input explicitly (e.g. a snapshot or viewport) if the route accepts it", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-MODEL-REPLY-UNPARSEABLE": {
+    description: "Observation unknown: a model reply could not be parsed or failed strict validation.",
+    commonCauses: [
+      "The model returned malformed or non-JSON output",
+      "The reply did not validate against the closed schema",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Retry the call once; model JSON-mode output is intermittently malformed", confidence: 0.5, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NEEDS-MULTI-FRAME-INPUT": {
+    description: "Observation unknown: the question needs more than one frame (e.g. animation_settled) and only one was available.",
+    commonCauses: [
+      "The check compares frames over time and was given a single frame",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Use a check that decides from one frame, or supply a prior frame/baseline", confidence: 0.5, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-PRODUCER-FAILED": {
+    description: "The producer (an observation producer, or the runner answering a proxied call) ran and failed: transport error, HTTP error status, timeout, or a thrown exception. An observation carrying it is unknown — nothing is known about the page.",
+    commonCauses: [
+      "A model/OCR endpoint returned an error or timed out",
+      "The producer threw while analyzing its input",
+      "An upstream call failed",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Retry the observation once; if it fails again read `unknown.detail` for the failing call", confidence: 0.6, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-PRODUCER-NOT-RUN": {
+    description: "Observation unknown: the producer did not run because there was nothing to look at yet (e.g. zero registered elements and components).",
+    commonCauses: [
+      "The page has not hydrated or mounted the UI Bridge provider yet",
+      "The registry is empty — nothing has registered",
+      "The wrong app/tab is connected",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Wait for the page to finish loading and observe again", command: "wait for page to load", confidence: 0.7, retryable: true, priority: 1 },
+      { suggestion: "Confirm the UI Bridge provider is mounted in the app", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-STALE-INPUT": {
+    description: "Observation unknown: the input is known to be stale, so an answer over it would describe a page that no longer exists.",
+    commonCauses: [
+      "The cached snapshot predates a page change",
+      "The relay could not refresh from the browser",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Refresh the snapshot and observe again", confidence: 0.7, retryable: true, priority: 1 },
+    ],
+    category: "system",
   },
   "UB-PAGE-LOAD-ERROR": {
     description: "The page failed to load correctly.",

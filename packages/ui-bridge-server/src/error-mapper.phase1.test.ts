@@ -90,7 +90,9 @@ describe('Phase 1 — APIResponse.code error-mapper', () => {
     expect(toCanonicalErrorCode('VALIDATION_ERROR')).toBe('UB-VALIDATION-ERROR');
     expect(toCanonicalErrorCode('INVALID_REQUEST')).toBe('UB-VALIDATION-ERROR');
     expect(toCanonicalErrorCode('NOT_IMPLEMENTED')).toBe('UB-UNSUPPORTED-ACTION');
-    expect(toCanonicalErrorCode('RUNNER_UNAVAILABLE')).toBe('UB-NET-ERROR');
+    expect(toCanonicalErrorCode('RUNNER_UNAVAILABLE')).toBe('UB-OBS-APP-UNREACHABLE');
+    expect(toCanonicalErrorCode('RUNNER_ERROR')).toBe('UB-OBS-PRODUCER-FAILED');
+    expect(toCanonicalErrorCode('RUNNER_REQUIRED')).toBe('UB-CAPABILITY-UNAVAILABLE');
   });
 
   it('falls back to message heuristic when no code given', () => {

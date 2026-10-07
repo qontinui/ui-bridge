@@ -33,7 +33,7 @@ import type {
   SemanticSearchResponse,
   ScreenAnalysis,
 } from '@qontinui/ui-bridge/ai';
-import type { PageHealthReport } from './page-health';
+import type { PageHealthObservation } from './page-health';
 
 /**
  * Server configuration
@@ -208,7 +208,7 @@ export interface UIBridgeServerHandlers {
   }) => Promise<APIResponse<{ events: unknown[]; count: number }>>;
 
   // Page health diagnostics
-  pageHealth?: () => Promise<APIResponse<PageHealthReport>>;
+  pageHealth?: () => Promise<APIResponse<PageHealthObservation>>;
 
   // Enhanced discovery endpoints
   query: (request: {
