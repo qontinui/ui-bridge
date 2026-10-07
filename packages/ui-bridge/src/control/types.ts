@@ -1003,8 +1003,14 @@ export interface DragAction {
   sourceOffset?: { x: number; y: number };
   /** Target offset from target element center in pixels (default: element center) */
   targetOffset?: { x: number; y: number };
-  /** Number of intermediate mousemove steps (default: 10) */
+  /** Number of intermediate move steps — each is a pointermove + mousemove pair (default: 10) */
   steps?: number;
+  /**
+   * Delay in ms between intermediate move steps (default: 0). Raise it (e.g.
+   * 16) for a widget that moves with the pointer and must re-render before
+   * the next step is hit-tested.
+   */
+  stepDelay?: number;
   /** Delay in ms between mousedown and first move (default: 100) */
   holdDelay?: number;
   /** Delay in ms after mouseup (default: 50) */

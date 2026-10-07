@@ -158,6 +158,7 @@ import { createSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
+import { performDragSequence } from './drag-sequence';
 import type {
   ActionParams,
   EffectSignature,
@@ -910,30 +911,6 @@ export function nextAnimationFrame(): Promise<void> {
     } else {
       setTimeout(resolve, 0);
     }
-  });
-}
-
-/**
- * Safe wrapper around document.elementFromPoint that returns null if unavailable.
- * (elementFromPoint is not implemented in some test environments like jsdom.)
- */
-function elementFromPointSafe(x: number, y: number): HTMLElement | null {
-  if (typeof document.elementFromPoint === 'function') {
-    return document.elementFromPoint(x, y) as HTMLElement | null;
-  }
-  return null;
-}
-
-/**
- * Create a mouse event at absolute client coordinates
- */
-function createMouseEventAt(type: string, clientX: number, clientY: number): MouseEvent {
-  return new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    button: 0,
-    clientX,
-    clientY,
   });
 }
 
@@ -1743,9 +1720,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       action.id
     );
     const wanted =
-      this.effectVerificationEnabled ||
-      request.verifyEffect === true ||
-      declaredHere !== undefined;
+      this.effectVerificationEnabled || request.verifyEffect === true || declaredHere !== undefined;
     if (!wanted) return undefined;
 
     // `componentSignatureArms` normalizes the declared signature again. That
@@ -1783,8 +1758,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       action.id
     );
 
-    const resolved: ComponentSignatureArms = this.signatureRegistry
-      .resolveComponentSignatureArms
+    const resolved: ComponentSignatureArms = this.signatureRegistry.resolveComponentSignatureArms
       ? this.signatureRegistry.resolveComponentSignatureArms(componentId, action.id, params)
       : {
           signature: this.signatureRegistry.resolveComponentSignature(
@@ -1858,12 +1832,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     if (!component) {
       const message = `Component "${componentId}" not found. Components are only available when their page is active.`;
       return fail(
-        unresolvedComponentActionPrediction(
-          componentId,
-          actionId,
-          message,
-          request.requestId
-        ),
+        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
         message,
         'COMPONENT_NOT_FOUND'
       );
@@ -1874,12 +1843,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const available = component.actions.map((a) => a.id).join(', ');
       const message = `Action "${actionId}" not found on component "${componentId}". Available actions: ${available}`;
       return fail(
-        unresolvedComponentActionPrediction(
-          componentId,
-          actionId,
-          message,
-          request.requestId
-        ),
+        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
         message,
         'ACTION_NOT_FOUND'
       );
@@ -1912,12 +1876,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // a capture failure as "nobody described this action" would blame the
       // author for an infrastructure fault and hide the real one.
       return fail(
-        unresolvedComponentActionPrediction(
-          componentId,
-          actionId,
-          message,
-          request.requestId
-        ),
+        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
         message,
         'SNAPSHOT_CAPTURE_FAILED'
       );
@@ -1942,12 +1901,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const detail = err instanceof Error ? err.message : String(err);
       const message = `The effect signature for "${componentId}.${actionId}" threw while predicting: ${detail}`;
       return fail(
-        unresolvedComponentActionPrediction(
-          componentId,
-          actionId,
-          message,
-          request.requestId
-        ),
+        unresolvedComponentActionPrediction(componentId, actionId, message, request.requestId),
         message,
         'SIGNATURE_PREDICT_FAILED'
       );
@@ -3632,135 +3586,11 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
   }
 
-  /**
-   * Perform a drag operation by dispatching a sequence of mouse events.
-   *
-   * Follows the same composite pattern as the qontinui core library:
-   * mousedown on source → wait → mousemove × N along path → mouseup on target.
-   *
-   * Optionally dispatches HTML5 drag events (dragstart/dragover/drop/dragend)
-   * for apps that use the HTML5 Drag and Drop API instead of mouse events.
-   */
-  private async performDrag(
+  private performDrag(
     sourceElement: HTMLElement,
     options?: DragAction
   ): Promise<{ warning?: string }> {
-    // Check if element appears to be draggable
-    const computedStyle = window.getComputedStyle(sourceElement);
-    const isDraggable =
-      sourceElement.draggable ||
-      sourceElement.getAttribute('aria-grabbed') !== null ||
-      sourceElement.getAttribute('role') === 'slider' ||
-      computedStyle.cursor === 'grab' ||
-      computedStyle.cursor === 'move' ||
-      computedStyle.cursor === 'grabbing';
-
-    const sourceRect = sourceElement.getBoundingClientRect();
-    const sourceX = sourceRect.left + (options?.sourceOffset?.x ?? sourceRect.width / 2);
-    const sourceY = sourceRect.top + (options?.sourceOffset?.y ?? sourceRect.height / 2);
-
-    // Resolve target position
-    let targetX: number;
-    let targetY: number;
-
-    if (options?.targetPosition) {
-      targetX = options.targetPosition.x;
-      targetY = options.targetPosition.y;
-    } else if (options?.target) {
-      const targetElement = this.resolveTargetElement(options.target);
-      if (!targetElement) {
-        throw new Error(`Drag target element not found: ${JSON.stringify(options.target)}`);
-      }
-      const targetRect = targetElement.getBoundingClientRect();
-      targetX = targetRect.left + (options?.targetOffset?.x ?? targetRect.width / 2);
-      targetY = targetRect.top + (options?.targetOffset?.y ?? targetRect.height / 2);
-    } else {
-      throw new Error('Drag requires either target or targetPosition');
-    }
-
-    const steps = options?.steps ?? 10;
-    const holdDelay = options?.holdDelay ?? 100;
-    const releaseDelay = options?.releaseDelay ?? 50;
-
-    // 1. Dispatch mousedown on source
-    sourceElement.dispatchEvent(createMouseEventAt('mousedown', sourceX, sourceY));
-
-    // 2. Optionally dispatch dragstart (HTML5 mode, requires DragEvent support)
-    const canHTML5 = options?.html5 && typeof DragEvent !== 'undefined';
-    if (canHTML5) {
-      sourceElement.dispatchEvent(
-        new DragEvent('dragstart', {
-          bubbles: true,
-          cancelable: true,
-          clientX: sourceX,
-          clientY: sourceY,
-        })
-      );
-    }
-
-    // 3. Wait hold delay (matches qontinui core's delay_between_mouse_down_and_move)
-    if (holdDelay > 0) {
-      await sleep(holdDelay);
-    }
-
-    // 4. Dispatch intermediate mousemove events along the path
-    for (let i = 1; i <= steps; i++) {
-      const progress = i / steps;
-      const currentX = sourceX + (targetX - sourceX) * progress;
-      const currentY = sourceY + (targetY - sourceY) * progress;
-
-      // Find the element under the cursor (falls back to source if unavailable)
-      const dispatchTarget = elementFromPointSafe(currentX, currentY) || sourceElement;
-
-      dispatchTarget.dispatchEvent(createMouseEventAt('mousemove', currentX, currentY));
-
-      if (canHTML5) {
-        dispatchTarget.dispatchEvent(
-          new DragEvent('dragover', {
-            bubbles: true,
-            cancelable: true,
-            clientX: currentX,
-            clientY: currentY,
-          })
-        );
-      }
-    }
-
-    // 5. Dispatch mouseup on the element under the final position
-    const dropTarget = elementFromPointSafe(targetX, targetY) || sourceElement;
-
-    dropTarget.dispatchEvent(createMouseEventAt('mouseup', targetX, targetY));
-
-    // 6. Optionally dispatch drop + dragend (HTML5 mode)
-    if (canHTML5) {
-      dropTarget.dispatchEvent(
-        new DragEvent('drop', {
-          bubbles: true,
-          cancelable: true,
-          clientX: targetX,
-          clientY: targetY,
-        })
-      );
-      sourceElement.dispatchEvent(
-        new DragEvent('dragend', {
-          bubbles: true,
-          cancelable: true,
-          clientX: targetX,
-          clientY: targetY,
-        })
-      );
-    }
-
-    // 7. Wait release delay (matches qontinui core's delay_after_drag)
-    if (releaseDelay > 0) {
-      await sleep(releaseDelay);
-    }
-
-    return {
-      warning: isDraggable
-        ? undefined
-        : 'Element does not appear to be draggable (no draggable attribute, aria-grabbed, or grab/move cursor). Drag events were dispatched but may have no effect.',
-    };
+    return performDragSequence(sourceElement, options, (t) => this.resolveTargetElement(t));
   }
 
   /**

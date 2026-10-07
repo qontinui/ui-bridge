@@ -51,8 +51,10 @@ import {
   dispatchMiddleClick,
 } from '../control/action-executor';
 import { inertAbortSignal } from '../core/abortable';
-import type { ComponentActionRequest, MouseAction } from '../control/types';
+import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
+import { performDragSequence } from '../control/drag-sequence';
+import { findElementByIdentifier } from '../core/element-identifier';
 import { applyValueMutation } from '../control/value-mutation';
 import { getEventStack } from '../debug/shared-utils';
 import { createStableRef, resolveStableRef } from '../core/stable-ref';
@@ -1793,6 +1795,7 @@ export async function executeCommand(
                   'targetOffset',
                   'sourceOffset',
                   'steps',
+                  'stepDelay',
                   'holdDelay',
                   'releaseDelay',
                   'html5',
@@ -1800,52 +1803,29 @@ export async function executeCommand(
                   .filter((k) => req[k] !== undefined)
                   .map((k) => [k, req[k]])
               ),
-            } as { targetId?: string; targetPosition?: { x: number; y: number } };
-            const { targetId, targetPosition } = dragParams;
-            const targetEl = targetId ? (getElement(targetId)?.element as HTMLElement) : null;
-            const srcRect = dom.getBoundingClientRect();
-            dom.dispatchEvent(
-              new DragEvent('dragstart', {
-                bubbles: true,
-                clientX: srcRect.x + srcRect.width / 2,
-                clientY: srcRect.y + srcRect.height / 2,
-              })
+            } as DragAction & { targetId?: string };
+            const { targetId, ...dragOptions } = dragParams;
+            // This path used to dispatch ONLY HTML5 drag events, so a
+            // pointer- or mouse-driven drag (most React drag code) silently
+            // no-oped here while the HTTP executor drove it. It now runs the
+            // shared sequence; `html5` defaults ON to keep emitting the
+            // HTML5 events this path always sent.
+            await performDragSequence(
+              dom as HTMLElement,
+              {
+                ...dragOptions,
+                target: dragOptions.target ?? (targetId ? { elementId: targetId } : undefined),
+                html5: dragOptions.html5 ?? true,
+              },
+              (t) => {
+                if (t.elementId) {
+                  const registered = getElement(t.elementId)?.element as HTMLElement | undefined;
+                  if (registered) return registered;
+                  return findElementByIdentifier(t.elementId);
+                }
+                return t.selector ? document.querySelector<HTMLElement>(t.selector) : null;
+              }
             );
-            if (targetEl) {
-              const tgtRect = targetEl.getBoundingClientRect();
-              targetEl.dispatchEvent(
-                new DragEvent('dragover', {
-                  bubbles: true,
-                  clientX: tgtRect.x + tgtRect.width / 2,
-                  clientY: tgtRect.y + tgtRect.height / 2,
-                })
-              );
-              targetEl.dispatchEvent(
-                new DragEvent('drop', {
-                  bubbles: true,
-                  clientX: tgtRect.x + tgtRect.width / 2,
-                  clientY: tgtRect.y + tgtRect.height / 2,
-                })
-              );
-            } else if (targetPosition) {
-              const dropTarget =
-                document.elementFromPoint(targetPosition.x, targetPosition.y) || dom;
-              dropTarget.dispatchEvent(
-                new DragEvent('dragover', {
-                  bubbles: true,
-                  clientX: targetPosition.x,
-                  clientY: targetPosition.y,
-                })
-              );
-              dropTarget.dispatchEvent(
-                new DragEvent('drop', {
-                  bubbles: true,
-                  clientX: targetPosition.x,
-                  clientY: targetPosition.y,
-                })
-              );
-            }
-            dom.dispatchEvent(new DragEvent('dragend', { bubbles: true }));
             break;
           }
           default:
