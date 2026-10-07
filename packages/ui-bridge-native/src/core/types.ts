@@ -339,6 +339,7 @@ export type NativeStandardAction =
   | 'focus'
   | 'blur'
   | 'scroll'
+  | 'scrollIntoView'
   | 'swipe'
   | 'toggle';
 

@@ -36,6 +36,13 @@ export interface ControlActionRequest extends NativeActionRequest {
 export interface ControlActionResponse extends NativeActionResponse {
   /** Request ID for correlation */
   requestId?: string;
+  /**
+   * Machine-readable failure code, set only when an action failed for a
+   * reason with an honest code of its own — today only `NOT_SUPPORTED`
+   * (`scrollIntoView` with no usable declared scroll container). Absent on
+   * every other failure, which the HTTP handler reports as `ACTION_FAILED`.
+   */
+  code?: string;
   /** Retry count */
   retryCount?: number;
 }
@@ -244,6 +251,17 @@ export interface ScrollActionParams {
   position?: { x: number; y: number };
   /** Animate the scroll */
   animated?: boolean;
+}
+
+/**
+ * `scrollIntoView` action params
+ */
+export interface ScrollIntoViewActionParams {
+  /**
+   * Gap (logical dp) left between the top of the scroll container's viewport
+   * and the element after scrolling. Finite and non-negative; default 16.
+   */
+  padding?: number;
 }
 
 /**

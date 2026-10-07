@@ -15,6 +15,7 @@ import type {
   WaitOptions,
 } from '../core/types';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { pageRectOf, isEmptyRect } from '../core/registry';
 // Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape). A justified
 // duplicate of the web SDK's primitive — see the header of `core/abortable.ts`
 // for why this package cannot import it.
@@ -38,6 +39,7 @@ import type {
   NativeActionListener,
   TypeActionParams,
   ScrollActionParams,
+  ScrollIntoViewActionParams,
   SwipeActionParams,
   PressActionParams,
 } from './types';
@@ -53,6 +55,44 @@ const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
   timeout: 10000,
   interval: 100,
 };
+
+/**
+ * An action failure that carries a machine-readable code of its own, so the
+ * HTTP handler can report it as that code instead of the generic
+ * `ACTION_FAILED`. Used for `NOT_SUPPORTED` — "this element cannot do that",
+ * which a caller must not retry with a different request shape.
+ */
+export class NativeActionError extends Error {
+  constructor(
+    message: string,
+    readonly code: string
+  ) {
+    super(message);
+    this.name = 'NativeActionError';
+  }
+}
+
+/** Default gap (logical dp) left above an element scrolled into view. */
+const DEFAULT_SCROLL_INTO_VIEW_PADDING = 16;
+
+/** Upper bound on waiting for `measureLayout` to call back. */
+const SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS = 1000;
+
+/** The slice of a React Native `ScrollView` instance `scrollIntoView` drives. */
+interface ScrollContainerRef {
+  scrollTo: (options: { x?: number; y?: number; animated?: boolean }) => void;
+  getInnerViewRef?: () => unknown;
+  getInnerViewNode?: () => unknown;
+}
+
+/** The slice of a React Native host view `scrollIntoView` measures with. */
+interface MeasurableRef {
+  measureLayout: (
+    relativeTo: unknown,
+    onSuccess: (x: number, y: number, width: number, height: number) => void,
+    onFail?: () => void
+  ) => void;
+}
 
 /**
  * Sleep for a duration
@@ -204,6 +244,7 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       return {
         success: false,
         error: errorMsg,
+        ...(error instanceof NativeActionError ? { code: error.code } : {}),
         stack: error instanceof Error ? error.stack : undefined,
         durationMs: failTime - startTime,
         timestamp: failTime,
@@ -265,6 +306,12 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
 
       case 'scroll':
         return this.performScroll(props, params as ScrollActionParams | undefined);
+
+      case 'scrollIntoView':
+        return this.performScrollIntoView(
+          element,
+          params as ScrollIntoViewActionParams | undefined
+        );
 
       case 'swipe':
         return this.performSwipe(props, params as unknown as SwipeActionParams);
@@ -500,6 +547,149 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       };
       (props.onScroll as (event: unknown) => void)(event);
     }
+  }
+
+  /**
+   * Perform scrollIntoView: scroll the element's DECLARED scroll container so
+   * the element sits `padding` dp below the top of its viewport.
+   *
+   * The container comes from `scrollAncestorId` and nowhere else — the
+   * registry keeps no parent chain (`RegisterElementOptions.scrollAncestorId`),
+   * so there is no "nearest ScrollView" to find. Nothing here tracks a
+   * ScrollView's content offset either (`performScroll` only fakes an
+   * `onScroll` event), so the target is measured CONTENT-relative with
+   * `measureLayout` against the container's inner content view: stateless,
+   * and immune to a stale-offset race.
+   *
+   * Result shape mirrors the web executor's `scrollIntoView`
+   * (`@qontinui/ui-bridge` `control/action-executor.ts`):
+   * `{ alreadyVisible, scrolled }`, short-circuiting when the element is
+   * already fully inside its clip region. "Fully visible" is only claimed when
+   * it is MEASURED — a page-space rect for the element and a known,
+   * non-empty clip (window ∩ declared container), read after a fresh
+   * `refreshMeasurements()`. Anything unknown scrolls.
+   *
+   * Prerequisites are checked BEFORE the visibility short-circuit, so whether
+   * the element supports the action does not depend on where it happens to be
+   * on screen. Each missing prerequisite is a `NOT_SUPPORTED` failure.
+   */
+  private async performScrollIntoView(
+    element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>,
+    params?: ScrollIntoViewActionParams
+  ): Promise<{ alreadyVisible: boolean; scrolled: boolean }> {
+    const padding = params?.padding ?? DEFAULT_SCROLL_INTO_VIEW_PADDING;
+    if (typeof padding !== 'number' || !Number.isFinite(padding) || padding < 0) {
+      throw new Error('scrollIntoView "padding" must be a finite, non-negative number');
+    }
+
+    const ancestorId = element.scrollAncestorId;
+    if (!ancestorId) {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": it declares no scrollAncestorId, ` +
+          'and the registry keeps no parent chain to find its scroll container from',
+        'NOT_SUPPORTED'
+      );
+    }
+    const ancestor = ancestorId === element.id ? undefined : this.registry.getElement(ancestorId);
+    if (!ancestor) {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": its declared scrollAncestorId ` +
+          `"${ancestorId}" is not a registered element`,
+        'NOT_SUPPORTED'
+      );
+    }
+    const container = ancestor.ref.current as unknown as Partial<ScrollContainerRef> | null;
+    if (!container || typeof container.scrollTo !== 'function') {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
+          `"${ancestorId}" has no scrollTo (not a mounted ScrollView)`,
+        'NOT_SUPPORTED'
+      );
+    }
+    const innerView = container.getInnerViewRef?.() ?? container.getInnerViewNode?.();
+    if (innerView === undefined || innerView === null) {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
+          `"${ancestorId}" exposes no inner content view to measure against`,
+        'NOT_SUPPORTED'
+      );
+    }
+    const target = element.ref.current as unknown as Partial<MeasurableRef> | null;
+    if (!target || typeof target.measureLayout !== 'function') {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": its ref has no measureLayout ` +
+          '(not a mounted host view)',
+        'NOT_SUPPORTED'
+      );
+    }
+
+    // Already-visible short-circuit — only on MEASURED evidence. Re-measure
+    // first (bounded; never throws), as the snapshot route does: the stored
+    // layout of a row the user has since scrolled would otherwise claim it is
+    // still on screen.
+    // `updateElementState` REPLACES the map entry (new `getState` closure), so
+    // read the re-fetched entry, not the `element` captured before the refresh.
+    await this.registry.refreshMeasurements();
+    const fresh = this.registry.getElement(element.id) ?? element;
+    const state = fresh.getState();
+    const rect = state.visible ? pageRectOf(state) : null;
+    const clip = this.registry.getClipRectFor(fresh);
+    if (
+      rect &&
+      clip &&
+      !isEmptyRect(clip) &&
+      rect.right > rect.left &&
+      rect.bottom > rect.top &&
+      rect.top >= clip.top &&
+      rect.left >= clip.left &&
+      rect.bottom <= clip.bottom &&
+      rect.right <= clip.right
+    ) {
+      return { alreadyVisible: true, scrolled: false };
+    }
+
+    const contentY = await new Promise<number>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(
+          new Error(
+            `scrollIntoView: measureLayout did not call back within ${SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS}ms`
+          )
+        );
+      }, SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS);
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      try {
+        target.measureLayout!(
+          innerView,
+          (_x, y) =>
+            finish(() =>
+              Number.isFinite(y)
+                ? resolve(y)
+                : reject(new Error('scrollIntoView: measureLayout returned a non-finite y'))
+            ),
+          () =>
+            finish(() =>
+              reject(
+                new Error(
+                  `scrollIntoView: measureLayout failed for "${element.id}" relative to "${ancestorId}"`
+                )
+              )
+            )
+        );
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    });
+
+    container.scrollTo({ y: Math.max(0, contentY - padding), animated: false });
+    return { alreadyVisible: false, scrolled: true };
   }
 
   /**

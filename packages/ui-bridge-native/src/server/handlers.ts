@@ -575,7 +575,10 @@ export function createServerHandlers(
       const response = await executor.executeAction(id, envelope as ControlActionRequest);
 
       if (!response.success) {
-        return error(response.error || 'Action failed', 'ACTION_FAILED');
+        // An action that failed with a code of its own (`NOT_SUPPORTED` from
+        // `scrollIntoView`) keeps it — mapped to 501 by `http-server.ts` — so
+        // "this element cannot do that" is not reported as a retryable 400.
+        return error(response.error || 'Action failed', response.code ?? 'ACTION_FAILED');
       }
 
       return success(response);

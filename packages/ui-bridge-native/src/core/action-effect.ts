@@ -48,8 +48,10 @@ import type { IREffect, NativeStandardAction } from './types';
  *   `effect: 'destructive'`.
  * - **`focus` / `blur` → `read`.** They move focus, which is UI state, not
  *   persistent state.
+ * - **`scrollIntoView` → `read`.** It moves the declared scroll container's
+ *   content offset (UI state) and fires no element handler.
  *
- * Note this union carries `click` and `setValue` that the
+ * Note this union carries `click`, `setValue` and `scrollIntoView` that the
  * `@qontinui/ui-bridge` `native/core` copy does not — a real divergence
  * between the two native unions, not a sync error.
  */
@@ -58,6 +60,7 @@ export const NATIVE_STANDARD_ACTION_EFFECTS: Record<NativeStandardAction, IREffe
   focus: 'read',
   blur: 'read',
   scroll: 'read',
+  scrollIntoView: 'read',
   longPress: 'read',
 
   // --- Writes --------------------------------------------------------------

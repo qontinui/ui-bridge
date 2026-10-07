@@ -233,6 +233,7 @@ export {
   type ActionExecutionOptions,
   type TypeActionParams,
   type ScrollActionParams,
+  type ScrollIntoViewActionParams,
   type SwipeActionParams,
   type PressActionParams,
 } from './control/types';

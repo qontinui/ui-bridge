@@ -9,7 +9,8 @@
  * duplication is exactly what these literal assertions defend: a copy that
  * drifts is the defect class the whole plan exists to close.
  *
- * Note the native union here carries `click` and `setValue` that the
+ * Note the native union here carries `click`, `setValue` and `scrollIntoView`
+ * (plan `2026-10-07-mobile-account-usage-iter2-residuals` Phase 4) that the
  * `@qontinui/ui-bridge` `native/core` copy does not — a real divergence
  * between the two native unions, asserted below so it stays deliberate.
  *
@@ -39,13 +40,14 @@ describe('Phase 4 — NATIVE_STANDARD_ACTION_EFFECTS (ui-bridge-native)', () => 
       focus: 'read',
       blur: 'read',
       scroll: 'read',
+      scrollIntoView: 'read',
       swipe: 'write',
       toggle: 'write',
     });
   });
 
-  it('covers exactly 12 verbs — two more than the ui-bridge/native copy', () => {
-    expect(Object.keys(NATIVE_STANDARD_ACTION_EFFECTS)).toHaveLength(12);
+  it('covers exactly 13 verbs — three more than the ui-bridge/native copy', () => {
+    expect(Object.keys(NATIVE_STANDARD_ACTION_EFFECTS)).toHaveLength(13);
     expect(nativeStandardActionEffect('click')).toBe('write');
     expect(nativeStandardActionEffect('setValue')).toBe('write');
   });

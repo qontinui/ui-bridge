@@ -523,10 +523,21 @@ export function computeVisibility(
 }
 
 /**
- * Infer available actions based on element type
+ * Infer available actions based on element type.
+ *
+ * `scrollIntoView` is advertised only when the element DECLARES a
+ * `scrollAncestorId`. It is the one input the action cannot work without (the
+ * registry keeps no parent chain, so there is nothing else to scroll), and the
+ * runner refuses any action an element does not advertise — so advertising it
+ * everywhere would put a verb on every element that answers `NOT_SUPPORTED`
+ * for all but the declared few. An ancestor that turns out to be unregistered
+ * or not a ScrollView is still answered honestly by the executor
+ * (`NOT_SUPPORTED`).
  */
-function inferActions(type: NativeElementType): NativeStandardAction[] {
-  const baseActions: NativeStandardAction[] = ['focus', 'blur'];
+function inferActions(type: NativeElementType, scrollAncestorId?: string): NativeStandardAction[] {
+  const baseActions: NativeStandardAction[] = scrollAncestorId
+    ? ['focus', 'blur', 'scrollIntoView']
+    : ['focus', 'blur'];
 
   switch (type) {
     case 'button':
@@ -830,7 +841,6 @@ export class NativeUIBridgeRegistry {
     const {
       type = 'custom',
       label,
-      actions = inferActions(type),
       customActions,
       props,
       treePath = id,
@@ -841,6 +851,7 @@ export class NativeUIBridgeRegistry {
       flatStyle,
       stateStyles,
     } = options;
+    const actions = options.actions ?? inferActions(type, scrollAncestorId);
 
     // Create state getter
     const getState = (): NativeElementState => {

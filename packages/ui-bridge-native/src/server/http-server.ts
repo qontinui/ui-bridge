@@ -444,6 +444,11 @@ const ACTION_REFERENCE = [
   { name: 'focus', params: 'none' },
   { name: 'blur', params: 'none' },
   { name: 'scroll', params: 'ScrollActionParams { offset? {x,y}, to? }' },
+  {
+    name: 'scrollIntoView',
+    params:
+      "ScrollIntoViewActionParams { padding? (dp, default 16) } — scrolls the element's DECLARED scrollAncestorId ScrollView; returns { alreadyVisible, scrolled }; NOT_SUPPORTED (501) without a usable declared ancestor",
+  },
   { name: 'swipe', params: 'SwipeActionParams { direction, distance }' },
   { name: 'toggle', params: 'none — flips boolean controls' },
 ];
