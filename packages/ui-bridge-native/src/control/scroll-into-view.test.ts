@@ -281,3 +281,139 @@ describe('scrollIntoView — declaration', () => {
     expect(NATIVE_STANDARD_ACTION_EFFECTS.scrollIntoView).toBe('read');
   });
 });
+
+describe('scrollIntoView — review follow-ups', () => {
+  it('does not short-circuit on the window alone when the container is unmeasured', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setViewportProvider(() => WINDOW);
+    const scroll = makeScrollViewRef();
+    registry.registerElement('short-scroll', scroll.ref, { type: 'scroll' }); // never measured
+    registry.registerElement('row', makeTargetRef(700).ref, {
+      type: 'view',
+      scrollAncestorId: 'short-scroll',
+    });
+    measure(registry, 'row', 700, 40); // inside the 830-high window
+
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('row', {
+      action: 'scrollIntoView',
+    });
+
+    expect(res.result).toEqual({ alreadyVisible: false, scrolled: true });
+    expect(scroll.scrollTo).toHaveBeenCalledWith({ y: 684, animated: false });
+  });
+
+  it('unwraps a FlatList-shaped container through getNativeScrollRef', async () => {
+    const inner = makeScrollViewRef();
+    const flatList = { scrollToOffset: vi.fn(), getNativeScrollRef: () => inner.ref.current };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('list', asRef(flatList), { type: 'list' });
+    registry.registerElement('item', makeTargetRef(900).ref, {
+      type: 'listItem',
+      scrollAncestorId: 'list',
+    });
+
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('item', {
+      action: 'scrollIntoView',
+    });
+
+    expect(res.success).toBe(true);
+    expect(inner.scrollTo).toHaveBeenCalledWith({ y: 884, animated: false });
+    expect(flatList.scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  it('is NOT_SUPPORTED on a horizontal container (would reset x and lie)', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    const scroll = makeScrollViewRef();
+    registry.registerElement('carousel', scroll.ref, {
+      type: 'scroll',
+      props: { horizontal: true },
+    });
+    registry.registerElement('card', makeTargetRef(0).ref, {
+      type: 'view',
+      scrollAncestorId: 'carousel',
+    });
+
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('card', {
+      action: 'scrollIntoView',
+    });
+
+    expect(res.code).toBe('NOT_SUPPORTED');
+    expect(res.error).toContain('horizontal');
+    expect(scroll.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('is NOT_SUPPORTED when the target ref has no measureLayout', async () => {
+    const { registry, executor } = setup();
+    registry.registerElement('account-usage-card', asRef({}), {
+      type: 'view',
+      scrollAncestorId: 'operations-overview',
+    });
+    const res = await executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
+    expect(res.code).toBe('NOT_SUPPORTED');
+    expect(res.error).toContain('measureLayout');
+  });
+
+  it('is NOT_SUPPORTED when an element names itself as its scroll ancestor', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('self', makeTargetRef(0).ref, {
+      type: 'view',
+      scrollAncestorId: 'self',
+    });
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('self', {
+      action: 'scrollIntoView',
+    });
+    expect(res.code).toBe('NOT_SUPPORTED');
+  });
+
+  it('fails (ACTION_FAILED, not NOT_SUPPORTED) when measureLayout never calls back', async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, executor, scroll } = setup();
+      registry.registerElement('account-usage-card', asRef({ measureLayout: () => {} }), {
+        type: 'view',
+        scrollAncestorId: 'operations-overview',
+      });
+      const pending = executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
+      await vi.advanceTimersByTimeAsync(1500);
+      const res = await pending;
+      expect(res.success).toBe(false);
+      expect(res.code).toBeUndefined();
+      expect(res.error).toContain('did not call back');
+      expect(scroll.scrollTo).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails when measureLayout reports a non-finite y', async () => {
+    const { registry, executor, scroll } = setup();
+    registry.registerElement(
+      'account-usage-card',
+      asRef({
+        measureLayout: (_r: unknown, ok: (x: number, y: number, w: number, h: number) => void) =>
+          ok(0, NaN, 0, 0),
+      }),
+      { type: 'view', scrollAncestorId: 'operations-overview' }
+    );
+    const res = await executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('non-finite');
+    expect(scroll.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('takes an explicit actions list as written, and infers on actions: null', () => {
+    const { registry } = setup();
+    registry.registerElement('explicit', asRef({}), {
+      type: 'view',
+      scrollAncestorId: 'operations-overview',
+      actions: ['press'],
+    });
+    registry.registerElement('nulled', asRef({}), {
+      type: 'view',
+      scrollAncestorId: 'operations-overview',
+      actions: null as unknown as undefined,
+    });
+    expect(registry.getElement('explicit')?.actions).toEqual(['press']);
+    expect(registry.getElement('nulled')?.actions).toContain('scrollIntoView');
+  });
+});

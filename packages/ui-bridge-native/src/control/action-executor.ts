@@ -15,7 +15,8 @@ import type {
   WaitOptions,
 } from '../core/types';
 import { findElementByIdentifier } from '../core/element-identifier';
-import { pageRectOf, isEmptyRect } from '../core/registry';
+import { pageRectOf, isEmptyRect, intersectRects } from '../core/registry';
+import type { NativePageRect } from '../core/registry';
 // Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape). A justified
 // duplicate of the web SDK's primitive — see the header of `core/abortable.ts`
 // for why this package cannot import it.
@@ -83,6 +84,55 @@ interface ScrollContainerRef {
   scrollTo: (options: { x?: number; y?: number; animated?: boolean }) => void;
   getInnerViewRef?: () => unknown;
   getInnerViewNode?: () => unknown;
+  /** VirtualizedList family (FlatList / SectionList): the underlying ScrollView. */
+  getNativeScrollRef?: () => unknown;
+  getScrollResponder?: () => unknown;
+}
+
+/** Upper bound on the targeted `measureInWindow` used for the visibility check. */
+const SCROLL_INTO_VIEW_WINDOW_MEASURE_TIMEOUT_MS = 250;
+
+type WindowMeasurable = {
+  measureInWindow?: (cb: (x: number, y: number, w: number, h: number) => void) => void;
+};
+
+/**
+ * The page rect of one registered element, measured NOW where its ref allows.
+ *
+ * A ref with `measureInWindow` is measured directly (bounded); a timeout,
+ * throw, or zero-size answer is UNKNOWN (`null`). A ref without it (a test
+ * fixture, a non-host wrapper) falls back to the registry's stored layout —
+ * the same evidence the snapshot route would report for it.
+ */
+function measurePageRectNow(
+  element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>
+): Promise<NativePageRect | null> {
+  const node = element.ref.current as unknown as WindowMeasurable | null;
+  if (!node || typeof node.measureInWindow !== 'function') {
+    const state = element.getState();
+    return Promise.resolve(state.visible ? pageRectOf(state) : null);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (rect: NativePageRect | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(rect);
+    };
+    const timer = setTimeout(() => done(null), SCROLL_INTO_VIEW_WINDOW_MEASURE_TIMEOUT_MS);
+    try {
+      node.measureInWindow!((x, y, w, h) =>
+        done(
+          [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0
+            ? { left: x, top: y, right: x + w, bottom: y + h }
+            : null
+        )
+      );
+    } catch {
+      done(null);
+    }
+  });
 }
 
 /** The slice of a React Native host view `scrollIntoView` measures with. */
@@ -92,6 +142,32 @@ interface MeasurableRef {
     onSuccess: (x: number, y: number, width: number, height: number) => void,
     onFail?: () => void
   ) => void;
+}
+
+/**
+ * The ScrollView-shaped object behind a container ref: the ref itself when it
+ * has `scrollTo`, else the ScrollView a VirtualizedList (FlatList /
+ * SectionList) wraps. `null` when neither yields one.
+ */
+function resolveScrollView(
+  current: unknown
+): (Partial<ScrollContainerRef> & Pick<ScrollContainerRef, 'scrollTo'>) | null {
+  const c = current as Partial<ScrollContainerRef> | null | undefined;
+  if (!c) return null;
+  if (typeof c.scrollTo === 'function')
+    return c as Partial<ScrollContainerRef> & Pick<ScrollContainerRef, 'scrollTo'>;
+  for (const unwrap of [c.getNativeScrollRef, c.getScrollResponder]) {
+    if (typeof unwrap !== 'function') continue;
+    let inner: Partial<ScrollContainerRef> | null | undefined;
+    try {
+      inner = unwrap.call(c) as Partial<ScrollContainerRef> | null | undefined;
+    } catch {
+      inner = null;
+    }
+    if (inner && typeof inner.scrollTo === 'function')
+      return inner as Partial<ScrollContainerRef> & Pick<ScrollContainerRef, 'scrollTo'>;
+  }
+  return null;
 }
 
 /**
@@ -566,8 +642,13 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
    * `{ alreadyVisible, scrolled }`, short-circuiting when the element is
    * already fully inside its clip region. "Fully visible" is only claimed when
    * it is MEASURED — a page-space rect for the element and a known,
-   * non-empty clip (window ∩ declared container), read after a fresh
-   * `refreshMeasurements()`. Anything unknown scrolls.
+   * non-empty clip (window ∩ declared container), both measured at call
+   * time. Anything unknown scrolls.
+   *
+   * Containers: a ScrollView, or a VirtualizedList (FlatList / SectionList)
+   * unwrapped through `getNativeScrollRef()` / `getScrollResponder()`.
+   * Vertical only — a `horizontal` container is NOT_SUPPORTED. The action
+   * returns once `scrollTo` is dispatched; positions settle on the next frame.
    *
    * Prerequisites are checked BEFORE the visibility short-circuit, so whether
    * the element supports the action does not depend on where it happens to be
@@ -598,15 +679,32 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         'NOT_SUPPORTED'
       );
     }
-    const container = ancestor.ref.current as unknown as Partial<ScrollContainerRef> | null;
-    if (!container || typeof container.scrollTo !== 'function') {
+    const container = resolveScrollView(ancestor.ref.current);
+    if (!container) {
       throw new NativeActionError(
         `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
-          `"${ancestorId}" has no scrollTo (not a mounted ScrollView)`,
+          `"${ancestorId}" has no scrollTo (not a mounted ScrollView, and no ` +
+          'getNativeScrollRef/getScrollResponder yielding one)',
         'NOT_SUPPORTED'
       );
     }
-    const innerView = container.getInnerViewRef?.() ?? container.getInnerViewNode?.();
+    if (ancestor.props?.horizontal === true) {
+      // `scrollTo` here moves only y; RN sends `x || 0`, so on a horizontal
+      // ScrollView this would jump the content to its start and still report
+      // success. Refuse rather than lie.
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
+          `"${ancestorId}" is horizontal (only vertical containers are supported)`,
+        'NOT_SUPPORTED'
+      );
+    }
+    // `getInnerViewRef()` returns a host instance on both architectures and is
+    // the primary path. `getInnerViewNode()` returns a numeric tag, which only
+    // the legacy architecture's `measureLayout` accepts (Fabric ignores it and
+    // never calls back — the timeout below then names that cause).
+    const innerViewRef = container.getInnerViewRef?.();
+    const innerView = innerViewRef ?? container.getInnerViewNode?.();
+    const innerViewIsTag = innerViewRef == null && typeof innerView === 'number';
     if (innerView === undefined || innerView === null) {
       throw new NativeActionError(
         `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
@@ -623,17 +721,18 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       );
     }
 
-    // Already-visible short-circuit — only on MEASURED evidence. Re-measure
-    // first (bounded; never throws), as the snapshot route does: the stored
-    // layout of a row the user has since scrolled would otherwise claim it is
-    // still on screen.
-    // `updateElementState` REPLACES the map entry (new `getState` closure), so
-    // read the re-fetched entry, not the `element` captured before the refresh.
-    await this.registry.refreshMeasurements();
-    const fresh = this.registry.getElement(element.id) ?? element;
-    const state = fresh.getState();
-    const rect = state.visible ? pageRectOf(state) : null;
-    const clip = this.registry.getClipRectFor(fresh);
+    // Already-visible short-circuit — only on MEASURED evidence: the target
+    // AND its declared container are both measured now (targeted, bounded —
+    // not a registry-wide sweep), and the target lies fully inside
+    // window ∩ container. An unknown container rect must NOT fall back to the
+    // window alone: a row below a short ScrollView's bottom edge is still
+    // inside the window. Anything unknown scrolls.
+    const [rect, ancestorRect] = await Promise.all([
+      measurePageRectNow(element),
+      measurePageRectNow(ancestor),
+    ]);
+    const viewport = this.registry.getViewportRect();
+    const clip = ancestorRect ? intersectRects(viewport, ancestorRect) : null;
     if (
       rect &&
       clip &&
@@ -655,7 +754,10 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         settled = true;
         reject(
           new Error(
-            `scrollIntoView: measureLayout did not call back within ${SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS}ms`
+            `scrollIntoView: measureLayout did not call back within ${SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS}ms` +
+              (innerViewIsTag
+                ? ' (measured against a numeric inner-view tag from getInnerViewNode, which the new architecture does not support)'
+                : '')
           )
         );
       }, SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS);

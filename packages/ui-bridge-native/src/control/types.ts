@@ -260,6 +260,11 @@ export interface ScrollIntoViewActionParams {
   /**
    * Gap (logical dp) left between the top of the scroll container's viewport
    * and the element after scrolling. Finite and non-negative; default 16.
+   *
+   * Measured from the container's CONTENT origin, so a `paddingTop` on the
+   * ScrollView's own style, or an iOS `contentInset.top` / automatic
+   * safe-area inset, shifts where the element lands — add it here if the row
+   * must clear a header.
    */
   padding?: number;
 }

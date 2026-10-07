@@ -141,6 +141,11 @@ export interface UseUIElementOptionsBase<T extends NativeElementType = NativeEle
    * element's children and cannot publish itself to them as an ancestor. See
    * `RegisterElementOptions.scrollAncestorId` for why guessing geometrically
    * would be worse than not clipping.
+   *
+   * It is also what the `scrollIntoView` action scrolls, and declaring it is
+   * what advertises that action — but only when `actions` is left to be
+   * inferred. An explicit `actions` list is taken as written; include
+   * `'scrollIntoView'` in it yourself if you want the action advertised.
    */
   scrollAncestorId?: string;
   /** RN style prop — will be flattened for design review */

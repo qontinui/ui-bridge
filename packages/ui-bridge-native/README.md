@@ -180,6 +180,7 @@ await executeAction('submit-button', { action: 'press' });
 - `focus` - Focus element
 - `blur` - Blur element
 - `scroll` - Scroll
+- `scrollIntoView` - Scroll the element's declared `scrollAncestorId` container (vertical ScrollView / FlatList) so the element is on screen; advertised only on elements that declare one
 - `swipe` - Swipe gesture
 - `toggle` - Toggle switch/checkbox
 
