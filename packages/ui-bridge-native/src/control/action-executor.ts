@@ -838,8 +838,9 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
     ) {
       throw new NativeActionError(
         `scrollIntoView is not supported on element "${element.id}": it is laid out beyond the ` +
-          `width of its scroll ancestor "${ancestorId}" (a horizontal container; only vertical ` +
-          'containers are supported)',
+          `horizontal extent of its scroll ancestor "${ancestorId}" (sideways overflow, a horizontal ` +
+          'container, or a nested horizontal container — declare that inner container as its ' +
+          'scrollAncestorId); only vertical scrolling is supported',
         'NOT_SUPPORTED'
       );
     }

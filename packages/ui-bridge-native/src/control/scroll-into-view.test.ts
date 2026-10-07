@@ -487,7 +487,24 @@ describe('scrollIntoView — undeclared horizontal backstop', () => {
     const res = await executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
 
     expect(res.code).toBe('NOT_SUPPORTED');
-    expect(res.error).toContain('beyond the width');
+    expect(res.error).toContain('beyond the horizontal extent');
     expect(scroll.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('still scrolls a row inset by content-container padding (x 16, width 361, container 393)', async () => {
+    const { registry, executor, scroll } = setup();
+    registry.registerElement(
+      'account-usage-card',
+      asRef({
+        measureLayout: (_r: unknown, ok: (x: number, y: number, w: number, h: number) => void) =>
+          ok(16, 900, 361, 120),
+      }),
+      { type: 'view', scrollAncestorId: 'operations-overview' }
+    );
+
+    const res = await executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
+
+    expect(res.result).toEqual({ alreadyVisible: false, scrolled: true });
+    expect(scroll.scrollTo).toHaveBeenCalledWith({ y: 884, animated: false });
   });
 });

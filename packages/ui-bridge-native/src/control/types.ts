@@ -259,7 +259,9 @@ export interface ScrollActionParams {
  * Vertical containers only. A container declared `horizontal` is answered
  * `NOT_SUPPORTED` where the bridge can see the declaration (captured props, or
  * a FlatList / SectionList instance), or where the element is measured laid
- * out beyond the container's width; see `performScrollIntoView`.
+ * out beyond the container's width — which also refuses an element wider than
+ * its vertical container, or one inside a nested horizontal carousel whose
+ * declared ancestor is the outer vertical feed; see `performScrollIntoView`.
  */
 export interface ScrollIntoViewActionParams {
   /**
