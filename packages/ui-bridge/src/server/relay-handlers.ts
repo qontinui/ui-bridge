@@ -208,6 +208,29 @@ export interface RelayHandlersOptions {
   specs?: Array<{ specId: string; config: unknown }>;
 }
 
+const MALFORMED_SNAPSHOT_MESSAGE =
+  'The tab answered a malformed control snapshot (elements, components or workflows is not an array)';
+
+/**
+ * Is a relayed `getControlSnapshot` answer shaped like a snapshot the shared
+ * cache can hold?
+ *
+ * Every cache reader below indexes `elements` / `components` / `workflows`
+ * directly, so a tab that answers without one of them (an older or broken
+ * SDK, an error object) used to be CACHED and then make every later call
+ * throw a `TypeError`. The answer is validated once, at the two cache-write
+ * sites, rather than guarded at each of the dozen reads: a malformed answer
+ * is never cached and is handled exactly like a relay failure (the previous
+ * good snapshot is kept and marked stale). Defaulting the missing arrays to
+ * `[]` is deliberately NOT done — that would render "could not see" as
+ * "nothing is there".
+ */
+function isControlSnapshot(value: unknown): value is ControlSnapshot {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return Array.isArray(v.elements) && Array.isArray(v.components) && Array.isArray(v.workflows);
+}
+
 /**
  * Create a full UIBridgeServerHandlers implementation backed by a CommandRelay.
  *
@@ -578,10 +601,12 @@ export function createRelayHandlers(
 
     inflightRefresh = (async () => {
       try {
-        const result = await relay.queueCommand<ControlSnapshot>('getControlSnapshot', {});
+        const result = await relay.queueCommand<unknown>('getControlSnapshot', {});
+        if (!isControlSnapshot(result)) throw new Error('malformed control snapshot');
         latestControlSnapshot = result;
         snapshotStaleSince = null;
       } catch {
+        // A relay failure OR a malformed answer: keep the last good snapshot.
         // Track when we first started returning stale data
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
       }
@@ -717,6 +742,7 @@ export function createRelayHandlers(
         if (!live.success || !live.data) {
           return live as unknown as APIResponse<ControlSnapshot['elements']>;
         }
+        if (!isControlSnapshot(live.data)) return error(MALFORMED_SNAPSHOT_MESSAGE);
         return success(applyFilters(live.data.elements), { stale: false, cacheAgeMs: 0 });
       }
 
@@ -922,6 +948,7 @@ export function createRelayHandlers(
             components: ControlSnapshot['components'];
           }>;
         }
+        if (!isControlSnapshot(live.data)) return error(MALFORMED_SNAPSHOT_MESSAGE);
         return success({ components: live.data.components }, { stale: false, cacheAgeMs: 0 });
       }
 
@@ -1228,11 +1255,14 @@ export function createRelayHandlers(
       try {
         const queueOpts: { ownerCheck?: { userId: string } } = {};
         if (effectiveUserId) queueOpts.ownerCheck = { userId: effectiveUserId };
-        const result = await relay.queueCommand<ControlSnapshot>(
+        const result = await relay.queueCommand<unknown>(
           'getControlSnapshot',
           {},
           Object.keys(queueOpts).length > 0 ? queueOpts : undefined
         );
+        // A malformed answer is handled like a relay failure (the catch below):
+        // never cached, previous good snapshot returned and marked stale.
+        if (!isControlSnapshot(result)) throw new Error('malformed control snapshot');
         latestControlSnapshot = result;
         snapshotStaleSince = null;
 
