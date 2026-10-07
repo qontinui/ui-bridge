@@ -30,8 +30,17 @@ export interface DeviceAnnouncerState {
   cloudConnected: boolean;
 }
 
-/** Minimal interface for the react-native-zeroconf Zeroconf instance */
-interface ZeroconfService {
+/**
+ * Minimal interface for the react-native-zeroconf Zeroconf instance.
+ *
+ * The positional `publishService` form is the one every published version
+ * accepts (0.17.x keeps it as a deprecated overload beside the options object).
+ * Both methods are typed `void | Promise<unknown>` because 0.17.x returns a
+ * Promise that REJECTS on failure (e.g. local-network permission denied); the
+ * announcer awaits it so a failure lands in its catch instead of becoming an
+ * unhandled rejection with `mdnsActive` already reporting true.
+ */
+export interface ZeroconfService {
   publishService(
     type: string,
     protocol: string,
@@ -39,9 +48,16 @@ interface ZeroconfService {
     name: string,
     port: number,
     txtRecord: Record<string, string>
-  ): void;
-  unpublishService(name: string): void;
+  ): void | Promise<unknown>;
+  unpublishService(name: string): void | Promise<unknown>;
 }
+
+/**
+ * The `Zeroconf` constructor `startMdnsAdvertise` accepts — the default export
+ * of `react-native-zeroconf` satisfies it. The one definition of the type: the
+ * provider's `zeroconf` prop is declared as this, not a parallel copy.
+ */
+export type ZeroconfConstructor = new () => ZeroconfService;
 
 /** Possible messages received over the cloud relay WebSocket */
 interface RelayMessage {
@@ -92,7 +108,7 @@ export class DeviceAnnouncer {
    *
    * @param ZeroconfCtor - constructor from `import Zeroconf from 'react-native-zeroconf'`
    */
-  async startMdnsAdvertise(ZeroconfCtor?: new () => ZeroconfService): Promise<void> {
+  async startMdnsAdvertise(ZeroconfCtor?: ZeroconfConstructor): Promise<void> {
     if (!ZeroconfCtor) {
       transportLogger.log(
         '[DeviceAnnouncer] mDNS advertisement skipped (no Zeroconf constructor provided). ' +
@@ -101,17 +117,30 @@ export class DeviceAnnouncer {
       return;
     }
     try {
-      this.zeroconf = new ZeroconfCtor();
+      const zeroconf = new ZeroconfCtor();
+      this.zeroconf = zeroconf;
 
       const port = this.config.port ?? DEFAULT_PORT;
       const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
 
-      this.zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
+      await zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
         device_id: this.config.deviceId,
         app_id: this.config.appId,
         version: this.config.version ?? 'unknown',
         pairing_token: this.pairingToken,
       });
+
+      // `stop()` ran while the publish was in flight: its unpublish may have
+      // reached the native side BEFORE the registration did, so withdraw again
+      // rather than leave an advertisement nobody owns, and never report active.
+      if (this.stopped) {
+        try {
+          await zeroconf.unpublishService(serviceName);
+        } catch {
+          // ignore
+        }
+        return;
+      }
 
       this.state = { ...this.state, mdnsActive: true };
       transportLogger.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
@@ -227,7 +256,7 @@ export class DeviceAnnouncer {
     if (this.zeroconf) {
       try {
         const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
-        this.zeroconf.unpublishService(serviceName);
+        await this.zeroconf.unpublishService(serviceName);
       } catch {
         // ignore
       }
