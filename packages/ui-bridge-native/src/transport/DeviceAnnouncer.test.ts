@@ -178,3 +178,94 @@ describe('DeviceAnnouncer — cloud relay diagnostics and token hygiene', () => 
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * mDNS: react-native-zeroconf 0.17.x returns a Promise from `publishService`
+ * and `unpublishService` that REJECTS on failure. Dropped unawaited, a rejection
+ * became an unhandled rejection while `mdnsActive` already read true.
+ */
+describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zeroconf', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  function announcer(): DeviceAnnouncer {
+    return new DeviceAnnouncer({ deviceId: 'abcdef0123456789', appId: 'io.qontinui.mobile' });
+  }
+
+  it('reports active only after the publish resolves', async () => {
+    const calls: unknown[][] = [];
+    class ResolvingZeroconf {
+      publishService(...args: unknown[]): Promise<unknown> {
+        calls.push(args);
+        return Promise.resolve({ name: args[3] });
+      }
+      unpublishService(): Promise<unknown> {
+        return Promise.resolve(null);
+      }
+    }
+    const a = announcer();
+    await a.startMdnsAdvertise(ResolvingZeroconf);
+
+    expect(calls[0]?.slice(0, 5)).toEqual([
+      '_uibridge',
+      '_tcp.',
+      'local.',
+      'UIBridge-abcdef01',
+      8087,
+    ]);
+    expect(a.getState().mdnsActive).toBe(true);
+  });
+
+  it('catches a rejected publish and stays inactive', async () => {
+    class RejectingZeroconf {
+      publishService(): Promise<unknown> {
+        return Promise.reject(new Error('local network permission denied'));
+      }
+      unpublishService(): Promise<unknown> {
+        return Promise.reject(new Error('NOT_PUBLISHED'));
+      }
+    }
+    const a = announcer();
+    await a.startMdnsAdvertise(RejectingZeroconf);
+
+    expect(a.getState().mdnsActive).toBe(false);
+    expect(String(warnSpy.mock.calls.at(-1)?.[0])).toContain('mDNS start failed');
+    // stop() swallows the unpublish rejection rather than throwing.
+    await expect(a.stop()).resolves.toBeUndefined();
+  });
+
+  it('withdraws and stays inactive when stopped while the publish is in flight', async () => {
+    let resolvePublish!: () => void;
+    const unpublished: unknown[] = [];
+    class SlowZeroconf {
+      publishService(): Promise<unknown> {
+        return new Promise((resolve) => {
+          resolvePublish = () => resolve(null);
+        });
+      }
+      unpublishService(name: unknown): Promise<unknown> {
+        unpublished.push(name);
+        return Promise.resolve(null);
+      }
+    }
+    const a = announcer();
+    const started = a.startMdnsAdvertise(SlowZeroconf);
+    await a.stop();
+    resolvePublish();
+    await started;
+
+    expect(a.getState().mdnsActive).toBe(false);
+    // Once from stop(), once more after the late registration landed.
+    expect(unpublished).toEqual(['UIBridge-abcdef01', 'UIBridge-abcdef01']);
+  });
+});

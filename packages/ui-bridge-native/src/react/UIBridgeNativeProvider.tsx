@@ -34,7 +34,7 @@ import {
 } from '../server/http-server';
 import type { RouteProvider, KeepAwakeProvider } from '../server/types';
 import { WebSocketEventBridge } from '../server/ws-event-bridge';
-import { DeviceAnnouncer } from '../transport/DeviceAnnouncer';
+import { DeviceAnnouncer, type ZeroconfConstructor } from '../transport/DeviceAnnouncer';
 import { CloudRelayClient, type CloudRelayConfig } from '../transport/CloudRelayClient';
 import { ModalDetector } from '../modal/modal-detector';
 import { ToastCapture } from '../toast/toast-capture';
@@ -187,9 +187,19 @@ export interface UIBridgeNativeProviderProps {
   cloudRelayConfig?: Omit<CloudRelayConfig, 'uiBridgeServer'>;
   /**
    * Enable mDNS advertisement so that runners on the same LAN can discover this
-   * device automatically (requires react-native-zeroconf).
+   * device automatically. Advertises `_uibridge._tcp` only when `zeroconf` is
+   * also passed; without it the announcer logs that advertisement was skipped.
    */
   enableMdnsAnnounce?: boolean;
+  /**
+   * The `Zeroconf` constructor from `react-native-zeroconf`
+   * (`import Zeroconf from 'react-native-zeroconf'` → `zeroconf={Zeroconf}`),
+   * forwarded to `DeviceAnnouncer.startMdnsAdvertise`. The SDK never
+   * `require()`s that package itself — Metro raises an uncatchable module-load
+   * error when it is absent — so the host app, which knows it is installed,
+   * hands the constructor in. Omitted, mDNS advertisement is skipped.
+   */
+  zeroconf?: ZeroconfConstructor;
   /**
    * Stable device identifier used for mDNS TXT records and cloud relay
    * registration.  Typically sourced from expo-device or a UUID stored in
@@ -252,6 +262,7 @@ export function UIBridgeNativeProvider({
   routeProvider,
   cloudRelayConfig,
   enableMdnsAnnounce,
+  zeroconf,
   deviceId,
 }: UIBridgeNativeProviderProps) {
   // Identity held steady by VALUE — see `useValueStable`. Everything below,
@@ -501,7 +512,7 @@ export function UIBridgeNativeProvider({
             cloudToken: cloudRelayConfig?.authToken,
           });
           announcerRef.current = announcer;
-          void announcer.startMdnsAdvertise().catch((err) => {
+          void announcer.startMdnsAdvertise(zeroconf).catch((err) => {
             console.warn('[ui-bridge-native] mDNS advertise failed:', err);
           });
         } catch (err) {
@@ -546,6 +557,7 @@ export function UIBridgeNativeProvider({
     cloudRelayConfig?.relayUrl,
     cloudRelayConfig?.authToken,
     enableMdnsAnnounce,
+    zeroconf,
     deviceId,
   ]);
 
