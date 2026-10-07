@@ -209,7 +209,7 @@ export interface RelayHandlersOptions {
 }
 
 const MALFORMED_SNAPSHOT_MESSAGE =
-  'The tab answered a malformed control snapshot (elements, components or workflows is not an array)';
+  'The tab answered a malformed control snapshot (elements, components or workflows is not an array, or timestamp is not a number)';
 
 /**
  * Is a relayed `getControlSnapshot` answer shaped like a snapshot the shared
@@ -228,7 +228,22 @@ const MALFORMED_SNAPSHOT_MESSAGE =
 function isControlSnapshot(value: unknown): value is ControlSnapshot {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  return Array.isArray(v.elements) && Array.isArray(v.components) && Array.isArray(v.workflows);
+  return (
+    typeof v.timestamp === 'number' &&
+    Number.isFinite(v.timestamp) &&
+    Array.isArray(v.elements) &&
+    Array.isArray(v.components) &&
+    Array.isArray(v.workflows)
+  );
+}
+
+/** Say WHY a relayed snapshot was refused, so "tab is broken" is not read as "tab is slow". */
+function warnMalformedSnapshot(value: unknown): void {
+  const shape =
+    typeof value === 'object' && value !== null
+      ? `keys=[${Object.keys(value).join(', ')}]`
+      : `type=${value === null ? 'null' : typeof value}`;
+  console.warn(`[ui-bridge relay] refused a malformed control snapshot (${shape})`);
 }
 
 /**
@@ -602,7 +617,10 @@ export function createRelayHandlers(
     inflightRefresh = (async () => {
       try {
         const result = await relay.queueCommand<unknown>('getControlSnapshot', {});
-        if (!isControlSnapshot(result)) throw new Error('malformed control snapshot');
+        if (!isControlSnapshot(result)) {
+          warnMalformedSnapshot(result);
+          throw new Error('malformed control snapshot');
+        }
         latestControlSnapshot = result;
         snapshotStaleSince = null;
       } catch {
@@ -1252,6 +1270,8 @@ export function createRelayHandlers(
         }
       }
 
+      // `timeout` unless the tab answered but not with a snapshot.
+      let fallbackReason: FallbackScreenshot['reason'] = 'timeout';
       try {
         const queueOpts: { ownerCheck?: { userId: string } } = {};
         if (effectiveUserId) queueOpts.ownerCheck = { userId: effectiveUserId };
@@ -1262,7 +1282,11 @@ export function createRelayHandlers(
         );
         // A malformed answer is handled like a relay failure (the catch below):
         // never cached, previous good snapshot returned and marked stale.
-        if (!isControlSnapshot(result)) throw new Error('malformed control snapshot');
+        if (!isControlSnapshot(result)) {
+          warnMalformedSnapshot(result);
+          fallbackReason = 'malformed_response';
+          throw new Error('malformed control snapshot');
+        }
         latestControlSnapshot = result;
         snapshotStaleSince = null;
 
@@ -1285,7 +1309,7 @@ export function createRelayHandlers(
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
         const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
-          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'timeout');
+          const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, fallbackReason);
           if (fallback) {
             snapshot.fallbackScreenshot = fallback;
           }

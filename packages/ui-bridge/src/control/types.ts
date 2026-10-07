@@ -688,8 +688,12 @@ export interface FallbackScreenshot {
   width: number;
   /** Screenshot height in pixels */
   height: number;
-  /** Why the fallback was triggered */
-  reason: 'timeout' | 'no_listeners' | 'empty_response';
+  /**
+   * Why the fallback was triggered. `malformed_response`: the tab answered,
+   * but not with a control snapshot (missing `elements` / `components` /
+   * `workflows` arrays or a numeric `timestamp`).
+   */
+  reason: 'timeout' | 'no_listeners' | 'empty_response' | 'malformed_response';
 }
 
 /**

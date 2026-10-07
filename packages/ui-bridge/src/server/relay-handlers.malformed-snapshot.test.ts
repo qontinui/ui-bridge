@@ -13,7 +13,7 @@
  * `2026-10-01-ui-bridge-observation-envelope-residuals`, item 2.)
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createRelayHandlers } from './relay-handlers';
 
@@ -33,6 +33,10 @@ function goodSnapshot() {
 }
 
 describe('relay handlers · a malformed snapshot is never cached', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
   it('a second call after the tab answered an empty object does not reject', async () => {
     const relay = freshRelay();
     vi.spyOn(relay, 'queueCommand').mockResolvedValue({} as never);
@@ -42,6 +46,8 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
     const second = await handlers.getElements!();
 
     expect(first.success).toBe(true);
+    // The very first malformed answer is already reported as stale.
+    expect(first._meta?.stale).toBe(true);
     expect(second.success).toBe(true);
     expect(second.data).toEqual([]);
     // "Could not see" must not render as a fresh, healthy empty registry.
@@ -80,5 +86,32 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
     expect(snap._meta?.stale).toBe(true);
     // And the cache it left behind still serves later readers.
     await expect(handlers.getElements!()).resolves.toMatchObject({ success: true });
+  });
+
+  it('a snapshot with no numeric timestamp is refused, not reported fresh', async () => {
+    const relay = freshRelay();
+    const noTimestamp = { ...goodSnapshot(), timestamp: undefined };
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue(noTimestamp as never);
+    const handlers = createRelayHandlers(relay);
+
+    const res = await handlers.getElements!();
+
+    expect(res.success).toBe(true);
+    expect(res.data).toEqual([]);
+    expect(res._meta?.stale).toBe(true);
+  });
+
+  it('a pinned (per-tab) read of a malformed answer is a typed failure', async () => {
+    const relay = freshRelay();
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue({} as never);
+    const handlers = createRelayHandlers(relay);
+
+    const elements = await handlers.getElements!({ tabId: 'tab-1', text: 'Save' });
+    const components = await handlers.getComponents!({ tabId: 'tab-1' });
+
+    expect(elements.success).toBe(false);
+    expect(elements.error).toMatch(/malformed control snapshot/);
+    expect(components.success).toBe(false);
+    expect(components.error).toMatch(/malformed control snapshot/);
   });
 });
