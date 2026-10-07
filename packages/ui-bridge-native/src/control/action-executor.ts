@@ -780,50 +780,71 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       return { alreadyVisible: true, scrolled: false };
     }
 
-    const contentY = await new Promise<number>((resolve, reject) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        reject(
-          new Error(
-            `scrollIntoView: measureLayout did not call back within ${SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS}ms` +
-              (innerViewIsTag
-                ? ' (measured against a numeric inner-view tag from getInnerViewNode, which the new architecture does not support)'
-                : '')
-          )
-        );
-      }, SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS);
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        fn();
-      };
-      try {
-        target.measureLayout!(
-          innerView,
-          (_x, y) =>
-            finish(() =>
-              Number.isFinite(y)
-                ? resolve(y)
-                : reject(new Error('scrollIntoView: measureLayout returned a non-finite y'))
-            ),
-          () =>
-            finish(() =>
-              reject(
-                new Error(
-                  `scrollIntoView: measureLayout failed for "${element.id}" relative to "${ancestorId}"`
+    const measured = await new Promise<{ x: number; y: number; width: number }>(
+      (resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(
+            new Error(
+              `scrollIntoView: measureLayout did not call back within ${SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS}ms` +
+                (innerViewIsTag
+                  ? ' (measured against a numeric inner-view tag from getInnerViewNode, which the new architecture does not support)'
+                  : '')
+            )
+          );
+        }, SCROLL_INTO_VIEW_MEASURE_TIMEOUT_MS);
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          fn();
+        };
+        try {
+          target.measureLayout!(
+            innerView,
+            (x, y, width) =>
+              finish(() =>
+                Number.isFinite(y)
+                  ? resolve({ x, y, width })
+                  : reject(new Error('scrollIntoView: measureLayout returned a non-finite y'))
+              ),
+            () =>
+              finish(() =>
+                reject(
+                  new Error(
+                    `scrollIntoView: measureLayout failed for "${element.id}" relative to "${ancestorId}"`
+                  )
                 )
               )
-            )
-        );
-      } catch (error) {
-        finish(() => reject(error));
+          );
+        } catch (error) {
+          finish(() => reject(error));
+        }
       }
-    });
+    );
 
-    container.scrollTo({ y: Math.max(0, contentY - padding), animated: false });
+    // Undeclared-horizontal backstop: content laid out sideways past the
+    // container's measured width means scrolling only y cannot reach it (and
+    // RN's `x || 0` would reset the x offset). Refuse rather than report a
+    // scroll that did not bring the element into view. Skipped when the
+    // container width is unknown.
+    if (
+      ancestorRect &&
+      Number.isFinite(measured.x) &&
+      Number.isFinite(measured.width) &&
+      measured.x + measured.width > ancestorRect.right - ancestorRect.left + 1
+    ) {
+      throw new NativeActionError(
+        `scrollIntoView is not supported on element "${element.id}": it is laid out beyond the ` +
+          `width of its scroll ancestor "${ancestorId}" (a horizontal container; only vertical ` +
+          'containers are supported)',
+        'NOT_SUPPORTED'
+      );
+    }
+
+    container.scrollTo({ y: Math.max(0, measured.y - padding), animated: false });
     return { alreadyVisible: false, scrolled: true };
   }
 

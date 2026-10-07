@@ -254,12 +254,12 @@ export interface ScrollActionParams {
 }
 
 /**
- * `scrollIntoView` action params
- */
-/**
+ * `scrollIntoView` action params.
+ *
  * Vertical containers only. A container declared `horizontal` is answered
  * `NOT_SUPPORTED` where the bridge can see the declaration (captured props, or
- * a FlatList / SectionList instance); see `performScrollIntoView`.
+ * a FlatList / SectionList instance), or where the element is measured laid
+ * out beyond the container's width; see `performScrollIntoView`.
  */
 export interface ScrollIntoViewActionParams {
   /**

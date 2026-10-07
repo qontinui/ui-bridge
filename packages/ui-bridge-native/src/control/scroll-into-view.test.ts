@@ -471,3 +471,23 @@ describe('scrollIntoView — re-review follow-ups', () => {
     expect(scrollTo).not.toHaveBeenCalled();
   });
 });
+
+describe('scrollIntoView — undeclared horizontal backstop', () => {
+  it('is NOT_SUPPORTED when the element is measured beyond the container width', async () => {
+    const { registry, executor, scroll } = setup();
+    registry.registerElement(
+      'account-usage-card',
+      asRef({
+        measureLayout: (_r: unknown, ok: (x: number, y: number, w: number, h: number) => void) =>
+          ok(800, 0, 300, 120), // third card of a sideways row, container is 393 wide
+      }),
+      { type: 'view', scrollAncestorId: 'operations-overview' }
+    );
+
+    const res = await executor.executeAction('account-usage-card', { action: 'scrollIntoView' });
+
+    expect(res.code).toBe('NOT_SUPPORTED');
+    expect(res.error).toContain('beyond the width');
+    expect(scroll.scrollTo).not.toHaveBeenCalled();
+  });
+});
