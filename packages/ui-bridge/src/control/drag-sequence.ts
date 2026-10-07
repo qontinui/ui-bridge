@@ -42,7 +42,7 @@ function createMouseEventAt(
 
 /**
  * Primary-button pointer event at absolute client coordinates — the drag
- * counterpart of {@link createPointerEvent}. Drag handlers written against
+ * counterpart of `createPointerEvent` in `action-executor.ts`. Drag handlers written against
  * Pointer Events (`onPointerDown` / `onPointerMove`, dnd-kit, most modern
  * React drag code) never see a mouse-only sequence, so a drag must emit both,
  * pointer first, as a real browser does. Returns null where `PointerEvent`
@@ -55,13 +55,16 @@ function createPointerEventAt(
   buttons: number
 ): Event | null {
   if (typeof PointerEvent !== 'function') return null;
-  // No `view: window` — see the jsdom note in createPointerEvent.
+  // No `view: window` — see the jsdom note in action-executor's createPointerEvent.
   return new PointerEvent(type, {
     bubbles: true,
     cancelable: true,
     composed: true,
-    button: 0,
+    // A browser reports `button: -1` on a move (no button changed state) and
+    // the default 0.5 pressure while a button is held.
+    button: type === 'pointermove' ? -1 : 0,
     buttons,
+    pressure: buttons !== 0 ? 0.5 : 0,
     clientX,
     clientY,
     pointerId: 1,
@@ -113,6 +116,21 @@ export async function performDragSequence(
     computedStyle.cursor === 'move' ||
     computedStyle.cursor === 'grabbing';
 
+  // Resolve (and scroll to) a named target BEFORE measuring anything: a
+  // scroll moves the source too, so a source rect read first would put the
+  // down event and the whole path off by the scroll distance.
+  let targetElement: HTMLElement | null = null;
+  if (!options?.targetPosition && options?.target) {
+    targetElement = resolveTarget(options.target);
+    if (!targetElement) {
+      throw new Error(`Drag target element not found: ${JSON.stringify(options.target)}`);
+    }
+    // A real user can only drop on what is on screen. `instant`, so a page
+    // with `scroll-behavior: smooth` has finished scrolling before the rects
+    // below are read. (Optional call: jsdom lacks it.)
+    targetElement.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+  }
+
   const sourceRect = sourceElement.getBoundingClientRect();
   const sourceX = sourceRect.left + (options?.sourceOffset?.x ?? sourceRect.width / 2);
   const sourceY = sourceRect.top + (options?.sourceOffset?.y ?? sourceRect.height / 2);
@@ -124,11 +142,7 @@ export async function performDragSequence(
   if (options?.targetPosition) {
     targetX = options.targetPosition.x;
     targetY = options.targetPosition.y;
-  } else if (options?.target) {
-    const targetElement = resolveTarget(options.target);
-    if (!targetElement) {
-      throw new Error(`Drag target element not found: ${JSON.stringify(options.target)}`);
-    }
+  } else if (targetElement) {
     const targetRect = targetElement.getBoundingClientRect();
     targetX = targetRect.left + (options?.targetOffset?.x ?? targetRect.width / 2);
     targetY = targetRect.top + (options?.targetOffset?.y ?? targetRect.height / 2);
@@ -168,8 +182,13 @@ export async function performDragSequence(
     const currentX = sourceX + (targetX - sourceX) * progress;
     const currentY = sourceY + (targetY - sourceY) * progress;
 
-    // Find the element under the cursor (falls back to source if unavailable)
-    const dispatchTarget = elementFromPointSafe(currentX, currentY) || sourceElement;
+    // Find the element under the cursor. When the hit-test answers nothing,
+    // the last move belongs to the named target (it is where the pointer
+    // arrives); earlier ones stay on the source.
+    const dispatchTarget =
+      elementFromPointSafe(currentX, currentY) ||
+      (i === steps ? targetElement : null) ||
+      sourceElement;
 
     dispatchDragPair(dispatchTarget, 'pointermove', 'mousemove', currentX, currentY, 1);
 
@@ -184,15 +203,18 @@ export async function performDragSequence(
       );
     }
 
-    // Let the page re-render between steps, so a widget that follows the
-    // pointer is still under it when the next move is hit-tested.
-    if (stepDelay > 0 && i < steps) {
+    // Let the page re-render after each move, so a widget that follows the
+    // pointer is still under it when the next move — or the drop — is
+    // hit-tested.
+    if (stepDelay > 0) {
       await sleep(stepDelay);
     }
   }
 
-  // 5. Dispatch mouseup on the element under the final position
-  const dropTarget = elementFromPointSafe(targetX, targetY) || sourceElement;
+  // 5. Dispatch pointerup + mouseup on the element under the final position.
+  // When the hit-test answers nothing (jsdom, or a point outside the
+  // viewport) a named target element is the honest fallback, not the source.
+  const dropTarget = elementFromPointSafe(targetX, targetY) || targetElement || sourceElement;
 
   dispatchDragPair(dropTarget, 'pointerup', 'mouseup', targetX, targetY, 0);
 

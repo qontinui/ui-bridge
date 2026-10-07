@@ -19,8 +19,10 @@ if (typeof globalThis.PointerEvent !== 'function') {
     readonly pointerId: number;
     readonly pointerType: string;
     readonly isPrimary: boolean;
+    readonly pressure: number;
     constructor(type: string, init: PointerEventInit = {}) {
       super(type, init);
+      this.pressure = init.pressure ?? 0;
       this.pointerId = init.pointerId ?? 0;
       this.pointerType = init.pointerType ?? '';
       this.isPrimary = init.isPrimary ?? false;
@@ -96,11 +98,52 @@ describe('performDragSequence', () => {
     expect(mouse).toEqual(['mousedown', 'mousemove', 'mousemove', 'mousemove', 'mouseup']);
   });
 
-  it('waits stepDelay between moves but not after the last one', async () => {
+  it('waits stepDelay after every move, including before the drop hit-test', async () => {
     const t0 = performance.now();
     await run({ stepDelay: 40 });
-    // 3 steps → 2 inter-step waits.
-    expect(performance.now() - t0).toBeGreaterThanOrEqual(75);
+    // 3 steps → 3 waits. A version that skipped the last one (~80ms) fails.
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(115);
+  });
+
+  it('marks moves as "no button changed" and held pointers with default pressure', async () => {
+    const pointers: PointerEvent[] = [];
+    const grab = (e: Event) => pointers.push(e as PointerEvent);
+    for (const t of ['pointerdown', 'pointermove', 'pointerup']) document.addEventListener(t, grab);
+    try {
+      await run();
+    } finally {
+      for (const t of ['pointerdown', 'pointermove', 'pointerup'])
+        document.removeEventListener(t, grab);
+    }
+    for (const e of pointers) {
+      expect(e.button).toBe(e.type === 'pointermove' ? -1 : 0);
+      expect(e.pressure).toBe(e.type === 'pointerup' ? 0 : 0.5);
+    }
+  });
+
+  it('falls back to the named target element, not the source, when the hit-test answers nothing', async () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const upOn: EventTarget[] = [];
+    const lastMoveOn: EventTarget[] = [];
+    const onUp = (e: Event) => upOn.push(e.target as EventTarget);
+    const onMove = (e: Event) => lastMoveOn.push(e.target as EventTarget);
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousemove', onMove);
+    try {
+      await performDragSequence(
+        source,
+        { target: { elementId: 'x' }, steps: 1, holdDelay: 0, releaseDelay: 0 },
+        () => target
+      );
+    } finally {
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('mousemove', onMove);
+      target.remove();
+    }
+    expect(upOn).toEqual([target]);
+    // steps: 1 → the only move is the last one, which arrives on the target.
+    expect(lastMoveOn).toEqual([target]);
   });
 
   it('rejects a drag with neither target nor targetPosition', async () => {
