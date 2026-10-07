@@ -105,9 +105,16 @@ type WindowMeasurable = {
  * the same evidence the snapshot route would report for it.
  */
 function measurePageRectNow(
-  element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>
+  element: NonNullable<ReturnType<NativeUIBridgeRegistry['getElement']>>,
+  preferred?: unknown
 ): Promise<NativePageRect | null> {
-  const node = element.ref.current as unknown as WindowMeasurable | null;
+  // `preferred` lets a caller measure a better node than the registered ref —
+  // the ScrollView a FlatList wraps, whose class instance has no measureInWindow.
+  const preferredNode = preferred as WindowMeasurable | null | undefined;
+  const node =
+    preferredNode && typeof preferredNode.measureInWindow === 'function'
+      ? preferredNode
+      : (element.ref.current as unknown as WindowMeasurable | null);
   if (!node || typeof node.measureInWindow !== 'function') {
     const state = element.getState();
     return Promise.resolve(state.visible ? pageRectOf(state) : null);
@@ -168,6 +175,23 @@ function resolveScrollView(
       return inner as Partial<ScrollContainerRef> & Pick<ScrollContainerRef, 'scrollTo'>;
   }
   return null;
+}
+
+/**
+ * Is the container visibly declared `horizontal`? Checks captured registry
+ * props, then a class-component ref's own `props` (FlatList / SectionList
+ * instances), then the resolved ScrollView's. See the LIMIT note at the call
+ * site — an invisible declaration cannot be detected.
+ */
+function isDeclaredHorizontal(
+  registeredProps: Record<string, unknown> | undefined,
+  ...refs: unknown[]
+): boolean {
+  if (registeredProps?.horizontal === true) return true;
+  return refs.some((r) => {
+    const props = (r as { props?: { horizontal?: unknown } } | null | undefined)?.props;
+    return props !== null && typeof props === 'object' && props.horizontal === true;
+  });
 }
 
 /**
@@ -688,10 +712,17 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         'NOT_SUPPORTED'
       );
     }
-    if (ancestor.props?.horizontal === true) {
+    if (isDeclaredHorizontal(ancestor.props, ancestor.ref.current, container)) {
       // `scrollTo` here moves only y; RN sends `x || 0`, so on a horizontal
       // ScrollView this would jump the content to its start and still report
       // success. Refuse rather than lie.
+      //
+      // LIMIT: detected only where `horizontal` is visible to the bridge —
+      // captured props (`captureProps({ horizontal: true })` / a direct
+      // `registerElement` with `props`) or a class-component ref carrying
+      // `props.horizontal` (FlatList / SectionList instances). A horizontal
+      // ScrollView registered through `useUIElement` without captured props
+      // is NOT detected; the action is documented as vertical-only.
       throw new NativeActionError(
         `scrollIntoView is not supported on element "${element.id}": its scroll ancestor ` +
           `"${ancestorId}" is horizontal (only vertical containers are supported)`,
@@ -729,8 +760,10 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
     // inside the window. Anything unknown scrolls.
     const [rect, ancestorRect] = await Promise.all([
       measurePageRectNow(element),
-      measurePageRectNow(ancestor),
+      measurePageRectNow(ancestor, container),
     ]);
+    // With no viewport provider the window is UNKNOWN and only the container
+    // bounds the check — the same answer `getClipRectFor` gives.
     const viewport = this.registry.getViewportRect();
     const clip = ancestorRect ? intersectRects(viewport, ancestorRect) : null;
     if (

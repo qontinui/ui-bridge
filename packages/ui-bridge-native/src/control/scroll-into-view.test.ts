@@ -417,3 +417,57 @@ describe('scrollIntoView — review follow-ups', () => {
     expect(registry.getElement('nulled')?.actions).toContain('scrollIntoView');
   });
 });
+
+describe('scrollIntoView — re-review follow-ups', () => {
+  it('detects horizontal on a FlatList instance registered WITHOUT captured props', async () => {
+    const inner = makeScrollViewRef();
+    const flatList = {
+      props: { horizontal: true },
+      getNativeScrollRef: () => inner.ref.current,
+    };
+    const registry = new NativeUIBridgeRegistry();
+    registry.registerElement('carousel-list', asRef(flatList), { type: 'list' }); // no props
+    registry.registerElement('tile', makeTargetRef(0).ref, {
+      type: 'listItem',
+      scrollAncestorId: 'carousel-list',
+    });
+
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('tile', {
+      action: 'scrollIntoView',
+    });
+
+    expect(res.code).toBe('NOT_SUPPORTED');
+    expect(inner.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('measures the unwrapped ScrollView of a FlatList for the already-visible check', async () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setViewportProvider(() => WINDOW);
+    const scrollTo = vi.fn();
+    const innerScrollView = {
+      scrollTo,
+      getInnerViewRef: () => INNER_VIEW,
+      measureInWindow: (cb: (x: number, y: number, w: number, h: number) => void) =>
+        cb(0, 64, 393, 575),
+    };
+    registry.registerElement('list', asRef({ getNativeScrollRef: () => innerScrollView }), {
+      type: 'list',
+    });
+    registry.registerElement(
+      'item',
+      asRef({
+        measureLayout: vi.fn(),
+        measureInWindow: (cb: (x: number, y: number, w: number, h: number) => void) =>
+          cb(0, 200, 393, 120),
+      }),
+      { type: 'listItem', scrollAncestorId: 'list' }
+    );
+
+    const res = await new DefaultNativeActionExecutor(registry).executeAction('item', {
+      action: 'scrollIntoView',
+    });
+
+    expect(res.result).toEqual({ alreadyVisible: true, scrolled: false });
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+});
