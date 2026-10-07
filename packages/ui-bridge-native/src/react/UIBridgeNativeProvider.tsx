@@ -198,6 +198,11 @@ export interface UIBridgeNativeProviderProps {
    * `require()`s that package itself — Metro raises an uncatchable module-load
    * error when it is absent — so the host app, which knows it is installed,
    * hands the constructor in. Omitted, mDNS advertisement is skipped.
+   *
+   * Must be a STABLE reference — the module-level import, never an inline
+   * wrapper — because it is a dependency of the transport effect: a new
+   * identity per render tears down and re-publishes the advertisement (and the
+   * cloud relay) on every render.
    */
   zeroconf?: ZeroconfConstructor;
   /**

@@ -50,6 +50,27 @@ export interface ZeroconfService {
     txtRecord: Record<string, string>
   ): void | Promise<unknown>;
   unpublishService(name: string): void | Promise<unknown>;
+  /**
+   * 0.17.x's constructor subscribes native event listeners
+   * (`addDeviceListeners()`); without this call every discarded instance keeps
+   * them. Optional because older versions and test fakes may not have it.
+   */
+  removeDeviceListeners?(): void;
+}
+
+/**
+ * The name the library actually registered. 0.17.x resolves `publishService`
+ * with the published service, whose name can differ from the requested one when
+ * that name is taken (Android registers `"<name> (2)"`); unpublishing the
+ * REQUESTED name would then remove someone else's advertisement and leak ours.
+ * A library that resolves nothing (older versions) registered the requested name.
+ */
+function registeredServiceName(result: unknown, requested: string): string {
+  if (result !== null && typeof result === 'object') {
+    const name = (result as { name?: unknown }).name;
+    if (typeof name === 'string' && name.length > 0) return name;
+  }
+  return requested;
 }
 
 /**
@@ -66,6 +87,25 @@ interface RelayMessage {
 }
 
 const DEFAULT_PORT = 8087;
+
+/**
+ * Withdraw `name` (when one was registered) and drop the instance's native
+ * listeners. Best-effort: cleanup never throws.
+ */
+async function releaseZeroconf(zeroconf: ZeroconfService, name: string | null): Promise<void> {
+  if (name !== null) {
+    try {
+      await zeroconf.unpublishService(name);
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    zeroconf.removeDeviceListeners?.();
+  } catch {
+    // ignore
+  }
+}
 const RECONNECT_INITIAL_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
 
@@ -83,8 +123,16 @@ export class DeviceAnnouncer {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
   private stopped = false;
-  /** Zeroconf instance, set when mDNS is successfully started */
+  /** Zeroconf instance, set when mDNS is started (cleared by `stop()`) */
   private zeroconf: ZeroconfService | null = null;
+  /** The name the library registered — the only name this announcer may unpublish */
+  private publishedName: string | null = null;
+  /**
+   * True while a publish is awaiting the library. A `stop()` that lands in that
+   * window leaves the cleanup to the publish path, which is the only side that
+   * will learn the registered name.
+   */
+  private publishInFlight = false;
   /** Rotated pairing token for mDNS TXT records */
   private pairingToken: string;
 
@@ -116,35 +164,46 @@ export class DeviceAnnouncer {
       );
       return;
     }
+    if (this.stopped) return;
+    let zeroconf: ZeroconfService | null = null;
     try {
-      const zeroconf = new ZeroconfCtor();
+      zeroconf = new ZeroconfCtor();
       this.zeroconf = zeroconf;
 
       const port = this.config.port ?? DEFAULT_PORT;
       const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
 
-      await zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
-        device_id: this.config.deviceId,
-        app_id: this.config.appId,
-        version: this.config.version ?? 'unknown',
-        pairing_token: this.pairingToken,
-      });
+      this.publishInFlight = true;
+      let result: unknown;
+      try {
+        result = await zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
+          device_id: this.config.deviceId,
+          app_id: this.config.appId,
+          version: this.config.version ?? 'unknown',
+          pairing_token: this.pairingToken,
+        });
+      } finally {
+        this.publishInFlight = false;
+      }
+      const registered = registeredServiceName(result, serviceName);
 
-      // `stop()` ran while the publish was in flight: its unpublish may have
-      // reached the native side BEFORE the registration did, so withdraw again
-      // rather than leave an advertisement nobody owns, and never report active.
+      // `stop()` ran while the publish was in flight and deferred to us: withdraw
+      // the name that was actually registered, and never report active.
       if (this.stopped) {
-        try {
-          await zeroconf.unpublishService(serviceName);
-        } catch {
-          // ignore
-        }
+        await releaseZeroconf(zeroconf, registered);
         return;
       }
 
+      this.publishedName = registered;
       this.state = { ...this.state, mdnsActive: true };
-      transportLogger.log(`[DeviceAnnouncer] mDNS: advertising "${serviceName}" on port ${port}`);
+      transportLogger.log(`[DeviceAnnouncer] mDNS: advertising "${registered}" on port ${port}`);
     } catch (err) {
+      if (this.stopped) {
+        // A publish that fails after we were told to stop is not a start
+        // failure anyone needs to act on; just drop the instance.
+        if (zeroconf) await releaseZeroconf(zeroconf, null);
+        return;
+      }
       transportLogger.warn('[DeviceAnnouncer] mDNS start failed:', err);
     }
   }
@@ -252,17 +311,18 @@ export class DeviceAnnouncer {
       this.reconnectTimer = null;
     }
 
-    // Unpublish mDNS service
-    if (this.zeroconf) {
-      try {
-        const serviceName = `UIBridge-${this.config.deviceId.slice(0, 8)}`;
-        await this.zeroconf.unpublishService(serviceName);
-      } catch {
-        // ignore
-      }
-      this.zeroconf = null;
-    }
+    // Unpublish mDNS service. Only the REGISTERED name is ours to withdraw;
+    // with a publish still in flight the publish path does the cleanup once it
+    // learns that name (see `startMdnsAdvertise`).
+    const zeroconf = this.zeroconf;
+    const publishedName = this.publishedName;
+    const inFlight = this.publishInFlight;
+    this.zeroconf = null;
+    this.publishedName = null;
     this.state = { ...this.state, mdnsActive: false };
+    if (zeroconf && !inFlight) {
+      await releaseZeroconf(zeroconf, publishedName);
+    }
 
     // Close cloud WebSocket
     if (this.cloudWs) {

@@ -181,8 +181,10 @@ describe('DeviceAnnouncer — cloud relay diagnostics and token hygiene', () => 
 
 /**
  * mDNS: react-native-zeroconf 0.17.x returns a Promise from `publishService`
- * and `unpublishService` that REJECTS on failure. Dropped unawaited, a rejection
- * became an unhandled rejection while `mdnsActive` already read true.
+ * and `unpublishService` that REJECTS on failure, resolves the publish with the
+ * name it actually REGISTERED (which differs from the requested one when that is
+ * taken — Android registers `"<name> (2)"`), and subscribes native listeners in
+ * its constructor that only `removeDeviceListeners()` drops.
  */
 describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zeroconf', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
@@ -200,6 +202,12 @@ describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zer
 
   function announcer(): DeviceAnnouncer {
     return new DeviceAnnouncer({ deviceId: 'abcdef0123456789', appId: 'io.qontinui.mobile' });
+  }
+
+  function mdnsWarnings(): string[] {
+    return warnSpy.mock.calls
+      .map((args: unknown[]) => String(args[0]))
+      .filter((m: string) => m.includes('mDNS'));
   }
 
   it('reports active only after the publish resolves', async () => {
@@ -226,46 +234,126 @@ describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zer
     expect(a.getState().mdnsActive).toBe(true);
   });
 
-  it('catches a rejected publish and stays inactive', async () => {
+  it('unpublishes the REGISTERED name, not the requested one, and drops listeners', async () => {
+    const unpublished: unknown[] = [];
+    let listenersRemoved = 0;
+    class RenamingZeroconf {
+      publishService(...args: unknown[]): Promise<unknown> {
+        return Promise.resolve({ name: `${String(args[3])} (2)` });
+      }
+      unpublishService(name: unknown): Promise<unknown> {
+        unpublished.push(name);
+        return Promise.resolve(null);
+      }
+      removeDeviceListeners(): void {
+        listenersRemoved += 1;
+      }
+    }
+    const a = announcer();
+    await a.startMdnsAdvertise(RenamingZeroconf);
+    await a.stop();
+
+    expect(unpublished).toEqual(['UIBridge-abcdef01 (2)']);
+    expect(listenersRemoved).toBe(1);
+    expect(a.getState().mdnsActive).toBe(false);
+  });
+
+  it('falls back to the requested name when the library resolves nothing', async () => {
+    const unpublished: unknown[] = [];
+    class VoidZeroconf {
+      publishService(): void {}
+      unpublishService(name: unknown): void {
+        unpublished.push(name);
+      }
+    }
+    const a = announcer();
+    await a.startMdnsAdvertise(VoidZeroconf);
+    await a.stop();
+
+    expect(unpublished).toEqual(['UIBridge-abcdef01']);
+  });
+
+  it('catches a rejected publish, stays inactive, and unpublishes nothing on stop', async () => {
+    const unpublished: unknown[] = [];
+    let listenersRemoved = 0;
     class RejectingZeroconf {
       publishService(): Promise<unknown> {
         return Promise.reject(new Error('local network permission denied'));
       }
-      unpublishService(): Promise<unknown> {
+      unpublishService(name: unknown): Promise<unknown> {
+        unpublished.push(name);
         return Promise.reject(new Error('NOT_PUBLISHED'));
+      }
+      removeDeviceListeners(): void {
+        listenersRemoved += 1;
       }
     }
     const a = announcer();
     await a.startMdnsAdvertise(RejectingZeroconf);
 
     expect(a.getState().mdnsActive).toBe(false);
-    expect(String(warnSpy.mock.calls.at(-1)?.[0])).toContain('mDNS start failed');
-    // stop() swallows the unpublish rejection rather than throwing.
+    expect(mdnsWarnings().at(-1)).toContain('mDNS start failed');
     await expect(a.stop()).resolves.toBeUndefined();
+    // Nothing was registered, so there is no name of ours to withdraw.
+    expect(unpublished).toEqual([]);
+    expect(listenersRemoved).toBe(1);
   });
 
-  it('withdraws and stays inactive when stopped while the publish is in flight', async () => {
-    let resolvePublish!: () => void;
+  it('defers to the publish path when stopped mid-publish: withdraws the registered name once', async () => {
+    let resolvePublish!: (value: unknown) => void;
     const unpublished: unknown[] = [];
+    let listenersRemoved = 0;
     class SlowZeroconf {
       publishService(): Promise<unknown> {
         return new Promise((resolve) => {
-          resolvePublish = () => resolve(null);
+          resolvePublish = resolve;
         });
       }
       unpublishService(name: unknown): Promise<unknown> {
         unpublished.push(name);
         return Promise.resolve(null);
       }
+      removeDeviceListeners(): void {
+        listenersRemoved += 1;
+      }
     }
     const a = announcer();
     const started = a.startMdnsAdvertise(SlowZeroconf);
     await a.stop();
-    resolvePublish();
+    // stop() must not guess a name while the registration is unresolved.
+    expect(unpublished).toEqual([]);
+
+    resolvePublish({ name: 'UIBridge-abcdef01 (2)' });
     await started;
 
     expect(a.getState().mdnsActive).toBe(false);
-    // Once from stop(), once more after the late registration landed.
-    expect(unpublished).toEqual(['UIBridge-abcdef01', 'UIBridge-abcdef01']);
+    expect(unpublished).toEqual(['UIBridge-abcdef01 (2)']);
+    expect(listenersRemoved).toBe(1);
+  });
+
+  it('does not report a start failure for a publish that rejects after stop()', async () => {
+    let rejectPublish!: (err: unknown) => void;
+    let listenersRemoved = 0;
+    class SlowRejectingZeroconf {
+      publishService(): Promise<unknown> {
+        return new Promise((_resolve, reject) => {
+          rejectPublish = reject;
+        });
+      }
+      unpublishService(): Promise<unknown> {
+        return Promise.resolve(null);
+      }
+      removeDeviceListeners(): void {
+        listenersRemoved += 1;
+      }
+    }
+    const a = announcer();
+    const started = a.startMdnsAdvertise(SlowRejectingZeroconf);
+    await a.stop();
+    rejectPublish(new Error('cancelled'));
+    await started;
+
+    expect(mdnsWarnings()).toEqual([]);
+    expect(listenersRemoved).toBe(1);
   });
 });
