@@ -757,10 +757,13 @@ export function createRelayHandlers(
             ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
           }
         );
-        if (!live.success || !live.data) {
+        if (!live.success) {
           return live as unknown as APIResponse<ControlSnapshot['elements']>;
         }
-        if (!isControlSnapshot(live.data)) return error(MALFORMED_SNAPSHOT_MESSAGE);
+        if (!isControlSnapshot(live.data)) {
+          warnMalformedSnapshot(live.data);
+          return error(MALFORMED_SNAPSHOT_MESSAGE);
+        }
         return success(applyFilters(live.data.elements), { stale: false, cacheAgeMs: 0 });
       }
 
@@ -961,12 +964,15 @@ export function createRelayHandlers(
             ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
           }
         );
-        if (!live.success || !live.data) {
+        if (!live.success) {
           return live as unknown as APIResponse<{
             components: ControlSnapshot['components'];
           }>;
         }
-        if (!isControlSnapshot(live.data)) return error(MALFORMED_SNAPSHOT_MESSAGE);
+        if (!isControlSnapshot(live.data)) {
+          warnMalformedSnapshot(live.data);
+          return error(MALFORMED_SNAPSHOT_MESSAGE);
+        }
         return success({ components: live.data.components }, { stale: false, cacheAgeMs: 0 });
       }
 
@@ -1235,7 +1241,13 @@ export function createRelayHandlers(
             ...(effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : {}),
           }
         );
-        if (!result.success || !result.data) return result;
+        if (!result.success) return result;
+        // Not cached here, but still never handed back as a successful snapshot
+        // (an empty `data` included).
+        if (!isControlSnapshot(result.data)) {
+          warnMalformedSnapshot(result.data);
+          return error(MALFORMED_SNAPSHOT_MESSAGE);
+        }
         return success(result.data, { stale: false, cacheAgeMs: 0 });
       }
 
