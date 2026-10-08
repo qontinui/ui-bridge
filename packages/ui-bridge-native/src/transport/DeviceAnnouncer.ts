@@ -41,6 +41,7 @@ export interface DeviceAnnouncerState {
  * unhandled rejection with `mdnsActive` already reporting true.
  */
 export interface ZeroconfService {
+  /** `type` / `protocol` are bare (`'uibridge'`, `'tcp'`): the library adds the underscores. */
   publishService(
     type: string,
     protocol: string,
@@ -176,7 +177,12 @@ export class DeviceAnnouncer {
       this.publishInFlight = true;
       let result: unknown;
       try {
-        result = await zeroconf.publishService('_uibridge', '_tcp.', 'local.', serviceName, port, {
+        // react-native-zeroconf takes the type and protocol WITHOUT their
+        // leading underscores and formats `_%s._%s` natively (iOS
+        // RNZeroconf.m, Android NsdServiceImpl/DnssdImpl), so passing
+        // '_uibridge' / '_tcp.' registered `__uibridge.__tcp.`, which no
+        // `_uibridge._tcp` browser (the runner's mdns_scanner) ever matches.
+        result = await zeroconf.publishService('uibridge', 'tcp', 'local.', serviceName, port, {
           device_id: this.config.deviceId,
           app_id: this.config.appId,
           version: this.config.version ?? 'unknown',

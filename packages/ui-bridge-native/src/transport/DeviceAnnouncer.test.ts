@@ -225,8 +225,8 @@ describe('DeviceAnnouncer — mDNS advertisement through a Promise-returning Zer
     await a.startMdnsAdvertise(ResolvingZeroconf);
 
     expect(calls[0]?.slice(0, 5)).toEqual([
-      '_uibridge',
-      '_tcp.',
+      'uibridge',
+      'tcp',
       'local.',
       'UIBridge-abcdef01',
       8087,
