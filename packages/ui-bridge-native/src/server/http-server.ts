@@ -40,6 +40,12 @@ import { isBatchRequest, isSubscribe, isUnsubscribe } from './ws-types';
  * (`METHOD_NOT_ALLOWED`) in the response envelope. Anything not listed here is
  * a client-input problem and keeps 400, which is what 400 is for.
  *
+ * `NOT_SUPPORTED` is also ELEMENT-scoped, not only platform-scoped: an element
+ * action that fails with a `NativeActionError` keeps its code through
+ * `handlers.ts` `executeAction` — today `scrollIntoView` on an element with no
+ * usable declared `scrollAncestorId`. Either way it means "retrying this
+ * request will not help", which is why it maps to 501 rather than 400.
+ *
  * RESOURCE-level misses are deliberately NOT here. `ELEMENT_NOT_FOUND`,
  * `COMPONENT_NOT_FOUND`, `MODAL_NOT_FOUND` and `WORKFLOW_NOT_FOUND`
  * (`handlers.ts`) keep 400: the route resolved and served a request whose
