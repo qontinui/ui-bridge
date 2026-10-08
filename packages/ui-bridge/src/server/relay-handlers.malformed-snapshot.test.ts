@@ -108,10 +108,28 @@ describe('relay handlers · a malformed snapshot is never cached', () => {
 
     const elements = await handlers.getElements!({ tabId: 'tab-1', text: 'Save' });
     const components = await handlers.getComponents!({ tabId: 'tab-1' });
+    const snapshot = await handlers.getControlSnapshot!({ tabId: 'tab-1' });
 
     expect(elements.success).toBe(false);
     expect(elements.error).toMatch(/malformed control snapshot/);
     expect(components.success).toBe(false);
     expect(components.error).toMatch(/malformed control snapshot/);
+    expect(snapshot.success).toBe(false);
+    expect(snapshot.error).toMatch(/malformed control snapshot/);
+  });
+
+  it('a pinned read whose tab answered nothing is a typed failure, not an empty success', async () => {
+    const relay = freshRelay();
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue(null as never);
+    const handlers = createRelayHandlers(relay);
+
+    for (const res of [
+      await handlers.getElements!({ tabId: 'tab-1' }),
+      await handlers.getComponents!({ tabId: 'tab-1' }),
+      await handlers.getControlSnapshot!({ tabId: 'tab-1' }),
+    ]) {
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/malformed control snapshot/);
+    }
   });
 });
