@@ -104,9 +104,21 @@ The mechanism is a provider-owned signal:
 4. The not-found boundary calls `useMarkRouteUnmatched()`. That raises the
    signal in `useLayoutEffect`.
 
-Every layout effect in a commit runs before any passive effect, so the
-layout's report already sees the signal. While a not-found boundary is
-mounted, the hook reports `pattern: null`, whatever `info.pattern` says.
+While a not-found boundary is mounted, the hook reports `pattern: null`,
+whatever `info.pattern` says.
+
+The marker uses a layout effect because every layout effect in a commit runs
+before any passive effect. For a marker below the hook's host, passive-effect
+order (children first) would already be enough, so there the layout effect is
+belt-and-braces. It is load-bearing when the marker is not a descendant. That
+happens when it sits in the same component as the hook (passive effects run in
+declaration order, hook first) or in a later sibling.
+
+A component that owns the signal is not below its own provider. One example is
+an `errorElement` that creates the signal and calls `useRouteAwareness`
+itself. Such a component must pass the signal explicitly:
+`useMarkRouteUnmatched(unmatched)`. The no-argument form reads the context
+above it, finds none, and silently does nothing.
 
 Precondition: the not-found boundary mounts in the same commit as the
 navigation that reached it. Next.js `not-found.tsx` does. A boundary that
@@ -165,12 +177,18 @@ export default function NotFound() {
 `useMatches()` is not a 404 test. In a data router an unmatched URL still
 yields `matches = [root]`, so `matches.length > 0` is always true.
 
-A data router renders the root's `errorElement` instead of its element on a
-404. A hook hosted in the root element therefore unmounts, and the tracker is
-cleared: nothing is reported, and nothing leaks. Wherever the hook IS rendered
-for an unmatched URL, mark the 404 with `useMarkRouteUnmatched()`. That means
-a `path="*"` route under it, or an `errorElement` that hosts it. In an
-`errorElement`, mark it when `isRouteErrorResponse(error) && error.status === 404`.
+Host the hook in a layout route's element, so `useParams()` returns the
+matched route's params. Then:
+
+- **A `path="*"` route is required.** Without one, an unmatched URL renders the
+  layout with `params = {}`, and the concrete path leaks. With one, its `*`
+  param templates the path as `[...*]`, which is safe even without the signal.
+  Marking it with `useMarkRouteUnmatched()` reports `null` instead.
+- **A data router's `errorElement`.** On a 404 a data router renders the root's
+  `errorElement` instead of its element. A hook hosted in the root element
+  therefore unmounts, and the tracker is cleared, so nothing leaks. An
+  `errorElement` that hosts the hook itself owns the signal. It must use the
+  explicit form, shown below.
 
 ```tsx
 import { useLocation, useParams, Outlet } from 'react-router-dom';
@@ -203,10 +221,41 @@ function App() {
   );
 }
 
-// The `path="*"` route's element
+// The `path="*"` route's element: below the provider, so the context form works
 function NoMatch() {
   useMarkRouteUnmatched();
   return <p>Not found</p>;
+}
+```
+
+```tsx
+import { isRouteErrorResponse, useLocation, useParams, useRouteError } from 'react-router-dom';
+import {
+  routePatternFromParams,
+  useMarkRouteUnmatched,
+  useRouteAwareness,
+  useRouteUnmatchedSignal,
+} from '@qontinui/ui-bridge/react';
+
+// The root route's errorElement, hosting the hook itself. It OWNS the signal,
+// so it must pass it: `useMarkRouteUnmatched()` with no argument would no-op.
+function RootError() {
+  const error = useRouteError();
+  const location = useLocation();
+  const params = useParams();
+  const unmatched = useRouteUnmatchedSignal();
+  const is404 = isRouteErrorResponse(error) && error.status === 404;
+
+  useRouteAwareness(
+    {
+      pattern: routePatternFromParams(location.pathname, params, { matched: !is404 }),
+      patternSource: 'router',
+    },
+    { unmatched },
+  );
+  useMarkRouteUnmatched(is404 ? unmatched : null);
+
+  return <p>{is404 ? 'Not found' : 'Something went wrong'}</p>;
 }
 ```
 
@@ -224,8 +273,8 @@ Derives the pattern by value substitution:
 
 - A path segment equal to a param value becomes `[name]`. That includes a
   value with a `/` in it that sits in one segment as `%2F`.
-- A catch-all array's run of segments becomes `[...name]`. So does a React
-  Router splat string that spans several segments.
+- A catch-all array's run of segments becomes `[...name]`. So does React
+  Router's `*` splat, even when it spans a single segment.
 - Segments and values are compared raw and after each successive
   `decodeURIComponent`, on both sides.
 
@@ -236,8 +285,10 @@ It then fails closed and returns `null` when:
 - a segment or value is still changing after four decodes;
 - any decoded form of a non-template output segment CONTAINS any decoded form
   of a param value or of one of its pieces. This catches `/files/abc.json`
-  for `:id.json`. It also nulls some legitimate paths when a value is short:
-  `{ id: '1' }` nulls `/v1/items/1`. That is the intended direction.
+  for `:id.json`. It also nulls some legitimate paths when a value is short.
+  A locale `en` nulls `/en/content`, and `{ id: '1' }` nulls `/v1/items/1`.
+  That is the intended fail-closed direction. A high `null` rate for an app
+  with short param values is expected, not a bug.
 
 The guarantee is that a non-null result contains no value from `params`. It
 holds for user input only when two things are true:

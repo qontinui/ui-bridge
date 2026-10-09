@@ -102,6 +102,13 @@ const cases: Case[] = [
     expected: '/files/[...*]',
   },
   {
+    name: "React Router's `*` splat is a catch-all even over one segment",
+    pathname: '/files/a',
+    params: { '*': 'a' },
+    matched: true,
+    expected: '/files/[...*]',
+  },
+  {
     name: 'a static route with no params is unchanged',
     pathname: '/login',
     params: {},

@@ -16,6 +16,18 @@
  * `useRouteAwareness(info, { unmatched })` effect runs it already sees the
  * signal and reports `pattern: null` instead of whatever was computed.
  *
+ * Why a LAYOUT effect: for a marker that is a descendant of the hook's host,
+ * plain passive-effect ordering (children first) would already suffice, so
+ * there it is belt-and-braces. It is load-bearing wherever the marker is NOT
+ * a descendant: in the SAME component as the hook (an `errorElement` that
+ * hosts both — its passive effects run in declaration order, hook first), or
+ * in a later sibling. Pinned by `useRouteAwareness.unmatched.test.tsx`.
+ *
+ * A marker that does not sit below the provider — the `errorElement` that
+ * itself creates the signal and calls `useRouteAwareness` — must pass the
+ * signal explicitly: `useMarkRouteUnmatched(unmatched)`. The context-read form
+ * reads the context ABOVE that component, finds none, and silently no-ops.
+ *
  * Precondition: the not-found boundary must mount in the SAME commit as the
  * navigation that reached it (Next.js `not-found.tsx` does). One that mounts
  * later (behind a Suspense boundary that resolves afterwards) re-reports
@@ -84,7 +96,8 @@ export const RouteUnmatchedContext = createContext<RouteUnmatchedSignal | null>(
  * Call from the not-found boundary (Next.js `app/not-found.tsx`, a React
  * Router `path="*"` element, or a 404 `errorElement`). Raises the signal from
  * `RouteUnmatchedContext` (or the one passed) for as long as it is mounted.
- * A no-op when there is no signal.
+ * A no-op when there is no signal — so a component that OWNS the signal
+ * (it is not below its own provider) must pass it: `useMarkRouteUnmatched(unmatched)`.
  */
 export function useMarkRouteUnmatched(signal?: RouteUnmatchedSignal | null): void {
   const fromContext = use(RouteUnmatchedContext);

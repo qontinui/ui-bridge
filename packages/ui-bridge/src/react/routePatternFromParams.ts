@@ -16,7 +16,7 @@
  *   whole);
  * - a run of segments equal to a multi-segment value (a catch-all `string[]`,
  *   or a React Router splat string containing `/`) becomes `[...name]`, and
- *   so does any match of an array param;
+ *   so does any match of an array param or of React Router's `*` splat;
  * - segments and values are compared raw and after each successive
  *   `decodeURIComponent` (inside try/catch), on BOTH sides.
  *
@@ -31,9 +31,11 @@
  * - POST-CHECK, by CONTAINMENT: any decoded form of any non-template segment
  *   of the output CONTAINS any decoded form of any param value or of any of
  *   its `/`-separated pieces. This catches a value sharing a segment with
- *   static text (`/files/abc.json` for `:id.json`). Short values will null
- *   some legitimate paths (`{ id: '1' }` nulls `/v1/items/1`); that is the
- *   intended direction.
+ *   static text (`/files/abc.json` for `:id.json`). Short values over-null:
+ *   a locale `en` nulls any path with `en` inside a segment (`/en/content`),
+ *   and a single-digit id nulls `/v1/items/1`. That is the intended
+ *   fail-closed direction, so a high `null` rate for an app with short param
+ *   values is expected, not a bug.
  *
  * GUARANTEE, and its precondition: a non-null result contains no param value
  * the caller passed, as a substring of any segment in any decoded form. It
@@ -197,7 +199,9 @@ export function routePatternFromParams(
     while (i < slots.length) {
       const consumed = matchesAt(i, run);
       if (consumed > 0) {
-        const spread = consumed > 1 || run.isArray;
+        // React Router's splat is named `*`; it is a catch-all even when it
+        // spans one segment.
+        const spread = consumed > 1 || run.isArray || run.name === '*';
         next.push({ kind: 'token', text: spread ? `[...${run.name}]` : `[${run.name}]` });
         i += consumed;
       } else {

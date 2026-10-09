@@ -188,6 +188,66 @@ describe('useRouteAwareness with the not-found signal', () => {
     });
   });
 
+  // A component that OWNS the signal (e.g. a React Router errorElement hosting
+  // the hook itself) is not below its own provider. The pattern is computed
+  // with matched:true here so that ONLY the signal stands between it and a leak.
+  function SelfHosted({ explicit }: { explicit: boolean }) {
+    const unmatched = useRouteUnmatchedSignal();
+    useRouteAwareness(
+      {
+        pattern: routePatternFromParams(`/search/${SENTINEL}`, {}, { matched: true }),
+        patternSource: 'router',
+      },
+      { unmatched }
+    );
+    useMarkRouteUnmatched(explicit ? unmatched : undefined);
+    return null;
+  }
+
+  it('a component owning the signal marks it with the explicit form', () => {
+    // Also pins useLayoutEffect: marker and hook share a component, and its
+    // passive effects run in declaration order (hook first).
+    render(<SelfHosted explicit />);
+    expect(setRouteInfo).toHaveBeenLastCalledWith({ pattern: null, patternSource: 'router' });
+    expectNoConcretePattern();
+  });
+
+  it('control: the context-read form no-ops in a component owning the signal', () => {
+    render(<SelfHosted explicit={false} />);
+    expect(setRouteInfo).toHaveBeenLastCalledWith({
+      pattern: `/search/${SENTINEL}`,
+      patternSource: 'router',
+    });
+  });
+
+  it('a marker in a LATER SIBLING of the host still reports null first', () => {
+    // Pins useLayoutEffect: a sibling's passive effect runs after the host's,
+    // so a passive-effect marker would let the concrete path through first.
+    const signal = createRouteUnmatchedSignal();
+    function Host() {
+      useRouteAwareness(
+        {
+          pattern: routePatternFromParams(`/search/${SENTINEL}`, {}, { matched: true }),
+          patternSource: 'router',
+        },
+        { unmatched: signal }
+      );
+      return null;
+    }
+    function SiblingMarker() {
+      useMarkRouteUnmatched(signal);
+      return null;
+    }
+    render(
+      <>
+        <Host />
+        <SiblingMarker />
+      </>
+    );
+    expect(setRouteInfo).toHaveBeenLastCalledWith({ pattern: null, patternSource: 'router' });
+    expectNoConcretePattern();
+  });
+
   it('the signal counts raises and lowers each raise once', () => {
     const signal = createRouteUnmatchedSignal();
     const lowerA = signal.raise();

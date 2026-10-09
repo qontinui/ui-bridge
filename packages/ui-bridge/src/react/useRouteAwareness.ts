@@ -61,13 +61,20 @@
  *
  * Usage with React Router: `useMatches()` is NOT a 404 test — in a data router
  * an unmatched URL still yields `matches = [root]`, so `matched:
- * matches.length > 0` is always true. A data router renders the root's
- * `errorElement` INSTEAD of its element on a 404, so a hook hosted in the root
- * element unmounts (the tracker is cleared; nothing is reported, nothing
- * leaks). Wherever the hook IS rendered for an unmatched URL — a `path="*"`
- * route under it, or an `errorElement` that hosts it — mark the 404 with
- * `useMarkRouteUnmatched()` (in an `errorElement`, when
- * `isRouteErrorResponse(error) && error.status === 404`).
+ * matches.length > 0` is always true. Host the hook in a layout route's
+ * element (so `useParams()` is the matched route's), and:
+ *
+ * - A `path="*"` route is REQUIRED. Without one, an unmatched URL renders the
+ *   layout with `params = {}`, and the concrete path leaks. With one, its `*`
+ *   param templates the path as `[...*]`, which is safe even without the
+ *   signal. Marking it with `useMarkRouteUnmatched()` reports `null` instead.
+ * - A data router renders the root's `errorElement` INSTEAD of its element on
+ *   a 404, so a hook hosted in the root element unmounts (the tracker is
+ *   cleared; nothing leaks). An `errorElement` that itself hosts the hook owns
+ *   the signal, so it is not below its own provider: it must mark with the
+ *   EXPLICIT form, `useMarkRouteUnmatched(unmatched)`, when
+ *   `isRouteErrorResponse(error) && error.status === 404`. The no-argument
+ *   form reads the context above it, finds none, and silently no-ops.
  *   import { useLocation, useParams, Outlet } from 'react-router-dom';
  *   import {
  *     RouteUnmatchedContext,
