@@ -146,7 +146,9 @@ function TaskDetailPage({ id }: { id: string }) {
   });
 
   useRouteAwareness({
+    // A literal template from the route definition — never the concrete path.
     pattern: '/tasks/:id',
+    patternSource: 'router',
     params: { id },
     routeStack: ['/', '/tasks', '/tasks/:id'],
   });

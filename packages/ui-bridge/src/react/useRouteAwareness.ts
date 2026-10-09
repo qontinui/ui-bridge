@@ -4,8 +4,15 @@
  * Provides framework-router integration for the navigation tracker.
  * Accepts structured route information and keeps the tracker updated.
  *
+ * `pattern` is a route TEMPLATE, never the concrete pathname: a concrete path
+ * (`/search/<what the user typed>`) reported as a pattern leaks user input into
+ * anything that stores templates. Derive it with `routePatternFromParams`, which
+ * returns `null` rather than leak, and say where it came from with
+ * `patternSource: 'router'` — consumers drop an unasserted pattern.
+ *
  * Usage with React Router:
  *   import { useLocation, useParams, useMatches } from 'react-router-dom';
+ *   import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
  *
  *   function App() {
  *     const location = useLocation();
@@ -13,17 +20,21 @@
  *     const matches = useMatches();
  *
  *     useRouteAwareness({
- *       pattern: matches[matches.length - 1]?.pathname,
- *       params,
+ *       pattern: routePatternFromParams(location.pathname, params, {
+ *         matched: matches.length > 0,
+ *       }),
+ *       patternSource: 'router',
  *       queryParams: Object.fromEntries(new URLSearchParams(location.search)),
- *       routeStack: matches.map(m => m.pathname),
  *     });
  *
  *     return <Outlet />;
  *   }
  *
- * Usage with Next.js:
+ * Usage with Next.js (pass `useParams()` RAW — flattening a catch-all array
+ * destroys the `[...slug]` run; report `matched: false` from your not-found
+ * boundary so a 404 reports `pattern: null`):
  *   import { usePathname, useParams, useSearchParams } from 'next/navigation';
+ *   import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
  *
  *   function Layout({ children }) {
  *     const pathname = usePathname();
@@ -31,7 +42,8 @@
  *     const searchParams = useSearchParams();
  *
  *     useRouteAwareness({
- *       params: params as Record<string, string>,
+ *       pattern: routePatternFromParams(pathname, params, { matched: true }),
+ *       patternSource: 'router',
  *       queryParams: Object.fromEntries(searchParams),
  *     });
  *
@@ -57,6 +69,7 @@ export function useRouteAwareness(info: RouteInfo): void {
   // effect re-fire triggers; the latest info object is read from
   // infoRef inside the effect.
   const pattern = info.pattern;
+  const patternSource = info.patternSource;
   const paramsKey = info.params ? JSON.stringify(info.params) : '';
   const queryParamsKey = info.queryParams ? JSON.stringify(info.queryParams) : '';
   const routeStackKey = info.routeStack?.join(',');
@@ -69,5 +82,5 @@ export function useRouteAwareness(info: RouteInfo): void {
     return () => {
       bridge.navigationTracker.setRouteInfo(undefined);
     };
-  }, [bridge, pattern, paramsKey, queryParamsKey, routeStackKey]);
+  }, [bridge, pattern, patternSource, paramsKey, queryParamsKey, routeStackKey]);
 }

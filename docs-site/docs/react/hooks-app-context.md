@@ -67,7 +67,8 @@ framework-agnostic and you supply whatever your router exposes.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `pattern` | `string` | Route pattern, e.g. `"/tasks/:id"` |
+| `pattern` | `string \| null` | Route pattern — a TEMPLATE such as `"/tasks/[id]"`, never the concrete pathname; `null` when unknown (a 404) |
+| `patternSource` | `'router'` | Asserts the pattern came from the router and carries no user input; consumers that persist templates drop a pattern without it |
 | `params` | `Record<string, string>` | Extracted route params, e.g. `{ id: "123" }` |
 | `queryParams` | `Record<string, string>` | Query string as key/value pairs |
 | `routeStack` | `string[]` | Matched route stack / breadcrumb |
@@ -75,11 +76,15 @@ framework-agnostic and you supply whatever your router exposes.
 Every field is optional, but the argument itself is required — pass `{}` to
 declare nothing.
 
+Never pass the concrete pathname as `pattern`: `/search/<what the user typed>`
+reported as a pattern leaks user input into everything that stores route
+templates. Derive the pattern with `routePatternFromParams`, below.
+
 ### React Router
 
 ```tsx
 import { useLocation, useParams, useMatches, Outlet } from 'react-router-dom';
-import { useRouteAwareness } from '@qontinui/ui-bridge/react';
+import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
 
 function App() {
   const location = useLocation();
@@ -87,10 +92,11 @@ function App() {
   const matches = useMatches();
 
   useRouteAwareness({
-    pattern: matches[matches.length - 1]?.pathname,
-    params,
+    pattern: routePatternFromParams(location.pathname, params, {
+      matched: matches.length > 0,
+    }),
+    patternSource: 'router',
     queryParams: Object.fromEntries(new URLSearchParams(location.search)),
-    routeStack: matches.map((m) => m.pathname),
   });
 
   return <Outlet />;
@@ -99,22 +105,52 @@ function App() {
 
 ### Next.js
 
+Pass `useParams()` raw — flattening a catch-all array destroys its
+`[...slug]` run. Next.js renders a 404 inside the root layout with
+`useParams()` returning `{}`, so report `matched: false` from your not-found
+boundary; the pattern is then `null` instead of the concrete path.
+
 ```tsx
 import { usePathname, useParams, useSearchParams } from 'next/navigation';
-import { useRouteAwareness } from '@qontinui/ui-bridge/react';
+import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
 
 function Layout({ children }) {
+  const pathname = usePathname();
   const params = useParams();
   const searchParams = useSearchParams();
 
   useRouteAwareness({
-    params: params as Record<string, string>,
+    pattern: routePatternFromParams(pathname, params, { matched: true }),
+    patternSource: 'router',
     queryParams: Object.fromEntries(searchParams),
   });
 
   return <>{children}</>;
 }
 ```
+
+### routePatternFromParams
+
+```typescript
+function routePatternFromParams(
+  pathname: string | null | undefined,
+  params: Record<string, string | string[] | undefined> | null | undefined,
+  options: { matched: boolean },
+): string | null
+```
+
+Derives the pattern by value substitution, failing closed:
+
+- every path segment equal to a param value becomes `[name]`;
+- a catch-all array's run of segments (or a React Router splat string spanning
+  several segments) becomes `[...name]`;
+- segments and values are compared raw and `decodeURIComponent`-decoded, so an
+  encoded/decoded mismatch still substitutes;
+- if any param value still appears as a segment afterwards, the result is `null`;
+- `matched: false` returns `null`.
+
+Over-templating (a static segment that happens to equal a param value is
+templated too) is harmless; under-templating cannot happen.
 
 The same single-holder caveat as `usePageContext` applies: the tracker stores one
 `RouteInfo`, and unmount clears it. Call this once, from the layout or app root.

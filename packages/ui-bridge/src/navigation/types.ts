@@ -56,8 +56,19 @@ export interface PageInfo {
  * Structured route information provided by framework router integration
  */
 export interface RouteInfo {
-  /** Route pattern (e.g., "/tasks/:id") */
-  pattern?: string;
+  /**
+   * Route pattern (e.g., "/tasks/:id" or "/tasks/[id]") — a TEMPLATE, never the
+   * concrete pathname. `null` means "no pattern is known" (e.g. a 404); derive it
+   * with `routePatternFromParams`, which returns `null` rather than leak.
+   */
+  pattern?: string | null;
+  /**
+   * Asserts where `pattern` came from. `"router"` declares it was derived from
+   * the framework router (e.g. via `routePatternFromParams`) and carries no
+   * user input. Consumers that persist the pattern as a template (the runner's
+   * journey ledger) keep it ONLY under this assertion, and drop it otherwise.
+   */
+  patternSource?: 'router';
   /** Extracted route parameters (e.g., { id: "123" }) */
   params?: Record<string, string>;
   /** Query parameters as key-value pairs */

@@ -118,6 +118,11 @@ export { useUIAnnotation } from './useUIAnnotation';
 // Page/route awareness hooks
 export { usePageContext } from './usePageContext';
 export { useRouteAwareness } from './useRouteAwareness';
+export {
+  routePatternFromParams,
+  type RouteParamsInput,
+  type RoutePatternFromParamsOptions,
+} from './routePatternFromParams';
 
 // Keyboard shortcut registration hook
 export { useKeyboardShortcuts, type ShortcutDef } from './useKeyboardShortcuts';

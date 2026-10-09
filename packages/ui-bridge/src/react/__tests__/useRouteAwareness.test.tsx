@@ -219,4 +219,53 @@ describe('useRouteAwareness', () => {
     // 3 calls: mount(initial) + cleanup(undefined) + mount(updated)
     expect(mockTracker.setRouteInfo).toHaveBeenCalledTimes(3);
   });
+  it('should pass a null pattern and its patternSource through unchanged', () => {
+    const bridgeContext = createMockBridgeContext(mockTracker);
+    mockUseUIBridgeOptional.mockReturnValue(bridgeContext);
+
+    const info: RouteInfo = { pattern: null, patternSource: 'router' };
+    renderHook(() => useRouteAwareness(info));
+
+    expect(mockTracker.setRouteInfo).toHaveBeenCalledWith({
+      pattern: null,
+      patternSource: 'router',
+    });
+  });
+
+  it('should update when only patternSource changes', () => {
+    const bridgeContext = createMockBridgeContext(mockTracker);
+    mockUseUIBridgeOptional.mockReturnValue(bridgeContext);
+
+    const { rerender } = renderHook(({ info }) => useRouteAwareness(info), {
+      initialProps: { info: { pattern: '/tasks/[id]' } as RouteInfo },
+    });
+
+    expect(mockTracker.setRouteInfo).toHaveBeenCalledTimes(1);
+
+    rerender({ info: { pattern: '/tasks/[id]', patternSource: 'router' } });
+
+    // 3 calls: mount(initial) + cleanup(undefined) + mount(updated)
+    expect(mockTracker.setRouteInfo).toHaveBeenCalledTimes(3);
+    expect(mockTracker.setRouteInfo).toHaveBeenLastCalledWith({
+      pattern: '/tasks/[id]',
+      patternSource: 'router',
+    });
+  });
+
+  it('should update when the pattern changes to null (a 404)', () => {
+    const bridgeContext = createMockBridgeContext(mockTracker);
+    mockUseUIBridgeOptional.mockReturnValue(bridgeContext);
+
+    const { rerender } = renderHook(({ info }) => useRouteAwareness(info), {
+      initialProps: { info: { pattern: '/search/[term]', patternSource: 'router' } as RouteInfo },
+    });
+
+    rerender({ info: { pattern: null, patternSource: 'router' } });
+
+    expect(mockTracker.setRouteInfo).toHaveBeenCalledTimes(3);
+    expect(mockTracker.setRouteInfo).toHaveBeenLastCalledWith({
+      pattern: null,
+      patternSource: 'router',
+    });
+  });
 });
