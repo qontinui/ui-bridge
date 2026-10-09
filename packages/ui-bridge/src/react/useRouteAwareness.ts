@@ -10,58 +10,123 @@
  * returns `null` rather than leak, and say where it came from with
  * `patternSource: 'router'` — consumers drop an unasserted pattern.
  *
- * Usage with React Router:
- *   import { useLocation, useParams, useMatches } from 'react-router-dom';
- *   import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
+ * `routePatternFromParams` is only as safe as the `matched` its caller reports:
+ * on a 404 the router's params are `{}`, so a `matched: true` there returns the
+ * concrete path unchanged. A layout cannot know at render time that this render
+ * is a 404 — so pass the not-found signal (`{ unmatched }`, see
+ * `routeUnmatched.ts`) and this hook reports `pattern: null` whenever a
+ * not-found boundary is mounted, whatever `info.pattern` says.
+ *
+ * Usage with Next.js (pass `useParams()` RAW — flattening a catch-all array
+ * destroys the `[...slug]` run):
+ *   // app/RouteAwareness.tsx — mounted once, in the root layout
+ *   import { usePathname, useParams, useSearchParams } from 'next/navigation';
+ *   import {
+ *     RouteUnmatchedContext,
+ *     routePatternFromParams,
+ *     useRouteAwareness,
+ *     useRouteUnmatchedSignal,
+ *   } from '@qontinui/ui-bridge/react';
+ *
+ *   export function RouteAwareness({ children }) {
+ *     const pathname = usePathname();
+ *     const params = useParams();
+ *     const searchParams = useSearchParams();
+ *     const unmatched = useRouteUnmatchedSignal();
+ *
+ *     useRouteAwareness(
+ *       {
+ *         // matched: true is safe ONLY because `unmatched` overrides it on a 404.
+ *         pattern: routePatternFromParams(pathname, params, { matched: true }),
+ *         patternSource: 'router',
+ *         queryParams: Object.fromEntries(searchParams),
+ *       },
+ *       { unmatched }
+ *     );
+ *
+ *     return (
+ *       <RouteUnmatchedContext.Provider value={unmatched}>{children}</RouteUnmatchedContext.Provider>
+ *     );
+ *   }
+ *
+ *   // app/not-found.tsx — raises the signal in useLayoutEffect. Do NOT call
+ *   // useRouteAwareness here: the layout's passive effect runs after this
+ *   // component's and would overwrite it.
+ *   import { useMarkRouteUnmatched } from '@qontinui/ui-bridge/react';
+ *
+ *   export default function NotFound() {
+ *     useMarkRouteUnmatched();
+ *     return <p>Not found</p>;
+ *   }
+ *
+ * Usage with React Router: `useMatches()` is NOT a 404 test — in a data router
+ * an unmatched URL still yields `matches = [root]`, so `matched:
+ * matches.length > 0` is always true. A data router renders the root's
+ * `errorElement` INSTEAD of its element on a 404, so a hook hosted in the root
+ * element unmounts (the tracker is cleared; nothing is reported, nothing
+ * leaks). Wherever the hook IS rendered for an unmatched URL — a `path="*"`
+ * route under it, or an `errorElement` that hosts it — mark the 404 with
+ * `useMarkRouteUnmatched()` (in an `errorElement`, when
+ * `isRouteErrorResponse(error) && error.status === 404`).
+ *   import { useLocation, useParams, Outlet } from 'react-router-dom';
+ *   import {
+ *     RouteUnmatchedContext,
+ *     routePatternFromParams,
+ *     useRouteAwareness,
+ *     useRouteUnmatchedSignal,
+ *   } from '@qontinui/ui-bridge/react';
  *
  *   function App() {
  *     const location = useLocation();
  *     const params = useParams();
- *     const matches = useMatches();
+ *     const unmatched = useRouteUnmatchedSignal();
  *
- *     useRouteAwareness({
- *       pattern: routePatternFromParams(location.pathname, params, {
- *         matched: matches.length > 0,
- *       }),
- *       patternSource: 'router',
- *       queryParams: Object.fromEntries(new URLSearchParams(location.search)),
- *     });
+ *     useRouteAwareness(
+ *       {
+ *         pattern: routePatternFromParams(location.pathname, params, { matched: true }),
+ *         patternSource: 'router',
+ *         queryParams: Object.fromEntries(new URLSearchParams(location.search)),
+ *       },
+ *       { unmatched }
+ *     );
  *
- *     return <Outlet />;
- *   }
- *
- * Usage with Next.js (pass `useParams()` RAW — flattening a catch-all array
- * destroys the `[...slug]` run; report `matched: false` from your not-found
- * boundary so a 404 reports `pattern: null`):
- *   import { usePathname, useParams, useSearchParams } from 'next/navigation';
- *   import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
- *
- *   function Layout({ children }) {
- *     const pathname = usePathname();
- *     const params = useParams();
- *     const searchParams = useSearchParams();
- *
- *     useRouteAwareness({
- *       pattern: routePatternFromParams(pathname, params, { matched: true }),
- *       patternSource: 'router',
- *       queryParams: Object.fromEntries(searchParams),
- *     });
- *
- *     return <>{children}</>;
+ *     return (
+ *       <RouteUnmatchedContext.Provider value={unmatched}>
+ *         <Outlet />
+ *       </RouteUnmatchedContext.Provider>
+ *     );
  *   }
  */
 
 import { useEffect, useRef } from 'react';
 import { useUIBridgeOptional } from './UIBridgeProvider';
 import type { RouteInfo } from '../navigation/types';
+import type { RouteUnmatchedSignal } from './routeUnmatched';
+
+export interface UseRouteAwarenessOptions {
+  /**
+   * The provider-owned not-found signal. While it is raised (a not-found
+   * boundary is mounted), the reported `pattern` is `null` regardless of
+   * `info.pattern`.
+   */
+  unmatched?: RouteUnmatchedSignal | null;
+}
+
+function effectiveInfo(
+  info: RouteInfo,
+  unmatched: RouteUnmatchedSignal | null | undefined
+): RouteInfo {
+  return unmatched && unmatched.count > 0 ? { ...info, pattern: null } : info;
+}
 
 /**
  * Provide framework router information to the navigation tracker.
  *
  * The info is cleared when the component unmounts.
  */
-export function useRouteAwareness(info: RouteInfo): void {
+export function useRouteAwareness(info: RouteInfo, options: UseRouteAwarenessOptions = {}): void {
   const bridge = useUIBridgeOptional();
+  const unmatched = options.unmatched ?? null;
   const infoRef = useRef(info);
   infoRef.current = info;
 
@@ -77,10 +142,21 @@ export function useRouteAwareness(info: RouteInfo): void {
   useEffect(() => {
     if (!bridge) return;
 
-    bridge.navigationTracker.setRouteInfo(infoRef.current);
+    bridge.navigationTracker.setRouteInfo(effectiveInfo(infoRef.current, unmatched));
 
     return () => {
       bridge.navigationTracker.setRouteInfo(undefined);
     };
-  }, [bridge, pattern, patternSource, paramsKey, queryParamsKey, routeStackKey]);
+  }, [bridge, unmatched, pattern, patternSource, paramsKey, queryParamsKey, routeStackKey]);
+
+  // A not-found boundary that mounts AFTER this hook's last report (no route
+  // dep changed) re-reports with `pattern: null`. Only raises re-report: a
+  // lower must never re-send `infoRef.current`, which on a 404 is the concrete
+  // path (the next route change re-fires the effect above instead).
+  useEffect(() => {
+    if (!bridge || !unmatched) return;
+    return unmatched.subscribe(() => {
+      bridge.navigationTracker.setRouteInfo(effectiveInfo(infoRef.current, unmatched));
+    });
+  }, [bridge, unmatched]);
 }

@@ -1,8 +1,9 @@
 /**
  * routePatternFromParams — the pattern it derives must never carry a param
  * value (plan 2026-10-09-journey-ledger-stores-a-concrete-url-path-as-a-route-pattern,
- * Phase 2). Every case below also runs the leak invariant: no param value, in
- * raw or decoded form, survives as a segment of the output.
+ * Phase 2). Every case below also runs the leak invariant: no fully decoded
+ * form of any non-template output segment CONTAINS any decoded form of any
+ * param value, unsplit or per `/`-piece.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -10,29 +11,55 @@ import { routePatternFromParams, type RouteParamsInput } from '../routePatternFr
 // The public entry point must carry it too.
 import { routePatternFromParams as fromReactEntry } from '../index';
 
-function decode(v: string): string {
-  try {
-    return decodeURIComponent(v);
-  } catch {
-    return v;
+/** Every successive decode of `v`, to a fixed point (bounded generously). */
+function allForms(v: string): string[] {
+  const out = [v];
+  let cur = v;
+  for (let i = 0; i < 20; i++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(cur);
+    } catch {
+      break;
+    }
+    if (next === cur) break;
+    out.push(next);
+    cur = next;
   }
+  return out;
 }
 
-/** Assert no param value (raw or decoded, per segment) is a segment of `out`. */
+const TOKEN = /^\[(\.\.\.)?[^\]/]+\]$/;
+
+/**
+ * Assert no param value survives in `out`, by containment. Written
+ * independently of the implementation: a template token is skipped only when
+ * no value equals it in any form.
+ */
 function expectNoValueSurvives(out: string | null, params: RouteParamsInput): void {
   if (out === null || !params) return;
-  const segs = new Set(
-    out
-      .split('/')
-      .filter((s) => s !== '')
-      .flatMap((s) => [s, decode(s)])
-  );
+  expect(out.includes('?') || out.includes('#'), `query/fragment in "${out}"`).toBe(false);
+  const needles = new Set<string>();
   for (const raw of Object.values(params)) {
     if (raw === undefined) continue;
-    const values = Array.isArray(raw) ? raw : [raw as string];
-    for (const v of values.flatMap((x) => x.split('/')).filter((x) => x !== '')) {
-      expect(segs.has(v), `value "${v}" survived in "${out}"`).toBe(false);
-      expect(segs.has(decode(v)), `decoded value "${decode(v)}" survived in "${out}"`).toBe(false);
+    const values = Array.isArray(raw) ? (raw as string[]) : [raw as string];
+    for (const v of [values.join('/'), ...values, ...values.flatMap((x) => x.split('/'))]) {
+      for (const f of allForms(v)) if (f !== '') needles.add(f);
+    }
+  }
+  for (const seg of out.split('/')) {
+    if (seg === '') continue;
+    const segForms = allForms(seg);
+    if (TOKEN.test(seg)) {
+      for (const f of segForms) expect(needles.has(f), `value equals token "${seg}"`).toBe(false);
+      continue;
+    }
+    for (const f of segForms) {
+      for (const n of needles) {
+        expect(f.includes(n), `value "${n}" survives inside segment "${seg}" of "${out}"`).toBe(
+          false
+        );
+      }
     }
   }
 }
@@ -152,7 +179,7 @@ const cases: Case[] = [
     expected: '/[id]/[id]',
   },
   {
-    name: 'a value not present as a segment cannot leak and is ignored',
+    name: 'a param value absent from the pathname is ignored',
     pathname: '/marketplace/widget',
     params: { slug: 'widget', other: 'elsewhere' },
     matched: true,
@@ -194,6 +221,56 @@ const cases: Case[] = [
     matched: true,
     expected: '/search/[term]',
   },
+  // Leaks found by review of b115f3d — each returned the concrete path.
+  {
+    name: 'an encoded slash inside one segment substitutes as one param',
+    pathname: '/files/c%2Fd',
+    params: { id: 'c/d' },
+    matched: true,
+    expected: '/files/[id]',
+  },
+  {
+    name: 'a value sharing a segment with static text gives null',
+    pathname: '/files/abc.json',
+    params: { id: 'abc' },
+    matched: true,
+    expected: null,
+  },
+  {
+    name: 'a pathname carrying a query and fragment gives null',
+    pathname: '/search/abc?q=secret#h',
+    params: { term: 'abc' },
+    matched: true,
+    expected: null,
+  },
+  {
+    name: 'a pathname carrying only a fragment gives null',
+    pathname: '/search/abc#h',
+    params: { term: 'abc' },
+    matched: true,
+    expected: null,
+  },
+  {
+    name: 'a segment encoded past the decode bound gives null',
+    pathname: `/search/${[1, 2, 3, 4, 5].reduce((v) => encodeURIComponent(v), 'a b')}`,
+    params: { term: 'a b' },
+    matched: true,
+    expected: null,
+  },
+  {
+    name: 'a value embedded in a longer segment gives null',
+    pathname: '/marketplace/xwidgetx',
+    params: { slug: 'widget' },
+    matched: true,
+    expected: null,
+  },
+  {
+    name: 'a short value contained in a static segment over-nulls (the allowed direction)',
+    pathname: '/v1/items/1',
+    params: { id: '1' },
+    matched: true,
+    expected: null,
+  },
   {
     name: 'a missing pathname gives null',
     pathname: undefined as unknown as string,
@@ -217,22 +294,51 @@ describe('routePatternFromParams', () => {
   }
 
   it('never lets a param value survive, across a generated sweep', () => {
-    const values = ['abc', 'a b', 'a%20b', '100%', 'x', 'login', '42', 'é', '%C3%A9'];
+    const values = ['abc', 'a b', 'a%20b', '100%', 'x', 'login', '42', 'é', '%C3%A9', 'c/d'];
     const statics = ['', 'search', 'login', 'x', 'docs'];
+    const wraps: [string, string][] = [
+      ['', ''],
+      ['pre-', ''],
+      ['', '.json'],
+      ['(', ')'],
+    ];
+    const tails = ['', '?q=secret', '#frag', '?q=1#f'];
+    const encode = (v: string, n: number) =>
+      Array.from({ length: n }).reduce<string>((acc) => encodeURIComponent(acc), v);
     for (const v of values) {
       for (const pre of statics) {
         for (const post of statics) {
-          for (const seg of [v, encodeURIComponent(v), encodeURIComponent(encodeURIComponent(v))]) {
-            const pathname = ['', pre, seg, post].filter((s, i) => i === 0 || s !== '').join('/');
-            const params = { p: v };
-            const out = routePatternFromParams(pathname, params, { matched: true });
-            expect(out).not.toBeNull();
-            expectNoValueSurvives(out, params);
-            const arr = { rest: [v, 'tail'] };
-            const out2 = routePatternFromParams(`${pathname}/tail`, arr, { matched: true });
-            expectNoValueSurvives(out2, arr);
+          for (const [wl, wr] of wraps) {
+            for (const tail of tails) {
+              for (const n of [0, 1, 2, 5]) {
+                const seg = `${wl}${encode(v, n)}${wr}`;
+                const pathname =
+                  ['', pre, seg, post].filter((s, i) => i === 0 || s !== '').join('/') + tail;
+                const params = { p: v };
+                const out = routePatternFromParams(pathname, params, { matched: true });
+                expectNoValueSurvives(out, params);
+                const arr = { rest: [v, 'tail'] };
+                const out2 = routePatternFromParams(`${pathname}/tail`, arr, { matched: true });
+                expectNoValueSurvives(out2, arr);
+              }
+            }
           }
         }
+      }
+    }
+  });
+
+  // The static prefix is `q` because containment over-nulls: `/search/c%2Fd`
+  // for `c/d` is null, since `search` contains the piece `c`.
+  it('templates a bare dynamic segment within the decode bound', () => {
+    for (const v of ['abc', 'a b', 'é', 'c/d']) {
+      for (const n of [0, 1, 2]) {
+        let seg = v;
+        for (let i = 0; i < n; i++) seg = encodeURIComponent(seg);
+        if (n === 0 && v.includes('/')) continue; // a raw slash is two segments
+        expect(routePatternFromParams(`/q/${seg}`, { term: v }, { matched: true })).toBe(
+          '/q/[term]'
+        );
       }
     }
   });

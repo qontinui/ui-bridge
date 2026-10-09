@@ -117,7 +117,14 @@ export { useUIAnnotation } from './useUIAnnotation';
 
 // Page/route awareness hooks
 export { usePageContext } from './usePageContext';
-export { useRouteAwareness } from './useRouteAwareness';
+export { useRouteAwareness, type UseRouteAwarenessOptions } from './useRouteAwareness';
+export {
+  RouteUnmatchedContext,
+  createRouteUnmatchedSignal,
+  useMarkRouteUnmatched,
+  useRouteUnmatchedSignal,
+  type RouteUnmatchedSignal,
+} from './routeUnmatched';
 export {
   routePatternFromParams,
   type RouteParamsInput,

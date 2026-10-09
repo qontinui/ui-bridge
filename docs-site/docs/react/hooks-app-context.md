@@ -58,7 +58,10 @@ the serialised `meta`, so inline object literals are safe.
 ## useRouteAwareness
 
 ```typescript
-function useRouteAwareness(info: RouteInfo): void
+function useRouteAwareness(
+  info: RouteInfo,
+  options?: { unmatched?: RouteUnmatchedSignal | null },
+): void
 ```
 
 Feeds structured router information into the navigation tracker. This is the
@@ -80,52 +83,130 @@ Never pass the concrete pathname as `pattern`: `/search/<what the user typed>`
 reported as a pattern leaks user input into everything that stores route
 templates. Derive the pattern with `routePatternFromParams`, below.
 
-### React Router
+`routePatternFromParams` is only as safe as the `matched` its caller reports.
+On a 404 the router's params are `{}`, so `matched: true` there returns the
+concrete path unchanged.
+
+### The not-found signal
+
+A layout cannot pass `matched: false` for a 404. Its render, where `pattern`
+is computed, runs before the not-found component exists. A second
+`useRouteAwareness({ pattern: null })` call inside the not-found component
+does not help either. React runs a child's passive effects before its
+parent's, so the layout's call overwrites it in the same commit, with the
+concrete path.
+
+The mechanism is a provider-owned signal:
+
+1. The layout creates it with `useRouteUnmatchedSignal()`.
+2. The layout provides it through `RouteUnmatchedContext`.
+3. The layout passes it to its single call: `useRouteAwareness(info, { unmatched })`.
+4. The not-found boundary calls `useMarkRouteUnmatched()`. That raises the
+   signal in `useLayoutEffect`.
+
+Every layout effect in a commit runs before any passive effect, so the
+layout's report already sees the signal. While a not-found boundary is
+mounted, the hook reports `pattern: null`, whatever `info.pattern` says.
+
+Precondition: the not-found boundary mounts in the same commit as the
+navigation that reached it. Next.js `not-found.tsx` does. A boundary that
+mounts later re-reports `pattern: null`, but by then the layout has already
+reported once.
+
+### Next.js
+
+Pass `useParams()` raw. Flattening a catch-all array destroys its
+`[...slug]` run.
 
 ```tsx
-import { useLocation, useParams, useMatches, Outlet } from 'react-router-dom';
-import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
+// app/RouteAwareness.tsx: mounted once, in the root layout
+import { usePathname, useParams, useSearchParams } from 'next/navigation';
+import {
+  RouteUnmatchedContext,
+  routePatternFromParams,
+  useRouteAwareness,
+  useRouteUnmatchedSignal,
+} from '@qontinui/ui-bridge/react';
+
+export function RouteAwareness({ children }) {
+  const pathname = usePathname();
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const unmatched = useRouteUnmatchedSignal();
+
+  useRouteAwareness(
+    {
+      // matched: true is safe ONLY because `unmatched` overrides it on a 404.
+      pattern: routePatternFromParams(pathname, params, { matched: true }),
+      patternSource: 'router',
+      queryParams: Object.fromEntries(searchParams),
+    },
+    { unmatched },
+  );
+
+  return (
+    <RouteUnmatchedContext.Provider value={unmatched}>{children}</RouteUnmatchedContext.Provider>
+  );
+}
+```
+
+```tsx
+// app/not-found.tsx. Do NOT call useRouteAwareness here.
+import { useMarkRouteUnmatched } from '@qontinui/ui-bridge/react';
+
+export default function NotFound() {
+  useMarkRouteUnmatched();
+  return <p>Not found</p>;
+}
+```
+
+### React Router
+
+`useMatches()` is not a 404 test. In a data router an unmatched URL still
+yields `matches = [root]`, so `matches.length > 0` is always true.
+
+A data router renders the root's `errorElement` instead of its element on a
+404. A hook hosted in the root element therefore unmounts, and the tracker is
+cleared: nothing is reported, and nothing leaks. Wherever the hook IS rendered
+for an unmatched URL, mark the 404 with `useMarkRouteUnmatched()`. That means
+a `path="*"` route under it, or an `errorElement` that hosts it. In an
+`errorElement`, mark it when `isRouteErrorResponse(error) && error.status === 404`.
+
+```tsx
+import { useLocation, useParams, Outlet } from 'react-router-dom';
+import {
+  RouteUnmatchedContext,
+  routePatternFromParams,
+  useMarkRouteUnmatched,
+  useRouteAwareness,
+  useRouteUnmatchedSignal,
+} from '@qontinui/ui-bridge/react';
 
 function App() {
   const location = useLocation();
   const params = useParams();
-  const matches = useMatches();
+  const unmatched = useRouteUnmatchedSignal();
 
-  useRouteAwareness({
-    pattern: routePatternFromParams(location.pathname, params, {
-      matched: matches.length > 0,
-    }),
-    patternSource: 'router',
-    queryParams: Object.fromEntries(new URLSearchParams(location.search)),
-  });
+  useRouteAwareness(
+    {
+      pattern: routePatternFromParams(location.pathname, params, { matched: true }),
+      patternSource: 'router',
+      queryParams: Object.fromEntries(new URLSearchParams(location.search)),
+    },
+    { unmatched },
+  );
 
-  return <Outlet />;
+  return (
+    <RouteUnmatchedContext.Provider value={unmatched}>
+      <Outlet />
+    </RouteUnmatchedContext.Provider>
+  );
 }
-```
 
-### Next.js
-
-Pass `useParams()` raw — flattening a catch-all array destroys its
-`[...slug]` run. Next.js renders a 404 inside the root layout with
-`useParams()` returning `{}`, so report `matched: false` from your not-found
-boundary; the pattern is then `null` instead of the concrete path.
-
-```tsx
-import { usePathname, useParams, useSearchParams } from 'next/navigation';
-import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
-
-function Layout({ children }) {
-  const pathname = usePathname();
-  const params = useParams();
-  const searchParams = useSearchParams();
-
-  useRouteAwareness({
-    pattern: routePatternFromParams(pathname, params, { matched: true }),
-    patternSource: 'router',
-    queryParams: Object.fromEntries(searchParams),
-  });
-
-  return <>{children}</>;
+// The `path="*"` route's element
+function NoMatch() {
+  useMarkRouteUnmatched();
+  return <p>Not found</p>;
 }
 ```
 
@@ -139,18 +220,33 @@ function routePatternFromParams(
 ): string | null
 ```
 
-Derives the pattern by value substitution, failing closed:
+Derives the pattern by value substitution:
 
-- every path segment equal to a param value becomes `[name]`;
-- a catch-all array's run of segments (or a React Router splat string spanning
-  several segments) becomes `[...name]`;
-- segments and values are compared raw and `decodeURIComponent`-decoded, so an
-  encoded/decoded mismatch still substitutes;
-- if any param value still appears as a segment afterwards, the result is `null`;
-- `matched: false` returns `null`.
+- A path segment equal to a param value becomes `[name]`. That includes a
+  value with a `/` in it that sits in one segment as `%2F`.
+- A catch-all array's run of segments becomes `[...name]`. So does a React
+  Router splat string that spans several segments.
+- Segments and values are compared raw and after each successive
+  `decodeURIComponent`, on both sides.
 
-Over-templating (a static segment that happens to equal a param value is
-templated too) is harmless; under-templating cannot happen.
+It then fails closed and returns `null` when:
+
+- `matched` is `false`;
+- the pathname contains `?` or `#`;
+- a segment or value is still changing after four decodes;
+- any decoded form of a non-template output segment CONTAINS any decoded form
+  of a param value or of one of its pieces. This catches `/files/abc.json`
+  for `:id.json`. It also nulls some legitimate paths when a value is short:
+  `{ id: '1' }` nulls `/v1/items/1`. That is the intended direction.
+
+The guarantee is that a non-null result contains no value from `params`. It
+holds for user input only when two things are true:
+
+- `params` is the router's complete, raw params for the route that matched;
+- `matched` is `false`, or the not-found signal is raised, whenever no route
+  matched.
+
+Text the router never reported as a param is not checked.
 
 The same single-holder caveat as `usePageContext` applies: the tracker stores one
 `RouteInfo`, and unmount clears it. Call this once, from the layout or app root.

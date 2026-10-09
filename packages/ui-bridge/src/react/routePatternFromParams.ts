@@ -11,35 +11,48 @@
  *
  * The derivation is VALUE substitution:
  *
- * - every path segment equal to a param value becomes `[name]`;
+ * - a segment equal to a param value becomes `[name]` (a value containing `/`
+ *   — React Router decodes `%2F` inside a `:param` — may match one segment
+ *   whole);
  * - a run of segments equal to a multi-segment value (a catch-all `string[]`,
- *   or a React Router splat string containing `/`) becomes `[...name]`;
- * - segments are compared after `decodeURIComponent` (inside try/catch) on
- *   BOTH sides, and also in raw form, so an encoded/decoded mismatch between
- *   the router and the URL still substitutes (see `forms`);
- * - POST-CHECK: if any param value still appears as a segment, the result is
- *   `null`;
- * - `matched: false` (a 404 — `useParams()` is `{}` there, so nothing would be
- *   substituted) is `null`.
+ *   or a React Router splat string containing `/`) becomes `[...name]`, and
+ *   so does any match of an array param;
+ * - segments and values are compared raw and after each successive
+ *   `decodeURIComponent` (inside try/catch), on BOTH sides.
  *
- * Over-templating (a static segment that happens to equal a param value also
- * becomes `[name]`) is harmless. Under-templating leaks, so it is made
- * impossible: the function returns either a string in which no param value
- * survives as a segment, or `null`.
+ * Then it fails closed — the result is `null` when:
+ *
+ * - `matched` is `false`;
+ * - `pathname` is not a string, or carries a `?` or `#` (it is not a bare
+ *   pathname, so a query or fragment would ride along);
+ * - any segment or value has not reached a decoding fixed point within
+ *   `MAX_DECODE_PASSES` (its fully decoded form is unknown, so containment
+ *   cannot be checked);
+ * - POST-CHECK, by CONTAINMENT: any decoded form of any non-template segment
+ *   of the output CONTAINS any decoded form of any param value or of any of
+ *   its `/`-separated pieces. This catches a value sharing a segment with
+ *   static text (`/files/abc.json` for `:id.json`). Short values will null
+ *   some legitimate paths (`{ id: '1' }` nulls `/v1/items/1`); that is the
+ *   intended direction.
+ *
+ * GUARANTEE, and its precondition: a non-null result contains no param value
+ * the caller passed, as a substring of any segment in any decoded form. It
+ * says nothing about text the router did NOT report as a param — so it holds
+ * for user input only when `params` is the router's complete, raw params for
+ * the route it actually matched, and `matched` is `false` whenever no route
+ * matched (a 404 has `useParams() == {}`, so with `matched: true` the
+ * concrete path would come back unchanged). Reporting `matched` correctly is
+ * the caller's job; see `useRouteAwareness` for the not-found signal.
  *
  * @example
  * ```tsx
  * import { usePathname, useParams } from 'next/navigation';
- * import { routePatternFromParams, useRouteAwareness } from '@qontinui/ui-bridge/react';
+ * import { routePatternFromParams } from '@qontinui/ui-bridge/react';
  *
- * function RouteAwareness() {
+ * function usePattern(matched: boolean) {
  *   const pathname = usePathname();
  *   const params = useParams();
- *   useRouteAwareness({
- *     pattern: routePatternFromParams(pathname, params, { matched: true }),
- *     patternSource: 'router',
- *   });
- *   return null;
+ *   return routePatternFromParams(pathname, params, { matched });
  * }
  * ```
  */
@@ -59,13 +72,14 @@ export interface RoutePatternFromParamsOptions {
   matched: boolean;
 }
 
-/** One param, normalised into the segment run it occupies in a pathname. */
-interface ParamRun {
-  name: string;
-  /** Each segment of the value, as the set of forms it may appear in. */
-  pieces: Set<string>[];
-  /** `true` → render as `[...name]`, else `[name]`. */
-  catchAll: boolean;
+/** Bound on repeated decoding. Not reaching a fixed point within it is null. */
+const MAX_DECODE_PASSES = 4;
+
+/** A string's comparison forms: raw plus each successive decode. */
+interface Forms {
+  all: Set<string>;
+  /** `false` when decoding was still changing the string after the bound. */
+  settled: boolean;
 }
 
 function safeDecode(value: string): string {
@@ -76,26 +90,16 @@ function safeDecode(value: string): string {
   }
 }
 
-/** Bound on repeated decoding; real routers decode once, this is headroom. */
-const MAX_DECODE_PASSES = 4;
-
-/**
- * The forms a segment or value is compared in: raw, plus each successive
- * `decodeURIComponent` of it. Comparing on any shared form is a superset of
- * comparing on the single decoded form, so it can only ADD substitutions —
- * which is the safe direction (an encoded/decoded mismatch, or a doubly
- * encoded segment, still substitutes instead of leaking).
- */
-function forms(value: string): Set<string> {
-  const out = new Set<string>([value]);
+function forms(value: string): Forms {
+  const all = new Set<string>([value]);
   let current = value;
   for (let i = 0; i < MAX_DECODE_PASSES; i++) {
     const next = safeDecode(current);
-    if (next === current) break;
-    out.add(next);
+    if (next === current) return { all, settled: true };
+    all.add(next);
     current = next;
   }
-  return out;
+  return { all, settled: safeDecode(current) === current };
 }
 
 function intersects(a: Set<string>, b: Set<string>): boolean {
@@ -105,22 +109,30 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-function toRuns(params: RouteParamsInput): ParamRun[] {
+/** One param, normalised for matching. */
+interface ParamRun {
+  name: string;
+  /** The unsplit value (array values joined with `/`). */
+  whole: Forms;
+  /** Each `/`-separated piece of the value. */
+  pieces: Forms[];
+  /** An array (catch-all) param always renders as `[...name]`. */
+  isArray: boolean;
+}
+
+function toRuns(params: RouteParamsInput): ParamRun[] | null {
   const runs: ParamRun[] = [];
   if (!params) return runs;
   for (const [name, raw] of Object.entries(params)) {
     if (raw === undefined || raw === null) continue;
     const isArray = Array.isArray(raw);
-    const segments: string[] = isArray
-      ? (raw as readonly string[]).flatMap((v) => String(v).split('/'))
-      : String(raw).split('/');
-    const nonEmpty = segments.filter((s) => s !== '');
+    const values: string[] = isArray ? (raw as readonly string[]).map(String) : [String(raw)];
+    const nonEmpty = values.flatMap((v) => v.split('/')).filter((s) => s !== '');
     if (nonEmpty.length === 0) continue;
-    runs.push({
-      name,
-      pieces: nonEmpty.map(forms),
-      catchAll: isArray || nonEmpty.length > 1,
-    });
+    const whole = forms(values.join('/'));
+    const pieces = nonEmpty.map(forms);
+    if (!whole.settled || pieces.some((p) => !p.settled)) return null;
+    runs.push({ name, whole, pieces, isArray });
   }
   // Longest runs first, so a catch-all claims its whole run before a shorter
   // param could claim one of its segments.
@@ -129,12 +141,21 @@ function toRuns(params: RouteParamsInput): ParamRun[] {
 }
 
 /** A segment in the working pathname: still concrete, or already templated. */
-type Slot = { kind: 'concrete'; raw: string; forms: Set<string> } | { kind: 'token'; text: string };
+type Slot = { kind: 'concrete'; raw: string; forms: Forms } | { kind: 'token'; text: string };
+
+function containsAny(haystack: Set<string>, needles: Set<string>): boolean {
+  for (const h of haystack) {
+    for (const n of needles) {
+      if (n !== '' && h.includes(n)) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Derive a route pattern from a concrete pathname and the router's RAW params
  * (do not pre-flatten catch-all arrays). Returns `null` when the route did not
- * match, or when any param value would survive in the result.
+ * match, or when any param value could survive in the result.
  */
 export function routePatternFromParams(
   pathname: string | null | undefined,
@@ -143,26 +164,42 @@ export function routePatternFromParams(
 ): string | null {
   if (!options.matched) return null;
   if (typeof pathname !== 'string') return null;
+  if (pathname.includes('?') || pathname.includes('#')) return null;
 
   const runs = toRuns(params);
-  let slots: Slot[] = pathname
-    .split('/')
-    .map((raw) => ({ kind: 'concrete' as const, raw, forms: forms(raw) }));
+  if (runs === null) return null;
+
+  let slots: Slot[] = [];
+  for (const raw of pathname.split('/')) {
+    const f = forms(raw);
+    if (!f.settled) return null;
+    slots.push({ kind: 'concrete', raw, forms: f });
+  }
+
+  const matchesAt = (i: number, run: ParamRun): number => {
+    const first = slots[i];
+    if (first.kind !== 'concrete' || first.raw === '') return 0;
+    // A whole value as one segment (`c%2Fd` for `c/d`).
+    if (intersects(first.forms.all, run.whole.all)) return 1;
+    const len = run.pieces.length;
+    if (i + len > slots.length) return 0;
+    for (let k = 0; k < len; k++) {
+      const slot = slots[i + k];
+      if (slot.kind !== 'concrete' || slot.raw === '') return 0;
+      if (!intersects(slot.forms.all, run.pieces[k].all)) return 0;
+    }
+    return len;
+  };
 
   for (const run of runs) {
-    const len = run.pieces.length;
-    const token = run.catchAll ? `[...${run.name}]` : `[${run.name}]`;
     const next: Slot[] = [];
     let i = 0;
     while (i < slots.length) {
-      let hit = i + len <= slots.length;
-      for (let k = 0; hit && k < len; k++) {
-        const slot = slots[i + k];
-        hit = slot.kind === 'concrete' && slot.raw !== '' && intersects(slot.forms, run.pieces[k]);
-      }
-      if (hit) {
-        next.push({ kind: 'token', text: token });
-        i += len;
+      const consumed = matchesAt(i, run);
+      if (consumed > 0) {
+        const spread = consumed > 1 || run.isArray;
+        next.push({ kind: 'token', text: spread ? `[...${run.name}]` : `[${run.name}]` });
+        i += consumed;
       } else {
         next.push(slots[i]);
         i += 1;
@@ -171,21 +208,31 @@ export function routePatternFromParams(
     slots = next;
   }
 
-  const out = slots.map((s) => (s.kind === 'token' ? s.text : s.raw));
-
-  // Post-check: no param value may survive as a segment of the OUTPUT — read
-  // off the final string, not off the bookkeeping, so a bug above cannot hide
-  // a leak. A token that itself equals a value (a value literally `[id]`) also
-  // trips this, which fails closed.
-  for (const segment of out) {
-    if (segment === '') continue;
-    const segForms = forms(segment);
+  // Post-check by containment, over the final slots. A template token is
+  // checked by equality only (its own `[name]` text is not user input), so a
+  // value that is literally `[id]` still fails closed.
+  for (const slot of slots) {
+    if (slot.kind === 'token') {
+      const tokenForms = forms(slot.text).all;
+      if (
+        runs.some(
+          (r) =>
+            intersects(tokenForms, r.whole.all) ||
+            r.pieces.some((p) => intersects(tokenForms, p.all))
+        )
+      ) {
+        return null;
+      }
+      continue;
+    }
+    if (slot.raw === '') continue;
     for (const run of runs) {
+      if (containsAny(slot.forms.all, run.whole.all)) return null;
       for (const piece of run.pieces) {
-        if (intersects(segForms, piece)) return null;
+        if (containsAny(slot.forms.all, piece.all)) return null;
       }
     }
   }
 
-  return out.join('/');
+  return slots.map((s) => (s.kind === 'token' ? s.text : s.raw)).join('/');
 }
