@@ -1174,7 +1174,7 @@ Response shape:
       "visible_count": 117                          // visible AND carrying geometry
     },
     "provenance": {
-      "producer": { "id": "sdk/page-health", "version": "0.28.0" },
+      "producer": { "id": "sdk/page-health", "version": "0.29.0" },
       "observedAt": "2026-09-30T12:00:00.000Z",    // snapshot time
       "evaluatedAt": "2026-09-30T12:00:00.012Z",   // analyzer run time
       "coverage": {
@@ -1199,7 +1199,7 @@ transport error:
   "data": {
     "status": "unknown",
     "unknown": { "code": "producer_not_run", "detail": "the bridge reports zero registered elements and zero registered components — …" },
-    "provenance": { "producer": { "id": "sdk/page-health", "version": "0.28.0" }, "observedAt": "…", "evaluatedAt": "…",
+    "provenance": { "producer": { "id": "sdk/page-health", "version": "0.29.0" }, "observedAt": "…", "evaluatedAt": "…",
                     "coverage": { "considered": 0, "measured": 0, "unmeasured": [] },
                     "confidence": null, "cache": null, "source": null }
   }

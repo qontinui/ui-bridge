@@ -447,7 +447,7 @@ function unknown<T = never>(
  * ```ts
  * // `Observation` is exported by the package that ships this module.
  * const prov = Observation.provenance({
- *   producer: { id: 'sdk/page-health', version: '0.28.0' },
+ *   producer: { id: 'sdk/page-health', version: '0.29.0' },
  *   observedAt: Date.now(),
  * });
  * const obs = Observation.unknown('input_missing', 'no elements key', prov);
