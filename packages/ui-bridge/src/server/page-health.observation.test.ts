@@ -244,18 +244,37 @@ describe('relay pageHealth handler', () => {
     expect(JSON.stringify(res)).not.toContain('CRITICAL');
   });
 
-  it('a snapshot with no elements key answers unknown{input_missing} — on the SECOND call too', async () => {
+  it('a snapshot with no elements key is refused, not cached: unknown on the SECOND call too', async () => {
+    // Main refuses a malformed tab answer at the cache (it is never cached and
+    // the relay reads as stale), so with nothing good cached the answer is
+    // `unknown{app_unreachable}` — an answer, never a rejection, never health.
     vi.spyOn(relay, 'queueCommand').mockResolvedValue({ timestamp: T } as never);
     const handlers = createRelayHandlers(relay);
-    const first = await handlers.pageHealth();
-    expect(first.data?.status).toBe('unknown');
-    if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
-    // The first call cached a snapshot with no `elements` key; the second
-    // call used to throw reading `.length` of it (a rejection, not an answer).
-    const second = await handlers.pageHealth();
-    expect(second.success).toBe(true);
-    expect(second.data?.status).toBe('unknown');
-    if (second.data?.status === 'unknown') expect(second.data.unknown.code).toBe('input_missing');
+    for (const res of [await handlers.pageHealth(), await handlers.pageHealth()]) {
+      expect(res.success).toBe(true);
+      expect(res.data?.status).toBe('unknown');
+      if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('app_unreachable');
+    }
+  });
+
+  it('a failed refresh over a populated cache answers unknown{stale_input}, never measured', async () => {
+    const queue = vi.spyOn(relay, 'queueCommand').mockResolvedValueOnce({
+      timestamp: T,
+      elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 })],
+      components: [],
+      workflows: [],
+    } as never);
+    const handlers = createRelayHandlers(relay);
+    const primed = await handlers.pageHealth();
+    expect(primed.data?.status).toBe('measured');
+
+    queue.mockRejectedValue(new Error('tab gone'));
+    const res = await handlers.pageHealth();
+    expect(res.success).toBe(true);
+    expect(res.data?.status).toBe('unknown');
+    if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('stale_input');
+    expect(res.data?.provenance.observedAt).toBe('2026-09-30T12:00:00.000Z');
+    expect(res._meta?.stale).toBe(true);
   });
 
   it('carries the cached snapshot id as provenance.source', async () => {

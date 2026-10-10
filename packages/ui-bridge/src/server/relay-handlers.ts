@@ -2143,9 +2143,9 @@ export function createRelayHandlers(
     // never-refreshed cache would analyze the pristine empty snapshot and
     // describe "nobody asked the browser", not the page. What the refresh
     // could not fix stays visible: a failed refresh over an empty cache is
-    // `unknown{app_unreachable}`; over a populated one the analysis runs and
-    // `provenance.observedAt` is the cached snapshot's own (old) timestamp,
-    // with `_meta` carrying the stale flag.
+    // `unknown{app_unreachable}`; over a populated one it is
+    // `unknown{stale_input}` with `provenance.observedAt` the cached
+    // snapshot's own (old) timestamp and `_meta` carrying the stale flag.
     async pageHealth() {
       try {
         // The cached snapshot is whatever the browser last sent, so its
@@ -2172,6 +2172,18 @@ export function createRelayHandlers(
             pageHealthUnknown(
               'app_unreachable',
               'the relay could not fetch a snapshot from the browser tab and holds none cached'
+            ),
+            staleMeta()
+          );
+        }
+        if (snapshotStaleSince !== null) {
+          // The refresh failed but a snapshot is cached: analyzing it would
+          // answer `measured` about a page the relay could not look at now.
+          return success(
+            pageHealthUnknown(
+              'stale_input',
+              'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
+              { observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null }
             ),
             staleMeta()
           );

@@ -264,3 +264,27 @@ describe('timestamps and cache inputs are checked like the Rust canon', () => {
     ).toThrow(/keyInputs/);
   });
 });
+
+describe('Observation provenance — hand-built timestamps are calendar-checked', () => {
+  const withStoredAt = (storedAt: string) => {
+    const prov = Observation.provenance({ producer });
+    return { ...prov, cache: { hit: true, storedAt, keyInputs: ['request'] } };
+  };
+
+  it.each([
+    '2026-02-30T00:00:00Z',
+    '2026-04-31T00:00:00+01:00',
+    '2026-01-01T24:00:00Z',
+    '2026-13-01T00:00:00Z',
+    '2026-01-01T00:00:00+24:00',
+  ])('refuses the impossible instant %s instead of rolling it over', (bad) => {
+    expect(() => Observation.measured(1, withStoredAt(bad) as never)).toThrow(ObservationError);
+  });
+
+  it.each(['2024-02-29T23:59:59Z', '2026-06-30T23:59:60Z', '2026-01-01t00:00:00.5-05:30'])(
+    'accepts the valid instant %s',
+    (good) => {
+      expect(() => Observation.measured(1, withStoredAt(good) as never)).not.toThrow();
+    }
+  );
+});

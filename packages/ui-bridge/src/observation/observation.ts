@@ -284,10 +284,21 @@ function assertSource(source: unknown): asserts source is Record<string, unknown
  * full date, `T` (or `t`/space), full time with optional fraction, and a `Z`
  * or `±HH:MM` offset — plus a calendar-valid instant.
  */
-const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
+const RFC3339 =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-](\d{2}):(\d{2}))$/;
 
 function isRfc3339(value: unknown): value is string {
-  return typeof value === 'string' && RFC3339.test(value) && !Number.isNaN(Date.parse(value));
+  if (typeof value !== 'string') return false;
+  const m = RFC3339.exec(value);
+  if (!m) return false;
+  const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4], m[5], m[6]].map(Number);
+  // `Date.parse` rolls an impossible date over (Feb 30 -> Mar 2) instead of
+  // refusing it, so check the calendar fields ourselves. A leap second (:60)
+  // is accepted, as chrono accepts it.
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || s > 60) return false;
+  if (new Date(Date.UTC(y, mo - 1, d)).getUTCDate() !== d) return false;
+  if (m[9] !== undefined && (Number(m[9]) > 23 || Number(m[10]) > 59)) return false;
+  return true;
 }
 
 /**
