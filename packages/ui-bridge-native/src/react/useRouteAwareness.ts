@@ -20,8 +20,11 @@
  * (`isExpoRouterUnmatched`), and a React Navigation not-found screen is an
  * ordinary named route in the state the caller already reads. So there is no
  * signal to wire. While `unmatched` is true the reported `pattern` is `null`
- * AND `params` is dropped: on `+not-found` expo-router carries the concrete
- * not-found path in `params['not-found']`, which must not ride along.
+ * AND `params` is dropped: on a NESTED `+not-found` route expo-router also
+ * carries the concrete not-found path in `params['not-found']` (on the
+ * top-level branch `params` is `{}`; the path is always in `pathname`, which
+ * the hook never takes), so a caller passing `useLocalSearchParams()` would
+ * otherwise ship user input.
  *
  * Note: native's `unmatched?: boolean` shares its option KEY with the web
  * hook's `unmatched?: RouteUnmatchedSignal | null`, but not its type.
@@ -36,6 +39,7 @@
  * import { useSegments } from 'expo-router';
  * import {
  *   expoRouterPattern,
+ *   expoRouterRouteStack,
  *   isExpoRouterUnmatched,
  *   useRouteAwareness,
  * } from '@qontinui/ui-bridge-native';
@@ -43,25 +47,45 @@
  * function RouteAwareness() {
  *   const segments = useSegments();
  *   useRouteAwareness(
- *     { pattern: expoRouterPattern(segments), patternSource: 'router', routeStack: segments },
+ *     {
+ *       pattern: expoRouterPattern(segments),
+ *       patternSource: 'router',
+ *       routeStack: expoRouterRouteStack(segments),
+ *     },
  *     { unmatched: isExpoRouterUnmatched(segments) }
  *   );
  *   return null;
  * }
  * ```
  *
- * Usage with React Navigation (inside the `NavigationContainer`):
+ * Usage with React Navigation: read the ROOT state from the container, not
+ * with `useNavigationState` (which throws outside a navigator and, inside a
+ * screen, sees only that navigator's state). The component must render inside
+ * `UIBridgeNativeProvider`:
  *
  * @example
  * ```tsx
- * import { useNavigationState } from '@react-navigation/native';
- * import { reactNavigationPattern, useRouteAwareness } from '@qontinui/ui-bridge-native';
+ * import { useState } from 'react';
+ * import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
+ * import {
+ *   reactNavigationPattern,
+ *   useRouteAwareness,
+ *   type NavigationStateLike,
+ * } from '@qontinui/ui-bridge-native';
  *
- * function RouteAwareness() {
- *   const state = useNavigationState((s) => s);
- *   const pattern = reactNavigationPattern(state, { notFoundRouteNames: ['NotFound'] });
+ * function Navigation({ children }: { children: React.ReactNode }) {
+ *   const navigationRef = useNavigationContainerRef();
+ *   const [rootState, setRootState] = useState<NavigationStateLike | undefined>();
+ *   const syncRootState = () => setRootState(navigationRef.getRootState());
+ *
+ *   const pattern = reactNavigationPattern(rootState, { notFoundRouteNames: ['NotFound'] });
  *   useRouteAwareness({ pattern, patternSource: 'router' }, { unmatched: pattern === null });
- *   return null;
+ *
+ *   return (
+ *     <NavigationContainer ref={navigationRef} onReady={syncRootState} onStateChange={syncRootState}>
+ *       {children}
+ *     </NavigationContainer>
+ *   );
  * }
  * ```
  */

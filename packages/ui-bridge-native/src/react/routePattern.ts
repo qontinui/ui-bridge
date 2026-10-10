@@ -11,9 +11,11 @@
  *
  * - **Expo Router** — `useSegments()` returns file-route names
  *   (`['profile', '[user]']`, `['(tabs)', 'runs']`), never the concrete path.
- *   A not-found render reads `['+not-found']`; the concrete not-found path
- *   lives only in `params['not-found']` (expo-router 6.0.23
- *   `build/global-state/routeInfo.js:22-30, 96-99`).
+ *   A not-found render reads `['+not-found']` in its segments. The concrete
+ *   not-found path is never a segment: it is always in `pathname` (which the
+ *   helpers never take), and on the NESTED not-found branch it is also in
+ *   `params['not-found']`; on the top-level branch `params` is `{}`
+ *   (expo-router 6.0.23 `build/global-state/routeInfo.js:22-30, 96-99`).
  * - **React Navigation** — the navigation state carries each route's `name`,
  *   a static identifier declared in code (`<Stack.Screen name="Profile">`).
  *   User values live only in `route.params`, which these helpers never read.
@@ -33,25 +35,42 @@
  * @example
  * ```tsx
  * import { useSegments } from 'expo-router';
- * import { expoRouterPattern, isExpoRouterUnmatched } from '@qontinui/ui-bridge-native';
+ * import {
+ *   expoRouterPattern,
+ *   expoRouterRouteStack,
+ *   isExpoRouterUnmatched,
+ * } from '@qontinui/ui-bridge-native';
  *
- * function useExpoPattern() {
+ * function useExpoRoute() {
  *   const segments = useSegments();
- *   return { pattern: expoRouterPattern(segments), unmatched: isExpoRouterUnmatched(segments) };
+ *   return {
+ *     pattern: expoRouterPattern(segments),
+ *     routeStack: expoRouterRouteStack(segments),
+ *     unmatched: isExpoRouterUnmatched(segments),
+ *   };
  * }
  * ```
  */
 
 /**
- * Structural subset of a React Navigation state object — what
- * `useNavigationState((s) => s)` or `navigationRef.getRootState()` returns.
+ * Structural subset of a React Navigation state object — the ROOT state, as
+ * `navigationRef.getRootState()` (from `useNavigationContainerRef()`) or the
+ * `NavigationContainer` `onStateChange` callback returns it. Do NOT use
+ * `useNavigationState((s) => s)`: outside a navigator it throws, and inside a
+ * screen it returns only that navigator's state, truncating the chain.
  * Declared structurally so this package takes no dependency on
  * `@react-navigation/*`. `params` is deliberately absent: the helper never
  * reads it.
  */
 export interface NavigationStateLike {
-  /** Index of the focused route in `routes`. Defaults to `0` when absent. */
+  /**
+   * Index of the focused route in `routes`. When absent (a partial state),
+   * React Navigation's own rule applies: the LAST route for a stack (or a
+   * state with no `type`), the FIRST route for any other navigator type.
+   */
   index?: number;
+  /** Navigator type (`'stack'`, `'tab'`, `'drawer'`, …), when known. */
+  type?: string;
   routes: ReadonlyArray<{
     name: string;
     /** The nested navigator's state, when this route hosts one. */
@@ -67,6 +86,16 @@ export interface ReactNavigationPatternOptions {
    * names the helper returns `null`.
    */
   notFoundRouteNames?: readonly string[];
+}
+
+/**
+ * The focused route's index, by React Navigation's rule for a partial state:
+ * `state.index ?? (typeof state.type === 'string' && state.type !== 'stack'
+ * ? 0 : routes.length - 1)`.
+ */
+function focusedIndex(state: NavigationStateLike, routeCount: number): number {
+  if (state.index !== undefined) return state.index;
+  return typeof state.type === 'string' && state.type !== 'stack' ? 0 : routeCount - 1;
 }
 
 /**
@@ -121,12 +150,35 @@ export function expoRouterPattern(segments: readonly string[]): string | null {
 }
 
 /**
+ * Derive the cumulative route stack from Expo Router's `useSegments()`, with
+ * the same meaning as the web `RouteInfo.routeStack` (`["/", "/tasks",
+ * "/tasks/:id"]`): one template per depth, root first.
+ *
+ * - `[]` → `['/']`;
+ * - `['(tabs)', 'runs']` → `['/', '/(tabs)', '/(tabs)/runs']`.
+ *
+ * Fails closed by the same rules as {@link expoRouterPattern}: returns
+ * `undefined` (no stack reported) when any segment is a `+` system route or
+ * fails the route-identifier shape test.
+ */
+export function expoRouterRouteStack(segments: readonly string[]): string[] | undefined {
+  if (expoRouterPattern(segments) === null) return undefined;
+  const stack = ['/'];
+  for (let depth = 1; depth <= segments.length; depth++) {
+    stack.push('/' + segments.slice(0, depth).join('/'));
+  }
+  return stack;
+}
+
+/**
  * Derive a route template from a React Navigation state: the focused
  * route-NAME chain, root to leaf, joined with `/` — e.g. `/HomeTabs/Profile`.
  *
  * The whole chain rather than the leaf keeps same-named screens in different
  * navigators (`Settings` under two tabs) distinct. Route `params` are never
- * read, so no param shape can leak into the result.
+ * read, so no param shape can leak into the result. Pass the ROOT state
+ * (see {@link NavigationStateLike}); a level with no `index` focuses its last
+ * route for a stack (or an untyped state) and its first for any other type.
  *
  * Returns `null` on an empty `routes`, an out-of-range or non-integer
  * `index`, a route name that fails the route-identifier shape test, or a
@@ -145,7 +197,7 @@ export function reactNavigationPattern(
   while (level) {
     const routes = level.routes;
     if (!Array.isArray(routes) || routes.length === 0) return null;
-    const index = level.index ?? 0;
+    const index = focusedIndex(level, routes.length);
     if (!Number.isInteger(index) || index < 0 || index >= routes.length) return null;
     const route = routes[index];
     if (!route || !isRouteIdentifier(route.name)) return null;

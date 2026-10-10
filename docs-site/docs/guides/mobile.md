@@ -437,8 +437,12 @@ The concrete path is still reported separately, as `currentRoute` (from your
   `['+not-found']` in the same render, and a React Navigation not-found screen
   is an ordinary named route. Pass `{ unmatched }` directly. While it is true,
   the reported `pattern` is `null` and `params` is dropped. On a not-found
-  screen Expo Router puts the concrete path in `params['not-found']`, and
-  dropping `params` keeps it out of the snapshot.
+  screen the concrete path is always in Expo Router's `pathname` (which you
+  never pass), and for a NESTED `+not-found` route it is also in
+  `params['not-found']`. Dropping `params` keeps it out of the snapshot.
+- **`routeStack` holds cumulative templates**, as on the web
+  (`["/", "/(tabs)", "/(tabs)/runs"]`), not raw segments. Derive it with
+  `expoRouterRouteStack(segments)`, which fails closed the same way.
 
 ### Expo Router
 
@@ -448,6 +452,7 @@ Mount this once in the root layout (`app/_layout.tsx`):
 import { useLocalSearchParams, useSegments } from 'expo-router';
 import {
   expoRouterPattern,
+  expoRouterRouteStack,
   isExpoRouterUnmatched,
   useRouteAwareness,
 } from '@qontinui/ui-bridge-native';
@@ -470,7 +475,7 @@ export function RouteAwareness() {
       pattern: expoRouterPattern(segments),
       patternSource: 'router',
       params: unmatched ? undefined : params,
-      routeStack: segments,
+      routeStack: expoRouterRouteStack(segments),
     },
     { unmatched }
   );
@@ -483,21 +488,42 @@ it anyway while `unmatched` is true.
 
 ### React Navigation
 
-Mount this inside the `NavigationContainer`:
+Read the **root** navigation state from the container. Do not use
+`useNavigationState`: directly under `NavigationContainer` it throws
+("Couldn't get the navigation state. Is your component inside a
+navigator?"), and inside a screen it returns only that navigator's state, which
+truncates the chain. Wrap your navigators in a component like this one, rendered
+inside `UIBridgeNativeProvider`:
 
 ```tsx
-import { useNavigationState } from '@react-navigation/native';
-import { reactNavigationPattern, useRouteAwareness } from '@qontinui/ui-bridge-native';
+import { useState } from 'react';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
+import {
+  reactNavigationPattern,
+  useRouteAwareness,
+  type NavigationStateLike,
+} from '@qontinui/ui-bridge-native';
 
-export function RouteAwareness() {
-  const state = useNavigationState((s) => s);
-  // The linking config's catch-all screen.
-  const pattern = reactNavigationPattern(state, { notFoundRouteNames: ['NotFound'] });
+export function Navigation({ children }: { children: React.ReactNode }) {
+  const navigationRef = useNavigationContainerRef();
+  const [rootState, setRootState] = useState<NavigationStateLike | undefined>();
+  const syncRootState = () => setRootState(navigationRef.getRootState());
 
+  // 'NotFound' is the linking config's catch-all screen.
+  const pattern = reactNavigationPattern(rootState, { notFoundRouteNames: ['NotFound'] });
   useRouteAwareness({ pattern, patternSource: 'router' }, { unmatched: pattern === null });
-  return null;
+
+  return (
+    <NavigationContainer ref={navigationRef} onReady={syncRootState} onStateChange={syncRootState}>
+      {children}
+    </NavigationContainer>
+  );
 }
 ```
+
+A navigator level whose state has no `index` focuses its last route for a stack
+and its first route for any other navigator type, matching React Navigation's
+own rule.
 
 The pattern is the chain of focused route **names** from the root navigator to
 the leaf, such as `/HomeTabs/Profile`. Route names are static identifiers

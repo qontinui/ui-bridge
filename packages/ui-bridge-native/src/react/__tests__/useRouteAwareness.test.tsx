@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
+import { StrictMode } from 'react';
 
 // Mock react-native before importing the provider so StyleSheet.flatten exists.
 vi.mock('react-native', () => ({
@@ -166,6 +167,37 @@ describe('useRouteAwareness', () => {
       route: { pattern: '/b', patternSource: 'router' },
     });
     h.unmount();
+  });
+
+  it('under StrictMode (double-invoked effects) leaves the latest info set after mount', () => {
+    let bridge!: UIBridgeNativeContextValue;
+    function Capture() {
+      bridge = useUIBridgeNative();
+      return null;
+    }
+    function Reporter({ info }: { info: RouteInfo }) {
+      useRouteAwareness(info);
+      return null;
+    }
+    const view = render(
+      <StrictMode>
+        <UIBridgeNativeProvider features={FEATURES} config={CONFIG}>
+          <Capture />
+          <Reporter info={{ pattern: '/a', patternSource: 'router' }} />
+        </UIBridgeNativeProvider>
+      </StrictMode>
+    );
+    expect(bridge.registry.getRouteInfo()).toEqual({ pattern: '/a', patternSource: 'router' });
+    view.rerender(
+      <StrictMode>
+        <UIBridgeNativeProvider features={FEATURES} config={CONFIG}>
+          <Capture />
+          <Reporter info={{ pattern: '/b', patternSource: 'router' }} />
+        </UIBridgeNativeProvider>
+      </StrictMode>
+    );
+    expect(bridge.registry.getRouteInfo()).toEqual({ pattern: '/b', patternSource: 'router' });
+    view.unmount();
   });
 
   it('end to end: an Expo not-found render yields page.route.pattern null', () => {

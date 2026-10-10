@@ -120,6 +120,7 @@ describe('the package root barrel lists the Phase 2-4 surface', () => {
   it('exports the route-awareness hook and the per-router pattern helpers', () => {
     expect(source).toContain('useRouteAwareness,');
     expect(source).toContain('expoRouterPattern,');
+    expect(source).toContain('expoRouterRouteStack,');
     expect(source).toContain('reactNavigationPattern,');
     expect(source).toContain('isExpoRouterUnmatched,');
     expect(source).toContain('type RouteInfo,');

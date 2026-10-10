@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   expoRouterPattern,
+  expoRouterRouteStack,
   isExpoRouterUnmatched,
   reactNavigationPattern,
   type NavigationStateLike,
@@ -72,20 +73,69 @@ describe('expoRouterPattern', () => {
   });
 
   /**
-   * The D3 premise, pinned: on a not-found render expo-router 6.0.23's
-   * `getRouteInfoFromState` (`build/global-state/routeInfo.js:22-30`) returns
-   * `segments: [route.name]` for the top-level `+not-found` route, and puts
-   * the concrete path only into `params['not-found']` (`:96-99`). This fixture
-   * is typed after that output; the concrete path must not reach the pattern.
+   * The D3 premise, pinned against the two real shapes expo-router 6.0.23's
+   * `getRouteInfoFromState` (`build/global-state/routeInfo.js`) returns on a
+   * not-found render. In both, the concrete path is in `pathname`, never in a
+   * segment, and the segments carry `+not-found`.
+   *
+   * - TOP-LEVEL branch (`:22-30`): `segments: [route.name]`, `params: {}`.
+   * - NESTED branch (`:36-46`, `:96-99`): route NAMES pushed into `segments`,
+   *   and the concrete path ALSO in `params['not-found']`.
    */
-  it('yields null for the shape getRouteInfoFromState returns on a not-found render', () => {
-    const notFoundRouteInfo = {
+  it('yields null for the top-level not-found shape (params empty)', () => {
+    const topLevel = {
       segments: ['+not-found'],
+      pathname: '/search/secret-sentinel',
+      params: {},
+    };
+    expect(expoRouterPattern(topLevel.segments)).toBeNull();
+    expect(isExpoRouterUnmatched(topLevel.segments)).toBe(true);
+    expect(expoRouterRouteStack(topLevel.segments)).toBeUndefined();
+  });
+
+  it('yields null for the nested not-found shape (path also in params)', () => {
+    const nested = {
+      segments: ['(tabs)', '+not-found'],
       pathname: '/search/secret-sentinel',
       params: { 'not-found': ['search', 'secret-sentinel'] },
     };
-    expect(expoRouterPattern(notFoundRouteInfo.segments)).toBeNull();
-    expect(isExpoRouterUnmatched(notFoundRouteInfo.segments)).toBe(true);
+    expect(expoRouterPattern(nested.segments)).toBeNull();
+    expect(isExpoRouterUnmatched(nested.segments)).toBe(true);
+    expect(expoRouterRouteStack(nested.segments)).toBeUndefined();
+  });
+});
+
+describe('expoRouterRouteStack', () => {
+  it('maps an empty segment list to the root alone', () => {
+    expect(expoRouterRouteStack([])).toEqual(['/']);
+  });
+
+  it('returns one cumulative template per depth, root first', () => {
+    expect(expoRouterRouteStack(['(tabs)', 'runs'])).toEqual(['/', '/(tabs)', '/(tabs)/runs']);
+  });
+
+  it('keeps dynamic segments as their file-route names', () => {
+    expect(expoRouterRouteStack(['profile', '[user]'])).toEqual([
+      '/',
+      '/profile',
+      '/profile/[user]',
+    ]);
+  });
+
+  it('fails closed on a + system segment', () => {
+    expect(expoRouterRouteStack(['+not-found'])).toBeUndefined();
+  });
+
+  it('fails closed on a malformed segment', () => {
+    expect(expoRouterRouteStack(['a/b'])).toBeUndefined();
+    expect(expoRouterRouteStack(['a', ''])).toBeUndefined();
+    expect(expoRouterRouteStack(['a?x'])).toBeUndefined();
+  });
+
+  it('agrees with expoRouterPattern at its deepest entry', () => {
+    const segments = ['(tabs)', 'profile', '[user]'];
+    const stack = expoRouterRouteStack(segments);
+    expect(stack?.[stack.length - 1]).toBe(expoRouterPattern(segments));
   });
 });
 
@@ -138,8 +188,37 @@ describe('reactNavigationPattern', () => {
     expect(reactNavigationPattern(state)).toBe('/Settings');
   });
 
-  it('treats an absent index as the first route', () => {
+  it('treats an absent index on a single-route state as that route', () => {
     expect(reactNavigationPattern({ routes: [{ name: 'Home' }] })).toBe('/Home');
+  });
+
+  it('focuses the LAST route of a stack with no index', () => {
+    expect(
+      reactNavigationPattern({ type: 'stack', routes: [{ name: 'List' }, { name: 'Detail' }] })
+    ).toBe('/Detail');
+  });
+
+  it('focuses the LAST route of an untyped state with no index', () => {
+    expect(reactNavigationPattern({ routes: [{ name: 'List' }, { name: 'Detail' }] })).toBe(
+      '/Detail'
+    );
+  });
+
+  it('focuses the FIRST route of a tab navigator with no index', () => {
+    expect(
+      reactNavigationPattern({ type: 'tab', routes: [{ name: 'Feed' }, { name: 'Search' }] })
+    ).toBe('/Feed');
+  });
+
+  it('applies the default rule at a nested level', () => {
+    const state: NavigationStateLike = {
+      type: 'stack',
+      routes: [
+        { name: 'Login' },
+        { name: 'HomeTabs', state: { type: 'tab', routes: [{ name: 'Feed' }, { name: 'Me' }] } },
+      ],
+    };
+    expect(reactNavigationPattern(state)).toBe('/HomeTabs/Feed');
   });
 
   it('returns null for an out-of-range index', () => {

@@ -17,5 +17,10 @@ export { State, TransitionTo } from './StateAnnotation';
 export type { StateProps, TransitionToProps, StateAnnotationRequiredElement } from './StateAnnotation';
 export { useRouteAwareness } from './useRouteAwareness';
 export type { UseRouteAwarenessOptions } from './useRouteAwareness';
-export { expoRouterPattern, reactNavigationPattern, isExpoRouterUnmatched } from './routePattern';
+export {
+  expoRouterPattern,
+  expoRouterRouteStack,
+  reactNavigationPattern,
+  isExpoRouterUnmatched,
+} from './routePattern';
 export type { NavigationStateLike, ReactNavigationPatternOptions } from './routePattern';

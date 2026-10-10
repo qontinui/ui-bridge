@@ -201,6 +201,7 @@ export { useUIBridgeModal, type UseUIBridgeModalOptions } from './react/useUIBri
 export { useRouteAwareness, type UseRouteAwarenessOptions } from './react/useRouteAwareness';
 export {
   expoRouterPattern,
+  expoRouterRouteStack,
   reactNavigationPattern,
   isExpoRouterUnmatched,
   type NavigationStateLike,

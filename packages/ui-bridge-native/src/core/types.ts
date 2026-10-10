@@ -798,9 +798,10 @@ export interface NativeBridgeSnapshot {
 /**
  * Structured route information provided by router integration.
  *
- * A VERBATIM mirror of `RouteInfo` in `@qontinui/ui-bridge`
+ * Mirrors `RouteInfo` in `@qontinui/ui-bridge`
  * (`packages/ui-bridge/src/navigation/types.ts`), which is the source of
- * truth for the field set. Declared here rather than imported because
+ * truth: the same field names and types, and each field means the same thing
+ * on both platforms. Declared here rather than imported because
  * `@qontinui/ui-bridge` is only an OPTIONAL peer of this package.
  */
 export interface RouteInfo {
@@ -822,7 +823,11 @@ export interface RouteInfo {
   params?: Record<string, string>;
   /** Query parameters as key-value pairs */
   queryParams?: Record<string, string>;
-  /** Matched route stack / breadcrumb (e.g., ["(tabs)", "profile", "[user]"]) */
+  /**
+   * Matched route stack / breadcrumb: one cumulative TEMPLATE per depth, root
+   * first, as on the web (e.g., ["/", "/(tabs)", "/(tabs)/runs"]) — derive it
+   * with `expoRouterRouteStack`, never pass raw segments.
+   */
   routeStack?: string[];
 }
 
