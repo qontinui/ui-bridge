@@ -572,6 +572,14 @@ export function createRelayHandlers(
    */
   const STALE_AGE_MULTIPLIER = 5;
   let snapshotStaleSince: number | null = null;
+  /**
+   * Why the most recent snapshot refresh failed, or `null` after a good one.
+   * A malformed answer and a relay failure both keep the previous snapshot
+   * (neither is ever cached), but they are different facts: the tab ANSWERED
+   * without a usable `elements` array versus the tab could not be reached.
+   * Page health reports them as `input_missing` and `app_unreachable`.
+   */
+  let lastRefreshFailure: 'relay_failed' | 'malformed_response' | null = null;
 
   function staleMeta(): { stale: boolean; staleSinceMs?: number; cacheAgeMs: number } {
     const cacheAgeMs = Date.now() - latestControlSnapshot.timestamp;
@@ -618,14 +626,21 @@ export function createRelayHandlers(
       try {
         const result = await relay.queueCommand<unknown>('getControlSnapshot', {});
         if (!isControlSnapshot(result)) {
+          // A malformed answer is handled like a relay failure — never cached,
+          // the last good snapshot kept and marked stale — but recorded as
+          // its own reason.
           warnMalformedSnapshot(result);
-          throw new Error('malformed control snapshot');
+          lastRefreshFailure = 'malformed_response';
+          if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+          return;
         }
         latestControlSnapshot = result;
         snapshotStaleSince = null;
+        lastRefreshFailure = null;
       } catch {
-        // A relay failure OR a malformed answer: keep the last good snapshot.
+        // A relay failure: keep the last good snapshot.
         // Track when we first started returning stale data
+        lastRefreshFailure = 'relay_failed';
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
       }
     })();
@@ -1301,6 +1316,7 @@ export function createRelayHandlers(
         }
         latestControlSnapshot = result;
         snapshotStaleSince = null;
+        lastRefreshFailure = null;
 
         // If the snapshot came back empty (no elements, no components), the app
         // may be in an error state — attach a fallback screenshot for context
@@ -1318,6 +1334,8 @@ export function createRelayHandlers(
         return success(result, { stale: false, cacheAgeMs: 0 });
       } catch (_e) {
         // Command timed out or failed — return cached snapshot with fallback screenshot
+        lastRefreshFailure =
+          fallbackReason === 'malformed_response' ? 'malformed_response' : 'relay_failed';
         if (!snapshotStaleSince) snapshotStaleSince = Date.now();
         const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
@@ -2143,15 +2161,17 @@ export function createRelayHandlers(
     // never-refreshed cache would analyze the pristine empty snapshot and
     // describe "nobody asked the browser", not the page. What the refresh
     // could not fix stays visible: a failed refresh over an empty cache is
-    // `unknown{app_unreachable}`; over a populated one the analysis runs and
+    // `unknown{app_unreachable}` when the tab could not be reached and
+    // `unknown{input_missing}` when it answered a malformed snapshot (no
+    // `elements` array — never cached, see `isControlSnapshot`); over a
+    // populated cache the analysis runs and
     // `provenance.observedAt` is the cached snapshot's own (old) timestamp,
     // with `_meta` carrying the stale flag.
     async pageHealth() {
       try {
-        // The cached snapshot is whatever the browser last sent, so its
-        // `elements` may be missing: read it through `Array.isArray`, never
-        // `.length` directly (a previous refresh that cached a snapshot with
-        // no `elements` key made the NEXT call throw here).
+        // Both cache-write sites validate the snapshot (`isControlSnapshot`),
+        // so `elements` is an array; it is still read through `Array.isArray`
+        // because an unknown is an answer and a throw here is not one.
         const cachedElements = (latestControlSnapshot as { elements?: unknown }).elements;
         await refreshSnapshotIfNeeded(
           resolveRecency(undefined),
@@ -2169,10 +2189,15 @@ export function createRelayHandlers(
           raw.elements.length === 0
         ) {
           return success(
-            pageHealthUnknown(
-              'app_unreachable',
-              'the relay could not fetch a snapshot from the browser tab and holds none cached'
-            ),
+            lastRefreshFailure === 'malformed_response'
+              ? pageHealthUnknown(
+                  'input_missing',
+                  `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it and holds none cached`
+                )
+              : pageHealthUnknown(
+                  'app_unreachable',
+                  'the relay could not fetch a snapshot from the browser tab and holds none cached'
+                ),
             staleMeta()
           );
         }

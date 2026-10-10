@@ -244,14 +244,30 @@ describe('relay pageHealth handler', () => {
     expect(JSON.stringify(res)).not.toContain('CRITICAL');
   });
 
-  it('a snapshot with no elements key answers unknown{input_missing} — on the SECOND call too', async () => {
+  it('the reason follows the LATEST refresh: malformed then unreachable answers app_unreachable', async () => {
+    const queue = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValueOnce({ timestamp: T } as never)
+      .mockRejectedValueOnce(new Error('no tab'));
+    const handlers = createRelayHandlers(relay);
+    const first = await handlers.pageHealth();
+    if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
+    const second = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(second.data?.status).toBe('unknown');
+    if (second.data?.status === 'unknown') expect(second.data.unknown.code).toBe('app_unreachable');
+  });
+
+  it('a malformed snapshot (no elements key) answers unknown{input_missing}, not app_unreachable — on the SECOND call too', async () => {
     vi.spyOn(relay, 'queueCommand').mockResolvedValue({ timestamp: T } as never);
     const handlers = createRelayHandlers(relay);
     const first = await handlers.pageHealth();
     expect(first.data?.status).toBe('unknown');
     if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
-    // The first call cached a snapshot with no `elements` key; the second
-    // call used to throw reading `.length` of it (a rejection, not an answer).
+    // The relay never caches a malformed answer (it keeps the last good
+    // snapshot and marks it stale), but the tab DID answer: the second call
+    // must still say input_missing rather than rejecting or calling the tab
+    // unreachable.
     const second = await handlers.pageHealth();
     expect(second.success).toBe(true);
     expect(second.data?.status).toBe('unknown');
