@@ -116,6 +116,27 @@ describe('Observation status arms', () => {
     expect(() => Observation.absent(prov)).toThrow(/unmeasured/);
   });
 
+  it('absent over ZERO considered items throws — "absent" means the producer looked at something', () => {
+    // The default coverage is {0, 0, []}: a producer that forgets coverage
+    // must not be able to say "nothing there" over nothing looked at.
+    expect(() => Observation.absent(Observation.provenance({ producer }))).toThrow(
+      ObservationError
+    );
+    expect(() =>
+      Observation.absent(
+        Observation.provenance({ producer, coverage: Observation.fullCoverage(0) })
+      )
+    ).toThrow(/zero considered/);
+  });
+
+  it('absent over exactly one considered, fully measured item is legal', () => {
+    const obs = Observation.absent(
+      Observation.provenance({ producer, coverage: Observation.fullCoverage(1) })
+    );
+    expect(obs.status).toBe('absent');
+    expect(obs.provenance.coverage).toEqual({ considered: 1, measured: 1, unmeasured: [] });
+  });
+
   it('unknown carries a code and detail and never a value', () => {
     const obs = wire(
       Observation.unknown(

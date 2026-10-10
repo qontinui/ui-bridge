@@ -119,7 +119,7 @@ export interface UnmeasuredDimension {
 /**
  * How much of what the producer looked at it could actually measure. A
  * non-empty `unmeasured` makes a `measured` observation DEGRADED (legal) and an
- * `absent` one ILLEGAL.
+ * `absent` one ILLEGAL; so does `considered === 0` for `absent`.
  */
 export interface ObservationCoverage {
   /** Items the producer considered. */
@@ -190,7 +190,8 @@ export interface UnknownObservation {
  * The envelope. A discriminated union on `status`, so there is no `measured`
  * without a `value`, no `unknown` without a `code`, and no `value` beside an
  * `absent` — at compile time. The one invariant spanning the state AND the
- * provenance (`absent` only over full coverage) is enforced by
+ * provenance (`absent` only over full coverage of at least one considered
+ * item) is enforced by
  * {@link Observation.absent}.
  */
 export type Observation<T> = MeasuredObservation<T> | AbsentObservation | UnknownObservation;
@@ -406,11 +407,20 @@ function measured<T>(value: T, prov: ObservationProvenance): Observation<T> {
 
 /**
  * The producer looked and found nothing. THROWS {@link ObservationError} when
- * `coverage.unmeasured` is non-empty: "absent" can never be asserted over a
- * region the producer did not measure.
+ * `coverage.considered` is 0 or `coverage.unmeasured` is non-empty: "absent"
+ * means the producer considered at least one item, measured all of it, and
+ * found nothing — it can never be asserted over nothing looked at, nor over a
+ * region the producer did not measure. A producer with nothing to consider
+ * answers `unknown` (e.g. `producer_not_run` / `input_missing`).
  */
 function absent<T = never>(prov: ObservationProvenance): Observation<T> {
   assertProvenance(prov);
+  if (prov.coverage.considered === 0) {
+    throw new ObservationError(
+      'cannot assert absent over zero considered items: the producer looked at nothing. ' +
+        'Report the observation as unknown instead.'
+    );
+  }
   if (prov.coverage.unmeasured.length > 0) {
     const dims = prov.coverage.unmeasured
       .map((u) => `${u.dimension} x${u.count} (${u.code})`)
