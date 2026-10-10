@@ -93,18 +93,25 @@ if (!tab.uiBridgeRegistered) {
 await tab.close();
 ```
 
+`tab.tabId` is this launch's own tab, never another tab that happens to be
+registered on the same relay. When the relay serves a `verifiedOrigin` per tab
+(the Qontinui runner does), only a tab bound to the navigated origin counts.
+Against a relay that does not, the first registered tab is returned. Pass
+`pinnedTabId` when the page pins its tab id (`ui-bridge-inject --tab-id` does).
+The poll then returns that tab and no other.
+
 ## Flags
 
-| Flag                  | Type              | Default            | Purpose                                   |
-| --------------------- | ----------------- | ------------------ | ----------------------------------------- |
-| `--url <url>`         | string (required) | —                  | URL to open                               |
-| `--headless`          | boolean           | `false`            | Hide the window                           |
-| `--ui-bridge <base>`  | string            | —                  | Poll relay base until first tab registers |
-| `--wait-ms <ms>`      | number            | `30000`            | Max wait for UI Bridge registration       |
-| `--keep-alive <secs>` | number            | —                  | Auto-close after this many seconds        |
-| `--viewport <WxH>`    | string            | `1280x720`         | Viewport size                             |
-| `--user-agent <ua>`   | string            | (Chromium default) | UA override                               |
-| `--quiet`             | boolean           | `false`            | Suppress browser console forwarding       |
+| Flag                  | Type              | Default            | Purpose                                           |
+| --------------------- | ----------------- | ------------------ | ------------------------------------------------- |
+| `--url <url>`         | string (required) | —                  | URL to open                                       |
+| `--headless`          | boolean           | `false`            | Hide the window                                   |
+| `--ui-bridge <base>`  | string            | —                  | Poll relay base until this launch's tab registers |
+| `--wait-ms <ms>`      | number            | `30000`            | Max wait for UI Bridge registration               |
+| `--keep-alive <secs>` | number            | —                  | Auto-close after this many seconds                |
+| `--viewport <WxH>`    | string            | `1280x720`         | Viewport size                                     |
+| `--user-agent <ua>`   | string            | (Chromium default) | UA override                                       |
+| `--quiet`             | boolean           | `false`            | Suppress browser console forwarding               |
 
 ## License
 
