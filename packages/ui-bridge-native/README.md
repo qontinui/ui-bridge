@@ -152,6 +152,23 @@ const buttons = await find({ types: ['button'] });
 await executeAction('submit-button', { action: 'press' });
 ```
 
+### useRouteAwareness
+
+Report the current screen as a route **template** (never the concrete path), emitted on every snapshot as `page.route`. Derive the template with `expoRouterPattern(useSegments())` (Expo Router) or `reactNavigationPattern(state)` (React Navigation), and set `patternSource: 'router'`.
+
+```tsx
+import { useSegments } from 'expo-router';
+import { expoRouterPattern, isExpoRouterUnmatched, useRouteAwareness } from '@qontinui/ui-bridge-native';
+
+const segments = useSegments();
+useRouteAwareness(
+  { pattern: expoRouterPattern(segments), patternSource: 'router' },
+  { unmatched: isExpoRouterUnmatched(segments) }
+);
+```
+
+The rules, and a React Navigation example: [Route Awareness in the React Native / Expo guide](https://qontinui.github.io/ui-bridge/docs/guides/mobile#route-awareness).
+
 ## Element Types
 
 - `button` - Pressable buttons

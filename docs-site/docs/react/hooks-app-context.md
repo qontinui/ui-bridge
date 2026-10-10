@@ -68,6 +68,10 @@ Feeds structured router information into the navigation tracker. This is the
 adapter layer between your router and the bridge — the hook is
 framework-agnostic and you supply whatever your router exposes.
 
+React Native / Expo: import `useRouteAwareness` from `@qontinui/ui-bridge-native`
+instead, not from `@qontinui/ui-bridge/react` — see
+[Route Awareness in the mobile guide](../guides/mobile#route-awareness).
+
 | Field | Type | Meaning |
 |-------|------|---------|
 | `pattern` | `string \| null` | Route pattern — a TEMPLATE such as `"/tasks/[id]"`, never the concrete pathname; `null` when unknown (a 404) |

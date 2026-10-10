@@ -396,6 +396,119 @@ function AddToCartButton({ productId }) {
 }
 ```
 
+## Route Awareness
+
+Report the screen the app is on as a route **template** with
+`useRouteAwareness`. Every snapshot then carries it as `page.route`, which is
+the same field the web SDK uses. The runner's journey ledger reads
+`page.route.pattern` from that field and stores it as the screen's node key.
+
+```typescript
+function useRouteAwareness(info: RouteInfo, options?: { unmatched?: boolean }): void
+```
+
+`RouteInfo` has the same fields as the web hook's (`pattern`, `patternSource`,
+`params`, `queryParams`, `routeStack`). Call the hook once, from a component
+mounted inside `UIBridgeNativeProvider`. The info is cleared when that
+component unmounts, and the hook does nothing outside a provider.
+
+The concrete path is still reported separately, as `currentRoute` (from your
+`RouteProvider`). `page` on native carries only `route`. It has no `url`,
+`pathname` or `title`, by design.
+
+### The rules
+
+- **The pattern is a template, never the concrete path.** `/profile/[user]` is a
+  template. `/profile/alice` is user input, and storing it as a template leaks
+  it. Derive the pattern with `expoRouterPattern` or `reactNavigationPattern`.
+  Both return `null` rather than leak.
+- **Never pass `usePathname()`**, a URL, or a param value as the pattern.
+- **Set `patternSource: 'router'`.** The runner keeps a pattern only when it
+  carries that assertion, and drops it otherwise.
+- **Groups are kept.** `["(tabs)", "runs"]` becomes `/(tabs)/runs`. Group names
+  are declared by the developer, never typed by a user, so keeping them leaks
+  nothing. Two screens in different groups can also share a URL (`(tabs)/index`
+  and `(auth)/index` are both `/`), and the group keeps them apart as separate
+  screens. A consumer can strip `(…)` segments if it wants the URL shape. A
+  stripped pattern cannot be restored.
+- **There is no not-found signal to wire.** The web SDK needs one because a
+  Next.js layout renders before its `not-found.tsx` exists. Native routers do
+  not have that gap: Expo Router's `useSegments()` already reads
+  `['+not-found']` in the same render, and a React Navigation not-found screen
+  is an ordinary named route. Pass `{ unmatched }` directly. While it is true,
+  the reported `pattern` is `null` and `params` is dropped. On a not-found
+  screen Expo Router puts the concrete path in `params['not-found']`, and
+  dropping `params` keeps it out of the snapshot.
+
+### Expo Router
+
+Mount this once in the root layout (`app/_layout.tsx`):
+
+```tsx
+import { useLocalSearchParams, useSegments } from 'expo-router';
+import {
+  expoRouterPattern,
+  isExpoRouterUnmatched,
+  useRouteAwareness,
+} from '@qontinui/ui-bridge-native';
+
+export function RouteAwareness() {
+  const segments = useSegments();
+  const searchParams = useLocalSearchParams();
+  const unmatched = isExpoRouterUnmatched(segments);
+
+  // A catch-all param ([...slug]) is a string[]; RouteInfo.params holds strings.
+  const params = Object.fromEntries(
+    Object.entries(searchParams).map(([key, value]) => [
+      key,
+      Array.isArray(value) ? value.join('/') : String(value),
+    ])
+  );
+
+  useRouteAwareness(
+    {
+      pattern: expoRouterPattern(segments),
+      patternSource: 'router',
+      params: unmatched ? undefined : params,
+      routeStack: segments,
+    },
+    { unmatched }
+  );
+  return null;
+}
+```
+
+`params` is optional. Leave it out if you only need the pattern. The hook drops
+it anyway while `unmatched` is true.
+
+### React Navigation
+
+Mount this inside the `NavigationContainer`:
+
+```tsx
+import { useNavigationState } from '@react-navigation/native';
+import { reactNavigationPattern, useRouteAwareness } from '@qontinui/ui-bridge-native';
+
+export function RouteAwareness() {
+  const state = useNavigationState((s) => s);
+  // The linking config's catch-all screen.
+  const pattern = reactNavigationPattern(state, { notFoundRouteNames: ['NotFound'] });
+
+  useRouteAwareness({ pattern, patternSource: 'router' }, { unmatched: pattern === null });
+  return null;
+}
+```
+
+The pattern is the chain of focused route **names** from the root navigator to
+the leaf, such as `/HomeTabs/Profile`. Route names are static identifiers
+declared in code, and `route.params` is never read, so the chain is a template
+by construction. The whole chain is used, not only the leaf, so that
+same-named screens in different navigators stay distinct.
+
+Expo Router runs on React Navigation, but an Expo app should use
+`expoRouterPattern`. Walking Expo's navigation state yields Expo's internal
+route names, not the file routes.
+
 ## HTTP Server (Development)
 
 In development, `ui-bridge-native` can expose an HTTP server for external tools:
