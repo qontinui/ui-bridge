@@ -15,3 +15,7 @@ export { useUIBridgeToast, useToastRecorder } from './useUIBridgeToast';
 export type { UseUIBridgeToastOptions, ToastRecorderInput } from './useUIBridgeToast';
 export { State, TransitionTo } from './StateAnnotation';
 export type { StateProps, TransitionToProps, StateAnnotationRequiredElement } from './StateAnnotation';
+export { useRouteAwareness } from './useRouteAwareness';
+export type { UseRouteAwarenessOptions } from './useRouteAwareness';
+export { expoRouterPattern, reactNavigationPattern, isExpoRouterUnmatched } from './routePattern';
+export type { NavigationStateLike, ReactNavigationPatternOptions } from './routePattern';

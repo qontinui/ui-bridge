@@ -109,6 +109,22 @@ describe('the package root barrel lists the Phase 2-4 surface', () => {
   it('exports the status mapping the ServerAdapter contract needs', () => {
     expect(source).toContain('httpStatusForResponse');
   });
+
+  /**
+   * Plan `2026-10-10-ui-bridge-native-exports-no-use-route-awareness`: the
+   * native package shipped no `useRouteAwareness` at all, so a React Native or
+   * Expo app had no way to report a route template. The trailing commas pin
+   * each name as a whole list entry, for the reason the visibility case above
+   * gives: a bare `toContain` is satisfied by any longer name it prefixes.
+   */
+  it('exports the route-awareness hook and the per-router pattern helpers', () => {
+    expect(source).toContain('useRouteAwareness,');
+    expect(source).toContain('expoRouterPattern,');
+    expect(source).toContain('reactNavigationPattern,');
+    expect(source).toContain('isExpoRouterUnmatched,');
+    expect(source).toContain('type RouteInfo,');
+    expect(source).toContain('type NativeSnapshotPageContext,');
+  });
 });
 
 describe('the ./core barrel exposes the visibility projection too', () => {

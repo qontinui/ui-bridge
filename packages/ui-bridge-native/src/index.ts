@@ -51,6 +51,9 @@ export {
   // The safety-annotation vocabulary (Phase 4). Without it a consumer cannot
   // even name the type its `effect` field holds.
   type IREffect,
+  // Route awareness: the snapshot's `page.route` (see useRouteAwareness).
+  type RouteInfo,
+  type NativeSnapshotPageContext,
 } from './core/types';
 
 export {
@@ -192,6 +195,17 @@ export {
 } from './react/useUIBridge';
 
 export { useUIBridgeModal, type UseUIBridgeModalOptions } from './react/useUIBridgeModal';
+
+// Route awareness — report the router's route TEMPLATE as `page.route`, plus
+// the per-router helpers that derive one without leaking user input.
+export { useRouteAwareness, type UseRouteAwarenessOptions } from './react/useRouteAwareness';
+export {
+  expoRouterPattern,
+  reactNavigationPattern,
+  isExpoRouterUnmatched,
+  type NavigationStateLike,
+  type ReactNavigationPatternOptions,
+} from './react/routePattern';
 
 export {
   useUIBridgeToast,
