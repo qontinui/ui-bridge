@@ -772,6 +772,68 @@ export interface NativeBridgeSnapshot {
    * Empty (undefined) when the host did not configure appInfo.
    */
   appInfo?: NativeAppInfo;
+  /**
+   * Page context, spelled as the web SDK's `ControlSnapshot.page`
+   * (`@qontinui/ui-bridge` `SnapshotPageContext`), so a cross-platform
+   * consumer reads `snapshot.page.route.pattern` on both platforms — the
+   * runner's journey ledger does exactly that.
+   *
+   * Native carries ONLY `route`: the router-asserted template the app reports
+   * through `useRouteAwareness` (`registry.setRouteInfo`). The web's
+   * `url` / `pathname` / `title` are absent BY DESIGN — the concrete path is
+   * user input and stays in {@link currentRoute}; it must never ride along
+   * with a stored template. A consumer that assumes the web's full shape on
+   * any `page` reads `undefined` for those fields.
+   *
+   * Omitted (not null) when no route info is set, so an app that never calls
+   * the hook emits a byte-identical snapshot.
+   */
+  page?: NativeSnapshotPageContext;
+}
+
+// ============================================================================
+// Route Awareness (page.route)
+// ============================================================================
+
+/**
+ * Structured route information provided by router integration.
+ *
+ * A VERBATIM mirror of `RouteInfo` in `@qontinui/ui-bridge`
+ * (`packages/ui-bridge/src/navigation/types.ts`), which is the source of
+ * truth for the field set. Declared here rather than imported because
+ * `@qontinui/ui-bridge` is only an OPTIONAL peer of this package.
+ */
+export interface RouteInfo {
+  /**
+   * Route pattern (e.g., "/profile/[user]" or "/HomeTabs/Profile") — a
+   * TEMPLATE, never the concrete pathname. `null` means "no pattern is known"
+   * (e.g. a not-found screen); derive it with `expoRouterPattern` or
+   * `reactNavigationPattern`, which return `null` rather than leak.
+   */
+  pattern?: string | null;
+  /**
+   * Asserts where `pattern` came from. `"router"` declares it was derived from
+   * the router's own route identifiers and carries no user input. Consumers
+   * that persist the pattern as a template (the runner's journey ledger) keep
+   * it ONLY under this assertion, and drop it otherwise.
+   */
+  patternSource?: 'router';
+  /** Extracted route parameters (e.g., { id: "123" }) */
+  params?: Record<string, string>;
+  /** Query parameters as key-value pairs */
+  queryParams?: Record<string, string>;
+  /** Matched route stack / breadcrumb (e.g., ["(tabs)", "profile", "[user]"]) */
+  routeStack?: string[];
+}
+
+/**
+ * The native snapshot's `page` object — the web `SnapshotPageContext`'s
+ * `route` field only. See {@link NativeBridgeSnapshot.page} for why the
+ * concrete-path fields are absent.
+ */
+export interface NativeSnapshotPageContext {
+  /** The route info last reported through `registry.setRouteInfo`. */
+  route?: RouteInfo;
 }
 
 // ============================================================================
@@ -868,8 +930,11 @@ export interface NativeModalDetectorLike {
 
 /**
  * Canonical enricher slot. Each tracker exposes a `getSnapshot*Context()` method
- * that the registry calls during `createSnapshot`. NavigationTracker is intentionally
- * NOT here — route info already flows through `currentRoute` / `segments`.
+ * that the registry calls during `createSnapshot`. There is no NavigationTracker
+ * here, and none is needed: the CONCRETE route still flows through
+ * `currentRoute` / `segments` (read from the route provider), while the route
+ * TEMPLATE arrives through `registry.setRouteInfo` (called by
+ * `useRouteAwareness`) and is emitted as `page.route`.
  */
 export interface NativeSnapshotEnrichers {
   modalDetector?: NativeModalDetectorLike;

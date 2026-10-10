@@ -21,6 +21,7 @@ import type {
   NativeRouteProviderLike,
   NativeSnapshotEnrichers,
   NativeSnapshotEnricher,
+  RouteInfo,
   Workflow,
   BridgeEvent,
   BridgeEventType,
@@ -534,6 +535,22 @@ export function computeVisibility(
  * or not a ScrollView is still answered honestly by the executor
  * (`NOT_SUPPORTED`).
  */
+/**
+ * Copy a {@link RouteInfo} one level deep (its `params` / `queryParams`
+ * objects and `routeStack` array too), so neither the caller of
+ * `setRouteInfo` nor a snapshot consumer can mutate the registry's slot or a
+ * previously emitted snapshot through a shared reference. Absent fields stay
+ * absent, so the emitted object carries no `undefined`-valued keys it was not
+ * given.
+ */
+function copyRouteInfo(info: RouteInfo): RouteInfo {
+  const copy: RouteInfo = { ...info };
+  if (info.params) copy.params = { ...info.params };
+  if (info.queryParams) copy.queryParams = { ...info.queryParams };
+  if (info.routeStack) copy.routeStack = [...info.routeStack];
+  return copy;
+}
+
 function inferActions(type: NativeElementType, scrollAncestorId?: string): NativeStandardAction[] {
   const baseActions: NativeStandardAction[] = scrollAncestorId
     ? ['focus', 'blur', 'scrollIntoView']
@@ -608,6 +625,16 @@ export class NativeUIBridgeRegistry {
    */
   private routeProvider: NativeRouteProviderLike | null = null;
   /**
+   * The route TEMPLATE the app last reported through `useRouteAwareness`
+   * (via {@link setRouteInfo}), emitted on every snapshot as `page.route`.
+   *
+   * Deliberately NOT named `routeInfo`: `createSnapshot`'s parameter of that
+   * name is the CONCRETE `{currentRoute, segments, activeTab}` read from the
+   * route provider. The two must never be confused — the concrete path is
+   * user input, and this slot is the router-asserted template.
+   */
+  private reportedRoute: RouteInfo | undefined = undefined;
+  /**
    * Device pixel ratio used to project `state.layout` (logical dp) into the
    * physical-pixel `bbox` emitted on each snapshot element. Defaults to `1`
    * (dp ≈ px) so callers/tests that never inject a ratio still get a usable
@@ -671,6 +698,24 @@ export class NativeUIBridgeRegistry {
   /** Read-only accessor for the registered route provider, if any. */
   getRouteProvider(): NativeRouteProviderLike | null {
     return this.routeProvider;
+  }
+
+  /**
+   * Set the route info emitted as `page.route` on every snapshot — the
+   * router-asserted TEMPLATE, normally reported by `useRouteAwareness`.
+   * Pass `undefined` to clear it (the hook does so on unmount), after which
+   * snapshots omit `page` again.
+   *
+   * The value is copied, so a later mutation by the caller cannot alter what
+   * is stored or what an already-emitted snapshot holds.
+   */
+  setRouteInfo(info: RouteInfo | undefined): void {
+    this.reportedRoute = info ? copyRouteInfo(info) : undefined;
+  }
+
+  /** Read-only accessor for the reported route info, if any (a copy). */
+  getRouteInfo(): RouteInfo | undefined {
+    return this.reportedRoute ? copyRouteInfo(this.reportedRoute) : undefined;
   }
 
   /**
@@ -1757,6 +1802,12 @@ export class NativeUIBridgeRegistry {
       // hosts that wire no route provider.
       ...(resolvedRoute.currentRoute ? { route: resolvedRoute.currentRoute } : {}),
       ...(resolvedRoute.activeTab ? { activeTab: resolvedRoute.activeTab } : {}),
+      // The router-asserted route TEMPLATE, spelled as the web SDK's
+      // `snapshot.page.route`. Emitted on the ONE assembly point both route
+      // branches above share (the explicit-`routeInfo` branch the server's
+      // `getSnapshot` override uses, and the provider fallback). Omitted, not
+      // nulled, when unset — the same convention as the aliases above.
+      ...(this.reportedRoute ? { page: { route: copyRouteInfo(this.reportedRoute) } } : {}),
       registration: this.getRegistrationCoverage(),
     };
 
@@ -1810,6 +1861,13 @@ export class NativeUIBridgeRegistry {
             console.warn(`[ui-bridge-native] snapshot enricher "${name}" threw:`, error);
           }
         }
+      }
+      // Custom enrichers `Object.assign` their keys, so one returning a `page`
+      // key would displace the canonical, router-asserted `page.route`.
+      // Re-apply it so it always wins. When no route info is set, an
+      // enricher's `page` is left exactly as the enricher wrote it.
+      if (this.reportedRoute) {
+        snapshot.page = { route: copyRouteInfo(this.reportedRoute) };
       }
     }
 
