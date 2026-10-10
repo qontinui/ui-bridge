@@ -575,7 +575,9 @@ export function createServerHandlers(
       const response = await executor.executeAction(id, envelope as ControlActionRequest);
 
       if (!response.success) {
-        return error(response.error || 'Action failed', 'ACTION_FAILED');
+        // A typed executor failure (`NOT_SUPPORTED` → 501) keeps its code;
+        // everything else stays the generic `ACTION_FAILED`.
+        return error(response.error || 'Action failed', response.errorCode ?? 'ACTION_FAILED');
       }
 
       return success(response);

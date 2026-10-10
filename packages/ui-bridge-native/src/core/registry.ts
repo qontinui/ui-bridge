@@ -526,7 +526,11 @@ export function computeVisibility(
  * Infer available actions based on element type
  */
 function inferActions(type: NativeElementType): NativeStandardAction[] {
-  const baseActions: NativeStandardAction[] = ['focus', 'blur'];
+  // `scrollIntoView` is advertised on every type: the runner refuses any
+  // action an element does not advertise before it ever reaches the device.
+  // An element that declares no `scrollAncestorId` still answers it — with a
+  // typed `NOT_SUPPORTED`, not "Unknown action".
+  const baseActions: NativeStandardAction[] = ['focus', 'blur', 'scrollIntoView'];
 
   switch (type) {
     case 'button':
@@ -1105,59 +1109,14 @@ export class NativeUIBridgeRegistry {
     const pending: Array<Promise<void>> = [];
 
     for (const element of this.getMountedVisibleElements()) {
-      const node = element.ref?.current as
-        | (NativeElementRef & {
-            measureInWindow?: (
-              callback: (pageX: number, pageY: number, w: number, h: number) => void
-            ) => void;
-          })
-        | null
-        | undefined;
-
-      if (!node || typeof node.measureInWindow !== 'function') {
+      const measuring = this.measureNode(element);
+      if (!measuring) {
         counts.skipped++;
         continue;
       }
-
-      const id = element.id;
       pending.push(
-        new Promise<void>((resolve) => {
-          let settled = false;
-          try {
-            node.measureInWindow!((pageX: number, pageY: number, w: number, h: number) => {
-              if (settled) return;
-              settled = true;
-              try {
-                if (w > 0 && h > 0) {
-                  this.updateElementState(id, {
-                    mounted: true,
-                    visible: true,
-                    enabled: true,
-                    focused: false,
-                    layout: { x: pageX, y: pageY, width: w, height: h, pageX, pageY },
-                  });
-                  counts.measured++;
-                } else if (this.elements.get(id)?.getState().layout != null) {
-                  // Collapsed / off-screen: it HAD a measured rect and now
-                  // reports zeros. Clear it so stale coords can't poison the
-                  // snapshot (same shape as markRouteOffscreen).
-                  this.updateElementState(id, { visible: false, layout: null });
-                  counts.cleared++;
-                } else {
-                  counts.skipped++;
-                }
-              } finally {
-                resolve();
-              }
-            });
-          } catch {
-            // A throwing measureInWindow must never break the sweep.
-            if (!settled) {
-              settled = true;
-              counts.skipped++;
-              resolve();
-            }
-          }
+        measuring.then((outcome) => {
+          counts[outcome]++;
         })
       );
     }
@@ -1173,6 +1132,97 @@ export class NativeUIBridgeRegistry {
     }
 
     return counts;
+  }
+
+  /**
+   * Re-measure ONE element via its stored ref and write the fresh geometry
+   * into the registry — the single-element form of {@link refreshMeasurements},
+   * with the same per-element outcomes. Resolves `'skipped'` for an unknown id
+   * or a ref with no callable `measureInWindow`, and at the deadline (default
+   * 250 ms) if the measure never calls back. Never throws.
+   */
+  async measureElement(
+    id: string,
+    options?: { timeoutMs?: number }
+  ): Promise<'measured' | 'cleared' | 'skipped'> {
+    const element = this.elements.get(id);
+    const measuring = element ? this.measureNode(element) : null;
+    if (!measuring) return 'skipped';
+    const timeoutMs =
+      typeof options?.timeoutMs === 'number' &&
+      Number.isFinite(options.timeoutMs) &&
+      options.timeoutMs > 0
+        ? options.timeoutMs
+        : 250;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve('skipped'), timeoutMs);
+      void measuring.then((outcome) => {
+        clearTimeout(timer);
+        resolve(outcome);
+      });
+    });
+  }
+
+  /**
+   * Shared per-element measure for {@link refreshMeasurements} and
+   * {@link measureElement}. Returns `null` when the ref cannot be measured
+   * (no node, no `measureInWindow` — test fixtures, web); otherwise a promise
+   * that settles once the callback fires (or the call throws). It carries no
+   * timeout of its own — callers race it.
+   */
+  private measureNode(
+    element: RegisteredNativeElement
+  ): Promise<'measured' | 'cleared' | 'skipped'> | null {
+    const node = element.ref?.current as
+      | (NativeElementRef & {
+          measureInWindow?: (
+            callback: (pageX: number, pageY: number, w: number, h: number) => void
+          ) => void;
+        })
+      | null
+      | undefined;
+
+    if (!node || typeof node.measureInWindow !== 'function') {
+      return null;
+    }
+
+    const id = element.id;
+    return new Promise((resolve) => {
+      let settled = false;
+      try {
+        node.measureInWindow!((pageX: number, pageY: number, w: number, h: number) => {
+          if (settled) return;
+          settled = true;
+          let outcome: 'measured' | 'cleared' | 'skipped' = 'skipped';
+          try {
+            if (w > 0 && h > 0) {
+              this.updateElementState(id, {
+                mounted: true,
+                visible: true,
+                enabled: true,
+                focused: false,
+                layout: { x: pageX, y: pageY, width: w, height: h, pageX, pageY },
+              });
+              outcome = 'measured';
+            } else if (this.elements.get(id)?.getState().layout != null) {
+              // Collapsed / off-screen: it HAD a measured rect and now
+              // reports zeros. Clear it so stale coords can't poison the
+              // snapshot (same shape as markRouteOffscreen).
+              this.updateElementState(id, { visible: false, layout: null });
+              outcome = 'cleared';
+            }
+          } finally {
+            resolve(outcome);
+          }
+        });
+      } catch {
+        // A throwing measureInWindow must never break the sweep.
+        if (!settled) {
+          settled = true;
+          resolve('skipped');
+        }
+      }
+    });
   }
 
   /**

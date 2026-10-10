@@ -340,7 +340,8 @@ export type NativeStandardAction =
   | 'blur'
   | 'scroll'
   | 'swipe'
-  | 'toggle';
+  | 'toggle'
+  | 'scrollIntoView';
 
 /**
  * Custom action definition for native elements.
@@ -478,6 +479,13 @@ export interface NativeActionResponse {
   result?: unknown;
   /** Error message if failed */
   error?: string;
+  /**
+   * Typed failure code, when the executor can name one (e.g. `NOT_SUPPORTED`
+   * for a `scrollIntoView` on an element that declares no scroll ancestor).
+   * The HTTP handler forwards it as the envelope `code` instead of the generic
+   * `ACTION_FAILED`, so `NOT_SUPPORTED` surfaces as 501. Absent = untyped.
+   */
+  errorCode?: string;
   /** Stack trace if failed */
   stack?: string;
   /** Duration of the action in milliseconds */

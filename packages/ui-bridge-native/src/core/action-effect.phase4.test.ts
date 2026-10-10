@@ -39,13 +39,14 @@ describe('Phase 4 — NATIVE_STANDARD_ACTION_EFFECTS (ui-bridge-native)', () => 
       focus: 'read',
       blur: 'read',
       scroll: 'read',
+      scrollIntoView: 'read',
       swipe: 'write',
       toggle: 'write',
     });
   });
 
-  it('covers exactly 12 verbs — two more than the ui-bridge/native copy', () => {
-    expect(Object.keys(NATIVE_STANDARD_ACTION_EFFECTS)).toHaveLength(12);
+  it('covers exactly 13 verbs — three more than the ui-bridge/native copy', () => {
+    expect(Object.keys(NATIVE_STANDARD_ACTION_EFFECTS)).toHaveLength(13);
     expect(nativeStandardActionEffect('click')).toBe('write');
     expect(nativeStandardActionEffect('setValue')).toBe('write');
   });

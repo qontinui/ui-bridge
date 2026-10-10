@@ -58,6 +58,7 @@ export const NATIVE_STANDARD_ACTION_EFFECTS: Record<NativeStandardAction, IREffe
   focus: 'read',
   blur: 'read',
   scroll: 'read',
+  scrollIntoView: 'read',
   longPress: 'read',
 
   // --- Writes --------------------------------------------------------------

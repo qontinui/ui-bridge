@@ -233,11 +233,17 @@ export {
   type ActionExecutionOptions,
   type TypeActionParams,
   type ScrollActionParams,
+  type ScrollIntoViewActionParams,
+  type ScrollIntoViewResult,
   type SwipeActionParams,
   type PressActionParams,
 } from './control/types';
 
-export { DefaultNativeActionExecutor, createNativeActionExecutor } from './control/action-executor';
+export {
+  DefaultNativeActionExecutor,
+  createNativeActionExecutor,
+  NativeActionError,
+} from './control/action-executor';
 
 // Server exports
 export {

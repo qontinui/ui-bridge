@@ -247,6 +247,46 @@ export interface ScrollActionParams {
 }
 
 /**
+ * `scrollIntoView` action params.
+ *
+ * The element must declare its scroll container (`scrollAncestorId` on
+ * `useUIElement` / `registerElement`); the registry keeps no parent chain, so
+ * there is no "nearest ScrollView" to discover.
+ */
+export interface ScrollIntoViewActionParams {
+  /**
+   * Gap (dp) left between the visible region's top edge and the element after
+   * scrolling. Default 16.
+   */
+  padding?: number;
+  /** Animate the scroll. Default `false` — the result is measured right after. */
+  animated?: boolean;
+}
+
+/**
+ * `scrollIntoView` result. `alreadyVisible`/`scrolled` mirror the web SDK's
+ * shape; the rest says what was done and whether it was confirmed by a fresh
+ * measurement.
+ */
+export interface ScrollIntoViewResult {
+  alreadyVisible: boolean;
+  scrolled: boolean;
+  /** The declared scroll container that was driven. */
+  scrollAncestorId?: string;
+  /**
+   * Content offset (y) requested of the container: the element's
+   * `measureLayout` y relative to the container's inner view, minus padding.
+   */
+  offsetY?: number;
+  /**
+   * Whether a fresh `measureInWindow` after scrolling put the element inside
+   * the visible region. `null` when the element could not be re-measured, so
+   * the outcome is UNKNOWN rather than assumed.
+   */
+  inView?: boolean | null;
+}
+
+/**
  * Swipe action params
  */
 export interface SwipeActionParams {
