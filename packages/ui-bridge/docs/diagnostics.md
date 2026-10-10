@@ -9,7 +9,7 @@ This catalog is the human-readable companion to the generated code enum
 CLI, and the `GET /diagnostics/:code` proxy endpoint — all four are generated
 from the single source of truth `diagnostics/codes.json`.
 
-There are **41** diagnostic codes.
+There are **51** diagnostic codes.
 
 ## Index
 
@@ -46,10 +46,12 @@ There are **41** diagnostic codes.
 
 - [`UB-NAVIGATION-ERROR`](#ub-navigation-error) — Navigation to the target page failed.
 - [`UB-NET-ERROR`](#ub-net-error) — A network error occurred while performing the action or loading data.
+- [`UB-OBS-APP-UNREACHABLE`](#ub-obs-app-unreachable) — The bridge, the runner, or the app behind it could not be reached, so nothing was attempted or observed (an observation carrying it is unknown, not empty).
 - [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error) — The page failed to load correctly.
 
 ### System
 
+- [`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable) — The running build does not serve this capability (e.g. a runner-direct `/vision/*` route called on an SDK-only bridge). Nothing was attempted; this is not an action rejection.
 - [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area) — Page health: the main content area is nearly empty while the sidebar/left region has content.
 - [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal) — Page health: empty-state text was detected (e.g. "no results", "nothing here").
 - [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal) — Page health: error-indicating text was detected on the page.
@@ -62,6 +64,14 @@ There are **41** diagnostic codes.
 - [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element) — Page health: a visible element is positioned entirely off-screen.
 - [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content) — Page health: the content region has very few elements.
 - [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element) — Page health: a visible element has zero width or height.
+- [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor) — Observation unknown: observations existed but every one fell under the caller's confidence floor.
+- [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build) — Observation unknown: the running build does not serve the capability this observation needs.
+- [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing) — Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself.
+- [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable) — Observation unknown: a model reply could not be parsed or failed strict validation.
+- [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input) — Observation unknown: the question needs more than one frame (e.g. animation_settled) and only one was available.
+- [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed) — The producer (an observation producer, or the runner answering a proxied call) ran and failed: transport error, HTTP error status, timeout, or a thrown exception. An observation carrying it is unknown — nothing is known about the page.
+- [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run) — Observation unknown: the producer did not run because there was nothing to look at yet (e.g. zero registered elements and components).
+- [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input) — Observation unknown: the input is known to be stale, so an answer over it would describe a page that no longer exists.
 - [`UB-PARSE-ERROR`](#ub-parse-error) — Could not parse the natural language instruction.
 - [`UB-STATE-NOT-REACHED`](#ub-state-not-reached) — The expected post-action state was not reached.
 - [`UB-UNEXPECTED-STATE`](#ub-unexpected-state) — The element or page is in an unexpected state.
@@ -277,6 +287,27 @@ An assertion about element visibility failed.
 
 [`UB-ASSERT-CONTRAST`](#ub-assert-contrast), [`UB-ASSERT-ELEMENT-MISSING`](#ub-assert-element-missing), [`UB-ASSERT-LAYOUT`](#ub-assert-layout), [`UB-ASSERT-TEXT-MISMATCH`](#ub-assert-text-mismatch), [`UB-ASSERT-TIMEOUT`](#ub-assert-timeout)
 
+## UB-CAPABILITY-UNAVAILABLE
+
+**Category:** `system`
+
+The running build does not serve this capability (e.g. a runner-direct `/vision/*` route called on an SDK-only bridge). Nothing was attempted; this is not an action rejection.
+
+### Common causes
+
+- The route is served only by the qontinui runner and no runner is mounted
+- The bridge build predates the capability
+- The capability is disabled in this build
+
+### Default recovery template
+
+- **Call the route on the runner (http://127.0.0.1:9876/ui-bridge/...) instead of the SDK-only bridge** — confidence: 0.8, retryable: no, priority: 1
+- **Upgrade the bridge/runner build to one that serves this capability** — confidence: 0.5, retryable: no, priority: 2
+
+### See also
+
+[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
 ## UB-ELEM-BLOCKED
 
 **Category:** `element`
@@ -430,7 +461,7 @@ Page health: the main content area is nearly empty while the sidebar/left region
 
 ### See also
 
-[`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-EMPTY-TEXT-SIGNAL
 
@@ -450,7 +481,7 @@ Page health: empty-state text was detected (e.g. "no results", "nothing here").
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-ERROR-TEXT-SIGNAL
 
@@ -470,7 +501,7 @@ Page health: error-indicating text was detected on the page.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-LOADING-CLASS-SIGNAL
 
@@ -489,7 +520,7 @@ Page health: a loading/skeleton/spinner CSS class was detected on a visible elem
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-LOADING-TEXT-SIGNAL
 
@@ -508,7 +539,7 @@ Page health: loading-indicating text was detected, suggesting the page is not se
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-LOW-ELEMENT-DIVERSITY
 
@@ -527,7 +558,7 @@ Page health: all visible elements are navigation-type, suggesting the content bo
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-LOW-SPATIAL-COVERAGE
 
@@ -547,7 +578,7 @@ Page health: rendered elements occupy a critically/abnormally small fraction of 
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-MANY-DISABLED-INTERACTIVE
 
@@ -567,7 +598,7 @@ Page health: over half of interactive elements are disabled.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-NO-CONTENT-ELEMENTS
 
@@ -587,7 +618,7 @@ Page health: no elements were found in the content region.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-OFF-SCREEN-ELEMENT
 
@@ -606,7 +637,7 @@ Page health: a visible element is positioned entirely off-screen.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-SPARSE-CONTENT
 
@@ -626,7 +657,7 @@ Page health: the content region has very few elements.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-HEALTH-ZERO-SIZE-ELEMENT
 
@@ -646,7 +677,7 @@ Page health: a visible element has zero width or height.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-LOW-CONFIDENCE
 
@@ -711,7 +742,7 @@ Navigation to the target page failed.
 
 ### See also
 
-[`UB-NET-ERROR`](#ub-net-error), [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error)
+[`UB-NET-ERROR`](#ub-net-error), [`UB-OBS-APP-UNREACHABLE`](#ub-obs-app-unreachable), [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error)
 
 ## UB-NET-ERROR
 
@@ -732,7 +763,185 @@ A network error occurred while performing the action or loading data.
 
 ### See also
 
-[`UB-NAVIGATION-ERROR`](#ub-navigation-error), [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error)
+[`UB-NAVIGATION-ERROR`](#ub-navigation-error), [`UB-OBS-APP-UNREACHABLE`](#ub-obs-app-unreachable), [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error)
+
+## UB-OBS-APP-UNREACHABLE
+
+**Category:** `network`
+
+The bridge, the runner, or the app behind it could not be reached, so nothing was attempted or observed (an observation carrying it is unknown, not empty).
+
+### Common causes
+
+- The app or runner is not running
+- The browser tab / device is disconnected from the relay
+- Wrong host or port
+- The runner a proxied call needs is not running
+
+### Default recovery template
+
+- **Check the app/runner is running and reachable, then observe again** — command: `check health`, confidence: 0.7, retryable: yes, priority: 1
+
+### See also
+
+[`UB-NAVIGATION-ERROR`](#ub-navigation-error), [`UB-NET-ERROR`](#ub-net-error), [`UB-PAGE-LOAD-ERROR`](#ub-page-load-error)
+
+## UB-OBS-BELOW-CONFIDENCE-FLOOR
+
+**Category:** `system`
+
+Observation unknown: observations existed but every one fell under the caller's confidence floor.
+
+### Common causes
+
+- The confidence floor is set higher than the model's scores for this content
+- Low-contrast or small text
+
+### Default recovery template
+
+- **Lower the confidence floor (e.g. `minConfidence`) or zoom/crop to the region** — confidence: 0.6, retryable: yes, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD
+
+**Category:** `system`
+
+Observation unknown: the running build does not serve the capability this observation needs.
+
+### Common causes
+
+- An SDK-only bridge was asked for a runner-only observation
+- The build predates the observation producer
+
+### Default recovery template
+
+- **Ask a build that serves the capability (usually the runner)** — confidence: 0.7, retryable: no, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-INPUT-MISSING
+
+**Category:** `system`
+
+Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself.
+
+### Common causes
+
+- The snapshot/discover reply carried no elements
+- Elements carry no normalized geometry yet
+- No frame could be captured
+- The device viewport is unknown
+
+### Default recovery template
+
+- **Re-take the snapshot once the page has settled, then observe again** — command: `wait for page to load`, confidence: 0.6, retryable: yes, priority: 1
+- **Supply the missing input explicitly (e.g. a snapshot or viewport) if the route accepts it** — confidence: 0.5, retryable: no, priority: 2
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-MODEL-REPLY-UNPARSEABLE
+
+**Category:** `system`
+
+Observation unknown: a model reply could not be parsed or failed strict validation.
+
+### Common causes
+
+- The model returned malformed or non-JSON output
+- The reply did not validate against the closed schema
+
+### Default recovery template
+
+- **Retry the call once; model JSON-mode output is intermittently malformed** — confidence: 0.5, retryable: yes, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-NEEDS-MULTI-FRAME-INPUT
+
+**Category:** `system`
+
+Observation unknown: the question needs more than one frame (e.g. animation_settled) and only one was available.
+
+### Common causes
+
+- The check compares frames over time and was given a single frame
+
+### Default recovery template
+
+- **Use a check that decides from one frame, or supply a prior frame/baseline** — confidence: 0.5, retryable: no, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-PRODUCER-FAILED
+
+**Category:** `system`
+
+The producer (an observation producer, or the runner answering a proxied call) ran and failed: transport error, HTTP error status, timeout, or a thrown exception. An observation carrying it is unknown — nothing is known about the page.
+
+### Common causes
+
+- A model/OCR endpoint returned an error or timed out
+- The producer threw while analyzing its input
+- An upstream call failed
+
+### Default recovery template
+
+- **Retry the observation once; if it fails again read `unknown.detail` for the failing call** — confidence: 0.6, retryable: yes, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-PRODUCER-NOT-RUN
+
+**Category:** `system`
+
+Observation unknown: the producer did not run because there was nothing to look at yet (e.g. zero registered elements and components).
+
+### Common causes
+
+- The page has not hydrated or mounted the UI Bridge provider yet
+- The registry is empty — nothing has registered
+- The wrong app/tab is connected
+
+### Default recovery template
+
+- **Wait for the page to finish loading and observe again** — command: `wait for page to load`, confidence: 0.7, retryable: yes, priority: 1
+- **Confirm the UI Bridge provider is mounted in the app** — confidence: 0.5, retryable: no, priority: 2
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+
+## UB-OBS-STALE-INPUT
+
+**Category:** `system`
+
+Observation unknown: the input is known to be stale, so an answer over it would describe a page that no longer exists.
+
+### Common causes
+
+- The cached snapshot predates a page change
+- The relay could not refresh from the browser
+
+### Default recovery template
+
+- **Refresh the snapshot and observe again** — confidence: 0.7, retryable: yes, priority: 1
+
+### See also
+
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-PAGE-LOAD-ERROR
 
@@ -753,7 +962,7 @@ The page failed to load correctly.
 
 ### See also
 
-[`UB-NAVIGATION-ERROR`](#ub-navigation-error), [`UB-NET-ERROR`](#ub-net-error)
+[`UB-NAVIGATION-ERROR`](#ub-navigation-error), [`UB-NET-ERROR`](#ub-net-error), [`UB-OBS-APP-UNREACHABLE`](#ub-obs-app-unreachable)
 
 ## UB-PARSE-ERROR
 
@@ -774,7 +983,7 @@ Could not parse the natural language instruction.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-STALE-ELEMENT
 
@@ -816,7 +1025,7 @@ The expected post-action state was not reached.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-UNEXPECTED-STATE
 
@@ -837,7 +1046,7 @@ The element or page is in an unexpected state.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-UNKNOWN-ERROR
 
@@ -856,7 +1065,7 @@ An unknown or uncategorized error occurred.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-VALIDATION-ERROR`](#ub-validation-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-UNSUPPORTED-ACTION
 
@@ -897,7 +1106,7 @@ The parsed action failed validation.
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VLM-STRUCTURED-PARSE-FAIL`](#ub-vlm-structured-parse-fail)
 
 ## UB-VLM-STRUCTURED-PARSE-FAIL
 
@@ -917,4 +1126,4 @@ The VLM Describe response could not be parsed into the closed structured schema;
 
 ### See also
 
-[`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error)
+[`UB-CAPABILITY-UNAVAILABLE`](#ub-capability-unavailable), [`UB-HEALTH-EMPTY-CONTENT-AREA`](#ub-health-empty-content-area), [`UB-HEALTH-EMPTY-TEXT-SIGNAL`](#ub-health-empty-text-signal), [`UB-HEALTH-ERROR-TEXT-SIGNAL`](#ub-health-error-text-signal), [`UB-HEALTH-LOADING-CLASS-SIGNAL`](#ub-health-loading-class-signal), [`UB-HEALTH-LOADING-TEXT-SIGNAL`](#ub-health-loading-text-signal), [`UB-HEALTH-LOW-ELEMENT-DIVERSITY`](#ub-health-low-element-diversity), [`UB-HEALTH-LOW-SPATIAL-COVERAGE`](#ub-health-low-spatial-coverage), [`UB-HEALTH-MANY-DISABLED-INTERACTIVE`](#ub-health-many-disabled-interactive), [`UB-HEALTH-NO-CONTENT-ELEMENTS`](#ub-health-no-content-elements), [`UB-HEALTH-OFF-SCREEN-ELEMENT`](#ub-health-off-screen-element), [`UB-HEALTH-SPARSE-CONTENT`](#ub-health-sparse-content), [`UB-HEALTH-ZERO-SIZE-ELEMENT`](#ub-health-zero-size-element), [`UB-OBS-BELOW-CONFIDENCE-FLOOR`](#ub-obs-below-confidence-floor), [`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`](#ub-obs-capability-unavailable-in-build), [`UB-OBS-INPUT-MISSING`](#ub-obs-input-missing), [`UB-OBS-MODEL-REPLY-UNPARSEABLE`](#ub-obs-model-reply-unparseable), [`UB-OBS-NEEDS-MULTI-FRAME-INPUT`](#ub-obs-needs-multi-frame-input), [`UB-OBS-PRODUCER-FAILED`](#ub-obs-producer-failed), [`UB-OBS-PRODUCER-NOT-RUN`](#ub-obs-producer-not-run), [`UB-OBS-STALE-INPUT`](#ub-obs-stale-input), [`UB-PARSE-ERROR`](#ub-parse-error), [`UB-STATE-NOT-REACHED`](#ub-state-not-reached), [`UB-UNEXPECTED-STATE`](#ub-unexpected-state), [`UB-UNKNOWN-ERROR`](#ub-unknown-error), [`UB-VALIDATION-ERROR`](#ub-validation-error)

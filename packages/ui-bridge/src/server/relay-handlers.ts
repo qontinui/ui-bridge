@@ -30,7 +30,7 @@ import type {
   EffectRecordEntry,
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
-import { diagnosePageHealth } from './page-health';
+import { diagnosePageHealth, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
@@ -2138,16 +2138,74 @@ export function createRelayHandlers(
       }
     },
 
+    // Answers `Observation<PageHealthValue>` over the relay's cached
+    // snapshot, refreshed first exactly as `visibility` is: answering from a
+    // never-refreshed cache would analyze the pristine empty snapshot and
+    // describe "nobody asked the browser", not the page. What the refresh
+    // could not fix stays visible: a failed refresh over an empty cache is
+    // `unknown{app_unreachable}`; over a populated one it is
+    // `unknown{stale_input}` with `provenance.observedAt` the cached
+    // snapshot's own (old) timestamp and `_meta` carrying the stale flag.
     async pageHealth() {
       try {
-        const snapshot = latestControlSnapshot as ControlSnapshot;
-        const elements = (snapshot?.elements ?? []) as unknown as Parameters<
-          typeof diagnosePageHealth
-        >[0];
-        const report = diagnosePageHealth(elements);
-        return success(report);
+        // The cached snapshot is whatever the browser last sent, so its
+        // `elements` may be missing: read it through `Array.isArray`, never
+        // `.length` directly (a previous refresh that cached a snapshot with
+        // no `elements` key made the NEXT call throw here).
+        const cachedElements = (latestControlSnapshot as { elements?: unknown }).elements;
+        await refreshSnapshotIfNeeded(
+          resolveRecency(undefined),
+          !Array.isArray(cachedElements) || cachedElements.length === 0
+        );
+        const raw = latestControlSnapshot as {
+          elements?: unknown;
+          components?: unknown;
+          timestamp?: number;
+          snapshotId?: unknown;
+        };
+        if (
+          snapshotStaleSince !== null &&
+          Array.isArray(raw.elements) &&
+          raw.elements.length === 0
+        ) {
+          return success(
+            pageHealthUnknown(
+              'app_unreachable',
+              'the relay could not fetch a snapshot from the browser tab and holds none cached'
+            ),
+            staleMeta()
+          );
+        }
+        if (snapshotStaleSince !== null) {
+          // The refresh failed but a snapshot is cached: analyzing it would
+          // answer `measured` about a page the relay could not look at now.
+          return success(
+            pageHealthUnknown(
+              'stale_input',
+              'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
+              { observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null }
+            ),
+            staleMeta()
+          );
+        }
+        return success(
+          diagnosePageHealth({
+            elements: raw.elements,
+            registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
+            observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+            source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
+          }),
+          staleMeta()
+        );
       } catch (err) {
-        return error((err as Error).message, 'PAGE_HEALTH_ERROR');
+        // An unknown is an answer: never let a malformed cache turn into a
+        // rejected handler.
+        return success(
+          pageHealthUnknown(
+            'producer_failed',
+            `relay page-health failed: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
       }
     },
 

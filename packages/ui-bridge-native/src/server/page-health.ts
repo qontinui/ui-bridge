@@ -27,6 +27,20 @@
  *     We still emit the `css_signals` field (as `[]`) so the response shape
  *     stays platform-neutral.
  *
+ * The answer is an {@link Observation} (producer `sdk-native/page-health`),
+ * the same envelope as the web SDK's. "Could not look" is an answer, never a
+ * CRITICAL report over nothing:
+ *
+ *   - no `elements` array at all              → `unknown{input_missing}`
+ *   - no usable viewport (absent / 0×0)       → `unknown{input_missing}` —
+ *     an unknown screen size must not read as a blank screen
+ *   - zero elements AND zero components       → `unknown{producer_not_run}`
+ *   - visible elements, none measured yet     → `unknown{input_missing}`
+ *   - the analyzer threw                      → `unknown{producer_failed}`
+ *
+ * Visible elements whose layout has not been measured are COUNTED into
+ * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped.
+ *
  * Fold semantics (see Step 7: Visual anomalies):
  *
  *   The `outside_viewport` count tracks only *horizontal* overflow — elements
@@ -40,7 +54,16 @@
  *   scroll), so that's the meaningful anomaly we surface.
  */
 
+import {
+  Observation,
+  type ObservationProducer,
+  type ObservationProvenanceInit,
+  type ObservationTime,
+  type UnmeasuredDimension,
+} from '../observation';
 import type { NativeElementState } from '../core/types';
+
+declare const __SDK_VERSION__: string;
 
 // ============================================================================
 // Types (mirrors ui-bridge/src/server/page-health.ts)
@@ -55,7 +78,9 @@ export interface PageHealthFinding {
   data: Record<string, unknown>;
 }
 
-export interface PageHealthReport {
+/** The `value` of a `measured` page-health observation. */
+export interface PageHealthValue {
+  /** Worst severity. Only ever present inside a `measured` observation. */
   summary: PageHealthSeverity;
   findings: PageHealthFinding[];
   heatmap: string[];
@@ -70,6 +95,55 @@ export interface PageHealthReport {
 export interface PageHealthElement {
   type: string;
   state: NativeElementState;
+}
+
+/** What this producer answers with. */
+export type PageHealthObservation = Observation<PageHealthValue>;
+
+/** Producer id of the React Native SDK's page-health. */
+export const NATIVE_PAGE_HEALTH_PRODUCER_ID = 'sdk-native/page-health';
+
+/** Inputs, handed over AS RECEIVED. */
+export interface PageHealthInput {
+  /** The registry's elements; anything but an array is `unknown{input_missing}`. */
+  elements: unknown;
+  /** Components the registry reports, or `null` when it keeps no such count. */
+  registeredComponents: number | null;
+  /** The device viewport in pixels, or `null` when it could not be resolved. */
+  viewport: { width: number; height: number } | null;
+  /** When the elements were sampled. */
+  observedAt: ObservationTime | null;
+}
+
+/** Options for {@link diagnosePageHealth}. */
+export interface PageHealthOptions {
+  /** Defaults to `sdk-native/page-health` at this package's version. */
+  producer?: ObservationProducer;
+  /** When the producer ran. Defaults to now. */
+  evaluatedAt?: ObservationTime;
+}
+
+function defaultProducer(): ObservationProducer {
+  return {
+    id: NATIVE_PAGE_HEALTH_PRODUCER_ID,
+    version: typeof __SDK_VERSION__ === 'string' ? __SDK_VERSION__ : 'unknown',
+  };
+}
+
+/** An `unknown` page-health observation for a failure hit before inputs existed. */
+export function pageHealthUnknown(
+  code: 'producer_failed' | 'input_missing' | 'producer_not_run',
+  detail: string,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  return Observation.unknown(
+    code,
+    detail,
+    Observation.provenance({
+      producer: options.producer ?? defaultProducer(),
+      evaluatedAt: options.evaluatedAt,
+    })
+  );
 }
 
 // ============================================================================
@@ -155,9 +229,9 @@ interface NormRect {
 /**
  * Project a mobile `state.layout` (pixels) into 0-1 viewport coords.
  *
- * Returns null when the element hasn't been measured yet (layout=null), the
- * viewport is degenerate (width/height ≤ 0), or pageX/pageY are absent —
- * the analyzer skips those rather than guessing.
+ * Returns null when the element hasn't been measured yet (layout=null) or the
+ * viewport is degenerate (width/height ≤ 0) — the analyzer COUNTS those as
+ * unmeasured geometry rather than guessing.
  */
 function normalizeRect(
   state: NativeElementState,
@@ -185,11 +259,13 @@ function normalizeRect(
 // ============================================================================
 
 /**
- * Run the page-health analyzer over a list of mobile registry elements.
+ * Run the page-health producer over the mobile registry's elements and answer
+ * with an {@link Observation}. Never throws.
  *
  * The pipeline mirrors the canonical analyzer step-for-step:
  *
- *   1. Visible filter (state.visible + measurable layout)
+ *   1. Visible filter (state.visible + measurable layout); visible elements
+ *      whose layout is unmeasured are counted into `coverage.unmeasured`
  *   2. Spatial coverage on a 20x20 grid + left/right halves
  *   3. Layout regions (sidebar/header/content) by center-point
  *   4. Element diversity (nav-only flag)
@@ -200,21 +276,96 @@ function normalizeRect(
  *   9. Worst severity rollup
  */
 export function diagnosePageHealth(
+  input: PageHealthInput,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  const producer = options.producer ?? defaultProducer();
+  try {
+    return observe(input, producer, options.evaluatedAt);
+  } catch (err) {
+    return Observation.unknown(
+      'producer_failed',
+      `page-health producer threw: ${err instanceof Error ? err.message : String(err)}`,
+      Observation.provenance({ producer })
+    );
+  }
+}
+
+function observe(
+  input: PageHealthInput,
+  producer: ObservationProducer,
+  evaluatedAt: ObservationTime | undefined
+): PageHealthObservation {
+  const base: ObservationProvenanceInit = {
+    producer,
+    observedAt: input.observedAt,
+    evaluatedAt,
+  };
+
+  if (!Array.isArray(input.elements)) {
+    return Observation.unknown(
+      'input_missing',
+      'the registry handed over no `elements` array, so there was nothing to analyze; ' +
+        'this says nothing about the screen itself',
+      Observation.provenance({ ...base, observedAt: null })
+    );
+  }
+  const elements = input.elements as PageHealthElement[];
+
+  const viewport = input.viewport;
+  if (!viewport || !(viewport.width > 0) || !(viewport.height > 0)) {
+    return Observation.unknown(
+      'input_missing',
+      viewport
+        ? `the device viewport is degenerate (${viewport.width}x${viewport.height}), so no ` +
+            'element can be placed on screen — pass `body.viewport` or wire `viewportProvider`'
+        : 'the device viewport is unknown, so no element can be placed on screen — pass ' +
+            '`body.viewport` or wire `viewportProvider`',
+      Observation.provenance(base)
+    );
+  }
+
+  if (elements.length === 0 && (input.registeredComponents ?? 0) === 0) {
+    return Observation.unknown(
+      'producer_not_run',
+      'the registry reports zero elements and zero components — nothing has registered ' +
+        'yet, so there was nothing to look at',
+      Observation.provenance(base)
+    );
+  }
+
+  return analyze(elements, viewport, base);
+}
+
+function analyze(
   elements: PageHealthElement[],
-  viewport: { width: number; height: number }
-): PageHealthReport {
+  viewport: { width: number; height: number },
+  base: ObservationProvenanceInit
+): PageHealthObservation {
   const findings: PageHealthFinding[] = [];
 
-  // Project each element's layout once; the analyzer iterates the result
-  // multiple times.
-  const projected = elements.map((el) => ({
-    el,
-    rect: el.state.visible ? normalizeRect(el.state, viewport) : null,
-  }));
-  const visible = projected.filter((p) => p.rect !== null) as Array<{
-    el: PageHealthElement;
-    rect: NormRect;
-  }>;
+  // Considered = visible elements; measured = those whose layout projects.
+  // The difference is COUNTED, never silently dropped.
+  const considered = elements.filter((el) => el.state.visible);
+  const visible = considered.flatMap((el) => {
+    const rect = normalizeRect(el.state, viewport);
+    return rect ? [{ el, rect }] : [];
+  });
+  const withoutGeometry = considered.length - visible.length;
+  const unmeasured: UnmeasuredDimension[] =
+    withoutGeometry > 0
+      ? [{ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' }]
+      : [];
+  const coverage = { considered: considered.length, measured: visible.length, unmeasured };
+
+  if (considered.length > 0 && visible.length === 0) {
+    return Observation.unknown(
+      'input_missing',
+      `all ${considered.length} visible element(s) have no measured layout yet, so spatial ` +
+        'coverage, layout regions and visual anomalies cannot be measured',
+      Observation.provenance({ ...base, coverage })
+    );
+  }
 
   // --- Step 2: Spatial coverage ---------------------------------------------
   const grid: boolean[][] = Array.from({ length: GRID_SIZE }, () =>
@@ -406,11 +557,15 @@ export function diagnosePageHealth(
     row.map((cell) => (cell ? '#' : '.')).join('')
   );
 
-  return {
-    summary: worstSeverity(findings),
-    findings,
-    heatmap,
-    element_count: elements.length,
-    visible_count: visible.length,
-  };
+  return Observation.measured(
+    {
+      summary: worstSeverity(findings),
+      findings,
+      heatmap,
+      element_count: elements.length,
+      visible_count: visible.length,
+    },
+    // A deduction over the registry, not an estimate.
+    Observation.provenance({ ...base, coverage })
+  );
 }

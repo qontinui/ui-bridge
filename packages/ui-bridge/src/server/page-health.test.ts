@@ -12,8 +12,23 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { diagnosePageHealth } from './page-health';
+import { diagnosePageHealth, type PageHealthValue } from './page-health';
 import type { DiscoveredElement } from '../control';
+
+const OBSERVED_AT = Date.UTC(2026, 8, 30, 12, 0, 0);
+
+/**
+ * Run the producer over a populated registry (one registered component, so
+ * an empty element list is a MEASURED empty page, not `producer_not_run`)
+ * and return the report inside the `measured` envelope.
+ */
+function report(elements: DiscoveredElement[]): PageHealthValue {
+  const obs = diagnosePageHealth({ elements, registeredComponents: 1, observedAt: OBSERVED_AT });
+  if (obs.status !== 'measured') {
+    throw new Error(`expected a measured observation, got ${JSON.stringify(obs)}`);
+  }
+  return obs.value;
+}
 
 // ----------------------------------------------------------------------------
 // Test helpers — element fixtures
@@ -101,7 +116,7 @@ describe('diagnosePageHealth', () => {
       }),
     ];
 
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     expect(r.summary).toBe('OK');
     expect(r.element_count).toBe(7);
     expect(r.visible_count).toBe(7);
@@ -116,7 +131,7 @@ describe('diagnosePageHealth', () => {
         rect: { x: 0.4, y: 0.4, width: 0.02, height: 0.02 },
       }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const spatial = r.findings.find((f) => f.check === 'spatial_coverage')!;
     expect(spatial.severity).toBe('CRITICAL');
     expect(r.summary).toBe('CRITICAL');
@@ -130,7 +145,7 @@ describe('diagnosePageHealth', () => {
       el({ rect: { x: 0.0, y: 0.1, width: 0.3, height: 0.4 } }),
       el({ rect: { x: 0.05, y: 0.55, width: 0.25, height: 0.4 } }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const spatial = r.findings.find((f) => f.check === 'spatial_coverage')!;
     expect(spatial.severity).toBe('CRITICAL');
   });
@@ -141,7 +156,7 @@ describe('diagnosePageHealth', () => {
       el({ rect: { x: 0.05, y: 0.2, width: 0.1, height: 0.1 } }),
       el({ rect: { x: 0.05, y: 0.4, width: 0.1, height: 0.1 } }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const layout = r.findings.find((f) => f.check === 'layout_regions')!;
     expect(layout.severity).toBe('CRITICAL');
     expect(layout.data.sidebar).toBe(2);
@@ -166,7 +181,7 @@ describe('diagnosePageHealth', () => {
         rect: { x: 0.3, y: 0.5, width: 0.2, height: 0.05 },
       }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const text = r.findings.find((f) => f.check === 'text_signals')!;
     expect(text.severity).toBe('CRITICAL');
     expect((text.data.errors as string[]).length).toBe(1);
@@ -197,7 +212,7 @@ describe('diagnosePageHealth', () => {
         rect: { x: 0.3, y: 0.7, width: 0.3, height: 0.1 },
       }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const text = r.findings.find((f) => f.check === 'text_signals')!;
     expect(text.severity).toBe('WARNING');
     expect((text.data.css_signals as string[]).length).toBeGreaterThan(0);
@@ -209,7 +224,7 @@ describe('diagnosePageHealth', () => {
       el({ id: 'b2', enabled: false }),
       el({ id: 'b3', enabled: true }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const inter = r.findings.find((f) => f.check === 'interactive_readiness')!;
     expect(inter.severity).toBe('WARNING');
     expect(inter.data.total).toBe(3);
@@ -222,10 +237,10 @@ describe('diagnosePageHealth', () => {
     // / off-right) is a real anomaly — there's no horizontal scroll on
     // typical layouts.
     function anomaliesFor(elements: DiscoveredElement[]) {
-      const report = diagnosePageHealth(elements);
+      const r = report(elements);
       return {
-        report,
-        anomalies: report.findings.find((f) => f.check === 'visual_anomalies')!,
+        report: r,
+        anomalies: r.findings.find((f) => f.check === 'visual_anomalies')!,
       };
     }
 
@@ -321,7 +336,7 @@ describe('diagnosePageHealth', () => {
         rect: { x: 0.3, y: 0.7, width: 0.3, height: 0.2 },
       }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const anomalies = r.findings.find((f) => f.check === 'visual_anomalies')!;
     expect(anomalies.severity).toBe('WARNING');
     expect(anomalies.data.zero_size).toBe(1);
@@ -336,7 +351,7 @@ describe('diagnosePageHealth', () => {
         rect: { x: 0.3 + i * 0.02, y: 0.3 + i * 0.05, width: 0.1, height: 0.05 },
       })
     );
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     const diversity = r.findings.find((f) => f.check === 'element_diversity')!;
     expect(diversity.severity).toBe('WARNING');
     expect(diversity.detail).toContain('navigation-only');
@@ -347,13 +362,13 @@ describe('diagnosePageHealth', () => {
       el({ id: 'visible-1', rect: { x: 0.3, y: 0.3, width: 0.3, height: 0.3 } }),
       el({ id: 'hidden-1', visible: false, rect: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 } }),
     ];
-    const r = diagnosePageHealth(elements);
+    const r = report(elements);
     expect(r.element_count).toBe(2);
     expect(r.visible_count).toBe(1);
   });
 
   it('always returns exactly the six expected check categories', () => {
-    const r = diagnosePageHealth([]);
+    const r = report([]);
     const checks = r.findings.map((f) => f.check);
     expect(checks).toEqual([
       'spatial_coverage',
@@ -365,8 +380,8 @@ describe('diagnosePageHealth', () => {
     ]);
   });
 
-  it('handles empty element list with sensible defaults', () => {
-    const r = diagnosePageHealth([]);
+  it('handles an empty element list over a populated registry as a measured empty page', () => {
+    const r = report([]);
     expect(r.element_count).toBe(0);
     expect(r.visible_count).toBe(0);
     expect(r.summary).toBe('CRITICAL'); // layout_regions content==0
