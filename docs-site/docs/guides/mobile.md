@@ -449,7 +449,7 @@ The concrete path is still reported separately, as `currentRoute` (from your
 Mount this once in the root layout (`app/_layout.tsx`):
 
 ```tsx
-import { useLocalSearchParams, useSegments } from 'expo-router';
+import { useSegments } from 'expo-router';
 import {
   expoRouterPattern,
   expoRouterRouteStack,
@@ -459,32 +459,25 @@ import {
 
 export function RouteAwareness() {
   const segments = useSegments();
-  const searchParams = useLocalSearchParams();
-  const unmatched = isExpoRouterUnmatched(segments);
-
-  // A catch-all param ([...slug]) is a string[]; RouteInfo.params holds strings.
-  const params = Object.fromEntries(
-    Object.entries(searchParams).map(([key, value]) => [
-      key,
-      Array.isArray(value) ? value.join('/') : String(value),
-    ])
-  );
 
   useRouteAwareness(
     {
       pattern: expoRouterPattern(segments),
       patternSource: 'router',
-      params: unmatched ? undefined : params,
       routeStack: expoRouterRouteStack(segments),
     },
-    { unmatched }
+    { unmatched: isExpoRouterUnmatched(segments) }
   );
   return null;
 }
 ```
 
-`params` is optional. Leave it out if you only need the pattern. The hook drops
-it anyway while `unmatched` is true.
+`params` is optional, and the example leaves it out. Do not fill it from
+`useLocalSearchParams()` in the root layout: there it reads the root route's
+own params, not the focused screen's. If you want route params, derive them
+from `useGlobalSearchParams()` and keep only the keys that appear as a `[key]`
+or `[...key]` segment; every other key is a query parameter. The hook drops
+`params` anyway while `unmatched` is true.
 
 ### React Navigation
 

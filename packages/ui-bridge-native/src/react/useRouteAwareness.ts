@@ -23,8 +23,8 @@
  * AND `params` is dropped: on a NESTED `+not-found` route expo-router also
  * carries the concrete not-found path in `params['not-found']` (on the
  * top-level branch `params` is `{}`; the path is always in `pathname`, which
- * the hook never takes), so a caller passing `useLocalSearchParams()` would
- * otherwise ship user input.
+ * the hook never takes), so a caller passing the router's search params as
+ * `params` would otherwise ship user input.
  *
  * Note: native's `unmatched?: boolean` shares its option KEY with the web
  * hook's `unmatched?: RouteUnmatchedSignal | null`, but not its type.

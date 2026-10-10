@@ -60,7 +60,7 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
       patternSource: 'router',
       params: { id: '7' },
       queryParams: { tab: 'logs' },
-      routeStack: ['(tabs)', 'runs', '[id]'],
+      routeStack: ['/', '/(tabs)', '/(tabs)/runs', '/(tabs)/runs/[id]'],
     });
     expect(registry.createSnapshot().page).toEqual({
       route: {
@@ -68,7 +68,7 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
         patternSource: 'router',
         params: { id: '7' },
         queryParams: { tab: 'logs' },
-        routeStack: ['(tabs)', 'runs', '[id]'],
+        routeStack: ['/', '/(tabs)', '/(tabs)/runs', '/(tabs)/runs/[id]'],
       },
     });
   });
@@ -79,7 +79,7 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
       pattern: '/profile/[user]',
       patternSource: 'router',
       params: { user: 'alice' },
-      routeStack: ['profile', '[user]'],
+      routeStack: ['/', '/profile', '/profile/[user]'],
     };
     registry.setRouteInfo(info);
     const before = registry.createSnapshot();
@@ -92,7 +92,7 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
         pattern: '/profile/[user]',
         patternSource: 'router',
         params: { user: 'alice' },
-        routeStack: ['profile', '[user]'],
+        routeStack: ['/', '/profile', '/profile/[user]'],
       },
     });
   });
