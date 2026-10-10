@@ -406,28 +406,38 @@ function measured<T>(value: T, prov: ObservationProvenance): Observation<T> {
 }
 
 /**
- * The producer looked and found nothing. THROWS {@link ObservationError} when
- * `coverage.considered` is 0 or `coverage.unmeasured` is non-empty: "absent"
- * means the producer considered at least one item, measured all of it, and
- * found nothing — it can never be asserted over nothing looked at, nor over a
- * region the producer did not measure. A producer with nothing to consider
- * answers `unknown` (e.g. `producer_not_run` / `input_missing`).
+ * The producer looked and found nothing. "absent" means the producer
+ * considered at least one item, measured every one of them, and found
+ * nothing. THROWS {@link ObservationError}, checked in the Rust canon's order:
+ *
+ * 1. `coverage.unmeasured` is non-empty — never asserted over a region the
+ *    producer did not measure;
+ * 2. `coverage.considered` is 0 — never asserted over nothing looked at (a
+ *    producer with nothing to consider answers `unknown`, e.g.
+ *    `producer_not_run` / `input_missing`);
+ * 3. `coverage.measured !== coverage.considered` — a partial look is
+ *    `measured` with its gaps in `coverage.unmeasured`, never `absent`.
  */
 function absent<T = never>(prov: ObservationProvenance): Observation<T> {
   assertProvenance(prov);
-  if (prov.coverage.considered === 0) {
+  const { considered, measured, unmeasured } = prov.coverage;
+  if (unmeasured.length > 0) {
+    const dims = unmeasured.map((u) => `${u.dimension} x${u.count} (${u.code})`).join(', ');
+    throw new ObservationError(
+      `cannot assert absent over unmeasured coverage: ${dims}. ` +
+        'Report the observation as measured (degraded) or unknown instead.'
+    );
+  }
+  if (considered === 0) {
     throw new ObservationError(
       'cannot assert absent over zero considered items: the producer looked at nothing. ' +
         'Report the observation as unknown instead.'
     );
   }
-  if (prov.coverage.unmeasured.length > 0) {
-    const dims = prov.coverage.unmeasured
-      .map((u) => `${u.dimension} x${u.count} (${u.code})`)
-      .join(', ');
+  if (measured !== considered) {
     throw new ObservationError(
-      `cannot assert absent over unmeasured coverage: ${dims}. ` +
-        'Report the observation as measured (degraded) or unknown instead.'
+      `an \`absent\` observation must have measured every considered item (measured ${measured} of ${considered}); ` +
+        'a partial look is `measured` with its gaps in `coverage.unmeasured`, never `absent`'
     );
   }
   return { status: 'absent', provenance: prov };

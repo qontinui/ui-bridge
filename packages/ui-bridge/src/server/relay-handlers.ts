@@ -578,6 +578,18 @@ export function createRelayHandlers(
    * (neither is ever cached), but they are different facts: the tab ANSWERED
    * without a usable `elements` array versus the tab could not be reached.
    * Page health reports them as `input_missing` and `app_unreachable`.
+   *
+   * Written at BOTH cache-write sites — `refreshSnapshotIfNeeded` and
+   * `getControlSnapshot` — in every outcome (good → `null`, malformed, relay
+   * failure), so it always describes the latest attempt whichever path made
+   * it. Its only reader today is page health, which consults it only over an
+   * EMPTY cache; an empty cache forces `refreshSnapshotIfNeeded` to fetch (or
+   * to await the in-flight fetch), and that fetch overwrites the reason before
+   * it is read. So the `getControlSnapshot` writes and the clear-on-good-
+   * refresh writes are defensive: unobservable through page health, they keep
+   * the field truthful for any reader that does not refresh first. The
+   * relay-pageHealth tests pin the consequence — page health classifies from
+   * its OWN refresh, never from an older attempt's reason.
    */
   let lastRefreshFailure: 'relay_failed' | 'malformed_response' | null = null;
 

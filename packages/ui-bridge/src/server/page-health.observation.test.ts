@@ -251,11 +251,63 @@ describe('relay pageHealth handler', () => {
       .mockRejectedValueOnce(new Error('no tab'));
     const handlers = createRelayHandlers(relay);
     const first = await handlers.pageHealth();
-    if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
+    expect(first.data?.status).toBe('unknown');
+    expect(first.data?.status === 'unknown' && first.data.unknown.code).toBe('input_missing');
     const second = await handlers.pageHealth();
     expect(queue).toHaveBeenCalledTimes(2);
     expect(second.data?.status).toBe('unknown');
-    if (second.data?.status === 'unknown') expect(second.data.unknown.code).toBe('app_unreachable');
+    expect(second.data?.status === 'unknown' && second.data.unknown.code).toBe('app_unreachable');
+  });
+
+  // The getControlSnapshot write site and the clear-on-good-refresh writes of
+  // the refresh reason are defensive (see `lastRefreshFailure` in
+  // relay-handlers.ts): page health reads the reason only over an empty cache,
+  // which forces its own refresh. These pin that consequence.
+  it('a malformed getControlSnapshot does not leak into page health: its own refresh decides', async () => {
+    // A tab is attached, so getControlSnapshot dispatches instead of answering from cache.
+    vi.spyOn(relay, 'hasCommandListeners').mockReturnValue(true);
+    const queue = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValueOnce({ timestamp: T } as never)
+      .mockRejectedValueOnce(new Error('no tab'));
+    const handlers = createRelayHandlers(relay);
+    const snap = await handlers.getControlSnapshot();
+    expect(snap.success).toBe(true);
+    expect(snap._meta?.stale).toBe(true);
+    const health = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(health.data?.status).toBe('unknown');
+    expect(health.data?.status === 'unknown' && health.data.unknown.code).toBe('app_unreachable');
+  });
+
+  it('a malformed getControlSnapshot followed by a malformed refresh still answers input_missing', async () => {
+    // A tab is attached, so getControlSnapshot dispatches instead of answering from cache.
+    vi.spyOn(relay, 'hasCommandListeners').mockReturnValue(true);
+    vi.spyOn(relay, 'queueCommand').mockResolvedValue({ timestamp: T } as never);
+    const handlers = createRelayHandlers(relay);
+    await handlers.getControlSnapshot();
+    const health = await handlers.pageHealth();
+    expect(health.data?.status).toBe('unknown');
+    expect(health.data?.status === 'unknown' && health.data.unknown.code).toBe('input_missing');
+  });
+
+  it('malformed, then a GOOD empty refresh, leaves no stale reason: producer_not_run, then app_unreachable on failure', async () => {
+    const queue = vi
+      .spyOn(relay, 'queueCommand')
+      .mockResolvedValueOnce({ timestamp: T } as never)
+      .mockResolvedValueOnce({ timestamp: T, elements: [], components: [], workflows: [] } as never)
+      .mockRejectedValueOnce(new Error('no tab'));
+    const handlers = createRelayHandlers(relay);
+    const malformed = await handlers.pageHealth();
+    expect(malformed.data?.status === 'unknown' && malformed.data.unknown.code).toBe(
+      'input_missing'
+    );
+    const good = await handlers.pageHealth();
+    expect(good.data?.status).toBe('unknown');
+    expect(good.data?.status === 'unknown' && good.data.unknown.code).toBe('producer_not_run');
+    const failed = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(3);
+    expect(failed.data?.status === 'unknown' && failed.data.unknown.code).toBe('app_unreachable');
   });
 
   it('a malformed snapshot (no elements key) answers unknown{input_missing}, not app_unreachable — on the SECOND call too', async () => {
@@ -263,7 +315,7 @@ describe('relay pageHealth handler', () => {
     const handlers = createRelayHandlers(relay);
     const first = await handlers.pageHealth();
     expect(first.data?.status).toBe('unknown');
-    if (first.data?.status === 'unknown') expect(first.data.unknown.code).toBe('input_missing');
+    expect(first.data?.status === 'unknown' && first.data.unknown.code).toBe('input_missing');
     // The relay never caches a malformed answer (it keeps the last good
     // snapshot and marks it stale), but the tab DID answer: the second call
     // must still say input_missing rather than rejecting or calling the tab
@@ -271,7 +323,7 @@ describe('relay pageHealth handler', () => {
     const second = await handlers.pageHealth();
     expect(second.success).toBe(true);
     expect(second.data?.status).toBe('unknown');
-    if (second.data?.status === 'unknown') expect(second.data.unknown.code).toBe('input_missing');
+    expect(second.data?.status === 'unknown' && second.data.unknown.code).toBe('input_missing');
   });
 
   it('carries the cached snapshot id as provenance.source', async () => {

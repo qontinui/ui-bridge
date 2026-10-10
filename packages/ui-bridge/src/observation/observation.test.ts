@@ -129,6 +129,37 @@ describe('Observation status arms', () => {
     ).toThrow(/zero considered/);
   });
 
+  it('absent over a PARTIALLY measured look throws even with no unmeasured entries', () => {
+    const prov = Observation.provenance({
+      producer,
+      coverage: { considered: 3, measured: 0, unmeasured: [] },
+    });
+    expect(() => Observation.absent(prov)).toThrow(ObservationError);
+    expect(() => Observation.absent(prov)).toThrow(
+      /must have measured every considered item \(measured 0 of 3\)/
+    );
+  });
+
+  it('absent checks run in the Rust canon order: unmeasured, then zero considered, then partial', () => {
+    // Both unmeasured AND partial: the unmeasured refusal wins.
+    expect(() =>
+      Observation.absent(
+        Observation.provenance({
+          producer,
+          coverage: {
+            considered: 3,
+            measured: 1,
+            unmeasured: [{ dimension: 'geometry', count: 2, code: 'input_missing' }],
+          },
+        })
+      )
+    ).toThrow(/unmeasured coverage/);
+    // Zero considered with measured 0 is the zero-considered refusal, not partial.
+    expect(() => Observation.absent(Observation.provenance({ producer }))).toThrow(
+      /zero considered/
+    );
+  });
+
   it('absent over exactly one considered, fully measured item is legal', () => {
     const obs = Observation.absent(
       Observation.provenance({ producer, coverage: Observation.fullCoverage(1) })
