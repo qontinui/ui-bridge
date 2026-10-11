@@ -159,8 +159,12 @@ function TaskDetailPage({ id }: { id: string }) {
 
 Both hooks write through to the tracker, and both clear themselves on unmount.
 The merged result appears as `pageContext` and `route` on
-`getSnapshotPageContext()`, and as `pageName` / `section` / `breadcrumb` /
-`routePattern` on the semantic snapshot's `PageContext`.
+`getSnapshotPageContext()`, which is the control snapshot's `page`. That is the
+only place the hooks' values go. The semantic snapshot's `PageContext` does not
+read the tracker: its `pathname` / `pageName` / `section` / `breadcrumb` are only what a
+`createSnapshot(controlSnapshot, pageContext)` caller passes in. It has no
+route-pattern field, because a pattern without `patternSource` cannot be told
+apart from a concrete path.
 
 There is no automatic breadcrumb inference and no "navigate back N crumbs"
 helper. Browser history navigation is `POST /control/page/back` and

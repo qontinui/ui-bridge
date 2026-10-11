@@ -218,18 +218,25 @@ export interface PageContext {
   focusedElement?: string;
   /** Detected navigation elements */
   navigation?: string[];
-  /** Pathname (from NavigationTracker) */
+  /**
+   * Pathname, page name, section and breadcrumb are copied only from the
+   * `pageContext` the CALLER passes to `SemanticSnapshotManager.createSnapshot`;
+   * nothing fills them from the NavigationTracker or `usePageContext`. The
+   * hook-fed values live on the control snapshot's `page` (`page.pageContext`).
+   *
+   * There is deliberately no route pattern here: the one route channel is the
+   * control snapshot's `page.route` (`RouteInfo`), which carries
+   * `patternSource`, so a consumer can drop a pattern the app did not assert
+   * came from its router. A second, unasserted pattern field is how a concrete
+   * path gets stored as a template.
+   */
   pathname?: string;
-  /** Semantic page name (from usePageContext) */
+  /** Semantic page name (caller-supplied; see above) */
   pageName?: string;
-  /** Application section (from usePageContext) */
+  /** Application section (caller-supplied; see above) */
   section?: string;
-  /** Breadcrumb trail (from usePageContext) */
+  /** Breadcrumb trail (caller-supplied; see above) */
   breadcrumb?: string[];
-  /** Route pattern (from useRouteAwareness, e.g., "/tasks/:id") */
-  routePattern?: string;
-  /** Route parameters (from useRouteAwareness, e.g., { id: "123" }) */
-  routeParams?: Record<string, string>;
 }
 
 /**

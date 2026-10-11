@@ -393,8 +393,6 @@ export class SemanticSnapshotManager {
       pageName: partial?.pageName,
       section: partial?.section,
       breadcrumb: partial?.breadcrumb,
-      routePattern: partial?.routePattern,
-      routeParams: partial?.routeParams,
     };
   }
 
