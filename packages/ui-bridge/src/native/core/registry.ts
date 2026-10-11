@@ -125,11 +125,6 @@ function inferActions(type: NativeElementType): NativeStandardAction[] {
 }
 
 /**
- * Native UI Bridge Registry
- *
- * Manages registration and lookup of native UI elements and components.
- */
-/**
  * Copy a {@link RouteInfo} one level deep (its `params` / `queryParams`
  * objects and `routeStack` array too), so neither the caller of
  * `setRouteInfo` nor a snapshot consumer can mutate the registry's slot or a
@@ -144,6 +139,11 @@ function copyRouteInfo(info: RouteInfo): RouteInfo {
   return copy;
 }
 
+/**
+ * Native UI Bridge Registry
+ *
+ * Manages registration and lookup of native UI elements and components.
+ */
 export class NativeUIBridgeRegistry {
   private elements = new Map<string, RegisteredNativeElement>();
   private components = new Map<string, RegisteredNativeComponent>();
