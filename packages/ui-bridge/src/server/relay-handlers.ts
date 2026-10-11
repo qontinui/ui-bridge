@@ -577,15 +577,17 @@ export function createRelayHandlers(
    * A malformed answer and a relay failure both keep the previous snapshot
    * (neither is ever cached), but they are different facts: the tab ANSWERED
    * without a usable `elements` array versus the tab could not be reached.
-   * Page health reports them as `input_missing` and `app_unreachable`.
+   * Over an empty cache page health reports them as `input_missing` and
+   * `app_unreachable`; over a populated one both are `stale_input`, and this
+   * field picks the detail text.
    *
    * Written at BOTH cache-write sites — `refreshSnapshotIfNeeded` and
    * `getControlSnapshot` — in every outcome (good → `null`, malformed, relay
    * failure), so it always describes the latest attempt whichever path made
-   * it. Its only reader today is page health, which consults it only over an
-   * EMPTY cache; an empty cache forces `refreshSnapshotIfNeeded` to fetch (or
-   * to await the in-flight fetch), and that fetch overwrites the reason before
-   * it is read. So the `getControlSnapshot` writes and the clear-on-good-
+   * it. Its only reader today is page health, which reads it only after a
+   * FORCED refresh (an empty cache, or one already marked stale, makes
+   * `refreshSnapshotIfNeeded` fetch or await the in-flight fetch), and that
+   * fetch overwrites the reason before it is read. So the `getControlSnapshot` writes and the clear-on-good-
    * refresh writes are defensive: unobservable through page health, they keep
    * the field truthful for any reader that does not refresh first. The
    * relay-pageHealth tests pin the consequence — page health classifies from
@@ -2175,19 +2177,25 @@ export function createRelayHandlers(
     // could not fix stays visible: a failed refresh over an empty cache is
     // `unknown{app_unreachable}` when the tab could not be reached and
     // `unknown{input_missing}` when it answered a malformed snapshot (no
-    // `elements` array — never cached, see `isControlSnapshot`); over a
-    // populated cache the analysis runs and
-    // `provenance.observedAt` is the cached snapshot's own (old) timestamp,
-    // with `_meta` carrying the stale flag.
+    // `elements` array — never cached, see `isControlSnapshot`). Over a
+    // populated cache it is `unknown{stale_input}`: analyzing the cached
+    // snapshot would answer `measured` about a page the relay could not look
+    // at now. `provenance.observedAt` is the cached snapshot's own (old)
+    // timestamp, with `_meta` carrying the stale flag.
     async pageHealth() {
       try {
         // Both cache-write sites validate the snapshot (`isControlSnapshot`),
         // so `elements` is an array; it is still read through `Array.isArray`
         // because an unknown is an answer and a throw here is not one.
         const cachedElements = (latestControlSnapshot as { elements?: unknown }).elements;
+        // A cache already marked stale (a DOM change event, or another call's
+        // failed fetch) is refreshed too, so `stale_input` below means the
+        // refresh this call made (or awaited) failed, not an older attempt's.
         await refreshSnapshotIfNeeded(
           resolveRecency(undefined),
-          !Array.isArray(cachedElements) || cachedElements.length === 0
+          !Array.isArray(cachedElements) ||
+            cachedElements.length === 0 ||
+            snapshotStaleSince !== null
         );
         const raw = latestControlSnapshot as {
           elements?: unknown;
@@ -2210,6 +2218,20 @@ export function createRelayHandlers(
                   'app_unreachable',
                   'the relay could not fetch a snapshot from the browser tab and holds none cached'
                 ),
+            staleMeta()
+          );
+        }
+        if (snapshotStaleSince !== null) {
+          // The refresh failed but a snapshot is cached: analyzing it would
+          // answer `measured` about a page the relay could not look at now.
+          return success(
+            pageHealthUnknown(
+              'stale_input',
+              lastRefreshFailure === 'malformed_response'
+                ? `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it, and the cached snapshot is stale`
+                : 'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
+              { observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null }
+            ),
             staleMeta()
           );
         }

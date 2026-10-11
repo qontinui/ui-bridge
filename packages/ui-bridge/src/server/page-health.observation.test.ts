@@ -326,6 +326,73 @@ describe('relay pageHealth handler', () => {
     expect(second.data?.status === 'unknown' && second.data.unknown.code).toBe('input_missing');
   });
 
+  it('a failed refresh over a populated cache answers unknown{stale_input}, never measured', async () => {
+    const queue = vi.spyOn(relay, 'queueCommand').mockResolvedValueOnce({
+      timestamp: T,
+      elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 })],
+      components: [],
+      workflows: [],
+    } as never);
+    const handlers = createRelayHandlers(relay);
+    const primed = await handlers.pageHealth();
+    expect(primed.data?.status).toBe('measured');
+
+    queue.mockRejectedValue(new Error('tab gone'));
+    const res = await handlers.pageHealth();
+    expect(res.success).toBe(true);
+    expect(res.data?.status).toBe('unknown');
+    expect(res.data?.status === 'unknown' && res.data.unknown.code).toBe('stale_input');
+    expect(res.data?.provenance.observedAt).toBe('2026-09-30T12:00:00.000Z');
+    expect(res._meta?.stale).toBe(true);
+  });
+
+  // These snapshots carry `timestamp: Date.now()` so the cache is INSIDE its
+  // 5 s TTL: only the stale flag, not age, can force the second fetch.
+  const freshSnap = () => ({
+    timestamp: Date.now(),
+    elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 })],
+    components: [],
+    workflows: [],
+  });
+  const pushChange = (handlers: unknown) =>
+    (handlers as { __pushChangeEvent: (e: unknown) => void }).__pushChangeEvent({
+      type: 'mutation',
+      timestamp: Date.now(),
+    });
+
+  it('within the cache TTL and with no change event, a second call does not refetch (control)', async () => {
+    const queue = vi.spyOn(relay, 'queueCommand').mockResolvedValue(freshSnap() as never);
+    const handlers = createRelayHandlers(relay);
+    await handlers.pageHealth();
+    const res = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(res.data?.status).toBe('measured');
+  });
+
+  it('a DOM change event within the cache TTL forces a refresh: a good one answers measured, not stale_input', async () => {
+    const queue = vi.spyOn(relay, 'queueCommand').mockResolvedValue(freshSnap() as never);
+    const handlers = createRelayHandlers(relay);
+    await handlers.pageHealth();
+    pushChange(handlers);
+    const res = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(res.data?.status).toBe('measured');
+  });
+
+  it('a malformed refresh over a populated cache is stale_input that says the tab answered', async () => {
+    const queue = vi.spyOn(relay, 'queueCommand').mockResolvedValueOnce(freshSnap() as never);
+    const handlers = createRelayHandlers(relay);
+    await handlers.pageHealth();
+    queue.mockResolvedValue({ timestamp: Date.now() } as never);
+    pushChange(handlers);
+    const res = await handlers.pageHealth();
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(res.data?.status === 'unknown' && res.data.unknown.code).toBe('stale_input');
+    const detail = res.data?.status === 'unknown' ? res.data.unknown.detail : '';
+    expect(detail).toMatch(/malformed control snapshot/);
+    expect(detail).not.toMatch(/could not refresh/);
+  });
+
   it('carries the cached snapshot id as provenance.source', async () => {
     vi.spyOn(relay, 'queueCommand').mockResolvedValue({
       timestamp: T,
