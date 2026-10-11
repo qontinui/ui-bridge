@@ -89,6 +89,32 @@ describe('NativeUIBridgeRegistry route info → page.route', () => {
     });
   });
 
+  it('copies the info out, so mutating an emitted snapshot or a getRouteInfo result alters nothing', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setRouteInfo({
+      pattern: '/profile/[user]',
+      patternSource: 'router',
+      params: { user: 'alice' },
+      routeStack: ['/', '/profile', '/profile/[user]'],
+    });
+    const expected = {
+      route: {
+        pattern: '/profile/[user]',
+        patternSource: 'router',
+        params: { user: 'alice' },
+        routeStack: ['/', '/profile', '/profile/[user]'],
+      },
+    };
+    const snapshot = registry.createSnapshot();
+    snapshot.page!.route!.params!.user = 'mallory';
+    snapshot.page!.route!.routeStack!.push('extra');
+    expect(registry.createSnapshot().page).toEqual(expected);
+    const read = registry.getRouteInfo()!;
+    read.params!.user = 'mallory';
+    read.routeStack!.push('extra');
+    expect(registry.createSnapshot().page).toEqual(expected);
+  });
+
   it('reaches GET /control/snapshot through the server getSnapshot handler', async () => {
     const registry = new NativeUIBridgeRegistry();
     const handlers = createServerHandlers(registry, {} as never);

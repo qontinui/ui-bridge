@@ -417,9 +417,11 @@ The concrete path is still reported separately, as `currentRoute` (from your
 `pathname` or `title`, by design.
 
 The same hook and helpers are also exported from `@qontinui/ui-bridge/native`,
-the React Native entry point inside the web package, with the same behaviour.
-The examples below import from `@qontinui/ui-bridge-native`. If your app uses
-the `/native` entry point, import from there instead.
+the React Native entry point inside the web package, and they behave the same
+there. That entry point has no `RouteProvider`, so its snapshot carries no
+`currentRoute`, only `page.route`. The examples below import from
+`@qontinui/ui-bridge-native`. If your app uses the `/native` entry point, import
+from there instead.
 
 ### The rules
 
