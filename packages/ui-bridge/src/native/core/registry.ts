@@ -21,6 +21,7 @@ import type {
   BridgeEventType,
   BridgeEventListener,
   IREffect,
+  RouteInfo,
 } from './types';
 import { serializeElementCustomActions } from '../../core/element-actions';
 
@@ -128,15 +129,53 @@ function inferActions(type: NativeElementType): NativeStandardAction[] {
  *
  * Manages registration and lookup of native UI elements and components.
  */
+/**
+ * Copy a {@link RouteInfo} one level deep (its `params` / `queryParams`
+ * objects and `routeStack` array too), so neither the caller of
+ * `setRouteInfo` nor a snapshot consumer can mutate the registry's slot or a
+ * previously emitted snapshot through a shared reference. Absent fields stay
+ * absent.
+ */
+function copyRouteInfo(info: RouteInfo): RouteInfo {
+  const copy: RouteInfo = { ...info };
+  if (info.params) copy.params = { ...info.params };
+  if (info.queryParams) copy.queryParams = { ...info.queryParams };
+  if (info.routeStack) copy.routeStack = [...info.routeStack];
+  return copy;
+}
+
 export class NativeUIBridgeRegistry {
   private elements = new Map<string, RegisteredNativeElement>();
   private components = new Map<string, RegisteredNativeComponent>();
   private workflows = new Map<string, Workflow>();
   private eventListeners = new Map<BridgeEventType, Set<BridgeEventListener>>();
   private config: NativeRegistryConfig;
+  /**
+   * The route TEMPLATE the app last reported through `useRouteAwareness`
+   * (via {@link setRouteInfo}), emitted on every snapshot as `page.route`.
+   */
+  private reportedRoute: RouteInfo | undefined = undefined;
 
   constructor(config: NativeRegistryConfig = {}) {
     this.config = config;
+  }
+
+  /**
+   * Set the route info emitted as `page.route` on every snapshot — the
+   * router-asserted TEMPLATE, normally reported by `useRouteAwareness`.
+   * Pass `undefined` to clear it (the hook does so on unmount), after which
+   * snapshots omit `page` again.
+   *
+   * The value is copied, so a later mutation by the caller cannot alter what
+   * is stored or what an already-emitted snapshot holds.
+   */
+  setRouteInfo(info: RouteInfo | undefined): void {
+    this.reportedRoute = info ? copyRouteInfo(info) : undefined;
+  }
+
+  /** Read-only accessor for the reported route info, if any (a copy). */
+  getRouteInfo(): RouteInfo | undefined {
+    return this.reportedRoute ? copyRouteInfo(this.reportedRoute) : undefined;
   }
 
   // ============================================================================
@@ -599,6 +638,9 @@ export class NativeUIBridgeRegistry {
         description: w.description,
         stepCount: w.steps.length,
       })),
+      // The router-asserted route TEMPLATE, spelled as the web SDK's
+      // `snapshot.page.route`. Omitted, not nulled, when unset.
+      ...(this.reportedRoute ? { page: { route: copyRouteInfo(this.reportedRoute) } } : {}),
     };
   }
 

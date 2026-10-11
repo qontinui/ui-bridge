@@ -416,6 +416,11 @@ The concrete path is still reported separately, as `currentRoute` (from your
 `RouteProvider`). `page` on native carries only `route`. It has no `url`,
 `pathname` or `title`, by design.
 
+The same hook and helpers are also exported from `@qontinui/ui-bridge/native`,
+the React Native entry point inside the web package, with the same behaviour.
+The examples below import from `@qontinui/ui-bridge-native`. If your app uses
+the `/native` entry point, import from there instead.
+
 ### The rules
 
 - **The pattern is a template, never the concrete path.** `/profile/[user]` is a

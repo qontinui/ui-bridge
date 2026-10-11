@@ -10,6 +10,8 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNativeElement = any;
 
+import type { RouteInfo } from '../../navigation/types';
+
 // Re-export common types from the web version that don't need adaptation
 // Note: In a real implementation, these would be imported from ui-bridge/core
 // For now, we define WaitOptions locally to avoid the dependency
@@ -499,6 +501,18 @@ export interface NativeBridgeSnapshot {
    * measurable", not "nothing interactive on screen".
    */
   totalInteractiveInDOM: number;
+  /**
+   * Page context, spelled as the web SDK's `snapshot.page`.
+   *
+   * Native carries ONLY `route`: the router-asserted template the app reports
+   * through `useRouteAwareness` (`registry.setRouteInfo`). The web's
+   * `url` / `pathname` / `title` are absent BY DESIGN — the concrete path is
+   * user input and must never ride along with a stored template.
+   *
+   * Omitted (not nulled) when no route info is reported, so an app that never
+   * calls the hook emits a byte-identical snapshot.
+   */
+  page?: NativeSnapshotPageContext;
 }
 
 /**
@@ -569,4 +583,24 @@ export interface NativeFindResponse {
   durationMs: number;
   /** Timestamp */
   timestamp: number;
+}
+
+// ============================================================================
+// Route Awareness (page.route)
+// ============================================================================
+
+/**
+ * Structured route information provided by router integration. The web SDK's
+ * own type — this twin lives in the same package, so it is imported rather
+ * than mirrored, and the two can never drift.
+ */
+export type { RouteInfo } from '../../navigation/types';
+
+/**
+ * The native snapshot's `page`: only the router-asserted `route`; the web's
+ * concrete-path fields are absent.
+ */
+export interface NativeSnapshotPageContext {
+  /** The route info last reported through `registry.setRouteInfo`. */
+  route?: RouteInfo;
 }
