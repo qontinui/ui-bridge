@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
 import { withoutReservedCaller } from './reserved-caller';
+import { scopedCallerRefusal } from './scoped-refusal';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
 
@@ -158,6 +159,11 @@ export function createExpressRouter(
   if (config.sseManager) {
     const sse = config.sseManager;
     router.get('/control/events/stream', (req: Request, res: Response) => {
+      // Events name no tab or user: refused to a scoped caller (scoped-refusal.ts).
+      if (typeof req.headers['x-caller-user-id'] === 'string') {
+        res.status(403).json(scopedCallerRefusal('This event stream'));
+        return;
+      }
       // Set SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -185,6 +191,10 @@ export function createExpressRouter(
 
     // Change observation SSE stream — filters to snapshot:changed events only
     router.get('/control/changes/stream', (changesReq: Request, changesRes: Response) => {
+      if (typeof changesReq.headers['x-caller-user-id'] === 'string') {
+        changesRes.status(403).json(scopedCallerRefusal('This event stream'));
+        return;
+      }
       changesRes.setHeader('Content-Type', 'text/event-stream');
       changesRes.setHeader('Cache-Control', 'no-cache');
       changesRes.setHeader('Connection', 'keep-alive');

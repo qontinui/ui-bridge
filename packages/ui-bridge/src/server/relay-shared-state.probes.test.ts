@@ -204,4 +204,19 @@ describe('shared relay state is never served across users', () => {
     const text = await expectIsolated('user-b', 'GET', '/control/changes/since?since=0');
     expect(JSON.parse(text).success).toBe(false);
   });
+  it("S18 the detailed tab list asks only the caller's own tabs", async () => {
+    const { text, tabs } = await as('user-b', 'GET', '/tabs?detailed=true');
+    expect(tabs).not.toContain('tab-a');
+    expect(text).not.toContain('tab-a');
+  });
+
+  it("S22 a refused heartbeat does not say whether another user's tab holds a stream", async () => {
+    const { text } = await as('user-b', 'POST', '/heartbeat', {
+      tabId: 'tab-a',
+      registrationMetadata: { userId: 'user-b', sessionId: 'mallory' },
+    });
+    const data = (JSON.parse(text) as { data: Record<string, unknown> }).data;
+    expect(data.ownershipAssigned).toBe(false);
+    expect(data).not.toHaveProperty('tabRegistered');
+  });
 });

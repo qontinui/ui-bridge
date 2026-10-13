@@ -1926,10 +1926,12 @@ export class CommandRelay {
   }
 
   /**
-   * Get connected tabs with page info by querying each tab.
+   * Get connected tabs with page info by querying each tab, or only the
+   * connected tabs among `onlyTabIds` when given (a scoped caller's own).
    */
-  async getTabsWithInfo(): Promise<TabInfo[]> {
-    const tabIds = this.getConnectedTabs();
+  async getTabsWithInfo(onlyTabIds?: readonly string[]): Promise<TabInfo[]> {
+    const only = onlyTabIds ? new Set(onlyTabIds) : null;
+    const tabIds = this.getConnectedTabs().filter((id) => !only || only.has(id));
     return Promise.all(
       tabIds.map(async (tabId): Promise<TabInfo> => {
         try {

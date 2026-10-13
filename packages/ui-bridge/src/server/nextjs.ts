@@ -50,6 +50,7 @@ import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
 import { CDPTabDiscovery } from './cdp-tabs';
 import { withoutReservedCaller } from './reserved-caller';
+import { scopedCallerRefusal } from './scoped-refusal';
 
 /**
  * Next.js specific configuration
@@ -162,6 +163,21 @@ export function createNextRouteHandlers(
       const pathParam = context.params.path;
       const path = Array.isArray(pathParam) ? '/' + pathParam.join('/') : '/' + pathParam;
       const method = request.method;
+
+      // The SSE event streams and the server's CDP tabs name no tab or user:
+      // a scoped caller is refused them (see scoped-refusal.ts).
+      if (
+        relayCallerUserId(request) &&
+        ((method === 'GET' &&
+          (path === '/control/events/stream' || path === '/control/changes/stream')) ||
+          path === '/tabs/cdp' ||
+          path.startsWith('/tabs/cdp/'))
+      ) {
+        return jsonResponse(
+          scopedCallerRefusal(path.startsWith('/tabs/cdp') ? 'The CDP tab list' : 'This event stream'),
+          403
+        );
+      }
 
       // Intercept SSE event stream before normal routing
       if (method === 'GET' && path === '/control/events/stream' && config.sseManager) {
@@ -856,13 +872,17 @@ function handleRelayRoute(
       // tabId. The SDK uses this to detect silent disconnects (e.g. when a
       // client-side route change dropped the EventSource without firing
       // onerror) and recover by reopening the stream.
+      // A refused claim is not told whether the tab holds a stream: that would
+      // answer for a tab the caller does not own.
       const diag = relay.getTransportDiagnostics();
-      const tabRegistered = diag.connectedTabs.includes(heartbeatTabId);
+      const tabRegistered = registration.ownershipAssigned
+        ? diag.connectedTabs.includes(heartbeatTabId)
+        : undefined;
       return jsonResponse({
         success: true,
         data: {
           received: true,
-          tabRegistered,
+          ...(tabRegistered === undefined ? {} : { tabRegistered }),
           // Observability: signals an ownership claim/transfer was refused
           // because the claimed userId was not auth-proven. Not a fatal
           // heartbeat error — the loop continues; the tab simply keeps its
@@ -1013,7 +1033,8 @@ function handleRelayRoute(
     const activeSet = new Set(diag.activeTabs);
     if (detailed) {
       return (async () => {
-        const tabInfos = await relay.getTabsWithInfo();
+        // Only the caller's own tabs are asked (§4.2); with no identity, all.
+        const tabInfos = await relay.getTabsWithInfo(ownedSet ? [...ownedSet] : undefined);
         const filtered = tabInfos.filter((info) => {
           if (activeOnly && !activeSet.has(info.tabId)) return false;
           if (ownedSet && !ownedSet.has(info.tabId)) return false;

@@ -12,6 +12,7 @@
 import type { CommandRelay } from './command-relay';
 import { mapInternalErrorCode } from '../diagnostics';
 import { componentActionInvocation } from './component-action-invocation';
+import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import type {
@@ -2551,11 +2552,10 @@ export function createRelayHandlers(
       // The change-event buffer (fed by `__pushChangeEvent`) names no tab or
       // user, so it is served to the unscoped caller only (§4.2).
       if (context?.callerUserId) {
-        return error(
-          'Change events are not attributed to a tab or user, so they are not served ' +
-            'to a caller scoped by X-Caller-User-Id.',
-          'SCOPED_CALLER_UNSUPPORTED'
-        );
+        return {
+          ...scopedCallerRefusal('The change-event buffer'),
+          httpStatus: 403,
+        } as unknown as APIResponse<{ events: DOMChangeEvent[]; count: number }>;
       }
       const since = params?.since ?? 0;
       const limit = params?.limit ?? 100;

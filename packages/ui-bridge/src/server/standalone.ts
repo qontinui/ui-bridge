@@ -17,6 +17,7 @@ import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
 import { SSEManager } from './sse-handler';
 import { withoutReservedCaller } from './reserved-caller';
+import { scopedCallerRefusal } from './scoped-refusal';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -321,6 +322,17 @@ export class StandaloneServer {
     let path = url.pathname;
     if (path.startsWith(basePath)) {
       path = path.slice(basePath.length) || '/';
+    }
+
+    // The SSE event streams name no tab or user: refused to a scoped caller
+    // (scoped-refusal.ts).
+    if (
+      method === 'GET' &&
+      (path === '/control/events/stream' || path === '/control/changes/stream') &&
+      typeof req.headers['x-caller-user-id'] === 'string'
+    ) {
+      this.sendJSON(res, scopedCallerRefusal('This event stream'), 403);
+      return;
     }
 
     // SSE streaming endpoint — handled before normal routing
