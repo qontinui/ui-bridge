@@ -224,6 +224,10 @@ export class LoadingIndicatorDetector implements IdleSignal<LoadingIndicatorSign
   // ==========================================================================
 
   private scan(): void {
+    // The debounced rescan is a timer: it can fire after the document it
+    // watched is gone (a torn-down test environment, a realm unloading).
+    // There is then nothing to scan, and no state worth reporting.
+    if (typeof document === 'undefined') return;
     const indicators: DetectedLoadingIndicator[] = [];
 
     // 1. Check CSS selectors
