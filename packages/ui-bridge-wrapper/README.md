@@ -137,10 +137,17 @@ two snapshots agree on every element's box. The action's output line gains a
 `frame` object whose every field is read off the page or the PNG at capture time
 — `width`/`height`, `devicePixelRatio`, `cssViewport`, `colorScheme`,
 `capturedAt` and `lockstep: {verified, attempts, changedElements}` — never
-copied from the flags. `{n}` in the path becomes the action's 1-based position
-and is required when a run takes more than one snapshot. A frame that cannot be
-produced leaves `"frame": null` plus `"frameError": {code, message}` (the
-snapshot still stands) and the process exits 1.
+copied from the flags. `{n}` in the path's file name becomes the action's
+1-based position and is required when a run takes more than one snapshot (a
+`{n}` in a directory name is refused). A frame that cannot be produced leaves
+`"frame": null` plus `"frameError": {code, message}` (the snapshot still
+stands) and the process exits 1.
+
+A frame is **raw pixels** of the page: `data-bridge-redact` masks elements in
+snapshots and over the relay, never in a screenshot, so a frame shows whatever
+the page showed — including anything an authenticated session displays.
+Directories created for frames (and the capture matrix's snapshots) are
+`0700` and every file `0600`.
 
 `--dpr <n>` and `--color-scheme <dark|light>` set the browser context's
 `deviceScaleFactor` and `prefers-color-scheme`, and the page is checked after
@@ -167,7 +174,10 @@ writes `<dir>/<cell>/frame-<n>.png`, `snapshot-<n>.json` and `results.ndjson`,
 plus `<dir>/matrix.json`: the URL, the producer and its version, the axes, the
 plan and every cell's requested values, status (`captured` / `incomplete` /
 `failed`) and pairs with their frame provenance. An axis left out stays at the
-browser default and says so in the cell id (`390x844_dpr-default_dark`).
+browser default and says so in the cell id (`390x844_dpr-default_dark`). The
+directory must be empty or not exist yet: a non-empty one is refused before any
+browser launches, and is never cleared. `--viewport` sides are at most 8192 CSS
+pixels.
 
 #### Sourcing credentials from SSM (qontinui operators)
 

@@ -28,7 +28,7 @@
  * stamped onto a frame as if it had.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 /** The `prefers-color-scheme` a page rendered in. */
@@ -52,7 +52,22 @@ export interface LockstepRecord {
   changedElements: number | null;
 }
 
-/** The frame-side half of a frame-and-snapshot pair, stamped into the CLI's JSON. */
+/**
+ * The frame-side half of a frame-and-snapshot pair, stamped into the CLI's JSON.
+ *
+ * CONSUMERS read these fields by name, so renaming one, or changing what it
+ * means, breaks them. qontinui-claude-config's `scripts/verify-page-verdict.sh`
+ * (the `/verify-web` verdict) copies the record into each capture, hands `path`
+ * to vision-audit as `--frame` with `--scale-factor <devicePixelRatio>`, and
+ * reads a record whose `devicePixelRatio` is not a positive finite number as no
+ * frame at all. The USAGE token test in `tests/inject-cli-frame.test.ts` pins
+ * the field names for that reason.
+ *
+ * The frame is RAW PIXELS of the page. `data-bridge-redact` masks elements in
+ * snapshots and over the relay, never in a screenshot, so a frame shows whatever
+ * the page showed — which is why it is written owner-only
+ * ({@link PRIVATE_FILE_MODE}, in directories created {@link PRIVATE_DIR_MODE}).
+ */
 export interface FrameRecord {
   /** Absolute path of the PNG written. */
   path: string;
@@ -106,8 +121,37 @@ export const DEFAULT_LOCKSTEP_ATTEMPTS = 3;
  */
 export const FRAME_SCALE_TOLERANCE_PX = 2;
 
-/** The placeholder a `--screenshot` path template replaces with the action's position. */
+/**
+ * The placeholder a `--screenshot` path template replaces with the action's
+ * position. It is substituted in the FILE NAME only — see {@link expandFramePath}.
+ */
 export const FRAME_INDEX_TOKEN = '{n}';
+
+/**
+ * Mode of every directory created to hold frames or snapshots: owner-only. They
+ * can hold pixels and element text from an authenticated session.
+ */
+export const PRIVATE_DIR_MODE = 0o700;
+
+/** Mode of every frame and snapshot file written: owner read/write only. */
+export const PRIVATE_FILE_MODE = 0o600;
+
+/**
+ * Create `dir`, and any missing parent, owner-only ({@link PRIVATE_DIR_MODE}).
+ * A directory that already exists keeps its mode: it is the caller's.
+ */
+export function ensurePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+}
+
+/**
+ * Write `data` to `path` owner-only ({@link PRIVATE_FILE_MODE}). `mode` applies
+ * only when the file is created, so an existing file is narrowed explicitly.
+ */
+export function writePrivateFile(path: string, data: string | Uint8Array): void {
+  writeFileSync(path, data, { mode: PRIVATE_FILE_MODE });
+  chmodSync(path, PRIVATE_FILE_MODE);
+}
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -127,9 +171,30 @@ export function pngDimensions(buf: Uint8Array): { width: number; height: number 
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-/** Substitute every `{n}` in a `--screenshot` template with the action's 1-based position. */
+/** Where the file name starts in a path: after its last `/` or `\` (either OS's separator). */
+function fileNameStart(path: string): number {
+  return Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1;
+}
+
+/**
+ * Substitute `{n}` in the FILE NAME of a `--screenshot` template with the
+ * action's 1-based position. A `{n}` in a directory name is left alone —
+ * {@link frameTokenInDirectory} is how `validateFramePlan` refuses one before
+ * anything runs, so a template never fans frames out across directories.
+ */
 export function expandFramePath(template: string, position: number): string {
-  return template.split(FRAME_INDEX_TOKEN).join(String(position));
+  const at = fileNameStart(template);
+  return template.slice(0, at) + template.slice(at).split(FRAME_INDEX_TOKEN).join(String(position));
+}
+
+/** True when `{n}` appears in a directory name of the template, where it is not substituted. */
+export function frameTokenInDirectory(template: string): boolean {
+  return template.slice(0, fileNameStart(template)).includes(FRAME_INDEX_TOKEN);
+}
+
+/** True when the template's file name carries `{n}`, so each action gets its own file. */
+export function frameTokenInFileName(template: string): boolean {
+  return template.slice(fileNameStart(template)).includes(FRAME_INDEX_TOKEN);
 }
 
 /** Read the page's own rendering metrics — never the flags that requested them. */
@@ -207,7 +272,10 @@ export interface CaptureFrameOptions {
   page: FramePage;
   /** Take one control snapshot. Its failure is the ACTION's failure and propagates. */
   takeSnapshot: () => Promise<unknown>;
-  /** Where to write the PNG. Resolved to an absolute path; parent dirs are created. */
+  /**
+   * Where to write the PNG. Resolved to an absolute path; missing parent dirs
+   * are created {@link PRIVATE_DIR_MODE} and the file {@link PRIVATE_FILE_MODE}.
+   */
   path: string;
   maxAttempts?: number;
   /** Injectable clock for tests. */
@@ -304,8 +372,8 @@ export async function captureFrameInLockstep(opts: CaptureFrameOptions): Promise
   }
 
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, png);
+    ensurePrivateDir(dirname(path));
+    writePrivateFile(path, png);
   } catch (err) {
     return {
       snapshot,

@@ -317,6 +317,17 @@ name = "typecheck"
 command = ["npm", "run", "typecheck"]
 
 [[steps]]
+name = "playwright-chromium"
+# parity: ci.yml lint-and-test "Install Playwright Chromium"
+# ci.yml "Install Playwright Chromium". Without it the real-Chromium smokes skip
+# themselves, so this lane would pass them by skipping. On a Linux host
+# `--with-deps` installs Chromium's system libraries through the host's package
+# manager, which needs root: a host that cannot grant it fails this step rather
+# than reporting a green it did not measure.
+command = ["npx", "playwright", "install", "--with-deps", "chromium"]
+timeout_secs = 1800
+
+[[steps]]
 name = "test"
 # parity: ci.yml lint-and-test "Test"
 # ci.yml "Test" → `test` = `npm run test --workspaces --if-present`.

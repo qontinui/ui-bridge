@@ -10,12 +10,22 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   captureFrameInLockstep,
   expandFramePath,
+  frameTokenInDirectory,
+  frameTokenInFileName,
   geometryDelta,
   pngDimensions,
   snapshotGeometry,
@@ -95,9 +105,20 @@ describe('pngDimensions', () => {
 });
 
 describe('expandFramePath', () => {
-  it('replaces every {n} with the action position', () => {
+  it('replaces every {n} in the FILE NAME with the action position', () => {
     expect(expandFramePath('/tmp/f-{n}.png', 3)).toBe('/tmp/f-3.png');
-    expect(expandFramePath('/tmp/{n}/f-{n}.png', 12)).toBe('/tmp/12/f-12.png');
+    expect(expandFramePath('/tmp/f-{n}-{n}.png', 12)).toBe('/tmp/f-12-12.png');
+    expect(expandFramePath('f-{n}.png', 4)).toBe('f-4.png');
+  });
+
+  it('leaves a {n} in a directory name alone (validateFramePlan refuses such a template)', () => {
+    expect(expandFramePath('/tmp/{n}/f-{n}.png', 12)).toBe('/tmp/{n}/f-12.png');
+    expect(expandFramePath('C:\\shots\\{n}\\f-{n}.png', 2)).toBe('C:\\shots\\{n}\\f-2.png');
+    expect(frameTokenInDirectory('/tmp/{n}/f.png')).toBe(true);
+    expect(frameTokenInDirectory('C:\\shots\\{n}\\f.png')).toBe(true);
+    expect(frameTokenInDirectory('/tmp/f-{n}.png')).toBe(false);
+    expect(frameTokenInFileName('/tmp/{n}/f.png')).toBe(false);
+    expect(frameTokenInFileName('/tmp/f-{n}.png')).toBe(true);
   });
 
   it('leaves a path without {n} unchanged', () => {
@@ -254,6 +275,38 @@ describe('captureFrameInLockstep', () => {
     expect(out.frameError).toBeUndefined();
     expect(out.frame?.devicePixelRatio).toBe(2.625);
   });
+
+  // Frames are raw pixels of possibly authenticated pages: owner-only on disk.
+  it.skipIf(process.platform === 'win32')(
+    'writes the frame 0600, in directories it creates 0700',
+    async () => {
+      const out = await captureFrameInLockstep({
+        page: fakePage(DPR2, pngHeader(800, 600)),
+        takeSnapshot: async () => snap({ a: [0, 0, 1, 1] }),
+        path: join(dir, 'made', 'here', 'frame.png'),
+      });
+      expect(out.frameError).toBeUndefined();
+      const mode = (p: string) => statSync(p).mode & 0o777;
+      expect(mode(join(dir, 'made'))).toBe(0o700);
+      expect(mode(join(dir, 'made', 'here'))).toBe(0o700);
+      expect(mode(join(dir, 'made', 'here', 'frame.png'))).toBe(0o600);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'narrows an existing file it overwrites to 0600',
+    async () => {
+      const path = join(dir, 'frame.png');
+      writeFileSync(path, 'old');
+      chmodSync(path, 0o644);
+      await captureFrameInLockstep({
+        page: fakePage(DPR2, pngHeader(800, 600)),
+        takeSnapshot: async () => snap({ a: [0, 0, 1, 1] }),
+        path,
+      });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
+  );
 
   it('reports a write failure as FRAME_CAPTURE_FAILED', async () => {
     const blocker = join(dir, 'not-a-dir');
