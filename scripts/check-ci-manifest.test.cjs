@@ -11,9 +11,12 @@
  * were checked. Review found two such misses in turn: `apk` and `port` matched
  * as bare words, which would have blocked a build target and a flag value; then
  * their subcommand was read only as the very next word, so
- * `apk --no-cache add chromium`, the usual Dockerfile form, passed. Each shape is
- * pinned below both ways round: refused (the reviewer's five probes first) and
- * allowed (words the rule must not take for a host change).
+ * `apk --no-cache add chromium`, the usual Dockerfile form, passed. A third
+ * review found the same words passing inside an interpreter's inline code
+ * (`sh -c "apt-get install ..."`, `node -e "...execSync('sudo ...')"`) and four
+ * escalators missing. Each shape is pinned below both ways round: refused (each
+ * review's probes first), refused as unreadable, and allowed (words the rule must
+ * not take for a host change).
  *
  * Usage:  node scripts/check-ci-manifest.test.cjs
  * Exit:   0 all passed / 1 one or more failed
@@ -82,6 +85,74 @@ const REFUSED = [
   [['brew', 'install', 'chromium'], 'brew'],
   [['npx', 'playwright', 'install', '--with-deps', 'chromium'], '--with-deps'],
   [['npx', 'playwright', 'install-deps'], 'install-deps'],
+  // The escalators the third review added, and doas.
+  [['pkexec', 'npm', 'ci'], 'pkexec'],
+  [['gsudo', 'npm', 'ci'], 'gsudo'],
+  [['runas', '/user:Administrator', 'npm ci'], 'runas'],
+  [['C:\\Windows\\System32\\runas.exe', '/user:admin', 'cmd'], 'C:\\Windows\\System32\\runas.exe'],
+  [['doas', 'npm', 'ci'], 'doas'],
+  // The third review's probes: the words inside an interpreter's inline code.
+  [['sh', '-c', 'apt-get install -y libnss3'], 'sh -c … apt-get'],
+  [['bash', '-c', 'sudo apt-get update; npm ci'], 'bash -c … sudo'],
+  [['cmd', '/c', 'choco install chromium'], 'cmd /c … choco'],
+  [['pwsh', '-Command', 'winget install chromium'], 'pwsh -Command … winget'],
+  [
+    ['node', '-e', "require('child_process').execSync('sudo apt-get install -y libnss3')"],
+    'node -e … sudo',
+  ],
+  [['python3', '-c', "import os; os.system('apt-get install -y libnss3')"], 'python3 -c … apt-get'],
+  // Every interpreter and flag form the rule reads.
+  [['zsh', '-c', 'brew install chromium'], 'zsh -c … brew'],
+  [['dash', '-ec', 'apk add chromium'], 'dash -ec … apk add'],
+  [['ksh', '-xc', 'sudo true'], 'ksh -xc … sudo'],
+  [['bash', '-euo', 'pipefail', '-c', 'apt-get install -y libnss3'], 'bash -c … apt-get'],
+  [['sh', '-c', 'exec "$@"', 'sh', 'apt-get', 'install', 'x'], 'sh -c … apt-get'],
+  [['/bin/sh', '-c', 'sudo true'], '/bin/sh -c … sudo'],
+  [['cmd', '/C', 'choco', 'install', 'chromium'], 'cmd /C … choco'],
+  [
+    ['C:\\Windows\\System32\\cmd.exe', '/k', 'winget install x'],
+    'C:\\Windows\\System32\\cmd.exe /k … winget',
+  ],
+  [['powershell', '-NoProfile', '-c', 'choco upgrade all -y'], 'powershell -c … choco'],
+  [
+    ['pwsh', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-command', 'scoop install x'],
+    'pwsh -command … scoop',
+  ],
+  [['node', '--eval', "require('child_process').execSync('brew install x')"], 'node --eval … brew'],
+  [['node', "--eval=require('child_process').execSync('apk add x')"], 'node --eval … apk add'],
+  [['node', '-pe', "require('child_process').execSync('pkexec true')"], 'node -pe … pkexec'],
+  [['node', '--print', "require('child_process').execSync('gsudo x')"], 'node --print … gsudo'],
+  [
+    ['python', '-c', "import subprocess; subprocess.run(['winget', 'install', 'x'])"],
+    'python -c … winget',
+  ],
+  [['py', '-3', '-c', "import os; os.system('choco install x')"], 'py -c … choco'],
+  [['python3', '-Ic', "__import__('os').system('apt install x')"], 'python3 -Ic … apt'],
+  [['perl', '-e', "system('sudo apt-get install -y x')"], 'perl -e … sudo'],
+  [['perl', '-wle', "system('yum install x')"], 'perl -wle … yum'],
+  [['ruby', '-e', "system('brew install x')"], 'ruby -e … brew'],
+  // Interpreters nested in inline code: the quote names each layer.
+  [['bash', '-c', 'bash -c \'node -e "x" ; dnf install x\''], 'bash -c … bash -c … node -e … dnf'],
+  [['sh', '-c', 'port -N install chromium'], 'sh -c … port -N install'],
+  [['sh', '-c', '/usr/bin/sudo -n true'], 'sh -c … /usr/bin/sudo'],
+];
+
+// [argv, the words the failure quotes]: code the rule cannot read at all.
+const UNREADABLE = [
+  [['pwsh', '-EncodedCommand', 'ZQBjAGgAbwAgAGgAaQA='], 'pwsh -EncodedCommand'],
+  [['pwsh', '-enc', 'ZQBj'], 'pwsh -enc'],
+  [['pwsh', '-ec', 'ZQBj'], 'pwsh -ec'],
+  [['powershell', '-e', 'ZQBj'], 'powershell -e'],
+  [['powershell', '-NoProfile', '-EncodedCommand', 'ZQBj'], 'powershell -EncodedCommand'],
+  [['pwsh', '-Command', '-'], 'pwsh -Command -'],
+  [['pwsh', '-'], 'pwsh -'],
+  [['bash', '-s'], 'bash -s'],
+  [['sh', '-es'], 'sh -es'],
+  [['node', '-'], 'node -'],
+  [['python3', '-'], 'python3 -'],
+  [['perl', '-'], 'perl -'],
+  [['ruby', '-'], 'ruby -'],
+  [['sh', '-c', 'pwsh -enc ZQBj'], 'sh -c … pwsh -enc'],
 ];
 
 // Words the rule must not take for a host change.
@@ -105,13 +176,34 @@ const ALLOWED = [
   ['port', '--version'],
   // `snap` as a script name.
   ['npm', 'run', 'snap'],
+  // Inline code that changes nothing on the host.
+  ['sh', '-c', 'npm ci'],
+  ['bash', '-c', 'echo port 3000'],
+  ['cmd', '/c', 'npm run build'],
+  ['pwsh', '-NoProfile', '-Command', 'Get-ChildItem dist'],
+  ['node', '-e', 'console.log(process.version)'],
+  ['node', '-pe', "require('./package.json').version"],
+  ['python3', '-c', "print('install')"],
+  ['perl', '-ne', 'print if /apk/'],
+  // A script FILE is not followed (a stated limit), and its own arguments are its.
+  ['bash', 'scripts/release.sh', '-s'],
+  ['node', 'scripts/apt-mirror.mjs', '-e'],
+  ['python3', 'scripts/tool.py', '-'],
+  ['pwsh', '-File', 'scripts/build.ps1'],
+  // `-ExecutionPolicy` is not `-EncodedCommand`.
+  ['pwsh', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build.ps1'],
 ];
 
 for (const [argv, quoted] of REFUSED) {
-  test(`refuses ${argv.join(' ')}`, () => assert.equal(hostChange(argv), quoted));
+  test(`refuses    ${argv.join(' ')}`, () =>
+    assert.deepEqual(hostChange(argv), { quoted, unreadable: false }));
+}
+for (const [argv, quoted] of UNREADABLE) {
+  test(`unreadable ${argv.join(' ')}`, () =>
+    assert.deepEqual(hostChange(argv), { quoted, unreadable: true }));
 }
 for (const argv of ALLOWED) {
-  test(`allows  ${argv.join(' ')}`, () => assert.equal(hostChange(argv), null));
+  test(`allows     ${argv.join(' ')}`, () => assert.equal(hostChange(argv), null));
 }
 
 // ---------------------------------------------------------------------------

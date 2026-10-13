@@ -42,7 +42,7 @@ const VIEWPORT_HEIGHT = 640;
 // returns the resolved path even when the binary isn't installed, so we check
 // the file actually exists. If the call throws (no browser registered at all),
 // treat that as unavailable too.
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 let server: Server | null = null;
 let serverPort = 0;

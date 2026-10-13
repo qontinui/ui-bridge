@@ -163,6 +163,23 @@ jobs:
         # worst outcome for two lanes meant to agree on a verdict.
         run: npm run ci:check-manifest
 
+      - name: Real-browser test placement self-test
+        # Pins which test files reach a real browser (a value import of a
+        # Playwright package, or an executablePath( call) and which do not (a
+        # type-only import, a vi.mock factory, a comment), against table cases.
+        # It runs BEFORE the check for the reason the self-tests above do: a
+        # regression in what it recognises turns the check QUIET, not red.
+        run: npm run browser-tests:check-placement:test
+
+      - name: Real-browser test placement
+        # Refuses a tracked test file that reaches a real browser but that its
+        # package's `test:smoke` does not select. browser-smokes, the only job
+        # with a Chromium, runs nothing but `test:smoke`, so such a test skips
+        # everywhere else and runs nowhere. test-support/chromium-gate.mjs
+        # refuses that at run time for a test that calls it; this step catches a
+        # test with its own playwright import or executablePath( gate.
+        run: npm run browser-tests:check-placement
+
       - name: Lint
         run: npm run lint
 
@@ -190,9 +207,10 @@ jobs:
         # mirrorable to .qontinui/ci.toml (whose lane must never install system
         # packages). They EXECUTE in the browser-smokes job below, which installs
         # Chromium, runs only `test:smoke` and fails if any of them skips. The
-        # gate refuses a caller its package's `test:smoke` does not select, so a
-        # gated test outside a `*smoke*` file fails HERE instead of running
-        # nowhere.
+        # gate refuses the test file vitest is running when its package's
+        # `test:smoke` does not select it, so a gated test outside a `*smoke*`
+        # file fails HERE instead of running nowhere; the "Real-browser test
+        # placement" step above refuses one with its own Chromium gate.
         run: npm run test
 
   browser-smokes:

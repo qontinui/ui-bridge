@@ -304,6 +304,27 @@ name = "ci-manifest-ratchet"
 command = ["npm", "run", "ci:check-manifest"]
 
 [[steps]]
+name = "browser-test-placement-self-test"
+# parity: ci.yml lint-and-test "Real-browser test placement self-test"
+# ci.yml "Real-browser test placement self-test" → `browser-tests:check-placement:test`
+# = `node scripts/check-browser-test-placement.test.mjs`. Pins which test files
+# reach a real browser and which do not, against table cases, and runs BEFORE the
+# step below: a regression in what it recognises turns that check QUIET.
+command = ["npm", "run", "browser-tests:check-placement:test"]
+
+[[steps]]
+name = "browser-test-placement"
+# parity: ci.yml lint-and-test "Real-browser test placement"
+# ci.yml "Real-browser test placement" → `browser-tests:check-placement` =
+# `node scripts/check-browser-test-placement.mjs`. Refuses a tracked test file
+# that reaches a real browser where its package's test:smoke does not select it:
+# such a test skips on this lane as in lint-and-test, and ci.yml's browser-smokes
+# job, the one place it would run, runs only test:smoke. Like the documentation
+# ratchet it reads `git ls-files`, so it needs `git` on PATH and a real work tree;
+# its only installed dependency is the `typescript` the root `npm ci` provides.
+command = ["npm", "run", "browser-tests:check-placement"]
+
+[[steps]]
 name = "lint"
 # parity: ci.yml lint-and-test "Lint"
 # ci.yml "Lint" → `lint` = `eslint "packages/*/src/**/*.{ts,tsx}"
