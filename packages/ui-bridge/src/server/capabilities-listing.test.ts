@@ -3,9 +3,9 @@
  *
  * `getCapabilities` (`GET /capabilities`) is how an agent discovers what the SDK
  * serves. Both listings kept advertising routes long after their handlers were
- * deleted: the eight `/ai/media/*` routes (handlers removed in 2d35d0d,
- * 2026-05-14) and `/control/get-element-images` (removed with the vision
- * pipeline, 2026-05-13). Measured live in plan
+ * deleted: the eight `/ai/media/*` routes and `/control/get-element-images`,
+ * whose handlers were removed in the same commit, 2d35d0d (2026-05-14).
+ * Measured live in plan
  * 2026-10-13-image-generation-and-visual-judgment Phase 1, a caller that
  * believed the listing got a 404 from the SDK route adapter, or a 30 s timeout
  * through a WebSocket-relayed app. The plan's D6 retires the media family
