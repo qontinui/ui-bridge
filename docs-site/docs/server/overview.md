@@ -151,6 +151,55 @@ export const { GET, POST, DELETE } = createNextRouteHandlers(handlers, {
 `authenticate` is not implemented by the standalone server; wrap it in a proxy
 instead, or bind it to loopback only.
 
+### Multi-user relays
+
+A relay-backed server is single-user unless a gate in front of it says
+otherwise. The relay authenticates nobody. The one identity it reads is the
+`X-Caller-User-Id` request header, and it trusts that header as given: a request
+that carries it is scoped to that user's tabs and commands, and a request
+without it is a trusted, unscoped call.
+
+So with no identity header (single-user mode) every route answers as it always
+has, `POST /commands` included: a command result posted without the header is
+accepted with no owner check. That is by design, and it is safe only while a
+single user can reach the relay.
+
+A relay that more than one user can reach needs a gate in front of it, and that
+gate:
+
+- **MUST gate every relay route**, `/commands` included, alongside
+  `/commands/stream`, `/heartbeat`, `/tabs*` and every `/control/*` route. A
+  route the gate skips answers anyone as an unscoped call.
+- **MUST overwrite `X-Caller-User-Id`** on every request with the identity it
+  verified: set the header, never append to it.
+- **MUST NEVER forward a client-supplied `X-Caller-User-Id`.** Drop the header
+  from anything the gate passes without a verified identity, and pass a request
+  that way only for a trusted server-side caller.
+
+`authenticate` is not that gate on its own: it answers yes or no and supplies no
+identity.
+
+:::note Routes a scoped caller is refused
+Under the per-user gate, routes that name no tab or user answer
+`403 SCOPED_CALLER_UNSUPPORTED` to any request carrying `X-Caller-User-Id`:
+
+- `GET /control/events/stream` and `GET /control/changes/stream`, on every
+  adapter;
+- `GET /control/changes/since`, on a relay-backed server;
+- `/tabs/cdp` and `/tabs/cdp/*`, which only the Next.js adapter serves.
+
+Each still answers a request with no identity, so only a trusted server-side
+caller reaches them. The per-tab `/commands/stream` is unaffected: a tab's owner
+opens it as before.
+:::
+
+:::warning Do not enable `websocket: true` on a multi-user relay
+The standalone server's WebSocket handler calls your handlers with no caller
+context, so every WebSocket request runs as a trusted, unscoped call. The
+server cannot tell that it serves more than one user (identity arrives per
+request, from the gate), so it does not refuse the option for you.
+:::
+
 ### Network Binding
 
 Bind to localhost only:

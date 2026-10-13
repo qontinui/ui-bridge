@@ -12,6 +12,8 @@ import { createExpressApp } from './express';
 import { createStandaloneServer, type StandaloneServer } from './standalone';
 import { SSEManager } from './sse-handler';
 import { SCOPED_CALLER_UNSUPPORTED } from './scoped-refusal';
+import { CommandRelay } from './command-relay';
+import { createRelayHandlers } from './relay-handlers';
 
 const BASE = '/api/ui-bridge';
 const STREAMS = ['/control/events/stream', '/control/changes/stream'];
@@ -103,6 +105,40 @@ describe('over HTTP', () => {
     server = createServer(app);
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     await checkStreams((server.address() as AddressInfo).port);
+  });
+
+  it("the standalone server sends a handler's httpStatus, as Next.js and Express do", async () => {
+    const relay = new CommandRelay({
+      globalPrefix: `__uiBridgeStatus_${Math.random().toString(36).slice(2, 10)}`,
+      proactiveSnapshot: false,
+    });
+    try {
+      standalone = await createStandaloneServer(createRelayHandlers(relay), {
+        host: '127.0.0.1',
+        port: 0,
+        basePath: BASE,
+        log: () => {},
+      });
+      const port = standalone.getAddress()!.port;
+      const get = async (path: string) => {
+        const response = await fetch(`http://127.0.0.1:${port}${BASE}${path}`, {
+          headers: { 'X-Caller-User-Id': 'user-b' },
+        });
+        return {
+          status: response.status,
+          body: (await response.json()) as Record<string, unknown>,
+        };
+      };
+      const refused = await get('/control/changes/since?since=0');
+      expect(refused.status).toBe(403);
+      expect(refused.body.code).toBe(SCOPED_CALLER_UNSUPPORTED);
+      expect(refused.body).not.toHaveProperty('httpStatus');
+      const pinned = await get('/control/elements?tabId=tab-x');
+      expect(pinned.status).toBe(404);
+      expect(pinned.body.code).toBe('TAB_NOT_FOUND');
+    } finally {
+      relay.destroy();
+    }
   });
 
   it('the standalone server refuses the event streams to a scoped caller', async () => {

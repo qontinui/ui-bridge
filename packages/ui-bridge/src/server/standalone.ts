@@ -464,6 +464,14 @@ export class StandaloneServer {
       const result = await (handler as (...args: unknown[]) => Promise<APIResponse<unknown>>)(
         ...args
       );
+      // Honor APIResponse.httpStatus as the Next.js and Express adapters do
+      // (a 404 TAB_NOT_FOUND, a 410 TAB_STALE, a 422 failed expectation, a 403
+      // refusal to a scoped caller), and keep the hint out of the body.
+      if (typeof result.httpStatus === 'number') {
+        const { httpStatus, ...body } = result;
+        this.sendJSON(res, body, httpStatus);
+        return;
+      }
       this.sendJSON(res, result);
     } catch (error) {
       this.config.log(`Error handling ${method} ${path}: ${error}`);

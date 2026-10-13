@@ -100,7 +100,7 @@ standalone server actually reads:
 | ---------------- | ------------------------- | ------------- | -------------------------------------------------- |
 | `host`           | `string`                  | `'localhost'` | Address to bind to                                 |
 | `port`           | `number`                  | `9876`        | Port to listen on                                  |
-| `websocket`      | `boolean`                 | `false`       | Enable the WebSocket handler                       |
+| `websocket`      | `boolean`                 | `false`       | Enable the WebSocket handler (single-user only; see [Security](#security)) |
 | `websocketPort`  | `number`                  | `port`        | WebSocket port                                     |
 | `log`            | `(message: string) => void` | `console.log` | Logging function                                   |
 | `basePath`       | `string`                  | `'/ui-bridge'`| Route prefix for all API endpoints                 |
@@ -209,6 +209,15 @@ if (process.env.NODE_ENV === 'development') {
   await createStandaloneServer(handlers, { port: 9876 });
 }
 ```
+
+### WebSocket on a multi-user relay
+
+The WebSocket handler calls your handlers with no caller context, so a
+WebSocket request is never scoped to a user. Do not enable `websocket: true` on
+a relay that more than one user can reach. The server cannot detect that case
+(identity arrives per request, from a gate in front of it), so it does not
+refuse the option for you. What such a gate must do is in
+[Multi-user relays](./overview#multi-user-relays).
 
 ## Electron / Tauri
 

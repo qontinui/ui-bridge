@@ -30,11 +30,29 @@ import { createRelayHandlers } from './relay-handlers';
 import { createNextRouteHandlers } from './nextjs';
 import { parseSSEDataBlock } from '../relay/relay-client';
 
+/** Every relay a test built; each is destroyed when its test ends. */
+const relays: CommandRelay[] = [];
+
+// Nothing a relay scheduled may run, or log, after this file's worker is torn
+// down: vitest then fails the run ("Closing rpc while onUserConsoleLog was
+// pending") even with every test green.
+afterEach(() => {
+  for (const relay of relays.splice(0)) relay.destroy();
+});
+
 function freshRelay(
   options?: Partial<ConstructorParameters<typeof CommandRelay>[0]>
 ): CommandRelay {
   const prefix = `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`;
-  return new CommandRelay({ globalPrefix: prefix, ...(options ?? {}) });
+  // No warm-up snapshot: it is dispatched, and logged, 500ms after a tab or
+  // WebSocket client connects, which can land after the last test here.
+  const relay = new CommandRelay({
+    globalPrefix: prefix,
+    proactiveSnapshot: false,
+    ...(options ?? {}),
+  });
+  relays.push(relay);
+  return relay;
 }
 
 describe('relay · a throttled heartbeat must not destroy a live command transport', () => {
