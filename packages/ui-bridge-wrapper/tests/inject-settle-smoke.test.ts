@@ -16,7 +16,7 @@ import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
  * the pre-fix behavior (ready resolves before the form exists).
  */
 
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 // The form is appended ~600ms after load — longer than the 500ms default quiet
 // window's first arming, so a naive ready-only gate would miss it.

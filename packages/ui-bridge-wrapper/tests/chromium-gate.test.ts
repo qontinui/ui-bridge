@@ -3,23 +3,24 @@
  * file that `npm run test:smoke` would not run, flag or no flag. ci.yml's
  * browser-smokes job runs nothing but test:smoke, so a gated test anywhere else
  * would skip here in lint-and-test and run nowhere; the refusal fails it here
- * instead. Not a smoke file itself: it calls the gate with other files' paths.
+ * instead.
+ *
+ * This file is not a smoke file, which is what makes it a misplaced caller: every
+ * call to the gate below must be refused. The file the gate judges comes from
+ * vitest's runtime, so neither a smoke-named helper (review case i) nor a
+ * made-up smoke URL (case ii) can admit it. Case iii, a test with its own
+ * Chromium gate, is the static check's: scripts/check-browser-test-placement.test.mjs.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  REQUIRE_CHROMIUM_ENV,
-  chromiumAvailable,
-  smokeFilters,
-  smokeSelection,
-} from '../../../test-support/chromium-gate.mjs';
+import { REQUIRE_CHROMIUM_ENV, chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
+import { smokeFilters, smokeSelection } from '../../../test-support/smoke-selection.mjs';
 
-// A test file beside this one. The gate reads only that path and this package's
-// package.json, so the file need not exist.
-const beside = (name: string) => new URL(`./${name}`, import.meta.url).href;
+const THIS_FILE_REFUSED =
+  /packages\/ui-bridge-wrapper\/tests\/chromium-gate\.test\.ts runs a real-Chromium test, but its package's test:smoke \(`vitest run smoke`\) does not select it/;
 
 describe('the real-Chromium gate admits only a file test:smoke runs', () => {
   let saved: string | undefined;
@@ -32,44 +33,45 @@ describe('the real-Chromium gate admits only a file test:smoke runs', () => {
     else process.env[REQUIRE_CHROMIUM_ENV] = saved;
   });
 
-  it('refuses a caller outside a smoke file, flag or no flag', () => {
-    const misplaced = beside('frame-pixels.test.ts');
-    expect(() => chromiumAvailable(misplaced)).toThrow(
-      /tests\/frame-pixels\.test\.ts runs a real-Chromium test, but its package's test:smoke \(`vitest run smoke`\) does not select it/
-    );
+  it('refuses the test file vitest is running when test:smoke does not select it, flag or no flag', () => {
+    expect(() => chromiumAvailable()).toThrow(THIS_FILE_REFUSED);
     process.env[REQUIRE_CHROMIUM_ENV] = '1';
-    expect(() => chromiumAvailable(misplaced)).toThrow(/does not select it/);
+    expect(() => chromiumAvailable()).toThrow(THIS_FILE_REFUSED);
   });
 
-  it('admits a smoke caller and answers whether Chromium is installed', () => {
-    expect(typeof chromiumAvailable(beside('frame-pixels-smoke.test.ts'))).toBe('boolean');
+  it('(i) a smoke-named helper does not admit the test file that imports it', async () => {
+    await expect(import('./fixtures/smoke-helpers')).rejects.toThrow(THIS_FILE_REFUSED);
+  });
+
+  it('(ii) a made-up smoke URL admits nothing: the gate takes no argument', () => {
+    const gate = chromiumAvailable as (...args: unknown[]) => boolean;
+    const madeUp = new URL('./anything-smoke.test.ts', import.meta.url).href;
+    expect(() => gate(madeUp)).toThrow(
+      /takes no argument: the test file it checks comes from vitest/
+    );
   });
 
   it("selects by vitest's own filter rule: the path below the package, any case", () => {
-    const at = (name: string) => smokeSelection(fileURLToPath(beside(name)));
+    const at = (name: string) =>
+      smokeSelection(fileURLToPath(new URL(`./${name}`, import.meta.url)));
     expect(at('Frame-SMOKE.test.ts').selected).toBe(true);
     expect(at('smoke/frame-pixels.test.ts').selected).toBe(true);
     expect(at('smoke.test.ts').relativePath).toBe('tests/smoke.test.ts');
     expect(at('frame-pixels.test.ts').selected).toBe(false);
   });
 
-  it('refuses a call that does not say which file it comes from', () => {
-    const gate = chromiumAvailable as (callerUrl?: unknown) => boolean;
-    expect(() => gate()).toThrow(/pass the calling test file's import\.meta\.url/);
-    expect(() => gate('/abs/path/x-smoke.test.ts')).toThrow(/pass the calling test file's/);
-  });
-
-  it('refuses a smoke file in a package with no test:smoke script', () => {
+  it('selects nothing in a package with no test:smoke script', () => {
     const root = mkdtempSync(join(tmpdir(), 'chromium-gate-'));
     try {
       writeFileSync(
         join(root, 'package.json'),
         JSON.stringify({ scripts: { test: 'vitest run' } })
       );
-      const caller = pathToFileURL(join(root, 'tests', 'frame-pixels-smoke.test.ts')).href;
-      expect(() => chromiumAvailable(caller)).toThrow(
-        /package\.json has no test:smoke script running `vitest run <filter>`/
-      );
+      expect(smokeSelection(join(root, 'tests', 'frame-pixels-smoke.test.ts'))).toMatchObject({
+        packageDir: root,
+        filters: [],
+        selected: false,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

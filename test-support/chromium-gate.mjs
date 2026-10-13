@@ -2,16 +2,27 @@
  * THE gate for every real-Chromium test in this repo. It enforces two rules, so
  * that neither is a convention a reader has to remember.
  *
- * WHERE. Each caller passes its own `import.meta.url`:
- *
- *   const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
+ *   const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
  *   describe.skipIf(!PLAYWRIGHT_AVAILABLE)(...)
  *
- * and the gate THROWS, flag or no flag, unless that file is one its package's
- * `test:smoke` script selects. ci.yml's browser-smokes job is the only place a
+ * WHERE. The gate THROWS, flag or no flag, unless the test file vitest is
+ * collecting is one its package's `test:smoke` script selects
+ * (smoke-selection.mjs). ci.yml's browser-smokes job is the only place a
  * Chromium is installed, and it runs nothing but `test:smoke`, so a gated test
  * anywhere else would skip in lint-and-test and run nowhere. The throw fails its
  * suite in lint-and-test instead, on the PR that put it there.
+ *
+ * The file comes from vitest's runtime (`expect.getState().testPath`), never
+ * from the caller, so neither a helper whose own name says "smoke" nor a
+ * made-up URL can admit a test file that test:smoke does not run. It takes no
+ * argument, and refuses one. LIMIT: a helper that calls the gate is judged
+ * against each test file that imports it only because every vitest config here
+ * isolates test files, which is vitest's default. Under `isolate: false` a
+ * cached helper is evaluated, and judged, for its first importer alone.
+ *
+ * A test that gates on Chromium WITHOUT this gate (its own playwright import or
+ * `executablePath(` call) is the other half: scripts/check-browser-test-placement.mjs
+ * refuses one outside a test:smoke file, in its own lint-and-test step.
  *
  * WHETHER. With no Playwright Chromium installed a gated test skips, which is
  * right on a developer box, in lint-and-test and on the .qontinui/ci.toml lane,
@@ -23,82 +34,53 @@
  * Plain .mjs with a .d.mts beside it, so a type-checked test inside a package
  * whose rootDir is `src` (ui-bridge-headless) can import it.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { expect } from 'vitest';
+import { smokeSelection } from './smoke-selection.mjs';
 
 /** The flag browser-smokes sets. */
 export const REQUIRE_CHROMIUM_ENV = 'UI_BRIDGE_REQUIRE_CHROMIUM';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const SHELL_OPERATORS = new Set(['&&', '||', ';', '|']);
-
-/**
- * The file filters a `test:smoke` script hands vitest: the words after
- * `vitest run` that are not options, up to the first shell operator. An
- * option's separate value (`--reporter dot`) would read as a filter, so spell
- * options `--flag=value`, as every `test:smoke` here does.
- */
-export function smokeFilters(script) {
-  const words = typeof script === 'string' ? script.split(/\s+/).filter(Boolean) : [];
-  const run = words.findIndex((word, i) => word === 'run' && words[i - 1] === 'vitest');
-  const filters = [];
-  if (run < 0) return filters;
-  for (const word of words.slice(run + 1)) {
-    if (SHELL_OPERATORS.has(word)) break;
-    if (!word.startsWith('-')) filters.push(word);
-  }
-  return filters;
-}
-
-/**
- * Whether `npm run test:smoke` runs this test file, by vitest's own rule
- * (`filterFiles` in its CLI): the file's path relative to the package root,
- * where `test:smoke` runs, lower-cased, contains one of the script's filters.
- * The package is the nearest directory above the file that holds a package.json.
- */
-export function smokeSelection(testFile) {
-  let packageDir = dirname(testFile);
-  while (!existsSync(join(packageDir, 'package.json'))) {
-    const parent = dirname(packageDir);
-    if (parent === packageDir) {
-      return { packageDir: null, relativePath: testFile, filters: [], selected: false };
-    }
-    packageDir = parent;
-  }
-  const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
-  const filters = smokeFilters(manifest.scripts?.['test:smoke']);
-  const relativePath = relative(packageDir, testFile).split(sep).join('/');
-  const lower = relativePath.toLowerCase();
-  return {
-    packageDir,
-    relativePath,
-    filters,
-    selected: filters.some((filter) => lower.includes(filter.toLowerCase())),
-  };
-}
 
 const shown = (file) => {
   const fromRoot = relative(REPO_ROOT, file);
   return fromRoot.startsWith('..') ? file : fromRoot.split(sep).join('/');
 };
 
-/**
- * True when a Playwright Chromium is installed, false when it is not. Throws
- * when the calling test file is not one `test:smoke` selects, and, under the
- * flag, when Chromium is missing.
- *
- * @param {string} callerUrl the calling test file's `import.meta.url`
- */
-export function chromiumAvailable(callerUrl) {
-  if (typeof callerUrl !== 'string' || !callerUrl.startsWith('file:')) {
-    throw new TypeError(
-      `chromiumAvailable(import.meta.url): pass the calling test file's import.meta.url, so ` +
-        `the gate can check that browser-smokes runs it (got ${String(callerUrl)}).`
+/** The test file vitest is collecting or running in this worker. */
+function runningTestFile() {
+  let testPath;
+  try {
+    testPath = expect.getState().testPath;
+  } catch {
+    testPath = undefined;
+  }
+  if (typeof testPath !== 'string' || testPath === '') {
+    throw new Error(
+      'chromiumAvailable() must be called while vitest collects or runs a test file: it ' +
+        "reads that file from vitest's runtime (expect.getState().testPath) and found none."
     );
   }
-  const testFile = fileURLToPath(callerUrl);
+  return testPath;
+}
+
+/**
+ * True when a Playwright Chromium is installed, false when it is not. Throws
+ * when the test file vitest is collecting is not one `test:smoke` selects, and,
+ * under the flag, when Chromium is missing.
+ */
+export function chromiumAvailable(...args) {
+  if (args.length > 0) {
+    throw new TypeError(
+      'chromiumAvailable() takes no argument: the test file it checks comes from vitest, ' +
+        `not from the caller (got ${String(args[0])}).`
+    );
+  }
+  const testFile = runningTestFile();
   const { packageDir, filters, selected } = smokeSelection(testFile);
   if (!selected) {
     let reason = `its package's test:smoke (\`vitest run ${filters.join(' ')}\`) does not select it`;

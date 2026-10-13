@@ -37,7 +37,7 @@ import {
 import { expandFramePath } from '../src/frame-capture.js';
 import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 // A red button at CSS (50,40) 100x60 on a page that is black in dark mode.
 // The label is red on red so every pixel inside the box is the same colour.

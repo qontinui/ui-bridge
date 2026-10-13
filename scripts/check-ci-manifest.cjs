@@ -123,15 +123,20 @@ const EXCLUDED_JOBS = new Map([
  * header items 1, 2 and 9). `npm install` and `npx playwright install chromium`
  * pass; `--with-deps` and `install-deps`, Playwright's apt path, do not.
  *
- * The package managers here name a system package manager and nothing else, so
- * the word alone is refused, whatever follows it. That is stricter than reading
- * their subcommand, and for two of them it has to be: pacman and dpkg install
- * through OPTIONS (`pacman -S`, `dpkg -i`), which no subcommand reading sees.
+ * sudo, su, doas, pkexec, gsudo and runas run a command as root or as an
+ * administrator. The package managers here name a system package manager and
+ * nothing else, so the word alone is refused, whatever follows it. That is
+ * stricter than reading their subcommand, and for two of them it has to be:
+ * pacman and dpkg install through OPTIONS (`pacman -S`, `dpkg -i`), which no
+ * subcommand reading sees.
  */
 const HOST_PACKAGE_WORDS = new Set([
   'sudo',
   'su',
   'doas',
+  'pkexec',
+  'gsudo',
+  'runas',
   'apt',
   'apt-get',
   'dpkg',
@@ -217,6 +222,49 @@ const AMBIGUOUS_PACKAGE_MANAGERS = new Map([
   ],
 ]);
 
+/**
+ * Interpreters that run code given INLINE in argv. `code` matches the flag that
+ * introduces it, and the code is every word after that flag: a shell's `-c`
+ * string together with the positional words it may run, `cmd /c`'s whole
+ * command line. `unreadable` matches the flags whose code this rule cannot read
+ * (encoded, or read from stdin); a lone `-`, the program read from stdin, is
+ * unreadable for every interpreter. Options are `-x` words, and `/x` ones for
+ * cmd and PowerShell.
+ */
+const INLINE_INTERPRETERS = new Map([
+  ...['sh', 'bash', 'zsh', 'dash', 'ksh'].map((shell) => [
+    shell,
+    // -c alone or in a cluster (-ec, -xc); -s reads the commands from stdin.
+    { code: /^-[A-Za-z]*c[A-Za-z]*$/, unreadable: /^-[A-Za-z]*s[A-Za-z]*$/ },
+  ]),
+  ['cmd', { code: /^\/[ck]$/i, slashOptions: true }],
+  ...['pwsh', 'powershell'].map((shell) => [
+    shell,
+    {
+      // -Command and its prefixes down to -c; -EncodedCommand, -enc, -ec, -e.
+      code: /^[-/](c|co|com|comm|comma|comman|command)$/i,
+      unreadable:
+        /^[-/](e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)$/i,
+      slashOptions: true,
+    },
+  ]),
+  // -e, -p, or both (-pe); --eval and --print, or --eval=<code>.
+  ['node', { code: /^(-[A-Za-z]*[ep][A-Za-z]*|--eval|--print)$|^--(eval|print)=/ }],
+  ...['python', 'python3', 'py'].map((python) => [python, { code: /^-[A-Za-z]*c$/ }]),
+  ['perl', { code: /^-[A-Za-z]*[eE][A-Za-z]*$/ }],
+  ['ruby', { code: /^-[A-Za-z]*e[A-Za-z]*$/ }],
+]);
+
+/**
+ * The words of inline code: split on whitespace and on the punctuation a shell
+ * or a script puts around a command (quotes, brackets, `;`, `&`, `|`, `<`, `>`,
+ * backticks, `$`, `=`, `,`, `!`). The code is NOT parsed: every word is read,
+ * whatever role it plays, so the rule over-reads rather than under-reads.
+ */
+function inlineWords(code) {
+  return code.split(/[\s;&|<>(){}[\],'"`$=!]+/).filter(Boolean);
+}
+
 /** The command an argv word names: its last path component, less a Windows executable suffix. */
 function commandName(word) {
   return word
@@ -226,8 +274,9 @@ function commandName(word) {
 }
 
 /**
- * The part of an argv that would change the host, as the words to quote in a
- * failure, or null when there is none.
+ * What in an argv would change the host, or null when nothing would:
+ * `{ quoted, unreadable }`, where `quoted` is the words to quote in a failure and
+ * `unreadable` says the argv runs code this rule cannot read at all.
  *
  * After an ambiguous manager the rule skips options (`apk --no-cache add`,
  * `port -N install`) and refuses when the first word that is not an option is a
@@ -236,14 +285,27 @@ function commandName(word) {
  * itself a host-changing subcommand the rule reads on to the next word. A bare
  * `apk` (a build target), `port 3000` and `--port 3000` all pass.
  *
- * LIMIT: this reads the manifest's argv only and cannot see inside an npm script
- * body, so `npm run x` whose script runs `sudo apt-get ...` passes it. Keep
- * host-changing work out of the package.json scripts a step runs.
+ * After an interpreter's inline-code flag (`sh -c`, `node -e`, `python3 -c`,
+ * INLINE_INTERPRETERS), the rule reads the code's words for the same things, so
+ * `bash -c "sudo apt-get ..."` and `node -e "...execSync('apt-get ...')"` are
+ * refused like the argv they hide. Code it cannot read is refused outright.
+ *
+ * LIMITS. It reads the manifest's argv, and the inline code of those
+ * interpreters as words, and follows nothing else: a script FILE
+ * (`bash scripts/x.sh`, `node scripts/x.mjs`, `pwsh -File x.ps1`) and an npm
+ * script (`npm run x`, whose body may run `sudo apt-get ...`) both pass it
+ * unread. Keep host-changing work out of the files and the package.json scripts
+ * a step runs.
  */
 function hostChange(argv) {
   for (let t = 0; t < argv.length; t += 1) {
     const name = commandName(argv[t]);
-    if (HOST_PACKAGE_WORDS.has(name)) return argv[t];
+    if (HOST_PACKAGE_WORDS.has(name)) return { quoted: argv[t], unreadable: false };
+    const interpreter = INLINE_INTERPRETERS.get(name);
+    if (interpreter) {
+      const inline = inlineHostChange(argv, t, interpreter);
+      if (inline) return inline;
+    }
     const subcommands = AMBIGUOUS_PACKAGE_MANAGERS.get(name);
     if (!subcommands) continue;
     let mayBeOptionValue = false;
@@ -253,10 +315,46 @@ function hostChange(argv) {
         mayBeOptionValue = !word.includes('=');
         continue;
       }
-      if (subcommands.has(word)) return argv.slice(t, s + 1).join(' ');
+      if (subcommands.has(word)) {
+        return { quoted: argv.slice(t, s + 1).join(' '), unreadable: false };
+      }
       if (!mayBeOptionValue) break;
       mayBeOptionValue = false;
     }
+  }
+  return null;
+}
+
+/**
+ * The host change in the inline code of the interpreter at argv[t], or an
+ * unreadable form of that code, or null. Its options are read until the first
+ * word that is neither an option nor, possibly, an option's value: that word is
+ * a script file, and what follows it belongs to the script.
+ */
+function inlineHostChange(argv, t, { code, unreadable, slashOptions = false }) {
+  const isOption = (word) => word.startsWith('-') || (slashOptions && word.startsWith('/'));
+  let mayBeOptionValue = false;
+  for (let s = t + 1; s < argv.length; s += 1) {
+    const word = argv[s];
+    if (word === '-' || unreadable?.test(word)) {
+      return { quoted: `${argv[t]} ${word}`, unreadable: true };
+    }
+    if (code.test(word)) {
+      const attached =
+        word.startsWith('--') && word.includes('=') ? [word.slice(word.indexOf('=') + 1)] : [];
+      const inline = [...attached, ...argv.slice(s + 1)];
+      const flag = attached.length > 0 ? word.slice(0, word.indexOf('=')) : word;
+      if (inline[0] === '-') return { quoted: `${argv[t]} ${flag} -`, unreadable: true };
+      const inner = hostChange(inline.flatMap(inlineWords));
+      if (inner === null) return null;
+      return { quoted: `${argv[t]} ${flag} … ${inner.quoted}`, unreadable: inner.unreadable };
+    }
+    if (isOption(word)) {
+      mayBeOptionValue = !word.includes('=');
+      continue;
+    }
+    if (!mayBeOptionValue) return null;
+    mayBeOptionValue = false;
   }
   return null;
 }
@@ -330,18 +428,26 @@ function validateManifest(manifest) {
           );
         }
       });
-      // The no-root rule: HOST_PACKAGE_WORDS and AMBIGUOUS_PACKAGE_MANAGERS,
-      // read by hostChange, which states the rule's limit.
+      // The no-root rule: HOST_PACKAGE_WORDS, AMBIGUOUS_PACKAGE_MANAGERS and
+      // INLINE_INTERPRETERS, read by hostChange, which states the rule's limits.
       const change = step.command.every((token) => typeof token === 'string')
         ? hostChange(step.command)
         : null;
-      if (change !== null) {
+      if (change !== null && change.unreadable) {
         fail(
-          `ci.toml ${label}: command ${JSON.stringify(change)} changes the host's system packages ` +
-            `or escalates to root, and this lane runs on a user's own machine: it would fail every ` +
-            `dispatch without passwordless sudo, or change the host for every other program on ` +
-            `it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job listed in ` +
+          `ci.toml ${label}: command ${JSON.stringify(change.quoted)} runs code this check ` +
+            `cannot read (encoded, or from stdin), and this lane runs on a user's own machine, ` +
+            `where that code could change the host or escalate to root (header items 1, 2 and ` +
+            `9). Pass the code inline, or run it in a GitHub-hosted ci.yml job listed in ` +
             `EXCLUDED_JOBS instead.`
+        );
+      } else if (change !== null) {
+        fail(
+          `ci.toml ${label}: command ${JSON.stringify(change.quoted)} changes the host's system ` +
+            `packages or escalates to root, and this lane runs on a user's own machine: it would ` +
+            `fail every dispatch without passwordless sudo, or change the host for every other ` +
+            `program on it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job ` +
+            `listed in EXCLUDED_JOBS instead.`
         );
       }
     }
