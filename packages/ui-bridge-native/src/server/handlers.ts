@@ -17,6 +17,7 @@ declare const __SDK_VERSION__: string;
 
 import {
   type NativeUIBridgeRegistry,
+  computeInViewport,
   computeVisibility,
   extractHandlerNames,
   matchesCurrentRoute,
@@ -464,13 +465,12 @@ export function createServerHandlers(
       const elements = allElements.map((e) => {
         const handlers = extractHandlerNames(e.props);
         const state = e.getState();
-        // Same helper `createSnapshot` uses — this used to be a hand-copied
+        const identifier = e.getIdentifier();
+        // Same helpers `createSnapshot` uses — this used to be a hand-copied
         // duplicate of the predicate, which is how the two surfaces could
         // disagree about what "visible" means.
-        const { visibility, visibilityReason } = computeVisibility(
-          state,
-          registry.getClipRectFor(e, viewport)
-        );
+        const clip = registry.getClipRectFor(e, viewport);
+        const { visibility, visibilityReason } = computeVisibility(state, clip);
         const bbox = projectBbox(state, visibility, registry.getPixelRatio());
         const vision = projectVisionFields({
           type: e.type,
@@ -480,12 +480,15 @@ export function createServerHandlers(
           handlerNames: handlers,
           state,
           flatStyle: e.flatStyle,
+          props: e.props,
+          accessibilityLabel: identifier.accessibilityLabel,
+          inViewport: computeInViewport(state, clip),
         });
         return {
           id: e.id,
           type: e.type,
           label: e.label,
-          identifier: e.getIdentifier(),
+          identifier,
           state,
           actions: e.actions,
           customActions: serializeElementCustomActions(e.customActions),

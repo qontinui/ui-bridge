@@ -508,19 +508,43 @@ export function computeVisibility(
     // Report it exactly as before — an unknown must not manufacture a verdict.
     return { visibility: 'visible' };
   }
+  return rectReachesClip(rect, clip)
+    ? { visibility: 'visible' }
+    : { visibility: 'hidden', visibilityReason: 'off-screen' };
+}
+
+/** Does any of `rect` lie inside `clip`? Any overlap counts (see {@link computeVisibility}). */
+function rectReachesClip(rect: NativePageRect, clip: NativePageRect): boolean {
   // A disjoint intersection (a scroll container itself scrolled off the window)
   // inverts rather than zeroing, and `spansOverlap` would read an inverted span
   // as overlapping. Nothing can be inside an empty clip.
-  if (isEmptyRect(clip)) {
-    return { visibility: 'hidden', visibilityReason: 'off-screen' };
-  }
-  const onScreen =
+  if (isEmptyRect(clip)) return false;
+  return (
     spansOverlap(rect.left, rect.right, clip.left, clip.right) &&
-    spansOverlap(rect.top, rect.bottom, clip.top, clip.bottom);
+    spansOverlap(rect.top, rect.bottom, clip.top, clip.bottom)
+  );
+}
 
-  return onScreen
-    ? { visibility: 'visible' }
-    : { visibility: 'hidden', visibilityReason: 'off-screen' };
+/**
+ * Whether a shown element's measured rect intersects its clip region — the
+ * value vision-core's `ElementMedia.in_viewport` carries. `undefined` whenever
+ * that cannot be MEASURED: the element is not shown (its rect may be a stale
+ * one from another route), it has no page-space rect yet, or the clip bounds
+ * are unknown.
+ *
+ * Deliberately stricter than {@link computeVisibility}, which answers
+ * `'visible'` when the clip is unknown because an unknown must never DEMOTE an
+ * element. The converse holds here: an unknown must never PROMOTE one to "on
+ * screen", or an off-screen check would pass on an image nobody located.
+ */
+export function computeInViewport(
+  state: NativeElementState,
+  clip?: NativePageRect | null
+): boolean | undefined {
+  if (!state.visible || !clip) return undefined;
+  const rect = pageRectOf(state);
+  if (!rect) return undefined;
+  return rectReachesClip(rect, clip);
 }
 
 /**
@@ -1748,10 +1772,9 @@ export class NativeUIBridgeRegistry {
       elements: elements.map((e) => {
         const handlers = extractHandlerNames(e.props);
         const state = e.getState();
-        const { visibility, visibilityReason } = computeVisibility(
-          state,
-          this.getClipRectFor(e, viewport)
-        );
+        const identifier = e.getIdentifier();
+        const clip = this.getClipRectFor(e, viewport);
+        const { visibility, visibilityReason } = computeVisibility(state, clip);
         const bbox = projectBbox(state, visibility, this.pixelRatio);
         const vision = projectVisionFields({
           type: e.type,
@@ -1763,12 +1786,15 @@ export class NativeUIBridgeRegistry {
           handlerNames: handlers,
           state,
           flatStyle: e.flatStyle,
+          props: e.props,
+          accessibilityLabel: identifier.accessibilityLabel,
+          inViewport: computeInViewport(state, clip),
         });
         return {
           id: e.id,
           type: e.type,
           label: e.label,
-          identifier: e.getIdentifier(),
+          identifier,
           state,
           actions: e.actions,
           customActions: serializeElementCustomActions(e.customActions),
