@@ -77,6 +77,18 @@ from .logging import (
     get_default_logger,
     set_default_logger,
 )
+from .observation import (
+    AbsentObservation,
+    MeasuredObservation,
+    ObservationCache,
+    ObservationCoverage,
+    ObservationProducer,
+    ObservationProvenance,
+    ObservationUnknown,
+    UnknownCode,
+    UnknownObservation,
+    UnmeasuredDimension,
+)
 
 # Recovery types
 from .recovery_types import (
@@ -127,6 +139,10 @@ from .types import (
     ElementState,
     FindRequest,
     FindResponse,
+    FindUnevaluated,
+    MediaFacts,
+    MediaLayoutShift,
+    MediaObservation,
     NavigationResult,
     ParamSchemaIssue,
     PartialMatch,
@@ -143,6 +159,8 @@ from .types import (
     WorkflowRunRequest,
     WorkflowRunResponse,
     WorkflowStepResult,
+    media_facts_of,
+    unmeasured_media_dimension,
     wire_error_code,
 )
 
@@ -164,8 +182,26 @@ __all__ = [
     "ControlSnapshot",
     "FindRequest",
     "FindResponse",
+    "FindUnevaluated",
     "DiscoveryRequest",  # Deprecated
     "DiscoveryResponse",  # Deprecated
+    # Media rows: one observation envelope per row
+    "MediaFacts",
+    "MediaLayoutShift",
+    "MediaObservation",
+    "media_facts_of",
+    "unmeasured_media_dimension",
+    # Observation envelope
+    "UnknownCode",
+    "ObservationProducer",
+    "UnmeasuredDimension",
+    "ObservationCoverage",
+    "ObservationCache",
+    "ObservationProvenance",
+    "ObservationUnknown",
+    "MeasuredObservation",
+    "AbsentObservation",
+    "UnknownObservation",
     # Action types
     "ActionRequest",
     "ActionResponse",

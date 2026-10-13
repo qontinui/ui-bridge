@@ -178,6 +178,29 @@ class TestUIBridgeClientFind:
             assert result.elements[0].id == "btn-1"
             assert result.total == 1
 
+    def test_find_sends_media_filters_and_reads_the_report(self, client, mock_response):
+        mock_response.json.return_value = {
+            "success": True,
+            "data": {
+                "elements": [],
+                "total": 0,
+                "durationMs": 1.0,
+                "timestamp": 1234567890,
+                "unevaluated": [
+                    {"id": "img-late", "option": "oversizeThreshold", "code": "input_missing"}
+                ],
+            },
+        }
+
+        with patch.object(client._client, "request", return_value=mock_response) as request:
+            result = client.find(media_only=True, oversize_threshold=2.0)
+
+        assert request.call_args.kwargs["json"] == {"mediaOnly": True, "oversizeThreshold": 2.0}
+        assert result.unevaluated is not None
+        assert [(u.id, u.option) for u in result.unevaluated] == [
+            ("img-late", "oversizeThreshold")
+        ]
+
     def test_discover_deprecated(self, client, mock_response):
         """Test that deprecated discover() still works."""
         mock_response.json.return_value = {

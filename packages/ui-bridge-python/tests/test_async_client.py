@@ -520,6 +520,36 @@ class TestAsyncUIBridgeClientFind:
         assert payload["selector"] == ".btn"
 
     @pytest.mark.asyncio
+    async def test_find_with_media_filters(self, client: AsyncUIBridgeClient) -> None:
+        client._request = AsyncMock(return_value=_find_data())  # type: ignore[method-assign]
+        await client.find(
+            media_only=True,
+            include_media=True,
+            media_type="image",
+            broken_only=True,
+            missing_alt_only=True,
+            src_pattern="cdn",
+            oversize_threshold=2.0,
+        )
+
+        payload = client._request.call_args[1]["json"]
+        assert payload == {
+            "mediaOnly": True,
+            "includeMedia": True,
+            "mediaType": "image",
+            "brokenOnly": True,
+            "missingAltOnly": True,
+            "srcPattern": "cdn",
+            "oversizeThreshold": 2.0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_find_can_drop_media_rows(self, client: AsyncUIBridgeClient) -> None:
+        client._request = AsyncMock(return_value=_find_data())  # type: ignore[method-assign]
+        await client.find(include_media=False)
+        assert client._request.call_args[1]["json"] == {"includeMedia": False}
+
+    @pytest.mark.asyncio
     async def test_discover_deprecated(self, client: AsyncUIBridgeClient) -> None:
         """Test that deprecated discover() still works and emits a warning."""
         client._request = AsyncMock(return_value=_find_data(elements=[], total=0))  # type: ignore[method-assign]

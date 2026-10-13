@@ -685,6 +685,13 @@ class AsyncUIBridgeClient:
         limit: int | None = None,
         types: list[str] | None = None,
         selector: str | None = None,
+        media_only: bool = False,
+        include_media: bool | None = None,
+        media_type: str | None = None,
+        broken_only: bool = False,
+        missing_alt_only: bool = False,
+        src_pattern: str | None = None,
+        oversize_threshold: float | None = None,
     ) -> FindResponse:
         """Find controllable elements in the UI."""
         request: dict[str, Any] = {}
@@ -700,6 +707,22 @@ class AsyncUIBridgeClient:
             request["types"] = types
         if selector:
             request["selector"] = selector
+        # Media rows are IN by default (the superset invariant); a media-fact
+        # filter answers rows it could not evaluate in `FindResponse.unevaluated`.
+        if media_only:
+            request["mediaOnly"] = True
+        if include_media is not None:
+            request["includeMedia"] = include_media
+        if media_type:
+            request["mediaType"] = media_type
+        if broken_only:
+            request["brokenOnly"] = True
+        if missing_alt_only:
+            request["missingAltOnly"] = True
+        if src_pattern:
+            request["srcPattern"] = src_pattern
+        if oversize_threshold is not None:
+            request["oversizeThreshold"] = oversize_threshold
 
         data = await self._request("POST", "/control/find", json=request)
         return FindResponse.model_validate(data)

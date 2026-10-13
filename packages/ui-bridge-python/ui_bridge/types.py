@@ -7,11 +7,17 @@ Pydantic models for UI Bridge API responses and requests.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from .diagnostics import UiBridgeErrorCode
+from .observation import (
+    AbsentObservation,
+    MeasuredObservation,
+    UnknownCode,
+    UnknownObservation,
+)
 
 
 class ElementRect(BaseModel):
@@ -163,8 +169,44 @@ class VideoState(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class MediaMetadata(BaseModel):
-    """Metadata for media elements (images, video, canvas, SVG, etc.)."""
+class ShiftRect(BaseModel):
+    """A viewport-relative rect, CSS px."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class MediaLayoutShift(BaseModel):
+    """A layout-shift entry that named a media element among its moved sources."""
+
+    value: float
+    start_time: float = Field(alias="startTime")
+    had_recent_input: bool = Field(
+        alias="hadRecentInput", description="True when the shift followed input (CLS excludes it)"
+    )
+    previous_rect: ShiftRect = Field(alias="previousRect")
+    current_rect: ShiftRect = Field(alias="currentRect")
+
+    model_config = {"populate_by_name": True}
+
+
+class MediaFacts(BaseModel):
+    """What the SDK measured about one media element.
+
+    Mirrors the TypeScript ``MediaFacts`` in ``packages/ui-bridge/src/core/types.ts``.
+    It never travels bare: it is the ``value`` of a :data:`MediaObservation`,
+    whose provenance lists every fact the producer could NOT measure. So a
+    ``None`` here is read in one of three ways, never conflated:
+
+    - the field's wire name is in ``provenance.coverage.unmeasured`` -> UNKNOWN
+      (the entry's ``code`` says why); never read it as 0 / False / "none";
+    - otherwise -> the fact does not apply to this media type, or the page
+      genuinely has none (no ``alt`` attribute, no ``srcset``).
+
+    Use :func:`unmeasured_media_dimension` to tell them apart.
+    """
 
     media_type: MediaType = Field(alias="mediaType")
     src: str | None = None
@@ -174,13 +216,41 @@ class MediaMetadata(BaseModel):
     natural_height: float | None = Field(None, alias="naturalHeight")
     rendered_width: float = Field(alias="renderedWidth")
     rendered_height: float = Field(alias="renderedHeight")
-    oversize_ratio: float | None = Field(None, alias="oversizeRatio")
-    loading_state: str = Field(
-        alias="loadingState", description="One of 'pending', 'loaded', 'error', 'lazy'"
+    device_pixel_ratio: float | None = Field(None, alias="devicePixelRatio")
+    effective_resolution: float | None = Field(
+        None,
+        alias="effectiveResolution",
+        description=(
+            "Source pixels per DEVICE pixel displayed (DPR- and object-fit-aware): "
+            "1.0 exact, 2.0 oversized, 0.5 upscaled. Replaces the DPR-blind oversizeRatio."
+        ),
     )
-    lazy_loading: bool = Field(alias="lazyLoading")
+    object_fit: str | None = Field(None, alias="objectFit")
+    object_position: str | None = Field(None, alias="objectPosition")
+    width_attribute: float | None = Field(None, alias="widthAttribute")
+    height_attribute: float | None = Field(None, alias="heightAttribute")
+    aspect_ratio: str | None = Field(None, alias="aspectRatio")
+    dims_reserved: bool | None = Field(
+        None,
+        alias="dimsReserved",
+        description="Whether the box is sized independently of the image's intrinsic size",
+    )
+    loading_state: Literal["pending", "loaded", "error", "lazy"] | None = Field(
+        None, alias="loadingState"
+    )
+    loading: Literal["lazy", "eager"] | None = None
+    decoding: Literal["sync", "async", "auto"] | None = None
+    fetch_priority: Literal["high", "low", "auto"] | None = Field(None, alias="fetchPriority")
     format: str | None = None
-    transfer_size: int | None = Field(None, alias="transferSize")
+    encoded_body_size: int | None = Field(
+        None,
+        alias="encodedBodySize",
+        description="Weight in bytes (Resource Timing encodedBodySize of the displayed URL)",
+    )
+    is_lcp_candidate: bool | None = Field(None, alias="isLcpCandidate")
+    cls_sources: list[MediaLayoutShift] | None = Field(None, alias="clsSources")
+    slot_id: str | None = Field(None, alias="slotId")
+    placeholder: bool | None = None
     srcset: str | None = None
     sizes: str | None = None
     sources: list[MediaSource] | None = None
@@ -188,6 +258,33 @@ class MediaMetadata(BaseModel):
     video_state: VideoState | None = Field(None, alias="videoState")
 
     model_config = {"populate_by_name": True}
+
+
+MediaObservation = Annotated[
+    MeasuredObservation[MediaFacts] | AbsentObservation | UnknownObservation,
+    Field(discriminator="status"),
+]
+"""Media metadata as every surface carries it: ONE observation per media row."""
+
+
+def media_facts_of(observation: object) -> MediaFacts | None:
+    """The facts a ``measured`` media observation carries, else ``None``."""
+    if isinstance(observation, MeasuredObservation) and isinstance(observation.value, MediaFacts):
+        return observation.value
+    return None
+
+
+def unmeasured_media_dimension(
+    observation: MeasuredObservation[MediaFacts] | AbsentObservation | UnknownObservation,
+    dimension: str,
+) -> UnknownCode | None:
+    """The code recorded for ``dimension`` (a wire name, e.g. ``"effectiveResolution"``)
+    in ``coverage.unmeasured``, or ``None`` when the producer measured it or it
+    does not apply."""
+    for entry in observation.provenance.coverage.unmeasured:
+        if entry.dimension == dimension:
+            return entry.code
+    return None
 
 
 class ElementRedaction(BaseModel):
@@ -283,7 +380,7 @@ class ElementState(BaseModel):
     required: bool | None = None
     validation_state: ValidationState | None = Field(None, alias="validationState")
     constraints: ElementConstraints | None = None
-    media_metadata: MediaMetadata | None = Field(None, alias="mediaMetadata")
+    media_metadata: MediaObservation | None = Field(None, alias="mediaMetadata")
     in_viewport: bool | None = Field(None, alias="inViewport")
     scroll_info: ScrollInfo | None = Field(None, alias="scrollInfo")
     redaction: ElementRedaction | None = None
@@ -699,6 +796,12 @@ class DiscoveredElement(BaseModel):
     actions: list[str]
     state: ElementState
     registered: bool
+    category: Literal["interactive", "content", "media"] | None = None
+    media_metadata: MediaObservation | None = Field(
+        None,
+        alias="mediaMetadata",
+        description="The media row's observation (section 4.6-scrubbed); absent on non-media rows",
+    )
     accessibility: ElementAccessibility | None = Field(
         None, description="Full accessibility information for the element"
     )
@@ -718,8 +821,32 @@ class FindRequest(BaseModel):
     limit: int | None = None
     types: list[str] | None = None
     selector: str | None = None
+    include_media: bool | None = Field(
+        None,
+        alias="includeMedia",
+        description="Media rows are INCLUDED unless this is False (the superset invariant)",
+    )
+    media_only: bool | None = Field(None, alias="mediaOnly")
+    media_type: MediaType | None = Field(None, alias="mediaType")
+    broken_only: bool | None = Field(None, alias="brokenOnly")
+    missing_alt_only: bool | None = Field(None, alias="missingAltOnly")
+    src_pattern: str | None = Field(None, alias="srcPattern")
+    oversize_threshold: float | None = Field(
+        None,
+        alias="oversizeThreshold",
+        gt=0,
+        description="Keep media whose effectiveResolution is at least this",
+    )
 
     model_config = {"populate_by_name": True}
+
+
+class FindUnevaluated(BaseModel):
+    """A row a media-fact filter could not evaluate - left out of ``elements``, and said so."""
+
+    id: str
+    option: str
+    code: UnknownCode
 
 
 class FindResponse(BaseModel):
@@ -732,6 +859,13 @@ class FindResponse(BaseModel):
     total: int
     duration_ms: float = Field(alias="durationMs")
     timestamp: int
+    unevaluated: list[FindUnevaluated] | None = Field(
+        None,
+        description=(
+            "Present when the request carried a media-fact filter: rows it could not "
+            "evaluate, with the option and code. [] = every row was evaluated."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 

@@ -842,6 +842,13 @@ class UIBridgeClient:
         limit: int | None = None,
         types: list[str] | None = None,
         selector: str | None = None,
+        media_only: bool = False,
+        include_media: bool | None = None,
+        media_type: str | None = None,
+        broken_only: bool = False,
+        missing_alt_only: bool = False,
+        src_pattern: str | None = None,
+        oversize_threshold: float | None = None,
     ) -> FindResponse:
         """
         Find controllable elements in the UI.
@@ -853,9 +860,17 @@ class UIBridgeClient:
             limit: Maximum elements to return
             types: Filter by element types
             selector: Filter by CSS selector
+            media_only: Only media rows
+            include_media: False drops media rows (they are included by default)
+            media_type: Only media of this type ('image', 'picture', 'video', 'svg', ...)
+            broken_only: Only media that failed to load
+            missing_alt_only: Only images with no alt text that are not decorative
+            src_pattern: Regex matched against the media src (ReDoS-guarded)
+            oversize_threshold: Only media whose effectiveResolution is at least this
 
         Returns:
-            FindResponse with found elements
+            FindResponse with found elements (``unevaluated`` lists rows a media
+            filter could not evaluate)
         """
         request: dict[str, Any] = {}
         if root:
@@ -870,6 +885,22 @@ class UIBridgeClient:
             request["types"] = types
         if selector:
             request["selector"] = selector
+        # Media rows are IN by default (the superset invariant); a media-fact
+        # filter answers rows it could not evaluate in `FindResponse.unevaluated`.
+        if media_only:
+            request["mediaOnly"] = True
+        if include_media is not None:
+            request["includeMedia"] = include_media
+        if media_type:
+            request["mediaType"] = media_type
+        if broken_only:
+            request["brokenOnly"] = True
+        if missing_alt_only:
+            request["missingAltOnly"] = True
+        if src_pattern:
+            request["srcPattern"] = src_pattern
+        if oversize_threshold is not None:
+            request["oversizeThreshold"] = oversize_threshold
 
         data = self._request("POST", "/control/find", json=request)
         return FindResponse.model_validate(data)
