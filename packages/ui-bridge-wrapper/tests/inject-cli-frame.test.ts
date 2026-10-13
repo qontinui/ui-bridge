@@ -8,11 +8,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   USAGE,
   CAPTURE_FRAME_ACTION,
   InjectCliArgError,
   MAX_DPR,
+  MAX_VIEWPORT_SIDE,
+  captureMatrix,
   SNAPSHOT_ACTIONS,
   buildCellTransportOptions,
   buildTransportOptions,
@@ -34,6 +39,53 @@ describe('USAGE', () => {
     expect(USAGE).toContain('--dpr <n>');
     expect(USAGE).toContain('--color-scheme <dark|light>');
     expect(USAGE).toContain('--capture-matrix <dir>');
+  });
+
+  // CONSUMER: qontinui-claude-config's scripts/verify-page-verdict.sh (the
+  // /verify-web verdict) reads the frame record's fields BY NAME — it copies
+  // the record into each capture, hands "path" to vision-audit with
+  // --scale-factor <devicePixelRatio>, and reports "lockstep" — so the names
+  // are pinned here, and a rename has to be made on both sides. FrameRecord in
+  // src/frame-capture.ts carries the same note.
+  it('names every frame-record field its consumer verify-page-verdict.sh reads', () => {
+    for (const field of [
+      '"path"',
+      '"width"',
+      '"height"',
+      '"devicePixelRatio"',
+      '"cssViewport"',
+      '"colorScheme"',
+      '"capturedAt"',
+      '"lockstep"',
+      '"verified"',
+      '"attempts"',
+      '"changedElements"',
+      '"frameError"',
+    ]) {
+      expect(USAGE).toContain(field);
+    }
+  });
+
+  it('says a frame is raw pixels that data-bridge-redact does not scrub, written owner-only', () => {
+    expect(USAGE).toContain('RAW PIXELS');
+    expect(USAGE).toContain('data-bridge-redact');
+    expect(USAGE).toContain('0700');
+    expect(USAGE).toContain('0600');
+  });
+});
+
+describe('--viewport', () => {
+  it('accepts a side of MAX_VIEWPORT_SIDE CSS pixels and refuses one above it', () => {
+    expect(parseArgs([...exec, '--viewport', `${MAX_VIEWPORT_SIDE}x720`]).viewports).toEqual([
+      { width: MAX_VIEWPORT_SIDE, height: 720 },
+    ]);
+    expect(() => parseArgs([...exec, '--viewport', `${MAX_VIEWPORT_SIDE + 1}x720`])).toThrow(
+      /at most 8192/
+    );
+    expect(() => parseArgs([...exec, '--viewport', `1280x${MAX_VIEWPORT_SIDE + 1}`])).toThrow(
+      InjectCliArgError
+    );
+    expect(USAGE).toContain(`1..${MAX_VIEWPORT_SIDE} CSS pixels`);
   });
 });
 
@@ -72,6 +124,18 @@ describe('validateFramePlan', () => {
 
   it('refuses a run with no getControlSnapshot — the flag would silently do nothing', () => {
     expect(() => validateFramePlan([a('find'), a('sleep')], 'f.png')).toThrow(/has\s+none/);
+  });
+
+  it('refuses {n} in a directory name, where it is not replaced', () => {
+    expect(() => validateFramePlan([a('getControlSnapshot')], '/tmp/{n}/frame.png')).toThrow(
+      /directory name/
+    );
+    expect(() =>
+      validateFramePlan([a('getControlSnapshot'), a('getControlSnapshot')], '/tmp/{n}/f-{n}.png')
+    ).toThrow(/directory name/);
+    expect(() =>
+      validateFramePlan([a('getControlSnapshot'), a('getControlSnapshot')], '/tmp/x/f-{n}.png')
+    ).not.toThrow();
   });
 
   it('refuses a fixed path over several snapshots — each frame would overwrite the last', () => {
@@ -350,5 +414,34 @@ describe('executeActions', () => {
     expect(anyError).toBe(true);
     expect(lines[0]!.error?.message).toMatch(/runtime gone/);
     expect('frame' in lines[0]!).toBe(false);
+  });
+});
+
+describe('captureMatrix output directory', () => {
+  const plan = [{ action: 'getControlSnapshot', payload: {} }];
+
+  it('refuses a non-empty directory before any browser launches, and never clears it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'matrix-nonempty-'));
+    try {
+      writeFileSync(join(dir, 'keep.txt'), 'mine');
+      const args = parseArgs(['--url', URL_, '--capture-matrix', dir]);
+      await expect(captureMatrix(args, plan)).rejects.toThrow(/not empty .*Pass an\s+empty/s);
+      expect(readdirSync(dir)).toEqual(['keep.txt']);
+      expect(readFileSync(join(dir, 'keep.txt'), 'utf8')).toBe('mine');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a file at that path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'matrix-file-'));
+    try {
+      const file = join(dir, 'matrix');
+      writeFileSync(file, 'x');
+      const args = parseArgs(['--url', URL_, '--capture-matrix', file]);
+      await expect(captureMatrix(args, plan)).rejects.toThrow(/is a file, not a directory/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

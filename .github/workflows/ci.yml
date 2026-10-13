@@ -175,6 +175,16 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Install Playwright Chromium
+        # The real-Chromium smokes (inject-cli frames at a DPR, the capture
+        # matrix, the settle and wait smokes) skip themselves when no Playwright
+        # Chromium is installed, and ubuntu-latest ships none, so until this step
+        # they passed every PR by skipping (plan
+        # 2026-10-13-image-generation-and-visual-judgment, Phase 9 review m7).
+        # `npx` resolves the workspace's own playwright, so the browser build
+        # matches the version the tests import.
+        run: npx playwright install --with-deps chromium
+
       - name: Test
         run: npm run test
 

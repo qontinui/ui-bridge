@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -283,5 +283,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('inject-cli frames (real Chromium)', () =
     expect(JSON.parse(readFileSync(join(out, 'matrix.json'), 'utf8'))).toEqual(
       JSON.parse(JSON.stringify(manifest))
     );
+
+    // Owner-only on disk: frames are raw pixels data-bridge-redact never scrubs.
+    if (process.platform !== 'win32') {
+      const mode = (p: string) => statSync(p).mode & 0o777;
+      expect(mode(out)).toBe(0o700);
+      expect(mode(join(out, 'matrix.json'))).toBe(0o600);
+      const cell = manifest.cells[0]!;
+      expect(mode(join(out, cell.id))).toBe(0o700);
+      expect(mode(join(out, cell.pairs[0]!.frame!.path))).toBe(0o600);
+      expect(mode(join(out, cell.pairs[0]!.snapshot))).toBe(0o600);
+      expect(mode(join(out, cell.results!))).toBe(0o600);
+    }
   }, 120_000);
 });

@@ -31,15 +31,19 @@
  * calling `main()`.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createTransport } from './create-transport.js';
 import { consumeValue } from './cli-args.js';
 import { returnedFailureError, thrownError, type CliActionError } from './action-outcome.js';
 import {
   captureFrameInLockstep,
+  ensurePrivateDir,
   expandFramePath,
   FRAME_INDEX_TOKEN,
+  frameTokenInDirectory,
+  frameTokenInFileName,
+  writePrivateFile,
   type FrameColorScheme,
   type FrameError,
   type FramePage,
@@ -141,12 +145,18 @@ Frames (Variant A):
                                   "colorScheme","capturedAt",
                                   "lockstep":{"verified","attempts","changedElements"}}
                                every field read off the page or the PNG at capture
-                               time, never copied from the flags. ${FRAME_INDEX_TOKEN} in <path> is
-                               replaced by the action's 1-based position (= its output
-                               line) and is REQUIRED when the run takes more than one
-                               snapshot. A frame that cannot be produced leaves
+                               time, never copied from the flags. ${FRAME_INDEX_TOKEN} in the FILE
+                               NAME of <path> is replaced by the action's 1-based
+                               position (= its output line) and is REQUIRED when the
+                               run takes more than one snapshot; ${FRAME_INDEX_TOKEN} in a directory
+                               name is refused. A frame that cannot be produced leaves
                                "frame":null plus "frameError":{"code","message"} on the
                                line — the snapshot still stands — and exit 1.
+                               A frame is RAW PIXELS of the page: data-bridge-redact
+                               masks elements in snapshots and over the relay, never
+                               in a screenshot, so a frame shows whatever the page
+                               showed. Directories created for frames are 0700 and
+                               the files 0600.
   --dpr <n>                    Device pixel ratio of the browser context, e.g. 2 or
                                2.625 (Chromium's --force-device-scale-factor does NOT
                                reach the page; this does). Default 1.
@@ -171,7 +181,11 @@ Capture matrix (its own mode):
                                'getControlSnapshot {}'); a frame is captured beside
                                every getControlSnapshot in it. Prints one JSON line
                                per cell; exits 1 if any cell is not "captured".
-                               Takes no --relay and no --screenshot.
+                               Takes no --relay and no --screenshot. <dir> must be
+                               empty or not exist yet: a non-empty one is refused,
+                               never cleared. Directories it creates are 0700 and
+                               every frame, snapshot and manifest 0600 — frames are
+                               raw pixels that data-bridge-redact does not scrub.
 
 Optional:
   --storage-state <path>       Seed the browser context from a Playwright storageState
@@ -193,7 +207,8 @@ Optional:
                                mounts lazily after unrelated chrome. If it never appears
                                before --settle-timeout, ready() fails with a BLOCKED error
                                instead of returning a control-less page.
-  --viewport <WxH>             Viewport size in CSS pixels, e.g. 1280x720 (default 1280x720)
+  --viewport <WxH>             Viewport size in CSS pixels, e.g. 1280x720 (default 1280x720).
+                               Each side 1..8192 CSS pixels.
   --launch-arg <arg>           Extra Chromium command-line argument (repeatable),
                                passed through to chromium.launch({ args }).
                                NOTE: when --url is https and --relay resolves to a
@@ -350,13 +365,27 @@ function splitList(flag: string, raw: string): string[] {
   return items;
 }
 
-/** Parse one `WxH` viewport in CSS pixels. Both sides must be positive integers. */
+/**
+ * Upper bound on each `--viewport` side, in CSS pixels. Above it a typo (one
+ * zero too many) would ask Chromium for a page wider than any display, and at
+ * a DPR of 2 or more a frame past Chromium's 16384-pixel screenshot limit.
+ */
+export const MAX_VIEWPORT_SIDE = 8192;
+
+/** Parse one `WxH` viewport in CSS pixels: each side an integer in 1..{@link MAX_VIEWPORT_SIDE}. */
 export function parseViewport(raw: string): MatrixViewport {
   const match = raw.match(/^([1-9]\d*)x([1-9]\d*)$/);
   if (!match) {
     throw new InjectCliArgError(`--viewport expects WxH in CSS pixels, e.g. 1280x720 (got ${raw})`);
   }
-  return { width: Number.parseInt(match[1]!, 10), height: Number.parseInt(match[2]!, 10) };
+  const width = Number.parseInt(match[1]!, 10);
+  const height = Number.parseInt(match[2]!, 10);
+  if (width > MAX_VIEWPORT_SIDE || height > MAX_VIEWPORT_SIDE) {
+    throw new InjectCliArgError(
+      `--viewport sides are at most ${MAX_VIEWPORT_SIDE} CSS pixels (got ${raw})`
+    );
+  }
+  return { width, height };
 }
 
 /**
@@ -711,6 +740,12 @@ export const SNAPSHOT_ACTIONS: ReadonlySet<string> = new Set(['getControlSnapsho
  */
 export function validateFramePlan(actions: readonly ExecAction[], screenshot: string | null): void {
   if (screenshot === null) return;
+  if (frameTokenInDirectory(screenshot)) {
+    throw new InjectCliArgError(
+      `--screenshot ${screenshot} has ${FRAME_INDEX_TOKEN} in a directory name, where it is not ` +
+        `replaced. Put it in the file name (e.g. frames/frame-${FRAME_INDEX_TOKEN}.png).`
+    );
+  }
   const snapshots = actions.filter((a) => SNAPSHOT_ACTIONS.has(a.action)).length;
   if (snapshots === 0) {
     throw new InjectCliArgError(
@@ -718,10 +753,10 @@ export function validateFramePlan(actions: readonly ExecAction[], screenshot: st
         `none. Add --exec 'getControlSnapshot {}'.`
     );
   }
-  if (snapshots > 1 && !screenshot.includes(FRAME_INDEX_TOKEN)) {
+  if (snapshots > 1 && !frameTokenInFileName(screenshot)) {
     throw new InjectCliArgError(
       `--screenshot ${screenshot} names one file but the run takes ${snapshots} snapshots, so ` +
-        `each frame would overwrite the last. Put ${FRAME_INDEX_TOKEN} in the path ` +
+        `each frame would overwrite the last. Put ${FRAME_INDEX_TOKEN} in the file name ` +
         `(e.g. frame-${FRAME_INDEX_TOKEN}.png); it becomes the action's position.`
     );
   }
@@ -1377,7 +1412,7 @@ async function runMatrixCell(
   log(args.quiet, `[ui-bridge-inject] capture matrix: cell ${id}`);
 
   try {
-    mkdirSync(cellDir, { recursive: true });
+    ensurePrivateDir(cellDir);
     await transport.ready();
   } catch (err) {
     await transport.close().catch(() => {});
@@ -1404,7 +1439,7 @@ async function runMatrixCell(
         lines.push(JSON.stringify(line));
         if (!SNAPSHOT_ACTIONS.has(line.action) || line.result === undefined) return;
         const snapshotPath = join(cellDir, `snapshot-${position}.json`);
-        writeFileSync(snapshotPath, `${JSON.stringify(line.result)}\n`);
+        writePrivateFile(snapshotPath, `${JSON.stringify(line.result)}\n`);
         pairs.push({
           position,
           snapshot: manifestPath(dir, snapshotPath),
@@ -1414,7 +1449,7 @@ async function runMatrixCell(
       }
     );
     const resultsPath = join(cellDir, 'results.ndjson');
-    writeFileSync(resultsPath, `${lines.join('\n')}\n`);
+    writePrivateFile(resultsPath, `${lines.join('\n')}\n`);
     return {
       id,
       requested: cell,
@@ -1438,6 +1473,36 @@ async function runMatrixCell(
 }
 
 /**
+ * `--capture-matrix` writes into an EMPTY directory only. Frames from a
+ * previous run would otherwise sit beside this run's under the same cell ids,
+ * indistinguishable from them, and clearing the directory silently could
+ * delete files the caller meant to keep. So a non-empty directory (or a file
+ * at that path) is refused before any browser launches; one that does not
+ * exist yet is created owner-only.
+ */
+export function assertEmptyMatrixDir(dir: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    if (code === 'ENOTDIR') {
+      throw new InjectCliArgError(
+        `${dir} is a file, not a directory. Pass an empty directory, or one that does not exist yet.`
+      );
+    }
+    throw err;
+  }
+  if (entries.length > 0) {
+    throw new InjectCliArgError(
+      `${dir} is not empty (${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}). Pass an ` +
+        `empty directory, or one that does not exist yet; the matrix never clears or overwrites one.`
+    );
+  }
+}
+
+/**
  * Run the capture matrix: every cell in turn into `args.captureMatrix`, then
  * `<dir>/matrix.json`. Returns the manifest it wrote; `onCell` sees each cell's
  * report as it completes. Never exits the process — that is `runMatrix`'s job —
@@ -1451,7 +1516,8 @@ export async function captureMatrix(
   if (!args.captureMatrix)
     throw new InjectCliArgError('captureMatrix needs --capture-matrix <dir>');
   const dir = resolve(args.captureMatrix);
-  mkdirSync(dir, { recursive: true });
+  assertEmptyMatrixDir(dir);
+  ensurePrivateDir(dir);
   const cells = expandMatrix({
     viewports: args.viewports,
     dprs: args.dprs,
@@ -1483,7 +1549,7 @@ export async function captureMatrix(
     cells: reports,
   };
   const manifestFile = join(dir, 'matrix.json');
-  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  writePrivateFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
   log(args.quiet, `[ui-bridge-inject] capture matrix: manifest ${manifestFile}`);
   return manifest;
 }
