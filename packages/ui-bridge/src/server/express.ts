@@ -257,7 +257,10 @@ function createRouteHandler(
       if (route.bodyRequired) {
         // A request-supplied `__callerUserId` never survives: the verified
         // header below is the only source (see nextjs.ts, reserved-caller.ts).
-        let body = withoutReservedCaller(req.body);
+        // A request with no body still hands the handler an object, as the
+        // Next.js and standalone adapters do: Express leaves `req.body`
+        // undefined then.
+        let body = withoutReservedCaller(req.body ?? {});
         if (
           externalTabId &&
           body !== null &&
