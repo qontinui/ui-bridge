@@ -23,7 +23,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs
 import { inflateSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
 import { createTransport } from '../src/create-transport.js';
 import {
   SNAPSHOT_ACTIONS,
@@ -36,14 +35,9 @@ import {
   type ExecLine,
 } from '../src/inject-cli.js';
 import { expandFramePath } from '../src/frame-capture.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 // A red button at CSS (50,40) 100x60 on a page that is black in dark mode.
 // The label is red on red so every pixel inside the box is the same colour.

@@ -33,6 +33,8 @@ coverage/
 htmlcov/
 .pytest_cache/
 .vitest/
+# vitest JSON report each package's `test:smoke` writes for assert-no-skipped-tests.mjs
+.smoke-report.json
 
 # Logs
 *.log

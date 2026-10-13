@@ -20,10 +20,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
 import { HeadlessTransport, type WrapperTransport } from '@qontinui/ui-bridge-wrapper';
 import { registerHandlers } from '../src/handlers.js';
 import type {
@@ -33,6 +31,7 @@ import type {
   ScreenshotResult,
   MetricsResult,
 } from '../src/handlers.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = resolve(__dirname, 'fixtures/page.html');
@@ -43,14 +42,7 @@ const VIEWPORT_HEIGHT = 640;
 // returns the resolved path even when the binary isn't installed, so we check
 // the file actually exists. If the call throws (no browser registered at all),
 // treat that as unavailable too.
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    const exePath = chromium.executablePath();
-    return existsSync(exePath);
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 let server: Server | null = null;
 let serverPort = 0;

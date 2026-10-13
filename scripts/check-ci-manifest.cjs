@@ -133,15 +133,24 @@ const HOST_PACKAGE_WORDS = new Set([
   'yum',
   'zypper',
   'pacman',
-  'apk',
   'brew',
-  'port',
   'choco',
   'winget',
   'scoop',
   '--with-deps',
   'install-deps',
 ]);
+
+/**
+ * Package managers whose name is also an ordinary word, matched only as the
+ * INVOCATION `<manager> <subcommand>`. A bare `apk` can be an Android build
+ * target and a bare `port` a flag value, so refusing those words outright would
+ * block legitimate steps.
+ */
+const HOST_PACKAGE_INVOCATIONS = [
+  ['apk', 'add'],
+  ['port', 'install'],
+];
 
 /** `# parity: <job> "<step name>"` — the citation that binds a manifest step. */
 const PARITY_CITATION = /^#\s*parity:\s*ci\.yml\s+([A-Za-z0-9_-]+)\s+"(.+)"\s*$/;
@@ -211,10 +220,18 @@ function validateManifest(manifest) {
               `metacharacter(s) ${JSON.stringify(banned.join(''))}`
           );
         }
-        if (HOST_PACKAGE_WORDS.has(token)) {
+        // HOST_PACKAGE_WORDS / HOST_PACKAGE_INVOCATIONS. LIMIT: this reads the
+        // manifest's argv only and cannot see inside an npm script body, so
+        // `npm run x` whose script runs `sudo apt-get ...` passes it. Keep
+        // host-mutating work out of the package.json scripts a step runs.
+        const invocation = HOST_PACKAGE_INVOCATIONS.find(
+          ([manager, sub]) => token === manager && step.command[t + 1] === sub
+        );
+        if (HOST_PACKAGE_WORDS.has(token) || invocation) {
+          const what = JSON.stringify(invocation ? invocation.join(' ') : token);
           fail(
-            `ci.toml ${label}: command word ${JSON.stringify(token)} installs system packages or ` +
-              `escalates to root, and this lane runs on a user's own machine: it would fail every ` +
+            `ci.toml ${label}: command ${what} installs system packages or escalates to root, ` +
+              `and this lane runs on a user's own machine: it would fail every ` +
               `dispatch without passwordless sudo, or change the host for every other program on ` +
               `it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job listed in ` +
               `EXCLUDED_JOBS instead.`
