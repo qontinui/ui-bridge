@@ -268,22 +268,83 @@ export function createRelayHandlers(
   const screenshotFallbackUrl = options?.screenshotFallbackUrl;
   const injectedSpecs = options?.specs ?? [];
 
-  // Server-side render log cache
+  // Server-side render log, fed by `__addRenderLogEntry`. Its entries name no
+  // tab or user, so only the unscoped caller reads it (per-user tab scoping,
+  // §4.2).
   let renderLogEntries: RenderLogEntry[] = [];
   const MAX_ENTRIES = 50;
 
-  // Cached snapshots
-  let latestControlSnapshot: ControlSnapshot = {
-    timestamp: Date.now(),
-    elements: [],
-    components: [],
-    workflows: [],
-    activeRuns: [],
-  };
-  let latestSemanticSnapshot: SemanticSnapshot | null = null;
+  /**
+   * What the relay handlers cache from a caller's tabs. Per-user tab scoping
+   * (§4.2): a scoped caller (one the adapter names from `X-Caller-User-Id`)
+   * has a cache of its own, filled only by commands dispatched with its
+   * `ownerCheck`, so a cached read answers only from tabs that caller owns.
+   * The unscoped caller (no identity: the admin or single-user mode) keeps the
+   * one shared cache. Nothing a scoped call reads or writes is shared.
+   */
+  interface CallerCache {
+    controlSnapshot: ControlSnapshot;
+    semanticSnapshot: SemanticSnapshot | null;
+    /** The last ungrouped console-errors answer, served when the browser disconnects. */
+    consoleErrors: APIResponse<unknown> | null;
+    /** When this cache was first known stale, or `null` while it is fresh. */
+    staleSince: number | null;
+    /**
+     * Why the most recent refresh of this cache failed, or `null` after a good
+     * one. See the note on refresh failures below.
+     */
+    lastRefreshFailure: 'relay_failed' | 'malformed_response' | null;
+    /** The refresh in flight, shared by concurrent reads of this cache. */
+    inflightRefresh: Promise<void> | null;
+  }
 
-  // Cache for console errors (returned when browser disconnects)
-  let lastConsoleErrorsCache: APIResponse<unknown> | null = null;
+  /** A caller and the cache its reads may use. */
+  interface CallerScope {
+    /** The scoped caller, or undefined for the unscoped (admin) caller. */
+    userId: string | undefined;
+    cache: CallerCache;
+  }
+
+  function emptyCallerCache(): CallerCache {
+    return {
+      controlSnapshot: {
+        timestamp: Date.now(),
+        elements: [],
+        components: [],
+        workflows: [],
+        activeRuns: [],
+      },
+      semanticSnapshot: null,
+      consoleErrors: null,
+      staleSince: null,
+      lastRefreshFailure: null,
+      inflightRefresh: null,
+    };
+  }
+
+  const unscopedCache = emptyCallerCache();
+  const scopedCaches = new Map<string, CallerCache>();
+  /** How many scoped callers keep a cache; past it, the least recently used is dropped. */
+  const MAX_SCOPED_CACHES = 256;
+
+  /** The scope for `userId`: its own cache when scoped, the shared one otherwise. */
+  function scopeOf(userId: string | undefined): CallerScope {
+    if (!userId) return { userId: undefined, cache: unscopedCache };
+    const cache = scopedCaches.get(userId) ?? emptyCallerCache();
+    // Re-insert so iteration order is least recently used first.
+    scopedCaches.delete(userId);
+    scopedCaches.set(userId, cache);
+    if (scopedCaches.size > MAX_SCOPED_CACHES) {
+      const oldest = scopedCaches.keys().next().value;
+      if (oldest !== undefined) scopedCaches.delete(oldest);
+    }
+    return { userId, cache };
+  }
+
+  /** The `ownerCheck` a relay dispatch carries on behalf of `userId`, if any. */
+  function ownedBy(userId: string | undefined): { ownerCheck: { userId: string } } | undefined {
+    return userId ? { ownerCheck: { userId } } : undefined;
+  }
 
   /**
    * Extract `targetTabId` from a relay-command payload — Item #4 routing.
@@ -584,9 +645,9 @@ export function createRelayHandlers(
    * stale=true to callers.
    */
   const STALE_AGE_MULTIPLIER = 5;
-  let snapshotStaleSince: number | null = null;
-  /**
-   * Why the most recent snapshot refresh failed, or `null` after a good one.
+  /*
+   * Refresh failures (`CallerCache.lastRefreshFailure`): why the most recent
+   * snapshot refresh failed, or `null` after a good one.
    * A malformed answer and a relay failure both keep the previous snapshot
    * (neither is ever cached), but they are different facts: the tab ANSWERED
    * without a usable `elements` array versus the tab could not be reached.
@@ -606,12 +667,15 @@ export function createRelayHandlers(
    * relay-pageHealth tests pin the consequence — page health classifies from
    * its OWN refresh, never from an older attempt's reason.
    */
-  let lastRefreshFailure: 'relay_failed' | 'malformed_response' | null = null;
 
-  function staleMeta(): { stale: boolean; staleSinceMs?: number; cacheAgeMs: number } {
-    const cacheAgeMs = Date.now() - latestControlSnapshot.timestamp;
-    if (snapshotStaleSince) {
-      return { stale: true, staleSinceMs: Date.now() - snapshotStaleSince, cacheAgeMs };
+  function staleMeta({ cache }: CallerScope): {
+    stale: boolean;
+    staleSinceMs?: number;
+    cacheAgeMs: number;
+  } {
+    const cacheAgeMs = Date.now() - cache.controlSnapshot.timestamp;
+    if (cache.staleSince) {
+      return { stale: true, staleSinceMs: Date.now() - cache.staleSince, cacheAgeMs };
     }
     // Item B (iter-3 manual-test remediation): mark stale on age-based decay
     // even when the relay never flagged a failure. Without this, a tab that
@@ -627,8 +691,6 @@ export function createRelayHandlers(
     return { stale: false, cacheAgeMs };
   }
 
-  let inflightRefresh: Promise<void> | null = null;
-
   /**
    * Refresh the cached snapshot if the given Recency requirement is not satisfied.
    *
@@ -636,46 +698,56 @@ export function createRelayHandlers(
    * - `Current` → always fetch fresh from the browser
    * - `MaxAge(ms)` → fetch only if cache is older than `ms`
    */
-  async function refreshSnapshotIfNeeded(recency: RecencyType, isEmpty: boolean): Promise<void> {
+  async function refreshSnapshotIfNeeded(
+    scope: CallerScope,
+    recency: RecencyType,
+    isEmpty: boolean
+  ): Promise<void> {
+    const { cache } = scope;
     // Fast path: Recency.Any accepts any cached value as long as it's non-empty
     if (recency.kind === 'any' && !isEmpty) return;
 
-    const ageMs = Date.now() - latestControlSnapshot.timestamp;
+    const ageMs = Date.now() - cache.controlSnapshot.timestamp;
     if (!isEmpty && isSatisfiedBy(recency, ageMs)) return;
 
     // Need to fetch — deduplicate concurrent refresh requests
-    if (inflightRefresh) {
-      await inflightRefresh;
+    if (cache.inflightRefresh) {
+      await cache.inflightRefresh;
       return;
     }
 
-    inflightRefresh = (async () => {
+    cache.inflightRefresh = (async () => {
       try {
-        const result = await relay.queueCommand<unknown>('getControlSnapshot', {});
+        // A scoped cache is filled from the caller's own tabs only.
+        const result = await relay.queueCommand<unknown>(
+          'getControlSnapshot',
+          {},
+          ownedBy(scope.userId)
+        );
         if (!isControlSnapshot(result)) {
           // A malformed answer is handled like a relay failure — never cached,
           // the last good snapshot kept and marked stale — but recorded as
           // its own reason.
           warnMalformedSnapshot(result);
-          lastRefreshFailure = 'malformed_response';
-          if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+          cache.lastRefreshFailure = 'malformed_response';
+          if (!cache.staleSince) cache.staleSince = Date.now();
           return;
         }
-        latestControlSnapshot = result;
-        snapshotStaleSince = null;
-        lastRefreshFailure = null;
+        cache.controlSnapshot = result;
+        cache.staleSince = null;
+        cache.lastRefreshFailure = null;
       } catch {
         // A relay failure: keep the last good snapshot.
         // Track when we first started returning stale data
-        lastRefreshFailure = 'relay_failed';
-        if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+        cache.lastRefreshFailure = 'relay_failed';
+        if (!cache.staleSince) cache.staleSince = Date.now();
       }
     })();
 
     try {
-      await inflightRefresh;
+      await cache.inflightRefresh;
     } finally {
-      inflightRefresh = null;
+      cache.inflightRefresh = null;
     }
   }
 
@@ -694,8 +766,13 @@ export function createRelayHandlers(
     if (changeEventBuffer.length > MAX_CHANGE_EVENTS) {
       changeEventBuffer.splice(0, changeEventBuffer.length - MAX_CHANGE_EVENTS);
     }
-    // Mark snapshot as stale when a change event arrives
-    if (!snapshotStaleSince) snapshotStaleSince = Date.now();
+    // Mark snapshots stale when a change event arrives. The event names no
+    // tab or user, so every cache is marked: the cost is a refresh, never
+    // another user's data.
+    const now = Date.now();
+    for (const cache of [unscopedCache, ...scopedCaches.values()]) {
+      if (!cache.staleSince) cache.staleSince = now;
+    }
     // Notify subscribers
     for (const sub of changeEventSubscribers) {
       try {
@@ -712,12 +789,11 @@ export function createRelayHandlers(
     // ========================================================================
 
     async getRenderLog(query, context) {
+      const { cleaned, callerUserId } = extractTabRouting(query ?? {});
+      const effectiveUserId = scopedCaller(callerUserId, context);
       // Try relaying to the browser first for live render log data
       try {
-        const { cleaned, callerUserId } = extractTabRouting(query ?? {});
-        const effectiveUserId = scopedCaller(callerUserId, context);
-        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
-        const result = await relay.queueCommand('getRenderLog', cleaned, liveOpts);
+        const result = await relay.queueCommand('getRenderLog', cleaned, ownedBy(effectiveUserId));
         if (
           result &&
           typeof result === 'object' &&
@@ -725,9 +801,12 @@ export function createRelayHandlers(
         ) {
           return success((result as Record<string, unknown>).entries as RenderLogEntry[]);
         }
-      } catch {
-        // Relay failed — fall back to server-side cache
+      } catch (err) {
+        // Relay failed. The server-side log below names no tab or user, so a
+        // scoped caller gets the failure rather than other users' entries.
+        if (effectiveUserId) return error((err as Error).message, 'COMMAND_FAILED');
       }
+      if (effectiveUserId) return success([]);
       let results = [...renderLogEntries];
       if (query?.type) results = results.filter((e) => e.type === query.type);
       if (query?.since) results = results.filter((e) => e.timestamp >= query.since!);
@@ -737,7 +816,9 @@ export function createRelayHandlers(
     },
 
     async clearRenderLog(context) {
-      renderLogEntries = [];
+      // The server-side log is shared and names no user: a scoped caller
+      // clears only its own tabs' logs, below.
+      if (!context?.callerUserId) renderLogEntries = [];
       // Also relay the clear to the browser so live render log entries are cleared.
       // Per-user tab scoping (§4.2): when invoked through the HTTP layer
       // with `X-Caller-User-Id`, the adapter passes the userId via `context`
@@ -809,23 +890,33 @@ export function createRelayHandlers(
         return success(applyFilters(live.data.elements), { stale: false, cacheAgeMs: 0 });
       }
 
+      const scope = scopeOf(scopedCaller(callerUserId, context));
       const recency = resolveRecency(opts);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
-      const _meta = staleMeta();
+      await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.elements.length === 0
+      );
+      const _meta = staleMeta(scope);
 
-      return success(applyFilters(latestControlSnapshot.elements), _meta);
+      return success(applyFilters(scope.cache.controlSnapshot.elements), _meta);
     },
 
-    async rankElements(request, _context) {
+    async rankElements(request, context) {
+      const scope = scopeOf(scopedCaller(extractTabRouting(request ?? {}).callerUserId, context));
       // Rank against the cached relay snapshot — the disambiguation
       // metadata is passthrough from the browser tab's registry, so no
       // live relay call is needed. Respects the caller's recency hint
       // so a stale snapshot can be refreshed first.
       const recency = resolveRecency(request as { recency?: string } | undefined);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
+      await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.elements.length === 0
+      );
       const query = (request ?? {}) as ElementQuery;
       const matches = findElements(
-        latestControlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
+        scope.cache.controlSnapshot.elements as unknown as Parameters<typeof findElements>[0],
         query
       );
       return success(
@@ -878,6 +969,7 @@ export function createRelayHandlers(
         );
       }
 
+      const scope = scopeOf(effectiveUserId);
       // Try relay first for live element data when browser is connected
       try {
         const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
@@ -886,15 +978,19 @@ export function createRelayHandlers(
       } catch {
         // Relay failed — fall back to cached snapshot
       }
-      let element = latestControlSnapshot.elements.find((e) => e.id === id);
+      let element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (!element) {
         // Refresh and retry — element may have been registered after the cached snapshot
         const recency = resolveRecency(options);
-        await refreshSnapshotIfNeeded(recency.kind === 'any' ? Recency.Current : recency, true);
-        element = latestControlSnapshot.elements.find((e) => e.id === id);
+        await refreshSnapshotIfNeeded(
+          scope,
+          recency.kind === 'any' ? Recency.Current : recency,
+          true
+        );
+        element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       }
       if (!element) {
-        const count = latestControlSnapshot.elements.length;
+        const count = scope.cache.controlSnapshot.elements.length;
         return error(
           `Element "${id}" not found (${count} elements registered). Use find() or getControlSnapshot() to see available elements.`,
           'ELEMENT_NOT_FOUND',
@@ -921,12 +1017,11 @@ export function createRelayHandlers(
         const result = await relay.queueCommand('getElementState', { id }, liveOpts);
         if (result) return success(result);
       } catch {
-        // Relay failed — fall back to state from cached snapshot.
-        // The cached snapshot is shared across users (refresh path runs
-        // unscoped), so the fallback below leaks no more than an
-        // unauthenticated admin GET against the same id would.
+        // Relay failed — fall back to state from the caller's cached
+        // snapshot, which holds only tabs the caller owns (§4.2).
       }
-      const element = latestControlSnapshot.elements.find((e) => e.id === id);
+      const scope = scopeOf(context?.callerUserId);
+      const element = scope.cache.controlSnapshot.elements.find((e) => e.id === id);
       if (element && 'state' in element) return success((element as { state: unknown }).state);
       return error(`Element state for ${id} not available (browser disconnected)`, 'NOT_FOUND');
     },
@@ -1018,31 +1113,41 @@ export function createRelayHandlers(
         return success({ components: live.data.components }, { stale: false, cacheAgeMs: 0 });
       }
 
+      const scope = scopeOf(scopedCaller(callerUserId, context));
       const recency = resolveRecency(cleaned as typeof options);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.components.length === 0);
-      const _meta = staleMeta();
+      await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.components.length === 0
+      );
+      const _meta = staleMeta(scope);
       // F2 (Direction B): wrap the array in `{components: [...]}` so the
       // envelope is `{success: true, data: {components: [...]}}`, matching
       // every other rich endpoint convention and aligning with the runner's
       // direct `/ui-bridge/control/components` route.
-      return success({ components: latestControlSnapshot.components }, _meta);
+      return success({ components: scope.cache.controlSnapshot.components }, _meta);
     },
 
-    async getComponent(id, options, _context) {
+    async getComponent(id, options, context) {
+      const scope = scopeOf(scopedCaller(extractTabRouting(options ?? {}).callerUserId, context));
       // Refresh snapshot before looking up — components mount/unmount with page navigation
       // First try cached, then refresh if not found (avoids unnecessary refresh when cache is fresh)
-      let component = latestControlSnapshot.components.find((c) => c.id === id);
+      let component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
       if (!component) {
         const recency = resolveRecency(options);
-        await refreshSnapshotIfNeeded(recency.kind === 'any' ? Recency.Current : recency, true);
-        component = latestControlSnapshot.components.find((c) => c.id === id);
+        await refreshSnapshotIfNeeded(
+          scope,
+          recency.kind === 'any' ? Recency.Current : recency,
+          true
+        );
+        component = scope.cache.controlSnapshot.components.find((c) => c.id === id);
       }
       if (!component) {
-        const available = latestControlSnapshot.components.map((c) => c.id);
+        const available = scope.cache.controlSnapshot.components.map((c) => c.id);
         // The cached snapshot may carry Phase-1.2 registration metadata
         // (`byRoute` with per-route ids) and a top-level `route`; use both
         // to inject the cross-route hint when the missing id lives elsewhere.
-        const enriched = latestControlSnapshot as ControlSnapshot & {
+        const enriched = scope.cache.controlSnapshot as ControlSnapshot & {
           registration?: { byRoute?: Record<string, { count: number; ids: string[] }> };
           route?: string;
         };
@@ -1127,16 +1232,21 @@ export function createRelayHandlers(
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
       // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
-      // the shared `latestControlSnapshot` cache — that cache is last-writer-
-      // wins across ALL tabs, so serving it would silently return another
+      // the caller's snapshot cache — that cache is last-writer-wins across
+      // ALL the caller's tabs, so serving it would silently return another
       // tab's elements as `success: true`. Propagate the routing/timeout
       // error envelope (TAB_NOT_FOUND / TAB_STALE / TIMEOUT / ...) instead.
       if (pinnedTabId !== undefined) return result;
       // Unpinned relay failure — fall back to filtering cached snapshot elements
+      const scope = scopeOf(scopedCaller(extractTabRouting(payload).callerUserId, context));
       const recency = parseRecency(recencyParam);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
-      const filtered = filterCachedElements(latestControlSnapshot.elements, payload);
-      const _meta = staleMeta();
+      await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.elements.length === 0
+      );
+      const filtered = filterCachedElements(scope.cache.controlSnapshot.elements, payload);
+      const _meta = staleMeta(scope);
       return success(
         {
           elements: filtered as unknown as FindResponse['elements'],
@@ -1152,8 +1262,8 @@ export function createRelayHandlers(
           // registration block so a caller polling through the post-reload
           // dead window sees a typed not-ready (`everHadRegistrations:
           // false`) instead of a bare empty result.
-          ...(latestControlSnapshot.registration
-            ? { registration: latestControlSnapshot.registration }
+          ...(scope.cache.controlSnapshot.registration
+            ? { registration: scope.cache.controlSnapshot.registration }
             : {}),
         },
         _meta
@@ -1231,15 +1341,16 @@ export function createRelayHandlers(
       const recency = parseRecency(request?.recency);
       const { targetTabId, callerUserId } = extractTabRouting(request ?? {});
       const effectiveUserId = scopedCaller(callerUserId, context);
+      const scope = scopeOf(effectiveUserId);
 
       // Item 3 (plan 2026-06-12): an explicitly PINNED snapshot read (either
       // spelling — public `?tabId=`/body `tabId` or internal `targetTabId`)
-      // must NEVER be answered from the shared `latestControlSnapshot` cache:
-      // the cache is last-writer-wins across ALL tabs, so a per-tab read from
+      // must NEVER be answered from the caller's snapshot cache: the cache is
+      // last-writer-wins across ALL the caller's tabs, so a per-tab read from
       // it is structurally impossible. Bypass every cache fast path and
       // dispatch live to that tab; on failure propagate the routing error
       // (TAB_NOT_FOUND / TAB_STALE / TIMEOUT) instead of another tab's data.
-      // The pinned result deliberately does NOT overwrite the shared cache —
+      // The pinned result deliberately does NOT overwrite the cache —
       // that would re-introduce the cross-tab pollution this fixes.
       if (targetTabId !== undefined) {
         const result = await relayCommand<ControlSnapshot>(
@@ -1261,9 +1372,9 @@ export function createRelayHandlers(
       }
 
       // Fast path: Recency.Any returns cached snapshot immediately
-      if (recency.kind === 'any' && latestControlSnapshot.elements.length > 0) {
-        const _meta = staleMeta();
-        return success(latestControlSnapshot, _meta);
+      if (recency.kind === 'any' && scope.cache.controlSnapshot.elements.length > 0) {
+        const _meta = staleMeta(scope);
+        return success(scope.cache.controlSnapshot, _meta);
       }
 
       // Check for no listeners before attempting the command
@@ -1271,35 +1382,33 @@ export function createRelayHandlers(
 
       if (!hasListeners) {
         // No browser connected — return cached snapshot with fallback screenshot
-        const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
+        const snapshot = { ...scope.cache.controlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, 'no_listeners');
           if (fallback) {
             snapshot.fallbackScreenshot = fallback;
           }
         }
-        const _meta = staleMeta();
+        const _meta = staleMeta(scope);
         return success(snapshot, _meta);
       }
 
       // MaxAge path: skip relay command if cache is fresh enough
       if (recency.kind === 'maxAge') {
-        const ageMs = Date.now() - latestControlSnapshot.timestamp;
-        if (isSatisfiedBy(recency, ageMs) && latestControlSnapshot.elements.length > 0) {
-          const _meta = staleMeta();
-          return success(latestControlSnapshot, _meta);
+        const ageMs = Date.now() - scope.cache.controlSnapshot.timestamp;
+        if (isSatisfiedBy(recency, ageMs) && scope.cache.controlSnapshot.elements.length > 0) {
+          const _meta = staleMeta(scope);
+          return success(scope.cache.controlSnapshot, _meta);
         }
       }
 
       // `timeout` unless the tab answered but not with a snapshot.
       let fallbackReason: FallbackScreenshot['reason'] = 'timeout';
       try {
-        const queueOpts: { ownerCheck?: { userId: string } } = {};
-        if (effectiveUserId) queueOpts.ownerCheck = { userId: effectiveUserId };
         const result = await relay.queueCommand<unknown>(
           'getControlSnapshot',
           {},
-          Object.keys(queueOpts).length > 0 ? queueOpts : undefined
+          ownedBy(effectiveUserId)
         );
         // A malformed answer is handled like a relay failure (the catch below):
         // never cached, previous good snapshot returned and marked stale.
@@ -1308,9 +1417,9 @@ export function createRelayHandlers(
           fallbackReason = 'malformed_response';
           throw new Error('malformed control snapshot');
         }
-        latestControlSnapshot = result;
-        snapshotStaleSince = null;
-        lastRefreshFailure = null;
+        scope.cache.controlSnapshot = result;
+        scope.cache.staleSince = null;
+        scope.cache.lastRefreshFailure = null;
 
         // If the snapshot came back empty (no elements, no components), the app
         // may be in an error state — attach a fallback screenshot for context
@@ -1328,17 +1437,17 @@ export function createRelayHandlers(
         return success(result, { stale: false, cacheAgeMs: 0 });
       } catch (_e) {
         // Command timed out or failed — return cached snapshot with fallback screenshot
-        lastRefreshFailure =
+        scope.cache.lastRefreshFailure =
           fallbackReason === 'malformed_response' ? 'malformed_response' : 'relay_failed';
-        if (!snapshotStaleSince) snapshotStaleSince = Date.now();
-        const snapshot = { ...latestControlSnapshot, timestamp: Date.now() };
+        if (!scope.cache.staleSince) scope.cache.staleSince = Date.now();
+        const snapshot = { ...scope.cache.controlSnapshot, timestamp: Date.now() };
         if (screenshotFallbackUrl) {
           const fallback = await fetchFallbackScreenshot(screenshotFallbackUrl, fallbackReason);
           if (fallback) {
             snapshot.fallbackScreenshot = fallback;
           }
         }
-        const _meta = staleMeta();
+        const _meta = staleMeta(scope);
         return success(snapshot, _meta);
       }
     },
@@ -1347,11 +1456,16 @@ export function createRelayHandlers(
     // Workflows
     // ========================================================================
 
-    async getWorkflows(options, _context) {
+    async getWorkflows(options, context) {
+      const scope = scopeOf(scopedCaller(extractTabRouting(options ?? {}).callerUserId, context));
       const recency = resolveRecency(options);
-      await refreshSnapshotIfNeeded(recency, latestControlSnapshot.workflows.length === 0);
-      const _meta = staleMeta();
-      return success(latestControlSnapshot.workflows, _meta);
+      await refreshSnapshotIfNeeded(
+        scope,
+        recency,
+        scope.cache.controlSnapshot.workflows.length === 0
+      );
+      const _meta = staleMeta(scope);
+      return success(scope.cache.controlSnapshot.workflows, _meta);
     },
 
     async runWorkflow(id, request, context) {
@@ -1414,24 +1528,23 @@ export function createRelayHandlers(
         totalGroups: number;
       };
       const isGrouped = params?.group === true;
+      const { cleaned, callerUserId } = extractTabRouting(params ?? {});
+      const scope = scopeOf(scopedCaller(callerUserId, context));
       try {
-        const { cleaned, callerUserId } = extractTabRouting(params ?? {});
-        const effectiveUserId = scopedCaller(callerUserId, context);
-        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
           cleaned,
-          liveOpts
+          ownedBy(scope.userId)
         );
         // Cache successful result for fallback when browser disconnects (ungrouped only)
         if (!isGrouped && result && typeof result === 'object') {
-          lastConsoleErrorsCache = success(result as ConsoleErrorsResult);
+          scope.cache.consoleErrors = success(result as ConsoleErrorsResult);
         }
         return success(result as ConsoleErrorsResult | GroupedResult);
       } catch {
         // Relay failed — return cached data if available (ungrouped only)
-        if (!isGrouped && lastConsoleErrorsCache)
-          return lastConsoleErrorsCache as APIResponse<ConsoleErrorsResult>;
+        if (!isGrouped && scope.cache.consoleErrors)
+          return scope.cache.consoleErrors as APIResponse<ConsoleErrorsResult>;
         if (isGrouped) {
           return success({ groups: [], totalErrors: 0, totalGroups: 0 } as GroupedResult);
         }
@@ -1468,19 +1581,18 @@ export function createRelayHandlers(
     },
 
     async getSemanticSnapshot(options, context) {
+      const { cleaned, callerUserId } = extractTabRouting(options ?? {});
+      const scope = scopeOf(scopedCaller(callerUserId, context));
       try {
-        const { cleaned, callerUserId } = extractTabRouting(options ?? {});
-        const effectiveUserId = scopedCaller(callerUserId, context);
-        const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<SemanticSnapshot>(
           'getSemanticSnapshot',
           cleaned,
-          liveOpts
+          ownedBy(scope.userId)
         );
-        latestSemanticSnapshot = result;
+        scope.cache.semanticSnapshot = result;
         return success(result);
       } catch (e) {
-        if (latestSemanticSnapshot) return success(latestSemanticSnapshot);
+        if (scope.cache.semanticSnapshot) return success(scope.cache.semanticSnapshot);
         return error((e as Error).message, 'COMMAND_FAILED');
       }
     },
@@ -2012,12 +2124,13 @@ export function createRelayHandlers(
     // State Summary (Phase 1.3, plan 2026-05-03)
     // ========================================================================
 
-    async getStateSummary(): Promise<APIResponse<StateSummary>> {
-      // Reuse the cached snapshot — `latestControlSnapshot` is the same data
+    async getStateSummary(context?: HandlerContext): Promise<APIResponse<StateSummary>> {
+      const scope = scopeOf(context?.callerUserId);
+      // Reuse the caller's cached snapshot — the same data
       // a fresh `/control/snapshot` call would synthesize, just without the
       // round-trip cost. The whole point of state-summary is to skip the
       // five separate calls a caller would otherwise make.
-      const snapshot = latestControlSnapshot as ControlSnapshot & {
+      const snapshot = scope.cache.controlSnapshot as ControlSnapshot & {
         route?: string;
         activeTab?: string;
       };
@@ -2032,11 +2145,11 @@ export function createRelayHandlers(
       }, 0);
       const modalOpen = (snapshot.modalStack?.count ?? 0) > 0;
 
-      // hasErrors: best-effort from the relay's console-errors cache. We do
+      // hasErrors: best-effort from the caller's console-errors cache. We do
       // NOT trigger a fresh round-trip here — state-summary's contract is
       // "synthesize from what we already have", not "make extra calls".
       let hasErrors = false;
-      const cache = lastConsoleErrorsCache as APIResponse<{
+      const cache = scope.cache.consoleErrors as APIResponse<{
         count?: number;
         errors?: unknown[];
       }> | null;
@@ -2055,7 +2168,11 @@ export function createRelayHandlers(
       let idleSignals: StateSummary['idleSignals'] = null;
       try {
         const idleResp =
-          await relayCommand<NonNullable<StateSummary['idleSignals']>>('getIdleStatus');
+          await relayCommand<NonNullable<StateSummary['idleSignals']>>(
+            'getIdleStatus',
+            {},
+            ctxOpts(context)
+          );
         if (idleResp.success && idleResp.data) idleSignals = idleResp.data;
       } catch {
         idleSignals = null;
@@ -2105,7 +2222,15 @@ export function createRelayHandlers(
     // The hit-test survives the trip because the page already ran it and
     // stamped `occludedBy` / `occludedPct` onto each element's state, so this
     // is a projection of a measurement, not a re-derivation of one.
-    async visibility(params?: { minRatio?: number; includeExpected?: boolean; recency?: string }) {
+    async visibility(
+      params?: {
+        minRatio?: number;
+        includeExpected?: boolean;
+        recency?: string;
+      },
+      context?: HandlerContext
+    ) {
+      const scope = scopeOf(scopedCaller(extractTabRouting(params ?? {}).callerUserId, context));
       try {
         // Populate the cache before reading it. Every other cache-reading
         // handler here (`getElements`, `rankElements`, `getComponents`, …)
@@ -2128,9 +2253,13 @@ export function createRelayHandlers(
         // same page. With the refresh, the same first call reports 25 and the
         // expected findings.
         const recency = resolveRecency(params);
-        await refreshSnapshotIfNeeded(recency, latestControlSnapshot.elements.length === 0);
+        await refreshSnapshotIfNeeded(
+          scope,
+          recency,
+          scope.cache.controlSnapshot.elements.length === 0
+        );
 
-        const snapshot = latestControlSnapshot as ControlSnapshot;
+        const snapshot = scope.cache.controlSnapshot as ControlSnapshot;
         const elements = (snapshot?.elements ?? []) as Array<{
           id: string;
           label?: string;
@@ -2158,7 +2287,7 @@ export function createRelayHandlers(
           // contract is that an UNKNOWN must not read as a PASS; a `clear`
           // derived from a snapshot the relay could not refresh is exactly
           // that trap, and `stale` is the only thing that distinguishes it.
-          staleMeta()
+          staleMeta(scope)
         );
       } catch (err) {
         return error((err as Error).message, 'VISIBILITY_ERROR');
@@ -2177,34 +2306,34 @@ export function createRelayHandlers(
     // snapshot would answer `measured` about a page the relay could not look
     // at now. `provenance.observedAt` is the cached snapshot's own (old)
     // timestamp, with `_meta` carrying the stale flag.
-    async pageHealth() {
+    async pageHealth(context?: HandlerContext) {
+      const scope = scopeOf(context?.callerUserId);
       try {
         // Both cache-write sites validate the snapshot (`isControlSnapshot`),
         // so `elements` is an array; it is still read through `Array.isArray`
         // because an unknown is an answer and a throw here is not one.
-        const cachedElements = (latestControlSnapshot as { elements?: unknown }).elements;
+        const cachedElements = (scope.cache.controlSnapshot as { elements?: unknown }).elements;
         // A cache already marked stale (a DOM change event, or another call's
         // failed fetch) is refreshed too, so `stale_input` below means the
         // refresh this call made (or awaited) failed, not an older attempt's.
-        await refreshSnapshotIfNeeded(
-          resolveRecency(undefined),
+        await refreshSnapshotIfNeeded(scope, resolveRecency(undefined),
           !Array.isArray(cachedElements) ||
             cachedElements.length === 0 ||
-            snapshotStaleSince !== null
+            scope.cache.staleSince !== null
         );
-        const raw = latestControlSnapshot as {
+        const raw = scope.cache.controlSnapshot as {
           elements?: unknown;
           components?: unknown;
           timestamp?: number;
           snapshotId?: unknown;
         };
         if (
-          snapshotStaleSince !== null &&
+          scope.cache.staleSince !== null &&
           Array.isArray(raw.elements) &&
           raw.elements.length === 0
         ) {
           return success(
-            lastRefreshFailure === 'malformed_response'
+            scope.cache.lastRefreshFailure === 'malformed_response'
               ? pageHealthUnknown(
                   'input_missing',
                   `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it and holds none cached`
@@ -2213,24 +2342,24 @@ export function createRelayHandlers(
                   'app_unreachable',
                   'the relay could not fetch a snapshot from the browser tab and holds none cached'
                 ),
-            staleMeta()
+            staleMeta(scope)
           );
         }
-        if (snapshotStaleSince !== null) {
+        if (scope.cache.staleSince !== null) {
           // The refresh failed but a snapshot is cached: analyzing it would
           // answer `measured` about a page the relay could not look at now.
           return success(
             pageHealthUnknown(
               'stale_input',
-              lastRefreshFailure === 'malformed_response'
+              scope.cache.lastRefreshFailure === 'malformed_response'
                 ? `${MALFORMED_SNAPSHOT_MESSAGE}; the relay refused it, and the cached snapshot is stale`
                 : 'the relay could not refresh the snapshot from the browser tab; the cached one is stale',
               { observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null }
             ),
-            staleMeta()
+            staleMeta(scope)
           );
         }
-        return success(diagnosePageHealth(pageHealthInputFromSnapshot(raw)), staleMeta());
+        return success(diagnosePageHealth(pageHealthInputFromSnapshot(raw)), staleMeta(scope));
       } catch (err) {
         // An unknown is an answer: never let a malformed cache turn into a
         // rejected handler.
@@ -2382,9 +2511,14 @@ export function createRelayHandlers(
     // `visionRaw`/`visionCacheStream`/`visionHealth` stubs above).
     // ========================================================================
 
-    async getSpecs() {
+    async getSpecs(context?: HandlerContext) {
       // Try the browser relay first for live spec data
-      const result = await relayWithFallback('getSpecs', {}, {} as Record<string, unknown>);
+      const result = await relayWithFallback(
+        'getSpecs',
+        {},
+        {} as Record<string, unknown>,
+        context
+      );
       // If the relay returned specs, use them
       if (result.success && result.data && Object.keys(result.data).length > 0) {
         return result;
@@ -2413,7 +2547,16 @@ export function createRelayHandlers(
     // Change Observation (push-based)
     // ========================================================================
 
-    async getChangesSince(params) {
+    async getChangesSince(params, context) {
+      // The change-event buffer (fed by `__pushChangeEvent`) names no tab or
+      // user, so it is served to the unscoped caller only (§4.2).
+      if (context?.callerUserId) {
+        return error(
+          'Change events are not attributed to a tab or user, so they are not served ' +
+            'to a caller scoped by X-Caller-User-Id.',
+          'SCOPED_CALLER_UNSUPPORTED'
+        );
+      }
       const since = params?.since ?? 0;
       const limit = params?.limit ?? 100;
       const events = changeEventBuffer.filter((e) => e.timestamp > since).slice(-limit);

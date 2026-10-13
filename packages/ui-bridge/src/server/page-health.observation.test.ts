@@ -230,7 +230,7 @@ describe('relay pageHealth handler', () => {
       workflows: [],
     } as never);
     const res = await createRelayHandlers(relay).pageHealth();
-    expect(queue).toHaveBeenCalledWith('getControlSnapshot', {});
+    expect(queue).toHaveBeenCalledWith('getControlSnapshot', {}, undefined);
     expect(res.data?.status).toBe('measured');
     expect(res.data?.provenance.observedAt).toBe('2026-09-30T12:00:00.000Z');
   });

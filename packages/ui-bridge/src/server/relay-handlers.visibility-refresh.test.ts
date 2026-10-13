@@ -63,7 +63,7 @@ describe('relay visibility · refreshes the snapshot before reading it', () => {
     // No priming call — visibility is the very first thing asked.
     const res = await handlers.visibility!();
 
-    expect(queue).toHaveBeenCalledWith('getControlSnapshot', {});
+    expect(queue).toHaveBeenCalledWith('getControlSnapshot', {}, undefined);
     expect(res.success).toBe(true);
     const data = res.data as { verdict: string; elementCount: number };
     expect(data.verdict).toBe('occlusions_found');

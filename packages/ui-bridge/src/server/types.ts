@@ -1239,7 +1239,7 @@ export interface UIBridgeServerHandlers {
   // five round-trips (snapshot + console-errors + idle-status + …) just to
   // pre-flight an interaction. Distinct from `/ai/page-summary` which
   // returns NL prose for human consumption.
-  getStateSummary: () => Promise<APIResponse<StateSummary>>;
+  getStateSummary: (context?: HandlerContext) => Promise<APIResponse<StateSummary>>;
 
   // Phase 2.1 (plan 2026-05-03) — assert an element predicate.
   // Returns 200 + passed:true on success, 422 + passed:false on timeout
@@ -1266,24 +1266,27 @@ export interface UIBridgeServerHandlers {
   // (qontinui-runner src-tauri/src/mcp/ui_bridge/screenshots.rs) but
   // server-side over the current snapshot. Pure data-over-elements; no
   // browser context required beyond a relayed snapshot.
-  pageHealth: () => Promise<APIResponse<PageHealthObservation>>;
+  pageHealth: (context?: HandlerContext) => Promise<APIResponse<PageHealthObservation>>;
 
   // Occlusion sweep — WHAT IS COVERING WHAT, page-wide and directed.
   // `pageHealth` and `discover` both report per-element visibility, but
   // neither answers "is a floating widget hiding something?", which needs
   // the occluder -> occluded relation rather than a per-element boolean.
-  visibility: (params?: {
-    minRatio?: number;
-    includeExpected?: boolean;
-    /** Relay only: how fresh the underlying snapshot must be. */
-    recency?: string;
-  }) => Promise<APIResponse<VisibilityReport>>;
+  visibility: (
+    params?: {
+      minRatio?: number;
+      includeExpected?: boolean;
+      /** Relay only: how fresh the underlying snapshot must be. */
+      recency?: string;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<VisibilityReport>>;
 
   // API discovery
   getCapabilities: () => Promise<APIResponse<CapabilitiesResponse>>;
 
   // Specs endpoint — serves all loaded specs for runner discovery
-  getSpecs: () => Promise<APIResponse<Record<string, unknown>>>;
+  getSpecs: (context?: HandlerContext) => Promise<APIResponse<Record<string, unknown>>>;
 
   // Heartbeat (app health detection)
   receiveHeartbeat: () => Promise<APIResponse<{ received: boolean }>>;
@@ -1305,10 +1308,13 @@ export interface UIBridgeServerHandlers {
   // routes directly; the SDK keeps stubs for type-completeness.
 
   // Change observation (push-based)
-  getChangesSince: (params?: {
-    since?: number;
-    limit?: number;
-  }) => Promise<APIResponse<{ events: DOMChangeEvent[]; count: number }>>;
+  getChangesSince: (
+    params?: {
+      since?: number;
+      limit?: number;
+    },
+    context?: HandlerContext
+  ) => Promise<APIResponse<{ events: DOMChangeEvent[]; count: number }>>;
 
   /** Tear down internal subscriptions and observers to prevent resource leaks. */
   destroy?: () => void;
