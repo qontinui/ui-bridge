@@ -146,6 +146,14 @@ jobs:
         # build green. That is exactly how it happened.
         run: npm run docs:check-symbols
 
+      - name: CI manifest ratchet self-test
+        # Pins the ratchet's no-root rule (which manifest argv would change the
+        # system packages of the user's machine the local-CI lane runs on) against
+        # table cases, both refused and allowed. It runs BEFORE the ratchet for
+        # the reason the documentation ratchet's self-test does: a regression in
+        # that rule does not turn the ratchet red, it turns it QUIET.
+        run: npm run ci:check-manifest:test
+
       - name: CI manifest ratchet
         # Validates .qontinui/ci.toml against the runner's parser contract and
         # enforces the parity invariant that file's header declares: its steps
@@ -180,9 +188,11 @@ jobs:
         # gates on test-support/chromium-gate.mjs, which skips when no Playwright
         # Chromium is installed, and this job installs none, so that it stays
         # mirrorable to .qontinui/ci.toml (whose lane must never install system
-        # packages). Every one lives in a `*smoke*` test file, and they EXECUTE
-        # in the browser-smokes job below, which installs Chromium and fails if
-        # any of them skips.
+        # packages). They EXECUTE in the browser-smokes job below, which installs
+        # Chromium, runs only `test:smoke` and fails if any of them skips. The
+        # gate refuses a caller its package's `test:smoke` does not select, so a
+        # gated test outside a `*smoke*` file fails HERE instead of running
+        # nowhere.
         run: npm run test
 
   browser-smokes:

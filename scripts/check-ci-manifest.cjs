@@ -41,6 +41,7 @@
 // Usage:
 //   node scripts/check-ci-manifest.cjs           # verify (CI)
 //   node scripts/check-ci-manifest.cjs --verbose # list every checked pairing
+//   node scripts/check-ci-manifest.test.cjs      # the no-root rule's table tests
 
 'use strict';
 
@@ -115,12 +116,17 @@ const EXCLUDED_JOBS = new Map([
 ]);
 
 /**
- * Argv words that install SYSTEM packages or escalate to root. A manifest step
- * runs on a user's own machine, so none may appear in one: the step would either
- * fail every dispatch on a host without passwordless sudo, or change the host
- * for every other program on it (manifest header items 1, 2 and 9). Matched per
- * argv word, so `npm install` and `npx playwright install chromium` pass, and
- * `--with-deps` / `install-deps` (Playwright's apt path) do not.
+ * Argv words refused ANYWHERE in a manifest step. A step runs on a user's own
+ * machine, and each of these changes that machine's system packages or
+ * escalates to root: the step would either fail every dispatch on a host without
+ * passwordless sudo, or change the host for every other program on it (manifest
+ * header items 1, 2 and 9). `npm install` and `npx playwright install chromium`
+ * pass; `--with-deps` and `install-deps`, Playwright's apt path, do not.
+ *
+ * The package managers here name a system package manager and nothing else, so
+ * the word alone is refused, whatever follows it. That is stricter than reading
+ * their subcommand, and for two of them it has to be: pacman and dpkg install
+ * through OPTIONS (`pacman -S`, `dpkg -i`), which no subcommand reading sees.
  */
 const HOST_PACKAGE_WORDS = new Set([
   'sudo',
@@ -141,16 +147,119 @@ const HOST_PACKAGE_WORDS = new Set([
   'install-deps',
 ]);
 
-/**
- * Package managers whose name is also an ordinary word, matched only as the
- * INVOCATION `<manager> <subcommand>`. A bare `apk` can be an Android build
- * target and a bare `port` a flag value, so refusing those words outright would
- * block legitimate steps.
- */
-const HOST_PACKAGE_INVOCATIONS = [
-  ['apk', 'add'],
-  ['port', 'install'],
+/** Subcommands that change the host under any package manager. */
+const HOST_CHANGING_SUBCOMMANDS = [
+  'install',
+  'add',
+  'upgrade',
+  'update',
+  'del',
+  'remove',
+  'uninstall',
+  'selfupdate',
+  'purge',
+  'reinstall',
+  'downgrade',
+  'autoremove',
 ];
+
+/**
+ * Package managers whose name is ALSO an ordinary argv word: `apk` an Android
+ * build target, `port` a flag value, `snap` a script name. Refusing the word
+ * would block legitimate steps, so the rule reads the invocation instead (see
+ * hostChange): each manager maps to the subcommands that change the host, the
+ * shared ones above plus its own.
+ */
+const AMBIGUOUS_PACKAGE_MANAGERS = new Map([
+  ['apk', new Set([...HOST_CHANGING_SUBCOMMANDS, 'fix', 'cache'])],
+  [
+    'port',
+    new Set([
+      ...HOST_CHANGING_SUBCOMMANDS,
+      'sync',
+      'activate',
+      'deactivate',
+      'clean',
+      'load',
+      'unload',
+      'migrate',
+      'reclaim',
+      'rev-upgrade',
+      'setrequested',
+      'unsetrequested',
+    ]),
+  ],
+  [
+    'snap',
+    new Set([
+      ...HOST_CHANGING_SUBCOMMANDS,
+      'refresh',
+      'revert',
+      'enable',
+      'disable',
+      'connect',
+      'disconnect',
+      'set',
+      'unset',
+      'switch',
+      'alias',
+      'unalias',
+      'prefer',
+      'try',
+      'ack',
+      'start',
+      'stop',
+      'restart',
+      'save',
+      'restore',
+      'forget',
+    ]),
+  ],
+]);
+
+/** The command an argv word names: its last path component, less a Windows executable suffix. */
+function commandName(word) {
+  return word
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.(exe|cmd|bat|com)$/i, '');
+}
+
+/**
+ * The part of an argv that would change the host, as the words to quote in a
+ * failure, or null when there is none.
+ *
+ * After an ambiguous manager the rule skips options (`apk --no-cache add`,
+ * `port -N install`) and refuses when the first word that is not an option is a
+ * host-changing subcommand. A word right after an option written without `=`
+ * may be that option's VALUE (`apk -X <repository> add`), so when it is not
+ * itself a host-changing subcommand the rule reads on to the next word. A bare
+ * `apk` (a build target), `port 3000` and `--port 3000` all pass.
+ *
+ * LIMIT: this reads the manifest's argv only and cannot see inside an npm script
+ * body, so `npm run x` whose script runs `sudo apt-get ...` passes it. Keep
+ * host-changing work out of the package.json scripts a step runs.
+ */
+function hostChange(argv) {
+  for (let t = 0; t < argv.length; t += 1) {
+    const name = commandName(argv[t]);
+    if (HOST_PACKAGE_WORDS.has(name)) return argv[t];
+    const subcommands = AMBIGUOUS_PACKAGE_MANAGERS.get(name);
+    if (!subcommands) continue;
+    let mayBeOptionValue = false;
+    for (let s = t + 1; s < argv.length; s += 1) {
+      const word = argv[s];
+      if (word.startsWith('-')) {
+        mayBeOptionValue = !word.includes('=');
+        continue;
+      }
+      if (subcommands.has(word)) return argv.slice(t, s + 1).join(' ');
+      if (!mayBeOptionValue) break;
+      mayBeOptionValue = false;
+    }
+  }
+  return null;
+}
 
 /** `# parity: <job> "<step name>"` — the citation that binds a manifest step. */
 const PARITY_CITATION = /^#\s*parity:\s*ci\.yml\s+([A-Za-z0-9_-]+)\s+"(.+)"\s*$/;
@@ -220,24 +329,21 @@ function validateManifest(manifest) {
               `metacharacter(s) ${JSON.stringify(banned.join(''))}`
           );
         }
-        // HOST_PACKAGE_WORDS / HOST_PACKAGE_INVOCATIONS. LIMIT: this reads the
-        // manifest's argv only and cannot see inside an npm script body, so
-        // `npm run x` whose script runs `sudo apt-get ...` passes it. Keep
-        // host-mutating work out of the package.json scripts a step runs.
-        const invocation = HOST_PACKAGE_INVOCATIONS.find(
-          ([manager, sub]) => token === manager && step.command[t + 1] === sub
-        );
-        if (HOST_PACKAGE_WORDS.has(token) || invocation) {
-          const what = JSON.stringify(invocation ? invocation.join(' ') : token);
-          fail(
-            `ci.toml ${label}: command ${what} installs system packages or escalates to root, ` +
-              `and this lane runs on a user's own machine: it would fail every ` +
-              `dispatch without passwordless sudo, or change the host for every other program on ` +
-              `it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job listed in ` +
-              `EXCLUDED_JOBS instead.`
-          );
-        }
       });
+      // The no-root rule: HOST_PACKAGE_WORDS and AMBIGUOUS_PACKAGE_MANAGERS,
+      // read by hostChange, which states the rule's limit.
+      const change = step.command.every((token) => typeof token === 'string')
+        ? hostChange(step.command)
+        : null;
+      if (change !== null) {
+        fail(
+          `ci.toml ${label}: command ${JSON.stringify(change)} changes the host's system packages ` +
+            `or escalates to root, and this lane runs on a user's own machine: it would fail every ` +
+            `dispatch without passwordless sudo, or change the host for every other program on ` +
+            `it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job listed in ` +
+            `EXCLUDED_JOBS instead.`
+        );
+      }
     }
 
     if (step.env !== undefined) {
@@ -522,4 +628,23 @@ function main() {
   );
 }
 
-main();
+// Run the check only when invoked as a script. Requiring this module, which
+// check-ci-manifest.test.cjs does to pin the no-root rule directly, must not
+// start a check or set an exit code. Same split as check-docs-symbols.cjs.
+const isEntry = require.main === module;
+
+// If that detection went wrong the ratchet would do NOTHING and exit 0. A real
+// run is `node scripts/check-ci-manifest.cjs`, so argv[1] naming this file while
+// `require.main` does not is a misfire, and it refuses rather than passing.
+if (!isEntry && process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  throw new Error(
+    `check-ci-manifest.cjs was invoked as ${JSON.stringify(process.argv[1])} but did not ` +
+      'detect itself as the entry module. Refusing to exit 0 without running the check.'
+  );
+}
+
+// The rule itself, for the test beside this file: a test that re-implemented it
+// would pin the re-implementation.
+module.exports = { hostChange };
+
+if (isEntry) main();

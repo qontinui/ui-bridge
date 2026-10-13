@@ -25,7 +25,7 @@ import { createTransport } from '../src/create-transport.js';
 import { buildTransportOptions, parseArgs, registerWaitActions } from '../src/inject-cli.js';
 import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
 
 /** Milliseconds after load at which the page mutates itself. */
 const MUTATE_AFTER_MS = 1200;
