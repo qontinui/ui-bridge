@@ -81,17 +81,28 @@ export type VisionObjectFit = 'fill' | 'contain' | 'cover' | 'none' | 'scale-dow
  * `rust-vision-core/src/element_media.rs`) a native registry can measure. Every
  * field but `kind` is omitted when unknown — absence is "not measured", never
  * zero, `false` or "none".
+ *
+ * There is no `natural_px` (and so no `effective_resolution`): the registry
+ * never learns an image's intrinsic size, so the source-pixel question —
+ * including the density correction a `srcSet` candidate brings — never arises
+ * here; vision-core reads both as unmeasured.
  */
 export interface VisionMedia {
   /** A native image is vision-core's `img`. */
   kind: 'img';
-  /** Laid-out size in dp (`state.layout`), before the pixel-ratio scaling `bbox` applies. */
+  /**
+   * The view's measured size in dp (`state.layout`, from `onLayout` /
+   * `measureInWindow`) — vision-core's drawn-box `rendered_px` — before the
+   * pixel-ratio scaling `bbox` applies.
+   */
   rendered_px?: { w: number; h: number };
   /** The CSS object-fit the image's resize mode paints as (see {@link resolveObjectFit}). */
   object_fit?: VisionObjectFit;
   /**
-   * The text alternative, read as one measurement. Projected only from a
-   * recorded accessibility label — `{ decorative: false, text }`. With no
+   * The text alternative, read as one measurement, from the recorded
+   * accessibility label: stripped of ASCII whitespace (the rule every
+   * converter applies), `{ decorative: false, text }`, or `{ decorative: true }`
+   * when a label is present but strips to nothing — as `alt=""` is. With no
    * label RN may simply not expose the image, so "missing" cannot be told
    * from "decorative", and the whole record is omitted.
    */
@@ -373,6 +384,14 @@ export function parseFontSizePx(input: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * HTML's "ASCII whitespace" at either end: tab, LF, FF, CR, space — the
+ * alt-text rule all three snapshot converters share. Deliberately not
+ * `String.prototype.trim`, which also strips U+00A0 and every other Unicode
+ * space.
+ */
+const ASCII_WHITESPACE_EDGES = /^[\t\n\f\r ]+|[\t\n\f\r ]+$/g;
+
 /** A non-empty string, or undefined — RN reads resize props with `||`. */
 function nonEmptyString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
@@ -479,9 +498,13 @@ export function projectMedia(args: {
   if (objectFit !== undefined) media.object_fit = objectFit;
 
   // An image the registry records an accessibility label for is announced
-  // with it, so it has a text alternative and is not decorative.
-  const altText = accessibilityLabel?.trim();
-  if (altText) media.alt = { decorative: false, text: altText };
+  // with it, so it has a text alternative and is not decorative — unless the
+  // label strips to nothing under HTML's ASCII-whitespace rule, which reads
+  // as `alt=""` does: decorative.
+  if (typeof accessibilityLabel === 'string') {
+    const text = accessibilityLabel.replace(ASCII_WHITESPACE_EDGES, '');
+    media.alt = text ? { decorative: false, text } : { decorative: true };
+  }
 
   const src = resolveImageSource(props);
   if (src !== undefined) media.src_digest = sha256Hex(src);

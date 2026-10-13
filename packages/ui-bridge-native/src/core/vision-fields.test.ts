@@ -24,6 +24,13 @@ import {
 const SHARED_SRC = 'http://localhost:3001/_next/image?url=%2Fimages%2Fhero.png&w=1920&q=75';
 const SHARED_DIGEST = 'a846bcf412cf708ec0a4ac6a972307cbcb250b75509765fd44c49caecbd01f94';
 
+/**
+ * The second shared vector: a lone surrogate digests as U+FFFD, which is what
+ * `TextEncoder` — and so `sha256Hex` — does. Pinned in all four suites.
+ */
+const SHARED_SURROGATE_SRC = 'http://localhost:3001/img/\ud800.png';
+const SHARED_SURROGATE_DIGEST = '6f45e1fb51856d9f4f25eea51558783cc2c060af2ba43ea46c8bdab5dbdf23a6';
+
 function makeRef(): React.RefObject<NativeElementRef> {
   return { current: {} as NativeElementRef };
 }
@@ -404,6 +411,21 @@ describe('projectMedia / projectVisionFields — image elements', () => {
     expect(stripped.src_digest).not.toBe(SHARED_DIGEST);
   });
 
+  it('digests a lone surrogate as U+FFFD — the shared surrogate vector', () => {
+    const digestOf = (uri: string) =>
+      projectMedia({
+        layout: LAYOUT,
+        props: { source: { uri } },
+        flatStyle: undefined,
+        accessibilityLabel: undefined,
+        inViewport: undefined,
+      }).src_digest;
+    expect(digestOf(SHARED_SURROGATE_SRC)).toBe(SHARED_SURROGATE_DIGEST);
+    expect(digestOf(SHARED_SURROGATE_SRC.replace('\ud800', '\ufffd'))).toBe(
+      SHARED_SURROGATE_DIGEST
+    );
+  });
+
   it('projects the laid-out size, fit, alt and viewport an image registry has', () => {
     const fields = projectVisionFields({
       type: 'image',
@@ -466,6 +488,31 @@ describe('projectMedia / projectVisionFields — image elements', () => {
     });
     expect(fields.media).toBeUndefined();
     expect(fields.text).toBe('Hello');
+  });
+});
+
+describe('projectMedia — alt loses ASCII whitespace; a label that strips to nothing is decorative', () => {
+  const altOf = (accessibilityLabel: string | undefined) =>
+    projectMedia({
+      layout: LAYOUT,
+      props: undefined,
+      flatStyle: undefined,
+      accessibilityLabel,
+      inViewport: undefined,
+    }).alt;
+
+  it("strips HTML's ASCII whitespace but not NBSP", () => {
+    expect(altOf(' \tHero\n')).toEqual({ decorative: false, text: 'Hero' });
+    expect(altOf('\u00a0Hero')).toEqual({ decorative: false, text: '\u00a0Hero' });
+  });
+
+  it('reads a label that strips to nothing as decorative, as alt="" is', () => {
+    expect(altOf(' \t\n\f\r ')).toEqual({ decorative: true });
+    expect(altOf('')).toEqual({ decorative: true });
+  });
+
+  it('leaves the alt unmeasured when no label is recorded', () => {
+    expect(altOf(undefined)).toBeUndefined();
   });
 });
 
