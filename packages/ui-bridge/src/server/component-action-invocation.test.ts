@@ -32,6 +32,19 @@ describe('componentActionInvocation', () => {
     expect(routing).toEqual({ tabId: 'tab-1', targetTabId: 'tab-2', __callerUserId: 'user-b' });
   });
 
+  it('drops routing fields from an explicit params, and the reserved key at any depth', () => {
+    const { request } = componentActionInvocation('select', {
+      params: {
+        tabId: 'tab-a',
+        targetTabId: 'tab-a',
+        __callerUserId: 'user-a',
+        choice: 'a',
+        nested: { __callerUserId: 'user-a', keep: 1 },
+      },
+    });
+    expect(request.params).toEqual({ choice: 'a', nested: { keep: 1 } });
+  });
+
   it('takes no body as an empty request', () => {
     expect(componentActionInvocation('open', undefined)).toEqual({
       request: { action: 'open', params: {} },

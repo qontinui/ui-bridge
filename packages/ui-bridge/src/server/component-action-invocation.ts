@@ -15,11 +15,13 @@
  *   - request fields (`timeoutMs`, `requestId`), hoisted onto the request;
  *   - routing fields (`tabId`, `targetTabId`, `__callerUserId`), which the
  *     adapters splice into a body and the relay lifts off a request before
- *     dispatch. A routing field left in `params` reaches the action handler as
- *     a parameter and escapes the relay's ownership routing.
+ *     dispatch. They are dropped from the flat keys and from the top level of
+ *     an explicit `params`, and the reserved `__callerUserId` from any depth,
+ *     so none reaches the action handler as a parameter.
  */
 
 import type { ComponentActionRequest } from '../control/types';
+import { withoutReservedCaller } from './reserved-caller';
 
 const REQUEST_FIELDS = new Set(['params', 'timeoutMs', 'requestId']);
 const ROUTING_FIELDS = ['tabId', 'targetTabId', '__callerUserId'] as const;
@@ -45,7 +47,11 @@ export function componentActionInvocation(
     : {};
   const explicit =
     body?.params !== null && typeof body?.params === 'object' && !Array.isArray(body.params)
-      ? (body.params as Record<string, unknown>)
+      ? Object.fromEntries(
+          Object.entries(body.params as Record<string, unknown>).filter(
+            ([k]) => !routingNames.has(k)
+          )
+        )
       : {};
   const routing: Partial<Record<RoutingField, string>> = {};
   for (const field of ROUTING_FIELDS) {
@@ -55,7 +61,7 @@ export function componentActionInvocation(
   return {
     request: {
       action: actionId,
-      params: { ...flat, ...explicit },
+      params: withoutReservedCaller({ ...flat, ...explicit }),
       timeoutMs: typeof body?.timeoutMs === 'number' ? body.timeoutMs : undefined,
       requestId: typeof body?.requestId === 'string' ? body.requestId : undefined,
     },
