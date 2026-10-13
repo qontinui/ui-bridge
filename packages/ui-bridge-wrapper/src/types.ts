@@ -35,7 +35,11 @@ export interface TransportConfig {
    *                   `handlerRegistry.register(...)`.
    *   - `headless` / `headed`:
    *                  `{ targetUrl: string; viewportWidth?: number; viewportHeight?: number;
-   *                     uiBridgeBase?: string; forwardConsole?: boolean }`
+   *                     deviceScaleFactor?: number; colorScheme?: 'light' | 'dark';
+   *                     uiBridgeBase?: string; forwardConsole?: boolean }` — a requested
+   *                  deviceScaleFactor / colorScheme is read back from the page after
+   *                  launch, and a page reporting anything else fails `ready()` with
+   *                  `EMULATION_NOT_APPLIED`
    *   - `live`:      `{ handshakeTimeoutMs?: number; authToken?: string }`
    */
   options?: Record<string, unknown>;

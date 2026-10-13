@@ -19,6 +19,25 @@ import {
   type StorageStateArtifact,
 } from './storage-state.js';
 
+/** The two `prefers-color-scheme` values a launch can emulate. */
+export type LaunchColorScheme = 'light' | 'dark';
+
+/**
+ * Validate a requested device scale factor, returning it unchanged.
+ *
+ * Checked HERE, before any browser launches, rather than left to Playwright:
+ * a NaN or a zero would otherwise surface as an opaque protocol error several
+ * frames deep, after a Chromium process had already been spawned.
+ *
+ * @internal Exported for tests; not part of the package's public surface.
+ */
+export function validateDeviceScaleFactor(value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`deviceScaleFactor must be a positive finite number (got ${String(value)})`);
+  }
+  return value;
+}
+
 export interface LaunchHeadlessTabOptions {
   /** URL the browser tab should navigate to. Required. */
   url: string;
@@ -82,6 +101,27 @@ export interface LaunchHeadlessTabOptions {
 
   /** Viewport height (px). Default 720. */
   viewportHeight?: number;
+
+  /**
+   * Device scale factor of the browser CONTEXT — what the page reads as
+   * `window.devicePixelRatio`, and how many screenshot pixels one CSS pixel
+   * covers. Any positive finite number (`2` for a Retina laptop, `2.625` for
+   * many phones). Default: Playwright's, which is `1`.
+   *
+   * It is a context option and not a launch flag on purpose. Chromium's
+   * `--force-device-scale-factor` passed through `launchArgs` does NOT reach
+   * the page: this launcher always creates the context with a `viewport`, and
+   * Playwright's metrics emulation then overrides the flag, so
+   * `devicePixelRatio` stays 1 (measured 2026-10-13, plan
+   * 2026-10-13-image-generation-and-visual-judgment, Phase 1 item 5).
+   */
+  deviceScaleFactor?: number;
+
+  /**
+   * The `prefers-color-scheme` the context emulates. Default: no override, so
+   * Playwright's own default (`light`) applies.
+   */
+  colorScheme?: LaunchColorScheme;
 
   /**
    * User agent string override. Defaults to Playwright's Chromium
@@ -347,6 +387,8 @@ export async function launchHeadlessTab(
     waitForUiBridgeMs = 30_000,
     viewportWidth = 1280,
     viewportHeight = 720,
+    deviceScaleFactor,
+    colorScheme,
     userAgent,
     forwardConsole = true,
     onPageUrl,
@@ -357,6 +399,11 @@ export async function launchHeadlessTab(
     callerUserId,
     pinnedTabId,
   } = options;
+
+  if (deviceScaleFactor !== undefined) validateDeviceScaleFactor(deviceScaleFactor);
+  if (colorScheme !== undefined && colorScheme !== 'light' && colorScheme !== 'dark') {
+    throw new Error(`colorScheme must be 'light' or 'dark' (got ${String(colorScheme)})`);
+  }
 
   const browser = await chromium.launch({
     headless,
@@ -382,6 +429,8 @@ export async function launchHeadlessTab(
 
   const context = await browser.newContext({
     viewport: { width: viewportWidth, height: viewportHeight },
+    ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
+    ...(colorScheme !== undefined ? { colorScheme } : {}),
     userAgent,
     ...(storageStateSeed ? { storageState: storageStateSeed as never } : {}),
   });

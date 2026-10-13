@@ -28,6 +28,15 @@ export interface HeadlessTransportOptions {
   /** Viewport height in px. Defaults to 720. */
   viewportHeight?: number;
   /**
+   * Device scale factor of the browser context — what the page reads as
+   * `window.devicePixelRatio`. Defaults to Playwright's (1). Applied as a
+   * CONTEXT option by `launchHeadlessTab`; a Chromium launch flag would be
+   * overridden by the viewport emulation and never reach the page.
+   */
+  deviceScaleFactor?: number;
+  /** `prefers-color-scheme` the context emulates. Defaults to no override. */
+  colorScheme?: 'light' | 'dark';
+  /**
    * UI Bridge relay base URL. If provided, `ready()` blocks until the relay
    * confirms the tab registered. Mirrors `launchHeadlessTab` behavior.
    */
@@ -79,6 +88,8 @@ interface LaunchHeadlessTabArgs {
   waitForUiBridgeMs?: number;
   viewportWidth?: number;
   viewportHeight?: number;
+  deviceScaleFactor?: number;
+  colorScheme?: 'light' | 'dark';
   userAgent?: string;
   forwardConsole?: boolean;
   initScripts?: string[];
@@ -154,6 +165,14 @@ export class HeadlessTransport extends BaseTransport {
         typeof raw['viewportWidth'] === 'number' ? (raw['viewportWidth'] as number) : undefined,
       viewportHeight:
         typeof raw['viewportHeight'] === 'number' ? (raw['viewportHeight'] as number) : undefined,
+      deviceScaleFactor:
+        typeof raw['deviceScaleFactor'] === 'number'
+          ? (raw['deviceScaleFactor'] as number)
+          : undefined,
+      colorScheme:
+        raw['colorScheme'] === 'light' || raw['colorScheme'] === 'dark'
+          ? (raw['colorScheme'] as 'light' | 'dark')
+          : undefined,
       uiBridgeBase:
         typeof raw['uiBridgeBase'] === 'string' ? (raw['uiBridgeBase'] as string) : undefined,
       waitForUiBridgeMs:
@@ -241,6 +260,12 @@ export class HeadlessTransport extends BaseTransport {
         waitForUiBridgeMs: this.options.waitForUiBridgeMs,
         viewportWidth: this.options.viewportWidth,
         viewportHeight: this.options.viewportHeight,
+        ...(this.options.deviceScaleFactor !== undefined
+          ? { deviceScaleFactor: this.options.deviceScaleFactor }
+          : {}),
+        ...(this.options.colorScheme !== undefined
+          ? { colorScheme: this.options.colorScheme }
+          : {}),
         userAgent: this.options.userAgent,
         forwardConsole: this.options.forwardConsole,
         initScripts: initScripts.length > 0 ? initScripts : undefined,
@@ -280,9 +305,49 @@ export class HeadlessTransport extends BaseTransport {
       close: tab.close,
     };
 
+    // A requested emulation is VERIFIED on the page before anything is driven
+    // through it. The launcher is an optional peer resolved at run time, and a
+    // `@qontinui/ui-bridge-headless` that predates `deviceScaleFactor` /
+    // `colorScheme` would accept the extra keys and silently ignore them — a
+    // DPR-1 page measured as if it were DPR 2.
+    await this.verifyEmulation(tab.page);
+
     // Subclass hook: block until the page-side runtime is ready (e.g. the
     // injected bundle reports `window.__uiBridgeInjected.ready === true`).
     await this.afterLaunch(tab.page);
+  }
+
+  /**
+   * Read back the requested device scale factor and colour scheme from the
+   * page itself, and refuse a launch whose page reports anything else.
+   */
+  private async verifyEmulation(page: Page): Promise<void> {
+    const wantDpr = this.options.deviceScaleFactor;
+    const wantScheme = this.options.colorScheme;
+    if (wantDpr === undefined && wantScheme === undefined) return;
+    const seen = await page.evaluate(() => ({
+      dpr: window.devicePixelRatio,
+      dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+    }));
+    const problems: string[] = [];
+    if (wantDpr !== undefined && Math.abs(seen.dpr - wantDpr) > 1e-9) {
+      problems.push(`devicePixelRatio ${seen.dpr} (requested ${wantDpr})`);
+    }
+    if (wantScheme !== undefined && seen.dark !== (wantScheme === 'dark')) {
+      problems.push(
+        `prefers-color-scheme ${seen.dark ? 'dark' : 'light'} (requested ${wantScheme})`
+      );
+    }
+    if (problems.length === 0) return;
+    await this.onClose().catch(() => {});
+    throw new WrapperTransportError(
+      'EMULATION_NOT_APPLIED',
+      `The launched page reports ${problems.join(' and ')}. The installed ` +
+        `'@qontinui/ui-bridge-headless' peer most likely predates deviceScaleFactor/colorScheme ` +
+        `support (added after 0.5.0) and ignored them; upgrade it. A page measured at an ` +
+        `emulation it is not actually rendering at would be stamped with the wrong values.`,
+      { details: { requested: { deviceScaleFactor: wantDpr, colorScheme: wantScheme }, seen } }
+    );
   }
 
   /**
