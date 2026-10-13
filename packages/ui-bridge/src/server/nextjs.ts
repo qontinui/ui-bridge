@@ -34,17 +34,13 @@ import type {
   UIBridgeServerConfig,
   UIBridgeServerHandlers,
   APIResponse,
+  HandlerContext,
   RouteDefinition,
   RenderLogQuery,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
 import { mapInternalErrorCode } from '../diagnostics';
-import type {
-  ControlActionRequest,
-  ComponentActionRequest,
-  FindRequest,
-  WorkflowRunRequest,
-} from '../control';
+import type { ControlActionRequest, FindRequest, WorkflowRunRequest } from '../control';
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
 import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
@@ -389,7 +385,30 @@ function extractParams(path: string, route: RouteDefinition): Record<string, str
 }
 
 /**
- * Individual route handler creators for more granular control
+ * The context the catch-all passes every handler: the caller identity the
+ * consumer's auth gate verified (`X-Caller-User-Id`), or none (the unscoped,
+ * admin mode). The named helpers below pass it too, so a route mounted
+ * through them keeps per-user tab scoping (§4.2).
+ */
+function callerContextOf(request?: Request): HandlerContext {
+  const callerUserId =
+    request?.headers.get('x-caller-user-id') ?? request?.headers.get('X-Caller-User-Id') ?? undefined;
+  return { callerUserId };
+}
+
+/** A JSON body without any request-supplied `__callerUserId`; `{}` when absent or unparseable. */
+async function bodyOf<T>(request: Request): Promise<T> {
+  try {
+    return withoutReservedCaller((await request.json()) as T);
+  } catch {
+    return {} as T;
+  }
+}
+
+/**
+ * Individual route handler creators for more granular control. Each one
+ * passes the handler the verified caller context, exactly as the catch-all
+ * does, so it is safe to mount on a relay shared by several users.
  */
 export function createRenderLogHandlers(handlers: UIBridgeServerHandlers) {
   return {
@@ -401,11 +420,11 @@ export function createRenderLogHandlers(handlers: UIBridgeServerHandlers) {
         until: searchParams.until ? parseInt(searchParams.until) : undefined,
         limit: searchParams.limit ? parseInt(searchParams.limit) : undefined,
       };
-      const result = await handlers.getRenderLog(query);
+      const result = await handlers.getRenderLog(query, callerContextOf(request));
       return jsonResponse(result);
     },
-    async DELETE(): Promise<Response> {
-      const result = await handlers.clearRenderLog();
+    async DELETE(request?: NextRequest): Promise<Response> {
+      const result = await handlers.clearRenderLog(callerContextOf(request));
       return jsonResponse(result);
     },
   };
@@ -427,48 +446,59 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
           if (raw === null) return undefined;
           return raw.length === 0 ? undefined : raw;
         };
-        const result = await handlers.getElements({
-          recency: pick('recency'),
-          title: pick('title'),
-          aria_label: pick('aria_label'),
-          text: pick('text'),
-          revealsAny: pick('revealsAny'),
-          windowLabel: pick('windowLabel'),
-        });
+        const result = await handlers.getElements(
+          {
+            recency: pick('recency'),
+            title: pick('title'),
+            aria_label: pick('aria_label'),
+            text: pick('text'),
+            revealsAny: pick('revealsAny'),
+            windowLabel: pick('windowLabel'),
+          },
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
     element: {
-      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.getElement(context.params.id);
+      async GET(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
+        const result = await handlers.getElement(context.params.id, {}, callerContextOf(request));
         return jsonResponse(result);
       },
       async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const body = (await request.json()) as ControlActionRequest;
-        const result = await handlers.executeElementAction(context.params.id, body);
+        const body = await bodyOf<ControlActionRequest>(request);
+        const result = await handlers.executeElementAction(
+          context.params.id,
+          body,
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
     components: {
-      async GET(): Promise<Response> {
-        const result = await handlers.getComponents();
+      async GET(request?: NextRequest): Promise<Response> {
+        const result = await handlers.getComponents({}, callerContextOf(request));
         return jsonResponse(result);
       },
     },
     component: {
-      async GET(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.getComponent(context.params.id);
+      async GET(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
+        const result = await handlers.getComponent(context.params.id, {}, callerContextOf(request));
         return jsonResponse(result);
       },
+      // The same handler the catch-all route uses: the body becomes the
+      // action request, and routing fields never become params.
       async POST(
         request: NextRequest,
         context: { params: { id: string; actionId: string } }
       ): Promise<Response> {
-        const body = (await request.json()) as Omit<ComponentActionRequest, 'action'>;
-        const result = await handlers.executeComponentAction(context.params.id, {
-          ...body,
-          action: context.params.actionId,
-        });
+        const body = await bodyOf<Record<string, unknown>>(request);
+        const result = await handlers.invokeComponentAction(
+          context.params.id,
+          context.params.actionId,
+          body,
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
@@ -488,24 +518,20 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         request: NextRequest,
         context: { params: { id: string; actionId: string } }
       ): Promise<Response> {
-        let body: Record<string, unknown>;
-        try {
-          body = (await request.json()) as Record<string, unknown>;
-        } catch {
-          body = {};
-        }
+        const body = await bodyOf<Record<string, unknown>>(request);
         const result = await handlers.predictComponentAction(
           context.params.id,
           context.params.actionId,
-          body
+          body,
+          callerContextOf(request)
         );
         return jsonResponse(result);
       },
     },
     find: {
       async POST(request: NextRequest): Promise<Response> {
-        const body = (await request.json()) as FindRequest;
-        const result = await handlers.find(body);
+        const body = await bodyOf<FindRequest>(request);
+        const result = await handlers.find(body, callerContextOf(request));
         return jsonResponse(result);
       },
     },
@@ -514,8 +540,8 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
        * @deprecated Use /control/find instead
        */
       async POST(request: NextRequest): Promise<Response> {
-        const body = (await request.json()) as FindRequest;
-        const result = await handlers.discover(body);
+        const body = await bodyOf<FindRequest>(request);
+        const result = await handlers.discover(body, callerContextOf(request));
         return jsonResponse(result);
       },
     },
@@ -525,25 +551,27 @@ export function createControlHandlers(handlers: UIBridgeServerHandlers) {
         const targetTabId = request.nextUrl?.searchParams?.get('targetTabId') ?? undefined;
         const skipSettle = request.nextUrl?.searchParams?.get('skipSettle') ?? undefined;
         const settleTimeout = request.nextUrl?.searchParams?.get('settleTimeout') ?? undefined;
-        const result = await handlers.getControlSnapshot({
-          targetTabId,
-          url,
-          skipSettle,
-          settleTimeout,
-        });
+        const result = await handlers.getControlSnapshot(
+          { targetTabId, url, skipSettle, settleTimeout },
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
     workflows: {
-      async GET(): Promise<Response> {
-        const result = await handlers.getWorkflows();
+      async GET(request?: NextRequest): Promise<Response> {
+        const result = await handlers.getWorkflows({}, callerContextOf(request));
         return jsonResponse(result);
       },
     },
     workflow: {
       async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const body = (await request.json()) as WorkflowRunRequest;
-        const result = await handlers.runWorkflow(context.params.id, body);
+        const body = await bodyOf<WorkflowRunRequest>(request);
+        const result = await handlers.runWorkflow(
+          context.params.id,
+          body,
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
@@ -555,7 +583,10 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
     actionHistory: {
       async GET(request: NextRequest): Promise<Response> {
         const limit = request.nextUrl.searchParams.get('limit');
-        const result = await handlers.getActionHistory(limit ? { limit } : {});
+        const result = await handlers.getActionHistory(
+          limit ? { limit } : {},
+          callerContextOf(request)
+        );
         return jsonResponse(result);
       },
     },
@@ -566,8 +597,8 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
       },
     },
     highlight: {
-      async POST(_request: NextRequest, context: { params: { id: string } }): Promise<Response> {
-        const result = await handlers.highlightElement(context.params.id);
+      async POST(request: NextRequest, context: { params: { id: string } }): Promise<Response> {
+        const result = await handlers.highlightElement(context.params.id, callerContextOf(request));
         return jsonResponse(result);
       },
     },
