@@ -128,6 +128,111 @@ describe('diagnosePageHealth (sdk-server) — the envelope', () => {
   });
 });
 
+/** Element states as the live 0.27.0 capture carries them: every element `visible: false`. */
+function hiddenEl(id: string, visibilityReason: string): DiscoveredElement {
+  return {
+    id,
+    type: 'button',
+    tagName: 'button',
+    actions: [],
+    registered: true,
+    category: 'interactive',
+    state: {
+      visible: false,
+      visibilityReason,
+      enabled: true,
+      focused: false,
+      textContent: id,
+      normalizedRect: { x: 0.004, y: 0.04, width: 0.095, height: 0.025 },
+    },
+  } as unknown as DiscoveredElement;
+}
+
+function statelessEl(id: string): DiscoveredElement {
+  return {
+    id,
+    type: 'paragraph',
+    tagName: 'p',
+    actions: [],
+    registered: true,
+    category: 'content',
+  } as unknown as DiscoveredElement;
+}
+
+describe('diagnosePageHealth (sdk-server) — elements exist, none can be placed on screen', () => {
+  it('every element visible:false → unknown{input_missing}, never unhealthy/critical', () => {
+    const obs = diagnosePageHealth({
+      elements: [hiddenEl('a', 'hidden'), hiddenEl('b', 'occluded'), hiddenEl('c', 'occluded')],
+      registeredComponents: 2,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') {
+      expect(obs.unknown.code).toBe('input_missing');
+      expect(obs.unknown.detail).toContain('occluded=2');
+    }
+    expect(obs.provenance.coverage).toEqual({ considered: 0, measured: 0, unmeasured: [] });
+    const text = JSON.stringify(obs);
+    expect(text).not.toContain('unhealthy');
+    expect(text).not.toContain('critical');
+  });
+
+  it('elements that never stated visibility → unknown naming the visibility dimension', () => {
+    const obs = diagnosePageHealth({
+      elements: [statelessEl('a'), statelessEl('b')],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 2,
+      measured: 0,
+      unmeasured: [{ dimension: 'visibility', count: 2, code: 'input_missing' }],
+    });
+  });
+
+  it('an interactive element with no `state` is counted, not a producer_failed throw', () => {
+    const interactiveNoState = {
+      ...statelessEl('i'),
+      category: 'interactive',
+    } as DiscoveredElement;
+    const obs = diagnosePageHealth({
+      elements: [visibleEl('a', { x: 0.3, y: 0.3, width: 0.3, height: 0.3 }), interactiveNoState],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.coverage.unmeasured).toEqual([
+      { dimension: 'visibility', count: 1, code: 'input_missing' },
+    ]);
+    // A missing `enabled` is not evidence of disabled.
+    if (obs.status === 'measured') expect(obs.value.stats.disabledCount).toBe(0);
+  });
+
+  it('a mixed reply is still measured, its gaps counted per dimension', () => {
+    const r = { x: 0.3, y: 0.3, width: 0.3, height: 0.3 };
+    const obs = diagnosePageHealth({
+      elements: [
+        visibleEl('a', r),
+        visibleEl('no-rect', null),
+        statelessEl('unstated'),
+        hiddenEl('h', 'occluded'),
+      ],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 3,
+      measured: 1,
+      unmeasured: [
+        { dimension: 'geometry', count: 1, code: 'input_missing' },
+        { dimension: 'visibility', count: 1, code: 'input_missing' },
+      ],
+    });
+  });
+});
+
 describe('pageHealth handler (sdk-server)', () => {
   it('a discover reply of `{}` → success + unknown{input_missing}; "unhealthy" appears nowhere', async () => {
     const handlers = createHandlers(registry([{ id: 'c' }]), executorFinding({}));
@@ -148,6 +253,18 @@ describe('pageHealth handler (sdk-server)', () => {
     expect(res.data?.status).toBe('unknown');
     if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('producer_not_run');
     expect(JSON.stringify(res)).not.toContain('critical');
+  });
+
+  it('a discover reply whose every element is visible:false → unknown, not unhealthy', async () => {
+    const handlers = createHandlers(
+      registry([{ id: 'c' }]),
+      executorFinding({ elements: [hiddenEl('a', 'occluded'), hiddenEl('b', 'hidden')] })
+    );
+    const res = await handlers.pageHealth!();
+    expect(res.success).toBe(true);
+    expect(res.data?.status).toBe('unknown');
+    if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('input_missing');
+    expect(JSON.stringify(res)).not.toContain('unhealthy');
   });
 
   it('a throwing discover → success + unknown{producer_failed} (an unknown is an answer)', async () => {

@@ -134,6 +134,204 @@ describe('diagnosePageHealth — the envelope', () => {
 });
 
 // ----------------------------------------------------------------------------
+// An all-invisible snapshot — "could not see" is not "the page is broken"
+// ----------------------------------------------------------------------------
+
+/**
+ * Element states copied (computedStyles/dataset dropped, nothing else edited)
+ * from the genuine live capture
+ * `qontinui-schemas/rust/tests/fixtures/ui_bridge_sdk/runner_live_sdk_0_27_0_control_snapshot.json`:
+ * every element reports `visible: false` — one opacity-hidden, two fully
+ * occluded by an unregistered `div.min-h-screen`. 0.31.0 answered `measured`
+ * with a CRITICAL report over ZERO considered elements for exactly this.
+ */
+function liveCaptureInvisibleElements(): DiscoveredElement[] {
+  const base = { actions: [], registered: true, category: 'interactive' };
+  return [
+    {
+      ...base,
+      id: 'terminal-input-b0fdb56e-3708-4446-9e17-b73fa7aa3ff9',
+      type: 'input',
+      tagName: 'textarea',
+      state: {
+        enabled: false,
+        focused: false,
+        inViewport: false,
+        normalizedRect: {
+          height: 0.000942507068803016,
+          width: 0.0005208333333333333,
+          x: -5.103645833333333,
+          y: 0.05089538171536286,
+        },
+        opacityHidden: true,
+        visibilityReason: 'hidden',
+        visible: false,
+      },
+    },
+    {
+      ...base,
+      id: 'button-workspace',
+      type: 'button',
+      tagName: 'button',
+      state: {
+        enabled: true,
+        focused: false,
+        inViewport: true,
+        normalizedRect: {
+          height: 0.02544769085768143,
+          width: 0.0953125,
+          x: 0.004166666666666667,
+          y: 0.04241281809613572,
+        },
+        occludedBy: 'div.min-h-screen',
+        occludedPct: 100,
+        textContent: 'WORKSPACE',
+        visibilityReason: 'occluded',
+        visible: false,
+      },
+    },
+    {
+      ...base,
+      id: 'nav:projects',
+      type: 'button',
+      tagName: 'button',
+      state: {
+        enabled: true,
+        focused: false,
+        inViewport: true,
+        normalizedRect: {
+          height: 0.033930254476908575,
+          width: 0.0953125,
+          x: 0.004166666666666667,
+          y: 0.07163053722902922,
+        },
+        occludedBy: 'div.min-h-screen',
+        occludedPct: 100,
+        textContent: 'Projects',
+        visibilityReason: 'occluded',
+        visible: false,
+      },
+    },
+  ] as unknown as DiscoveredElement[];
+}
+
+function stateless(id: string): DiscoveredElement {
+  return {
+    id,
+    type: 'paragraph',
+    tagName: 'p',
+    actions: [],
+    registered: true,
+    category: 'content',
+  } as unknown as DiscoveredElement;
+}
+
+describe('diagnosePageHealth — elements exist, none can be placed on screen', () => {
+  it('every element visible:false (the live capture) → unknown{input_missing}, no CRITICAL', () => {
+    const obs = diagnosePageHealth({
+      elements: liveCaptureInvisibleElements(),
+      registeredComponents: 2,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    expect('value' in obs).toBe(false);
+    if (obs.status === 'unknown') {
+      expect(obs.unknown.code).toBe('input_missing');
+      // Visibility WAS measured — the detail says what hid every element.
+      expect(obs.unknown.detail).toContain('hidden=1');
+      expect(obs.unknown.detail).toContain('occluded=2');
+    }
+    // Nothing was on screen to consider; nothing is claimed about the page.
+    expect(obs.provenance.coverage).toEqual({ considered: 0, measured: 0, unmeasured: [] });
+    const text = JSON.stringify(obs);
+    expect(text).not.toContain('CRITICAL');
+    expect(text).not.toContain('unhealthy');
+  });
+
+  it('elements that never stated visibility → unknown{input_missing} naming the visibility dimension', () => {
+    const obs = diagnosePageHealth({
+      elements: [stateless('a'), stateless('b'), stateless('c')],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') expect(obs.unknown.code).toBe('input_missing');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 3,
+      measured: 0,
+      unmeasured: [{ dimension: 'visibility', count: 3, code: 'input_missing' }],
+    });
+    expect(JSON.stringify(obs)).not.toContain('CRITICAL');
+    if (obs.status === 'unknown') expect(obs.unknown.detail).not.toContain('none of the 0');
+  });
+
+  it('hidden + visibility-unstated + rectless-visible, none placeable → unknown with both dimensions', () => {
+    const obs = diagnosePageHealth({
+      elements: [...liveCaptureInvisibleElements(), stateless('s'), visibleEl('v', null)],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 2,
+      measured: 0,
+      unmeasured: [
+        { dimension: 'geometry', count: 1, code: 'input_missing' },
+        { dimension: 'visibility', count: 1, code: 'input_missing' },
+      ],
+    });
+  });
+
+  it('a mixed snapshot is still measured, its gaps counted per dimension', () => {
+    const r = { x: 0.3, y: 0.3, width: 0.3, height: 0.3 };
+    const obs = diagnosePageHealth({
+      elements: [
+        visibleEl('a', r),
+        visibleEl('b', { ...r, y: 0.6 }),
+        visibleEl('no-rect', null),
+        stateless('unstated'),
+        ...liveCaptureInvisibleElements(),
+      ],
+      registeredComponents: 1,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 4,
+      measured: 2,
+      unmeasured: [
+        { dimension: 'geometry', count: 1, code: 'input_missing' },
+        { dimension: 'visibility', count: 1, code: 'input_missing' },
+      ],
+    });
+    if (obs.status === 'measured') {
+      expect(obs.value.element_count).toBe(7);
+      expect(obs.value.visible_count).toBe(2);
+    }
+  });
+
+  it('the in-page handler answers the all-invisible snapshot as unknown, never unhealthy', async () => {
+    const handlers = createHandlers(
+      registryReturning({
+        timestamp: T,
+        snapshotId: 'snap_invisible',
+        elements: liveCaptureInvisibleElements(),
+        components: [{}, {}],
+        workflows: [],
+      }),
+      executor as never,
+      NO_IDLE
+    );
+    const res = await handlers.pageHealth();
+    expect(res.success).toBe(true);
+    expect(res.data?.status).toBe('unknown');
+    if (res.data?.status === 'unknown') expect(res.data.unknown.code).toBe('input_missing');
+    expect(res.data?.provenance.source).toEqual({ snapshotId: 'snap_invisible' });
+    expect(JSON.stringify(res)).not.toContain('CRITICAL');
+  });
+});
+
+// ----------------------------------------------------------------------------
 // Handlers — the `?? []` call sites are gone
 // ----------------------------------------------------------------------------
 

@@ -36,10 +36,14 @@
  *     an unknown screen size must not read as a blank screen
  *   - zero elements AND zero components       → `unknown{producer_not_run}`
  *   - visible elements, none measured yet     → `unknown{input_missing}`
+ *   - elements, but EVERY one reports
+ *     `visible: false`                        → `unknown{input_missing}` —
+ *     what is on screen is not a registered element; not a blank screen
  *   - the analyzer threw                      → `unknown{producer_failed}`
  *
  * Visible elements whose layout has not been measured are COUNTED into
- * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped.
+ * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped;
+ * elements with no boolean `state.visible` likewise (`dimension: "visibility"`).
  *
  * Fold semantics (see Step 7: Visual anomalies):
  *
@@ -94,6 +98,11 @@ export interface PageHealthValue {
  */
 export interface PageHealthElement {
   type: string;
+  /**
+   * Typed as required, but `elements` reaches the producer as `unknown` off
+   * the wire, so the analyzer reads it defensively: an element with no
+   * `state` is counted as visibility-unmeasured, never a throw.
+   */
   state: NativeElementState;
 }
 
@@ -185,14 +194,7 @@ const LOADING_PHRASES = [
   'fetching',
 ];
 
-const EMPTY_PHRASES = [
-  'no data',
-  'no results',
-  'nothing here',
-  'empty',
-  'no items',
-  'get started',
-];
+const EMPTY_PHRASES = ['no data', 'no results', 'nothing here', 'empty', 'no items', 'get started'];
 
 // ============================================================================
 // Helpers
@@ -337,6 +339,46 @@ function observe(
   return analyze(elements, viewport, base);
 }
 
+/**
+ * Why a registry that HAS elements left the producer nothing to place on
+ * screen. Either inputs were missing (no boolean `state.visible`, or visible
+ * elements whose layout has not been measured — counted in
+ * `coverage.unmeasured`), or every element reports `visible: false` (its
+ * route is off-screen via `markRouteOffscreen`, or it is unmounted): then whatever IS on screen is
+ * not a registered element, and a screen the producer cannot see is not a
+ * blank screen.
+ */
+function nothingOnScreenDetail(
+  elements: PageHealthElement[],
+  visibleCount: number,
+  visibilityUnstated: number
+): string {
+  if (visibilityUnstated === 0 && visibleCount > 0) {
+    return (
+      `all ${visibleCount} visible element(s) have no measured layout yet, so spatial ` +
+      'coverage, layout regions and visual anomalies cannot be measured'
+    );
+  }
+  if (visibilityUnstated > 0) {
+    const geometry =
+      visibleCount > 0
+        ? ` and none of the ${visibleCount} visible one(s) has a measured layout`
+        : '';
+    return (
+      `${visibilityUnstated} of ${elements.length} element(s) carry no boolean ` +
+      `\`state.visible\`${geometry}, so no element can be placed on screen; spatial ` +
+      'coverage, layout regions and visual anomalies cannot be measured'
+    );
+  }
+  const unmounted = elements.filter((el) => el.state?.mounted === false).length;
+  return (
+    `all ${elements.length} registered element(s) report visible: false (unmounted=${unmounted}, ` +
+    `off-screen route or otherwise=${elements.length - unmounted}), so ` +
+    'whatever is on screen is not a registered element and there is nothing on screen to ' +
+    'measure; this says nothing about whether the screen is blank'
+  );
+}
+
 function analyze(
   elements: PageHealthElement[],
   viewport: { width: number; height: number },
@@ -344,25 +386,38 @@ function analyze(
 ): PageHealthObservation {
   const findings: PageHealthFinding[] = [];
 
-  // Considered = visible elements; measured = those whose layout projects.
-  // The difference is COUNTED, never silently dropped.
-  const considered = elements.filter((el) => el.state.visible);
-  const visible = considered.flatMap((el) => {
+  // Considered = elements that are, or may be, on screen: the visible ones
+  // plus those whose state never said whether they are visible. Measured =
+  // the visible ones whose layout projects. The difference is COUNTED, never
+  // silently dropped.
+  const onScreen = elements.filter((el) => el.state?.visible === true);
+  const visibilityUnstated = elements.filter(
+    (el) => typeof (el.state as { visible?: unknown } | undefined)?.visible !== 'boolean'
+  ).length;
+  const visible = onScreen.flatMap((el) => {
     const rect = normalizeRect(el.state, viewport);
     return rect ? [{ el, rect }] : [];
   });
-  const withoutGeometry = considered.length - visible.length;
-  const unmeasured: UnmeasuredDimension[] =
-    withoutGeometry > 0
-      ? [{ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' }]
-      : [];
-  const coverage = { considered: considered.length, measured: visible.length, unmeasured };
+  const withoutGeometry = onScreen.length - visible.length;
+  const unmeasured: UnmeasuredDimension[] = [];
+  if (withoutGeometry > 0) {
+    unmeasured.push({ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' });
+  }
+  if (visibilityUnstated > 0) {
+    unmeasured.push({ dimension: 'visibility', count: visibilityUnstated, code: 'input_missing' });
+  }
+  const coverage = {
+    considered: onScreen.length + visibilityUnstated,
+    measured: visible.length,
+    unmeasured,
+  };
 
-  if (considered.length > 0 && visible.length === 0) {
+  if (elements.length > 0 && visible.length === 0) {
+    // Elements exist but none can be placed on screen: the spatial checks
+    // would report a CRITICAL blank screen over nothing looked at.
     return Observation.unknown(
       'input_missing',
-      `all ${considered.length} visible element(s) have no measured layout yet, so spatial ` +
-        'coverage, layout regions and visual anomalies cannot be measured',
+      nothingOnScreenDetail(elements, onScreen.length, visibilityUnstated),
       Observation.provenance({ ...base, coverage })
     );
   }
@@ -448,8 +503,7 @@ function analyze(
     const t = el.type || 'unknown';
     typeCounts[t] = (typeCounts[t] ?? 0) + 1;
   }
-  const allNav =
-    elements.length > 5 && Object.keys(typeCounts).every((k) => NAV_TYPES.has(k));
+  const allNav = elements.length > 5 && Object.keys(typeCounts).every((k) => NAV_TYPES.has(k));
   const diversitySeverity: PageHealthSeverity = allNav ? 'WARNING' : 'OK';
 
   findings.push({
@@ -473,7 +527,7 @@ function analyze(
     const elType = el.type ?? '';
     if (SKIP_TEXT_TYPES.has(elType)) continue;
 
-    const text = (el.state.textContent ?? '').toString();
+    const text = (el.state?.textContent ?? '').toString();
     if (!text) continue;
     const textLower = text.toLowerCase();
     for (const p of ERROR_PHRASES) {
@@ -518,7 +572,7 @@ function analyze(
   for (const el of elements) {
     if (!INTERACTIVE_TYPES.has(el.type)) continue;
     interactiveTotal++;
-    if (el.state.enabled === false) interactiveDisabled++;
+    if (el.state?.enabled === false) interactiveDisabled++;
   }
   const interactiveSeverity: PageHealthSeverity =
     interactiveTotal > 0 && interactiveDisabled / interactiveTotal > 0.5 ? 'WARNING' : 'OK';
@@ -553,9 +607,7 @@ function analyze(
   });
 
   // --- Step 8: ASCII heatmap ------------------------------------------------
-  const heatmap: string[] = grid.map((row) =>
-    row.map((cell) => (cell ? '#' : '.')).join('')
-  );
+  const heatmap: string[] = grid.map((row) => row.map((cell) => (cell ? '#' : '.')).join(''));
 
   return Observation.measured(
     {
