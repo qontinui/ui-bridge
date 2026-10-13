@@ -29,6 +29,8 @@
  * restarting the client.
  */
 
+import { safeJsonStringify } from '../core/wire-json';
+
 // SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
 const SSE_RECONNECT_DELAY_MS = 10_000;
 
@@ -47,30 +49,6 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** sessionStorage key for the stable per-tab id. */
 const TAB_ID_STORAGE_KEY = '__uiBridge_tabId';
-
-/**
- * JSON.stringify replacer that strips DOM nodes and handles circular
- * references. Command handler results can contain HTMLElement refs (e.g. from
- * component getState() or action handlers), which create cycles via React's
- * `__reactFiber$`.
- */
-export function safeJsonStringify(value: unknown): string {
-  const seen = new WeakSet();
-  return JSON.stringify(value, (_key, val) => {
-    if (val !== null && typeof val === 'object') {
-      // Strip DOM nodes — they're never meaningful in JSON responses
-      if (typeof Node !== 'undefined' && val instanceof Node) {
-        return `[${val.constructor.name}]`;
-      }
-      // Break circular references
-      if (seen.has(val)) return '[Circular]';
-      seen.add(val);
-    }
-    // Strip functions
-    if (typeof val === 'function') return undefined;
-    return val;
-  });
-}
 
 /**
  * Resolve the current auth token from the consumer's hook, or `null` if no

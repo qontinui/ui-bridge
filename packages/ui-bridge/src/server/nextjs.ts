@@ -39,6 +39,7 @@ import type {
   RenderLogQuery,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { safeJsonStringify } from '../core/wire-json';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { ControlActionRequest, FindRequest, WorkflowRunRequest } from '../control';
 import { createHandlers, type RegistryLike, type ActionExecutorLike } from './handlers';
@@ -71,29 +72,6 @@ function wrapError(error: Error | string, code?: string): APIResponse<never> {
     code: mapInternalErrorCode(code, message),
     timestamp: Date.now(),
   };
-}
-
-/**
- * JSON.stringify replacer that strips DOM nodes and handles circular references.
- * Server-side responses may include data from command handlers that accidentally
- * contain HTMLElement refs (which create cycles via React's __reactFiber$).
- */
-function safeJsonStringify(value: unknown): string {
-  const seen = new WeakSet();
-  return JSON.stringify(value, (_key, val) => {
-    if (val !== null && typeof val === 'object') {
-      // Strip DOM nodes — they're never meaningful in JSON responses
-      if (typeof Node !== 'undefined' && val instanceof Node) {
-        return `[${val.constructor.name}]`;
-      }
-      // Break circular references
-      if (seen.has(val)) return '[Circular]';
-      seen.add(val);
-    }
-    // Strip functions
-    if (typeof val === 'function') return undefined;
-    return val;
-  });
 }
 
 /**

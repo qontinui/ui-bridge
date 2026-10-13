@@ -12,6 +12,7 @@ import type {
   WebSocketMessage,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { safeJsonStringify } from '../core/wire-json';
 import { mapInternalErrorCode } from '../diagnostics';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
@@ -548,19 +549,9 @@ export class StandaloneServer {
    */
   private sendJSON(res: import('http').ServerResponse, data: unknown, status = 200): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    const seen = new WeakSet();
-    res.end(
-      JSON.stringify(data, (_key, val) => {
-        if (val !== null && typeof val === 'object') {
-          if (typeof Node !== 'undefined' && val instanceof Node)
-            return `[${val.constructor.name}]`;
-          if (seen.has(val)) return '[Circular]';
-          seen.add(val);
-        }
-        if (typeof val === 'function') return undefined;
-        return val;
-      })
-    );
+    // The one wire serializer: DOM nodes and true cycles handled, a shared
+    // reference written in full (see core/wire-json.ts).
+    res.end(safeJsonStringify(data));
   }
 
   /**
