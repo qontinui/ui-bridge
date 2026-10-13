@@ -283,6 +283,16 @@ name = "docs-symbol-ratchet"
 command = ["npm", "run", "docs:check-symbols"]
 
 [[steps]]
+name = "ci-manifest-ratchet-self-test"
+# parity: ci.yml lint-and-test "CI manifest ratchet self-test"
+# ci.yml "CI manifest ratchet self-test" → `ci:check-manifest:test` =
+# `node scripts/check-ci-manifest.test.cjs`. Pins the no-root rule of the step
+# below (which argv would change the system packages of the machine this lane
+# runs on) against table cases, refused and allowed, and runs BEFORE it: a
+# regression in that rule turns the ratchet QUIET rather than red.
+command = ["npm", "run", "ci:check-manifest:test"]
+
+[[steps]]
 name = "ci-manifest-ratchet"
 # parity: ci.yml lint-and-test "CI manifest ratchet"
 # ci.yml "CI manifest ratchet" → `ci:check-manifest` =

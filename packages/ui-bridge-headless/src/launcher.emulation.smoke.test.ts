@@ -18,7 +18,7 @@ import type { AddressInfo } from 'node:net';
 import { launchHeadlessTab } from './launcher.js';
 import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>dpr</title>
 <style>html,body{margin:0;background:#fff}@media (prefers-color-scheme: dark){html,body{background:#000}}</style>

@@ -26,7 +26,7 @@ const BIN = resolve(PKG_DIR, 'dist/inject-cli.cjs');
 // Browser: the BUILT bin, against a real page
 // ---------------------------------------------------------------------------
 
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
 
 /** Newest mtime under `src/` — used to detect a dist built from older sources. */
 function newestSourceMtime(dir: string): number {

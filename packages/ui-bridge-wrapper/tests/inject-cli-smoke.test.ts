@@ -11,7 +11,7 @@ import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 // the file actually exists; if the call throws (no browser registered at all),
 // treat that as unavailable too. This gates the suite off in CI that hasn't run
 // `npx playwright install chromium`, mirroring the example smokes' convention.
-const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable(import.meta.url);
 
 /**
  * Browser smoke for the injected-transport CLI flow (Variant A, in-process).
