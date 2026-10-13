@@ -175,18 +175,69 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Test
+        # The real-Chromium smokes are part of this suite but SKIP here: each one
+        # skips itself when no Playwright Chromium is installed, and this job
+        # installs none, so that it stays mirrorable to .qontinui/ci.toml (whose
+        # lane must never install system packages). They EXECUTE in the
+        # browser-smokes job below, which installs Chromium.
+        run: npm run test
+
+  browser-smokes:
+    # The real-Chromium smokes: inject-cli frames at a DPR and the capture
+    # matrix, the settle and wait smokes, the headless launcher's emulation
+    # smoke and the headless example. Each one SKIPS when no Playwright Chromium
+    # is installed, so until this job they passed every PR by skipping (plan
+    # 2026-10-13-image-generation-and-visual-judgment, Phase 9 review m7 / B).
+    #
+    # A SEPARATE, GitHub-hosted job on purpose. `--with-deps` installs Chromium's
+    # system libraries with `sudo apt-get` on Linux. On the runner-as-CI-node
+    # lane, a user's own machine, that either fails every dispatch without
+    # passwordless sudo or installs system packages as root, both of which
+    # .qontinui/ci.toml's header forbids. So this job is NOT mirrored there
+    # (scripts/check-ci-manifest.cjs lists it in EXCLUDED_JOBS); on that lane the
+    # suite runs and these smokes skip, exactly as they do in lint-and-test.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.x
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        # The smokes drive the built packages: the wrapper's transports load
+        # @qontinui/ui-bridge-headless and the injected bundle from their dist/.
+        run: npm run build
+
       - name: Install Playwright Chromium
-        # The real-Chromium smokes (inject-cli frames at a DPR, the capture
-        # matrix, the settle and wait smokes) skip themselves when no Playwright
-        # Chromium is installed, and ubuntu-latest ships none, so until this step
-        # they passed every PR by skipping (plan
-        # 2026-10-13-image-generation-and-visual-judgment, Phase 9 review m7).
         # `npx` resolves the workspace's own playwright, so the browser build
-        # matches the version the tests import.
+        # matches the version the smokes import.
         run: npx playwright install --with-deps chromium
 
-      - name: Test
-        run: npm run test
+      - name: Chromium is where the smokes look for it
+        # Every smoke gates on existsSync(chromium.executablePath()). If the
+        # install above left the browser anywhere else, every smoke below would
+        # skip and this job would pass having run nothing.
+        run: |
+          node -e "
+            const p = require('playwright').chromium.executablePath();
+            if (!require('fs').existsSync(p)) {
+              console.error('no Playwright Chromium at ' + p);
+              process.exit(1);
+            }
+            console.log('Playwright Chromium at ' + p);
+          "
+
+      - name: Real-Chromium smokes
+        run: npm run test:smoke
 
   python-tests:
     runs-on: ubuntu-latest

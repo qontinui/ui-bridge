@@ -28,8 +28,9 @@
  * stamped onto a frame as if it had.
  */
 
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join, resolve } from 'node:path';
 
 /** The `prefers-color-scheme` a page rendered in. */
 export type FrameColorScheme = 'dark' | 'light';
@@ -145,12 +146,24 @@ export function ensurePrivateDir(dir: string): void {
 }
 
 /**
- * Write `data` to `path` owner-only ({@link PRIVATE_FILE_MODE}). `mode` applies
- * only when the file is created, so an existing file is narrowed explicitly.
+ * Write `data` to `path` owner-only ({@link PRIVATE_FILE_MODE}), private from
+ * the instant the bytes exist. They go into a fresh temp file created 0600
+ * beside `path`, which is then renamed over it. Writing in place and narrowing
+ * afterwards left a window in which an existing, wider-moded file already held
+ * the new pixels; renaming never puts the new bytes in the old file at all.
  */
 export function writePrivateFile(path: string, data: string | Uint8Array): void {
-  writeFileSync(path, data, { mode: PRIVATE_FILE_MODE });
-  chmodSync(path, PRIVATE_FILE_MODE);
+  const tmp = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  );
+  try {
+    writeFileSync(tmp, data, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];

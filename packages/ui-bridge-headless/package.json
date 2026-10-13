@@ -29,6 +29,7 @@
     "build": "tsup && tsc -p tsconfig.build.json",
     "dev": "tsup --watch",
     "test": "vitest run",
+    "test:smoke": "vitest run smoke",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist",
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"

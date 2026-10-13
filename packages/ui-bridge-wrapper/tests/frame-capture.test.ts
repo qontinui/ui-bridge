@@ -12,7 +12,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   chmodSync,
+  linkSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   existsSync,
@@ -24,6 +26,7 @@ import { join } from 'node:path';
 import {
   captureFrameInLockstep,
   expandFramePath,
+  writePrivateFile,
   frameTokenInDirectory,
   frameTokenInFileName,
   geometryDelta,
@@ -305,6 +308,26 @@ describe('captureFrameInLockstep', () => {
         path,
       });
       expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
+  );
+
+  // The new bytes must never sit in the old, wider-moded file: they are written
+  // to a fresh 0600 file and renamed over it. A hard link to the old file is the
+  // witness — written in place, it would see the new bytes.
+  it.skipIf(process.platform === 'win32')(
+    'replaces an existing file without ever writing the new bytes into it',
+    () => {
+      const path = join(dir, 'frame.png');
+      writeFileSync(path, 'old');
+      chmodSync(path, 0o644);
+      linkSync(path, join(dir, 'witness.png'));
+      writePrivateFile(path, 'new');
+      expect(readFileSync(path, 'utf8')).toBe('new');
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readFileSync(join(dir, 'witness.png'), 'utf8')).toBe('old');
+      expect(statSync(join(dir, 'witness.png')).mode & 0o777).toBe(0o644);
+      // No temp file is left behind.
+      expect(readdirSync(dir).sort()).toEqual(['frame.png', 'witness.png']);
     }
   );
 
