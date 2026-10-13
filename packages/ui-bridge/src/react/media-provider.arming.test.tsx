@@ -7,7 +7,10 @@
  * never reached the scanner; and the scanner skipped any image whose derived id
  * was taken, so two images sharing an alt registered once. Now both register,
  * and the background image registers with a measured observation that states
- * what CSS cannot tell it (its intrinsic size) as unmeasured.
+ * what CSS cannot tell it (its intrinsic size) as unmeasured. And inside a
+ * `data-bridge-redact` boundary a media id slugged the alt, the file name or
+ * an ancestor's aria-label — content no scrub reaches, since an id is an
+ * address; now none of them names one.
  *
  * The host calls the provider inline (`AutoRegisterProvider({...})` inside its
  * own render): the same component code an app renders, run as part of the
@@ -92,4 +95,34 @@ it('the provider forwards mediaDiscovery so background images and both same-alt 
     count: 1,
     code: 'input_missing',
   });
+});
+
+it('the provider registers redacted media under ids that slug none of their content', async () => {
+  // An id is an address: no scrub runs over it, so inside a redaction boundary
+  // nothing the page wrote (alt, file name, an ancestor's aria-label) may
+  // become part of one.
+  const boundary = document.createElement('section');
+  boundary.setAttribute('data-bridge-redact', 'true');
+  const dialog = document.createElement('div');
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-label', 'Zephyrine Quill chart');
+  boundary.appendChild(dialog);
+  document.body.appendChild(boundary);
+
+  const scan = laidOut(document.createElement('img'), 50, 50);
+  scan.setAttribute('alt', 'Zephyrine Quill x-ray');
+  scan.setAttribute('src', '/scans/zephyrine-quill.png');
+  dialog.appendChild(scan);
+  // No alt and no src: only its ancestors can name it.
+  dialog.appendChild(laidOut(document.createElement('img'), 50, 50));
+  const banner = laidOut(document.createElement('div'), 600, 200);
+  banner.style.backgroundImage = 'url("/scans/zephyrine-banner.jpg")';
+  dialog.appendChild(banner);
+
+  render(<Host />);
+
+  await waitFor(() => expect(registry.getAllMediaElements()).toHaveLength(3), { timeout: 5000 });
+  for (const row of registry.getAllMediaElements()) {
+    expect(row.id).not.toMatch(/zephyrine|quill/i);
+  }
 });
