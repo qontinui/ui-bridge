@@ -560,14 +560,17 @@ function mediaFactsVerdict(
   };
   // A fact the observation lists as unmeasured cannot be decided; one it does
   // not list does not apply to this media type, so the row cannot match.
-  const unmeasured = (dimension: 'loadingState' | 'effectiveResolution'): UnknownCode | false =>
-    (scrubbed && unmeasuredMediaDimension(scrubbed, dimension)) || false;
+  const codeIfUnmeasured = (
+    dimension: 'loadingState' | 'effectiveResolution'
+  ): UnknownCode | false => (scrubbed && unmeasuredMediaDimension(scrubbed, dimension)) || false;
 
   if (r.mediaType !== undefined) decide('mediaType', facts.mediaType === r.mediaType);
   if (r.brokenOnly) {
     decide(
       'brokenOnly',
-      facts.loadingState !== undefined ? facts.loadingState === 'error' : unmeasured('loadingState')
+      facts.loadingState !== undefined
+        ? facts.loadingState === 'error'
+        : codeIfUnmeasured('loadingState')
     );
   }
   if (r.missingAltOnly) {
@@ -583,7 +586,7 @@ function mediaFactsVerdict(
       'oversizeThreshold',
       facts.effectiveResolution !== undefined
         ? facts.effectiveResolution >= r.oversizeThreshold
-        : unmeasured('effectiveResolution')
+        : codeIfUnmeasured('effectiveResolution')
     );
   }
   return { miss, unknown: miss ? [] : unknown };
