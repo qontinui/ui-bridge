@@ -72,6 +72,9 @@ export {
   // this file uses an explicit export list and was not updated, which is the
   // defect `public-surface.remediation.test.ts` exists to catch.
   computeVisibility,
+  // `ElementMedia.in_viewport`'s source: stricter than `computeVisibility`,
+  // it answers `undefined` rather than "on screen" when the clip is unknown.
+  computeInViewport,
   pageRectOf,
   intersectRects,
   isEmptyRect,
@@ -90,6 +93,9 @@ export {
 
 export {
   projectVisionFields,
+  projectMedia,
+  resolveObjectFit,
+  resolveImageSource,
   deriveInteractable,
   deriveText,
   roleForType,
@@ -97,6 +103,8 @@ export {
   parseFontSizePx,
   type VisionRgb,
   type VisionElementFields,
+  type VisionMedia,
+  type VisionObjectFit,
 } from './core/vision-fields';
 
 // Action declarations: effect annotation, param validation, cancellation

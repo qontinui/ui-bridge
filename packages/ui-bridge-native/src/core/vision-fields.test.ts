@@ -1,14 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { NativeUIBridgeRegistry } from './registry';
-import type { NativeElementRef } from './types';
+import { NativeUIBridgeRegistry, computeInViewport } from './registry';
+import type { NativeElementRef, NativeElementState } from './types';
 import {
   projectVisionFields,
+  projectMedia,
+  resolveObjectFit,
+  resolveImageSource,
   deriveInteractable,
   deriveText,
   roleForType,
   parseColorToRgb,
   parseFontSizePx,
 } from './vision-fields';
+
+/**
+ * THE shared `src_digest` vector: the same URL and digest are pinned in
+ * vision-core (qontinui-schemas `rust-vision-core/src/element_media.rs`), in
+ * qontinui-web's `tests/e2e/style-gate/normalize.test.ts` and in
+ * qontinui-claude-config's `scripts/test-uibridge-to-elementsnapshot.py`. The
+ * query is part of the input on purpose — stripped, every next/image is one
+ * image.
+ */
+const SHARED_SRC = 'http://localhost:3001/_next/image?url=%2Fimages%2Fhero.png&w=1920&q=75';
+const SHARED_DIGEST = 'a846bcf412cf708ec0a4ac6a972307cbcb250b75509765fd44c49caecbd01f94';
 
 function makeRef(): React.RefObject<NativeElementRef> {
   return { current: {} as NativeElementRef };
@@ -89,19 +103,45 @@ describe('parseColorToRgb', () => {
     expect(parseColorToRgb('#FFFFFF')).toEqual({ r: 255, g: 255, b: 255 });
   });
 
-  it('parses 8-digit hex (drops alpha)', () => {
+  it('parses opaque 8-digit hex', () => {
     expect(parseColorToRgb('#1e293bff')).toEqual({ r: 0x1e, g: 0x29, b: 0x3b });
   });
 
-  it('parses 3- and 4-digit shorthand hex', () => {
+  it('parses 3-digit and opaque 4-digit shorthand hex', () => {
     expect(parseColorToRgb('#fff')).toEqual({ r: 255, g: 255, b: 255 });
-    expect(parseColorToRgb('#f00a')).toEqual({ r: 255, g: 0, b: 0 });
+    expect(parseColorToRgb('#f00f')).toEqual({ r: 255, g: 0, b: 0 });
   });
 
   it('parses rgb()/rgba() with ints and percents', () => {
     expect(parseColorToRgb('rgb(255, 0, 0)')).toEqual({ r: 255, g: 0, b: 0 });
-    expect(parseColorToRgb('rgba(0,0,0,0.5)')).toEqual({ r: 0, g: 0, b: 0 });
+    expect(parseColorToRgb('rgba(0,0,0,1)')).toEqual({ r: 0, g: 0, b: 0 });
+    expect(parseColorToRgb('rgba(0,0,0,100%)')).toEqual({ r: 0, g: 0, b: 0 });
     expect(parseColorToRgb('rgb(100%, 0%, 50%)')).toEqual({ r: 255, g: 0, b: 128 });
+  });
+
+  // Both of these used to come back as a colour: `transparent` as opaque
+  // BLACK, and a translucent colour flattened to its opaque RGB. Light text
+  // over an image could then PASS a contrast check against a black that is
+  // not there. Each is unknown, so the field is omitted.
+  it('reads transparent as UNKNOWN, never black', () => {
+    expect(parseColorToRgb('transparent')).toBeUndefined();
+    expect(parseColorToRgb('Transparent')).toBeUndefined();
+  });
+
+  it('reads any partial alpha as UNKNOWN, never flattened', () => {
+    expect(parseColorToRgb('rgba(0,0,0,0.5)')).toBeUndefined();
+    expect(parseColorToRgb('rgba(0, 0, 0, 0.999)')).toBeUndefined();
+    expect(parseColorToRgb('rgba(255,255,255,0)')).toBeUndefined();
+    expect(parseColorToRgb('rgba(0,0,0,50%)')).toBeUndefined();
+    expect(parseColorToRgb('#f00a')).toBeUndefined();
+    expect(parseColorToRgb('#0000')).toBeUndefined();
+    expect(parseColorToRgb('#00000080')).toBeUndefined();
+    expect(parseColorToRgb('#00000000')).toBeUndefined();
+  });
+
+  it('reads an unparseable alpha or a fifth component as UNKNOWN, not opaque', () => {
+    expect(parseColorToRgb('rgba(0,0,0,x)')).toBeUndefined();
+    expect(parseColorToRgb('rgba(0,0,0,1,1)')).toBeUndefined();
   });
 
   it('parses named colors', () => {
@@ -159,6 +199,20 @@ describe('projectVisionFields', () => {
       font_size_px: 18,
       font_family: 'Inter',
     });
+  });
+
+  it('omits a transparent or translucent background instead of reading it as black', () => {
+    for (const backgroundColor of ['transparent', 'rgba(0,0,0,0.4)', '#00000066']) {
+      const fields = projectVisionFields({
+        type: 'text',
+        label: 'Caption over a photo',
+        handlerNames: undefined,
+        state: {},
+        flatStyle: { color: '#ffffff', backgroundColor },
+      });
+      expect(fields.bg_color).toBeUndefined();
+      expect(fields.fg_color).toEqual({ r: 255, g: 255, b: 255 });
+    }
   });
 
   it('omits visual fields when flatStyle is absent (analyzer soft-skips)', () => {
@@ -272,5 +326,220 @@ describe('createSnapshot emits analyzer fields', () => {
     const el = snapshot.elements.find((e) => e.id === 'status');
     expect(el!.text).toBe('Status: online');
     expect(el!.role).toBe('text');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Image media — vision-core `Element.media` (plan
+// 2026-10-13-image-generation-and-visual-judgment, Phase 7)
+// ---------------------------------------------------------------------------
+
+const LAYOUT = { x: 0, y: 0, width: 120, height: 80, pageX: 10, pageY: 20 };
+
+describe('resolveObjectFit — what an RN Image actually paints', () => {
+  it('maps each resize mode to the object-fit that paints the same layout', () => {
+    expect(resolveObjectFit({ resizeMode: 'cover' }, undefined)).toBe('cover');
+    expect(resolveObjectFit({ resizeMode: 'contain' }, undefined)).toBe('contain');
+    expect(resolveObjectFit({ resizeMode: 'stretch' }, undefined)).toBe('fill');
+    // RN `center`: scale down if bigger, never up, centred — CSS scale-down.
+    expect(resolveObjectFit({ resizeMode: 'center' }, undefined)).toBe('scale-down');
+    expect(resolveObjectFit({ resizeMode: 'none' }, undefined)).toBe('none');
+  });
+
+  it('omits `repeat`, which tiles — no object-fit paints that', () => {
+    expect(resolveObjectFit({ resizeMode: 'repeat' }, undefined)).toBeUndefined();
+  });
+
+  it("follows RN's precedence: objectFit style, then resizeMode prop, then style", () => {
+    expect(resolveObjectFit({ resizeMode: 'stretch' }, { objectFit: 'cover' })).toBe('cover');
+    expect(resolveObjectFit({ resizeMode: 'stretch' }, { resizeMode: 'contain' })).toBe('fill');
+    expect(resolveObjectFit(undefined, { resizeMode: 'contain' })).toBe('contain');
+    // RN does not implement scale-down: it paints `contain`, so that is the fit.
+    expect(resolveObjectFit(undefined, { objectFit: 'scale-down' })).toBe('contain');
+    expect(resolveObjectFit(undefined, { objectFit: 'fill' })).toBe('fill');
+  });
+
+  it("leaves an unset mode UNKNOWN rather than assuming RN's `cover` default", () => {
+    // `type: 'image'` need not be RN's Image (expo-image, FastImage, an SVG).
+    expect(resolveObjectFit(undefined, undefined)).toBeUndefined();
+    expect(resolveObjectFit({}, {})).toBeUndefined();
+    expect(resolveObjectFit({ resizeMode: '' }, { resizeMode: 'cover' })).toBe('cover');
+  });
+});
+
+describe('resolveImageSource — the URL an RN Image displays', () => {
+  it('reads source.uri, a one-element source array, and src (which wins)', () => {
+    expect(resolveImageSource({ source: { uri: SHARED_SRC } })).toBe(SHARED_SRC);
+    expect(resolveImageSource({ source: [{ uri: SHARED_SRC }] })).toBe(SHARED_SRC);
+    expect(resolveImageSource({ src: SHARED_SRC, source: { uri: '/other.png' } })).toBe(SHARED_SRC);
+  });
+
+  it('cannot name the displayed URL for a srcSet, several candidates, or a bundled asset', () => {
+    expect(
+      resolveImageSource({ srcSet: `${SHARED_SRC} 1x, /b.png 2x`, src: SHARED_SRC })
+    ).toBeUndefined();
+    expect(resolveImageSource({ source: [{ uri: '/a.png' }, { uri: '/b.png' }] })).toBeUndefined();
+    expect(resolveImageSource({ source: 42 })).toBeUndefined(); // require('./hero.png')
+    expect(resolveImageSource(undefined)).toBeUndefined();
+  });
+});
+
+describe('projectMedia / projectVisionFields — image elements', () => {
+  it('digests the source URL with the shared vector, query kept', () => {
+    const media = projectMedia({
+      layout: LAYOUT,
+      props: { source: { uri: SHARED_SRC } },
+      flatStyle: undefined,
+      accessibilityLabel: undefined,
+      inViewport: undefined,
+    });
+    expect(media.src_digest).toBe(SHARED_DIGEST);
+    const stripped = projectMedia({
+      layout: LAYOUT,
+      props: { source: { uri: SHARED_SRC.slice(0, SHARED_SRC.indexOf('?')) } },
+      flatStyle: undefined,
+      accessibilityLabel: undefined,
+      inViewport: undefined,
+    });
+    expect(stripped.src_digest).not.toBe(SHARED_DIGEST);
+  });
+
+  it('projects the laid-out size, fit, alt and viewport an image registry has', () => {
+    const fields = projectVisionFields({
+      type: 'image',
+      label: 'Hero banner',
+      handlerNames: undefined,
+      state: { layout: LAYOUT },
+      flatStyle: { resizeMode: 'stretch', backgroundColor: 'transparent' },
+      props: { source: { uri: SHARED_SRC } },
+      accessibilityLabel: 'Hero banner',
+      inViewport: true,
+    });
+    expect(fields.media).toEqual({
+      kind: 'img',
+      rendered_px: { w: 120, h: 80 },
+      object_fit: 'fill',
+      alt: { decorative: false, text: 'Hero banner' },
+      src_digest: SHARED_DIGEST,
+      in_viewport: true,
+    });
+    expect(fields.bg_color).toBeUndefined(); // transparent, not black
+  });
+
+  it('never projects an image label as text — the label is its alt', () => {
+    const fields = projectVisionFields({
+      type: 'image',
+      label: 'Company logo',
+      handlerNames: undefined,
+      state: { textContent: 'Company logo' },
+      flatStyle: undefined,
+      accessibilityLabel: 'Company logo',
+    });
+    expect(fields.text).toBeUndefined();
+    expect(fields.media?.alt).toEqual({ decorative: false, text: 'Company logo' });
+    expect(fields.role).toBe('img');
+  });
+
+  it('omits every fact it cannot measure, keeping only the kind', () => {
+    const fields = projectVisionFields({
+      type: 'image',
+      label: undefined,
+      handlerNames: undefined,
+      state: { layout: null },
+      flatStyle: undefined,
+    });
+    // No accessibility label: RN may simply not expose the image, so the alt
+    // is UNKNOWN — neither "missing" nor "decorative".
+    expect(fields.media).toEqual({ kind: 'img' });
+  });
+
+  it('gives a non-image element no media, and keeps its label as text', () => {
+    const fields = projectVisionFields({
+      type: 'text',
+      label: 'Hello',
+      handlerNames: undefined,
+      state: { layout: LAYOUT },
+      flatStyle: undefined,
+      props: { source: { uri: SHARED_SRC } },
+      accessibilityLabel: 'Hello',
+      inViewport: true,
+    });
+    expect(fields.media).toBeUndefined();
+    expect(fields.text).toBe('Hello');
+  });
+});
+
+describe('computeInViewport — never promotes an unknown to "on screen"', () => {
+  const shown = (pageY: number): NativeElementState => ({
+    mounted: true,
+    visible: true,
+    enabled: true,
+    focused: false,
+    layout: { x: 0, y: pageY, width: 100, height: 40, pageX: 0, pageY },
+  });
+  const WINDOW_CLIP = { left: 0, top: 0, right: 393, bottom: 830 };
+
+  it('answers from the measured rect against a known clip', () => {
+    expect(computeInViewport(shown(100), WINDOW_CLIP)).toBe(true);
+    expect(computeInViewport(shown(810), WINDOW_CLIP)).toBe(true); // straddling counts
+    expect(computeInViewport(shown(900), WINDOW_CLIP)).toBe(false);
+  });
+
+  it('is UNKNOWN when the clip bounds are unknown — where computeVisibility says visible', () => {
+    expect(computeInViewport(shown(9999), null)).toBeUndefined();
+    expect(computeInViewport(shown(9999), undefined)).toBeUndefined();
+  });
+
+  it('is UNKNOWN for a hidden element or one with no page-space rect', () => {
+    expect(computeInViewport({ ...shown(100), visible: false }, WINDOW_CLIP)).toBeUndefined();
+    expect(computeInViewport({ ...shown(100), layout: null }, WINDOW_CLIP)).toBeUndefined();
+    const parentRelative = shown(100);
+    parentRelative.layout = { ...parentRelative.layout!, pageOriginUnmeasured: true };
+    expect(computeInViewport(parentRelative, WINDOW_CLIP)).toBeUndefined();
+  });
+
+  it('reads an empty clip as off screen', () => {
+    expect(computeInViewport(shown(100), { left: 0, top: 0, right: 0, bottom: 0 })).toBe(false);
+  });
+});
+
+describe('createSnapshot emits image media', () => {
+  it('an image carries media, no text, and no fabricated black background', () => {
+    const registry = new NativeUIBridgeRegistry();
+    registry.setViewportProvider(() => ({ width: 393, height: 830 }));
+    registry.registerElement('hero', makeRef(), {
+      type: 'image',
+      label: 'Hero',
+      accessibilityLabel: 'Hero',
+      props: { source: { uri: SHARED_SRC }, resizeMode: 'center' },
+      flatStyle: { backgroundColor: 'transparent' },
+    });
+    registry.updateElementState('hero', {
+      visible: true,
+      layout: { x: 0, y: 100, width: 393, height: 200, pageX: 0, pageY: 100 },
+    });
+    registry.registerElement('below-fold', makeRef(), { type: 'image', label: 'Footer art' });
+    registry.updateElementState('below-fold', {
+      visible: true,
+      layout: { x: 0, y: 2000, width: 393, height: 200, pageX: 0, pageY: 2000 },
+    });
+
+    const snapshot = registry.createSnapshot();
+    const hero = snapshot.elements.find((e) => e.id === 'hero');
+    expect(hero!.media).toEqual({
+      kind: 'img',
+      rendered_px: { w: 393, h: 200 },
+      object_fit: 'scale-down',
+      alt: { decorative: false, text: 'Hero' },
+      src_digest: SHARED_DIGEST,
+      in_viewport: true,
+    });
+    expect(hero!.text).toBeUndefined();
+    expect(hero!.bg_color).toBeUndefined();
+
+    const belowFold = snapshot.elements.find((e) => e.id === 'below-fold');
+    expect(belowFold!.media?.in_viewport).toBe(false);
+    // Registered with a label but no accessibility label: alt UNKNOWN.
+    expect(belowFold!.media?.alt).toBeUndefined();
   });
 });
