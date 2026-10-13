@@ -32,6 +32,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:smoke": "vitest run smoke",
     "clean": "rimraf dist",
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },

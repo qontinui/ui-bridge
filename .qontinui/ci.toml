@@ -119,6 +119,19 @@
 # 8. NO setup-node CACHE EQUIVALENT. The Actions lane restores an npm cache
 #    keyed on the lockfiles; a cold CI node downloads the full tree, which is why
 #    the two install steps below carry the maximum per-step timeout.
+#
+# 9. ci.yml's `browser-smokes` job — A HOST-DAMAGE GAP, items 1 and 2 at once.
+#    It runs `npx playwright install --with-deps chromium`, and `--with-deps`
+#    installs Chromium's system libraries with `sudo apt-get` on Linux. On this
+#    lane, a user's own machine, that either fails every dispatch on a host
+#    without passwordless sudo, or installs system packages as root. Neither is
+#    acceptable, so the job is not mirrored (EXCLUDED_JOBS in
+#    scripts/check-ci-manifest.cjs), and that check refuses any manifest step
+#    that installs system packages. What this lane loses is only the browser
+#    half of the suite: the real-Chromium smokes skip themselves without a
+#    Playwright Chromium, so the `test` step below runs them skipping, exactly
+#    as ci.yml's `lint-and-test` does; they EXECUTE in `browser-smokes` on
+#    GitHub's hosted runners (ui-bridge is public).
 # ===========================================================================
 
 version = 1
@@ -315,17 +328,6 @@ name = "typecheck"
 # --if-present`. Runs after the builds because workspaces typecheck against each
 # other's emitted declarations.
 command = ["npm", "run", "typecheck"]
-
-[[steps]]
-name = "playwright-chromium"
-# parity: ci.yml lint-and-test "Install Playwright Chromium"
-# ci.yml "Install Playwright Chromium". Without it the real-Chromium smokes skip
-# themselves, so this lane would pass them by skipping. On a Linux host
-# `--with-deps` installs Chromium's system libraries through the host's package
-# manager, which needs root: a host that cannot grant it fails this step rather
-# than reporting a green it did not measure.
-command = ["npx", "playwright", "install", "--with-deps", "chromium"]
-timeout_secs = 1800
 
 [[steps]]
 name = "test"

@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node --import tsx src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:smoke": "vitest run smoke"
   },
   "dependencies": {
     "@qontinui/ui-bridge-headless": "*",

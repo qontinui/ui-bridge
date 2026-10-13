@@ -98,12 +98,49 @@ const MIRRORED_JOBS = ['lint-and-test', 'docs'];
  */
 const EXCLUDED_JOBS = new Map([
   [
+    'browser-smokes',
+    'It installs a browser with `npx playwright install --with-deps chromium`, and ' +
+      '`--with-deps` runs `sudo apt-get` on Linux: on the local-CI lane that fails every ' +
+      'dispatch without passwordless sudo or installs system packages as root. The smokes ' +
+      'it runs skip themselves without Chromium, so the mirrored `test` step runs them ' +
+      'skipping. Manifest header item 9.',
+  ],
+  [
     'python-tests',
     'Its `pip install -e ".[dev]"` records an editable finder pointing into the ' +
       'dispatch directory the executor deletes, permanently breaking `import ui_bridge` ' +
       'on the host. Its 3.10/3.11/3.12 matrix is separately unrepresentable — a manifest ' +
       'has one PATH and one interpreter.',
   ],
+]);
+
+/**
+ * Argv words that install SYSTEM packages or escalate to root. A manifest step
+ * runs on a user's own machine, so none may appear in one: the step would either
+ * fail every dispatch on a host without passwordless sudo, or change the host
+ * for every other program on it (manifest header items 1, 2 and 9). Matched per
+ * argv word, so `npm install` and `npx playwright install chromium` pass, and
+ * `--with-deps` / `install-deps` (Playwright's apt path) do not.
+ */
+const HOST_PACKAGE_WORDS = new Set([
+  'sudo',
+  'su',
+  'doas',
+  'apt',
+  'apt-get',
+  'dpkg',
+  'dnf',
+  'yum',
+  'zypper',
+  'pacman',
+  'apk',
+  'brew',
+  'port',
+  'choco',
+  'winget',
+  'scoop',
+  '--with-deps',
+  'install-deps',
 ]);
 
 /** `# parity: <job> "<step name>"` — the citation that binds a manifest step. */
@@ -172,6 +209,15 @@ function validateManifest(manifest) {
           fail(
             `ci.toml ${label}: command token ${JSON.stringify(token)} contains banned shell ` +
               `metacharacter(s) ${JSON.stringify(banned.join(''))}`
+          );
+        }
+        if (HOST_PACKAGE_WORDS.has(token)) {
+          fail(
+            `ci.toml ${label}: command word ${JSON.stringify(token)} installs system packages or ` +
+              `escalates to root, and this lane runs on a user's own machine: it would fail every ` +
+              `dispatch without passwordless sudo, or change the host for every other program on ` +
+              `it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job listed in ` +
+              `EXCLUDED_JOBS instead.`
           );
         }
       });

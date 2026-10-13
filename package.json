@@ -12,6 +12,7 @@
   "scripts": {
     "build": "npm run build -w packages/ui-bridge-cli-args --if-present && npm run build -w packages/ui-bridge-headless --if-present && npm run build -w packages/ui-bridge --if-present && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:smoke": "npm run test:smoke --workspaces --if-present",
     "test:e2e": "npm run test -w e2e",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\" --max-warnings 0",
     "lint:fix": "eslint \"packages/*/src/**/*.{ts,tsx}\" --fix",
