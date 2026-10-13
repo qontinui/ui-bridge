@@ -17,10 +17,14 @@
  *   - no `elements` array at all            → `unknown{input_missing}`
  *   - zero elements AND zero components     → `unknown{producer_not_run}`
  *   - visible elements, none with geometry  → `unknown{input_missing}`
+ *   - elements, but EVERY one reports
+ *     `visible: false`                      → `unknown{input_missing}` —
+ *     what is on screen is not a registered element; not a blank page
  *   - the analyzer threw                    → `unknown{producer_failed}`
  *
  * Visible elements without a `normalizedRect` are COUNTED into
- * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped.
+ * `provenance.coverage.unmeasured` (`dimension: "geometry"`), not skipped;
+ * elements with no boolean `state.visible` likewise (`dimension: "visibility"`).
  * `status` lives only inside a `measured` value.
  */
 
@@ -168,6 +172,49 @@ const LOADING_CLASS_PATTERNS = ['spin', 'pulse', 'skeleton', 'loading', 'shimmer
 // ============================================================================
 
 /**
+ * Why a reply that HAS elements left the producer nothing to place on screen.
+ * Either inputs were missing (no boolean `state.visible`, or visible elements
+ * with no geometry — counted in `coverage.unmeasured`), or every element
+ * reports `visible: false`: then whatever IS on screen is not a registered
+ * element, and a page the producer cannot see is not a blank page.
+ */
+function nothingOnScreenDetail(
+  elements: DiscoveredElement[],
+  visibleCount: number,
+  visibilityUnstated: number
+): string {
+  if (visibilityUnstated === 0 && visibleCount > 0) {
+    return (
+      `all ${visibleCount} visible element(s) carry no normalizedRect, so spatial ` +
+      'coverage, layout regions and visual anomalies cannot be measured'
+    );
+  }
+  if (visibilityUnstated > 0) {
+    const geometry =
+      visibleCount > 0
+        ? ` and none of the ${visibleCount} visible one(s) carries a normalizedRect`
+        : '';
+    return (
+      `${visibilityUnstated} of ${elements.length} element(s) carry no boolean ` +
+      `\`state.visible\`${geometry}, so no element can be placed on screen; spatial ` +
+      'coverage, layout regions and visual anomalies cannot be measured'
+    );
+  }
+  const reasons = new Map<string, number>();
+  for (const el of elements) {
+    const r = (el.state as { visibilityReason?: unknown } | undefined)?.visibilityReason;
+    const key = typeof r === 'string' && r.length > 0 ? r : 'unstated';
+    reasons.set(key, (reasons.get(key) ?? 0) + 1);
+  }
+  const tally = [...reasons].map(([reason, n]) => `${reason}=${n}`).join(', ');
+  return (
+    `all ${elements.length} registered element(s) report visible: false (${tally}), so ` +
+    'whatever is on screen is not a registered element and there is nothing on screen to ' +
+    'measure; this says nothing about whether the page is blank'
+  );
+}
+
+/**
  * Diagnose page health from discovered elements. Never throws: an exception
  * is itself an answer (`unknown{producer_failed}`).
  */
@@ -227,27 +274,36 @@ function analyze(
   const findings: PageHealthFinding[] = [];
 
   const visibleElements = elements.filter((el) => el.state?.visible === true);
+  // Elements whose reply never said whether they are visible: considered (they
+  // may be on screen) but unmeasured — never assumed hidden.
+  const visibilityUnstated = elements.filter(
+    (el) => typeof (el.state as { visible?: unknown } | undefined)?.visible !== 'boolean'
+  ).length;
   // Visible elements that carry geometry; the rest are COUNTED as unmeasured.
   const measuredElements = visibleElements.flatMap((el) => {
     const nr = el.state.normalizedRect;
     return nr ? [{ el, nr }] : [];
   });
   const withoutGeometry = visibleElements.length - measuredElements.length;
-  const unmeasured: UnmeasuredDimension[] =
-    withoutGeometry > 0
-      ? [{ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' }]
-      : [];
+  const unmeasured: UnmeasuredDimension[] = [];
+  if (withoutGeometry > 0) {
+    unmeasured.push({ dimension: 'geometry', count: withoutGeometry, code: 'input_missing' });
+  }
+  if (visibilityUnstated > 0) {
+    unmeasured.push({ dimension: 'visibility', count: visibilityUnstated, code: 'input_missing' });
+  }
   const coverage = {
-    considered: visibleElements.length,
+    considered: visibleElements.length + visibilityUnstated,
     measured: measuredElements.length,
     unmeasured,
   };
 
-  if (visibleElements.length > 0 && measuredElements.length === 0) {
+  if (elements.length > 0 && measuredElements.length === 0) {
+    // Elements exist but none can be placed on screen: the spatial checks
+    // would report an `unhealthy` blank page over nothing looked at.
     return Observation.unknown(
       'input_missing',
-      `all ${visibleElements.length} visible element(s) carry no normalizedRect, so spatial ` +
-        'coverage, layout regions and visual anomalies cannot be measured',
+      nothingOnScreenDetail(elements, visibleElements.length, visibilityUnstated),
       Observation.provenance({ ...base, coverage })
     );
   }
@@ -429,7 +485,8 @@ function analyze(
 
   // ---- Interactive Readiness ----
   const interactiveElements = elements.filter((el) => el.category === 'interactive');
-  const disabledCount = interactiveElements.filter((el) => !el.state.enabled).length;
+  // A missing `enabled` is not evidence of disabled (matches the web SDK).
+  const disabledCount = interactiveElements.filter((el) => !(el.state?.enabled ?? true)).length;
 
   if (interactiveElements.length > 0 && disabledCount / interactiveElements.length > 0.5) {
     findings.push({

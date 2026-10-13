@@ -32,17 +32,19 @@ function measuredValue(
   elements: PageHealthElement[],
   viewport: { width: number; height: number }
 ): PageHealthValue {
-  const obs = diagnosePageHealth({ elements, registeredComponents: 1, viewport, observedAt: Date.now() });
+  const obs = diagnosePageHealth({
+    elements,
+    registeredComponents: 1,
+    viewport,
+    observedAt: Date.now(),
+  });
   if (obs.status !== 'measured') {
     throw new Error(`expected a measured observation, got ${JSON.stringify(obs)}`);
   }
   return obs.value;
 }
 
-function el(
-  type: string,
-  partial: Partial<PageHealthElement['state']> = {}
-): PageHealthElement {
+function el(type: string, partial: Partial<PageHealthElement['state']> = {}): PageHealthElement {
   return {
     type,
     state: {
@@ -516,7 +518,12 @@ describe('page-health observation envelope (sdk-native)', () => {
   it('an unknown viewport (null or 0x0) → unknown{input_missing}, never a blank screen', () => {
     const elements = [laidOut('text', 0, 0, 400, 800)];
     for (const viewport of [null, { width: 0, height: 0 }]) {
-      const obs = diagnosePageHealth({ elements, registeredComponents: 1, viewport, observedAt: T });
+      const obs = diagnosePageHealth({
+        elements,
+        registeredComponents: 1,
+        viewport,
+        observedAt: T,
+      });
       expect(obs.status).toBe('unknown');
       if (obs.status === 'unknown') {
         expect(obs.unknown.code).toBe('input_missing');
@@ -561,6 +568,84 @@ describe('page-health observation envelope (sdk-native)', () => {
     expect(obs.provenance.confidence).toBeNull();
     expect(obs.provenance.cache).toBeNull();
     expect(obs.provenance.source).toBeNull();
+  });
+
+  it('every element visible:false (route off-screen) → unknown{input_missing}, no CRITICAL', () => {
+    const obs = diagnosePageHealth({
+      elements: [
+        laidOut('text', 0, 0, 400, 400, { visible: false }),
+        laidOut('button', 0, 400, 400, 400, { visible: false }),
+      ],
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    if (obs.status === 'unknown') expect(obs.unknown.code).toBe('input_missing');
+    expect(obs.provenance.coverage).toEqual({ considered: 0, measured: 0, unmeasured: [] });
+    expect(JSON.stringify(obs)).not.toContain('CRITICAL');
+  });
+
+  it('elements that never stated visibility → unknown naming the visibility dimension', () => {
+    const unstated = {
+      type: 'text',
+      state: { mounted: true, layout: null },
+    } as unknown as PageHealthElement;
+    const obs = diagnosePageHealth({
+      elements: [unstated, laidOut('text', 0, 0, 400, 400, { visible: false })],
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('unknown');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 1,
+      measured: 0,
+      unmeasured: [{ dimension: 'visibility', count: 1, code: 'input_missing' }],
+    });
+  });
+
+  it('an element with no `state` at all is counted, not a producer_failed throw', () => {
+    const noState = { type: 'text' } as unknown as PageHealthElement;
+    const obs = diagnosePageHealth({
+      elements: [laidOut('text', 0, 0, 400, 400), noState],
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 2,
+      measured: 1,
+      unmeasured: [{ dimension: 'visibility', count: 1, code: 'input_missing' }],
+    });
+  });
+
+  it('a mixed screen is still measured, its gaps counted per dimension', () => {
+    const unstated = {
+      type: 'text',
+      state: { mounted: true, layout: null },
+    } as unknown as PageHealthElement;
+    const obs = diagnosePageHealth({
+      elements: [
+        laidOut('text', 0, 0, 400, 400),
+        el('text'),
+        unstated,
+        laidOut('text', 0, 400, 400, 400, { visible: false }),
+      ],
+      registeredComponents: 1,
+      viewport: VIEWPORT,
+      observedAt: T,
+    });
+    expect(obs.status).toBe('measured');
+    expect(obs.provenance.coverage).toEqual({
+      considered: 3,
+      measured: 1,
+      unmeasured: [
+        { dimension: 'geometry', count: 1, code: 'input_missing' },
+        { dimension: 'visibility', count: 1, code: 'input_missing' },
+      ],
+    });
   });
 
   it('every visible element unmeasured → unknown{input_missing}', () => {
