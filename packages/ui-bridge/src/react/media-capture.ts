@@ -131,7 +131,10 @@ function readDimensionAttr(el: Element, name: 'width' | 'height'): number | unde
 }
 
 /** The first non-empty value of `attr` across `nodes` (an `<img>` and its `<picture>`, …). */
-function readMarker(attr: string, nodes: ReadonlyArray<Element | null | undefined>): string | undefined {
+function readMarker(
+  attr: string,
+  nodes: ReadonlyArray<Element | null | undefined>
+): string | undefined {
   for (const node of nodes) {
     const v = node?.getAttribute(attr);
     if (v) return v;
@@ -322,7 +325,10 @@ function resourceEntry(url: string): ResourceLookup {
 }
 
 /** `format`, `encodedBodySize` — keyed on the URL the element DISPLAYS. */
-function measureFormatAndWeight(b: FactsBuilder, url: string | undefined): ResourceLookup | undefined {
+function measureFormatAndWeight(
+  b: FactsBuilder,
+  url: string | undefined
+): ResourceLookup | undefined {
   if (!url) return undefined;
   if (url.startsWith('data:')) {
     b.facts.format = formatFromUrl(url);
@@ -449,7 +455,12 @@ function startObserver(
  */
 function perf(): PerfTracker {
   if (!perfTracker) {
-    const t: PerfTracker = { lcp: 'unsupported', cls: 'unsupported', lcpElement: undefined, shifts: [] };
+    const t: PerfTracker = {
+      lcp: 'unsupported',
+      cls: 'unsupported',
+      lcpElement: undefined,
+      shifts: [],
+    };
     perfTracker = t;
     t.lcp = startObserver('largest-contentful-paint', (entries) => ingestLcp(t, entries));
     t.cls = startObserver('layout-shift', (entries) => ingestShifts(t, entries));
@@ -515,7 +526,11 @@ interface StylePropertyMapLike {
 }
 
 /** `dimsReserved` for an element whose box can wait on a network load. */
-function measureDimsReserved(b: FactsBuilder, el: HTMLElement, cs: CSSStyleDeclaration | undefined): void {
+function measureDimsReserved(
+  b: FactsBuilder,
+  el: HTMLElement,
+  cs: CSSStyleDeclaration | undefined
+): void {
   if (b.facts.widthAttribute !== undefined && b.facts.heightAttribute !== undefined) {
     b.facts.dimsReserved = true;
     return;
@@ -717,8 +732,7 @@ function measureCanvas(b: FactsBuilder, canvas: HTMLCanvasElement, rect: DOMRect
 
 function measureSvg(b: FactsBuilder, svg: Element): void {
   b.facts.svgViewBox = svg.getAttribute('viewBox') || undefined;
-  b.facts.altText =
-    readAriaLabelAttr(svg) || svg.querySelector('title')?.textContent || undefined;
+  b.facts.altText = readAriaLabelAttr(svg) || svg.querySelector('title')?.textContent || undefined;
   b.facts.isDecorative =
     svg.getAttribute('aria-hidden') === 'true' || svg.getAttribute('role') === 'presentation';
   // Inline SVG is painted with the document: nothing is pending.

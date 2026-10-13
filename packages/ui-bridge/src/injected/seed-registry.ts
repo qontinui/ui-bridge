@@ -114,7 +114,9 @@ export function seedRegistryFromDom(
   // collision rule and the observation are identical across both runtimes.
   // Background images stay off, as `useAutoRegister`'s default.
   const mediaRoot = root ?? document.body;
-  const media = mediaRoot ? Array.from(mediaRoot.querySelectorAll<HTMLElement>(MEDIA_SELECTORS.join(', '))) : [];
+  const media = mediaRoot
+    ? Array.from(mediaRoot.querySelectorAll<HTMLElement>(MEDIA_SELECTORS.join(', ')))
+    : [];
   const isRegistered = (el: HTMLElement) =>
     tracked ? tracked.has(el) : registry.findByDOMElement(el) !== undefined;
   let mediaCount = registry.getAllMediaElements().length;

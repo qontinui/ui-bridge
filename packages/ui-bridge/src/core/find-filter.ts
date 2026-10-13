@@ -490,7 +490,10 @@ function refuseContradictions(r: ResolvedCriteria, ctx: CanonicalFindContext): v
       `find options ${options.map((o) => `\`${o}\``).join(' + ')} contradict each other: ${why}`
     );
   if (!r.includeMedia && media.length > 0) {
-    contradiction(['includeMedia', ...media], 'they select media rows that includeMedia:false excludes');
+    contradiction(
+      ['includeMedia', ...media],
+      'they select media rows that includeMedia:false excludes'
+    );
   }
   if (!r.includeContent && content.length > 0) {
     contradiction(
@@ -544,7 +547,8 @@ function mediaFactsVerdict(
   if (!facts) {
     // The capture itself failed (or answered `absent`): no predicate can be
     // decided, for the reason the observation gives.
-    const code: UnknownCode = scrubbed?.status === 'unknown' ? scrubbed.unknown.code : 'input_missing';
+    const code: UnknownCode =
+      scrubbed?.status === 'unknown' ? scrubbed.unknown.code : 'input_missing';
     return { miss: false, unknown: options.map((option) => ({ option, code })) };
   }
 
@@ -675,7 +679,9 @@ export function applyCanonicalFindFilter<T extends FindFilterableElement>(
           facts,
           `the ${ctx.transport ?? 'direct'} transport cannot evaluate ${facts
             .map((o) => `\`${o}\``)
-            .join(' / ')}: media row \`${el.id ?? '?'}\` carries no media observation (an SDK build that predates it)`,
+            .join(
+              ' / '
+            )}: media row \`${el.id ?? '?'}\` carries no media observation (an SDK build that predates it)`,
           'capability_unavailable_in_build'
         );
       }

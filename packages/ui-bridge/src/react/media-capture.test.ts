@@ -41,7 +41,12 @@ describe('effective resolution is DPR-aware (the DPR fixture)', () => {
     restores.push(setDevicePixelRatio(2));
     // 200x200 source pixels in a 100x100 CSS box: at DPR 2 the box IS
     // 200x200 device pixels, so the image carries exactly what is shown.
-    const img = makeImage({ alt: 'retina', src: '/hero.png', natural: [200, 200], rendered: [100, 100] });
+    const img = makeImage({
+      alt: 'retina',
+      src: '/hero.png',
+      natural: [200, 200],
+      rendered: [100, 100],
+    });
 
     const facts = measured(captureMediaMetadata(img));
 
@@ -51,14 +56,24 @@ describe('effective resolution is DPR-aware (the DPR fixture)', () => {
 
   it('the same image at DPR 1 reads 2.0 — oversized for that screen', () => {
     restores.push(setDevicePixelRatio(1));
-    const img = makeImage({ alt: 'retina', src: '/hero.png', natural: [200, 200], rendered: [100, 100] });
+    const img = makeImage({
+      alt: 'retina',
+      src: '/hero.png',
+      natural: [200, 200],
+      rendered: [100, 100],
+    });
 
     expect(measured(captureMediaMetadata(img)).effectiveResolution).toBe(2);
   });
 
   it('a 1x image at DPR 2 reads 0.5 — upscaled, soft', () => {
     restores.push(setDevicePixelRatio(2));
-    const img = makeImage({ alt: 'soft', src: '/soft.png', natural: [100, 100], rendered: [100, 100] });
+    const img = makeImage({
+      alt: 'soft',
+      src: '/soft.png',
+      natural: [100, 100],
+      rendered: [100, 100],
+    });
 
     expect(measured(captureMediaMetadata(img)).effectiveResolution).toBe(0.5);
   });
@@ -137,13 +152,17 @@ describe('the envelope', () => {
 
 describe('alt, decoration and the slot marker', () => {
   it('a MISSING alt is not decorative (img.alt reads "" for both)', () => {
-    const facts = measured(captureMediaMetadata(makeImage({ alt: null, src: '/a.png', natural: [1, 1] })));
+    const facts = measured(
+      captureMediaMetadata(makeImage({ alt: null, src: '/a.png', natural: [1, 1] }))
+    );
     expect(facts.altText).toBeUndefined();
     expect(facts.isDecorative).toBe(false);
   });
 
   it('an EMPTY alt is decorative', () => {
-    const facts = measured(captureMediaMetadata(makeImage({ alt: '', src: '/a.png', natural: [1, 1] })));
+    const facts = measured(
+      captureMediaMetadata(makeImage({ alt: '', src: '/a.png', natural: [1, 1] }))
+    );
     expect(facts.isDecorative).toBe(true);
   });
 
@@ -243,7 +262,12 @@ describe('weight: encodedBodySize keyed on currentSrc', () => {
     stubResourceEntries({
       'https://cdn.example/a.png': { encodedBodySize: 0, transferSize: 0 },
     });
-    const img = makeImage({ alt: 'a', currentSrc: 'https://cdn.example/a.png', src: 'https://cdn.example/a.png', natural: [1, 1] });
+    const img = makeImage({
+      alt: 'a',
+      currentSrc: 'https://cdn.example/a.png',
+      src: 'https://cdn.example/a.png',
+      natural: [1, 1],
+    });
     const obs = captureMediaMetadata(img);
 
     expect(mediaFactsOf(obs)!.encodedBodySize).toBeUndefined();
@@ -274,14 +298,22 @@ describe('weight: encodedBodySize keyed on currentSrc', () => {
         contentType: 'image/webp',
       } as Partial<PerformanceResourceTiming>,
     });
-    const img = makeImage({ alt: 'h', src: '/_next/image?url=%2Fhero.png&w=640&q=75', natural: [1, 1] });
+    const img = makeImage({
+      alt: 'h',
+      src: '/_next/image?url=%2Fhero.png&w=640&q=75',
+      natural: [1, 1],
+    });
 
     expect(measured(captureMediaMetadata(img)).format).toBe('webp');
   });
 
   it('an optimizer URL with no content type has its format UNMEASURED — it transcodes', () => {
     stubResourceEntries({});
-    const img = makeImage({ alt: 'h', src: '/_next/image?url=%2Fhero.png&w=640&q=75', natural: [1, 1] });
+    const img = makeImage({
+      alt: 'h',
+      src: '/_next/image?url=%2Fhero.png&w=640&q=75',
+      natural: [1, 1],
+    });
     const obs = captureMediaMetadata(img);
     expect(mediaFactsOf(obs)!.format).toBeUndefined();
     expect(unmeasuredMediaDimension(obs, 'format')).toBe('input_missing');
@@ -322,7 +354,9 @@ describe('LCP and layout shift', () => {
     const hero = makeImage({ alt: 'hero', src: '/hero.png', natural: [10, 10] });
     const other = makeImage({ alt: 'other', src: '/other.png', natural: [10, 10] });
     installObserver({
-      'largest-contentful-paint': [{ element: hero, startTime: 900 } as unknown as PerformanceEntry],
+      'largest-contentful-paint': [
+        { element: hero, startTime: 900 } as unknown as PerformanceEntry,
+      ],
       'layout-shift': [
         {
           value: 0.12,
@@ -379,7 +413,12 @@ describe('a broken image', () => {
     expect(facts.format).toBeUndefined();
     expect(facts.effectiveResolution).toBeUndefined();
     // Not applicable is not "could not look": nothing is listed as unmeasured.
-    for (const dim of ['encodedBodySize', 'format', 'effectiveResolution', 'naturalWidth'] as const) {
+    for (const dim of [
+      'encodedBodySize',
+      'format',
+      'effectiveResolution',
+      'naturalWidth',
+    ] as const) {
       expect(unmeasuredMediaDimension(obs, dim)).toBeUndefined();
     }
   });

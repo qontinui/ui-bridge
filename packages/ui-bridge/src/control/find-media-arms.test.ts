@@ -28,11 +28,26 @@ import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { isFindRefusalError } from '../core/find-filter';
 import { isMediaObservation } from '../core/media-observation';
 import type { FindRequest, FindResponse } from './types';
-import { makeImage, registerMedia, setDevicePixelRatio, stubBox } from '../react/__tests__/media-fixture';
+import {
+  makeImage,
+  registerMedia,
+  setDevicePixelRatio,
+  stubBox,
+} from '../react/__tests__/media-fixture';
 
-const bridge: BridgeAccess = { elements: [], getElement: () => undefined, components: [], workflows: [] };
+const bridge: BridgeAccess = {
+  elements: [],
+  getElement: () => undefined,
+  components: [],
+  workflows: [],
+};
 
-type Row = { id: string; category?: string; mediaMetadata?: unknown; state?: { mediaMetadata?: unknown } };
+type Row = {
+  id: string;
+  category?: string;
+  mediaMetadata?: unknown;
+  state?: { mediaMetadata?: unknown };
+};
 type ArmAnswer =
   | { ok: true; rows: Row[]; unevaluated?: FindResponse['unevaluated'] }
   | { ok: false; code: string };
@@ -108,12 +123,47 @@ function mediaRowIds(answer: ArmAnswer): string[] {
 /** The fixture page: eight media rows, one interactive row, one content row. */
 function buildPage(registry: UIBridgeRegistry): void {
   // DPR 1: `hero` carries 4x the pixels its box shows; `logo` exactly 1x.
-  registerMedia(registry, 'hero', makeImage({ alt: 'Hero', src: '/img/hero.png', natural: [400, 400], rendered: [100, 100] }), 'Hero');
-  registerMedia(registry, 'logo', makeImage({ alt: 'Logo', src: 'https://cdn.example.com/logo.png', natural: [100, 100], rendered: [100, 100] }), 'Logo');
-  registerMedia(registry, 'broken', makeImage({ alt: 'Broken', src: '/img/missing.png', natural: [0, 0] }), 'Broken');
-  registerMedia(registry, 'noalt', makeImage({ alt: null, src: '/img/noalt.png', natural: [50, 50], rendered: [50, 50] }), 'noalt.png');
-  registerMedia(registry, 'decorative', makeImage({ alt: '', src: '/img/spacer.gif', natural: [1, 1], rendered: [1, 1] }), 'spacer.gif');
-  registerMedia(registry, 'pending', makeImage({ alt: 'Pending', src: '/img/pending.png', complete: false }), 'Pending');
+  registerMedia(
+    registry,
+    'hero',
+    makeImage({ alt: 'Hero', src: '/img/hero.png', natural: [400, 400], rendered: [100, 100] }),
+    'Hero'
+  );
+  registerMedia(
+    registry,
+    'logo',
+    makeImage({
+      alt: 'Logo',
+      src: 'https://cdn.example.com/logo.png',
+      natural: [100, 100],
+      rendered: [100, 100],
+    }),
+    'Logo'
+  );
+  registerMedia(
+    registry,
+    'broken',
+    makeImage({ alt: 'Broken', src: '/img/missing.png', natural: [0, 0] }),
+    'Broken'
+  );
+  registerMedia(
+    registry,
+    'noalt',
+    makeImage({ alt: null, src: '/img/noalt.png', natural: [50, 50], rendered: [50, 50] }),
+    'noalt.png'
+  );
+  registerMedia(
+    registry,
+    'decorative',
+    makeImage({ alt: '', src: '/img/spacer.gif', natural: [1, 1], rendered: [1, 1] }),
+    'spacer.gif'
+  );
+  registerMedia(
+    registry,
+    'pending',
+    makeImage({ alt: 'Pending', src: '/img/pending.png', complete: false }),
+    'Pending'
+  );
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('aria-label', 'Chart');
@@ -261,12 +311,17 @@ describe('arm-specific behaviour', () => {
     hidden.textContent = 'Hidden';
     hidden.style.display = 'none';
     document.body.appendChild(hidden);
-    getGlobalRegistry().registerElement('hidden-btn', hidden, { type: 'button', actions: ['click'] });
+    getGlobalRegistry().registerElement('hidden-btn', hidden, {
+      type: 'button',
+      actions: ['click'],
+    });
 
     const res = await new DefaultActionExecutor(getGlobalRegistry()).find({});
     expect(res.elements.map((e) => e.id)).toContain('hidden-btn');
 
-    const visibleOnly = await new DefaultActionExecutor(getGlobalRegistry()).find({ includeHidden: false });
+    const visibleOnly = await new DefaultActionExecutor(getGlobalRegistry()).find({
+      includeHidden: false,
+    });
     expect(visibleOnly.elements.map((e) => e.id)).not.toContain('hidden-btn');
   });
 
@@ -325,6 +380,10 @@ describe('arm-specific behaviour', () => {
     const res = await createRelayHandlers(relay).find({ mediaOnly: true, interactiveOnly: true });
     expect(res.success).toBe(false);
     expect(res.code).toBe('UB-VALIDATION-ERROR');
-    expect(queue).not.toHaveBeenCalledWith('getControlSnapshot', expect.anything(), expect.anything());
+    expect(queue).not.toHaveBeenCalledWith(
+      'getControlSnapshot',
+      expect.anything(),
+      expect.anything()
+    );
   });
 });

@@ -2273,8 +2273,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       criteria.oversizeThreshold != null;
     const mediaOnly = criteria.mediaOnly === true || mediaFacts;
     const contentOnly = criteria.contentOnly === true || criteria.contentRole != null;
-    const interactiveOnly =
-      (criteria.interactive_only ?? criteria.interactiveOnly) === true;
+    const interactiveOnly = (criteria.interactive_only ?? criteria.interactiveOnly) === true;
     const scanDom = !mediaOnly && !contentOnly;
     const keepContent = !interactiveOnly && !mediaOnly && criteria.includeContent !== false;
     const keepMedia = !interactiveOnly && !contentOnly && criteria.includeMedia !== false;
@@ -2341,7 +2340,9 @@ export class DefaultActionExecutor implements ActionExecutor {
   private scanFindCandidates(root?: string | null, selector?: string | null): HTMLElement[] {
     try {
       const scanRoot = (root ? document.querySelector(root) : null) ?? document.body;
-      return Array.from(scanRoot.querySelectorAll<HTMLElement>(selector || EXECUTOR_SCAN_SELECTORS));
+      return Array.from(
+        scanRoot.querySelectorAll<HTMLElement>(selector || EXECUTOR_SCAN_SELECTORS)
+      );
     } catch {
       return [];
     }

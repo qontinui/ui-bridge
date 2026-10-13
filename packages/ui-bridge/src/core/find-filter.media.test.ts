@@ -31,7 +31,12 @@ function observed(facts: MediaFacts, unmeasured: Array<[MediaFactsDimension, Unk
   );
 }
 
-function mediaRow(id: string, facts: Partial<MediaFacts>, extra: Partial<FindFilterableElement> = {}, unmeasured: Array<[MediaFactsDimension, UnknownCode]> = []): FindFilterableElement {
+function mediaRow(
+  id: string,
+  facts: Partial<MediaFacts>,
+  extra: Partial<FindFilterableElement> = {},
+  unmeasured: Array<[MediaFactsDimension, UnknownCode]> = []
+): FindFilterableElement {
   return {
     id,
     type: 'image',
@@ -52,10 +57,26 @@ function mediaRow(id: string, facts: Partial<MediaFacts>, extra: Partial<FindFil
   };
 }
 
-const button: FindFilterableElement = { id: 'save', type: 'button', actions: ['click'], category: 'interactive', state: { visible: true } };
-const heading: FindFilterableElement = { id: 'title', type: 'heading', category: 'content', kind: 'content', contentMetadata: { contentRole: 'heading' } };
+const button: FindFilterableElement = {
+  id: 'save',
+  type: 'button',
+  actions: ['click'],
+  category: 'interactive',
+  state: { visible: true },
+};
+const heading: FindFilterableElement = {
+  id: 'title',
+  type: 'heading',
+  category: 'content',
+  kind: 'content',
+  contentMetadata: { contentRole: 'heading' },
+};
 
-function filterIds(rows: FindFilterableElement[], criteria: CanonicalFindCriteria, ctx?: CanonicalFindContext): string[] {
+function filterIds(
+  rows: FindFilterableElement[],
+  criteria: CanonicalFindCriteria,
+  ctx?: CanonicalFindContext
+): string[] {
   return applyCanonicalFindFilter(rows, criteria, ctx).map((r) => r.id!);
 }
 
@@ -117,7 +138,9 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
   });
 
   it('brokenOnly reports an unmeasured loading state and misses a not-applicable one', () => {
-    const bg = mediaRow('bg', { mediaType: 'background-image', loadingState: undefined }, {}, [['loadingState', 'input_missing']]);
+    const bg = mediaRow('bg', { mediaType: 'background-image', loadingState: undefined }, {}, [
+      ['loadingState', 'input_missing'],
+    ]);
     const role = mediaRow('role-img', { loadingState: undefined });
     const broken = mediaRow('broken', { loadingState: 'error' });
     const ctx: CanonicalFindContext = {};
@@ -125,7 +148,7 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
     expect(ctx.unevaluated).toEqual([{ id: 'bg', option: 'brokenOnly', code: 'input_missing' }]);
   });
 
-  it('a row whose capture failed is reported under every fact predicate, with the capture\'s code', () => {
+  it("a row whose capture failed is reported under every fact predicate, with the capture's code", () => {
     const failed: FindFilterableElement = {
       id: 'failed',
       category: 'media',
@@ -145,14 +168,18 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
 
   it('a definite miss on one predicate decides the row — nothing is reported for it', () => {
     const ctx: CanonicalFindContext = {};
-    const unsure = mediaRow('unsure', { mediaType: 'video' }, {}, [['effectiveResolution', 'input_missing']]);
+    const unsure = mediaRow('unsure', { mediaType: 'video' }, {}, [
+      ['effectiveResolution', 'input_missing'],
+    ]);
     expect(filterIds([unsure], { mediaType: 'image', oversizeThreshold: 2 }, ctx)).toEqual([]);
     expect(ctx.unevaluated).toEqual([]);
   });
 
   it('a row another (decidable) predicate drops is not reported either', () => {
     const ctx: CanonicalFindContext = {};
-    const unsure = mediaRow('unsure', {}, { label: 'Banner' }, [['effectiveResolution', 'input_missing']]);
+    const unsure = mediaRow('unsure', {}, { label: 'Banner' }, [
+      ['effectiveResolution', 'input_missing'],
+    ]);
     expect(filterIds([unsure], { oversizeThreshold: 2, label: 'logo' }, ctx)).toEqual([]);
     expect(ctx.unevaluated).toEqual([]);
   });
@@ -163,7 +190,9 @@ describe('a media-fact filter never passes a row it cannot evaluate — and says
   });
 
   it('every fact predicate selects media rows only', () => {
-    expect(filterIds([button, heading, mediaRow('hero', { mediaType: 'image' })], { mediaType: 'image' })).toEqual(['hero']);
+    expect(
+      filterIds([button, heading, mediaRow('hero', { mediaType: 'image' })], { mediaType: 'image' })
+    ).toEqual(['hero']);
   });
 });
 
@@ -199,7 +228,11 @@ describe('content options and limit', () => {
 describe('typed refusals', () => {
   it('carry the transport and the options they are about', () => {
     const r = refusal(() =>
-      applyCanonicalFindFilter([button], { mediaOnly: true, interactiveOnly: true }, { transport: 'server' })
+      applyCanonicalFindFilter(
+        [button],
+        { mediaOnly: true, interactiveOnly: true },
+        { transport: 'server' }
+      )
     );
     expect(r).toMatchObject({ code: 'UB-VALIDATION-ERROR', transport: 'server' });
     expect(r.options).toEqual(['interactiveOnly', 'mediaOnly']);
@@ -211,7 +244,9 @@ describe('typed refusals', () => {
     ['content and media at once', { contentOnly: true, mediaOnly: true }],
     ['interactiveOnly with contentRole', { interactiveOnly: true, contentRole: 'heading' }],
   ])('%s is a contradiction', (_name, criteria) => {
-    expect(refusal(() => applyCanonicalFindFilter([button], criteria)).code).toBe('UB-VALIDATION-ERROR');
+    expect(refusal(() => applyCanonicalFindFilter([button], criteria)).code).toBe(
+      'UB-VALIDATION-ERROR'
+    );
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -221,14 +256,18 @@ describe('typed refusals', () => {
     ['a non-string srcPattern', { srcPattern: 7 }],
     ['a non-boolean mediaOnly', { mediaOnly: 'yes' }],
   ])('%s is invalid', (_name, criteria) => {
-    expect(refusal(() => applyCanonicalFindFilter([button], criteria as CanonicalFindCriteria)).code).toBe(
-      'UB-VALIDATION-ERROR'
-    );
+    expect(
+      refusal(() => applyCanonicalFindFilter([button], criteria as CanonicalFindCriteria)).code
+    ).toBe('UB-VALIDATION-ERROR');
   });
 
   it('root / selector over rows with no DOM are capability_unavailable_in_build', () => {
     const r = refusal(() =>
-      applyCanonicalFindFilter([button], { selector: 'button' }, { transport: 'relay-cache', liveDom: false })
+      applyCanonicalFindFilter(
+        [button],
+        { selector: 'button' },
+        { transport: 'relay-cache', liveDom: false }
+      )
     );
     expect(r).toMatchObject({
       code: 'UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD',
@@ -239,7 +278,9 @@ describe('typed refusals', () => {
   });
 
   it('a media question over an empty registry is producer_not_run', () => {
-    const r = refusal(() => applyCanonicalFindFilter([], { mediaType: 'image' }, { registrySize: 0 }));
+    const r = refusal(() =>
+      applyCanonicalFindFilter([], { mediaType: 'image' }, { registrySize: 0 })
+    );
     expect(r).toMatchObject({ code: 'UB-OBS-PRODUCER-NOT-RUN', unknownCode: 'producer_not_run' });
   });
 
@@ -260,7 +301,12 @@ describe('typed refusals', () => {
   });
 
   it('FindRefusalError is an Error with the code on it', () => {
-    const err = new FindRefusalError({ code: 'UB-VALIDATION-ERROR', options: [], transport: 'direct', detail: 'x' });
+    const err = new FindRefusalError({
+      code: 'UB-VALIDATION-ERROR',
+      options: [],
+      transport: 'direct',
+      detail: 'x',
+    });
     expect(err).toBeInstanceOf(Error);
     expect(err.code).toBe('UB-VALIDATION-ERROR');
     expect(isFindRefusalError(err)).toBe(true);

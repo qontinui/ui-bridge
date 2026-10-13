@@ -30,7 +30,12 @@ import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 import { makeImage, registerMedia, stubBox } from '../react/__tests__/media-fixture';
 
 const SECRET = 'SECRET123';
-const bridge: BridgeAccess = { elements: [], getElement: () => undefined, components: [], workflows: [] };
+const bridge: BridgeAccess = {
+  elements: [],
+  getElement: () => undefined,
+  components: [],
+  workflows: [],
+};
 
 /** Every emission path, as the JSON a client would receive. */
 const PATHS: Record<string, () => Promise<string>> = {
@@ -57,10 +62,14 @@ const PATHS: Record<string, () => Promise<string>> = {
     return JSON.stringify(all);
   },
   async 'executor find'() {
-    return JSON.stringify(await new DefaultActionExecutor(getGlobalRegistry()).find({ mediaOnly: true }));
+    return JSON.stringify(
+      await new DefaultActionExecutor(getGlobalRegistry()).find({ mediaOnly: true })
+    );
   },
   async 'relay find (elementToFindResult)'() {
-    return JSON.stringify(await executeCommand('find', { mediaOnly: true, skipSettle: true }, bridge));
+    return JSON.stringify(
+      await executeCommand('find', { mediaOnly: true, skipSettle: true }, bridge)
+    );
   },
   async 'relay snapshot (getControlSnapshot)'() {
     return JSON.stringify(await executeCommand('getControlSnapshot', { skipSettle: true }, bridge));
@@ -127,14 +136,17 @@ describe('§4.6 — a redacted media element ships no secret on any path', () =>
     }
   });
 
-  it.each(Object.keys(PATHS))('%s: no secret src / srcset / alt / poster / slot, any case', async (name) => {
-    const json = await PATHS[name]();
-    expect(json.toLowerCase()).not.toContain(SECRET.toLowerCase());
-    // The rows are still there, with their structure: the scrub is
-    // field-level, so audits keep working inside the boundary.
-    expect(json).toContain('[REDACTED]');
-    expect(json).toContain('"naturalWidth":64');
-  });
+  it.each(Object.keys(PATHS))(
+    '%s: no secret src / srcset / alt / poster / slot, any case',
+    async (name) => {
+      const json = await PATHS[name]();
+      expect(json.toLowerCase()).not.toContain(SECRET.toLowerCase());
+      // The rows are still there, with their structure: the scrub is
+      // field-level, so audits keep working inside the boundary.
+      expect(json).toContain('[REDACTED]');
+      expect(json).toContain('"naturalWidth":64');
+    }
+  );
 });
 
 describe('[negative control] outside a boundary, media URLs pass through', () => {

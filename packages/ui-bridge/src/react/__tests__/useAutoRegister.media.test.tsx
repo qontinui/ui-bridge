@@ -87,10 +87,22 @@ describe('every image registers', () => {
   });
 
   it('alt-less next/image sources no longer collapse to one img-image', async () => {
-    makeImage({ alt: null, src: '/_next/image?url=%2Fimages%2Fhero.png&w=1920&q=75', natural: [10, 10] });
-    makeImage({ alt: null, src: '/_next/image?url=%2Fimages%2Fteam.jpg&w=640&q=75', natural: [10, 10] });
+    makeImage({
+      alt: null,
+      src: '/_next/image?url=%2Fimages%2Fhero.png&w=1920&q=75',
+      natural: [10, 10],
+    });
+    makeImage({
+      alt: null,
+      src: '/_next/image?url=%2Fimages%2Fteam.jpg&w=640&q=75',
+      natural: [10, 10],
+    });
     // The same source twice is still two images.
-    makeImage({ alt: null, src: '/_next/image?url=%2Fimages%2Fteam.jpg&w=640&q=75', natural: [10, 10] });
+    makeImage({
+      alt: null,
+      src: '/_next/image?url=%2Fimages%2Fteam.jpg&w=640&q=75',
+      natural: [10, 10],
+    });
 
     render(<Harness />);
     await expectMediaIds(registry, ['img-hero', 'img-team', 'img-team-2']);
@@ -140,7 +152,12 @@ describe('every image registers', () => {
     const boundary = document.createElement('section');
     boundary.setAttribute('data-bridge-redact', 'true');
     document.body.appendChild(boundary);
-    makeImage({ alt: 'QR for SECRET123', src: '/totp-SECRET123.png', natural: [10, 10], parent: boundary });
+    makeImage({
+      alt: 'QR for SECRET123',
+      src: '/totp-SECRET123.png',
+      natural: [10, 10],
+      parent: boundary,
+    });
 
     render(<Harness />);
     await waitFor(() => expect(mediaIds(registry)).toHaveLength(1), { timeout: 3000 });
