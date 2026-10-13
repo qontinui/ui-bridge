@@ -1,6 +1,9 @@
 /**
- * Over HTTP, a caller's command reaches only that caller's own tab, and
- * nothing in a request can supply the caller identity.
+ * Over HTTP, the requests these tests send reach only the caller's own tab,
+ * and the request-supplied identities they try (in the query, in the body,
+ * under either name the relay reads) are not honoured. What they cover is
+ * listed below; `relay-scoping.ratchet.test.ts` sweeps every route, and the
+ * review-probe files cover the remaining spellings and the shared state.
  *
  * The adapters call a handler positionally: URL params, then the payload (the
  * body, or the GET query) when the route takes one, then the context carrying
@@ -42,6 +45,8 @@ interface Seen {
 function twoUserRelay(seen: Seen[]): CommandRelay {
   const relay = new CommandRelay({
     globalPrefix: `__uiBridgeTest_${Math.random().toString(36).slice(2, 10)}`,
+    // No warm-up snapshot: every command a test sees is one a request caused.
+    proactiveSnapshot: false,
   });
   for (const [tab, userId] of [
     ['tab-b', 'user-b'],

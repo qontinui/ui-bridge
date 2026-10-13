@@ -29,11 +29,37 @@ describe('withoutReservedCaller', () => {
     expect(withoutReservedCaller(body)).toBe(body);
   });
 
-  it('passes a non-object through unchanged', () => {
+  it('passes a primitive, or a value without the key, through unchanged', () => {
     expect(withoutReservedCaller(null)).toBeNull();
     expect(withoutReservedCaller('text')).toBe('text');
-    const list = [{ __callerUserId: 'user-a' }];
-    expect(withoutReservedCaller(list)).toBe(list);
+    const clean = { request: { action: 'click' }, list: [{ id: 1 }] };
+    expect(withoutReservedCaller(clean)).toBe(clean);
+  });
+
+  it('drops the key at every depth, inside arrays too', () => {
+    expect(
+      withoutReservedCaller({
+        request: { action: 'click', __callerUserId: 'user-a' },
+        params: { inner: { __callerUserId: 'user-a', keep: 1 } },
+        list: [{ __callerUserId: 'user-a', id: 1 }, 'text'],
+      })
+    ).toEqual({
+      request: { action: 'click' },
+      params: { inner: { keep: 1 } },
+      list: [{ id: 1 }, 'text'],
+    });
+    expect(withoutReservedCaller([{ __callerUserId: 'user-a' }])).toEqual([{}]);
+  });
+
+  it('keeps an own __proto__ key an own property, never a prototype', () => {
+    const body = JSON.parse('{"__proto__":{"__callerUserId":"user-a"},"text":"x"}') as Record<
+      string,
+      unknown
+    >;
+    const out = withoutReservedCaller(body) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(out.__callerUserId).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(out, '__proto__')).toBe(true);
   });
 });
 
