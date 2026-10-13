@@ -11,6 +11,7 @@
 
 import type { CommandRelay } from './command-relay';
 import { mapInternalErrorCode } from '../diagnostics';
+import { componentActionInvocation } from './component-action-invocation';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
 import type {
@@ -25,7 +26,6 @@ import type { RenderLogEntry } from '../render-log';
 import type {
   ControlSnapshot,
   FallbackScreenshot,
-  ComponentActionRequest,
   FindResponse,
   EffectRecordEntry,
 } from '../control';
@@ -1052,53 +1052,20 @@ export function createRelayHandlers(
       return relayCommand('getComponentState', { id }, ctxOpts(context));
     },
 
-    async executeComponentAction(
-      id,
-      request,
-      bodyOrContext?: (Record<string, unknown> & HandlerContext) | HandlerContext
-    ) {
-      // The Express adapter passes (id, actionId, body) based on route params ['id', 'actionId'].
-      // When called from Express: id=componentId, request=actionId (string), bodyOrContext=req.body.
-      // When called from Next.js/WebSocket: id=componentId, request={action, params}, bodyOrContext=HandlerContext.
-      // Per-user tab scoping (§4.2): the trailing arg from the Next.js
-      // catch-all dispatcher is a `HandlerContext` `{ callerUserId }`;
-      // disambiguate by inspecting the body-shape fields.
-      let normalizedRequest: ComponentActionRequest;
-      let context: HandlerContext | undefined;
-      if (typeof request === 'string') {
-        // Express path: request is actually the actionId string, body is the 3rd argument.
-        // Accept BOTH the wrapped shape `{"params":{...}}` and the bare shape the
-        // action's `paramSchema` advertises (`{"layoutId":"single"}`): flat top-level
-        // body keys are merged into params, with an explicit `params` winning on
-        // collision — parity with the runner's UIBridgeComponentActionRequest merge
-        // and the element-action route's flat-format handling.
-        const body = bodyOrContext as Record<string, unknown> | undefined;
-        const explicitParams = body?.params as Record<string, unknown> | undefined;
-        // `timeoutMs` and `requestId` are REQUEST fields, not params. They are
-        // excluded from the flat merge and hoisted onto the request instead —
-        // otherwise `{"timeoutMs":5000}` would arrive at the handler as a
-        // parameter named `timeoutMs` (and fail an `additionalProperties:
-        // false` schema), while the action stayed uncancellable.
-        const REQUEST_LEVEL_KEYS = new Set(['params', 'timeoutMs', 'requestId']);
-        const flatKeys = body
-          ? Object.fromEntries(Object.entries(body).filter(([k]) => !REQUEST_LEVEL_KEYS.has(k)))
-          : {};
-        normalizedRequest = {
-          action: request,
-          params: { ...flatKeys, ...(explicitParams ?? {}) },
-          timeoutMs: body?.timeoutMs as number | undefined,
-          requestId: body?.requestId as string | undefined,
-        };
-        // Express never threads HandlerContext through this path.
-        context = undefined;
-      } else {
-        normalizedRequest = request;
-        // The trailing arg is the HandlerContext threaded by Next.js.
-        context = bodyOrContext as HandlerContext | undefined;
-      }
+    async executeComponentAction(id, request, context) {
+      return relayCommand('executeComponentAction', { id, request }, ctxOpts(context));
+    },
+
+    // `POST /control/component/:id/action/:actionId`: the route's own handler,
+    // whose parameters match its URL params, so the trailing context always
+    // arrives and the per-user ownership check (§4.2) applies. Routing fields
+    // the adapter spliced into the body ride on the request, where
+    // `extractTabRouting` lifts them, and never in `params`.
+    async invokeComponentAction(id, actionId, request, context) {
+      const { request: actionRequest, routing } = componentActionInvocation(actionId, request);
       return relayCommand(
         'executeComponentAction',
-        { id, request: normalizedRequest },
+        { id, request: { ...actionRequest, ...routing } },
         ctxOpts(context)
       );
     },
@@ -1386,7 +1353,8 @@ export function createRelayHandlers(
     // Debug
     // ========================================================================
 
-    async getActionHistory(limit, context) {
+    async getActionHistory(query, context) {
+      const limit = Number(query?.limit) || undefined;
       return relayWithFallback('getActionHistory', { limit }, [] as unknown[], context);
     },
 
@@ -1504,7 +1472,8 @@ export function createRelayHandlers(
       }
     },
 
-    async getSemanticDiff(since, context) {
+    async getSemanticDiff(query, context) {
+      const since = Number(query?.since) || undefined;
       return relayCommand('getSemanticDiff', { since }, ctxOpts(context));
     },
 
@@ -1669,6 +1638,23 @@ export function createRelayHandlers(
 
     async executeIntent(request, context) {
       return relayCommand('executeIntent', request, ctxOpts(context));
+    },
+
+    // `POST /control/intent/:name/execute`. Only the intent, its params and
+    // the routing fields the adapter spliced into the body (lifted by
+    // `extractTabRouting`) travel; nothing else in the body does.
+    async executeNamedIntent(name, request, context) {
+      const body = (request ?? {}) as Record<string, unknown>;
+      const routing = Object.fromEntries(
+        ['tabId', 'targetTabId', '__callerUserId']
+          .filter((k) => typeof body[k] === 'string')
+          .map((k) => [k, body[k]])
+      );
+      return relayCommand(
+        'executeIntent',
+        { ...routing, intentId: name, params: request?.params },
+        ctxOpts(context)
+      );
     },
 
     async findIntent(request, context) {

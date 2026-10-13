@@ -280,16 +280,15 @@ function createRouteHandler(
         args.push(body);
       }
 
-      // Add query params for GET requests. See nextjs.ts for why
-      // `__callerUserId` is NOT spliced into the searchParams.
-      if (route.method === 'GET') {
+      // Add the query object when the route's handler takes one, EMPTY
+      // included, and never otherwise. See nextjs.ts for why (and for why
+      // `__callerUserId` is NOT spliced into the query).
+      if (route.queryRequired) {
         const query = { ...req.query } as Record<string, unknown>;
         if (externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
           query.tabId = externalTabId;
         }
-        if (Object.keys(query).length > 0) {
-          args.push(query);
-        }
+        args.push(query);
       }
 
       // Per-user tab scoping (§4.2) — trailing context arg. The adapter

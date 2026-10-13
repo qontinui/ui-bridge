@@ -433,11 +433,10 @@ export class StandaloneServer {
         args.push(body);
       }
 
-      if (method === 'GET') {
-        const query = Object.fromEntries(url.searchParams);
-        if (Object.keys(query).length > 0) {
-          args.push(query);
-        }
+      // The query object goes to a handler that takes one, EMPTY included,
+      // and to no other (see nextjs.ts).
+      if (route.queryRequired) {
+        args.push(Object.fromEntries(url.searchParams));
       }
 
       // Per-user tab scoping (§4.2) — trailing context arg. Adapter

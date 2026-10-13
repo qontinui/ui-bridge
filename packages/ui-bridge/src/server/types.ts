@@ -566,6 +566,20 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<ComponentActionResponse>>;
   /**
+   * `POST /control/component/:id/action/:actionId` — the HTTP binding of
+   * `executeComponentAction`. Its parameter list matches the route
+   * (`params: ['id','actionId']`, then the body, then the context), so the
+   * adapters hand it exactly what its signature names. The body may be the
+   * wrapped `{ params: {...} }` shape or the flat shape the action's
+   * `paramSchema` advertises; `timeoutMs` and `requestId` are request fields.
+   */
+  invokeComponentAction: (
+    id: string,
+    actionId: string,
+    request?: Record<string, unknown>,
+    context?: HandlerContext
+  ) => Promise<APIResponse<ComponentActionResponse>>;
+  /**
    * `POST /control/component/:id/action/:actionId/predict` — ask the effect
    * twin what invoking the action WOULD do, without invoking it (Phase 6 of
    * plan `2026-09-04-effect-calculus-joins-the-component-action-registry`).
@@ -576,9 +590,7 @@ export interface UIBridgeServerHandlers {
    * before the body (`server/express.ts` `createRouteHandler`,
    * `server/nextjs.ts` `handleRequest`), so a route declaring
    * `params: ['id','actionId']` hands a four-arg handler exactly the arguments
-   * its signature names. `executeComponentAction` predates that alignment and
-   * pays for it in `relay-handlers.ts`, which has to sniff whether its second
-   * argument is an `actionId` string or a request object. This one does not.
+   * its signature names — the same alignment `invokeComponentAction` has.
    */
   predictComponentAction: (
     id: string,
@@ -701,7 +713,7 @@ export interface UIBridgeServerHandlers {
 
   // Debug endpoints
   getActionHistory: (
-    limit?: number,
+    query?: { limit?: string | number },
     context?: HandlerContext
   ) => Promise<APIResponse<unknown[]>>;
   // D3 Effect Calculus (Phase 2) — read-only recent predict-then-verify
@@ -785,7 +797,7 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<SemanticSnapshot>>;
   getSemanticDiff: (
-    since?: number,
+    query?: { since?: string | number },
     context?: HandlerContext
   ) => Promise<APIResponse<SemanticDiff | null>>;
   getPageSummary: (context?: HandlerContext) => Promise<APIResponse<string>>;
@@ -894,6 +906,12 @@ export interface UIBridgeServerHandlers {
       intentId: string;
       params?: Record<string, unknown>;
     },
+    context?: HandlerContext
+  ) => Promise<APIResponse<IntentExecutionResult>>;
+  /** `POST /control/intent/:name/execute` — `executeIntent` with the intent named in the URL. */
+  executeNamedIntent: (
+    name: string,
+    request?: { params?: Record<string, unknown> },
     context?: HandlerContext
   ) => Promise<APIResponse<IntentExecutionResult>>;
   findIntent: (
@@ -1716,14 +1734,36 @@ export interface ControlBatchResponse {
 }
 
 /**
- * Route definition
+ * Route definition.
+ *
+ * The HTTP adapters (`server/nextjs.ts`, `server/express.ts`,
+ * `server/standalone.ts`) call the handler POSITIONALLY:
+ *
+ *   handler(...urlParams, payload?, context)
+ *
+ * where `payload` is the parsed body (when `bodyRequired`) or the query object
+ * (when `queryRequired`), and `context` is the `HandlerContext` carrying the
+ * caller identity the consumer's auth gate verified (`X-Caller-User-Id`). The
+ * flags must therefore match the handler's own parameter list exactly: a
+ * missing flag lets the context slide into the request slot (the relay then
+ * loses its per-user ownership check and dispatches to the primary tab), and a
+ * stray one puts caller-controlled data in the context slot. The ratchet in
+ * `server/route-argument-alignment.test.ts` derives both from
+ * `UIBridgeServerHandlers` and fails on any mismatch.
  */
 export interface RouteDefinition {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   path: string;
   handler: string; // Key in UIBridgeServerHandlers
-  params?: string[]; // URL params to extract
+  params?: string[]; // URL params to extract, in handler-argument order
+  /** The handler takes the request body as its argument after the URL params. */
   bodyRequired?: boolean;
+  /**
+   * GET only: the handler takes the query object (possibly empty) as its
+   * argument after the URL params. Without it the adapters pass no query at
+   * all, so a query string can never reach the context slot.
+   */
+  queryRequired?: boolean;
 }
 
 /**
@@ -1731,20 +1771,31 @@ export interface RouteDefinition {
  */
 export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Render log
-  { method: 'GET', path: '/render-log', handler: 'getRenderLog' },
-  { method: 'GET', path: '/control/render-log', handler: 'getRenderLog' }, // Alias under /control/
+  { method: 'GET', path: '/render-log', handler: 'getRenderLog', queryRequired: true },
+  {
+    method: 'GET',
+    path: '/control/render-log',
+    handler: 'getRenderLog',
+    queryRequired: true,
+  }, // Alias under /control/
   { method: 'DELETE', path: '/render-log', handler: 'clearRenderLog' },
   { method: 'POST', path: '/render-log/snapshot', handler: 'captureSnapshot' },
   { method: 'GET', path: '/render-log/path', handler: 'getRenderLogPath' },
 
   // Control - Elements
-  { method: 'GET', path: '/control/elements', handler: 'getElements' },
+  { method: 'GET', path: '/control/elements', handler: 'getElements', queryRequired: true },
   // Discover the runner process's own webview windows (main + pop-outs) so
   // callers can resolve a `windowLabel` target. Runner-owned; promoted out of
   // the runner_only_baseline allow-list once the SDK declared it here (plan
   // 2026-06-07-multi-window-sdk-automation, Phase 2).
   { method: 'GET', path: '/control/runner-windows', handler: 'listWindows' },
-  { method: 'GET', path: '/control/element/:id', handler: 'getElement', params: ['id'] },
+  {
+    method: 'GET',
+    path: '/control/element/:id',
+    handler: 'getElement',
+    params: ['id'],
+    queryRequired: true,
+  },
   { method: 'GET', path: '/control/element/:id/state', handler: 'getElementState', params: ['id'] },
   {
     method: 'GET',
@@ -1792,8 +1843,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   },
 
   // Control - Components
-  { method: 'GET', path: '/control/components', handler: 'getComponents' },
-  { method: 'GET', path: '/control/component/:id', handler: 'getComponent', params: ['id'] },
+  { method: 'GET', path: '/control/components', handler: 'getComponents', queryRequired: true },
+  {
+    method: 'GET',
+    path: '/control/component/:id',
+    handler: 'getComponent',
+    params: ['id'],
+    queryRequired: true,
+  },
   {
     method: 'GET',
     path: '/control/component/:id/state',
@@ -1803,7 +1860,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   {
     method: 'POST',
     path: '/control/component/:id/action/:actionId',
-    handler: 'executeComponentAction',
+    handler: 'invokeComponentAction',
     params: ['id', 'actionId'],
     bodyRequired: true,
   },
@@ -1833,9 +1890,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   },
 
   // Find (formerly Discovery)
-  { method: 'POST', path: '/control/find', handler: 'find' },
-  { method: 'POST', path: '/control/discover', handler: 'discover' }, // @deprecated Use /control/find
-  { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot' },
+  { method: 'POST', path: '/control/find', handler: 'find', bodyRequired: true },
+  {
+    method: 'POST',
+    path: '/control/discover',
+    handler: 'discover',
+    bodyRequired: true,
+  }, // @deprecated Use /control/find
+  { method: 'GET', path: '/control/snapshot', handler: 'getControlSnapshot', queryRequired: true },
   // Phase 1.3 (plan 2026-05-03) — flat digest synthesized from snapshot +
   // console-errors + idle-status. One call instead of five.
   { method: 'GET', path: '/control/state-summary', handler: 'getStateSummary' },
@@ -1860,8 +1922,14 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/visibility', handler: 'visibility', bodyRequired: true },
 
   // Workflows
-  { method: 'GET', path: '/control/workflows', handler: 'getWorkflows' },
-  { method: 'POST', path: '/control/workflow/:id/run', handler: 'runWorkflow', params: ['id'] },
+  { method: 'GET', path: '/control/workflows', handler: 'getWorkflows', queryRequired: true },
+  {
+    method: 'POST',
+    path: '/control/workflow/:id/run',
+    handler: 'runWorkflow',
+    params: ['id'],
+    bodyRequired: true,
+  },
   {
     method: 'GET',
     path: '/control/workflow/:runId/status',
@@ -1875,16 +1943,27 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/debug/element-history/:id',
     handler: 'getElementHistory',
     params: ['id'],
+    queryRequired: true,
   },
 
   // Debug
-  { method: 'GET', path: '/debug/action-history', handler: 'getActionHistory' },
+  {
+    method: 'GET',
+    path: '/debug/action-history',
+    handler: 'getActionHistory',
+    queryRequired: true,
+  },
   // D3 Effect Calculus (Phase 2) — read-only recent predict-then-verify cycles.
-  { method: 'GET', path: '/effects/recent', handler: 'getRecentEffects' },
+  { method: 'GET', path: '/effects/recent', handler: 'getRecentEffects', queryRequired: true },
   { method: 'GET', path: '/debug/metrics', handler: 'getMetrics' },
   { method: 'POST', path: '/debug/highlight/:id', handler: 'highlightElement', params: ['id'] },
   { method: 'GET', path: '/debug/element-tree', handler: 'getElementTree' },
-  { method: 'GET', path: '/control/console-errors', handler: 'getConsoleErrors' },
+  {
+    method: 'GET',
+    path: '/control/console-errors',
+    handler: 'getConsoleErrors',
+    queryRequired: true,
+  },
   { method: 'POST', path: '/control/console-errors/clear', handler: 'clearConsoleErrors' },
 
   // AI-native endpoints
@@ -1893,8 +1972,8 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/ai/execute', handler: 'aiExecute', bodyRequired: true },
   { method: 'POST', path: '/ai/assert', handler: 'aiAssert', bodyRequired: true },
   { method: 'POST', path: '/ai/assert/batch', handler: 'aiAssertBatch', bodyRequired: true },
-  { method: 'GET', path: '/ai/snapshot', handler: 'getSemanticSnapshot' },
-  { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff' },
+  { method: 'GET', path: '/ai/snapshot', handler: 'getSemanticSnapshot', queryRequired: true },
+  { method: 'GET', path: '/ai/diff', handler: 'getSemanticDiff', queryRequired: true },
   { method: 'GET', path: '/ai/summary', handler: 'getPageSummary' },
   { method: 'POST', path: '/ai/semantic-search', handler: 'aiSemanticSearch', bodyRequired: true },
 
@@ -2079,11 +2158,26 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/performance-entries/clear',
     handler: 'clearPerformanceEntries',
   },
-  { method: 'GET', path: '/control/browser-events', handler: 'getBrowserEvents' },
-  { method: 'GET', path: '/control/timeline', handler: 'getTimeline' },
-  { method: 'GET', path: '/control/health', handler: 'getHealthReport' },
-  { method: 'GET', path: '/control/network-chains', handler: 'getNetworkChains' },
-  { method: 'POST', path: '/control/error-sessions/start', handler: 'startErrorSession' },
+  {
+    method: 'GET',
+    path: '/control/browser-events',
+    handler: 'getBrowserEvents',
+    queryRequired: true,
+  },
+  { method: 'GET', path: '/control/timeline', handler: 'getTimeline', queryRequired: true },
+  { method: 'GET', path: '/control/health', handler: 'getHealthReport', queryRequired: true },
+  {
+    method: 'GET',
+    path: '/control/network-chains',
+    handler: 'getNetworkChains',
+    queryRequired: true,
+  },
+  {
+    method: 'POST',
+    path: '/control/error-sessions/start',
+    handler: 'startErrorSession',
+    bodyRequired: true,
+  },
   { method: 'POST', path: '/control/error-sessions/end', handler: 'endErrorSession' },
   { method: 'GET', path: '/control/error-sessions', handler: 'getErrorSessions' },
   {
@@ -2098,7 +2192,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'compareErrorBaseline',
     bodyRequired: true,
   },
-  { method: 'GET', path: '/control/error-snapshots', handler: 'getErrorSnapshots' },
+  {
+    method: 'GET',
+    path: '/control/error-snapshots',
+    handler: 'getErrorSnapshots',
+    queryRequired: true,
+  },
   { method: 'GET', path: '/control/error-report', handler: 'getErrorReport' },
 
   // Design review
@@ -2113,8 +2212,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/design/element/:id/state-styles',
     handler: 'getElementStateStyles',
     params: ['id'],
+    bodyRequired: true,
   },
-  { method: 'POST', path: '/design/snapshot', handler: 'getDesignSnapshot' },
+  { method: 'POST', path: '/design/snapshot', handler: 'getDesignSnapshot', bodyRequired: true },
   {
     method: 'POST',
     path: '/design/responsive',
@@ -2127,7 +2227,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     handler: 'setViewportConstraints',
     bodyRequired: true,
   },
-  { method: 'POST', path: '/design/audit', handler: 'runDesignAudit' },
+  { method: 'POST', path: '/design/audit', handler: 'runDesignAudit', bodyRequired: true },
   {
     method: 'POST',
     path: '/design/style-guide/load',
@@ -2138,10 +2238,15 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'DELETE', path: '/design/style-guide', handler: 'clearStyleGuide' },
 
   // Quality evaluation
-  { method: 'POST', path: '/design/evaluate', handler: 'evaluateQuality' },
+  { method: 'POST', path: '/design/evaluate', handler: 'evaluateQuality', bodyRequired: true },
   { method: 'GET', path: '/design/evaluate/contexts', handler: 'getQualityContexts' },
-  { method: 'POST', path: '/design/evaluate/baseline', handler: 'saveBaseline' },
-  { method: 'POST', path: '/design/evaluate/diff', handler: 'diffBaseline' },
+  {
+    method: 'POST',
+    path: '/design/evaluate/baseline',
+    handler: 'saveBaseline',
+    bodyRequired: true,
+  },
+  { method: 'POST', path: '/design/evaluate/diff', handler: 'diffBaseline', bodyRequired: true },
 
   // Form state awareness
   { method: 'GET', path: '/control/forms', handler: 'getForms' },
@@ -2159,7 +2264,12 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/clipboard', handler: 'setClipboard', bodyRequired: true },
 
   // Network request monitoring (static routes before parameterized)
-  { method: 'GET', path: '/control/network-requests', handler: 'getNetworkRequests' },
+  {
+    method: 'GET',
+    path: '/control/network-requests',
+    handler: 'getNetworkRequests',
+    queryRequired: true,
+  },
   {
     method: 'GET',
     path: '/control/network-requests/in-flight',
@@ -2190,7 +2300,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // `docs-site/docs/api/runner-features.md` for the canonicalisation rule.
   { method: 'GET', path: '/control/idle-status', handler: 'getIdleStatus' },
   { method: 'GET', path: '/ai/idle-status', handler: 'getIdleStatus' },
-  { method: 'POST', path: '/control/wait-for-idle', handler: 'waitForIdle' },
+  { method: 'POST', path: '/control/wait-for-idle', handler: 'waitForIdle', bodyRequired: true },
   {
     method: 'POST',
     path: '/control/wait-for-targets',
@@ -2208,6 +2318,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/wait-for-idle/:signal',
     handler: 'waitForSignalIdle',
     params: ['signal'],
+    bodyRequired: true,
   },
 
   // Undo/redo awareness
@@ -2230,17 +2341,17 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // and `/ai/media/*` routes. The runner answers these directly; the
   // SDK exposes stubs that return `runner_required` so the route table
   // stays the single source of truth.
-  { method: 'POST', path: '/vision/capture', handler: 'visionCapture' },
-  { method: 'POST', path: '/vision/annotate', handler: 'visionAnnotate' },
-  { method: 'POST', path: '/vision/diff', handler: 'visionDiff' },
-  { method: 'POST', path: '/vision/raw', handler: 'visionRaw' },
+  { method: 'POST', path: '/vision/capture', handler: 'visionCapture', bodyRequired: true },
+  { method: 'POST', path: '/vision/annotate', handler: 'visionAnnotate', bodyRequired: true },
+  { method: 'POST', path: '/vision/diff', handler: 'visionDiff', bodyRequired: true },
+  { method: 'POST', path: '/vision/raw', handler: 'visionRaw', bodyRequired: true },
   // Phase 4 — text-bearing outputs (OCR + VLM caption).
-  { method: 'POST', path: '/vision/extract', handler: 'visionExtract' },
-  { method: 'POST', path: '/vision/describe', handler: 'visionDescribe' },
+  { method: 'POST', path: '/vision/extract', handler: 'visionExtract', bodyRequired: true },
+  { method: 'POST', path: '/vision/describe', handler: 'visionDescribe', bodyRequired: true },
   // Phase 6 — declarative analyzers + assertion DSL.
-  { method: 'POST', path: '/vision/analyze', handler: 'visionAnalyze' },
-  { method: 'POST', path: '/vision/assert', handler: 'visionAssert' },
-  { method: 'POST', path: '/vision/baseline', handler: 'visionBaseline' },
+  { method: 'POST', path: '/vision/analyze', handler: 'visionAnalyze', bodyRequired: true },
+  { method: 'POST', path: '/vision/assert', handler: 'visionAssert', bodyRequired: true },
+  { method: 'POST', path: '/vision/baseline', handler: 'visionBaseline', bodyRequired: true },
   { method: 'GET', path: '/vision/baselines', handler: 'visionBaselinesList' },
   // Frontend → runner mutation signal (Phase 6).
   {
@@ -2257,20 +2368,30 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'GET', path: '/vision/health', handler: 'visionHealth' },
 
   // Change observation (push-based)
-  { method: 'GET', path: '/control/changes/since', handler: 'getChangesSince' },
+  {
+    method: 'GET',
+    path: '/control/changes/since',
+    handler: 'getChangesSince',
+    queryRequired: true,
+  },
 
   // ── Route aliases ──────────────────────────────────────────────────
   // These map commonly expected paths to existing handlers.
 
   // Design review aliases under /control/ (static before parameterized)
-  { method: 'POST', path: '/control/design/snapshot', handler: 'getDesignSnapshot' },
+  {
+    method: 'POST',
+    path: '/control/design/snapshot',
+    handler: 'getDesignSnapshot',
+    bodyRequired: true,
+  },
   {
     method: 'POST',
     path: '/control/design/responsive',
     handler: 'getResponsiveSnapshots',
     bodyRequired: true,
   },
-  { method: 'POST', path: '/control/design/audit', handler: 'runDesignAudit' },
+  { method: 'POST', path: '/control/design/audit', handler: 'runDesignAudit', bodyRequired: true },
   {
     method: 'GET',
     path: '/control/design/element/:id/styles',
@@ -2282,6 +2403,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/design/element/:id/state-styles',
     handler: 'getElementStateStyles',
     params: ['id'],
+    bodyRequired: true,
   },
 
   // Annotation aliases under /control/ (static before parameterized)
@@ -2317,8 +2439,13 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   },
 
   // History/metrics aliases under /control/
-  { method: 'GET', path: '/control/action-history', handler: 'getActionHistory' },
-  { method: 'GET', path: '/control/history', handler: 'getActionHistory' },
+  {
+    method: 'GET',
+    path: '/control/action-history',
+    handler: 'getActionHistory',
+    queryRequired: true,
+  },
+  { method: 'GET', path: '/control/history', handler: 'getActionHistory', queryRequired: true },
   { method: 'GET', path: '/control/metrics', handler: 'getMetrics' },
   { method: 'GET', path: '/control/interaction-metrics', handler: 'getMetrics' },
   {
@@ -2326,6 +2453,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     path: '/control/element/:id/history',
     handler: 'getElementHistory',
     params: ['id'],
+    queryRequired: true,
   },
 
   // Intent aliases under /control/ (static before parameterized)
@@ -2334,7 +2462,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   {
     method: 'POST',
     path: '/control/intent/:name/execute',
-    handler: 'executeIntent',
+    handler: 'executeNamedIntent',
     params: ['name'],
     bodyRequired: true,
   },
@@ -2394,6 +2522,7 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
     method: 'POST',
     path: '/ai/wait-for-route-change',
     handler: 'waitForRouteChange',
+    bodyRequired: true,
   },
   {
     method: 'POST',

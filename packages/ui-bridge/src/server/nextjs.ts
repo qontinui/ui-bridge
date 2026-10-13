@@ -271,14 +271,15 @@ export function createNextRouteHandlers(
         }
       }
 
-      // Add query params for GET requests. Per-user tab scoping (§4.2):
-      // `__callerUserId` is delivered via the trailing `context` arg
-      // (below) — NOT spliced into the searchParams bag. Splicing it
-      // would push an otherwise-empty query as the 2nd positional arg
-      // to id-only handlers like `getElementState(id, context?)`,
-      // shifting `context` to the wrong slot. The `tabId` splice stays
-      // (it's a payload field many handlers read via `extractTabRouting`).
-      if (method === 'GET') {
+      // Add the query object when the route's handler takes one — EMPTY
+      // included, so the trailing context below always lands in the
+      // context slot. A route whose handler takes no query never gets one:
+      // it would land in that slot, and a query string could then name the
+      // caller identity. Per-user tab scoping (§4.2): `__callerUserId` is
+      // delivered via the trailing `context` arg (below), never spliced
+      // into the searchParams bag. The `tabId` splice stays (it's a payload
+      // field many handlers read via `extractTabRouting`).
+      if (route.queryRequired) {
         const searchParams = Object.fromEntries(request.nextUrl.searchParams);
         if (
           externalTabId &&
@@ -287,9 +288,7 @@ export function createNextRouteHandlers(
         ) {
           searchParams.tabId = externalTabId;
         }
-        if (Object.keys(searchParams).length > 0) {
-          args.push(searchParams);
-        }
+        args.push(searchParams);
       }
 
       // Per-user tab scoping (§4.2) — trailing context arg. The adapter
@@ -535,7 +534,7 @@ export function createDebugHandlers(handlers: UIBridgeServerHandlers) {
     actionHistory: {
       async GET(request: NextRequest): Promise<Response> {
         const limit = request.nextUrl.searchParams.get('limit');
-        const result = await handlers.getActionHistory(limit ? parseInt(limit) : undefined);
+        const result = await handlers.getActionHistory(limit ? { limit } : {});
         return jsonResponse(result);
       },
     },

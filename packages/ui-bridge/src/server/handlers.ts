@@ -193,6 +193,7 @@ import type {
 } from '../specs/quality-types';
 import { evaluateQuality } from '../specs/quality-evaluator';
 import { listContexts } from '../specs/quality-contexts';
+import { componentActionInvocation } from './component-action-invocation';
 import { createBaseline, diffSnapshots } from '../specs/quality-diff';
 import { getGlobalSpecStore } from '../specs/store';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
@@ -2063,6 +2064,28 @@ export function createHandlers(
       }
     },
 
+    // `POST /control/component/:id/action/:actionId`: the route's own handler,
+    // whose parameters match its URL params (see `invokeComponentAction` in
+    // `types.ts`). The body becomes the same request `executeComponentAction`
+    // takes; routing fields never become params.
+    invokeComponentAction: async (
+      id: string,
+      actionId: string,
+      body?: Record<string, unknown>
+    ): Promise<APIResponse<ComponentActionResponse>> => {
+      const { request } = componentActionInvocation(actionId, body);
+      try {
+        const result = await actionExecutor.executeComponentAction(id, {
+          action: request.action,
+          params: request.params,
+          timeoutMs: request.timeoutMs,
+        });
+        return success(result) as APIResponse<ComponentActionResponse>;
+      } catch (err) {
+        return error((err as Error).message, 'COMPONENT_ACTION_ERROR');
+      }
+    },
+
     // D3 Effect Calculus, Phase 6 — `POST
     // /control/component/:id/action/:actionId/predict`. Delegates to the
     // executor; this handler owns only the body normalization and the
@@ -2503,10 +2526,13 @@ export function createHandlers(
     // Debug Handlers
     // =========================================================================
 
-    getActionHistory: async (limit?: number): Promise<APIResponse<unknown[]>> => {
+    getActionHistory: async (query?: {
+      limit?: string | number;
+    }): Promise<APIResponse<unknown[]>> => {
       try {
         const history = registry.getActionHistory?.() ?? [];
-        const limited = limit ? history.slice(-limit) : history;
+        const limit = Number(query?.limit) || 0;
+        const limited = limit > 0 ? history.slice(-limit) : history;
         return success(limited);
       } catch (err) {
         return error((err as Error).message, 'ACTION_HISTORY_ERROR');
@@ -3031,7 +3057,9 @@ export function createHandlers(
       }
     },
 
-    getSemanticDiff: async (_since?: number): Promise<APIResponse<SemanticDiff | null>> => {
+    getSemanticDiff: async (_query?: {
+      since?: string | number;
+    }): Promise<APIResponse<SemanticDiff | null>> => {
       try {
         // Create current snapshot
         const controlSnapshot = registry.createSnapshot();
@@ -4090,6 +4118,36 @@ export function createHandlers(
         return success({
           success: nlResponse.success,
           intentId: request.intentId,
+          result: nlResponse,
+          error: nlResponse.error,
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        return error((err as Error).message, 'EXECUTE_INTENT_ERROR');
+      }
+    },
+
+    // `POST /control/intent/:name/execute`: the intent named in the URL. Like
+    // `executeIntent`, this in-process arm runs the intent's description and
+    // takes no params from the request.
+    executeNamedIntent: async (
+      name: string,
+      _request?: { params?: Record<string, unknown> }
+    ): Promise<APIResponse<IntentExecutionResult>> => {
+      const startTime = Date.now();
+      try {
+        refreshElements();
+        const intent = intentRegistry.get(name);
+        if (!intent) {
+          return error(`Intent not found: ${name}`, 'NOT_FOUND');
+        }
+        const nlResponse = await nlExecutor.execute({
+          instruction: intent.description,
+          context: `Executing intent: ${intent.name}`,
+        });
+        return success({
+          success: nlResponse.success,
+          intentId: name,
           result: nlResponse,
           error: nlResponse.error,
           durationMs: Date.now() - startTime,
@@ -7277,7 +7335,9 @@ export function createAIHandlers(
       }
     },
 
-    getSemanticDiff: async (_since?: number): Promise<APIResponse<SemanticDiff | null>> => {
+    getSemanticDiff: async (_query?: {
+      since?: string | number;
+    }): Promise<APIResponse<SemanticDiff | null>> => {
       try {
         const controlSnapshot = registry.createSnapshot();
         const currentSnapshot = snapshotManager.createSnapshot(controlSnapshot);

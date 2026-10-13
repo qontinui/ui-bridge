@@ -161,11 +161,12 @@ describe('WebSocket handler (server/websocket-handler.ts)', () => {
   });
 });
 
-describe('relay handlers, Express arm (server/relay-handlers.ts)', () => {
+describe('relay handlers, HTTP route arm (invokeComponentAction)', () => {
   /**
-   * The Express adapter calls `(id, actionId, body)` and merges flat body keys
-   * into `params`. Without an exclusion list `timeoutMs` arrived as a
-   * PARAMETER named `timeoutMs` — which both loses the cancellation and, under
+   * `POST /control/component/:id/action/:actionId` calls the route's handler
+   * as `(id, actionId, body, context)` and merges flat body keys into
+   * `params`. Without an exclusion list `timeoutMs` arrived as a PARAMETER
+   * named `timeoutMs`, which both loses the cancellation and, under
    * `additionalProperties: false`, fails the action's own schema.
    */
   function relayCapture(): {
@@ -189,11 +190,11 @@ describe('relay handlers, Express arm (server/relay-handlers.ts)', () => {
   it('hoists timeoutMs onto the request instead of merging it into params', async () => {
     const { handlers, dispatched } = relayCapture();
 
-    await handlers.executeComponentAction(
-      'login-form',
-      'submit' as never,
-      { layoutId: 'single', timeoutMs: 1234, requestId: 'req-9' } as never
-    );
+    await handlers.invokeComponentAction('login-form', 'submit', {
+      layoutId: 'single',
+      timeoutMs: 1234,
+      requestId: 'req-9',
+    });
 
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0].id).toBe('login-form');
@@ -208,11 +209,10 @@ describe('relay handlers, Express arm (server/relay-handlers.ts)', () => {
   it('still merges ordinary flat body keys into params', async () => {
     const { handlers, dispatched } = relayCapture();
 
-    await handlers.executeComponentAction(
-      'login-form',
-      'submit' as never,
-      { layoutId: 'single', mode: 'fast' } as never
-    );
+    await handlers.invokeComponentAction('login-form', 'submit', {
+      layoutId: 'single',
+      mode: 'fast',
+    });
 
     expect(dispatched[0].request).toEqual({
       action: 'submit',
