@@ -41,8 +41,11 @@ import { computeSnapshotSignature } from '../core/snapshot-signature';
 import type { ElementQuery } from '../core/find';
 import {
   applyCanonicalFindFilter,
+  isFindRefusalError,
+  type CanonicalFindContext,
   type CanonicalFindCriteria,
   type FindFilterableElement,
+  type FindUnevaluated,
 } from '../core/find-filter';
 
 // ============================================================================
@@ -622,23 +625,37 @@ export function createRelayHandlers(
 
   // Helper: filter cached snapshot elements using find/discover criteria.
   // Filtering delegates to the canonical `applyCanonicalFindFilter`
-  // (src/core/find-filter.ts) — shared with the React command handlers and
-  // direct server handlers so the four historical copies cannot drift again.
-  // Only the DiscoveredElement-compatible shape mapping stays relay-specific.
+  // (src/core/find-filter.ts) — shared with the executor, the React command
+  // handlers and the direct server handlers so the historical copies cannot
+  // drift again. Only the DiscoveredElement-compatible shape mapping stays
+  // relay-specific.
+  //
+  // The cached rows are serialized JSON: no DOM node behind them. So the
+  // filter is told `liveDom: false`, and `root` / `selector` are REFUSED,
+  // typed, rather than silently ignored as they were; a media-fact filter
+  // over rows that carry no observation envelope (a snapshot from an SDK
+  // build predating it) is refused the same way. Throws `FindRefusalError`.
   function filterCachedElements(
     elements: ControlSnapshot['elements'],
     criteria: Record<string, unknown>
-  ): Array<Record<string, unknown>> {
+  ): { rows: Array<Record<string, unknown>>; unevaluated?: FindUnevaluated[] } {
+    const filterCtx: CanonicalFindContext = {
+      transport: 'relay-cache',
+      liveDom: false,
+      registrySize: elements.length,
+    };
     const filtered = applyCanonicalFindFilter(
       elements as unknown as FindFilterableElement[],
-      criteria as CanonicalFindCriteria
+      criteria as CanonicalFindCriteria,
+      filterCtx
     );
     // Map to DiscoveredElement-compatible shape (add missing fields)
-    return filtered.map((e) => ({
+    const rows = filtered.map((e) => ({
       ...e,
       tagName: e.type,
       registered: true,
     }));
+    return { rows, unevaluated: filterCtx.unevaluated };
   }
 
   // Helper: refresh the cached control snapshot based on Recency requirements
@@ -1239,6 +1256,11 @@ export function createRelayHandlers(
           : undefined);
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
+      // The browser ANSWERED, with a typed refusal (a request the canonical
+      // filter will not honour — it would refuse it over the cache too). That
+      // is the answer; falling back to the cache would replace a precise
+      // failure with a guess.
+      if (readRelayInnerFailure(result.data)) return result;
       // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
       // the caller's snapshot cache — that cache is last-writer-wins across
       // ALL the caller's tabs, so serving it would silently return another
@@ -1253,7 +1275,17 @@ export function createRelayHandlers(
         recency,
         scope.cache.controlSnapshot.elements.length === 0
       );
-      const filtered = filterCachedElements(scope.cache.controlSnapshot.elements, payload);
+      let filtered: Array<Record<string, unknown>>;
+      let unevaluated: FindUnevaluated[] | undefined;
+      try {
+        ({ rows: filtered, unevaluated } = filterCachedElements(
+          scope.cache.controlSnapshot.elements,
+          payload
+        ));
+      } catch (err) {
+        if (isFindRefusalError(err)) return error(err.message, err.code);
+        throw err;
+      }
       const _meta = staleMeta(scope);
       return success(
         {
@@ -1273,6 +1305,9 @@ export function createRelayHandlers(
           ...(scope.cache.controlSnapshot.registration
             ? { registration: scope.cache.controlSnapshot.registration }
             : {}),
+          // Rows a media-fact filter could not evaluate. See
+          // `FindResponse.unevaluated`.
+          ...(unevaluated ? { unevaluated } : {}),
         },
         _meta
       ) as APIResponse<FindResponse>;

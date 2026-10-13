@@ -49,10 +49,19 @@ import type {
   ComponentActionPredictResponse,
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
-import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
+import {
+  applyCanonicalFindFilter,
+  isFindRefusalError,
+  type CanonicalFindContext,
+  type FindFilterableElement,
+} from '../core/find-filter';
 import { diagnoseSnapshotPageHealth } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
-import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
+import {
+  scanDOMForInteractiveElements,
+  scanDOMForInteractiveElementsWithRefs,
+  countDOMInteractiveElements,
+} from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
 import { buildComponentNotFoundError } from './component-not-found';
 import { describeInnerFailure } from './inner-failure';
@@ -83,13 +92,16 @@ import { measureFreshBbox } from '../core/registry';
 import {
   isContentRedacted,
   scrubContent,
+  scrubContentByVerdict,
   scrubMediaMetadata,
   verdictOf,
+  verdictFromState,
   readScrubbedValue,
   readScrubbedText,
   REDACTED_VALUE,
 } from '../core/redaction';
-import type { MediaMetadata } from '../core/types';
+import type { ElementState } from '../core/types';
+import { isMediaObservation } from '../core/media-observation';
 import type { RenderLogEntry } from '../render-log';
 import type { ActionFailureDetails, FillResult } from '../core';
 import type { UiBridgeErrorCode } from '../diagnostics';
@@ -351,6 +363,14 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     // entry (`{}`, `null`) yields `undefined` without a verdict probe (which
     // would throw on a non-node). CONTENT axis; `role` stays raw (structural).
     const liveEl = el.element instanceof HTMLElement ? el.element : undefined;
+    // The §4.6 verdict for the label and media scrubs reads attributes up the
+    // ancestor chain, which an SVG media element answers as well as an HTML
+    // one — so it keys on any live `Element`, not only an `HTMLElement` (an
+    // `<svg>` row used to ship its raw alt text, being no HTMLElement).
+    const liveNode = el.element instanceof Element ? el.element : undefined;
+    const rowVerdict = liveNode
+      ? verdictOf(liveNode as HTMLElement)
+      : verdictFromState((el.state ?? {}) as Pick<ElementState, 'redaction'>);
     const titleAttr = scrubContent((liveEl ? readTitleAttr(liveEl) : null) ?? undefined, liveEl);
     const ariaRole = liveEl ? computeRoleSafe(liveEl) : undefined;
     const ariaLabel = scrubContent(liveEl ? computeAriaLabel(liveEl) : undefined, liveEl);
@@ -363,18 +383,23 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
     // (`serializeRegisteredElement`) — cached tracker bboxes go stale on
     // translation-only moves (qontinui-runner#186). Cache is the fallback.
     const freshBbox = measureFreshBbox(el.element);
+    // `getState()` first: on a registry media element it re-captures the
+    // observation, so the top-level `mediaMetadata` read below is as fresh.
+    const state = el.getState?.() ?? el.state;
     return {
       id: el.id,
       type: el.type,
       tagName: el.element?.tagName?.toLowerCase?.(),
-      label: el.label,
+      // §4.6: an auto-registered label is scraped (a media label IS its alt
+      // text or file name) — scrub it like every other projection does.
+      label: scrubContentByVerdict(el.label, rowVerdict),
       role: ariaRole,
       ariaLabel,
       accessibleName,
       text: visibleText,
       title: titleAttr || undefined,
       identifier: el.getIdentifier?.(),
-      state: el.getState?.() ?? el.state,
+      state,
       // Canonical lifecycle fields (UIBridgeElement requires both). Registry
       // entries carry real values; DOM-fallback scans synthesize them —
       // materialization time for `registeredAt`, and `mounted: true` since a
@@ -387,9 +412,11 @@ export function materializeElements(rawElements: unknown[]): ControlSnapshot['el
       contentMetadata: el.contentMetadata,
       // §4.6: a redacted media element's src/srcset/altText/poster ARE the
       // rendered secret — scrub via the choke point (structural fields survive).
-      mediaMetadata: liveEl
-        ? scrubMediaMetadata(el.mediaMetadata as MediaMetadata | undefined, verdictOf(liveEl))
-        : el.mediaMetadata,
+      // Only an observation envelope can be scrubbed field by field; anything
+      // else is not shipped.
+      mediaMetadata: isMediaObservation(el.mediaMetadata)
+        ? scrubMediaMetadata(el.mediaMetadata, rowVerdict)
+        : undefined,
       // Bbox/visibility: fresh DOM measurement when available (see above),
       // else the tracker-maintained cache for SDK-registered elements;
       // absent entirely for detached DOM-fallback scans.
@@ -1388,23 +1415,31 @@ export function createHandlers(
       if (!findRequest?.skipSettle) {
         await awaitDOMSettled(findRequest?.settleTimeout);
       }
-      let elements = registry.findElements?.(findRequest) ?? registry.getAllElements();
+      const registered = registry.findElements?.(findRequest) ?? registry.getAllElements();
 
       // Always apply the canonical filter — registry.findElements may not
       // handle all filter types. A missing/empty request is a no-op filter.
-      elements = applyCanonicalFindFilter(
-        elements as FindFilterableElement[],
-        findRequest
-      ) as unknown[];
+      // `registrySize` lets it refuse a media question an empty registry
+      // cannot answer, instead of answering "no media".
+      const filterCtx: CanonicalFindContext = {
+        transport: 'server',
+        registrySize: registry.getAllElements().length,
+      };
+      let elements: unknown[] = applyCanonicalFindFilter(
+        registered as FindFilterableElement[],
+        findRequest,
+        filterCtx
+      );
 
-      // DOM fallback: when registry returns 0 elements, scan the DOM directly
+      // DOM fallback: when registry returns 0 elements, scan the DOM directly.
+      // The scan keeps each node until filtering is done, so `root`,
+      // `selector` and the live visibility check still evaluate against it.
       if (elements.length === 0) {
-        const domElements = scanDOMForInteractiveElements();
+        const domElements = scanDOMForInteractiveElementsWithRefs();
         if (domElements.length > 0) {
-          elements = applyCanonicalFindFilter(
-            domElements as FindFilterableElement[],
-            findRequest
-          ) as unknown[];
+          elements = applyCanonicalFindFilter(domElements, findRequest, {
+            transport: 'server',
+          }).map(({ element: _element, ...data }) => data);
         }
       }
 
@@ -1419,8 +1454,13 @@ export function createHandlers(
         timestamp: Date.now(),
         total: elements.length,
         durationMs: 0,
+        // Rows a media-fact filter could not evaluate (the registry pass's —
+        // the DOM fallback carries no media). See `FindResponse.unevaluated`.
+        ...(filterCtx.unevaluated ? { unevaluated: filterCtx.unevaluated } : {}),
       }) as unknown as APIResponse<FindResponse>;
     } catch (err) {
+      // A refused find is a TYPED failure (behaviour 8), never an empty page.
+      if (isFindRefusalError(err)) return error(err.message, err.code);
       return error((err as Error).message, 'FIND_ERROR');
     }
   };

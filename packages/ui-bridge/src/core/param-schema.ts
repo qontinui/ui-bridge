@@ -379,12 +379,13 @@ const MAX_PATTERN_LENGTH = 200;
  * is then quantified (`(a+)+`, `(a*)*`, `(?:a{2,})+`), the classic
  * catastrophic-backtracking shape.
  *
- * A deliberate duplicate of `@qontinui/ui-bridge` `control/action-executor.ts`
- * `hasNestedQuantifiers`: this module imports nothing so that `src/native/*`
- * and the standalone React Native package can share it (see the header), while
- * `action-executor.ts` pulls in the DOM. KEEP THE COPIES IN SYNC.
+ * The package's ONE copy. It lives here because this module imports nothing,
+ * so `src/native/*`, the standalone React Native package, the canonical find
+ * filter (`core/find-filter.ts`, `srcPattern`) and the relay's network-stub
+ * URL patterns (`react/commandHandlers.ts`) can all share it without pulling
+ * in the DOM.
  */
-function hasNestedQuantifiers(pattern: string): boolean {
+export function hasNestedQuantifiers(pattern: string): boolean {
   return /(\((?:[^()]*[+*}])[^()]*\))[+*?]|\(\?:[^()]*[+*}][^()]*\)[+*?]/.test(pattern);
 }
 

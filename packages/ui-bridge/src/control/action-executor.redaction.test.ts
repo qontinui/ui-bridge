@@ -68,6 +68,21 @@ import { UIBridgeRegistry, REDACTED_VALUE } from '../core/registry';
 import { DefaultActionExecutor, extractReactState } from './action-executor';
 import { SearchEngine } from '../ai/search-engine';
 import type { DiscoveredElement } from './types';
+import type { MediaFacts, MediaObservation } from '../core/types';
+import { mediaFactsOf } from '../core/media-observation';
+import { Observation } from '../observation/observation';
+
+/** A fully measured media observation over `facts` (the shape every producer emits). */
+function measuredMedia(facts: MediaFacts): MediaObservation {
+  return Observation.measured(
+    facts,
+    Observation.provenance({
+      producer: { id: 'test/media', version: '0' },
+      observedAt: Date.now(),
+      coverage: Observation.fullCoverage(1),
+    })
+  );
+}
 
 /** Blanket needle — must never appear anywhere in a serialized response. */
 const SECRET = 'SECRET123';
@@ -423,17 +438,17 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
       container.appendChild(boundary);
 
       registry.registerMediaElement('img-secret', img, {
-        type: 'image',
+        mediaType: 'image',
         label: 'Avatar',
-        mediaMetadata: {
+        mediaMetadata: measuredMedia({
           mediaType: 'image',
           altText: `QR code for ${SECRET}`,
           isDecorative: false,
           renderedWidth: 10,
           renderedHeight: 10,
           loadingState: 'loaded',
-          lazyLoading: false,
-        },
+          loading: 'eager',
+        }),
       });
 
       const res = await executor.find({ includeHidden: true, includeMedia: true });
@@ -443,11 +458,13 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
       expect(media).toBeDefined();
 
       expect(media!.accessibleName ?? '').not.toContain(SECRET);
-      expect(media!.mediaMetadata?.altText ?? '').not.toContain(SECRET);
+      const facts = mediaFactsOf(media!.mediaMetadata);
+      expect(facts).toBeDefined();
+      expect(facts!.altText ?? '').not.toContain(SECRET);
       // Structural media fields must SURVIVE — oversize/lazy-loading audits
       // still have to work inside a redacted subtree.
-      expect(media!.mediaMetadata?.renderedWidth).toBe(10);
-      expect(media!.mediaMetadata?.loadingState).toBe('loaded');
+      expect(facts!.renderedWidth).toBe(10);
+      expect(facts!.loadingState).toBe('loaded');
       expect(JSON.stringify(res)).not.toContain(SECRET);
     });
 
@@ -464,9 +481,9 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
       container.appendChild(boundary);
 
       registry.registerMediaElement('vid-secret', video, {
-        type: 'video',
+        mediaType: 'video',
         label: 'Recording',
-        mediaMetadata: {
+        mediaMetadata: measuredMedia({
           mediaType: 'video',
           src: `https://cdn.example.com/clip.mp4?token=${SECRET}`,
           srcset: `https://cdn.example.com/clip.mp4?token=${SECRET} 1x`,
@@ -476,7 +493,6 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
           renderedWidth: 320,
           renderedHeight: 240,
           loadingState: 'loaded',
-          lazyLoading: false,
           format: 'mp4',
           videoState: {
             poster: `data:image/png;base64,${SECRET}`,
@@ -485,14 +501,15 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
             paused: true,
             muted: false,
           },
-        },
+        }),
       });
 
       const res = await executor.find({ includeHidden: true, includeMedia: true });
       const media = findById(res.elements, 'vid-secret');
       expect(media).toBeDefined();
 
-      const meta = media!.mediaMetadata!;
+      const meta = mediaFactsOf(media!.mediaMetadata)!;
+      expect(meta).toBeDefined();
       expect(meta.src).toBe(REDACTED_VALUE);
       expect(meta.srcset).toBe(REDACTED_VALUE);
       expect(meta.sources?.[0].srcset).toBe(REDACTED_VALUE);
@@ -510,9 +527,9 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
       const img = document.createElement('img');
       container.appendChild(img);
       registry.registerMediaElement('vid-public', img, {
-        type: 'image',
+        mediaType: 'image',
         label: 'Logo',
-        mediaMetadata: {
+        mediaMetadata: measuredMedia({
           mediaType: 'image',
           src: 'https://cdn.example.com/logo.png',
           altText: 'Company logo',
@@ -520,14 +537,13 @@ describe('control/action-executor §4.6 — find()/discover() projection', () =>
           renderedWidth: 100,
           renderedHeight: 40,
           loadingState: 'loaded',
-          lazyLoading: false,
-        },
+        }),
       });
 
       const res = await executor.find({ includeHidden: true, includeMedia: true });
       const media = findById(res.elements, 'vid-public')!;
-      expect(media.mediaMetadata?.src).toBe('https://cdn.example.com/logo.png');
-      expect(media.mediaMetadata?.altText).toBe('Company logo');
+      expect(mediaFactsOf(media.mediaMetadata)?.src).toBe('https://cdn.example.com/logo.png');
+      expect(mediaFactsOf(media.mediaMetadata)?.altText).toBe('Company logo');
     });
   });
 

@@ -27,7 +27,7 @@ import type {
   ComponentStateResponse,
   StateGetter,
   ContentMetadata,
-  MediaMetadata,
+  MediaObservation,
   ElementLogLevel,
   ElementHistoryOptions,
   ElementLogEntry,
@@ -1432,7 +1432,7 @@ export class UIBridgeRegistry {
       customActions?: Record<string, CustomAction>;
       category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
-      mediaMetadata?: MediaMetadata;
+      mediaMetadata?: MediaObservation;
       /** Disambiguation hint — semantic role/intent. See RegisteredElement.variant. */
       variant?: string;
       /** Disambiguation hint — positional. See RegisteredElement.position. */
@@ -1635,7 +1635,7 @@ export class UIBridgeRegistry {
       customActions?: Record<string, CustomAction>;
       category?: 'interactive' | 'content' | 'media';
       contentMetadata?: ContentMetadata;
-      mediaMetadata?: MediaMetadata;
+      mediaMetadata?: MediaObservation;
       /**
        * Re-derivation closure for a DOM-SCRAPED `label`, supplied by whichever
        * scanner scraped it (the injected seeder, `useAutoRegister`).
@@ -1989,17 +1989,29 @@ export class UIBridgeRegistry {
   /**
    * Register a media element (image, video, canvas, SVG, etc.)
    *
-   * If a `refreshMetadata` callback is provided, mediaMetadata is re-captured
-   * on every `getState()` call so loading transitions and video state stay fresh.
+   * If a `refreshMetadata` callback is provided, the media observation is
+   * re-captured on every `getState()` call — and on demand through
+   * `refreshMediaMetadata()`, which the canonical find filter calls before
+   * deciding a media predicate — so loading transitions and video state stay
+   * fresh.
+   *
+   * `state.mediaMetadata` is minted through `scrubMediaMetadata` with the
+   * element's OWN §4.6 verdict, here, at the state builder. Every emission path
+   * (the snapshot serializer, the server materializer, the relay's find row,
+   * the executor's find row) ships `state` beside its scrubbed top-level
+   * `mediaMetadata`; this override used to write the RAW capture into
+   * `state`, so a redacted image's `src` / `srcset` / alt / poster rode out
+   * through `state` on every one of them. The field's `Scrubbed<…>` type makes
+   * a raw write here a compile error.
    */
   registerMediaElement(
     id: string,
     element: HTMLElement,
     options: {
       mediaType: string;
-      mediaMetadata: MediaMetadata;
+      mediaMetadata: MediaObservation;
       label?: string;
-      refreshMetadata?: (el: HTMLElement) => MediaMetadata;
+      refreshMetadata?: (el: HTMLElement) => MediaObservation;
       /** Defaults to `'auto'` — media elements only flow from the DOM scanner. */
       origin?: 'hook' | 'auto';
     }
@@ -2013,18 +2025,25 @@ export class UIBridgeRegistry {
       origin: options.origin ?? 'auto',
     });
 
-    // Override getState to re-capture media metadata on each call
-    if (options.refreshMetadata) {
-      const originalGetState = registered.getState;
-      const refreshFn = options.refreshMetadata;
-      registered.getState = () => {
-        const state = originalGetState();
-        const freshMeta = refreshFn(element);
-        registered.mediaMetadata = freshMeta;
-        state.mediaMetadata = freshMeta;
-        return state;
+    const refreshFn = options.refreshMetadata;
+    if (refreshFn) {
+      registered.refreshMediaMetadata = () => {
+        const fresh = refreshFn(element);
+        registered.mediaMetadata = fresh;
+        return fresh;
       };
     }
+
+    // Override getState to carry the (re-captured, scrubbed) media observation.
+    const originalGetState = registered.getState;
+    registered.getState = () => {
+      const state = originalGetState();
+      const meta = registered.refreshMediaMetadata
+        ? registered.refreshMediaMetadata()
+        : registered.mediaMetadata;
+      state.mediaMetadata = scrubMediaMetadata(meta, verdictOf(element));
+      return state;
+    };
 
     return registered;
   }

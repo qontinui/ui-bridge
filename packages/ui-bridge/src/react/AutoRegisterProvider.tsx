@@ -33,18 +33,13 @@
 
 import { type ReactNode, useRef } from 'react';
 import { useAutoRegister, type AutoRegisterOptions } from './useAutoRegister';
-import type { ContentDiscoveryOptions } from './content-discovery';
 
 export interface AutoRegisterProviderProps extends Omit<AutoRegisterOptions, 'root'> {
   /** Children to render */
   children: ReactNode;
   /** Use this element as the observation root instead of document.body */
   scopeToChildren?: boolean;
-  /** Content discovery options (enabled by default) */
-  contentDiscovery?: ContentDiscoveryOptions;
 }
-
-const EMPTY_SELECTORS: string[] = [];
 
 /**
  * Provider component that enables automatic element registration.
@@ -57,38 +52,26 @@ const EMPTY_SELECTORS: string[] = [];
  *
  * Place this component at the root of your app (inside UIBridgeProvider)
  * for comprehensive automatic element registration.
+ *
+ * Every {@link AutoRegisterOptions} field reaches the hook. The provider used
+ * to list them one by one, and the list had drifted: `mediaDiscovery` (and
+ * with it `includeBackgroundImages`), `logLevel` and `writeStableAttribute`
+ * were accepted by type and silently dropped. Forwarding the rest of the props
+ * makes that drift impossible; only `enabled` keeps a provider-level default.
  */
 export function AutoRegisterProvider({
   children,
   scopeToChildren = false,
   enabled = process.env.NODE_ENV === 'development',
-  idStrategy = 'prefer-existing',
-  debounceMs = 100,
-  includeHidden = false,
-  includeSelectors = EMPTY_SELECTORS,
-  excludeSelectors = EMPTY_SELECTORS,
-  generateId,
-  onRegister,
-  onUnregister,
-  contentDiscovery,
-  persistWhileMounted,
+  ...options
 }: AutoRegisterProviderProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Use the auto-register hook
   useAutoRegister({
+    ...options,
     enabled,
     root: scopeToChildren ? containerRef.current : null,
-    idStrategy,
-    debounceMs,
-    includeHidden,
-    includeSelectors,
-    excludeSelectors,
-    generateId,
-    onRegister,
-    onUnregister,
-    contentDiscovery,
-    persistWhileMounted,
   });
 
   // If scoped to children, wrap in a div

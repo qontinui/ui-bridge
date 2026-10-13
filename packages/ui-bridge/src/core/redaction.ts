@@ -27,7 +27,7 @@
 // assert on the sentinel import it from here (or the package root, which
 // surfaces it via this module).
 export const REDACTED_VALUE = '[REDACTED]';
-import type { ElementState, MediaMetadata } from './types';
+import type { ElementState, MediaFacts, MediaObservation } from './types';
 import { truncateCodePoints } from './text';
 
 /**
@@ -371,42 +371,77 @@ export function scrubReactProps(
 }
 
 /**
- * Field-by-field scrub for a `MediaMetadata` payload. CONTENT axis: inside a
+ * Field-by-field scrub of a media observation's facts. CONTENT axis: inside a
  * content-redaction boundary a media element's URL/text fields ARE the
  * rendered secret — a `data:image/...;base64,...` URI can be a QR code or a
- * one-time key, a signed URL carries a token in its query string, and
- * `altText` describes the sensitive image. Those collapse to the sentinel;
- * the STRUCTURAL fields (`mediaType`, dimensions, `format`, `sizes`, loading
- * state, video timing) SURVIVE so oversize / lazy-load / playback audits keep
- * working inside a redacted subtree.
- *
- * `MediaMetadata` is a shared cross-wire interface (registration metadata,
- * snapshot, discover) so its fields are NOT branded individually — this
- * container-scrub is applied at each media projection instead. Returns the
- * input untouched when the content axis does not apply (zero copy on the
- * common path).
+ * one-time key, a signed URL carries a token in its query string, `altText`
+ * describes the sensitive image, and the slot id is an attribute value. Those
+ * collapse to the sentinel, PRESENCE-preserving (a missing `alt` stays
+ * missing, so a missing-alt audit still works). The STRUCTURAL facts
+ * (`mediaType`, dimensions, effective resolution, `format`, `sizes`, loading
+ * state, weight, LCP/CLS, video timing) SURVIVE, so oversize / lazy-load /
+ * playback audits keep working inside a redacted subtree.
  */
-export function scrubMediaMetadata(
-  meta: MediaMetadata | undefined,
-  v: RedactionVerdict
-): MediaMetadata | undefined {
-  if (!meta || !v.content) return meta;
+function scrubMediaFacts(facts: MediaFacts): MediaFacts {
   return {
-    ...meta,
-    src: meta.src ? REDACTED_VALUE : meta.src,
-    altText: meta.altText ? REDACTED_VALUE : meta.altText,
-    srcset: meta.srcset ? REDACTED_VALUE : meta.srcset,
-    sources: meta.sources?.map((s) => ({
+    ...facts,
+    src: facts.src ? REDACTED_VALUE : facts.src,
+    altText: facts.altText ? REDACTED_VALUE : facts.altText,
+    srcset: facts.srcset ? REDACTED_VALUE : facts.srcset,
+    slotId: facts.slotId ? REDACTED_VALUE : facts.slotId,
+    sources: facts.sources?.map((s) => ({
       ...s,
       srcset: s.srcset ? REDACTED_VALUE : s.srcset,
     })),
-    videoState: meta.videoState
+    videoState: facts.videoState
       ? {
-          ...meta.videoState,
-          poster: meta.videoState.poster ? REDACTED_VALUE : meta.videoState.poster,
+          ...facts.videoState,
+          poster: facts.videoState.poster ? REDACTED_VALUE : facts.videoState.poster,
         }
-      : meta.videoState,
+      : facts.videoState,
   };
+}
+
+/**
+ * The ONE scrub for a media observation — and the only way to mint
+ * `Scrubbed<MediaObservation>`, the type every wire carrier of media metadata
+ * declares (`ElementState.mediaMetadata`, `DiscoveredElement.mediaMetadata`,
+ * the snapshot element). A raw capture therefore cannot reach a client
+ * without passing through here: that bypass — the registry's refresh override
+ * writing the raw capture into `state.mediaMetadata` beside a scrubbed
+ * top-level copy — is the defect this brand closes.
+ *
+ * Inside a content boundary a `measured` observation's facts are scrubbed (see
+ * {@link scrubMediaFacts}) and an `unknown` observation's `detail` collapses to
+ * the sentinel too (prose is never allowed to carry what the facts may not);
+ * the provenance — producer, times, coverage — is structural and survives.
+ * Outside a boundary the observation passes through untouched (zero copy).
+ *
+ * Fail-closed: inside a boundary, anything that is not an observation this
+ * function can read field by field (an untyped caller's legacy flat object)
+ * is DROPPED rather than passed through — a shape it cannot scrub is a shape
+ * it cannot ship.
+ */
+export function scrubMediaMetadata(
+  meta: MediaObservation | undefined,
+  v: RedactionVerdict
+): Scrubbed<MediaObservation> | undefined {
+  if (!meta) return undefined;
+  if (!v.content) return meta as Scrubbed<MediaObservation>;
+  switch (meta.status) {
+    case 'measured':
+      if (meta.value === null || typeof meta.value !== 'object') return undefined;
+      return { ...meta, value: scrubMediaFacts(meta.value) } as Scrubbed<MediaObservation>;
+    case 'unknown':
+      return {
+        ...meta,
+        unknown: { ...meta.unknown, detail: REDACTED_VALUE },
+      } as Scrubbed<MediaObservation>;
+    case 'absent':
+      return meta as Scrubbed<MediaObservation>;
+    default:
+      return undefined;
+  }
 }
 
 /**

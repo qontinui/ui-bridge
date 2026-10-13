@@ -21,6 +21,7 @@ import type { AccessibleNameSource } from './a11y';
 import type { SnapshotUndoContext } from '../undo/types';
 import type { SnapshotShortcutContext } from '../shortcuts/types';
 import type { Scrubbed } from './redaction';
+import type { Observation } from '../observation/observation';
 // Snapshot identity (plan `2026-08-20-ui-bridge-snapshot-identity-and-selector-candidates`
 // Phase 1). `snapshot-signature` imports nothing, so this creates no cycle.
 import type { SnapshotFreshness, SnapshotSignature } from './snapshot-signature';
@@ -257,8 +258,13 @@ export interface ElementState {
     max?: string;
     step?: string;
   };
-  /** Media metadata for images, video, canvas, SVG elements */
-  mediaMetadata?: MediaMetadata;
+  /**
+   * Media observation for images, video, canvas, SVG elements. Already
+   * §4.6-scrubbed against the element's own redaction verdict — the registry
+   * mints it through `scrubMediaMetadata` and nothing else can produce the
+   * brand, so a raw capture cannot ride `state` past the projection's scrub.
+   */
+  mediaMetadata?: Scrubbed<MediaObservation>;
   /** Whether this element is within the viewport bounds (separate from `visible` which also checks display/opacity) */
   inViewport?: boolean;
   /**
@@ -431,44 +437,127 @@ export interface ContentMetadata {
 export type MediaType = 'image' | 'video' | 'canvas' | 'svg' | 'picture' | 'background-image';
 
 /**
- * Metadata for media elements (images, video, canvas, SVG, etc.)
+ * A layout-shift entry (`PerformanceObserver` type `layout-shift`) that named
+ * a media element among its moved sources. Rects are viewport-relative CSS px.
  */
-export interface MediaMetadata {
-  /** Type of media element */
+export interface MediaLayoutShift {
+  /** The entry's layout-shift score (its contribution to CLS). */
+  value: number;
+  /** `PerformanceEntry.startTime` — ms since the navigation started. */
+  startTime: number;
+  /** True when the shift followed user input within 500 ms; CLS excludes those. */
+  hadRecentInput: boolean;
+  /** Where the element was before the shift. */
+  previousRect: { x: number; y: number; width: number; height: number };
+  /** Where it was after. */
+  currentRect: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * What the SDK measured about one media element (image, picture, video,
+ * canvas, SVG, `[role=img]`, or a CSS background image). It never travels
+ * bare: it is the `value` of a {@link MediaObservation}, whose provenance says
+ * who measured it, when, and which fields it could NOT measure.
+ *
+ * Reading a field — three cases, never conflated:
+ *
+ * - **present** → measured.
+ * - **absent, and its name is in `provenance.coverage.unmeasured`** → the
+ *   producer could not measure it, and the entry's `code` says why
+ *   (`input_missing`: the input was not there — no `Timing-Allow-Origin`, the
+ *   image has not loaded, no LCP entry yet; `capability_unavailable_in_build`:
+ *   the engine does not expose it — no `PerformanceObserver` entry type, no
+ *   computed-value API). Such a field is UNKNOWN: never read it as `0`,
+ *   `false` or "none".
+ * - **absent and not listed** → it does not apply to this media type (a
+ *   `fetchPriority` on an `<svg>`), or the page genuinely has none (no `alt`
+ *   attribute, no `srcset`, no slot marker).
+ *
+ * Every `coverage.unmeasured[].dimension` is spelled exactly as the field it
+ * covers, so "dimension X unmeasured" always means "field X omitted".
+ */
+export interface MediaFacts {
+  /** Type of media element. */
   mediaType: MediaType;
-  /** Source URL */
+  /** The URL the element actually displays (`currentSrc`, falling back to `src`). §4.6 content. */
   src?: string;
-  /** Alt text for accessibility */
+  /** Alt text (or the accessible label for SVG / canvas / `[role=img]`). §4.6 content. */
   altText?: string;
-  /** Whether the image is decorative (empty alt or role="presentation") */
+  /** Decorative: empty `alt`, `role="presentation"`, or an `aria-hidden` SVG. Background images always are. */
   isDecorative: boolean;
-  /** Natural (intrinsic) width in pixels */
+  /** Intrinsic width in px (`naturalWidth` / `videoWidth` / the canvas backing store). */
   naturalWidth?: number;
-  /** Natural (intrinsic) height in pixels */
+  /** Intrinsic height in px. */
   naturalHeight?: number;
-  /** Rendered width in pixels */
+  /** Rendered (border-box) width in CSS px. */
   renderedWidth: number;
-  /** Rendered height in pixels */
+  /** Rendered (border-box) height in CSS px. */
   renderedHeight: number;
-  /** Ratio of natural to rendered size (> 2.0 indicates oversized) */
-  oversizeRatio?: number;
-  /** Current loading state */
-  loadingState: 'pending' | 'loaded' | 'error' | 'lazy';
-  /** Whether the element uses lazy loading */
-  lazyLoading: boolean;
-  /** Image format (e.g., 'png', 'jpg', 'webp', 'svg+xml') */
+  /** `window.devicePixelRatio` at capture time (zoom included). */
+  devicePixelRatio?: number;
+  /**
+   * Source pixels per DEVICE pixel actually displayed: natural ÷ (displayed ×
+   * DPR). 1.0 means the image carries exactly the pixels the screen shows, 2.0
+   * means twice as many (oversized), 0.5 half (upscaled, soft). "Displayed"
+   * is the image as `object-fit` lays it out inside the content box, so a
+   * `cover` / `contain` / `none` image is measured at the scale it is really
+   * painted at; under `fill` the two axes can differ and the SMALLER is
+   * reported — the largest uniform downscale that loses no displayed detail.
+   * Replaces the DPR-blind `oversizeRatio`.
+   */
+  effectiveResolution?: number;
+  /** Computed `object-fit`. */
+  objectFit?: string;
+  /** Computed `object-position`. */
+  objectPosition?: string;
+  /** The `width` attribute, when present and a positive number. */
+  widthAttribute?: number;
+  /** The `height` attribute, when present and a positive number. */
+  heightAttribute?: number;
+  /** Computed CSS `aspect-ratio` (e.g. `auto`, `16 / 9`, `auto 1200 / 800`). */
+  aspectRatio?: string;
+  /**
+   * Whether the element's box is sized independently of the image's intrinsic
+   * size (both dimension attributes; non-auto CSS `width` and `height`; or a
+   * CSS `aspect-ratio` with one definite dimension) — i.e. whether loading the
+   * image can shift the layout. Present for `img`, `picture` and `video`, the
+   * elements whose box can wait on a network load.
+   */
+  dimsReserved?: boolean;
+  /** Current loading state. Unmeasured for a background image the page fetched no timing entry for. */
+  loadingState?: 'pending' | 'loaded' | 'error' | 'lazy';
+  /** Effective `loading` attribute (absent attribute = the spec default `eager`). */
+  loading?: 'lazy' | 'eager';
+  /** Effective `decoding` attribute (absent = `auto`). */
+  decoding?: 'sync' | 'async' | 'auto';
+  /** Effective `fetchpriority` attribute (absent = `auto`). */
+  fetchPriority?: 'high' | 'low' | 'auto';
+  /** Image format (e.g. `png`, `jpeg`, `webp`, `svg+xml`), from the response type or the URL. */
   format?: string;
-  /** Transfer size in bytes (from Performance API) */
-  transferSize?: number;
-  /** srcset attribute value */
+  /**
+   * The image's weight in bytes: the Resource Timing `encodedBodySize` of the
+   * entry for the URL it displays (or a `data:` URL's payload). Not
+   * `transferSize`, which reads 0 on every cache hit and so is vacuous on a
+   * warm page.
+   */
+  encodedBodySize?: number;
+  /** Whether this element is the page's current Largest-Contentful-Paint element. */
+  isLcpCandidate?: boolean;
+  /** The layout-shift entries that named this element as a moved source (`[]` = measured, none). */
+  clsSources?: MediaLayoutShift[];
+  /** The image slot this element fills, from `data-ui-bridge-image-slot`. §4.6 content. */
+  slotId?: string;
+  /** True when the element carries `data-ui-bridge-placeholder="true"` (a slot still showing its placeholder). */
+  placeholder?: boolean;
+  /** `srcset` attribute value. §4.6 content. */
   srcset?: string;
-  /** sizes attribute value */
+  /** `sizes` attribute value. */
   sizes?: string;
-  /** Source elements from <picture> */
+  /** `<source>` children of a `<picture>`. Their `srcset` is §4.6 content. */
   sources?: Array<{ srcset: string; media?: string; type?: string }>;
-  /** SVG viewBox attribute */
+  /** SVG `viewBox` attribute. */
   svgViewBox?: string;
-  /** Video-specific state */
+  /** Video playback state. `poster` is §4.6 content. */
   videoState?: {
     poster?: string;
     currentTime: number;
@@ -477,6 +566,22 @@ export interface MediaMetadata {
     muted: boolean;
   };
 }
+
+/** The {@link MediaFacts} fields a media observation can list in `coverage.unmeasured`. */
+export type MediaFactsDimension = Exclude<
+  keyof MediaFacts,
+  'mediaType' | 'isDecorative' | 'renderedWidth' | 'renderedHeight'
+>;
+
+/**
+ * Media metadata as every surface carries it: ONE observation per media row,
+ * not one per field, so a find over 200 images ships 200 provenance blocks
+ * rather than thousands. `measured` carries the {@link MediaFacts}; a field it
+ * could not measure is listed in `provenance.coverage.unmeasured` with its
+ * code (the row is then "degraded", which is legal); `unknown` means the
+ * capture itself failed.
+ */
+export type MediaObservation = Observation<MediaFacts>;
 
 // ============================================================================
 // Effect — the safety annotation
@@ -743,8 +848,18 @@ export interface RegisteredElement {
   category?: 'interactive' | 'content' | 'media';
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
-  /** Metadata for media elements */
-  mediaMetadata?: MediaMetadata;
+  /**
+   * The RAW media observation (in-process only). Every wire projection
+   * scrubs it with `scrubMediaMetadata` against the element's verdict.
+   */
+  mediaMetadata?: MediaObservation;
+  /**
+   * Re-capture {@link RegisteredElement.mediaMetadata} from the live element
+   * now, store it, and return it. Present on media elements registered with a
+   * refresh callback (every auto-discovered one). A function, so it never
+   * reaches a wire projection.
+   */
+  refreshMediaMetadata?: () => MediaObservation;
   /**
    * Normalized text content of a content element (whitespace collapsed,
    * trimmed). Populated by the auto-register scanner for plain content
@@ -2048,7 +2163,8 @@ export interface BridgeSnapshot {
      */
     text?: Scrubbed<string>;
     contentMetadata?: ContentMetadata;
-    mediaMetadata?: MediaMetadata;
+    /** §4.6-scrubbed media observation (see {@link MediaObservation}). */
+    mediaMetadata?: Scrubbed<MediaObservation>;
     /** Component (if any) that owns/renders this element. Prefer component actions for automation. */
     ownedByComponent?: string;
     /** Base URL template for the owning component, if present. */

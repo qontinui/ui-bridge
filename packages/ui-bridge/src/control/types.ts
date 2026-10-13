@@ -13,7 +13,7 @@ import type {
   SerializedComponentAction,
   WaitOptions,
   ContentMetadata,
-  MediaMetadata,
+  MediaObservation,
   FillResult,
   SerializedElementAction,
 } from '../core/types';
@@ -34,6 +34,7 @@ import type { Scrubbed } from '../core/redaction';
 import type { SnapshotSignature } from '../core/snapshot-signature';
 // Phase 2 (plan 2026-08-20-ui-bridge-action-declaration-shape).
 import type { ParamValidationMode } from '../core/param-schema';
+import type { FindUnevaluated } from '../core/find-filter';
 
 /**
  * Extended action request with additional options
@@ -485,8 +486,11 @@ export interface DiscoveredElement {
   classes?: string[];
   /** Metadata for content elements */
   contentMetadata?: ContentMetadata;
-  /** Metadata for media elements */
-  mediaMetadata?: MediaMetadata;
+  /**
+   * The media row's observation (see {@link MediaObservation}), §4.6-scrubbed
+   * against the element's own verdict. Absent on non-media rows.
+   */
+  mediaMetadata?: Scrubbed<MediaObservation>;
 }
 
 /**
@@ -495,7 +499,12 @@ export interface DiscoveredElement {
  * Used to find/discover controllable elements in the UI.
  */
 export interface FindRequest {
-  /** Root element selector to start from */
+  /**
+   * Keep only elements inside the element this CSS selector resolves to. A
+   * selector that resolves to nothing is refused (`UB-ELEM-NOT-FOUND`), not
+   * read as the whole page; a transport whose rows carry no DOM (a relay's
+   * cached snapshot) refuses it typed (`UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD`).
+   */
   root?: string;
   /** Only find interactive elements */
   interactiveOnly?: boolean;
@@ -515,7 +524,7 @@ export interface FindRequest {
   includeHidden?: boolean;
   /** snake_case wire alias for {@link includeHidden}. Same TRUE default. */
   include_hidden?: boolean;
-  /** Maximum elements to return */
+  /** Maximum elements to return, applied after filtering (`0` = no cap) */
   limit?: number;
   /** Filter by element type */
   types?: string[];
@@ -529,33 +538,57 @@ export interface FindRequest {
   label?: string;
   /** Filter by exact text content or label (case-insensitive, trimmed) */
   exact_text?: string;
-  /** Filter by selector */
+  /**
+   * Keep only elements matching this CSS selector (the executor also scans
+   * with it). Needs a live DOM, like `root`.
+   */
   selector?: string;
   /** Filter by data-testid attribute (exact match) */
   testId?: string;
-  /** Include content (non-interactive) elements in results */
+  /**
+   * Content (non-interactive) rows are INCLUDED unless this is `false` — the
+   * superset invariant (`src/core/find-filter.ts`).
+   */
   includeContent?: boolean;
   /** Only return content elements */
   contentOnly?: boolean;
-  /** Filter by content role */
+  /** Only return content elements with this `contentMetadata.contentRole` */
   contentRole?: string;
   /** Skip waiting for DOM to settle (default: false — endpoints wait by default) */
   skipSettle?: boolean;
   /** Max ms to wait for DOM settle (default: 500). Non-fatal on timeout. */
   settleTimeout?: number;
-  /** Include media elements in results */
+  /**
+   * Media rows (images, video, SVG, canvas, …) are INCLUDED unless this is
+   * `false` — the superset invariant. Before ui-bridge 0.31.0 the executor
+   * arm needed this flag to return any media row at all.
+   */
   includeMedia?: boolean;
   /** Only return media elements */
   mediaOnly?: boolean;
-  /** Filter media by type (e.g., 'image', 'video', 'svg') */
+  /**
+   * Only media of this type (`image`, `picture`, `video`, `svg`, `canvas`,
+   * `background-image`). Like every media-fact filter below, it selects media
+   * rows only, and is refused typed on a transport whose rows carry no media
+   * observation.
+   */
   mediaType?: string;
   /** Only return media elements that failed to load */
   brokenOnly?: boolean;
-  /** Only return images missing alt text */
+  /** Only return images with no alt text that are not decorative */
   missingAltOnly?: boolean;
-  /** Regex pattern to match against source URL */
+  /**
+   * Regex matched against the media row's `src` (ReDoS-guarded: an over-long
+   * or nested-quantifier pattern is matched as a substring). Matched against
+   * the §4.6-SCRUBBED src, so it cannot probe a redacted URL.
+   */
   srcPattern?: string;
-  /** Filter oversized images by ratio threshold (default: 2.0) */
+  /**
+   * Only media whose `effectiveResolution` (source pixels per device pixel,
+   * DPR- and object-fit-aware) is at least this — e.g. `2` for "twice the
+   * pixels the screen shows". A row whose resolution is unmeasured (not yet
+   * loaded) is KEPT, its observation saying so; a vector SVG is not.
+   */
   oversizeThreshold?: number;
 }
 
@@ -620,6 +653,16 @@ export interface FindResponse {
    * browser-side SDKs don't emit it.
    */
   registration?: SnapshotRegistrationStats;
+  /**
+   * Present when the request carried a media-fact filter (`mediaType`,
+   * `brokenOnly`, `missingAltOnly`, `srcPattern`, `oversizeThreshold`): the
+   * rows such a filter could NOT evaluate — an image whose effective
+   * resolution is unmeasured because it has not loaded, a capture that
+   * failed — with the option and the code. They are not in `elements` (a
+   * filter never passes a row it cannot evaluate) and not silently gone
+   * either. `[]` states that every row was evaluated.
+   */
+  unevaluated?: FindUnevaluated[];
 }
 
 /**
@@ -787,7 +830,8 @@ export interface ControlSnapshot {
      */
     text?: Scrubbed<string>;
     contentMetadata?: ContentMetadata;
-    mediaMetadata?: MediaMetadata;
+    /** §4.6-scrubbed media observation (see {@link MediaObservation}). */
+    mediaMetadata?: Scrubbed<MediaObservation>;
     /**
      * Live viewport-relative bounding box (CSS pixels) tracked by
      * `useUIElement`'s ResizeObserver + scroll/resize listeners. Present for

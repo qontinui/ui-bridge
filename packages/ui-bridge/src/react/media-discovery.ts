@@ -1,15 +1,25 @@
 /**
  * Media Discovery
  *
- * Discovers media elements (images, video, canvas, SVG, picture, CSS background images)
- * and generates stable IDs and metadata for AI consumption.
+ * Decides WHICH media elements register (images, video, canvas, SVG, picture,
+ * `[role=img]`, CSS background images) and under WHAT id. What is measured
+ * about each one — the observation the registry carries — lives in
+ * `media-capture.ts`.
  *
  * Follows the same pattern as content-discovery.ts — media elements get their own
- * category ('media') and metadata type (MediaMetadata).
+ * category ('media') and metadata type (a media observation).
  */
 
-import type { MediaMetadata, MediaType } from '../core/types';
 import { readAriaLabelAttr, readAltAttr, readTitleAttr } from '../core/a11y';
+import { isContentRedacted } from '../core/redaction';
+import type { UIBridgeRegistry } from '../core/registry';
+import {
+  backgroundImageUrl,
+  captureBackgroundImageMetadata,
+  captureMediaMetadata,
+  inferMediaType,
+  transcodedSourceUrl,
+} from './media-capture';
 
 // ============================================================================
 // Configuration
@@ -34,16 +44,14 @@ export interface MediaDiscoveryOptions {
 // ============================================================================
 
 /**
- * CSS selectors for media elements
+ * CSS selectors for media elements.
+ *
+ * `<picture>` is deliberately absent: it is a container for the `<img>` that
+ * paints, which IS matched, and is registered as the picture (`mediaType:
+ * 'picture'`, with the `<source>` list). Listing both registered one image
+ * twice.
  */
-export const MEDIA_SELECTORS = [
-  'img',
-  'svg:not(button svg)',
-  'picture',
-  'video',
-  'canvas',
-  '[role="img"]',
-];
+export const MEDIA_SELECTORS = ['img', 'svg:not(button svg)', 'video', 'canvas', '[role="img"]'];
 
 /**
  * CSS selectors for elements that should always be excluded from media discovery
@@ -98,12 +106,17 @@ function isInteractiveElement(element: HTMLElement): boolean {
 }
 
 /**
- * Check if an element should be registered as media
+ * Check if an element should be registered as media.
+ *
+ * `isRegistered` answers by ELEMENT identity, never by derived id: two images
+ * that derive the same id (a shared alt, two alt-less `next/image`s) are two
+ * images, and the second one used to be skipped here as a "duplicate" — which
+ * left it invisible to every media find and audit.
  */
 export function shouldRegisterMedia(
   element: HTMLElement,
   _options: MediaDiscoveryOptions = {},
-  registeredIds: Set<string>
+  isRegistered: (element: HTMLElement) => boolean
 ): boolean {
   // Check exclusion selectors
   for (const sel of MEDIA_EXCLUDE_SELECTORS) {
@@ -131,222 +144,28 @@ export function shouldRegisterMedia(
     }
   }
 
-  // Check if already registered
-  const id = generateMediaId(element);
-  if (registeredIds.has(id)) {
-    return false;
-  }
-
-  return true;
+  return !isRegistered(element);
 }
 
-// ============================================================================
-// Metadata Capture
-// ============================================================================
-
-/**
- * Infer image format from URL or content type
- */
-function inferFormat(src: string | undefined): string | undefined {
-  if (!src) return undefined;
-  // Data URLs
-  const dataMatch = src.match(/^data:image\/([^;,]+)/);
-  if (dataMatch) return dataMatch[1];
-  // File extension
-  const extMatch = src.match(/\.([a-z0-9]+)(?:\?|#|$)/i);
-  if (extMatch) {
-    const ext = extMatch[1].toLowerCase();
-    const formatMap: Record<string, string> = {
-      jpg: 'jpeg',
-      jpeg: 'jpeg',
-      png: 'png',
-      gif: 'gif',
-      webp: 'webp',
-      avif: 'avif',
-      svg: 'svg+xml',
-      bmp: 'bmp',
-      ico: 'ico',
-    };
-    return formatMap[ext] || ext;
-  }
-  return undefined;
+/** Whether `element` paints a CSS `url(...)` background image. */
+export function hasBackgroundImage(element: Element): boolean {
+  return backgroundImageUrl(element) !== undefined;
 }
 
 /**
- * Get transfer size from Performance API for a resource URL
- */
-function getTransferSize(src: string | undefined): number | undefined {
-  if (!src || typeof performance === 'undefined') return undefined;
-  try {
-    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].name === src || entries[i].name.endsWith(src)) {
-        return entries[i].transferSize || undefined;
-      }
-    }
-  } catch {
-    // Performance API not available
-  }
-  return undefined;
-}
-
-/**
- * Capture comprehensive metadata from a media element
- */
-export function captureMediaMetadata(element: HTMLElement): MediaMetadata {
-  const tag = element.tagName.toLowerCase();
-  const rect = element.getBoundingClientRect();
-
-  const base: MediaMetadata = {
-    mediaType: inferMediaType(element),
-    isDecorative: false,
-    renderedWidth: rect.width,
-    renderedHeight: rect.height,
-    loadingState: 'loaded',
-    lazyLoading: false,
-  };
-
-  if (tag === 'img') {
-    const img = element as HTMLImageElement;
-    base.src = img.currentSrc || img.src || undefined;
-    base.altText = img.alt || undefined;
-    base.isDecorative = img.alt === '' || img.getAttribute('role') === 'presentation';
-    base.naturalWidth = img.naturalWidth || undefined;
-    base.naturalHeight = img.naturalHeight || undefined;
-    base.lazyLoading = img.loading === 'lazy';
-    base.format = inferFormat(base.src);
-    base.transferSize = getTransferSize(img.src);
-
-    // Compute oversize ratio
-    if (img.naturalWidth && img.naturalHeight && rect.width > 0 && rect.height > 0) {
-      const widthRatio = img.naturalWidth / rect.width;
-      const heightRatio = img.naturalHeight / rect.height;
-      base.oversizeRatio = Math.max(widthRatio, heightRatio);
-    }
-
-    // Loading state
-    if (!img.complete) {
-      base.loadingState = img.loading === 'lazy' ? 'lazy' : 'pending';
-    } else if (img.naturalWidth === 0 && img.src) {
-      base.loadingState = 'error';
-    } else {
-      base.loadingState = 'loaded';
-    }
-
-    // Srcset and sizes
-    if (img.srcset) base.srcset = img.srcset;
-    if (img.sizes) base.sizes = img.sizes;
-  }
-
-  if (tag === 'picture') {
-    const img = element.querySelector('img');
-    if (img) {
-      const imgMeta = captureMediaMetadata(img);
-      Object.assign(base, imgMeta);
-      base.mediaType = 'picture';
-    }
-    // Capture <source> elements
-    const sources = element.querySelectorAll('source');
-    if (sources.length > 0) {
-      base.sources = Array.from(sources).map((source) => ({
-        srcset: source.srcset,
-        media: source.media || undefined,
-        type: source.type || undefined,
-      }));
-    }
-  }
-
-  if (tag === 'svg') {
-    base.svgViewBox = element.getAttribute('viewBox') || undefined;
-    base.altText =
-      readAriaLabelAttr(element) ||
-      element.querySelector('title')?.textContent ||
-      undefined;
-    base.isDecorative =
-      element.getAttribute('aria-hidden') === 'true' ||
-      element.getAttribute('role') === 'presentation';
-    // SVGs are always "loaded"
-    base.loadingState = 'loaded';
-  }
-
-  if (tag === 'video') {
-    const video = element as HTMLVideoElement;
-    base.src = video.currentSrc || video.src || undefined;
-    base.altText = readAriaLabelAttr(video) || undefined;
-    base.naturalWidth = video.videoWidth || undefined;
-    base.naturalHeight = video.videoHeight || undefined;
-    base.format = inferFormat(base.src);
-
-    if (video.videoWidth && video.videoHeight && rect.width > 0 && rect.height > 0) {
-      base.oversizeRatio = Math.max(video.videoWidth / rect.width, video.videoHeight / rect.height);
-    }
-
-    base.loadingState = video.readyState >= 2 ? 'loaded' : 'pending';
-
-    base.videoState = {
-      poster: video.poster || undefined,
-      currentTime: video.currentTime,
-      duration: video.duration || 0,
-      paused: video.paused,
-      muted: video.muted,
-    };
-  }
-
-  if (tag === 'canvas') {
-    const canvas = element as HTMLCanvasElement;
-    base.naturalWidth = canvas.width;
-    base.naturalHeight = canvas.height;
-    base.altText = readAriaLabelAttr(element) || element.textContent?.trim() || undefined;
-    base.loadingState = 'loaded';
-  }
-
-  // Check role="img" on non-standard elements
-  if (element.getAttribute('role') === 'img') {
-    base.altText = base.altText || readAriaLabelAttr(element) || undefined;
-    base.isDecorative = !base.altText && element.getAttribute('aria-hidden') === 'true';
-  }
-
-  return base;
-}
-
-/**
- * Capture metadata for an element with a CSS background image
- */
-export function captureBackgroundImageMetadata(element: HTMLElement): MediaMetadata | null {
-  const style = window.getComputedStyle(element);
-  const bgImage = style.backgroundImage;
-
-  if (!bgImage || bgImage === 'none') return null;
-
-  // Extract URL from url("...")
-  const urlMatch = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
-  if (!urlMatch) return null;
-
-  const src = urlMatch[1];
-  const rect = element.getBoundingClientRect();
-
-  return {
-    mediaType: 'background-image',
-    src,
-    isDecorative: true, // background images are decorative by default
-    renderedWidth: rect.width,
-    renderedHeight: rect.height,
-    loadingState: 'loaded',
-    lazyLoading: false,
-    format: inferFormat(src),
-    transferSize: getTransferSize(src),
-  };
-}
-
-/**
- * Find elements with CSS background images in a subtree.
+ * Find elements with CSS background images in a subtree (the root itself is
+ * not visited — check it with {@link hasBackgroundImage}).
  *
  * Walks visible elements checking `getComputedStyle(el).backgroundImage`.
- * Skips elements already matched by standard media selectors.
+ * Skips elements already matched by standard media selectors. `maxVisited`
+ * bounds the walk itself: every visited node costs a style read, and a
+ * mutation-path scan must not turn one class change on a large subtree into a
+ * full-document style pass.
  */
 export function findBackgroundImageElements(
   root: HTMLElement,
-  maxElements: number = 50
+  maxElements: number = 50,
+  maxVisited: number = Number.POSITIVE_INFINITY
 ): HTMLElement[] {
   const results: HTMLElement[] = [];
   const mediaTags = new Set(['img', 'svg', 'picture', 'video', 'canvas']);
@@ -364,67 +183,15 @@ export function findBackgroundImageElements(
     },
   });
 
+  let visited = 0;
   let node: Node | null;
-  while ((node = walker.nextNode()) && results.length < maxElements) {
+  while (results.length < maxElements && visited < maxVisited && (node = walker.nextNode())) {
+    visited++;
     const el = node as HTMLElement;
-    const bgImage = window.getComputedStyle(el).backgroundImage;
-    if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
-      results.push(el);
-    }
+    if (hasBackgroundImage(el)) results.push(el);
   }
 
   return results;
-}
-
-/**
- * Generate a stable ID for a background-image element
- */
-export function generateBackgroundImageId(element: HTMLElement): string {
-  const explicitId = element.getAttribute('data-media-id');
-  if (explicitId) return explicitId;
-
-  const src = window.getComputedStyle(element).backgroundImage;
-  const urlMatch = src?.match(/url\(["']?([^"')]+)["']?\)/);
-  if (urlMatch) {
-    const filename = urlMatch[1].split('/').pop()?.split('?')[0]?.split('#')[0];
-    if (filename) {
-      const name = filename.replace(/\.[^.]+$/, '');
-      const slug = slugify(name, 20);
-      if (slug) return `bg-${slug}`;
-    }
-  }
-
-  const context = getAncestorContext(element);
-  if (context) return `bg-${context}`;
-
-  const parent = element.parentElement;
-  if (parent) {
-    const idx = Array.from(parent.children).indexOf(element);
-    return `bg-child-${idx}`;
-  }
-
-  return `bg-root`;
-}
-
-/**
- * Infer the media type from a DOM element
- */
-function inferMediaType(element: HTMLElement): MediaType {
-  const tag = element.tagName.toLowerCase();
-  switch (tag) {
-    case 'img':
-      return 'image';
-    case 'svg':
-      return 'svg';
-    case 'video':
-      return 'video';
-    case 'canvas':
-      return 'canvas';
-    case 'picture':
-      return 'picture';
-    default:
-      return 'image'; // role="img" or other
-  }
 }
 
 // ============================================================================
@@ -444,9 +211,11 @@ function slugify(text: string, maxLength: number = 30): string {
 }
 
 /**
- * Get context from ancestor elements for disambiguation
+ * Get context from ancestor elements for disambiguation. Inside a §4.6
+ * redaction boundary a landmark's `aria-label` is content, so only its role
+ * is used.
  */
-function getAncestorContext(element: HTMLElement): string | undefined {
+function getAncestorContext(element: HTMLElement, redacted: boolean): string | undefined {
   let current = element.parentElement;
   let depth = 0;
   while (current && depth < 5) {
@@ -461,7 +230,7 @@ function getAncestorContext(element: HTMLElement): string | undefined {
       role &&
       ['main', 'banner', 'navigation', 'dialog', 'tabpanel', 'article', 'section'].includes(role)
     ) {
-      const label = readAriaLabelAttr(current);
+      const label = redacted ? null : readAriaLabelAttr(current);
       return label ? slugify(`${role}-${label}`, 20) : role;
     }
 
@@ -484,15 +253,47 @@ function getSiblingIndex(element: HTMLElement): number | undefined {
 }
 
 /**
- * Generate a stable, deterministic ID for a media element
+ * The file name a source URL names: `/img/hero.png?v=2` → `hero.png`. An
+ * image-optimizer URL (`/_next/image?url=%2Fimg%2Fhero.png&w=1920`) is read
+ * through to the source it transcodes — before this, every alt-less
+ * `next/image` on a page derived the one id `img-image`. A `data:` / `blob:`
+ * URL names no file (its "file name" would be a slice of the payload).
+ */
+function sourceFileName(url: string): string | undefined {
+  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return undefined;
+  const inner = transcodedSourceUrl(url);
+  if (inner) return sourceFileName(inner);
+  const filename = url.split('/').pop()?.split('?')[0]?.split('#')[0];
+  if (!filename) return undefined;
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
+}
+
+/** The file stem a source URL names, for an id: `/img/hero.png?v=2` → `hero`. */
+function sourceStem(url: string): string | undefined {
+  return sourceFileName(url)?.replace(/\.[^.]+$/, '') || undefined;
+}
+
+/**
+ * Generate a stable, deterministic BASE id for a media element. Two elements
+ * can share a base id; {@link disambiguateMediaId} makes the registered id
+ * unique.
  *
  * Format: {mediaType}-{label|context}[-{index}]
+ *
+ * Inside a §4.6 redaction boundary the alt / aria-label / title / source are
+ * the secret (a QR code's alt, a signed URL's file name), so they are never
+ * slugged into the id; the id falls back to structural context.
  *
  * Examples:
  *   <img alt="Company logo"> → "img-company-logo"
  *   <svg aria-label="Close icon"> → "svg-close-icon"
  *   <video> in hero section → "video-hero"
  *   3rd img in a gallery → "img-gallery-2"
+ *   <img src="/_next/image?url=%2Fhero.png&w=1920"> → "img-hero"
  */
 export function generateMediaId(element: HTMLElement): string {
   // Respect explicit data-media-id if present
@@ -501,41 +302,43 @@ export function generateMediaId(element: HTMLElement): string {
 
   const tag = element.tagName.toLowerCase();
   const prefix = tag === 'picture' ? 'picture' : tag;
+  const redacted = isContentRedacted(element);
+  // A <picture> carries its alt and source on its <img>.
+  const imageHalf = tag === 'picture' ? (element.querySelector('img') ?? element) : element;
 
-  // Try alt text
-  const alt = readAltAttr(element);
-  if (alt && alt.trim()) {
-    const slug = slugify(alt.trim());
-    if (slug) return `${prefix}-${slug}`;
-  }
+  if (!redacted) {
+    // Try alt text
+    const alt = readAltAttr(imageHalf);
+    if (alt && alt.trim()) {
+      const slug = slugify(alt.trim());
+      if (slug) return `${prefix}-${slug}`;
+    }
 
-  // Try aria-label
-  const ariaLabel = readAriaLabelAttr(element);
-  if (ariaLabel) {
-    const slug = slugify(ariaLabel);
-    if (slug) return `${prefix}-${slug}`;
-  }
+    // Try aria-label
+    const ariaLabel = readAriaLabelAttr(element);
+    if (ariaLabel) {
+      const slug = slugify(ariaLabel);
+      if (slug) return `${prefix}-${slug}`;
+    }
 
-  // Try title
-  const title = readTitleAttr(element);
-  if (title) {
-    const slug = slugify(title);
-    if (slug) return `${prefix}-${slug}`;
-  }
+    // Try title
+    const title = readTitleAttr(element);
+    if (title) {
+      const slug = slugify(title);
+      if (slug) return `${prefix}-${slug}`;
+    }
 
-  // Try src filename
-  const src = (element as HTMLImageElement).src || element.getAttribute('src');
-  if (src) {
-    const filename = src.split('/').pop()?.split('?')[0]?.split('#')[0];
-    if (filename) {
-      const name = filename.replace(/\.[^.]+$/, ''); // strip extension
-      const slug = slugify(name, 20);
+    // Try the source's file name
+    const src = imageHalf.getAttribute('src') ?? '';
+    const stem = sourceStem(src);
+    if (stem) {
+      const slug = slugify(stem, 20);
       if (slug) return `${prefix}-${slug}`;
     }
   }
 
   // Use ancestor context + sibling index
-  const context = getAncestorContext(element);
+  const context = getAncestorContext(element, redacted);
   const siblingIdx = getSiblingIndex(element);
 
   if (context && siblingIdx !== undefined) {
@@ -556,4 +359,93 @@ export function generateMediaId(element: HTMLElement): string {
   }
 
   return `${prefix}-root`;
+}
+
+/**
+ * Generate a stable BASE id for a background-image element (see
+ * {@link generateMediaId} for the redaction and uniqueness rules).
+ */
+export function generateBackgroundImageId(element: HTMLElement): string {
+  const explicitId = element.getAttribute('data-media-id');
+  if (explicitId) return explicitId;
+
+  const redacted = isContentRedacted(element);
+  if (!redacted) {
+    const stem = sourceStem(backgroundImageUrl(element) ?? '');
+    if (stem) {
+      const slug = slugify(stem, 20);
+      if (slug) return `bg-${slug}`;
+    }
+  }
+
+  const context = getAncestorContext(element, redacted);
+  if (context) return `bg-${context}`;
+
+  const parent = element.parentElement;
+  if (parent) {
+    const idx = Array.from(parent.children).indexOf(element);
+    return `bg-child-${idx}`;
+  }
+
+  return `bg-root`;
+}
+
+/**
+ * The registered id for a media element whose base id may already be taken by
+ * ANOTHER element: the base id when free, else the first free `-2`, `-3`, …
+ * suffix. Registration walks the DOM in document order, so the first image
+ * keeps the bare id and later ones are numbered in page order.
+ */
+export function disambiguateMediaId(baseId: string, isTaken: (id: string) => boolean): string {
+  if (!isTaken(baseId)) return baseId;
+  for (let n = 2; ; n++) {
+    const candidate = `${baseId}-${n}`;
+    if (!isTaken(candidate)) return candidate;
+  }
+}
+
+/**
+ * Register one media element into `registry` — the ONE media registration
+ * both scanners use: the React hook (`useAutoRegister`) and the injected
+ * runtime's DOM seeder (`injected/seed-registry.ts`). A page driven through
+ * inject-cli therefore carries the same media rows, ids and observations as
+ * an instrumented app; before, the injected runtime registered no media at
+ * all, so every media find there answered with nothing.
+ *
+ * The id is the element's base id disambiguated against the registry; the
+ * observation is captured now and re-captured on every read
+ * (`refreshMetadata`). Returns the registered id, or `null` when the element
+ * paints no media (a background capture with no `url()`).
+ */
+export function registerMediaInRegistry(
+  registry: UIBridgeRegistry,
+  element: HTMLElement
+): string | null {
+  const isStandardMedia = element.matches(MEDIA_SELECTORS.join(', '));
+  const metadata = isStandardMedia
+    ? captureMediaMetadata(element)
+    : captureBackgroundImageMetadata(element);
+  if (!metadata) return null;
+
+  const baseId = isStandardMedia ? generateMediaId(element) : generateBackgroundImageId(element);
+  // Every image registers: two images that derive the same base id (a shared
+  // alt, two alt-less `next/image`s) are two images, so the later one takes
+  // the next free numbered id rather than being dropped as a "duplicate".
+  const id = disambiguateMediaId(baseId, (candidate) => {
+    const holder = registry.getElement(candidate);
+    return holder !== undefined && holder.element !== element;
+  });
+
+  const facts = metadata.status === 'measured' ? metadata.value : undefined;
+  const refresh = isStandardMedia
+    ? captureMediaMetadata
+    : (el: HTMLElement) => captureBackgroundImageMetadata(el) ?? metadata;
+  registry.registerMediaElement(id, element, {
+    mediaType: facts?.mediaType ?? (isStandardMedia ? inferMediaType(element) : 'background-image'),
+    mediaMetadata: metadata,
+    // Scraped (alt text, or the file name): every projection scrubs it.
+    label: facts?.altText || (facts?.src ? sourceFileName(facts.src) : undefined) || undefined,
+    refreshMetadata: refresh,
+  });
+  return id;
 }

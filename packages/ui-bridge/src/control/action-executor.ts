@@ -195,15 +195,36 @@ import type {
   ControlBatchStep,
   ControlBatchResponse,
 } from './types';
+import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
+import { mediaFactsOf } from '../core/media-observation';
 
 /**
- * Detects regex patterns with nested quantifiers that can cause catastrophic
- * backtracking (ReDoS). Matches constructs like (a+)+, (a*)+, (a+)*, etc.
+ * What `find()`'s DOM scan matches when the caller passes no `selector`: the
+ * elements a user can operate. Registry elements outside this list (content,
+ * media, a `[data-ui-bridge-id]` div) join the candidate set separately.
  */
-export function hasNestedQuantifiers(pattern: string): boolean {
-  // Matches a group containing a quantifier (+, *, {n,}) followed by another quantifier
-  return /(\((?:[^()]*[+*}])[^()]*\))[+*?]|\(\?:[^()]*[+*}][^()]*\)[+*?]/.test(pattern);
-}
+const EXECUTOR_SCAN_SELECTORS = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  '[onclick]',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="menuitem"]',
+  '[role="tab"]',
+  '[role="switch"]',
+  '[tabindex]:not([tabindex="-1"])',
+  '[contenteditable="true"]',
+  '[data-ui-element]',
+  '[data-testid]',
+].join(', ');
+
+/** A `find()` row plus the node the canonical filter's DOM predicates read. */
+type ExecutorFindCandidate = DiscoveredElement & { element: HTMLElement };
 
 /**
  * Set of supported built-in action names for early validation.
@@ -2212,7 +2233,24 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
-   * Find controllable elements
+   * Find controllable elements.
+   *
+   * The CANDIDATE set is this arm's own: every element the DOM scan reaches
+   * (`selector`, or the interactive selectors) under `root`, plus every
+   * registry element the scan did not reach — content rows, media rows, and
+   * registered interactive elements outside the selector list. Every FILTER
+   * is the canonical one (`core/find-filter.ts`): the same predicates,
+   * defaults and typed refusals as the server handler and both relay arms.
+   *
+   * Until plan 2026-10-13-image-generation-and-visual-judgment (Phase 5) this
+   * method kept a private copy of every predicate, and they had drifted:
+   * `includeHidden` defaulted to FALSE against its documented TRUE, `mediaOnly`
+   * still returned every interactive row, and content and media rows needed
+   * opt-in flags the other arms did not. Media rows are now IN unless the
+   * caller passes `includeMedia: false` — the superset invariant.
+   *
+   * @throws {FindRefusalError} for a request the canonical filter refuses; it
+   *   carries the typed `code` every error-to-response mapper reads.
    */
   async find(options?: FindRequest): Promise<FindResponse> {
     // Clear the discovery cache so IDs are re-generated deterministically
@@ -2220,318 +2258,61 @@ export class DefaultActionExecutor implements ActionExecutor {
     this.discoveryCache.clear();
 
     const startTime = performance.now();
-    const elements: DiscoveredElement[] = [];
+    const criteria = options ?? {};
 
-    // Get root element
-    let root: HTMLElement = document.body;
-    if (options?.root) {
-      const rootEl = document.querySelector<HTMLElement>(options.root);
-      if (rootEl) root = rootEl;
-    }
+    // Category pre-pruning. Exact, never semantic: a request that can only
+    // match media (or content) rows skips BUILDING the rows the filter would
+    // discard anyway — building one costs a full element-state read. The
+    // canonical filter still decides every row, and still refuses a request
+    // that contradicts itself.
+    const mediaFacts =
+      criteria.mediaType != null ||
+      criteria.brokenOnly === true ||
+      criteria.missingAltOnly === true ||
+      criteria.srcPattern != null ||
+      criteria.oversizeThreshold != null;
+    const mediaOnly = criteria.mediaOnly === true || mediaFacts;
+    const contentOnly = criteria.contentOnly === true || criteria.contentRole != null;
+    const interactiveOnly =
+      (criteria.interactive_only ?? criteria.interactiveOnly) === true;
+    const scanDom = !mediaOnly && !contentOnly;
+    const keepContent = !interactiveOnly && !mediaOnly && criteria.includeContent !== false;
+    const keepMedia = !interactiveOnly && !contentOnly && criteria.includeMedia !== false;
 
-    // Find interactive elements (unless contentOnly is set)
-    if (!options?.contentOnly) {
-      const interactiveSelectors = [
-        'a[href]',
-        'button',
-        'input',
-        'select',
-        'textarea',
-        '[onclick]',
-        '[role="button"]',
-        '[role="link"]',
-        '[role="checkbox"]',
-        '[role="radio"]',
-        '[role="menuitem"]',
-        '[role="tab"]',
-        '[role="switch"]',
-        '[tabindex]:not([tabindex="-1"])',
-        '[contenteditable="true"]',
-        '[data-ui-element]',
-        '[data-testid]',
-      ];
-
-      const selector = options?.selector || interactiveSelectors.join(', ');
-      const foundElements = root.querySelectorAll<HTMLElement>(selector);
-
-      for (const el of foundElements) {
-        if (options?.limit && elements.length >= options.limit) break;
-
-        const state = getElementState(el);
-
-        // Filter by visibility
-        if (!options?.includeHidden && !state.visible) continue;
-
-        // Filter by type
-        if (options?.types) {
-          const type = this.inferElementType(el);
-          if (!options.types.includes(type)) continue;
-        }
-
-        // Filter by element_type (single string alias for types)
-        if (options?.element_type) {
-          const type = this.inferElementType(el);
-          if (type !== options.element_type) continue;
-        }
-
-        // Filter by role (match ARIA role attribute OR inferred UI Bridge type)
-        if (options?.role) {
-          const roleLc = options.role.toLowerCase();
-          const elRole = el.getAttribute('role')?.toLowerCase();
-          const inferredType = this.inferElementType(el).toLowerCase();
-          if (elRole !== roleLc && inferredType !== roleLc) continue;
-        }
-
-        // Filter by text (matches label, textContent, or accessible name)
-        if (options?.text) {
-          const searchText = options.text.toLowerCase();
-          const label = this.getElementLabel(el)?.toLowerCase() || '';
-          const textContent = (state.textContent || '').toLowerCase();
-          const accessibleName = this.getAccessibleName(el)?.toLowerCase() || '';
-          if (
-            !label.includes(searchText) &&
-            !textContent.includes(searchText) &&
-            !accessibleName.includes(searchText)
-          ) {
-            continue;
-          }
-        }
-
-        // Filter by label (case-insensitive partial match)
-        if (options?.label) {
-          const labelLc = options.label.toLowerCase();
-          const elLabel = (this.getElementLabel(el) || '').toLowerCase();
-          if (!elLabel.includes(labelLc)) continue;
-        }
-
-        // Filter by exact_text (case-insensitive exact match on label or textContent)
-        if (options?.exact_text) {
-          const exactLc = options.exact_text.toLowerCase();
-          const elLabel = (this.getElementLabel(el) || '').toLowerCase();
-          const elText = (state.textContent || '').trim().toLowerCase();
-          if (elLabel !== exactLc && elText !== exactLc) continue;
-        }
-
-        // Filter by interactiveOnly — keep only elements that are interactive by type or have actions
-        if (options?.interactiveOnly) {
-          const interactiveTypes = new Set([
-            'button',
-            'input',
-            'select',
-            'textarea',
-            'link',
-            'checkbox',
-            'radio',
-          ]);
-          const elType = this.inferElementType(el);
-          const elActions = this.inferActions(el);
-          if (!interactiveTypes.has(elType) && elActions.length === 0) continue;
-        }
-
-        // Check if registered
+    const candidates: ExecutorFindCandidate[] = [];
+    const scanned = new Set<Element>();
+    if (scanDom) {
+      for (const el of this.scanFindCandidates(criteria.root, criteria.selector)) {
         const registered = this.registry.findByDOMElement(el);
-
-        const id = registered?.id || this.getElementId(el);
-
-        // Cache unregistered elements so executeAction can resolve them later
-        if (!registered) {
-          this.discoveryCache.set(id, el);
-          this.evictDiscoveryCache();
-        }
-
-        elements.push({
-          id,
-          type: registered?.type || this.inferElementType(el),
-          // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
-          // scraped origin (resolved design decision — one field can't
-          // discriminate, and a dev who wraps a subtree intends it hidden). A
-          // bare password field keeps its label; a boundary redacts it.
-          label: scrubContent(registered?.label ?? this.getElementLabel(el), el),
-          tagName: el.tagName.toLowerCase(),
-          role: el.getAttribute('role') || undefined,
-          accessibleName: scrubContent(this.getAccessibleName(el), el),
-          actions: registered?.actions || this.inferActions(el),
-          // The element's APP-DEFINED actions, kept in their own field rather
-          // than merged into `actions` — the canonical split. Without this a
-          // discover consumer reads `actions: []` off a pane that in fact
-          // dispatches five custom actions and concludes it supports nothing;
-          // `POST /element/<id>/action` was executing them the whole time.
-          // Absent for a DOM-scanned node: it has no registration to carry
-          // them.
-          //
-          // Routed through the ONE canonical projection rather than spelled
-          // inline: the wire shape widened from bare names to
-          // `SerializedElementAction` objects on 2026-09-11, and every inline
-          // copy of `Object.keys(...)` became a silent divergence the moment it
-          // did. Calling the helper is what keeps this producer correct across
-          // the NEXT such change.
-          customActions: serializeElementCustomActions(registered?.customActions),
-          state,
-          registered: !!registered,
-          // WHICH MOUNT this element belongs to — the only field that makes a
-          // same-shape remount visible to anything folding this payload. Copied
-          // off the registry record, and deliberately left ABSENT for a
-          // DOM-scanned node: it has no registration time, and synthesizing one
-          // would churn the generation fold on every call. See
-          // `DiscoveredElement.registeredAt`.
-          registeredAt: registered?.registeredAt,
-          category: registered?.category || 'interactive',
-          className: classString(el) || undefined,
-          classes: el.classList?.length > 0 ? Array.from(el.classList) : undefined,
-          contentMetadata: registered?.contentMetadata,
-        });
+        // Registered content / media elements are projected by their own
+        // category's builder in the registry pass below.
+        if (registered?.category === 'content' || registered?.category === 'media') continue;
+        candidates.push(this.scannedFindRow(el, registered));
+        scanned.add(el);
+      }
+    }
+    for (const registered of this.registry.getAllElements()) {
+      if (scanned.has(registered.element)) continue;
+      if (registered.category === 'content') {
+        if (keepContent) candidates.push(this.contentFindRow(registered));
+      } else if (registered.category === 'media') {
+        if (keepMedia) candidates.push(this.mediaFindRow(registered));
+      } else if (scanDom) {
+        // Registered, but outside the selector list (a `[data-ui-bridge-id]`
+        // div): the snapshot carries it, so find must too.
+        candidates.push(this.scannedFindRow(registered.element, registered));
       }
     }
 
-    // Include content elements when explicitly requested or when interactiveOnly is false
-    if (options?.includeContent || options?.contentOnly || options?.interactiveOnly === false) {
-      const contentElements = this.registry.getAllContentElements();
-      for (const el of contentElements) {
-        if (options?.limit && elements.length >= options.limit) break;
-
-        const state = el.getState();
-
-        // Filter by visibility
-        if (!options?.includeHidden && !state.visible) continue;
-
-        // Filter by content role
-        if (options?.contentRole && el.contentMetadata?.contentRole !== options.contentRole) {
-          continue;
-        }
-
-        // Filter by label (case-insensitive partial match)
-        if (options?.label) {
-          const labelLc = options.label.toLowerCase();
-          const elLabel = (el.label || '').toLowerCase();
-          if (!elLabel.includes(labelLc)) continue;
-        }
-
-        // Filter by exact_text (case-insensitive exact match on label or textContent)
-        if (options?.exact_text) {
-          const exactLc = options.exact_text.toLowerCase();
-          const elLabel = (el.label || '').toLowerCase();
-          const elText = (state.textContent || '').trim().toLowerCase();
-          if (elLabel !== exactLc && elText !== exactLc) continue;
-        }
-
-        // Content elements: scrub the label ONCE against the live node
-        // (auto-registered content labels can be DOM-derived; a boundary
-        // redacts them) and reuse it for `accessibleName`.
-        const scrubbedContentLabel = scrubContent(el.label, el.element);
-        elements.push({
-          id: el.id,
-          type: el.type,
-          label: scrubbedContentLabel,
-          tagName: el.element.tagName.toLowerCase(),
-          role: el.element.getAttribute('role') || undefined,
-          accessibleName: scrubbedContentLabel ?? state.textContent,
-          actions: [],
-          // A content element carries no BUILT-IN actions, but a consumer may
-          // still have declared custom ones on it, and `executeAction`
-          // dispatches those. Same canonical projection as the interactive
-          // block and as `serializeRegisteredElement`, which emits this for
-          // every category.
-          customActions: serializeElementCustomActions(el.customActions),
-          state,
-          registered: true,
-          // See the interactive block above — mount identity, always real here
-          // because a content element only reaches this loop via the registry.
-          registeredAt: el.registeredAt,
-          category: 'content',
-          className: classString(el.element) || undefined,
-          classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
-          contentMetadata: el.contentMetadata,
-        });
-      }
-    }
-
-    // Include media elements from registry when requested
-    if (options?.includeMedia || options?.mediaOnly) {
-      const mediaElements = this.registry.getAllMediaElements();
-      for (const el of mediaElements) {
-        if (options?.limit && elements.length >= options.limit) break;
-
-        const state = el.getState();
-
-        // Filter by visibility
-        if (!options?.includeHidden && !state.visible) continue;
-
-        // Re-capture media metadata to detect loading transitions
-        const meta = el.mediaMetadata;
-
-        // Filter by media type
-        if (options?.mediaType && meta?.mediaType !== options.mediaType) continue;
-
-        // Filter broken only
-        if (options?.brokenOnly && meta?.loadingState !== 'error') continue;
-
-        // Filter missing alt only
-        if (options?.missingAltOnly) {
-          if (meta?.altText !== undefined && meta?.altText !== null) continue;
-          if (meta?.isDecorative) continue; // decorative images intentionally have no alt
-        }
-
-        // Filter by source pattern (with ReDoS protection)
-        if (options?.srcPattern && meta?.src) {
-          if (options.srcPattern.length > 200 || hasNestedQuantifiers(options.srcPattern)) {
-            // Pattern too long or has nested quantifiers (ReDoS risk) — fall back to substring match
-            if (!meta.src.includes(options.srcPattern)) continue;
-          } else {
-            try {
-              const regex = new RegExp(options.srcPattern);
-              if (!regex.test(meta.src)) continue;
-            } catch {
-              // Invalid regex — fall back to substring match
-              if (!meta.src.includes(options.srcPattern)) continue;
-            }
-          }
-        }
-
-        // Filter oversized
-        if (options?.oversizeThreshold && meta?.oversizeRatio) {
-          if (meta.oversizeRatio < options.oversizeThreshold) continue;
-        }
-
-        // Filter by label (case-insensitive partial match)
-        if (options?.label) {
-          const labelLc = options.label.toLowerCase();
-          const elLabel = (el.label || '').toLowerCase();
-          if (!elLabel.includes(labelLc)) continue;
-        }
-
-        // Filter by exact_text (case-insensitive exact match on label or alt text)
-        if (options?.exact_text) {
-          const exactLc = options.exact_text.toLowerCase();
-          const elLabel = (el.label || '').toLowerCase();
-          const altText = (meta?.altText || '').toLowerCase();
-          if (elLabel !== exactLc && altText !== exactLc) continue;
-        }
-
-        elements.push({
-          id: el.id,
-          type: el.type,
-          label: scrubContent(el.label, el.element),
-          tagName: el.element.tagName.toLowerCase(),
-          role: el.element.getAttribute('role') || undefined,
-          // altText is CONTENT — a redacted <img>'s alt describes the secret;
-          // its src/srcset/poster ARE the rendered secret (scrubbed below).
-          accessibleName: scrubContent(el.label || meta?.altText, el.element),
-          actions: [],
-          // See the content block above — no built-in actions, but declared
-          // custom ones are dispatchable and must be advertised.
-          customActions: serializeElementCustomActions(el.customActions),
-          state,
-          registered: true,
-          // See the interactive block above — mount identity, always real here
-          // because a media element only reaches this loop via the registry.
-          registeredAt: el.registeredAt,
-          category: 'media',
-          className: classString(el.element) || undefined,
-          classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
-          mediaMetadata: scrubMediaMetadata(meta, verdictOf(el.element)),
-        });
-      }
-    }
+    const filterCtx: CanonicalFindContext = {
+      transport: 'executor',
+      registrySize: this.registry.getAllElements().length,
+    };
+    const elements: DiscoveredElement[] = applyCanonicalFindFilter(
+      candidates,
+      criteria,
+      filterCtx
+    ).map(({ element: _element, ...row }) => row);
 
     return {
       elements,
@@ -2545,6 +2326,147 @@ export class DefaultActionExecutor implements ActionExecutor {
       signature: computeSnapshotSignature(elements),
       durationMs: performance.now() - startTime,
       timestamp: Date.now(),
+      // The rows a media-fact filter could not evaluate — out of `elements`,
+      // and said so. See `FindResponse.unevaluated`.
+      ...(filterCtx.unevaluated ? { unevaluated: filterCtx.unevaluated } : {}),
+    };
+  }
+
+  /**
+   * The DOM scan's candidates: `selector` (else the interactive selectors)
+   * under `root` (else the body). An unresolvable or malformed `root` /
+   * `selector` yields none here — the canonical filter refuses it, typed —
+   * so the scan only has to not throw.
+   */
+  private scanFindCandidates(root?: string | null, selector?: string | null): HTMLElement[] {
+    try {
+      const scanRoot = (root ? document.querySelector(root) : null) ?? document.body;
+      return Array.from(scanRoot.querySelectorAll<HTMLElement>(selector || EXECUTOR_SCAN_SELECTORS));
+    } catch {
+      return [];
+    }
+  }
+
+  /** A DOM-scanned (or registered interactive) element's find row. */
+  private scannedFindRow(
+    el: HTMLElement,
+    registered: RegisteredElement | undefined
+  ): ExecutorFindCandidate {
+    const id = registered?.id || this.getElementId(el);
+
+    // Cache unregistered elements so executeAction can resolve them later
+    if (!registered) {
+      this.discoveryCache.set(id, el);
+      this.evictDiscoveryCache();
+    }
+
+    return {
+      element: el,
+      id,
+      type: registered?.type || this.inferElementType(el),
+      // §4.6: `label` scrubs on the CONTENT axis regardless of dev-set vs
+      // scraped origin (resolved design decision — one field can't
+      // discriminate, and a dev who wraps a subtree intends it hidden). A
+      // bare password field keeps its label; a boundary redacts it.
+      label: scrubContent(registered?.label ?? this.getElementLabel(el), el),
+      tagName: el.tagName.toLowerCase(),
+      role: el.getAttribute('role') || undefined,
+      accessibleName: scrubContent(this.getAccessibleName(el), el),
+      actions: registered?.actions || this.inferActions(el),
+      // The element's APP-DEFINED actions, kept in their own field rather
+      // than merged into `actions` — the canonical split. Without this a
+      // discover consumer reads `actions: []` off a pane that in fact
+      // dispatches five custom actions and concludes it supports nothing;
+      // `POST /element/<id>/action` was executing them the whole time.
+      // Absent for a DOM-scanned node: it has no registration to carry
+      // them.
+      //
+      // Routed through the ONE canonical projection rather than spelled
+      // inline: the wire shape widened from bare names to
+      // `SerializedElementAction` objects on 2026-09-11, and every inline
+      // copy of `Object.keys(...)` became a silent divergence the moment it
+      // did. Calling the helper is what keeps this producer correct across
+      // the NEXT such change.
+      customActions: serializeElementCustomActions(registered?.customActions),
+      state: getElementState(el),
+      registered: !!registered,
+      // WHICH MOUNT this element belongs to — the only field that makes a
+      // same-shape remount visible to anything folding this payload. Copied
+      // off the registry record, and deliberately left ABSENT for a
+      // DOM-scanned node: it has no registration time, and synthesizing one
+      // would churn the generation fold on every call. See
+      // `DiscoveredElement.registeredAt`.
+      registeredAt: registered?.registeredAt,
+      category: registered?.category || 'interactive',
+      className: classString(el) || undefined,
+      classes: el.classList?.length > 0 ? Array.from(el.classList) : undefined,
+      contentMetadata: registered?.contentMetadata,
+    };
+  }
+
+  /** A registered content element's find row. */
+  private contentFindRow(el: RegisteredElement): ExecutorFindCandidate {
+    const state = el.getState();
+    // Content elements: scrub the label ONCE against the live node
+    // (auto-registered content labels can be DOM-derived; a boundary
+    // redacts them) and reuse it for `accessibleName`.
+    const scrubbedContentLabel = scrubContent(el.label, el.element);
+    return {
+      element: el.element,
+      id: el.id,
+      type: el.type,
+      label: scrubbedContentLabel,
+      tagName: el.element.tagName.toLowerCase(),
+      role: el.element.getAttribute('role') || undefined,
+      accessibleName: scrubbedContentLabel ?? state.textContent,
+      actions: [],
+      // A content element carries no BUILT-IN actions, but a consumer may
+      // still have declared custom ones on it, and `executeAction`
+      // dispatches those. Same canonical projection as the interactive
+      // row and as `serializeRegisteredElement`, which emits this for
+      // every category.
+      customActions: serializeElementCustomActions(el.customActions),
+      state,
+      registered: true,
+      // See the scanned row — mount identity, always real here because a
+      // content element only reaches this builder via the registry.
+      registeredAt: el.registeredAt,
+      category: 'content',
+      className: classString(el.element) || undefined,
+      classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
+      contentMetadata: el.contentMetadata,
+    };
+  }
+
+  /** A registered media element's find row. */
+  private mediaFindRow(el: RegisteredElement): ExecutorFindCandidate {
+    // `getState()` re-captures the observation first (the registry's media
+    // override), so the top-level copy below is as fresh as `state`'s.
+    const state = el.getState();
+    const facts = mediaFactsOf(el.mediaMetadata);
+    return {
+      element: el.element,
+      id: el.id,
+      type: el.type,
+      label: scrubContent(el.label, el.element),
+      tagName: el.element.tagName.toLowerCase(),
+      role: el.element.getAttribute('role') || undefined,
+      // altText is CONTENT — a redacted <img>'s alt describes the secret;
+      // its src/srcset/poster ARE the rendered secret (scrubbed below).
+      accessibleName: scrubContent(el.label || facts?.altText, el.element),
+      actions: [],
+      // See the content row — no built-in actions, but declared custom ones
+      // are dispatchable and must be advertised.
+      customActions: serializeElementCustomActions(el.customActions),
+      state,
+      registered: true,
+      // See the scanned row — mount identity, always real here because a
+      // media element only reaches this builder via the registry.
+      registeredAt: el.registeredAt,
+      category: 'media',
+      className: classString(el.element) || undefined,
+      classes: el.element.classList?.length > 0 ? Array.from(el.element.classList) : undefined,
+      mediaMetadata: scrubMediaMetadata(el.mediaMetadata, verdictOf(el.element)),
     };
   }
 

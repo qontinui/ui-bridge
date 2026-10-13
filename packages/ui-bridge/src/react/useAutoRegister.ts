@@ -39,12 +39,11 @@ import type { MediaDiscoveryOptions } from './media-discovery';
 import {
   MEDIA_SELECTORS,
   shouldRegisterMedia,
-  captureMediaMetadata,
-  generateMediaId,
   findBackgroundImageElements,
-  captureBackgroundImageMetadata,
-  generateBackgroundImageId,
+  hasBackgroundImage,
+  registerMediaInRegistry,
 } from './media-discovery';
+import { IMAGE_SLOT_ATTR } from './media-capture';
 
 /**
  * ID generation strategy
@@ -183,6 +182,13 @@ export const UI_BRIDGE_ROLE_ATTR = 'data-ui-bridge-role';
 export const UI_BRIDGE_TEST_ID_ATTR = 'data-ui-bridge-test-id';
 
 const EMPTY_SELECTORS: string[] = [];
+
+/**
+ * Most nodes one mutation-path background-image walk visits. Each visit is a
+ * style read; a class change high in a large tree must not become a
+ * full-document style pass. The initial scan walks the whole root, as before.
+ */
+const MUTATION_BACKGROUND_SCAN_LIMIT = 500;
 
 /**
  * Infer element type from DOM element
@@ -1201,32 +1207,11 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
         return;
       }
 
-      // Detect whether this is a background-image element or standard media
-      const isStandardMedia = element.matches(MEDIA_SELECTORS.join(', '));
-      const id = isStandardMedia ? generateMediaId(element) : generateBackgroundImageId(element);
-
-      // Check if ID already exists in registry
-      const existing = bridge.registry.getElement(id);
-      if (existing) {
-        return; // Media IDs are deterministic — skip duplicates
-      }
-
-      const metadata = isStandardMedia
-        ? captureMediaMetadata(element)
-        : captureBackgroundImageMetadata(element);
-      if (!metadata) return; // background image capture can return null
-
-      const label = metadata.altText || metadata.src?.split('/').pop() || undefined;
-      const refreshFn = isStandardMedia
-        ? captureMediaMetadata
-        : (el: HTMLElement) => captureBackgroundImageMetadata(el) || metadata;
-
-      bridge.registry.registerMediaElement(id, element, {
-        mediaType: metadata.mediaType,
-        mediaMetadata: metadata,
-        label,
-        refreshMetadata: refreshFn,
-      });
+      // The ONE media registration (shared with the injected runtime's
+      // seeder): a unique id — every image registers, even two that derive the
+      // same base id — and an observation re-captured on every read.
+      const id = registerMediaInRegistry(bridge.registry, element);
+      if (id === null) return; // a background capture with no url()
 
       registeredMediaElementsRef.current.set(element, id);
     },
@@ -1325,9 +1310,9 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
    * Process pending media registrations (debounced, separate timer)
    */
   const processPendingMediaRegistrations = useCallback(() => {
-    const registeredIds = new Set(registeredMediaElementsRef.current.values());
+    const isMediaRegistered = (el: HTMLElement) => registeredMediaElementsRef.current.has(el);
     pendingMediaRegistrationsRef.current.forEach((element) => {
-      if (shouldRegisterMedia(element, mediaDiscovery, registeredIds)) {
+      if (shouldRegisterMedia(element, mediaDiscovery, isMediaRegistered)) {
         registerMediaElement(element);
       }
     });
@@ -1388,6 +1373,47 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       );
     },
     [mediaDiscovery?.mediaDebounceMs, processPendingMediaRegistrations]
+  );
+
+  /**
+   * Queue `root` and its media descendants for registration — the ONE media
+   * pass both mutation paths (an attribute change, an added subtree) share.
+   *
+   * Background images take part when `includeBackgroundImages` is on, and only
+   * then: they used to register solely on the initial scan (so a background
+   * that appeared later was never seen), while a mutated element that happened
+   * to carry one registered even with the option OFF. The background walk is
+   * bounded — every visited node costs a style read.
+   */
+  const queueMediaSubtree = useCallback(
+    (root: HTMLElement): void => {
+      const isMediaRegistered = (el: HTMLElement) => registeredMediaElementsRef.current.has(el);
+      const consider = (el: HTMLElement) => {
+        if (shouldRegisterMedia(el, mediaDiscovery, isMediaRegistered)) {
+          queueMediaRegistration(el);
+        }
+      };
+      const mediaSelectors = MEDIA_SELECTORS.join(', ');
+      const withBackgrounds = mediaDiscovery?.includeBackgroundImages === true;
+      if (root.matches(mediaSelectors) || (withBackgrounds && hasBackgroundImage(root))) {
+        consider(root);
+      }
+      root.querySelectorAll<HTMLElement>(mediaSelectors).forEach(consider);
+      if (withBackgrounds) {
+        const room = Math.max(
+          0,
+          (mediaDiscovery?.maxMediaElements ?? 200) - registeredMediaElementsRef.current.size
+        );
+        if (room > 0) {
+          findBackgroundImageElements(
+            root,
+            Math.min(room, 50),
+            MUTATION_BACKGROUND_SCAN_LIMIT
+          ).forEach(consider);
+        }
+      }
+    },
+    [mediaDiscovery, queueMediaRegistration]
   );
 
   /**
@@ -1461,10 +1487,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       if (mediaEnabled) {
         const mediaSelectors = MEDIA_SELECTORS.join(', ');
         const mediaElements = rootElement.querySelectorAll<HTMLElement>(mediaSelectors);
-        const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
+        const isMediaRegistered = (el: HTMLElement) => registeredMediaElementsRef.current.has(el);
 
         mediaElements.forEach((element) => {
-          if (shouldRegisterMedia(element, mediaDiscovery, registeredMediaIds)) {
+          if (shouldRegisterMedia(element, mediaDiscovery, isMediaRegistered)) {
             queueMediaRegistration(element);
           }
         });
@@ -1477,8 +1503,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           );
           const bgElements = findBackgroundImageElements(rootElement, Math.min(maxBg, 50));
           for (const el of bgElements) {
-            const bgId = generateBackgroundImageId(el);
-            if (!registeredMediaIds.has(bgId) && !registeredMediaElementsRef.current.has(el)) {
+            if (!isMediaRegistered(el)) {
               queueMediaRegistration(el);
             }
           }
@@ -1553,19 +1578,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
             }
           });
 
-          // Media discovery for newly-visible elements
+          // Media discovery for newly-visible elements (and a changed `src`,
+          // `srcset` or image-slot marker — see the observer's attributeFilter).
           if (mediaEnabled) {
-            const mediaSelectors = MEDIA_SELECTORS.join(', ');
-            const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
-            if (shouldRegisterMedia(target, mediaDiscovery, registeredMediaIds)) {
-              queueMediaRegistration(target);
-            }
-            const mediaDescendants = target.querySelectorAll<HTMLElement>(mediaSelectors);
-            mediaDescendants.forEach((descendant) => {
-              if (shouldRegisterMedia(descendant, mediaDiscovery, registeredMediaIds)) {
-                queueMediaRegistration(descendant);
-              }
-            });
+            queueMediaSubtree(target);
           }
         }
 
@@ -1644,23 +1660,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
               }
             });
 
-            // Media discovery for added nodes
+            // Media discovery for added nodes — the element itself and its
+            // subtree, background images included when enabled.
             if (mediaEnabled) {
-              const mediaSelectors = MEDIA_SELECTORS.join(', ');
-              const registeredMediaIds = new Set(registeredMediaElementsRef.current.values());
-
-              // Check the element itself
-              if (shouldRegisterMedia(element, mediaDiscovery, registeredMediaIds)) {
-                queueMediaRegistration(element);
-              }
-
-              // Check descendants
-              const mediaDescendants = element.querySelectorAll<HTMLElement>(mediaSelectors);
-              mediaDescendants.forEach((descendant) => {
-                if (shouldRegisterMedia(descendant, mediaDiscovery, registeredMediaIds)) {
-                  queueMediaRegistration(descendant);
-                }
-              });
+              queueMediaSubtree(element);
             }
           }
         });
@@ -1712,8 +1715,7 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       queueContentRegistration,
       unregisterContentElement,
       mediaEnabled,
-      mediaDiscovery,
-      queueMediaRegistration,
+      queueMediaSubtree,
       unregisterMediaElement,
     ]
   );
@@ -1742,7 +1744,10 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['class', 'style', 'hidden'],
+      // `src` / `srcset`: an image swapped in place (a lazy-load library, a
+      // carousel, an in-situ asset override) is a new image to consider.
+      // The slot marker: a placeholder slot gaining its asset.
+      attributeFilter: ['class', 'style', 'hidden', 'src', 'srcset', IMAGE_SLOT_ATTR],
     });
 
     // Listen for auth-complete events from AuthProvider. When a temp

@@ -7,6 +7,7 @@
  */
 
 import type { RegisteredElement } from '../core/types';
+import { mediaFactsOf } from '../core/media-observation';
 import { captureMediaSnapshot } from './media-snapshot';
 import { readAriaLabelAttr } from '../core/a11y';
 import { truncateCodePoints } from '../core/text';
@@ -178,7 +179,7 @@ export function analyzeMediaElement(
   maxSize: number = 512
 ): MediaAnalysisResult | null {
   const { element, id } = registeredElement;
-  const meta = registeredElement.mediaMetadata;
+  const meta = mediaFactsOf(registeredElement.mediaMetadata);
 
   // Capture the visual snapshot
   const snapshot = captureMediaSnapshot(element, id, maxSize);

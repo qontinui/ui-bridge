@@ -6,6 +6,7 @@
  */
 
 import type { FindRequest, FindResponse } from '../control/types';
+import { mediaFactsOf } from '../core/media-observation';
 
 /**
  * Accessibility audit result for media elements
@@ -25,18 +26,22 @@ export interface MediaAccessibilityAudit {
  * Performance audit result for media elements
  */
 export interface MediaPerformanceAudit {
-  /** Images where natural size is significantly larger than rendered size */
+  /**
+   * Images carrying more pixels than the screen shows: `effectiveResolution`
+   * (source pixels per DEVICE pixel, DPR- and object-fit-aware) above the
+   * threshold.
+   */
   oversized: Array<{
     id: string;
     src?: string;
-    oversizeRatio: number;
+    effectiveResolution: number;
     naturalWidth: number;
     naturalHeight: number;
     renderedWidth: number;
     renderedHeight: number;
   }>;
-  /** Images with large transfer size (> 500KB) */
-  largeTransferSize: Array<{ id: string; src?: string; transferSize: number }>;
+  /** Images whose encoded body (`encodedBodySize`) is large (> 500KB) */
+  largeTransferSize: Array<{ id: string; src?: string; encodedBodySize: number }>;
   /** Above-the-fold images not using lazy loading (which is fine) vs below-fold not lazy */
   notLazyLoaded: Array<{ id: string; src?: string; inViewport: boolean }>;
   /** Total media elements audited */
@@ -102,7 +107,7 @@ export function buildAccessibilityAudit(response: FindResponse): MediaAccessibil
   };
 
   for (const el of response.elements) {
-    const meta = el.mediaMetadata;
+    const meta = mediaFactsOf(el.mediaMetadata);
     if (!meta) continue;
 
     // Skip non-image media types for alt text audit
@@ -146,15 +151,15 @@ export function buildPerformanceAudit(
   };
 
   for (const el of response.elements) {
-    const meta = el.mediaMetadata;
+    const meta = mediaFactsOf(el.mediaMetadata);
     if (!meta) continue;
 
     // Oversized check
-    if (meta.oversizeRatio && meta.oversizeRatio > oversizeThreshold) {
+    if (meta.effectiveResolution !== undefined && meta.effectiveResolution > oversizeThreshold) {
       result.oversized.push({
         id: el.id,
         src: meta.src,
-        oversizeRatio: meta.oversizeRatio,
+        effectiveResolution: meta.effectiveResolution,
         naturalWidth: meta.naturalWidth || 0,
         naturalHeight: meta.naturalHeight || 0,
         renderedWidth: meta.renderedWidth,
@@ -162,17 +167,17 @@ export function buildPerformanceAudit(
       });
     }
 
-    // Large transfer size
-    if (meta.transferSize && meta.transferSize > largeTransferThreshold) {
+    // Large encoded body
+    if (meta.encodedBodySize !== undefined && meta.encodedBodySize > largeTransferThreshold) {
       result.largeTransferSize.push({
         id: el.id,
         src: meta.src,
-        transferSize: meta.transferSize,
+        encodedBodySize: meta.encodedBodySize,
       });
     }
 
     // Not lazy loaded (below the fold)
-    if (!meta.lazyLoading && meta.mediaType === 'image' && el.state.inViewport === false) {
+    if (meta.loading !== 'lazy' && meta.mediaType === 'image' && el.state.inViewport === false) {
       result.notLazyLoaded.push({
         id: el.id,
         src: meta.src,

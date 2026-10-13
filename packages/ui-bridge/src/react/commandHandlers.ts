@@ -19,7 +19,12 @@ import {
   serializeRegisteredComponent,
 } from '../core/registry';
 import { serializeElementCustomActions } from '../core/element-actions';
-import { applyCanonicalFindFilter, type CanonicalFindCriteria } from '../core/find-filter';
+import {
+  applyCanonicalFindFilter,
+  isFindRefusalError,
+  type CanonicalFindContext,
+  type CanonicalFindCriteria,
+} from '../core/find-filter';
 import { truncateCodePoints } from '../core/text';
 import {
   buildKeyboardEventInit,
@@ -37,8 +42,8 @@ import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type { SemanticSnapshot } from '../ai/types';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
+import { hasNestedQuantifiers } from '../core/param-schema';
 import {
-  hasNestedQuantifiers,
   findHoverableAncestor,
   dispatchHoverEnter,
   nextAnimationFrame,
@@ -75,6 +80,7 @@ import {
   verdictOf,
   scrubContent,
   scrubContentRequired,
+  scrubMediaMetadata,
   trustDeveloperContent,
   readScrubbedValue,
   readScrubbedText,
@@ -511,11 +517,16 @@ function inProcessComponentNotFoundMessage(id: string): string {
  *   every future shape change; a call cannot drift.
  */
 function elementToFindResult(e: RegisteredElement) {
+  // `getState()` first: on a media element it re-captures the observation,
+  // so the top-level `mediaMetadata` below is as fresh as `state`'s.
   const state = e.getState();
   return {
     id: e.id,
     type: e.type,
-    label: e.label,
+    // §4.6: the label is scraped on auto-registered elements — on a media
+    // element it IS the alt text or file name — so it is scrubbed like every
+    // other projection's.
+    label: scrubContent(e.label, e.element),
     tagName: e.element.tagName.toLowerCase(),
     role: e.element.getAttribute('role') ?? undefined,
     // §4.6: accessibleName reaches the client — scrub the scraped aria-label
@@ -528,6 +539,10 @@ function elementToFindResult(e: RegisteredElement) {
     registeredAt: e.registeredAt,
     category: e.category,
     stableRef: createStableRef(e),
+    // The media row's observation, scrubbed against the element's own
+    // verdict. This producer emitted none until ui-bridge 0.31.0, so a media
+    // find over the relay carried its facts only inside `state`.
+    mediaMetadata: scrubMediaMetadata(e.mediaMetadata, verdictOf(e.element)),
   };
 }
 
@@ -2052,12 +2067,26 @@ export async function executeCommand(
 
     case 'find':
     case 'discover': {
-      // Canonical filter (src/core/find-filter.ts) — shared with the direct
-      // server handlers and the relay handlers so the four historical copies
-      // cannot drift again. Handles interactive_only/include_hidden (default
-      // TRUE — hidden elements included unless explicitly excluded),
-      // type/element_type/types, role, label, text, exact_text, testId.
-      const filtered = applyCanonicalFindFilter(elements, payload as CanonicalFindCriteria);
+      // Canonical filter (src/core/find-filter.ts) — shared with the executor,
+      // the direct server handlers and the relay's cached arm, so the
+      // historical copies cannot drift again. It owns the WHOLE FindRequest
+      // surface: interactive / hidden (default TRUE — hidden elements included
+      // unless explicitly excluded), type / role / label / text / testId,
+      // content and media (rows IN unless `includeContent` / `includeMedia`
+      // is false; `mediaOnly`, `mediaType`, `brokenOnly`, `missingAltOnly`,
+      // `srcPattern`, `oversizeThreshold`), `root` / `selector`, and `limit`.
+      // A request it cannot honour is answered as a typed failure — the relay
+      // server reads `code` off this reply — never as an empty page.
+      let filtered: RegisteredElement[];
+      const filterCtx: CanonicalFindContext = { transport: 'relay', registrySize: elements.length };
+      try {
+        filtered = applyCanonicalFindFilter(elements, payload as CanonicalFindCriteria, filterCtx);
+      } catch (err) {
+        if (isFindRefusalError(err)) {
+          return { success: false, error: err.message, code: err.code, refusal: err.refusal };
+        }
+        throw err;
+      }
       // F3 readiness signal (plan 2026-06-12 item 5): mirror the snapshot's
       // `registration` block on find/discover so pollers can distinguish
       // "page not hydrated/registered yet" (`everHadRegistrations: false`)
@@ -2095,6 +2124,9 @@ export async function executeCommand(
         durationMs: 0,
         timestamp: Date.now(),
         registration,
+        // Rows a media-fact filter could not evaluate — out of `elements`,
+        // and said so. See `FindResponse.unevaluated`.
+        ...(filterCtx.unevaluated ? { unevaluated: filterCtx.unevaluated } : {}),
       };
     }
 

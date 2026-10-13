@@ -8,6 +8,12 @@
  * `HTMLElement` ref — so the relay command dispatcher (`executeCommand`) can
  * `find`, snapshot, and act on a page that ships **zero** UI Bridge code.
  *
+ * Media registers too, through the same `registerMediaInRegistry` the React
+ * scanner uses (plan 2026-10-13-image-generation-and-visual-judgment,
+ * Phase 5). Before, this seeder registered interactive elements only, so on a
+ * page driven by inject-cli every media find answered with nothing — and a
+ * media question about an uninstrumented page could not be asked at all.
+ *
  * No React, no app cooperation. This is what makes Tier-1 injected semantics
  * (find / act / snapshot / state-read) work on uninstrumented pages.
  */
@@ -18,12 +24,21 @@ import {
   computeDomFallbackLabel,
   type DOMFallbackElementWithRef,
 } from '../server/dom-fallback';
+import {
+  MEDIA_SELECTORS,
+  registerMediaInRegistry,
+  shouldRegisterMedia,
+} from '../react/media-discovery';
+import { IMAGE_SLOT_ATTR } from '../react/media-capture';
+
+/** Most media elements the seeder registers, as `useAutoRegister`'s default. */
+const MAX_SEEDED_MEDIA = 200;
 
 /** Outcome of a single seed pass. */
 export interface SeedResult {
-  /** Elements newly registered on this pass. */
+  /** Elements newly registered on this pass (interactive and media). */
   registered: number;
-  /** Total interactive elements the scan found (registered + already-tracked). */
+  /** Total interactive and media elements the scan found (registered + already-tracked). */
   total: number;
 }
 
@@ -95,7 +110,25 @@ export function seedRegistryFromDom(
     registered++;
   }
 
-  return { registered, total: scanned.length };
+  // Media — the React scanner's own registration, so the ids, the
+  // collision rule and the observation are identical across both runtimes.
+  // Background images stay off, as `useAutoRegister`'s default.
+  const mediaRoot = root ?? document.body;
+  const media = mediaRoot ? Array.from(mediaRoot.querySelectorAll<HTMLElement>(MEDIA_SELECTORS.join(', '))) : [];
+  const isRegistered = (el: HTMLElement) =>
+    tracked ? tracked.has(el) : registry.findByDOMElement(el) !== undefined;
+  let mediaCount = registry.getAllMediaElements().length;
+  for (const el of media) {
+    if (mediaCount >= MAX_SEEDED_MEDIA) break;
+    if (!shouldRegisterMedia(el, {}, isRegistered)) continue;
+    const id = registerMediaInRegistry(registry, el);
+    if (id === null) continue;
+    tracked?.set(el, id);
+    mediaCount++;
+    registered++;
+  }
+
+  return { registered, total: scanned.length + media.length };
 }
 
 /** Options for {@link observeAndSeed}. */
@@ -164,7 +197,18 @@ export function observeAndSeed(
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['class', 'style', 'hidden', 'disabled', 'aria-hidden'],
+    // `src` / `srcset` / the image-slot marker: an image swapped in place is a
+    // new image to consider, as in `useAutoRegister`.
+    attributeFilter: [
+      'class',
+      'style',
+      'hidden',
+      'disabled',
+      'aria-hidden',
+      'src',
+      'srcset',
+      IMAGE_SLOT_ATTR,
+    ],
   });
 
   return () => {

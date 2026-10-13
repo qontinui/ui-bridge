@@ -13,6 +13,7 @@ import { UIBridgeRegistry, setGlobalRegistry } from '../core/registry';
 import { executeCommand } from '../react/commandHandlers';
 import { seedRegistryFromDom, observeAndSeed } from './seed-registry';
 import { bridgeAccessOver } from './bridge-access';
+import { makeImage } from '../react/__tests__/media-fixture';
 
 function setBody(html: string): void {
   document.body.innerHTML = html;
@@ -142,6 +143,64 @@ describe('executeCommand over a DOM-seeded registry (Tier 1)', () => {
 
     expect(input.value).toBe('Ada');
     expect(observed).toBe('Ada'); // onChange fired with the new value
+  });
+});
+
+describe('seedRegistryFromDom — media (the injected runtime sees images)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('registers media through the React scanner\'s own registration', async () => {
+    const hero = makeImage({ alt: 'Hero', src: '/hero.png', natural: [400, 200], rendered: [200, 100] });
+    makeImage({ alt: 'Hero', src: '/hero-b.png', natural: [10, 10] });
+    const registry = new UIBridgeRegistry();
+    setGlobalRegistry(registry);
+
+    const result = seedRegistryFromDom(registry, document.body);
+
+    expect(result.registered).toBe(2);
+    // The same ids, collision rule included, as useAutoRegister assigns.
+    expect(registry.getAllMediaElements().map((e) => e.id).sort()).toEqual(['img-hero', 'img-hero-2']);
+    expect(registry.getElement('img-hero')?.element).toBe(hero);
+
+    // And the relay dispatcher answers a media find from them, with the envelope.
+    const found = (await executeCommand(
+      'find',
+      { mediaOnly: true, skipSettle: true },
+      bridgeAccessOver(registry)
+    )) as { elements: Array<{ id: string; mediaMetadata?: { status?: string } }> };
+    expect(found.elements.map((e) => e.id).sort()).toEqual(['img-hero', 'img-hero-2']);
+    expect(found.elements.every((e) => e.mediaMetadata?.status === 'measured')).toBe(true);
+  });
+
+  it('is idempotent across re-seeds (media included)', () => {
+    makeImage({ alt: 'One', src: '/one.png', natural: [1, 1] });
+    const registry = new UIBridgeRegistry();
+    const tracked = new Map<HTMLElement, string>();
+    seedRegistryFromDom(registry, document.body, { tracked });
+    const second = seedRegistryFromDom(registry, document.body, { tracked });
+
+    expect(second.registered).toBe(0);
+    expect(registry.getAllMediaElements()).toHaveLength(1);
+  });
+
+  it('a <picture> is ONE row: its <img>, typed picture, with the <source> list', () => {
+    const picture = document.createElement('picture');
+    picture.innerHTML = '<source srcset="/hero.avif" type="image/avif" />';
+    document.body.appendChild(picture);
+    makeImage({ alt: 'Hero', src: '/hero.jpg', natural: [800, 600], parent: picture });
+    const registry = new UIBridgeRegistry();
+
+    seedRegistryFromDom(registry, document.body);
+
+    const media = registry.getAllMediaElements();
+    expect(media).toHaveLength(1);
+    expect(media[0].element.tagName).toBe('IMG');
+    expect(media[0].type).toBe('picture');
+    const facts = media[0].mediaMetadata?.status === 'measured' ? media[0].mediaMetadata.value : undefined;
+    expect(facts?.mediaType).toBe('picture');
+    expect(facts?.sources).toEqual([{ srcset: '/hero.avif', type: 'image/avif' }]);
   });
 });
 
