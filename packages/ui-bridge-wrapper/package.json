@@ -32,7 +32,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:smoke": "vitest run smoke",
+    "test:smoke": "vitest run smoke --reporter=default --reporter=json --outputFile.json=.smoke-report.json && node ../../test-support/assert-no-skipped-tests.mjs .smoke-report.json",
     "clean": "rimraf dist",
     "prepublishOnly": "node ../../scripts/check-clean-tree.cjs && npm run build"
   },

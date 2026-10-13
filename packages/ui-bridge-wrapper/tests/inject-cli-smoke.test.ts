@@ -1,23 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { createTransport } from '../src/create-transport.js';
 import { buildTransportOptions, parseArgs } from '../src/inject-cli.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
 // Probe whether the Playwright Chromium binary is available. `executablePath()`
 // returns the resolved path even when the binary isn't installed, so we check
 // the file actually exists; if the call throws (no browser registered at all),
 // treat that as unavailable too. This gates the suite off in CI that hasn't run
 // `npx playwright install chromium`, mirroring the example smokes' convention.
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 /**
  * Browser smoke for the injected-transport CLI flow (Variant A, in-process).

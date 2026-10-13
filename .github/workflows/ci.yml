@@ -176,11 +176,13 @@ jobs:
         run: npm run typecheck
 
       - name: Test
-        # The real-Chromium smokes are part of this suite but SKIP here: each one
-        # skips itself when no Playwright Chromium is installed, and this job
-        # installs none, so that it stays mirrorable to .qontinui/ci.toml (whose
-        # lane must never install system packages). They EXECUTE in the
-        # browser-smokes job below, which installs Chromium.
+        # The real-Chromium tests are part of this suite but SKIP here: each one
+        # gates on test-support/chromium-gate.mjs, which skips when no Playwright
+        # Chromium is installed, and this job installs none, so that it stays
+        # mirrorable to .qontinui/ci.toml (whose lane must never install system
+        # packages). Every one lives in a `*smoke*` test file, and they EXECUTE
+        # in the browser-smokes job below, which installs Chromium and fails if
+        # any of them skips.
         run: npm run test
 
   browser-smokes:
@@ -189,6 +191,12 @@ jobs:
     # smoke and the headless example. Each one SKIPS when no Playwright Chromium
     # is installed, so until this job they passed every PR by skipping (plan
     # 2026-10-13-image-generation-and-visual-judgment, Phase 9 review m7 / B).
+    #
+    # Under UI_BRIDGE_REQUIRE_CHROMIUM=1 (set ONLY here) a skip is a failure:
+    # the shared gate test-support/chromium-gate.mjs THROWS instead of skipping
+    # when Chromium is missing, and each package's test:smoke ends with
+    # test-support/assert-no-skipped-tests.mjs, which fails on a smoke that
+    # skipped for any other reason or a run that executed nothing.
     #
     # A SEPARATE, GitHub-hosted job on purpose. `--with-deps` installs Chromium's
     # system libraries with `sudo apt-get` on Linux. On the runner-as-CI-node
@@ -237,6 +245,8 @@ jobs:
           "
 
       - name: Real-Chromium smokes
+        env:
+          UI_BRIDGE_REQUIRE_CHROMIUM: '1'
         run: npm run test:smoke
 
   python-tests:

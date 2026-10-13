@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync } from 'node:fs';
-import { chromium } from 'playwright';
 import { createTransport } from '../src/create-transport.js';
 import type { InjectedContext } from '../src/transports/injected.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
 /**
  * Settle smoke for the injected transport (real Chromium).
@@ -17,13 +16,7 @@ import type { InjectedContext } from '../src/transports/injected.js';
  * the pre-fix behavior (ready resolves before the form exists).
  */
 
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 // The form is appended ~600ms after load — longer than the 500ms default quiet
 // window's first arming, so a naive ready-only gate would miss it.

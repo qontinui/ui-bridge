@@ -15,17 +15,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync } from 'node:fs';
-import { chromium } from 'playwright';
 import { launchHeadlessTab } from './launcher.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>dpr</title>
 <style>html,body{margin:0;background:#fff}@media (prefers-color-scheme: dark){html,body{background:#000}}</style>

@@ -21,18 +21,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync } from 'node:fs';
-import { chromium } from 'playwright';
 import { createTransport } from '../src/create-transport.js';
 import { buildTransportOptions, parseArgs, registerWaitActions } from '../src/inject-cli.js';
+import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';
 
-const PLAYWRIGHT_AVAILABLE = (() => {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-})();
+const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
 /** Milliseconds after load at which the page mutates itself. */
 const MUTATE_AFTER_MS = 1200;
