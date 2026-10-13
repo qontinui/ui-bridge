@@ -201,12 +201,16 @@ import type {
   SnapshotDiffReport,
   SnapshotBaseline,
   EvaluateRequest,
-  QualityContext,
 } from '../specs/quality-types';
-import { evaluateQuality } from '../specs/quality-evaluator';
 import { listContexts } from '../specs/quality-contexts';
 import { componentActionInvocation } from './component-action-invocation';
-import { createBaseline, diffSnapshots } from '../specs/quality-diff';
+import {
+  captureQualityBaseline,
+  diffQualityBaseline,
+  evaluateRegisteredQuality,
+  type QualityBaselineRequest,
+  type QualityDiffRequest,
+} from '../specs/quality-request';
 import { getGlobalSpecStore } from '../specs/store';
 import type { ElementAnnotation, AnnotationConfig, AnnotationCoverage } from '../annotations';
 import { AnnotationStore, getGlobalAnnotationStore } from '../annotations';
@@ -5016,41 +5020,14 @@ export function createHandlers(
 
     // Quality evaluation endpoints
 
+    // The /design/evaluate family runs through specs/quality-request.ts, which
+    // the browser relay calls too — one model whichever transport answers.
     evaluateQuality: async (
       request?: EvaluateRequest
     ): Promise<APIResponse<QualityEvaluationReport>> => {
       try {
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-              })
-            );
-          }
-        }
-
-        const viewport = request?.viewport ?? {
-          width: window.innerWidth,
-          height: window.innerHeight,
-        };
-
-        // Resolve context: custom object > style guide context > built-in name
-        let context: QualityContext | string =
-          request?.customContext ?? request?.context ?? 'general';
-        if (typeof context === 'string' && loadedStyleGuide?.qualityContexts?.[context]) {
-          context = loadedStyleGuide.qualityContexts[context];
-        }
-        const report = evaluateQuality(designData, viewport, context);
-        return success(report);
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(evaluateRegisteredQuality(elements, request, loadedStyleGuide));
       } catch (err) {
         return error((err as Error).message, 'QUALITY_EVALUATION_ERROR');
       }
@@ -5062,69 +5039,27 @@ export function createHandlers(
       return success(listContexts());
     },
 
-    saveBaseline: async (request?: {
-      label?: string;
-      elementIds?: string[];
-    }): Promise<APIResponse<{ saved: boolean; elementCount: number }>> => {
+    saveBaseline: async (
+      request?: QualityBaselineRequest
+    ): Promise<APIResponse<{ saved: boolean; elementCount: number }>> => {
       try {
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-              })
-            );
-          }
-        }
-
-        const viewport = {
-          width: window.innerWidth,
-          height: window.innerHeight,
-        };
-
-        savedBaseline = createBaseline(designData, viewport, request?.label);
-        return success({ saved: true, elementCount: designData.length });
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        savedBaseline = captureQualityBaseline(elements, request);
+        return success({ saved: true, elementCount: savedBaseline.elements.length });
       } catch (err) {
         return error((err as Error).message, 'SAVE_BASELINE_ERROR');
       }
     },
 
-    diffBaseline: async (request?: {
-      elementIds?: string[];
-    }): Promise<APIResponse<SnapshotDiffReport>> => {
+    diffBaseline: async (
+      request?: QualityDiffRequest
+    ): Promise<APIResponse<SnapshotDiffReport>> => {
       try {
         if (!savedBaseline) {
           return error('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
         }
-
-        const allElements = registry.getAllElements() as unknown as RegistryElementView[];
-        const elements = request?.elementIds
-          ? allElements.filter((el) => request.elementIds!.includes(el.id))
-          : allElements;
-
-        const designData: ElementDesignData[] = [];
-        for (const el of elements) {
-          if (el.element && el.element instanceof HTMLElement) {
-            designData.push(
-              getElementDesignData(el.element, {
-                elementId: el.id,
-                label: el.label,
-                type: el.type,
-              })
-            );
-          }
-        }
-
-        const report = diffSnapshots(savedBaseline, designData);
-        return success(report);
+        const elements = registry.getAllElements() as unknown as RegistryElementView[];
+        return success(diffQualityBaseline(savedBaseline, elements, request));
       } catch (err) {
         return error((err as Error).message, 'DIFF_BASELINE_ERROR');
       }
@@ -5605,11 +5540,6 @@ export function createHandlers(
                   method: 'POST',
                   path: '/control/actions/batch',
                   description: 'Execute batch actions on multiple elements',
-                },
-                {
-                  method: 'POST',
-                  path: '/control/get-element-images',
-                  description: 'Get rendered images for elements',
                 },
               ],
             },
@@ -6247,51 +6177,6 @@ export function createHandlers(
                   method: 'POST',
                   path: '/control/visibility',
                   description: 'Occlusion sweep — which elements are covering which',
-                },
-              ],
-            },
-            media: {
-              description: 'Media discovery, analysis, and auditing',
-              endpoints: [
-                {
-                  method: 'POST',
-                  path: '/ai/media/find',
-                  description: 'Find media elements on page',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/audit/accessibility',
-                  description: 'Audit media accessibility',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/audit/performance',
-                  description: 'Audit media performance',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/snapshot',
-                  description: 'Capture media snapshot',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/compare',
-                  description: 'Compare media snapshots',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/analyze',
-                  description: 'Analyze media element',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/analyze/batch',
-                  description: 'Batch analyze media elements',
-                },
-                {
-                  method: 'POST',
-                  path: '/ai/media/analyze/page',
-                  description: 'Analyze all media on page',
                 },
               ],
             },

@@ -102,6 +102,17 @@ import {
   type WaitForElementState,
   type ElementSnapshot,
 } from '../ai/wait-for-element';
+import { mapInternalErrorCode } from '../diagnostics';
+import { listContexts } from '../specs/quality-contexts';
+import {
+  captureQualityBaseline,
+  diffQualityBaseline,
+  evaluateRegisteredQuality,
+  type QualityBaselineRequest,
+  type QualityDiffRequest,
+} from '../specs/quality-request';
+import type { EvaluateRequest, SnapshotBaseline } from '../specs/quality-types';
+import type { StyleGuideConfig } from '../specs/style-types';
 
 // ============================================================================
 // Types
@@ -928,12 +939,11 @@ function enableChangeTracking() {
   });
 }
 
-// Internal quality-baseline store. Distinct from the user-visible bookmark
-// registry: `saveBaseline` / `diffBaseline` (below) own their own shape
-// (raw element-state arrays, not full `SemanticSnapshot`s) and never need
-// to interop with `/ai/bookmarks`. Keeping a private Map here avoids
-// pollution of the singleton's typed snapshot contract.
-const qualityBaselines = new Map<string, { timestamp: number; snapshot: unknown }>();
+// The `/design/evaluate/baseline` capture `diffBaseline` reads. Distinct from
+// the user-visible bookmark registry (`/ai/bookmarks`): it holds design data in
+// the shape `specs/quality-request.ts` diffs, the same shape the server
+// handlers keep, so both transports answer the baseline routes with one model.
+let qualityBaseline: SnapshotBaseline | null = null;
 
 // Error sessions
 interface ErrorSession {
@@ -949,6 +959,26 @@ const errorBaselines = new Map<string, { label: string; timestamp: number; error
 
 // Style guide
 let loadedStyleGuide: unknown = null;
+
+/**
+ * The style guide `loadStyleGuide` stored. The relay keeps that command's
+ * payload verbatim, and on the wire it is `{ guide }`
+ * (`UIBridgeServerHandlers.loadStyleGuide`), so the guide sits one level down.
+ */
+function loadedGuideConfig(): StyleGuideConfig | null {
+  const stored = loadedStyleGuide as { guide?: StyleGuideConfig } | null;
+  return stored?.guide ?? null;
+}
+
+/**
+ * A `/design/evaluate*` failure, coded as the server handlers code it. Their
+ * `error()` maps the internal code onto the canonical `UB-*` vocabulary, while
+ * the relay forwards a command's own `code` verbatim, so mapping it here keeps
+ * one failure one code over either transport.
+ */
+function qualityFailure(message: string, internalCode: string): Record<string, unknown> {
+  return { success: false, error: message, code: mapInternalErrorCode(internalCode, message) };
+}
 
 /**
  * React-aware value fill for the app-agnostic `typeInto` relay command.
@@ -4749,55 +4779,38 @@ export async function executeCommand(
     // Quality Evaluation
     // ======================================================================
 
+    // The same functions the server handlers call (specs/quality-request.ts),
+    // so `/design/evaluate*` answers with one model over either transport,
+    // failures included (see `qualityFailure`).
     case 'evaluateQuality': {
-      const total = elements.length;
-      const withLabels = elements.filter((e) => e.label).length;
-      const withActions = elements.filter((e) => e.actions && e.actions.length > 0).length;
-      const visibleCount = elements.filter((e) => {
-        const dom = e.element as HTMLElement;
-        return dom.offsetParent !== null;
-      }).length;
-      return {
-        score:
-          total > 0
-            ? Math.round(
-                (withLabels / total) * 50 + (withActions / total) * 30 + (visibleCount / total) * 20
-              )
-            : 0,
-        totalElements: total,
-        labelCoverage: total > 0 ? Math.round((withLabels / total) * 100) : 0,
-        actionCoverage: total > 0 ? Math.round((withActions / total) * 100) : 0,
-        visibilityRate: total > 0 ? Math.round((visibleCount / total) * 100) : 0,
-        timestamp: Date.now(),
-      };
+      try {
+        return evaluateRegisteredQuality(elements, payload as EvaluateRequest, loadedGuideConfig());
+      } catch (err) {
+        return qualityFailure((err as Error).message, 'QUALITY_EVALUATION_ERROR');
+      }
     }
 
     case 'getQualityContexts':
-      return { contexts: ['elements', 'accessibility', 'design'], timestamp: Date.now() };
+      return listContexts();
 
     case 'saveBaseline': {
-      const snapshot = elements.map((e) => ({
-        id: e.id,
-        label: e.label,
-        type: e.type,
-        state: e.getState(),
-      }));
-      qualityBaselines.set('__quality_baseline__', {
-        timestamp: Date.now(),
-        snapshot,
-      });
-      return { success: true, elementCount: snapshot.length, timestamp: Date.now() };
+      try {
+        qualityBaseline = captureQualityBaseline(elements, payload as QualityBaselineRequest);
+        return { saved: true, elementCount: qualityBaseline.elements.length };
+      } catch (err) {
+        return qualityFailure((err as Error).message, 'SAVE_BASELINE_ERROR');
+      }
     }
 
     case 'diffBaseline': {
-      const baseline = qualityBaselines.get('__quality_baseline__');
-      if (!baseline) return { success: false, error: 'No baseline saved' };
-      return {
-        baselineTimestamp: baseline.timestamp,
-        currentElements: elements.length,
-        baselineElements: ((baseline.snapshot as unknown[]) ?? []).length,
-        timestamp: Date.now(),
-      };
+      if (!qualityBaseline) {
+        return qualityFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
+      }
+      try {
+        return diffQualityBaseline(qualityBaseline, elements, payload as QualityDiffRequest);
+      } catch (err) {
+        return qualityFailure((err as Error).message, 'DIFF_BASELINE_ERROR');
+      }
     }
 
     // ======================================================================

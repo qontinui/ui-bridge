@@ -2,7 +2,10 @@
  * Media Snapshot
  *
  * On-demand visual snapshot capture and pixel-level comparison for media elements.
- * Never called during discovery — only when explicitly requested via API.
+ * Never called during discovery — only when a caller asks: ui-bridge-auto's
+ * screenshot assertions (`captureMediaSnapshot`, `captureElementScreenshot`,
+ * `compareVisualRegression`) and the runner's `POST /ui-bridge/ai/image-diff`,
+ * whose frontend half runs `compareVisualRegression`.
  */
 
 /**
@@ -21,27 +24,6 @@ export interface MediaSnapshotData {
   elementId: string;
   /** Timestamp of capture */
   timestamp: number;
-}
-
-/**
- * Result of comparing two media snapshots
- */
-export interface MediaComparisonResult {
-  /** Whether the images are identical */
-  identical: boolean;
-  /** Percentage of pixels that differ (0-100), or -1 if comparison not supported */
-  diffPercentage: number;
-  /** Bounding box of the region with differences */
-  diffRegion?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  /** Base64-encoded diff image highlighting differences in red */
-  diffImage?: string;
-  /** Error message if comparison could not be performed */
-  error?: string;
 }
 
 /**
@@ -167,117 +149,6 @@ function captureSvgSnapshot(
     };
   } catch {
     return null;
-  }
-}
-
-/**
- * Compare two media snapshots pixel-by-pixel.
- *
- * Both snapshots must be base64 PNG data. Returns diff percentage and
- * optional diff image highlighting changed pixels in red.
- *
- * Note: This function is async because it needs to decode base64 images.
- */
-export async function compareMediaSnapshots(
-  a: MediaSnapshotData,
-  b: MediaSnapshotData
-): Promise<MediaComparisonResult> {
-  // SVG snapshots cannot be compared pixel-by-pixel
-  if (a.mediaType === 'image/svg+xml' || b.mediaType === 'image/svg+xml') {
-    return { identical: false, diffPercentage: -1, error: 'SVG comparison not supported' };
-  }
-
-  try {
-    const imgA = await loadBase64Image(a.data);
-    const imgB = await loadBase64Image(b.data);
-
-    // Use the larger dimensions
-    const width = Math.max(imgA.width, imgB.width);
-    const height = Math.max(imgA.height, imgB.height);
-
-    const canvasA = document.createElement('canvas');
-    canvasA.width = width;
-    canvasA.height = height;
-    const ctxA = canvasA.getContext('2d');
-    if (!ctxA) return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
-    ctxA.drawImage(imgA, 0, 0);
-    const dataA = ctxA.getImageData(0, 0, width, height);
-
-    const canvasB = document.createElement('canvas');
-    canvasB.width = width;
-    canvasB.height = height;
-    const ctxB = canvasB.getContext('2d');
-    if (!ctxB) return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
-    ctxB.drawImage(imgB, 0, 0);
-    const dataB = ctxB.getImageData(0, 0, width, height);
-
-    // Compare pixels
-    const diffCanvas = document.createElement('canvas');
-    diffCanvas.width = width;
-    diffCanvas.height = height;
-    const diffCtx = diffCanvas.getContext('2d');
-    if (!diffCtx)
-      return { identical: false, diffPercentage: -1, error: 'Failed to get 2d context' };
-    const diffData = diffCtx.createImageData(width, height);
-
-    let diffCount = 0;
-    let minX = width,
-      minY = height,
-      maxX = 0,
-      maxY = 0;
-    const totalPixels = width * height;
-    const threshold = 10; // Color difference threshold
-
-    for (let i = 0; i < dataA.data.length; i += 4) {
-      const rDiff = Math.abs(dataA.data[i] - dataB.data[i]);
-      const gDiff = Math.abs(dataA.data[i + 1] - dataB.data[i + 1]);
-      const bDiff = Math.abs(dataA.data[i + 2] - dataB.data[i + 2]);
-
-      if (rDiff > threshold || gDiff > threshold || bDiff > threshold) {
-        diffCount++;
-        const px = (i / 4) % width;
-        const py = Math.floor(i / 4 / width);
-        minX = Math.min(minX, px);
-        minY = Math.min(minY, py);
-        maxX = Math.max(maxX, px);
-        maxY = Math.max(maxY, py);
-
-        // Highlight diff in red
-        diffData.data[i] = 255;
-        diffData.data[i + 1] = 0;
-        diffData.data[i + 2] = 0;
-        diffData.data[i + 3] = 200;
-      } else {
-        // Copy original with reduced opacity
-        diffData.data[i] = dataA.data[i];
-        diffData.data[i + 1] = dataA.data[i + 1];
-        diffData.data[i + 2] = dataA.data[i + 2];
-        diffData.data[i + 3] = 80;
-      }
-    }
-
-    diffCtx.putImageData(diffData, 0, 0);
-    const diffPercentage = (diffCount / totalPixels) * 100;
-
-    return {
-      identical: diffCount === 0,
-      diffPercentage: Math.round(diffPercentage * 100) / 100,
-      diffRegion:
-        diffCount > 0
-          ? {
-              x: minX,
-              y: minY,
-              width: maxX - minX + 1,
-              height: maxY - minY + 1,
-            }
-          : undefined,
-      diffImage:
-        diffCount > 0
-          ? diffCanvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '')
-          : undefined,
-    };
-  } catch {
-    return { identical: false, diffPercentage: 100 };
   }
 }
 

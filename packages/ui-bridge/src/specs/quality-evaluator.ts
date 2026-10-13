@@ -11,24 +11,11 @@ import type {
   QualityContext,
   QualityMetricId,
   QualityEvaluationReport,
-  QualityGrade,
   MetricResult,
   MetricFinding,
 } from './quality-types';
 import { METRIC_FUNCTIONS } from './quality-metrics';
 import { getContext, BUILT_IN_CONTEXTS } from './quality-contexts';
-
-// ============================================================================
-// Grade Assignment
-// ============================================================================
-
-function assignGrade(score: number): QualityGrade {
-  if (score >= 90) return 'A';
-  if (score >= 75) return 'B';
-  if (score >= 60) return 'C';
-  if (score >= 40) return 'D';
-  return 'F';
-}
 
 // ============================================================================
 // Context Resolution
@@ -57,7 +44,9 @@ function resolveContext(context?: QualityContext | string): QualityContext {
  * @param elements - Design data for all elements to evaluate
  * @param viewport - Viewport dimensions
  * @param context - Context name (string) or custom context object. Defaults to 'general'.
- * @returns Complete evaluation report with scores, grades, and actionable findings
+ * @returns Complete evaluation report: per-metric scores, the weighted overall and UX
+ *   scores, and actionable findings. Values, not verdicts — the report carries no grade;
+ *   the standard a score is judged against belongs to the caller.
  */
 export function evaluateQuality(
   elements: ElementDesignData[],
@@ -152,9 +141,7 @@ export function evaluateQuality(
 
   return {
     overallScore,
-    grade: assignGrade(overallScore),
     uxScore,
-    uxGrade: assignGrade(uxScore),
     contextName: ctx.name,
     metrics: metricResults,
     topIssues,

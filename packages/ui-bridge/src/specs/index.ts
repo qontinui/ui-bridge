@@ -122,7 +122,6 @@ export type {
   MetricResult,
   MetricContextConfig,
   QualityContext,
-  QualityGrade,
   QualityEvaluationReport,
   SnapshotBaseline,
   StyleChange,

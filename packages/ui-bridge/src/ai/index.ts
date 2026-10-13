@@ -369,40 +369,23 @@ export type { FormSnapshot, FormFieldDiff, FormDiff } from './form-diff';
 export { decomposeTarget } from './target-decomposer';
 export type { DecomposedTarget, SpatialRelation } from './target-decomposer';
 
-// Media Queries
-export {
-  createMediaFindRequest,
-  createBrokenImagesFindRequest,
-  createMissingAltFindRequest,
-  createOversizedImagesFindRequest,
-  buildAccessibilityAudit,
-  buildPerformanceAudit,
-} from './media-queries';
+// Media Audits (no route serves them; Phase 8 of plan
+// 2026-10-13-image-generation-and-visual-judgment re-homes them as assertions)
+export { buildAccessibilityAudit, buildPerformanceAudit } from './media-queries';
 export type { MediaAccessibilityAudit, MediaPerformanceAudit } from './media-queries';
 
 // Media Snapshot & Visual Regression
 export {
   captureMediaSnapshot,
-  compareMediaSnapshots,
   captureElementScreenshot,
   compareVisualRegression,
 } from './media-snapshot';
 export type {
   MediaSnapshotData,
-  MediaComparisonResult,
   ElementCaptureOptions,
   VisualRegressionOptions,
   VisualRegressionResult,
 } from './media-snapshot';
-
-// Media Analysis
-export { analyzeMediaElement, analyzeMediaBatch, analyzeMediaPage } from './media-analysis';
-export type {
-  MediaAnalysisResult,
-  MediaAnalyzeRequest,
-  MediaAnalyzeBatchRequest,
-  MediaAnalyzePageRequest,
-} from './media-analysis';
 
 // Background Observer (screenpipe-inspired continuous capture)
 export { BackgroundObserver } from './background-observer';

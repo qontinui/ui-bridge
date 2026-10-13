@@ -312,15 +312,22 @@ describe('viewportUtilization', () => {
 // ============================================================================
 
 describe('evaluateQuality UX sub-score', () => {
-  it('computes uxScore and uxGrade in the report', () => {
+  it('reports uxScore as the weighted mean of the enabled UX metrics, and no grade', () => {
     const elements = [
       makeContentElement('h', 'heading', { x: 0, y: 0, width: 400, height: 50 }),
       makeContentElement('p', 'paragraph', { x: 0, y: 60, width: 400, height: 200 }),
     ];
     const report = evaluateQuality(elements, DEFAULT_VIEWPORT, 'general');
-    expect(report.uxScore).toBeGreaterThanOrEqual(0);
-    expect(report.uxScore).toBeLessThanOrEqual(100);
-    expect(['A', 'B', 'C', 'D', 'F']).toContain(report.uxGrade);
+    const ux = report.metrics.filter((m) => m.enabled && m.category === 'ux');
+    const totalWeight = ux.reduce((sum, m) => sum + m.weight, 0);
+    expect(totalWeight).toBeGreaterThan(0);
+    const expected = Math.round(ux.reduce((sum, m) => sum + m.score * m.weight, 0) / totalWeight);
+    expect(report.uxScore).toBe(expected);
+    // Values, not verdicts: the report carries scores, never a letter grade.
+    // The standard a score is judged against belongs to the caller
+    // (domain_spec/ui-bridge behaviour (3)).
+    expect(report).not.toHaveProperty('grade');
+    expect(report).not.toHaveProperty('uxGrade');
   });
 
   it('UX metrics appear with category "ux" in results', () => {

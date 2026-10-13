@@ -1,11 +1,13 @@
 /**
- * Media Queries
+ * Media Audits
  *
- * Convenience query functions for common media-related searches.
- * These wrap the find() API with pre-configured media filters.
+ * Accessibility and performance audits computed from a media `find` response.
+ * No route serves them: they are the specification the L0 image assertions
+ * re-home (plan 2026-10-13-image-generation-and-visual-judgment, Phase 8), and
+ * they are deleted when those assertions land.
  */
 
-import type { FindRequest, FindResponse } from '../control/types';
+import type { FindResponse } from '../control/types';
 import { mediaFactsOf } from '../core/media-observation';
 
 /**
@@ -62,38 +64,6 @@ const GENERIC_ALT_PATTERNS = [
   /^screen\s*shot$/i,
   /^\d+$/,
 ];
-
-/**
- * Create a find request with media filters
- */
-export function createMediaFindRequest(overrides: Partial<FindRequest> = {}): FindRequest {
-  return {
-    mediaOnly: true,
-    skipSettle: true,
-    ...overrides,
-  };
-}
-
-/**
- * Create a find request for broken images
- */
-export function createBrokenImagesFindRequest(): FindRequest {
-  return createMediaFindRequest({ brokenOnly: true });
-}
-
-/**
- * Create a find request for images missing alt text
- */
-export function createMissingAltFindRequest(): FindRequest {
-  return createMediaFindRequest({ missingAltOnly: true });
-}
-
-/**
- * Create a find request for oversized images
- */
-export function createOversizedImagesFindRequest(threshold: number = 2.0): FindRequest {
-  return createMediaFindRequest({ oversizeThreshold: threshold });
-}
 
 /**
  * Build an accessibility audit from a media find response

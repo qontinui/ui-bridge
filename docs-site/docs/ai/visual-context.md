@@ -192,6 +192,8 @@ table is the single source of truth, so the SDK ships stubs for all thirteen
 | `GET /vision/cache/:sha256` | Stream a cached capture |
 | `GET /vision/health` | Vision pipeline health |
 
-These replaced the older `/control/*screenshot*` and `/ai/media/*` routes.
+These replaced the older `/control/*screenshot*` routes. The `/ai/media/*`
+routes were retired without a successor: image facts arrive on `find`'s media
+rows.
 `POST /vision/describe` can fail its structured-parse step and return prose with
 `structured: null`; that case is reported as `UB-VLM-STRUCTURED-PARSE-FAIL`.

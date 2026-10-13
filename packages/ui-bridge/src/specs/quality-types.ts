@@ -112,13 +112,15 @@ export interface QualityContext {
 // Evaluation Report
 // ============================================================================
 
-export type QualityGrade = 'A' | 'B' | 'C' | 'D' | 'F';
-
+/**
+ * The `/design/evaluate` report. Values, not verdicts: scores and findings only.
+ * There is deliberately no letter grade — a grade is a judgment, and the standard
+ * a score is judged against belongs to the caller (`domain_spec/ui-bridge`
+ * behaviour (3)).
+ */
 export interface QualityEvaluationReport {
   overallScore: number; // 0-100 weighted average
-  grade: QualityGrade;
   uxScore: number; // 0-100 UX sub-score
-  uxGrade: QualityGrade;
   contextName: string;
   metrics: MetricResult[];
   topIssues: MetricFinding[];

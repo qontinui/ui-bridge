@@ -1298,14 +1298,16 @@ export interface UIBridgeServerHandlers {
     context?: HandlerContext
   ) => Promise<APIResponse<unknown[]>>;
 
-  // Media discovery & analysis endpoints — removed in Phase 2 of the
-  // UI Bridge Vision Pipeline (2026-05-13). The `/control/screenshot`,
+  // Screenshot endpoints — removed in Phase 2 of the UI Bridge Vision
+  // Pipeline (2026-05-13). The `/control/screenshot`,
   // `/control/annotated-screenshot`, `/control/element-screenshot`,
-  // `/control/capture-element-images`, `/control/get-element-images`,
-  // `/control/diagnose-stuck-screen`, and `/ai/media/*` routes are
-  // superseded by `/vision/{capture,annotate,diff,raw,cache,health}`
-  // declared above (handlers prefixed `vision*`). The runner answers those
-  // routes directly; the SDK keeps stubs for type-completeness.
+  // `/control/capture-element-images`, `/control/get-element-images` and
+  // `/control/diagnose-stuck-screen` routes are superseded by
+  // `/vision/{capture,annotate,diff,raw,cache,health}` declared above
+  // (handlers prefixed `vision*`). The runner answers those routes directly;
+  // the SDK keeps stubs for type-completeness. The media discovery and
+  // analysis routes removed in the same phase have no successor: image facts
+  // arrive on `find`'s media rows.
 
   // Change observation (push-based)
   getChangesSince: (
@@ -2344,9 +2346,9 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   // Vision pipeline (Phase 2, plan 2026-05-13). Replaces the legacy
   // `/control/{screenshot,annotated-screenshot,element-screenshot,
   // capture-element-images,get-element-images,diagnose-stuck-screen}`
-  // and `/ai/media/*` routes. The runner answers these directly; the
-  // SDK exposes stubs that return `runner_required` so the route table
-  // stays the single source of truth.
+  // routes. The runner answers these directly; the SDK exposes stubs that
+  // return `runner_required` so the route table stays the single source of
+  // truth.
   { method: 'POST', path: '/vision/capture', handler: 'visionCapture', bodyRequired: true },
   { method: 'POST', path: '/vision/annotate', handler: 'visionAnnotate', bodyRequired: true },
   { method: 'POST', path: '/vision/diff', handler: 'visionDiff', bodyRequired: true },

@@ -2501,43 +2501,6 @@ export function createRelayHandlers(
               { method: 'GET', path: '/ai/snapshot', description: 'Semantic snapshot' },
             ],
           },
-          media: {
-            description: 'Media element discovery and analysis',
-            endpoints: [
-              {
-                method: 'POST',
-                path: '/ai/media/find',
-                description: 'Find media elements with filters',
-              },
-              {
-                method: 'POST',
-                path: '/ai/media/audit/accessibility',
-                description: 'Alt text audit',
-              },
-              {
-                method: 'POST',
-                path: '/ai/media/audit/performance',
-                description: 'Oversized/transfer size audit',
-              },
-              { method: 'POST', path: '/ai/media/snapshot', description: 'Capture media snapshot' },
-              { method: 'POST', path: '/ai/media/compare', description: 'Compare two snapshots' },
-              {
-                method: 'POST',
-                path: '/ai/media/analyze',
-                description: 'Capture image + context for AI analysis',
-              },
-              {
-                method: 'POST',
-                path: '/ai/media/analyze/batch',
-                description: 'Capture multiple images for comparison',
-              },
-              {
-                method: 'POST',
-                path: '/ai/media/analyze/page',
-                description: 'Capture all visible media on page',
-              },
-            ],
-          },
           debug: {
             description: 'Debugging and diagnostics',
             endpoints: [
