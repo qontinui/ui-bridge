@@ -400,12 +400,21 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   });
 
   let stopped = false;
+  // The id of the command stream currently open, from its `connected` event.
+  // Every command result carries it, so the relay can hold the result to the
+  // stream the command was delivered on.
+  let streamId: string | undefined;
   let abortController: AbortController | null = null;
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   // ----- Response sender -----
-  const sendResponse = async (commandId: string, ok: boolean, result: unknown) => {
+  const sendResponse = async (
+    commandId: string,
+    ok: boolean,
+    result: unknown,
+    fromStream: string | undefined
+  ) => {
     if (isOpaqueOrigin()) return;
     try {
       await fetch(`${basePath}/commands`, {
@@ -416,6 +425,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
           success: ok,
           result,
           tabId,
+          streamId: fromStream,
           error: ok ? undefined : (result as { error?: string })?.error,
         }),
       });
@@ -425,15 +435,17 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
   };
 
   // ----- Command processor -----
-  const processCommand = async (command: QueuedCommand) => {
+  // `fromStream` is the stream the command arrived on; its result names that
+  // stream even if the connection has been reopened since.
+  const processCommand = async (command: QueuedCommand, fromStream: string | undefined) => {
     try {
       const result = await execute(command.action, command.payload as Record<string, unknown>);
       const resultObj = result as { success?: boolean };
       if (resultObj && resultObj.success === false) {
-        await sendResponse(command.commandId, false, result);
+        await sendResponse(command.commandId, false, result, fromStream);
         return;
       }
-      await sendResponse(command.commandId, true, result);
+      await sendResponse(command.commandId, true, result, fromStream);
     } catch (e: unknown) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       let errorCode = 'UNKNOWN_ERROR';
@@ -441,13 +453,18 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
       else if (errorMessage.includes('timeout')) errorCode = 'ACTION_TIMEOUT';
       else if (errorMessage.includes('Unknown command')) errorCode = 'UNKNOWN_COMMAND';
 
-      await sendResponse(command.commandId, false, {
-        success: false,
-        error: errorMessage,
-        failureDetails: { errorCode, message: errorMessage, timestamp: Date.now() },
-        durationMs: 0,
-        timestamp: Date.now(),
-      });
+      await sendResponse(
+        command.commandId,
+        false,
+        {
+          success: false,
+          error: errorMessage,
+          failureDetails: { errorCode, message: errorMessage, timestamp: Date.now() },
+          durationMs: 0,
+          timestamp: Date.now(),
+        },
+        fromStream
+      );
     }
   };
 
@@ -505,7 +522,10 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
               if (data == null) continue;
               try {
                 const parsed = JSON.parse(data);
-                if (parsed.type === 'connected') continue;
+                if (parsed.type === 'connected') {
+                  streamId = typeof parsed.streamId === 'string' ? parsed.streamId : undefined;
+                  continue;
+                }
                 // Throttle-immune heartbeat clock: arriving bytes are not
                 // subject to the background-tab timer clamp, so a hidden tab
                 // stays registered on the strength of these alone.
@@ -514,7 +534,7 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
                   continue;
                 }
                 if (parsed.commandId && parsed.action) {
-                  void processCommand(parsed as QueuedCommand);
+                  void processCommand(parsed as QueuedCommand, streamId);
                 }
               } catch (e) {
                 onError('[UIBridge] Failed to parse SSE message:', e);

@@ -270,28 +270,47 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     });
   });
 
-  it('allows a genuine re-login: proven new identity, same tab, ownership transfers', () => {
-    const relay = freshRelay();
-    relay.recordRegistration(
-      'shared-tab',
-      { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
-    );
-    expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
+  it('allows a genuine re-login once the previous owner has gone quiet: proven new identity, same tab', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const relay = freshRelay({ tabActiveWindowMs: 30_000 });
+      relay.recordRegistration(
+        'shared-tab',
+        { userId: 'alice', sessionId: 'alice-s1' },
+        { callerUserId: 'alice' },
+      );
+      expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
 
-    // Same physical browser tab; the operator logs out of alice and into
-    // bob. The auth gate now proves `bob`, and the heartbeat body claims
-    // `bob` — the transfer is authorized.
-    const relogin = relay.recordRegistration(
-      'shared-tab',
-      { userId: 'bob', sessionId: 'bob-s1' },
-      { callerUserId: 'bob' },
-    );
-    expect(relogin.ownershipAssigned).toBe(true);
-    expect(relay.getOwnership('shared-tab')).toMatchObject({
-      userId: 'bob',
-      sessionId: 'bob-s1',
-    });
+      // Same physical browser tab; the operator logs out of alice and into
+      // bob. The auth gate now proves `bob`, and the heartbeat body claims
+      // `bob`. While alice's session on the tab is still live, the transfer
+      // is refused: a proven identity is not, by itself, a claim on a tab
+      // another user is using.
+      const early = relay.recordRegistration(
+        'shared-tab',
+        { userId: 'bob', sessionId: 'bob-s1' },
+        { callerUserId: 'bob' },
+      );
+      expect(early).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' });
+      expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
+
+      // Alice's heartbeats stopped with the logout; past the active window
+      // bob's next heartbeat takes the tab.
+      vi.setSystemTime(Date.now() + 30_001);
+      const relogin = relay.recordRegistration(
+        'shared-tab',
+        { userId: 'bob', sessionId: 'bob-s1' },
+        { callerUserId: 'bob' },
+      );
+      expect(relogin.ownershipAssigned).toBe(true);
+      expect(relay.getOwnership('shared-tab')).toMatchObject({
+        userId: 'bob',
+        sessionId: 'bob-s1',
+      });
+      relay.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('leaves the current owner heartbeat path unchanged (same-owner refresh, no proof needed)', () => {

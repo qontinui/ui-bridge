@@ -36,6 +36,14 @@ export type CommandListener = (command: QueuedCommand) => void;
 export interface TabListener {
   tabId: string;
   callback: CommandListener;
+  /**
+   * Fresh per subscription. A command delivered on this stream is answered
+   * only by a response that presents this id, or one from the tab's verified
+   * owner (see `resolveCommand`).
+   */
+  streamId?: string;
+  /** The verified identity that opened this stream, when one was present. */
+  userId?: string;
 }
 
 export interface PendingCommand {
@@ -53,6 +61,31 @@ export interface PendingCommand {
    * timeout). Absent for same-instance commands.
    */
   busUnsub?: () => void;
+  /** The tab the command was dispatched to, when it was dispatched to one. */
+  targetTabId?: string;
+  /** The SSE stream the command went down, when it went down one on this instance. */
+  streamId?: string;
+  /** The verified identity bound to that stream when the command was delivered. */
+  streamUserId?: string;
+  /** The caller the command was dispatched for (its `ownerCheck`), when scoped. */
+  ownerUserId?: string;
+}
+
+/**
+ * Who is answering a command: the stream id the responder presents, and the
+ * verified identity of the responding request (`X-Caller-User-Id`).
+ */
+export interface CommandResponder {
+  streamId?: string;
+  callerUserId?: string | null;
+}
+
+/** Where this instance delivered a command that another instance dispatched. */
+interface BusDelivery {
+  targetTabId: string;
+  streamId?: string;
+  streamUserId?: string;
+  expiresAt: number;
 }
 
 export interface WebSocketClient {
@@ -165,6 +198,13 @@ export interface CommandRelayOptions {
    * fresh tabs. The two thresholds are deliberately independent.
    */
   tabActiveWindowMs?: number;
+  /**
+   * Whether a newly connected tab is sent one `getControlSnapshot` of its own
+   * shortly after it connects (default true). Tests that count which tab each
+   * command reached turn it off, since that warm-up command lands at a time no
+   * request chose.
+   */
+  proactiveSnapshot?: boolean;
   /**
    * Threshold after which a tab that still holds an OPEN command transport
    * (SSE listener or connected WebSocket) but has not sent a heartbeat is
@@ -300,6 +340,7 @@ export class CommandRelay {
   private readonly tabDemotionTtlMs: number;
   private readonly tabActiveWindowMs: number;
   private readonly zombieTransportMs: number;
+  private readonly proactiveSnapshot: boolean;
   private readonly pruneSweepIntervalMs: number;
 
   // All state lives on globalThis for HMR survival
@@ -322,6 +363,8 @@ export class CommandRelay {
    * other relay state for Next.js HMR survival.
    */
   private readonly tabOwnership: Map<string, TabOwnership>;
+  /** Commands this instance delivered for another instance, by command id. */
+  private readonly busDeliveries: Map<string, BusDelivery>;
 
   // Simple value state
   private primaryTabId: string | null;
@@ -352,6 +395,7 @@ export class CommandRelay {
     // heartbeats at the SDK's 10s cadence.
     this.tabActiveWindowMs =
       options?.tabActiveWindowMs ?? envInt('UI_BRIDGE_TAB_ACTIVE_WINDOW_MS', 30_000);
+    this.proactiveSnapshot = options?.proactiveSnapshot ?? true;
     // Destructive prune threshold — must stay above the browser's background
     // timer clamp (~60s) or every hidden tab loses its working transport.
     this.zombieTransportMs =
@@ -373,6 +417,7 @@ export class CommandRelay {
     if (!g[key('TabMetadata')]) g[key('TabMetadata')] = new Map();
     if (!g[key('TabLastSuccess')]) g[key('TabLastSuccess')] = new Map();
     if (!g[key('TabOwnership')]) g[key('TabOwnership')] = new Map();
+    if (!g[key('BusDeliveries')]) g[key('BusDeliveries')] = new Map();
     if (!g[key('BuildId')]) g[key('BuildId')] = Date.now().toString();
 
     if (!g[key('ConnectionReady')]) {
@@ -396,6 +441,7 @@ export class CommandRelay {
     this.tabMetadata = g[key('TabMetadata')];
     this.tabLastSuccess = g[key('TabLastSuccess')];
     this.tabOwnership = g[key('TabOwnership')];
+    this.busDeliveries = g[key('BusDeliveries')];
     this.buildId = g[key('BuildId')];
 
     // Periodic cleanup. Runs at `pruneSweepIntervalMs` cadence and performs
@@ -1128,6 +1174,7 @@ export class CommandRelay {
           timeout: recorderTimeout,
           tabsNotified: notified,
           errorResponseCount: 0,
+          ...this.deliveryBinding(targetTabId, senderUserId),
         });
 
         resolve({
@@ -1177,6 +1224,7 @@ export class CommandRelay {
         timeout,
         tabsNotified: sentViaWebSocket ? 1 : 0,
         errorResponseCount: 0,
+        ...this.deliveryBinding(targetTabId, senderUserId),
       };
       this.pendingCommands.set(commandId, pending);
 
@@ -1254,6 +1302,14 @@ export class CommandRelay {
     const busUnsub = bus.subscribeResponse(commandId, (env) => {
       const pending = this.pendingCommands.get(commandId);
       if (!pending) return;
+      // The responder's checks run here, where the command is pending. An
+      // envelope that names no responder comes from an instance that predates
+      // them and is taken as before.
+      const responder =
+        env.responderUserId !== undefined || env.streamId !== undefined
+          ? { streamId: env.streamId, callerUserId: env.responderUserId }
+          : undefined;
+      if (this.responseRefusal(pending, env.tabId, responder)) return;
       clearTimeout(pending.timeout);
       if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
       if (pending.busUnsub) pending.busUnsub();
@@ -1272,6 +1328,7 @@ export class CommandRelay {
       tabsNotified: 1,
       errorResponseCount: 0,
       busUnsub,
+      ...this.deliveryBinding(targetTabId, senderUserId),
     });
 
     bus.publishCommand({
@@ -1395,7 +1452,7 @@ export class CommandRelay {
 
     // Proactive snapshot capture
     setTimeout(async () => {
-      if (!this.wsClients.has(client.clientId)) return;
+      if (!this.proactiveSnapshot || !this.wsClients.has(client.clientId)) return;
       try {
         const result = await this.queueCommand<ControlSnapshot>(
           'getControlSnapshot',
@@ -1467,20 +1524,132 @@ export class CommandRelay {
   // --------------------------------------------------------------------------
 
   /**
-   * Resolve a pending command with a response from the browser.
+   * What a pending command records about where it went (per-user tab
+   * scoping, §4.2): the tab it was dispatched to, the stream it went down on
+   * this instance, and who it was dispatched for.
    */
-  resolveCommand(commandId: string, result: unknown, tabId?: string): boolean {
+  private deliveryBinding(
+    targetTabId: string | undefined,
+    ownerUserId: string | undefined
+  ): Pick<PendingCommand, 'targetTabId' | 'streamId' | 'streamUserId' | 'ownerUserId'> {
+    const listener = targetTabId ? this.tabListeners.get(targetTabId) : undefined;
+    return {
+      ...(targetTabId ? { targetTabId } : {}),
+      ...(listener?.streamId ? { streamId: listener.streamId } : {}),
+      ...(listener?.userId ? { streamUserId: listener.userId } : {}),
+      ...(ownerUserId ? { ownerUserId } : {}),
+    };
+  }
+
+  /**
+   * Why `responder` may not settle a command, or null when it may (per-user
+   * tab scoping, §4.2). A result is taken only from the tab the command was
+   * dispatched to; a presented stream id must be the stream the command went
+   * down; and a verified responder must be the tab's owner (before the tab
+   * registers: the identity its stream was opened under, else the caller the
+   * command was dispatched for). A response that presents no stream id passes
+   * on the identity check, so a client that predates stream ids keeps working
+   * where identity is verified. With no responder at all (an in-process call)
+   * nothing is checked, and with no identity a missing tab id is tolerated:
+   * single-user mode is unchanged.
+   */
+  private responseRefusal(
+    binding: Pick<PendingCommand, 'targetTabId' | 'streamId' | 'streamUserId' | 'ownerUserId'>,
+    tabId: string | undefined,
+    responder: CommandResponder | undefined
+  ): 'TAB_MISMATCH' | 'STREAM_MISMATCH' | 'NOT_OWNER' | null {
+    if (!responder) return null;
+    const identity = responder.callerUserId || undefined;
+    if (
+      binding.targetTabId !== undefined &&
+      (tabId !== undefined || identity !== undefined) &&
+      tabId !== binding.targetTabId
+    ) {
+      return 'TAB_MISMATCH';
+    }
+    if (
+      responder.streamId !== undefined &&
+      binding.streamId !== undefined &&
+      responder.streamId !== binding.streamId
+    ) {
+      return 'STREAM_MISMATCH';
+    }
+    if (identity !== undefined) {
+      const owner = binding.targetTabId ? this.tabOwnership.get(binding.targetTabId) : undefined;
+      const expected = owner?.userId ?? binding.streamUserId ?? binding.ownerUserId;
+      if (expected !== undefined && expected !== identity) return 'NOT_OWNER';
+    }
+    return null;
+  }
+
+  /**
+   * Why `responder` may not settle `commandId`, or null when it may or when
+   * this instance knows nothing of the command. The HTTP layer asks first so
+   * a refused result gets its own answer; `resolveCommand` and
+   * `rejectCommand` apply the same check themselves.
+   */
+  commandResponseRefusal(
+    commandId: string,
+    tabId: string | undefined,
+    responder: CommandResponder
+  ): 'TAB_MISMATCH' | 'STREAM_MISMATCH' | 'NOT_OWNER' | null {
+    const binding = this.pendingCommands.get(commandId) ?? this.liveBusDelivery(commandId);
+    return binding ? this.responseRefusal(binding, tabId, responder) : null;
+  }
+
+  /** This instance's record of delivering `commandId` for another instance, if live. */
+  private liveBusDelivery(commandId: string): BusDelivery | undefined {
+    const delivery = this.busDeliveries.get(commandId);
+    if (delivery && delivery.expiresAt < Date.now()) {
+      this.busDeliveries.delete(commandId);
+      return undefined;
+    }
+    return delivery;
+  }
+
+  /** The responder fields a forwarded response carries over the bus. */
+  private responderEnvelope(
+    responder: CommandResponder | undefined
+  ): { responderUserId?: string; streamId?: string } {
+    return {
+      ...(responder?.callerUserId ? { responderUserId: responder.callerUserId } : {}),
+      ...(responder?.streamId !== undefined ? { streamId: responder.streamId } : {}),
+    };
+  }
+
+  /**
+   * Resolve a pending command with a response from the browser. `responder`
+   * says who is answering (the HTTP layer passes it); a response the checks in
+   * `responseRefusal` refuse is dropped and false is returned.
+   */
+  resolveCommand(
+    commandId: string,
+    result: unknown,
+    tabId?: string,
+    responder?: CommandResponder
+  ): boolean {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) {
       // Cross-instance (P0a): the browser's response landed on an instance that
       // did NOT originate the command. Forward it over the bus to the instance
-      // holding the pending promise.
+      // holding the pending promise, with who answered. When this instance
+      // delivered the command, the stream it went down is checked here.
       if (this.bus) {
-        this.bus.publishResponse({ commandId, ok: true, result, tabId });
+        const delivery = this.liveBusDelivery(commandId);
+        if (delivery && this.responseRefusal(delivery, tabId, responder)) return false;
+        this.busDeliveries.delete(commandId);
+        this.bus.publishResponse({
+          commandId,
+          ok: true,
+          result,
+          tabId,
+          ...this.responderEnvelope(responder),
+        });
         return true;
       }
       return false;
     }
+    if (this.responseRefusal(pending, tabId, responder)) return false;
 
     clearTimeout(pending.timeout);
     if (pending.graceTimeout) clearTimeout(pending.graceTimeout);
@@ -1500,16 +1669,31 @@ export class CommandRelay {
   /**
    * Reject a pending command with an error from the browser.
    */
-  rejectCommand(commandId: string, errorMessage: string): boolean {
+  rejectCommand(
+    commandId: string,
+    errorMessage: string,
+    tabId?: string,
+    responder?: CommandResponder
+  ): boolean {
     const pending = this.pendingCommands.get(commandId);
     if (!pending) {
       // Cross-instance (P0a): forward the error to the originating instance.
       if (this.bus) {
-        this.bus.publishResponse({ commandId, ok: false, error: errorMessage });
+        const delivery = this.liveBusDelivery(commandId);
+        if (delivery && this.responseRefusal(delivery, tabId, responder)) return false;
+        this.busDeliveries.delete(commandId);
+        this.bus.publishResponse({
+          commandId,
+          ok: false,
+          error: errorMessage,
+          ...(tabId !== undefined ? { tabId } : {}),
+          ...this.responderEnvelope(responder),
+        });
         return true;
       }
       return false;
     }
+    if (this.responseRefusal(pending, tabId, responder)) return false;
 
     pending.errorResponseCount++;
     if (!pending.firstError) {
@@ -1545,11 +1729,58 @@ export class CommandRelay {
   // --------------------------------------------------------------------------
 
   /**
-   * Subscribe to commands via SSE. Returns an unsubscribe function.
+   * Subscribe to commands via SSE. Returns an unsubscribe function. This is
+   * the unscoped door (no caller identity); the HTTP layer opens streams for
+   * a verified caller through {@link openCommandStream}.
    */
   subscribeToCommands(listener: CommandListener, tabId?: string): () => void {
+    return this.addCommandListener(listener, tabId, undefined).unsubscribe;
+  }
+
+  /**
+   * Open a command stream on behalf of a verified caller (per-user tab
+   * scoping, §4.2). With no caller this is {@link subscribeToCommands}. With
+   * one, the stream must name its tab, and that tab may not be registered to
+   * another user, nor (before it registers) already be streaming to another
+   * user. A refusal throws `OwnerMismatchError`, which the HTTP layer answers
+   * as TAB_NOT_FOUND. The returned `streamId` is fresh per stream; see
+   * `resolveCommand` for what it binds.
+   */
+  openCommandStream(
+    listener: CommandListener,
+    tabId: string | undefined,
+    callerUserId?: string | null
+  ): { streamId: string; unsubscribe: () => void } {
+    const userId = callerUserId || undefined;
+    if (userId) {
+      if (!tabId) {
+        throw new Error('A command stream opened for a verified caller must name its tab');
+      }
+      const owner = this.tabOwnership.get(tabId);
+      if (owner && owner.userId !== userId) {
+        throw new OwnerMismatchError(tabId, userId, owner.userId);
+      }
+      const live = this.tabListeners.get(tabId);
+      if (!owner && live?.userId && live.userId !== userId) {
+        throw new OwnerMismatchError(tabId, userId, live.userId);
+      }
+    }
+    return this.addCommandListener(listener, tabId, userId);
+  }
+
+  private addCommandListener(
+    listener: CommandListener,
+    tabId: string | undefined,
+    userId: string | undefined
+  ): { streamId: string; unsubscribe: () => void } {
     const id = tabId || `anon_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    this.tabListeners.set(id, { tabId: id, callback: listener });
+    const streamId = crypto.randomUUID();
+    this.tabListeners.set(id, {
+      tabId: id,
+      callback: listener,
+      streamId,
+      ...(userId ? { userId } : {}),
+    });
 
     // New tab becomes primary
     this.demotedTabs.delete(id);
@@ -1603,6 +1834,9 @@ export class CommandRelay {
             payload: env.payload,
             timestamp: env.timestamp,
           });
+          // Remember where it went, so a response that lands here is held to
+          // the stream that received the command (see `resolveCommand`).
+          this.recordBusDelivery(env.commandId, id, current);
         } catch {
           /* self-cleaning */
         }
@@ -1632,16 +1866,20 @@ export class CommandRelay {
     };
 
     const proactiveTimer = setTimeout(async () => {
+      if (!this.proactiveSnapshot) return;
       const captured = await captureSnapshot();
       if (!captured && this.tabListeners.has(id)) {
         retryTimer = setTimeout(() => captureSnapshot(), 1500);
       }
     }, 500);
 
-    return () => {
+    const unsubscribe = () => {
       clearTimeout(proactiveTimer);
       if (retryTimer) clearTimeout(retryTimer);
       if (busUnsubCmd) busUnsubCmd();
+      // A newer stream for the same tab replaced this one: its state is not
+      // this stream's to remove.
+      if (this.tabListeners.get(id)?.streamId !== streamId) return;
       if (this.bus) this.bus.unregisterTab(id);
       this.tabListeners.delete(id);
       this.demotedTabs.delete(id);
@@ -1654,6 +1892,23 @@ export class CommandRelay {
       );
       this.resetConnectionGateIfEmpty();
     };
+    return { streamId, unsubscribe };
+  }
+
+  /** Record a bus-dispatched command this instance delivered down a local stream. */
+  private recordBusDelivery(commandId: string, tabId: string, listener: TabListener): void {
+    const now = Date.now();
+    if (this.busDeliveries.size > this.maxPendingCommands) {
+      for (const [id, delivery] of this.busDeliveries) {
+        if (delivery.expiresAt < now) this.busDeliveries.delete(id);
+      }
+    }
+    this.busDeliveries.set(commandId, {
+      targetTabId: tabId,
+      ...(listener.streamId ? { streamId: listener.streamId } : {}),
+      ...(listener.userId ? { streamUserId: listener.userId } : {}),
+      expiresAt: now + this.sseTimeoutMs + this.multiTabGraceMs,
+    });
   }
 
   /**
@@ -1792,7 +2047,9 @@ export class CommandRelay {
    *     unauthenticated (`callerUserId` absent) or mismatched claim is
    *     REFUSED and the prior owner is left untouched — this is the
    *     takeover primitive being closed. A genuine re-login carries the
-   *     new user's proven identity and therefore still transfers.
+   *     new user's proven identity and therefore still transfers, once
+   *     the previous owner's own heartbeats for the tab have stopped for
+   *     `tabActiveWindowMs` (`OWNER_SESSION_LIVE` until then).
    *   - First CLAIM (tab has no owner yet — bootstrap): honored, so a
    *     header-less / single-trust-domain deployment can still register
    *     tabs. A *present* proven identity must still match the claimed
@@ -1806,7 +2063,10 @@ export class CommandRelay {
     tabId: string,
     metadata: { userId: string; sessionId: string },
     options?: { callerUserId?: string | null }
-  ): { ownershipAssigned: boolean; rejectedReason?: 'OWNER_CHANGE_UNVERIFIED' } {
+  ): {
+    ownershipAssigned: boolean;
+    rejectedReason?: 'OWNER_CHANGE_UNVERIFIED' | 'OWNER_SESSION_LIVE';
+  } {
     const now = Date.now();
     const proven = options?.callerUserId;
 
@@ -1834,6 +2094,13 @@ export class CommandRelay {
       // which is the takeover primitive — refuse, prior owner stands.
       if (proven == null) {
         return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
+      }
+      // A proven identity still may not take a tab from an owner whose
+      // session is live: the owner's own heartbeat for this tab arrived within
+      // the active window. A re-login in the same tab stops the previous
+      // owner's heartbeats, so the new owner takes over once they go quiet.
+      if (now - existing.lastSeen < this.tabActiveWindowMs) {
+        return { ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' };
       }
     }
     // First claim / bootstrap: allowed (a present proof already backs the

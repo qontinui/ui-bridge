@@ -54,6 +54,13 @@ export interface RelayResponseEnvelope {
   error?: string;
   /** Tab that produced the response (for success tracking). */
   tabId?: string;
+  /**
+   * The verified identity of the request that carried the response, and the
+   * stream id it presented. The instance holding the pending command checks
+   * both against where the command went (per-user tab scoping, §4.2).
+   */
+  responderUserId?: string;
+  streamId?: string;
 }
 
 export interface RelayBus {

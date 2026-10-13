@@ -11,7 +11,7 @@
  * header the response is the unfiltered admin view.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandRelay } from './command-relay';
 import { createNextRouteHandlers } from './nextjs';
 
@@ -213,27 +213,45 @@ describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () 
     expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
   });
 
-  it('genuine re-login (auth-proven new identity, same tab) STILL transfers ownership', async () => {
+  it('genuine re-login (auth-proven new identity, same tab) transfers ownership once the previous owner is quiet', async () => {
     await seedAlice();
+    const relogin = () =>
+      makeRequest('POST', '/heartbeat', {
+        headers: { 'X-Caller-User-Id': 'bob' },
+        body: {
+          tabId: 'victim-tab',
+          registrationMetadata: { userId: 'bob', sessionId: 'bob-s1' },
+        },
+      });
 
-    // Same physical tab; operator logs out of alice, into bob. The gate now
-    // proves `bob` and the body claims `bob` → transfer authorized.
-    const relogin = makeRequest('POST', '/heartbeat', {
-      headers: { 'X-Caller-User-Id': 'bob' },
-      body: {
-        tabId: 'victim-tab',
-        registrationMetadata: { userId: 'bob', sessionId: 'bob-s1' },
-      },
-    });
-    const res = await routes.POST(relogin, { params: { path: ['heartbeat'] } });
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
-    // No rejection flag present when ownership was assigned.
-    expect(json.data.ownershipAssigned).toBeUndefined();
-    expect(relay.getOwnership('victim-tab')).toMatchObject({
-      userId: 'bob',
-      sessionId: 'bob-s1',
-    });
+    // Same physical tab; operator logs out of alice, into bob. While alice's
+    // session on the tab is live, the transfer is refused.
+    const early = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
+    expect(early.status).toBe(200);
+    const earlyJson = (await early.json()) as {
+      data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
+    };
+    expect(earlyJson.data.ownershipAssigned).toBe(false);
+    expect(earlyJson.data.ownerChangeRejected).toBe('OWNER_SESSION_LIVE');
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+
+    // Past the active window (alice's heartbeats stopped with the logout),
+    // bob's heartbeat takes the tab.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 30_001);
+      const res = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
+      // No rejection flag present when ownership was assigned.
+      expect(json.data.ownershipAssigned).toBeUndefined();
+      expect(relay.getOwnership('victim-tab')).toMatchObject({
+        userId: 'bob',
+        sessionId: 'bob-s1',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('current owner heartbeat (proven identity matches) refreshes normally', async () => {

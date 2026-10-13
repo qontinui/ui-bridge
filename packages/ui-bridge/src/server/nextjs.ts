@@ -703,6 +703,56 @@ async function handleCDPRoute(
 
 const RELAY_COMMAND_STREAM_HEARTBEAT_MS = 15_000;
 
+/** The verified caller identity a relay route acts for, if any (§4.2). */
+function relayCallerUserId(request: NextRequest): string | undefined {
+  return (
+    request.headers.get('x-caller-user-id') ?? request.headers.get('X-Caller-User-Id') ?? undefined
+  );
+}
+
+/** `ownerCheck` dispatch options for the verified caller, if any. */
+function tabOwnerCheck(request: NextRequest): { ownerCheck?: { userId: string } } {
+  const userId = relayCallerUserId(request);
+  return userId ? { ownerCheck: { userId } } : {};
+}
+
+/**
+ * A tab another user owns answers exactly as a tab that does not exist:
+ * TAB_NOT_FOUND, with no tab ids (per-user tab scoping, §4.2).
+ */
+function tabNotFoundResponse(): Response {
+  return jsonResponse(
+    {
+      success: false,
+      error:
+        'tabId is not in connectedTabs. Use GET /tabs to discover live tab ids, ' +
+        'or omit tabId to dispatch to the primary tab.',
+      code: 'TAB_NOT_FOUND',
+      timestamp: Date.now(),
+    },
+    404
+  );
+}
+
+/** The answer for a tab command (close / activate) that failed. */
+function tabCommandErrorResponse(err: unknown): Response {
+  const named = err as { name?: unknown; code?: unknown; message?: unknown };
+  if (named?.name === 'OwnerMismatchError') return tabNotFoundResponse();
+  if (named?.name === 'TabRoutingError' && typeof named.code === 'string') {
+    return jsonResponse(
+      {
+        success: false,
+        error: String(named.message),
+        code: named.code,
+        timestamp: Date.now(),
+      },
+      named.code === 'TAB_STALE' ? 410 : 404
+    );
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
+}
+
 /**
  * Handle relay-specific routes. Returns a Response (or Promise<Response>)
  * if the route matches, or null to fall through to normal routing.
@@ -794,7 +844,9 @@ function handleRelayRoute(
         { userId, sessionId },
         { callerUserId }
       );
-      relay.receiveHeartbeat(heartbeatTabId, {
+      // A refused claim leaves the tab exactly as its owner left it: no
+      // heartbeat time, url or title is taken from the refused request.
+      if (registration.ownershipAssigned) relay.receiveHeartbeat(heartbeatTabId, {
         url: typeof body?.url === 'string' ? (body.url as string) : undefined,
         title: typeof body?.title === 'string' ? (body.title as string) : undefined,
         visibility: typeof body?.visibility === 'string' ? (body.visibility as string) : undefined,
@@ -1002,11 +1054,13 @@ function handleRelayRoute(
     const targetTabId = decodeURIComponent(path.split('/')[2]);
     return (async () => {
       try {
-        const result = await relay.queueCommand('tabActivate', {}, { targetTabId });
+        const result = await relay.queueCommand('tabActivate', {}, {
+          targetTabId,
+          ...tabOwnerCheck(request),
+        });
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
+        return tabCommandErrorResponse(err);
       }
     })();
   }
@@ -1016,11 +1070,13 @@ function handleRelayRoute(
     const targetTabId = decodeURIComponent(path.split('/')[2]);
     return (async () => {
       try {
-        const result = await relay.queueCommand('tabClose', {}, { targetTabId });
+        const result = await relay.queueCommand('tabClose', {}, {
+          targetTabId,
+          ...tabOwnerCheck(request),
+        });
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return jsonResponse({ success: false, error: msg, timestamp: Date.now() }, 500);
+        return tabCommandErrorResponse(err);
       }
     })();
   }
@@ -1035,42 +1091,77 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
   const url = new URL(request.url);
   const tabId = url.searchParams.get('tabId') ?? undefined;
   const encoder = new TextEncoder();
+  const callerUserId = relayCallerUserId(request);
 
-  const stream = new ReadableStream({
+  // Per-user tab scoping (§4.2): a verified caller streams for a named tab
+  // that is not another user's. The stream is opened before the response is
+  // built, so a refusal is an ordinary error answer rather than a stream.
+  if (callerUserId && !tabId) {
+    return jsonResponse(
+      {
+        success: false,
+        error: 'A command stream opened for a verified caller must name its tab (?tabId=).',
+        code: 'TAB_ID_REQUIRED',
+        timestamp: Date.now(),
+      },
+      400
+    );
+  }
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let closed = false;
+  const early: Uint8Array[] = [];
+  const send = (bytes: Uint8Array): boolean => {
+    if (!controllerRef) {
+      early.push(bytes);
+      return true;
+    }
+    try {
+      controllerRef.enqueue(bytes);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let opened: { streamId: string; unsubscribe: () => void };
+  try {
+    opened = relay.openCommandStream(
+      (command) => {
+        if (closed) return;
+        if (!send(encoder.encode(`data: ${JSON.stringify(command)}\n\n`))) cleanup();
+      },
+      tabId,
+      callerUserId
+    );
+  } catch (err) {
+    if ((err as { name?: unknown })?.name === 'OwnerMismatchError') return tabNotFoundResponse();
+    throw err;
+  }
+  const { streamId, unsubscribe } = opened;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    unsubscribe();
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      let closed = false;
-      let heartbeat: ReturnType<typeof setInterval> | null = null;
+      controllerRef = controller;
 
-      const cleanup = () => {
-        if (closed) return;
-        closed = true;
-        if (heartbeat) {
-          clearInterval(heartbeat);
-          heartbeat = null;
-        }
-        unsubscribe();
+      // Initial connection event. `streamId` names this stream: the client
+      // presents it with every command result it posts back.
+      const connected = {
+        type: 'connected',
+        buildId: relay.buildId,
+        streamId,
+        timestamp: Date.now(),
       };
-
-      // Send initial connection event
-      try {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: 'connected', buildId: relay.buildId, timestamp: Date.now() })}\n\n`
-          )
-        );
-      } catch {
-        /* ignore */
-      }
-
-      // Subscribe to commands
-      const unsubscribe = relay.subscribeToCommands((command) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(command)}\n\n`));
-        } catch {
-          cleanup();
-        }
-      }, tabId);
+      send(encoder.encode(`data: ${JSON.stringify(connected)}\n\n`));
+      for (const bytes of early.splice(0)) send(bytes);
 
       // Keep-alive, and the client's throttle-immune heartbeat clock.
       //
@@ -1137,12 +1228,34 @@ async function handleCommandResponse(request: NextRequest, relay: CommandRelay):
       );
     }
 
+    // Per-user tab scoping (§4.2): a result settles a command only when it
+    // comes from the tab the command went to, presents that stream's id (when
+    // it presents one), and is posted by the tab's verified owner.
+    const tabId = typeof responseTabId === 'string' ? responseTabId : undefined;
+    const responder = {
+      streamId: typeof body.streamId === 'string' ? (body.streamId as string) : undefined,
+      callerUserId: relayCallerUserId(request),
+    };
+    if (relay.commandResponseRefusal(commandId, tabId, responder)) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'This result does not come from the stream the command was delivered on.',
+          code: 'COMMAND_RESPONSE_REFUSED',
+          timestamp: Date.now(),
+        },
+        403
+      );
+    }
+
     if (ok) {
-      relay.resolveCommand(commandId, result, responseTabId as string | undefined);
+      relay.resolveCommand(commandId, result, tabId, responder);
     } else {
       relay.rejectCommand(
         commandId,
-        errorMsg || (result as { error?: string })?.error || 'Unknown error'
+        errorMsg || (result as { error?: string })?.error || 'Unknown error',
+        tabId,
+        responder
       );
     }
 
