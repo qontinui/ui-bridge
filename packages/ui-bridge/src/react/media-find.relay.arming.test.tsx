@@ -11,7 +11,9 @@
  *
  * It imports only modules that exist before Phase 5, so with the phase's
  * production hunks reverted it fails on its assertion (the relay ignored
- * `mediaOnly` and returned the button too), never on an import.
+ * `mediaOnly` and returned the button too), never on an import. The `waitFor`
+ * gives up (3s) before vitest's 5s test timeout, so a reply that never comes
+ * fails on the assertion too, not as a timeout.
  */
 
 import { it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -143,7 +145,7 @@ it('a relay find for mediaOnly answers only media rows, each with a scrubbed obs
   );
 
   render(<RelayTab />);
-  await waitFor(() => expect(posted.length).toBe(1), { timeout: 5000 });
+  await waitFor(() => expect(posted.length).toBe(1), { timeout: 3000 });
 
   const reply = posted[0];
   expect(reply.commandId).toBe('cmd-1');

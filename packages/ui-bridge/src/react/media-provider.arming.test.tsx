@@ -16,7 +16,8 @@
  * own render): the same component code an app renders, run as part of the
  * host's render. It imports only modules that exist before Phase 5, so with
  * the phase's production hunks reverted it fails on its assertion, never on an
- * import.
+ * import — and each `waitFor` gives up (3s) before vitest's 5s test timeout,
+ * so that failure is the assertion's message rather than a timeout.
  */
 
 import { it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -78,7 +79,7 @@ it('the provider forwards mediaDiscovery so background images and both same-alt 
           .map((e) => e.id)
           .sort()
       ).toEqual(['bg-sunrise', 'img-x', 'img-x-2']),
-    { timeout: 5000 }
+    { timeout: 3000 }
   );
   const bg = registry.getAllMediaElements().filter((e) => e.id === 'bg-sunrise')[0];
   const obs = bg.mediaMetadata as unknown as {
@@ -121,7 +122,7 @@ it('the provider registers redacted media under ids that slug none of their cont
 
   render(<Host />);
 
-  await waitFor(() => expect(registry.getAllMediaElements()).toHaveLength(3), { timeout: 5000 });
+  await waitFor(() => expect(registry.getAllMediaElements()).toHaveLength(3), { timeout: 3000 });
   for (const row of registry.getAllMediaElements()) {
     expect(row.id).not.toMatch(/zephyrine|quill/i);
   }
