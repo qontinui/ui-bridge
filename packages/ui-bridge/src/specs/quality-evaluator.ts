@@ -34,6 +34,15 @@ function resolveContext(context?: QualityContext | string): QualityContext {
   return context;
 }
 
+/**
+ * Whether `context` runs `metricId`. A metric the context does not configure
+ * runs; this is the evaluator's own rule, shared so a caller deciding what to
+ * collect cannot drift from it.
+ */
+export function isMetricEnabled(context: QualityContext, metricId: QualityMetricId): boolean {
+  return context.metrics[metricId]?.enabled ?? true;
+}
+
 // ============================================================================
 // Evaluator
 // ============================================================================
@@ -64,7 +73,7 @@ export function evaluateQuality(
 
   for (const metricId of metricIds) {
     const config = ctx.metrics[metricId];
-    const enabled = config?.enabled ?? true;
+    const enabled = isMetricEnabled(ctx, metricId);
     const weight = config?.weight ?? 0.045;
 
     if (!enabled) {

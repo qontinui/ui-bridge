@@ -255,10 +255,14 @@ export const BUILT_IN_CONTEXTS: Record<string, QualityContext> = {
 };
 
 /**
- * Get a context by name. Returns undefined if not found.
+ * Get a context by name. Returns undefined if not found. Only a context the
+ * table itself declares is found: a name such as "constructor" reaches
+ * `Object.prototype`, not a context.
  */
 export function getContext(name: string): QualityContext | undefined {
-  return BUILT_IN_CONTEXTS[name];
+  return Object.prototype.hasOwnProperty.call(BUILT_IN_CONTEXTS, name)
+    ? BUILT_IN_CONTEXTS[name]
+    : undefined;
 }
 
 /**

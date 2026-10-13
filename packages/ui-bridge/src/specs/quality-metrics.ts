@@ -1556,3 +1556,12 @@ export const METRIC_FUNCTIONS: Record<QualityMetricId, MetricFunction> = {
   touchTargetCompliance,
   customPropertyConsistency,
 };
+
+/**
+ * The metrics whose value reads `ElementDesignData.customProperties`. Reading
+ * custom properties walks the page's stylesheets, so an evaluation whose
+ * context enables none of these metrics skips that walk
+ * (`specs/quality-request.ts`). `quality-metrics.custom-properties.test.ts`
+ * fails when a metric reads custom properties without being listed here.
+ */
+export const CUSTOM_PROPERTY_METRICS: readonly QualityMetricId[] = ['customPropertyConsistency'];

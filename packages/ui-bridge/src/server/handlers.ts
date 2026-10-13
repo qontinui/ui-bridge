@@ -208,6 +208,7 @@ import {
   captureQualityBaseline,
   diffQualityBaseline,
   evaluateRegisteredQuality,
+  qualityFailureCode,
   type QualityBaselineRequest,
   type QualityDiffRequest,
 } from '../specs/quality-request';
@@ -5029,7 +5030,7 @@ export function createHandlers(
         const elements = registry.getAllElements() as unknown as RegistryElementView[];
         return success(evaluateRegisteredQuality(elements, request, loadedStyleGuide));
       } catch (err) {
-        return error((err as Error).message, 'QUALITY_EVALUATION_ERROR');
+        return error((err as Error).message, qualityFailureCode(err, 'QUALITY_EVALUATION_ERROR'));
       }
     },
 
@@ -5047,7 +5048,7 @@ export function createHandlers(
         savedBaseline = captureQualityBaseline(elements, request);
         return success({ saved: true, elementCount: savedBaseline.elements.length });
       } catch (err) {
-        return error((err as Error).message, 'SAVE_BASELINE_ERROR');
+        return error((err as Error).message, qualityFailureCode(err, 'SAVE_BASELINE_ERROR'));
       }
     },
 
@@ -5061,7 +5062,7 @@ export function createHandlers(
         const elements = registry.getAllElements() as unknown as RegistryElementView[];
         return success(diffQualityBaseline(savedBaseline, elements, request));
       } catch (err) {
-        return error((err as Error).message, 'DIFF_BASELINE_ERROR');
+        return error((err as Error).message, qualityFailureCode(err, 'DIFF_BASELINE_ERROR'));
       }
     },
 

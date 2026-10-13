@@ -16,7 +16,7 @@
  * the real `executeCommand` — and require the same envelope from each.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeCommand, type BridgeAccess } from './commandHandlers';
 import { getGlobalRegistry, resetGlobalRegistry } from '../core/registry';
 import type { ElementType } from '../core/types';
@@ -133,13 +133,17 @@ describe('/design/evaluate family · relay and server answer with one model', ()
     expect(minimal.data?.contextName).toBe('minimal');
 
     // `design` was on the relay's old context list; the evaluator never knew it.
-    const request = { context: 'design', viewport: VIEWPORT };
-    const server = await serverHandlers().evaluateQuality(request);
-    const relay = await relayHandlers().evaluateQuality(request);
-    expect(server.success).toBe(false);
-    expect(server.error).toContain('Unknown quality context: "design"');
-    expect(server.code).toBeTruthy();
-    expect(failure(relay)).toEqual(failure(server));
+    // `constructor` names no context either, though a plain lookup reaches
+    // `Object.prototype` with it.
+    for (const context of ['design', 'constructor']) {
+      const request = { context, viewport: VIEWPORT };
+      const server = await serverHandlers().evaluateQuality(request);
+      const relay = await relayHandlers().evaluateQuality(request);
+      expect(server.success).toBe(false);
+      expect(server.error).toContain(`Unknown quality context: "${context}"`);
+      expect(server.code).toBe('UB-VALIDATION-ERROR');
+      expect(failure(relay)).toEqual(failure(server));
+    }
   });
 
   it('evaluateQuality: a context the loaded style guide declares is resolved on both', async () => {
@@ -211,5 +215,157 @@ describe('/design/evaluate family · relay and server answer with one model', ()
     expect(save?.styleChanges?.map((c) => c.property)).toContain('color');
     expect(diff.hasSignificantChanges).toBe(true);
     expect(fromRelay.data).toEqual(fromServer.data);
+  });
+
+  // The routes declare `bodyRequired`, so the caller's JSON reaches these
+  // handlers as sent. A malformed field is refused, coded, on both transports.
+  type QualityMethod = 'evaluateQuality' | 'saveBaseline' | 'diffBaseline';
+  const IDS = 'elementIds must be an array of strings';
+  const BAD_VIEWPORT = 'viewport must be { width, height }';
+  const BODY = 'the request body must be a JSON object';
+  const CUSTOM = 'customContext must be an object with a string name and a metrics object';
+  // [method, what is wrong, the body, what the error says]
+  const MALFORMED: Array<[QualityMethod, string, unknown, string]> = [
+    ['evaluateQuality', 'elementIds as a string', { elementIds: 'save' }, IDS],
+    ['evaluateQuality', 'elementIds holding a number', { elementIds: ['save', 7] }, IDS],
+    ['evaluateQuality', 'a viewport with no height', { viewport: { width: 1280 } }, BAD_VIEWPORT],
+    [
+      'evaluateQuality',
+      'a zero viewport width',
+      { viewport: { width: 0, height: 800 } },
+      BAD_VIEWPORT,
+    ],
+    [
+      'evaluateQuality',
+      'a negative viewport width',
+      { viewport: { width: -1, height: 800 } },
+      BAD_VIEWPORT,
+    ],
+    [
+      'evaluateQuality',
+      'a string viewport width',
+      { viewport: { width: '1280', height: 800 } },
+      BAD_VIEWPORT,
+    ],
+    [
+      'evaluateQuality',
+      'an infinite viewport width',
+      { viewport: { width: Infinity, height: 800 } },
+      BAD_VIEWPORT,
+    ],
+    ['evaluateQuality', 'a string viewport', { viewport: 'desktop' }, BAD_VIEWPORT],
+    ['evaluateQuality', 'an array body', ['general'], BODY],
+    ['evaluateQuality', 'a string body', 'general', BODY],
+    ['evaluateQuality', 'a numeric context', { context: 7 }, 'context must be a string'],
+    [
+      'evaluateQuality',
+      'a customContext with no metrics',
+      { customContext: { name: 'mine' } },
+      CUSTOM,
+    ],
+    [
+      'evaluateQuality',
+      'a string metric weight',
+      { customContext: { name: 'mine', metrics: { contentOverflow: { weight: 'heavy' } } } },
+      'customContext.metrics.contentOverflow must be an object',
+    ],
+    ['saveBaseline', 'elementIds as a string', { elementIds: 'save' }, IDS],
+    ['saveBaseline', 'a numeric label', { label: 3 }, 'label must be a string'],
+    ['diffBaseline', 'elementIds as a string', { elementIds: 'save' }, IDS],
+  ];
+  const ROUTE: Record<QualityMethod, string> = {
+    evaluateQuality: '/design/evaluate',
+    saveBaseline: '/design/evaluate/baseline',
+    diffBaseline: '/design/evaluate/diff',
+  };
+
+  it.each(MALFORMED)(
+    '%s refuses %s with UB-VALIDATION-ERROR on both transports',
+    async (method, _what, request, message) => {
+      const server = serverHandlers();
+      const relay = relayHandlers();
+      // A diff is checked only once a baseline exists.
+      await server.saveBaseline({});
+      await relay.saveBaseline({});
+      const call = (handlers: typeof server | typeof relay) =>
+        (handlers[method] as (request: unknown) => Promise<APIResponse<unknown>>)(request);
+
+      const fromServer = await call(server);
+      const fromRelay = await call(relay);
+      expect(failure(fromServer)).toEqual({
+        success: false,
+        error: expect.stringContaining(`${ROUTE[method]}: ${message}`),
+        code: 'UB-VALIDATION-ERROR',
+      });
+      expect(failure(fromRelay)).toEqual(failure(fromServer));
+      // Nothing was computed: no report, baseline or diff rides along. (The
+      // relay envelope keeps the dispatcher's own failure object under `data`.)
+      for (const response of [fromServer, fromRelay]) {
+        expect(response.data ?? {}).not.toHaveProperty('metrics');
+        expect(response.data ?? {}).not.toHaveProperty('saved');
+        expect(response.data ?? {}).not.toHaveProperty('modified');
+      }
+    }
+  );
+
+  it('a field sent as JSON null is not given, on both transports', async () => {
+    const request = { context: null, customContext: null, elementIds: null, viewport: null };
+    for (const handlers of [serverHandlers(), relayHandlers()]) {
+      const report = await (
+        handlers.evaluateQuality as (
+          request: unknown
+        ) => Promise<APIResponse<QualityEvaluationReport>>
+      )(request);
+      expect(report.success).toBe(true);
+      expect(report.data?.contextName).toBe('general');
+      expect(report.data?.totalElements).toBe(3);
+    }
+    const saved = await (
+      relayHandlers().saveBaseline as (request: unknown) => Promise<APIResponse<unknown>>
+    )({ label: null, elementIds: null });
+    expect(saved.data).toEqual({ saved: true, elementCount: 3 });
+  });
+
+  // Custom properties are read by walking the page's stylesheets. One pass
+  // reads them once for the whole batch, and an evaluation whose context runs
+  // no metric that reads them (`CUSTOM_PROPERTY_METRICS`) does not walk them.
+  it('the stylesheets are read once per evaluation, and not at all when no metric reads them', async () => {
+    const style = document.createElement('style');
+    style.textContent = ':root { --brand: #123456; } button { --pad: 4px; }';
+    document.head.appendChild(style);
+    const noCustomProperties: QualityContext = {
+      name: 'no-custom-properties',
+      description: 'customPropertyConsistency off',
+      metrics: {
+        customPropertyConsistency: {
+          enabled: false,
+          weight: 0,
+          thresholds: { good: 80, warning: 50 },
+        },
+      },
+    };
+    const sheets = vi.spyOn(document, 'styleSheets', 'get');
+    try {
+      for (const handlers of [serverHandlers(), relayHandlers()]) {
+        sheets.mockClear();
+        const skipped = await handlers.evaluateQuality({
+          customContext: noCustomProperties,
+          viewport: VIEWPORT,
+        });
+        expect(skipped.success).toBe(true);
+        expect(sheets).not.toHaveBeenCalled();
+
+        const read = await handlers.evaluateQuality({ context: 'general', viewport: VIEWPORT });
+        expect(read.success).toBe(true);
+        // Three elements, one pass over the stylesheets.
+        expect(read.data?.totalElements).toBe(3);
+        expect(sheets).toHaveBeenCalledTimes(1);
+        const metric = read.data?.metrics.find((m) => m.metricId === 'customPropertyConsistency');
+        expect(metric?.enabled).toBe(true);
+      }
+    } finally {
+      sheets.mockRestore();
+      style.remove();
+    }
   });
 });

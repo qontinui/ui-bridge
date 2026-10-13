@@ -108,10 +108,9 @@ import {
   captureQualityBaseline,
   diffQualityBaseline,
   evaluateRegisteredQuality,
-  type QualityBaselineRequest,
-  type QualityDiffRequest,
+  qualityFailureCode,
 } from '../specs/quality-request';
-import type { EvaluateRequest, SnapshotBaseline } from '../specs/quality-types';
+import type { SnapshotBaseline } from '../specs/quality-types';
 import type { StyleGuideConfig } from '../specs/style-types';
 
 // ============================================================================
@@ -4784,9 +4783,12 @@ export async function executeCommand(
     // failures included (see `qualityFailure`).
     case 'evaluateQuality': {
       try {
-        return evaluateRegisteredQuality(elements, payload as EvaluateRequest, loadedGuideConfig());
+        return evaluateRegisteredQuality(elements, payload, loadedGuideConfig());
       } catch (err) {
-        return qualityFailure((err as Error).message, 'QUALITY_EVALUATION_ERROR');
+        return qualityFailure(
+          (err as Error).message,
+          qualityFailureCode(err, 'QUALITY_EVALUATION_ERROR')
+        );
       }
     }
 
@@ -4795,10 +4797,13 @@ export async function executeCommand(
 
     case 'saveBaseline': {
       try {
-        qualityBaseline = captureQualityBaseline(elements, payload as QualityBaselineRequest);
+        qualityBaseline = captureQualityBaseline(elements, payload);
         return { saved: true, elementCount: qualityBaseline.elements.length };
       } catch (err) {
-        return qualityFailure((err as Error).message, 'SAVE_BASELINE_ERROR');
+        return qualityFailure(
+          (err as Error).message,
+          qualityFailureCode(err, 'SAVE_BASELINE_ERROR')
+        );
       }
     }
 
@@ -4807,9 +4812,12 @@ export async function executeCommand(
         return qualityFailure('No baseline saved. Call saveBaseline first.', 'NO_BASELINE');
       }
       try {
-        return diffQualityBaseline(qualityBaseline, elements, payload as QualityDiffRequest);
+        return diffQualityBaseline(qualityBaseline, elements, payload);
       } catch (err) {
-        return qualityFailure((err as Error).message, 'DIFF_BASELINE_ERROR');
+        return qualityFailure(
+          (err as Error).message,
+          qualityFailureCode(err, 'DIFF_BASELINE_ERROR')
+        );
       }
     }
 
