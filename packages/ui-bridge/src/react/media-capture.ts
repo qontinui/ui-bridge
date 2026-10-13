@@ -657,9 +657,10 @@ function measureImage(b: FactsBuilder, img: HTMLImageElement, host: Element): vo
   measureReplacedStyle(b, cs);
   measureDimsReserved(b, img, cs);
 
-  // A BROKEN image has no intrinsic size at all: its resolution does not
-  // apply (absent, not listed), whereas a pending one's is merely not known
-  // yet (unmeasured, `input_missing`).
+  // A BROKEN image has no image at all: its resolution, format and weight do
+  // not apply (absent, not listed) — the bytes that came back were an error
+  // page, not an image. A pending image's are merely not known yet
+  // (unmeasured, `input_missing`).
   if (b.facts.loadingState !== 'error') {
     const loaded = img.complete && img.naturalWidth > 0;
     measureResolution(
@@ -669,8 +670,8 @@ function measureImage(b: FactsBuilder, img: HTMLImageElement, host: Element): vo
       cs,
       'fill'
     );
+    measureFormatAndWeight(b, src);
   }
-  measureFormatAndWeight(b, src);
   measurePaintTiming(b, host === img ? [img] : [host, img]);
 }
 

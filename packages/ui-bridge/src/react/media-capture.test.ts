@@ -364,6 +364,27 @@ describe('LCP and layout shift', () => {
   });
 });
 
+describe('a broken image', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('has no resolution, format or weight — the bytes were an error page, not an image', () => {
+    vi.spyOn(performance, 'getEntriesByName').mockImplementation((() => [
+      { encodedBodySize: 335 } as PerformanceEntry,
+    ]) as never);
+    const obs = captureMediaMetadata(makeImage({ alt: 'gone', src: '/gone.png', natural: [0, 0] }));
+    const facts = measured(obs);
+
+    expect(facts.loadingState).toBe('error');
+    expect(facts.encodedBodySize).toBeUndefined();
+    expect(facts.format).toBeUndefined();
+    expect(facts.effectiveResolution).toBeUndefined();
+    // Not applicable is not "could not look": nothing is listed as unmeasured.
+    for (const dim of ['encodedBodySize', 'format', 'effectiveResolution', 'naturalWidth'] as const) {
+      expect(unmeasuredMediaDimension(obs, dim)).toBeUndefined();
+    }
+  });
+});
+
 describe('background images', () => {
   it('capture the url, and leave the intrinsic size unmeasured rather than guess it', () => {
     const div = document.createElement('div');
