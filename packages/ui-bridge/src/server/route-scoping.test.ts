@@ -109,23 +109,23 @@ async function expressCall(relay: CommandRelay, servers: Server[]): Promise<Call
 describe('per-user tab scoping over the Next.js adapter', () => {
   let seen: Seen[];
   let relay: CommandRelay;
-  let call: Call;
 
   beforeEach(() => {
     seen = [];
     relay = twoUserRelay(seen);
-    call = nextCall(relay);
   });
 
   afterEach(() => relay.destroy());
 
   it('without a caller identity a command goes to the primary tab (the setup tells the tabs apart)', async () => {
-    await call('GET', '/control/element/save/state', { caller: null });
+    await nextCall(relay)('GET', '/control/element/save/state', { caller: null });
     expect(seen.at(-1)?.tab).toBe('tab-a');
   });
 
   it('POST /control/find reaches the caller own tab with the criteria the caller sent', async () => {
-    const res = await call('POST', '/control/find', { body: { text: 'Save', includeMedia: true } });
+    const res = await nextCall(relay)('POST', '/control/find', {
+      body: { text: 'Save', includeMedia: true },
+    });
     expect(res.status).toBe(200);
     expect(seen.at(-1)?.tab).toBe('tab-b');
     expect(seen.at(-1)?.payload).toMatchObject({ text: 'Save', includeMedia: true });
@@ -133,17 +133,17 @@ describe('per-user tab scoping over the Next.js adapter', () => {
   });
 
   it('GET /control/snapshot with no query reaches the caller own tab', async () => {
-    await call('GET', '/control/snapshot');
+    await nextCall(relay)('GET', '/control/snapshot');
     expect(seen.at(-1)?.tab).toBe('tab-b');
   });
 
   it('a query string cannot name the caller: GET element state stays on the caller tab', async () => {
-    await call('GET', '/control/element/save/state?callerUserId=user-a');
+    await nextCall(relay)('GET', '/control/element/save/state?callerUserId=user-a');
     expect(seen.at(-1)?.tab).toBe('tab-b');
   });
 
   it('a body cannot name the caller: the named intent runs on the caller tab with its params', async () => {
-    await call('POST', '/control/intent/demo/execute', {
+    await nextCall(relay)('POST', '/control/intent/demo/execute', {
       body: { callerUserId: 'user-a', params: { size: 2 } },
     });
     expect(seen.at(-1)?.tab).toBe('tab-b');
@@ -151,7 +151,7 @@ describe('per-user tab scoping over the Next.js adapter', () => {
   });
 
   it('a component action runs on the caller tab and no routing field reaches its params', async () => {
-    await call('POST', '/control/component/save/action/click', {
+    await nextCall(relay)('POST', '/control/component/save/action/click', {
       body: { params: { label: 'Save' }, timeoutMs: 500 },
     });
     expect(seen.at(-1)?.tab).toBe('tab-b');
