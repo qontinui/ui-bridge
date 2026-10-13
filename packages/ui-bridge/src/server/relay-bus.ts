@@ -61,6 +61,12 @@ export interface RelayResponseEnvelope {
    */
   responderUserId?: string;
   streamId?: string;
+  /**
+   * Set by the instance holding the tab when it refuses the sender's identity
+   * (per-user tab scoping, §4.2). The sender rejects with `OwnerMismatchError`,
+   * which the HTTP layer answers exactly like a tab that does not exist.
+   */
+  code?: 'OWNER_MISMATCH';
 }
 
 export interface RelayBus {

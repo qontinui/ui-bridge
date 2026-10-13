@@ -21,6 +21,7 @@ import {
   TabRoutingError,
 } from './command-relay';
 import type { RelayBus, RelayCommandEnvelope, RelayResponseEnvelope } from './relay-bus';
+import { createRelayHandlers } from './relay-handlers';
 
 /** Synchronous in-memory bus (matches relay-bus.crossinstance.test.ts). */
 class InMemoryBus implements RelayBus {
@@ -520,6 +521,32 @@ describe('§4.2 · cross-instance bus envelope ownership enforcement', () => {
     expect(settled.ok).toBe(false);
     if (!settled.ok) {
       expect((settled.err as Error).message).toMatch(/not addressable/);
+    }
+  });
+
+  it('a scoped caller reads a tab another instance refuses it exactly like a missing tab', async () => {
+    // One clock for both answers, so they can be compared whole.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const bus = new InMemoryBus();
+    const instA = new CommandRelay({ globalPrefix: '__instAHeldElsewhere_test', bus });
+    const instB = new CommandRelay({ globalPrefix: '__instBHeldElsewhere_test', bus });
+    try {
+      const delivered: string[] = [];
+      instB.subscribeToCommands((cmd) => delivered.push(cmd.commandId), 'tab-1');
+      instB.recordRegistration('tab-1', { userId: 'bob', sessionId: 's' });
+
+      const handlers = createRelayHandlers(instA);
+      const held = await handlers.getElements({ tabId: 'tab-1' }, { callerUserId: 'eve' });
+      const missing = await handlers.getElements({ tabId: 'tab-absent' }, { callerUserId: 'eve' });
+
+      expect(delivered).toHaveLength(0);
+      expect(held).toMatchObject({ success: false, code: 'TAB_NOT_FOUND', httpStatus: 404 });
+      expect(held).toEqual(missing);
+    } finally {
+      instA.destroy();
+      instB.destroy();
+      vi.useRealTimers();
     }
   });
 

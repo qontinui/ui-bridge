@@ -500,14 +500,14 @@ export function createRelayHandlers(
       // contract surface (multi-machine drivers branch on them), same shape
       // as the `WRONG_TYPE_PARAM` envelope in `executeElementAction`.
       const tabErr = e as { code?: unknown; name?: unknown };
-      // Per-user tab scoping (§4.2): OwnerMismatchError is redacted to
-      // TAB_NOT_FOUND (404) at the HTTP envelope so callers cannot
-      // distinguish "tab exists but not yours" from "tab does not
-      // exist". The structured field (`callerUserId` / `storedUserId`)
-      // stays in the relay's exception for server-side observability
-      // and never reaches the wire.
-      if (tabErr?.name === 'OwnerMismatchError') {
-        return {
+      // Per-user tab scoping (§4.2): a scoped caller cannot distinguish "tab
+      // exists but not yours" from "tab does not exist". OwnerMismatchError
+      // and, for a scoped dispatch, a missing tab both get this one answer:
+      // no tab id, no tab list. The structured fields (`callerUserId` /
+      // `storedUserId`) stay in the relay's exception for server-side
+      // observability and never reach the wire.
+      const unaddressableTab = (): APIResponse<T> =>
+        ({
           success: false,
           error:
             `tabId is not in connectedTabs. ` +
@@ -519,7 +519,14 @@ export function createRelayHandlers(
             'GET /tabs?activeOnly=true to discover currently live tabs',
             'Omit tabId to fall back to the relay primary tab',
           ],
-        } as APIResponse<T>;
+        }) as APIResponse<T>;
+      if (tabErr?.name === 'OwnerMismatchError') return unaddressableTab();
+      if (
+        effectiveOwnerCheck &&
+        tabErr?.name === 'TabRoutingError' &&
+        tabErr.code === 'TAB_NOT_FOUND'
+      ) {
+        return unaddressableTab();
       }
       if (tabErr?.name === 'TabRoutingError' && typeof tabErr.code === 'string') {
         // Surface HTTP-level status codes so adapters (Express / Next.js)

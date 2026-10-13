@@ -781,10 +781,16 @@ function tabNotFoundResponse(): Response {
   );
 }
 
-/** The answer for a tab command (close / activate) that failed. */
-function tabCommandErrorResponse(err: unknown): Response {
+/**
+ * The answer for a tab command (close / activate) that failed. A scoped caller
+ * gets one answer for another user's tab and for a missing one (§4.2).
+ */
+function tabCommandErrorResponse(err: unknown, scoped: boolean): Response {
   const named = err as { name?: unknown; code?: unknown; message?: unknown };
   if (named?.name === 'OwnerMismatchError') return tabNotFoundResponse();
+  if (scoped && named?.name === 'TabRoutingError' && named.code === 'TAB_NOT_FOUND') {
+    return tabNotFoundResponse();
+  }
   if (named?.name === 'TabRoutingError' && typeof named.code === 'string') {
     return jsonResponse(
       {
@@ -1112,7 +1118,7 @@ function handleRelayRoute(
         });
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
-        return tabCommandErrorResponse(err);
+        return tabCommandErrorResponse(err, relayCallerUserId(request) !== undefined);
       }
     })();
   }
@@ -1128,7 +1134,7 @@ function handleRelayRoute(
         });
         return jsonResponse({ success: true, data: result, timestamp: Date.now() });
       } catch (err: unknown) {
-        return tabCommandErrorResponse(err);
+        return tabCommandErrorResponse(err, relayCallerUserId(request) !== undefined);
       }
     })();
   }

@@ -932,6 +932,17 @@ export class CommandRelay {
             `Use GET /tabs to discover live tab ids, or omit tabId to dispatch to the primary tab.`
         );
       }
+      // Strict mode (§4.2): a scoped caller addresses only a tab registered to
+      // it. A local tab with no ownership record yet (its stream is open, its
+      // first heartbeat has not landed) is nobody's to a scoped caller, as bus
+      // receivers already rule, so it is refused like another user's tab.
+      if (ownerCheck && !this.isOwnedBy(targetTabId, ownerCheck.userId)) {
+        throw new OwnerMismatchError(
+          targetTabId,
+          ownerCheck.userId,
+          this.tabListeners.get(targetTabId)?.userId ?? ''
+        );
+      }
       if (!this.isTabActive(targetTabId)) {
         const lastBeat = this.tabHeartbeats.get(targetTabId);
         const ageMs = lastBeat ? Date.now() - lastBeat : -1;
@@ -1316,6 +1327,11 @@ export class CommandRelay {
       this.pendingCommands.delete(commandId);
       if (env.ok) {
         pending.resolve(env.result);
+      } else if (env.code === 'OWNER_MISMATCH' && targetTabId !== undefined) {
+        // The holding instance refused the sender's identity: answer it as a
+        // local ownership refusal, so a tab held elsewhere and a tab that does
+        // not exist read the same to a scoped caller.
+        pending.reject(new OwnerMismatchError(targetTabId, senderUserId ?? '', ''));
       } else {
         pending.reject(new Error(env.error || `Command ${action} failed`));
       }
@@ -1822,6 +1838,7 @@ export class CommandRelay {
                 commandId: env.commandId,
                 ok: false,
                 error: `tabId "${id}" is not addressable by the authenticated caller`,
+                code: 'OWNER_MISMATCH',
               });
             }
             return;
@@ -2107,7 +2124,15 @@ export class CommandRelay {
     }
     // First claim / bootstrap: allowed (a present proof already backs the
     // claimed userId via the check above; absent proof bootstraps a tab in
-    // a header-less deployment).
+    // a header-less deployment) — unless it contradicts the verified user the
+    // tab is already streaming to. Before it registers, a tab is the stream
+    // opener's, as `openCommandStream` rules for a second stream.
+    if (!existing) {
+      const streamUserId = this.tabListeners.get(tabId)?.userId;
+      if (streamUserId !== undefined && streamUserId !== metadata.userId) {
+        return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
+      }
+    }
 
     this.tabOwnership.set(tabId, {
       userId: metadata.userId,
