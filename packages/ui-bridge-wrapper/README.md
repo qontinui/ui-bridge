@@ -62,7 +62,7 @@ or a global/dev install:
 
 | Bin | What it does |
 | --- | --- |
-| `ui-bridge-inject` | Drive the injected transport against a UI-Bridge-free page (exec one-shot actions, or register as a relay tab). |
+| `ui-bridge-inject` | Drive the injected transport against a UI-Bridge-free page (exec one-shot actions, register as a relay tab, or capture frame-and-snapshot pairs — one, or a viewport × DPR × colour-scheme matrix). |
 | `ui-bridge-login-web` | Automated web login via the injected transport — drives the full Cognito OAuth redirect chain in one headless tab. Optionally asserts on-page text (`--expect-text`) and screenshots the authed landing (`--screenshot`/`--scroll-to`). Prints one JSON result line; exit 0 = login confirmed AND all expected text present. |
 | `ui-bridge-capture-specs` | Log in (same flow) then `goto` + snapshot a set of authed pages, writing one `<slug>.snapshot.json` per page. |
 
@@ -128,6 +128,46 @@ ui-bridge-login-web \
 # capture the default admin coord pages
 ui-bridge-capture-specs --out ./spec-capture
 ```
+
+### Frames, device pixel ratio and the capture matrix (`ui-bridge-inject`)
+
+`--screenshot <path>` captures a PNG frame **in lockstep** with every
+`getControlSnapshot` action: snapshot, frame, snapshot again, retried until the
+two snapshots agree on every element's box. The action's output line gains a
+`frame` object whose every field is read off the page or the PNG at capture time
+— `width`/`height`, `devicePixelRatio`, `cssViewport`, `colorScheme`,
+`capturedAt` and `lockstep: {verified, attempts, changedElements}` — never
+copied from the flags. `{n}` in the path becomes the action's 1-based position
+and is required when a run takes more than one snapshot. A frame that cannot be
+produced leaves `"frame": null` plus `"frameError": {code, message}` (the
+snapshot still stands) and the process exits 1.
+
+`--dpr <n>` and `--color-scheme <dark|light>` set the browser context's
+`deviceScaleFactor` and `prefers-color-scheme`, and the page is checked after
+launch: one that reports anything else fails with `EMULATION_NOT_APPLIED`
+rather than being measured as if it had applied. (Chromium's
+`--force-device-scale-factor` passed through `--launch-arg` does **not** reach
+the page — Playwright's viewport emulation overrides it.) Needs
+`@qontinui/ui-bridge-headless` with `deviceScaleFactor`/`colorScheme` support
+(the release after 0.5.0).
+
+```bash
+# one frame at a Retina DPR in dark mode, paired with its snapshot
+ui-bridge-inject --url http://127.0.0.1:3000/ --viewport 1280x720 --dpr 2 \
+  --color-scheme dark --screenshot ./frame.png --exec 'getControlSnapshot {}'
+
+# every combination: 2 breakpoints x 2 schemes x 2 DPRs = 8 cells
+ui-bridge-inject --url http://127.0.0.1:3000/ --capture-matrix ./matrix \
+  --viewport 390x844,1280x720 --color-scheme light,dark --dpr 1,2
+```
+
+`--capture-matrix <dir>` runs the plan (`--exec`/`--exec-stdin`, default one
+`getControlSnapshot {}`) once per combination in a fresh browser context and
+writes `<dir>/<cell>/frame-<n>.png`, `snapshot-<n>.json` and `results.ndjson`,
+plus `<dir>/matrix.json`: the URL, the producer and its version, the axes, the
+plan and every cell's requested values, status (`captured` / `incomplete` /
+`failed`) and pairs with their frame provenance. An axis left out stays at the
+browser default and says so in the cell id (`390x844_dpr-default_dark`).
 
 #### Sourcing credentials from SSM (qontinui operators)
 

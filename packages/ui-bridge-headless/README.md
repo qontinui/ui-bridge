@@ -93,6 +93,29 @@ if (!tab.uiBridgeRegistered) {
 await tab.close();
 ```
 
+### Device pixel ratio and colour scheme
+
+`deviceScaleFactor` and `colorScheme` are browser-CONTEXT options (since
+0.6.0): the page reads them back as `window.devicePixelRatio` and
+`matchMedia('(prefers-color-scheme: dark)')`, and a screenshot is
+`viewport × deviceScaleFactor` pixels.
+
+```ts
+const tab = await launchHeadlessTab({
+  url: 'http://localhost:3001/',
+  headless: true,
+  viewportWidth: 390,
+  viewportHeight: 844,
+  deviceScaleFactor: 3,
+  colorScheme: 'dark',
+});
+```
+
+Do not reach for Chromium's `--force-device-scale-factor` through
+`launchArgs` instead: the launcher always sets a viewport, and Playwright's
+metrics emulation overrides the flag, so the page keeps reading
+`devicePixelRatio` 1.
+
 ## Flags
 
 | Flag                  | Type              | Default            | Purpose                                   |

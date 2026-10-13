@@ -10,7 +10,7 @@
  * only generic argument plumbing, a one-shot exec path (Variant A), and a
  * stay-alive relay loop (Variant B).
  *
- * Two modes:
+ * Three modes:
  *   - Variant A (one-shot exec): `--exec '<action> <json>'` (repeatable) or
  *     `--exec-stdin` (NDJSON on stdin). Each action runs against the in-page
  *     runtime; one JSON result line per action is written to stdout, then exit.
@@ -18,18 +18,44 @@
  *     `{ success: false }` — puts a `{ code, message, source, details }` object
  *     on that line's `error` key and makes the process exit 1. See
  *     `./action-outcome.js` for why the returned case needs saying out loud.
+ *     With `--screenshot <path>`, every `getControlSnapshot` action is captured
+ *     in lockstep with a PNG frame (`./frame-capture.js`).
  *   - Variant B (relay, DEFAULT): no exec actions → register as a relay tab
  *     (requires `--relay`) and stay alive until SIGINT/SIGTERM.
+ *   - Capture matrix (`--capture-matrix <dir>`): the Variant-A plan, run once
+ *     per viewport × DPR × colour-scheme combination, storing every
+ *     frame-and-snapshot pair with its provenance (`./capture-matrix.js`).
  *
  * The arg parsing, validation, option building, and mode selection are exported
  * pure functions so they can be unit-tested without spawning a browser or
  * calling `main()`.
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { createTransport } from './create-transport.js';
 import { consumeValue } from './cli-args.js';
-import { returnedFailureError, thrownError } from './action-outcome.js';
+import { returnedFailureError, thrownError, type CliActionError } from './action-outcome.js';
+import {
+  captureFrameInLockstep,
+  expandFramePath,
+  FRAME_INDEX_TOKEN,
+  type FrameColorScheme,
+  type FrameError,
+  type FramePage,
+  type FrameRecord,
+  type LockstepCapture,
+} from './frame-capture.js';
+import {
+  cellId,
+  expandMatrix,
+  manifestPath,
+  type MatrixCell,
+  type MatrixCellReport,
+  type MatrixManifest,
+  type MatrixPair,
+  type MatrixViewport,
+} from './capture-matrix.js';
 
 export const USAGE = `ui-bridge-inject — drive UI Bridge's injected transport against a UI-Bridge-free page
 
@@ -105,6 +131,48 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
     N actions with N lines. A caller that wants stop-on-first-failure gets it by
     running one action per invocation and checking the exit code.
 
+Frames (Variant A):
+  --screenshot <path>          Capture a PNG frame IN LOCKSTEP with every
+                               getControlSnapshot action: snapshot, frame, snapshot
+                               again, retried until both snapshots agree on every
+                               element's box. That action's line gains a "frame":
+                                 {"path","format":"png","width","height",
+                                  "devicePixelRatio","cssViewport":{"width","height"},
+                                  "colorScheme","capturedAt",
+                                  "lockstep":{"verified","attempts","changedElements"}}
+                               every field read off the page or the PNG at capture
+                               time, never copied from the flags. ${FRAME_INDEX_TOKEN} in <path> is
+                               replaced by the action's 1-based position (= its output
+                               line) and is REQUIRED when the run takes more than one
+                               snapshot. A frame that cannot be produced leaves
+                               "frame":null plus "frameError":{"code","message"} on the
+                               line — the snapshot still stands — and exit 1.
+  --dpr <n>                    Device pixel ratio of the browser context, e.g. 2 or
+                               2.625 (Chromium's --force-device-scale-factor does NOT
+                               reach the page; this does). Default 1.
+  --color-scheme <dark|light>  prefers-color-scheme of the browser context.
+                               Default: no override (light).
+                               Both are read back from the page after launch; a page
+                               that reports anything else fails the run
+                               (EMULATION_NOT_APPLIED) instead of being measured as if.
+
+Capture matrix (its own mode):
+  --capture-matrix <dir>       Run the plan once per --viewport × --dpr × --color-scheme
+                               combination, each a fresh browser context, and store
+                               every frame-and-snapshot pair with its provenance:
+                                 <dir>/<cell>/frame-<n>.png, snapshot-<n>.json,
+                                 results.ndjson, and <dir>/matrix.json for all cells.
+                               In this mode those three flags take comma-separated
+                               lists (or repeat): --viewport 390x844,1280x720
+                               --dpr 1,2 --color-scheme light,dark. An axis left out
+                               stays at the browser default and is named so in the
+                               cell id (e.g. 390x844_dpr-default_dark). --exec /
+                               --exec-stdin give the per-cell plan (default: one
+                               'getControlSnapshot {}'); a frame is captured beside
+                               every getControlSnapshot in it. Prints one JSON line
+                               per cell; exits 1 if any cell is not "captured".
+                               Takes no --relay and no --screenshot.
+
 Optional:
   --storage-state <path>       Seed the browser context from a Playwright storageState
                                JSON file (cookies + localStorage) produced by
@@ -125,7 +193,7 @@ Optional:
                                mounts lazily after unrelated chrome. If it never appears
                                before --settle-timeout, ready() fails with a BLOCKED error
                                instead of returning a control-less page.
-  --viewport <WxH>             Viewport size, e.g. 1280x720
+  --viewport <WxH>             Viewport size in CSS pixels, e.g. 1280x720 (default 1280x720)
   --launch-arg <arg>           Extra Chromium command-line argument (repeatable),
                                passed through to chromium.launch({ args }).
                                NOTE: when --url is https and --relay resolves to a
@@ -158,6 +226,20 @@ Examples:
     --exec 'waitForSelector {"selector":"[data-row=account]","timeoutMs":15000}' \
     --exec 'discover {}'
 
+  # A frame in lockstep with the snapshot, at a Retina DPR in dark mode
+  ui-bridge-inject --url http://127.0.0.1:3000/ --viewport 1280x720 --dpr 2 \\
+    --color-scheme dark --screenshot ./frame.png --exec 'getControlSnapshot {}'
+
+  # Before/after a click: {n} names each frame by its action's position
+  ui-bridge-inject --url http://127.0.0.1:3000/ --screenshot './frame-{n}.png' \\
+    --exec 'getControlSnapshot {}' \\
+    --exec 'executeElementAction {"id":"open","request":{"action":"click"}}' \\
+    --exec 'getControlSnapshot {}'
+
+  # Capture matrix: 2 breakpoints x 2 schemes x 2 DPRs = 8 frame-and-snapshot pairs
+  ui-bridge-inject --url http://127.0.0.1:3000/ --capture-matrix ./matrix \\
+    --viewport 390x844,1280x720 --color-scheme light,dark --dpr 1,2
+
   # Reuse a saved login: drive a login-walled page with a captured auth artifact
   ui-bridge-login-web --url "https://qontinui.io/login?next=%2Fadmin" \\
     --success /admin --storage-state-out auth.json
@@ -189,8 +271,19 @@ export interface InjectCliArgs {
   appId: string | null;
   appName: string | null;
   tabId: string | null;
-  viewportWidth: number | null;
-  viewportHeight: number | null;
+  /**
+   * `--viewport` values in the order given. At most one outside
+   * `--capture-matrix`, where it is the one viewport; inside, it is an axis.
+   */
+  viewports: MatrixViewport[];
+  /** `--dpr` values (device scale factors). Same one-vs-axis rule as `viewports`. */
+  dprs: number[];
+  /** `--color-scheme` values. Same one-vs-axis rule as `viewports`. */
+  colorSchemes: FrameColorScheme[];
+  /** `--screenshot` path template (may carry `{n}`), or null. Variant A only. */
+  screenshot: string | null;
+  /** `--capture-matrix` output directory, or null. Selects matrix mode. */
+  captureMatrix: string | null;
   /** Path to a Playwright storageState JSON file to seed the context (from --storage-state). */
   storageState: string | null;
   /** Extra Chromium launch args collected from --launch-arg flags (in order). */
@@ -240,6 +333,53 @@ function parseExecValue(raw: string): ExecAction {
 }
 
 /**
+ * Upper bound on `--dpr`. A typo such as `--dpr 20` would otherwise ask
+ * Chromium for a 25600-pixel-wide frame; the densest shipping displays are
+ * well under this.
+ */
+export const MAX_DPR = 8;
+
+/** Split one flag occurrence's value on commas, refusing an empty item (`1,,2`). */
+function splitList(flag: string, raw: string): string[] {
+  const items = raw.split(',').map((s) => s.trim());
+  if (items.some((s) => s.length === 0)) {
+    throw new InjectCliArgError(
+      `${flag} has an empty item in its list (got ${JSON.stringify(raw)})`
+    );
+  }
+  return items;
+}
+
+/** Parse one `WxH` viewport in CSS pixels. Both sides must be positive integers. */
+export function parseViewport(raw: string): MatrixViewport {
+  const match = raw.match(/^([1-9]\d*)x([1-9]\d*)$/);
+  if (!match) {
+    throw new InjectCliArgError(`--viewport expects WxH in CSS pixels, e.g. 1280x720 (got ${raw})`);
+  }
+  return { width: Number.parseInt(match[1]!, 10), height: Number.parseInt(match[2]!, 10) };
+}
+
+/**
+ * Parse one `--dpr` value: a plain decimal in (0, {@link MAX_DPR}]. A decimal
+ * pattern rather than `Number()` alone, which would also accept `0x2` and `1e1`.
+ */
+export function parseDpr(raw: string): number {
+  const n = /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isFinite(n) || n <= 0 || n > MAX_DPR) {
+    throw new InjectCliArgError(
+      `--dpr expects a device pixel ratio in (0, ${MAX_DPR}], e.g. 1, 2 or 2.625 (got ${raw})`
+    );
+  }
+  return n;
+}
+
+/** Parse one `--color-scheme` value. */
+export function parseColorScheme(raw: string): FrameColorScheme {
+  if (raw === 'dark' || raw === 'light') return raw;
+  throw new InjectCliArgError(`--color-scheme expects dark or light (got ${raw})`);
+}
+
+/**
  * Parse `argv` (already sliced past `node script`) into validated args.
  * Throws {@link InjectCliArgError} on bad input (no `process.exit` — testable).
  */
@@ -259,8 +399,11 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     appId: null,
     appName: null,
     tabId: null,
-    viewportWidth: null,
-    viewportHeight: null,
+    viewports: [],
+    dprs: [],
+    colorSchemes: [],
+    screenshot: null,
+    captureMatrix: null,
     storageState: null,
     launchArgs: [],
     execActions: [],
@@ -424,14 +567,47 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.expectSelector = raw;
         break;
       }
+      // The three capture axes. Each occurrence may carry a comma-separated
+      // list and every occurrence appends; `validateArgs` then allows more than
+      // one value only under --capture-matrix, where they are an axis.
       case '--viewport': {
         const raw = consumeValue('--viewport', argv[++i], mkError);
-        const match = raw?.match(/^(\d+)x(\d+)$/);
-        if (!match) {
-          throw new InjectCliArgError(`--viewport expects WxH (got ${raw ?? '<missing>'})`);
+        if (raw === null) throw new InjectCliArgError(`--viewport expects WxH (got <missing>)`);
+        for (const item of splitList('--viewport', raw)) args.viewports.push(parseViewport(item));
+        break;
+      }
+      case '--dpr': {
+        const raw = consumeValue('--dpr', argv[++i], mkError);
+        if (raw === null) throw new InjectCliArgError(`--dpr expects a number (got <missing>)`);
+        for (const item of splitList('--dpr', raw)) args.dprs.push(parseDpr(item));
+        break;
+      }
+      case '--color-scheme': {
+        const raw = consumeValue('--color-scheme', argv[++i], mkError);
+        if (raw === null) {
+          throw new InjectCliArgError(`--color-scheme expects dark or light (got <missing>)`);
         }
-        args.viewportWidth = Number.parseInt(match[1]!, 10);
-        args.viewportHeight = Number.parseInt(match[2]!, 10);
+        for (const item of splitList('--color-scheme', raw)) {
+          args.colorSchemes.push(parseColorScheme(item));
+        }
+        break;
+      }
+      case '--screenshot': {
+        const raw = consumeValue('--screenshot', argv[++i], mkError);
+        if (raw === null || raw.length === 0) {
+          throw new InjectCliArgError(`--screenshot expects a PNG path (got <missing>)`);
+        }
+        args.screenshot = raw;
+        break;
+      }
+      case '--capture-matrix': {
+        const raw = consumeValue('--capture-matrix', argv[++i], mkError);
+        if (raw === null || raw.length === 0) {
+          throw new InjectCliArgError(
+            `--capture-matrix expects an output directory (got <missing>)`
+          );
+        }
+        args.captureMatrix = raw;
         break;
       }
       default:
@@ -458,7 +634,53 @@ export function validateArgs(args: InjectCliArgs): void {
   if (!/^https?:\/\//i.test(args.url)) {
     throw new InjectCliArgError(`--url must start with http:// or https:// (got ${args.url})`);
   }
-  if (selectMode(args) === 'relay' && !args.relay) {
+  const mode = selectMode(args);
+  if (mode === 'matrix') {
+    // An axis value given twice would make two cells with one id, the second
+    // silently overwriting the first's frames.
+    const dup = <T>(flag: string, values: T[], key: (v: T) => string): void => {
+      const seen = new Set<string>();
+      for (const v of values) {
+        const k = key(v);
+        if (seen.has(k)) throw new InjectCliArgError(`${flag} lists ${k} twice`);
+        seen.add(k);
+      }
+    };
+    dup('--viewport', args.viewports, (v) => `${v.width}x${v.height}`);
+    dup('--dpr', args.dprs, (v) => String(v));
+    dup('--color-scheme', args.colorSchemes, (v) => v);
+    if (args.relay) {
+      throw new InjectCliArgError(
+        '--capture-matrix captures and exits; it does not register relay tabs. Drop --relay.'
+      );
+    }
+    if (args.screenshot) {
+      throw new InjectCliArgError(
+        '--capture-matrix names its own frame files (<dir>/<cell>/frame-<n>.png). Drop --screenshot.'
+      );
+    }
+    return;
+  }
+  // Outside the matrix each axis is ONE value: a list there would be silently
+  // narrowed to its first item, measuring a page the caller did not ask for.
+  for (const [flag, count] of [
+    ['--viewport', args.viewports.length],
+    ['--dpr', args.dprs.length],
+    ['--color-scheme', args.colorSchemes.length],
+  ] as const) {
+    if (count > 1) {
+      throw new InjectCliArgError(
+        `${flag} takes one value unless --capture-matrix is given (got ${count})`
+      );
+    }
+  }
+  if (mode === 'relay' && args.screenshot) {
+    throw new InjectCliArgError(
+      '--screenshot captures beside getControlSnapshot actions, which only Variant A (--exec / ' +
+        '--exec-stdin) runs. A relay tab takes no frame.'
+    );
+  }
+  if (mode === 'relay' && !args.relay) {
     throw new InjectCliArgError(
       'Variant B (relay) is the default mode and requires --relay. ' +
         'Either pass --relay <uiBridgeBase>, or pass --exec/--exec-stdin for one-shot exec (Variant A).'
@@ -467,11 +689,42 @@ export function validateArgs(args: InjectCliArgs): void {
 }
 
 /**
- * Mode selection: any `--exec`/`--exec-stdin` → one-shot exec (Variant A);
- * otherwise relay registration (Variant B, the default).
+ * Mode selection: `--capture-matrix` → the capture matrix; else any
+ * `--exec`/`--exec-stdin` → one-shot exec (Variant A); otherwise relay
+ * registration (Variant B, the default).
  */
-export function selectMode(args: InjectCliArgs): 'exec' | 'relay' {
+export function selectMode(args: InjectCliArgs): 'exec' | 'relay' | 'matrix' {
+  if (args.captureMatrix) return 'matrix';
   return args.execActions.length > 0 || args.execStdin ? 'exec' : 'relay';
+}
+
+/** The actions `--screenshot` / the capture matrix pair a frame with. */
+export const SNAPSHOT_ACTIONS: ReadonlySet<string> = new Set(['getControlSnapshot']);
+
+/**
+ * Validate `--screenshot` against the full action list, which with
+ * `--exec-stdin` is known only after stdin is read — so this runs then, before
+ * the browser launches, rather than inside `parseArgs`.
+ *
+ * Refuses a run with no snapshot action (the flag would do nothing, silently)
+ * and a fixed path over several snapshots (each frame would overwrite the last).
+ */
+export function validateFramePlan(actions: readonly ExecAction[], screenshot: string | null): void {
+  if (screenshot === null) return;
+  const snapshots = actions.filter((a) => SNAPSHOT_ACTIONS.has(a.action)).length;
+  if (snapshots === 0) {
+    throw new InjectCliArgError(
+      `--screenshot captures a frame beside each getControlSnapshot action, and this run has ` +
+        `none. Add --exec 'getControlSnapshot {}'.`
+    );
+  }
+  if (snapshots > 1 && !screenshot.includes(FRAME_INDEX_TOKEN)) {
+    throw new InjectCliArgError(
+      `--screenshot ${screenshot} names one file but the run takes ${snapshots} snapshots, so ` +
+        `each frame would overwrite the last. Put ${FRAME_INDEX_TOKEN} in the path ` +
+        `(e.g. frame-${FRAME_INDEX_TOKEN}.png); it becomes the action's position.`
+    );
+  }
 }
 
 /**
@@ -509,9 +762,10 @@ export function isLoopbackHost(hostname: string): boolean {
  *
  * Pure — exported for unit tests.
  */
-export function buildLaunchArgs(
-  args: Pick<InjectCliArgs, 'url' | 'relay' | 'launchArgs'>
-): { launchArgs: string[]; lnaAutoAppended: boolean } {
+export function buildLaunchArgs(args: Pick<InjectCliArgs, 'url' | 'relay' | 'launchArgs'>): {
+  launchArgs: string[];
+  lnaAutoAppended: boolean;
+} {
   const launchArgs = [...args.launchArgs];
   let lnaAutoAppended = false;
 
@@ -592,9 +846,39 @@ export function buildTransportOptions(args: InjectCliArgs): Record<string, unkno
   if (args.appId) options.appId = args.appId;
   if (args.appName) options.appName = args.appName;
   if (args.tabId) options.tabId = args.tabId;
-  if (args.viewportWidth !== null) options.viewportWidth = args.viewportWidth;
-  if (args.viewportHeight !== null) options.viewportHeight = args.viewportHeight;
+  applyCell(options, {
+    viewport: args.viewports[0] ?? null,
+    dpr: args.dprs[0] ?? null,
+    colorScheme: args.colorSchemes[0] ?? null,
+  });
   if (args.storageState) options.storageStatePath = args.storageState;
+  return options;
+}
+
+/** Set one cell's viewport / device scale factor / colour scheme on transport options. */
+function applyCell(options: Record<string, unknown>, cell: MatrixCell): void {
+  delete options.viewportWidth;
+  delete options.viewportHeight;
+  delete options.deviceScaleFactor;
+  delete options.colorScheme;
+  if (cell.viewport) {
+    options.viewportWidth = cell.viewport.width;
+    options.viewportHeight = cell.viewport.height;
+  }
+  if (cell.dpr !== null) options.deviceScaleFactor = cell.dpr;
+  if (cell.colorScheme !== null) options.colorScheme = cell.colorScheme;
+}
+
+/**
+ * Transport options for one capture-matrix cell: every non-axis flag exactly as
+ * {@link buildTransportOptions} sets it, and the cell's own three axis values.
+ */
+export function buildCellTransportOptions(
+  args: InjectCliArgs,
+  cell: MatrixCell
+): Record<string, unknown> {
+  const options = buildTransportOptions(args);
+  applyCell(options, cell);
   return options;
 }
 
@@ -812,6 +1096,13 @@ async function main(): Promise<void> {
 
   const mode = selectMode(args);
 
+  // The matrix builds one transport PER CELL, so it branches off before the
+  // single transport below is constructed.
+  if (mode === 'matrix') {
+    await runMatrix(args);
+    return;
+  }
+
   // authToken is only ever consumed by relay registration (Variant B) — resolve
   // it (with its file/env I/O and possible failure) only in that mode, so a
   // stale/unreadable --auth-token-file never fails an exec-only (Variant A)
@@ -859,22 +1150,150 @@ async function main(): Promise<void> {
   await runRelay(args, transport);
 }
 
+/** The `--exec` actions followed by the `--exec-stdin` ones, read before any browser launches. */
+async function collectActions(args: InjectCliArgs): Promise<ExecAction[]> {
+  const actions: ExecAction[] = [...args.execActions];
+  if (args.execStdin) {
+    const raw = await readStdin();
+    actions.push(...parseStdinActions(raw));
+  }
+  return actions;
+}
+
+/**
+ * ---------------------------------------------------------------------------
+ * Frame-paired snapshots
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * The private action id a frame-paired snapshot is dispatched under. A
+ * double-underscore id like `__inject_cli_info`: no in-page action is named
+ * this, so it can never shadow one.
+ */
+export const CAPTURE_FRAME_ACTION = '__inject_cli_capture_frame';
+
+/** The slice of the transport the action loop drives. */
+export interface ExecTransport {
+  readonly handlerRegistry: { has(actionId: string): boolean };
+  register(actionId: string, fn: (params: unknown, ctx: unknown) => unknown): void;
+  dispatch(actionId: string, params?: unknown): Promise<unknown>;
+}
+
+/**
+ * Register the lockstep frame capture under {@link CAPTURE_FRAME_ACTION}. It
+ * runs in the CLI process against the transport context's `page` (the
+ * screenshot) and `execute` (the in-page snapshot) — see `./frame-capture.js`.
+ */
+export function registerFrameCapture(registrar: Pick<ExecTransport, 'register'>): void {
+  registrar.register(CAPTURE_FRAME_ACTION, async (params: unknown, ctx: unknown) => {
+    const { action, payload, path } = params as { action: string; payload: unknown; path: string };
+    const c = ctx as {
+      page?: FramePage;
+      execute?: (a: string, p?: unknown) => Promise<unknown>;
+    } | null;
+    const execute = c?.execute;
+    if (!c?.page || typeof execute !== 'function') {
+      throw new InjectCliArgError(
+        `${action} with a frame needs the transport's page and in-page execute, which this ` +
+          `context does not expose`
+      );
+    }
+    return captureFrameInLockstep({
+      page: c.page,
+      takeSnapshot: () => execute(action, payload),
+      path,
+    });
+  });
+}
+
+/**
+ * One action's output line: the shape exec mode prints and the capture matrix
+ * stores. `action` is always the FIRST key — consumers find result lines by
+ * their `{"action":` prefix among forwarded browser output.
+ */
+export interface ExecLine {
+  action: string;
+  result?: unknown;
+  error?: CliActionError;
+  /** Present only on a frame-paired snapshot; `null` when the frame failed. */
+  frame?: FrameRecord | null;
+  frameError?: FrameError;
+}
+
+/**
+ * Run `actions` in order against a READY transport, handing one
+ * {@link ExecLine} per action to `onLine`. `framePathFor(position, action)`
+ * names the frame to pair with an action, or `null` for none.
+ *
+ * Every action runs whatever happened to the ones before it. Returns `true` if
+ * any action failed — thrown or returned — or any requested frame was not
+ * produced.
+ */
+export async function executeActions(
+  transport: ExecTransport,
+  actions: readonly ExecAction[],
+  framePathFor: (position: number, action: string) => string | null,
+  onLine: (line: ExecLine, position: number) => void
+): Promise<boolean> {
+  let anyError = false;
+  for (let i = 0; i < actions.length; i++) {
+    const { action, payload } = actions[i]!;
+    const position = i + 1;
+    const framePath = framePathFor(position, action);
+    let line: ExecLine;
+    try {
+      if (framePath !== null) {
+        const cap = (await transport.dispatch(CAPTURE_FRAME_ACTION, {
+          action,
+          payload,
+          path: framePath,
+        })) as LockstepCapture;
+        const returnedError = returnedFailureError(action, cap.snapshot);
+        if (returnedError || cap.frameError) anyError = true;
+        line = {
+          action,
+          result: cap.snapshot,
+          ...(returnedError ? { error: returnedError } : {}),
+          frame: cap.frame,
+          ...(cap.frameError ? { frameError: cap.frameError } : {}),
+        };
+      } else {
+        if (!transport.handlerRegistry.has(action)) {
+          transport.register(action, (params: unknown, ctx: unknown) =>
+            (ctx as { execute(a: string, p?: unknown): Promise<unknown> }).execute(action, params)
+          );
+        }
+        const result = await transport.dispatch(action, payload);
+        // A handler that FAILED but returned (rather than threw) still has to
+        // reach the error channel — see `returnedFailureError`. `result` is
+        // kept verbatim alongside it so this stays additive.
+        const returnedError = returnedFailureError(action, result);
+        if (returnedError) anyError = true;
+        line = returnedError ? { action, result, error: returnedError } : { action, result };
+      }
+    } catch (err) {
+      anyError = true;
+      line = { action, error: thrownError(err) };
+    }
+    onLine(line, position);
+  }
+  return anyError;
+}
+
 /** Variant A: run each action against the in-page runtime, one result line each. */
 async function runExec(
   args: InjectCliArgs,
   transport: ReturnType<typeof createTransport>
 ): Promise<void> {
   // Collect the full action list before launching the browser.
-  const actions: ExecAction[] = [...args.execActions];
-  if (args.execStdin) {
-    const raw = await readStdin();
-    actions.push(...parseStdinActions(raw));
-  }
+  const actions = await collectActions(args);
   if (actions.length === 0) {
     die('Variant A (exec) selected but no actions were provided');
   }
   try {
     validateWaitActions(actions);
+    validateFramePlan(actions, args.screenshot);
   } catch (err) {
     if (err instanceof InjectCliArgError) die(err.message);
     throw err;
@@ -883,6 +1302,7 @@ async function runExec(
   // CLI-side waits must win the id lookup below, which forwards anything
   // unregistered into the page realm.
   registerWaitActions(transport);
+  registerFrameCapture(transport);
 
   log(args.quiet, `[ui-bridge-inject] launching injected transport (exec mode)`);
   try {
@@ -894,35 +1314,215 @@ async function runExec(
     process.exit(1);
   }
 
-  let anyError = false;
+  const screenshot = args.screenshot;
+  let anyError: boolean;
   try {
-    for (const { action, payload } of actions) {
-      if (!transport.handlerRegistry.has(action)) {
-        transport.register(action, (params: unknown, ctx: unknown) =>
-          (ctx as { execute(a: string, p?: unknown): Promise<unknown> }).execute(action, params)
-        );
-      }
-      try {
-        const result = await transport.dispatch(action, payload);
-        // A handler that FAILED but returned (rather than threw) still has to
-        // reach the error channel — see `returnedFailureError`. `result` is
-        // kept verbatim alongside it so this stays additive.
-        const returnedError = returnedFailureError(action, result);
-        if (returnedError) anyError = true;
-        process.stdout.write(
-          `${JSON.stringify(
-            returnedError ? { action, result, error: returnedError } : { action, result }
-          )}\n`
-        );
-      } catch (err) {
-        anyError = true;
-        process.stdout.write(`${JSON.stringify({ action, error: thrownError(err) })}\n`);
-      }
-    }
+    anyError = await executeActions(
+      transport,
+      actions,
+      (position, action) =>
+        screenshot !== null && SNAPSHOT_ACTIONS.has(action)
+          ? expandFramePath(screenshot, position)
+          : null,
+      (line) => process.stdout.write(`${JSON.stringify(line)}\n`)
+    );
   } finally {
     await transport.close().catch(() => {});
   }
   process.exit(anyError ? 1 : 0);
+}
+
+/**
+ * ---------------------------------------------------------------------------
+ * Capture matrix
+ * ---------------------------------------------------------------------------
+ */
+
+/** This package's own version, for the manifest's provenance; `null` when unreadable. */
+function wrapperVersion(): string | null {
+  try {
+    // `../package.json` from both `src/inject-cli.ts` and `dist/inject-cli.cjs`.
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      name?: unknown;
+      version?: unknown;
+    };
+    return pkg.name === '@qontinui/ui-bridge-wrapper' && typeof pkg.version === 'string'
+      ? pkg.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One cell: a fresh transport at the cell's viewport / DPR / colour scheme, the
+ * plan run against it, and every snapshot action's pair written under
+ * `<dir>/<cell id>/`. Never throws — a cell that cannot be captured is a
+ * `failed` report, so one bad cell does not lose the others.
+ */
+async function runMatrixCell(
+  args: InjectCliArgs,
+  cell: MatrixCell,
+  plan: readonly ExecAction[],
+  dir: string
+): Promise<MatrixCellReport> {
+  const id = cellId(cell);
+  const cellDir = join(dir, id);
+  const transport = createTransport({
+    kind: 'injected',
+    options: buildCellTransportOptions(args, cell),
+  });
+  registerWaitActions(transport);
+  registerFrameCapture(transport);
+  log(args.quiet, `[ui-bridge-inject] capture matrix: cell ${id}`);
+
+  try {
+    mkdirSync(cellDir, { recursive: true });
+    await transport.ready();
+  } catch (err) {
+    await transport.close().catch(() => {});
+    const e = thrownError(err);
+    return {
+      id,
+      requested: cell,
+      status: 'failed',
+      error: { code: e.code, message: e.message },
+      results: null,
+      pairs: [],
+    };
+  }
+
+  const lines: string[] = [];
+  const pairs: MatrixPair[] = [];
+  try {
+    const anyError = await executeActions(
+      transport,
+      plan,
+      (position, action) =>
+        SNAPSHOT_ACTIONS.has(action) ? join(cellDir, `frame-${position}.png`) : null,
+      (line, position) => {
+        lines.push(JSON.stringify(line));
+        if (!SNAPSHOT_ACTIONS.has(line.action) || line.result === undefined) return;
+        const snapshotPath = join(cellDir, `snapshot-${position}.json`);
+        writeFileSync(snapshotPath, `${JSON.stringify(line.result)}\n`);
+        pairs.push({
+          position,
+          snapshot: manifestPath(dir, snapshotPath),
+          frame: line.frame ? { ...line.frame, path: manifestPath(dir, line.frame.path) } : null,
+          ...(line.frameError ? { frameError: line.frameError } : {}),
+        });
+      }
+    );
+    const resultsPath = join(cellDir, 'results.ndjson');
+    writeFileSync(resultsPath, `${lines.join('\n')}\n`);
+    return {
+      id,
+      requested: cell,
+      status: anyError ? 'incomplete' : 'captured',
+      results: manifestPath(dir, resultsPath),
+      pairs,
+    };
+  } catch (err) {
+    const e = thrownError(err);
+    return {
+      id,
+      requested: cell,
+      status: 'failed',
+      error: { code: e.code, message: e.message },
+      results: null,
+      pairs,
+    };
+  } finally {
+    await transport.close().catch(() => {});
+  }
+}
+
+/**
+ * Run the capture matrix: every cell in turn into `args.captureMatrix`, then
+ * `<dir>/matrix.json`. Returns the manifest it wrote; `onCell` sees each cell's
+ * report as it completes. Never exits the process — that is `runMatrix`'s job —
+ * so it is callable from a test.
+ */
+export async function captureMatrix(
+  args: InjectCliArgs,
+  plan: readonly ExecAction[],
+  onCell: (report: MatrixCellReport, cellDir: string) => void = () => {}
+): Promise<MatrixManifest> {
+  if (!args.captureMatrix)
+    throw new InjectCliArgError('captureMatrix needs --capture-matrix <dir>');
+  const dir = resolve(args.captureMatrix);
+  mkdirSync(dir, { recursive: true });
+  const cells = expandMatrix({
+    viewports: args.viewports,
+    dprs: args.dprs,
+    colorSchemes: args.colorSchemes,
+  });
+  const startedAt = new Date().toISOString();
+  log(args.quiet, `[ui-bridge-inject] capture matrix: ${cells.length} cell(s) into ${dir}`);
+
+  const reports: MatrixCellReport[] = [];
+  for (const cell of cells) {
+    const report = await runMatrixCell(args, cell, plan, dir);
+    reports.push(report);
+    onCell(report, join(dir, report.id));
+  }
+
+  const manifest: MatrixManifest = {
+    kind: 'ui-bridge-capture-matrix',
+    schemaVersion: 1,
+    url: args.url,
+    producer: {
+      name: 'ui-bridge-inject',
+      package: '@qontinui/ui-bridge-wrapper',
+      version: wrapperVersion(),
+    },
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    axes: { viewports: args.viewports, dprs: args.dprs, colorSchemes: args.colorSchemes },
+    plan: plan.map((a, i) => ({ position: i + 1, action: a.action, payload: a.payload })),
+    cells: reports,
+  };
+  const manifestFile = join(dir, 'matrix.json');
+  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  log(args.quiet, `[ui-bridge-inject] capture matrix: manifest ${manifestFile}`);
+  return manifest;
+}
+
+/** Capture-matrix mode: validate the plan, run {@link captureMatrix}, one stdout line per cell. */
+async function runMatrix(args: InjectCliArgs): Promise<void> {
+  const actions = await collectActions(args);
+  const plan: ExecAction[] =
+    actions.length > 0 ? actions : [{ action: 'getControlSnapshot', payload: {} }];
+  try {
+    validateWaitActions(plan);
+  } catch (err) {
+    if (err instanceof InjectCliArgError) die(err.message);
+    throw err;
+  }
+  if (!plan.some((a) => SNAPSHOT_ACTIONS.has(a.action))) {
+    die(
+      `--capture-matrix stores frame-and-snapshot pairs, and this plan takes no ` +
+        `getControlSnapshot. Add --exec 'getControlSnapshot {}', or pass no --exec at all.`
+    );
+  }
+
+  let manifest: MatrixManifest;
+  try {
+    manifest = await captureMatrix(args, plan, (report, cellDir) => {
+      process.stdout.write(
+        `${JSON.stringify({
+          cell: report.id,
+          status: report.status,
+          frames: report.pairs.filter((p) => p.frame !== null).length,
+          dir: cellDir,
+          ...(report.error ? { error: report.error } : {}),
+        })}\n`
+      );
+    });
+  } catch (err) {
+    die(`--capture-matrix: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  process.exit(manifest.cells.every((c) => c.status === 'captured') ? 0 : 1);
 }
 
 /** Variant B: register as a relay tab, print one info line, then stay alive. */

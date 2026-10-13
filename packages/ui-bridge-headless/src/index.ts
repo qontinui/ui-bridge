@@ -30,6 +30,7 @@
 export {
   launchHeadlessTab,
   type HeadlessTab,
+  type LaunchColorScheme,
   type LaunchHeadlessTabOptions,
   type LaunchHeadlessTabResult,
 } from './launcher.js';
