@@ -16,6 +16,7 @@ import { mapInternalErrorCode } from '../diagnostics';
 import { UIBridgeWSHandler, type WebSocketLike } from './websocket-handler';
 import { createWSStreamBroadcast } from './ws-stream-adapter';
 import { SSEManager } from './sse-handler';
+import { withoutReservedCaller } from './reserved-caller';
 import type { BridgeEvent } from '../core';
 
 /**
@@ -422,6 +423,9 @@ export class StandaloneServer {
           : undefined) ?? undefined;
 
       if (route.bodyRequired) {
+        // A request-supplied `__callerUserId` never survives: the verified
+        // header is the only source (see nextjs.ts, reserved-caller.ts).
+        body = withoutReservedCaller(body);
         if (
           headerCallerUserId &&
           body !== null &&
@@ -436,7 +440,7 @@ export class StandaloneServer {
       // The query object goes to a handler that takes one, EMPTY included,
       // and to no other (see nextjs.ts).
       if (route.queryRequired) {
-        args.push(Object.fromEntries(url.searchParams));
+        args.push(withoutReservedCaller(Object.fromEntries(url.searchParams)));
       }
 
       // Per-user tab scoping (§4.2) — trailing context arg. Adapter

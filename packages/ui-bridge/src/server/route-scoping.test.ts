@@ -29,6 +29,9 @@ import { createStandaloneServer, type StandaloneServer } from './standalone';
 
 const BASE = '/api/ui-bridge';
 
+/** The verified identity an adapter would pass for user-b. */
+const CONTEXT_B = { callerUserId: 'user-b' };
+
 interface Seen {
   tab: string;
   action: string;
@@ -142,6 +145,19 @@ describe('per-user tab scoping over the Next.js adapter', () => {
     expect(seen.at(-1)?.tab).toBe('tab-b');
   });
 
+  it('the reserved __callerUserId key in a query cannot name the caller: GET snapshot stays on the caller tab', async () => {
+    await nextCall(relay)('GET', '/control/snapshot?__callerUserId=user-a');
+    expect(seen.at(-1)?.tab).toBe('tab-b');
+    expect(seen.at(-1)?.payload).not.toHaveProperty('__callerUserId');
+  });
+
+  it('the reserved __callerUserId key in a body cannot name the caller: POST /control/find stays on the caller tab', async () => {
+    await nextCall(relay)('POST', '/control/find', {
+      body: { text: 'Save', __callerUserId: 'user-a', request: { __callerUserId: 'user-a' } },
+    });
+    expect(seen.at(-1)?.tab).toBe('tab-b');
+  });
+
   it('a body cannot name the caller: the named intent runs on the caller tab with its params', async () => {
     await nextCall(relay)('POST', '/control/intent/demo/execute', {
       body: { callerUserId: 'user-a', params: { size: 2 } },
@@ -200,6 +216,11 @@ describe('per-user tab scoping over the Express adapter', () => {
 
   it('Express: a query string cannot name the caller', async () => {
     await call('GET', '/control/element/save/state?callerUserId=user-a');
+    expect(seen.at(-1)?.tab).toBe('tab-b');
+  });
+
+  it('Express: the reserved __callerUserId key in a query cannot name the caller', async () => {
+    await call('GET', '/control/snapshot?__callerUserId=user-a');
     expect(seen.at(-1)?.tab).toBe('tab-b');
   });
 
@@ -270,6 +291,42 @@ describe('per-user tab scoping over the standalone server', () => {
 
   it('standalone: a query string cannot name the caller', async () => {
     await call('GET', '/control/element/save/state?callerUserId=user-a');
+    expect(seen.at(-1)?.tab).toBe('tab-b');
+  });
+
+  it('standalone: the reserved __callerUserId key in a query cannot name the caller', async () => {
+    await call('GET', '/control/snapshot?__callerUserId=user-a');
+    expect(seen.at(-1)?.tab).toBe('tab-b');
+  });
+});
+
+describe('the relay ranks the verified context above a payload identity', () => {
+  let seen: Seen[];
+  let relay: CommandRelay;
+
+  beforeEach(() => {
+    seen = [];
+    relay = twoUserRelay(seen);
+  });
+
+  afterEach(() => relay.destroy());
+
+  // In process, so no adapter strips the key: each handler gets a payload that
+  // names user-a and a context that names user-b, and must reach tab-b. Every
+  // handler that reads an identity off its payload and dispatches live is
+  // listed.
+  const asUserA = { __callerUserId: 'user-a' };
+  const calls: Array<[string, (h: ReturnType<typeof createRelayHandlers>) => Promise<unknown>]> = [
+    ['find (relayCommand)', (h) => h.find({ text: 'Save', ...asUserA } as never, CONTEXT_B)],
+    ['getControlSnapshot', (h) => h.getControlSnapshot(asUserA as never, CONTEXT_B)],
+    ['getElement', (h) => h.getElement('save', asUserA as never, CONTEXT_B)],
+    ['getConsoleErrors', (h) => h.getConsoleErrors(asUserA as never, CONTEXT_B)],
+    ['getSemanticSnapshot', (h) => h.getSemanticSnapshot(asUserA as never, CONTEXT_B)],
+    ['getRenderLog', (h) => h.getRenderLog(asUserA as never, CONTEXT_B)],
+  ];
+
+  it.each(calls)('%s runs on the context caller tab', async (_name, call) => {
+    await call(createRelayHandlers(relay));
     expect(seen.at(-1)?.tab).toBe('tab-b');
   });
 });

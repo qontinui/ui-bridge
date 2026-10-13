@@ -13,6 +13,7 @@ import type {
   CORSOptions,
 } from './types';
 import { UI_BRIDGE_ROUTES } from './types';
+import { withoutReservedCaller } from './reserved-caller';
 import { mapInternalErrorCode } from '../diagnostics';
 import type { SSEManager } from './sse-handler';
 
@@ -254,7 +255,9 @@ function createRouteHandler(
       // are context-only handlers whose signatures end at the trailing
       // `context?: HandlerContext` arg).
       if (route.bodyRequired) {
-        let body = req.body;
+        // A request-supplied `__callerUserId` never survives: the verified
+        // header below is the only source (see nextjs.ts, reserved-caller.ts).
+        let body = withoutReservedCaller(req.body);
         if (
           externalTabId &&
           body !== null &&
@@ -284,7 +287,7 @@ function createRouteHandler(
       // included, and never otherwise. See nextjs.ts for why (and for why
       // `__callerUserId` is NOT spliced into the query).
       if (route.queryRequired) {
-        const query = { ...req.query } as Record<string, unknown>;
+        const query = withoutReservedCaller({ ...req.query }) as Record<string, unknown>;
         if (externalTabId && query.tabId === undefined && query.targetTabId === undefined) {
           query.tabId = externalTabId;
         }

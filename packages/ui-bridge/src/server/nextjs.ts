@@ -49,6 +49,7 @@ import { createHandlers, type RegistryLike, type ActionExecutorLike } from './ha
 import { SSEManager } from './sse-handler';
 import type { CommandRelay } from './command-relay';
 import { CDPTabDiscovery } from './cdp-tabs';
+import { withoutReservedCaller } from './reserved-caller';
 
 /**
  * Next.js specific configuration
@@ -230,7 +231,9 @@ export function createNextRouteHandlers(
       // as `__callerUserId` so `relay-handlers.extractTabRouting` can lift
       // it into `ownerCheck` and the relay enforces per-user dispatch
       // boundaries. Reserved key — do NOT use `callerUserId` to avoid
-      // colliding with handler request bodies.
+      // colliding with handler request bodies. A request-supplied
+      // `__callerUserId` is stripped from the body and the query first
+      // (`reserved-caller.ts`): only this adapter writes that key.
       const callerUserId =
         request.headers.get('x-caller-user-id') ??
         request.headers.get('X-Caller-User-Id') ??
@@ -244,7 +247,7 @@ export function createNextRouteHandlers(
       // context to the wrong positional slot. Stick to the route table.
       if (route.bodyRequired) {
         try {
-          const body = await request.json();
+          const body = withoutReservedCaller(await request.json());
           if (
             externalTabId &&
             body !== null &&
@@ -280,7 +283,9 @@ export function createNextRouteHandlers(
       // into the searchParams bag. The `tabId` splice stays (it's a payload
       // field many handlers read via `extractTabRouting`).
       if (route.queryRequired) {
-        const searchParams = Object.fromEntries(request.nextUrl.searchParams);
+        const searchParams = withoutReservedCaller(
+          Object.fromEntries(request.nextUrl.searchParams)
+        );
         if (
           externalTabId &&
           searchParams.tabId === undefined &&

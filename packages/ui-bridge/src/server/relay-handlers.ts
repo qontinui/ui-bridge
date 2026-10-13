@@ -357,6 +357,20 @@ export function createRelayHandlers(
     return { targetTabId, callerUserId, cleaned: rest };
   }
 
+  // The user whose tabs a command may reach (§4.2). The verified context
+  // outranks a payload-supplied `__callerUserId`: over HTTP the payload is
+  // request data (a GET query, a body), so a payload identity counts only
+  // when no context names a caller, as for an in-process caller that routes
+  // by payload alone. The HTTP adapters also strip a request-supplied
+  // `__callerUserId` (see `reserved-caller.ts`); this ranking holds even
+  // where a transport does not.
+  function scopedCaller(
+    payloadCallerUserId: string | undefined,
+    context?: HandlerContext
+  ): string | undefined {
+    return context?.callerUserId ?? payloadCallerUserId;
+  }
+
   // Helper: relay a command, return success/error. Honors `targetTabId`
   // sourced from either the explicit `opts` argument (used by a couple of
   // handlers that destructure it manually) or the payload itself (the
@@ -375,7 +389,8 @@ export function createRelayHandlers(
   // and the handler forwards it here via `opts.context` so the ownership
   // check fires even when there's no payload to splice `__callerUserId`
   // into. Precedence (highest first): explicit `opts.ownerCheck` →
-  // payload-supplied `__callerUserId` → `opts.context.callerUserId`.
+  // `opts.context.callerUserId` → payload-supplied `__callerUserId`
+  // (`scopedCaller`).
   async function relayCommand<T>(
     action: string,
     payload: unknown = {},
@@ -387,11 +402,9 @@ export function createRelayHandlers(
   ): Promise<APIResponse<T>> {
     const { targetTabId: payloadTabId, callerUserId, cleaned } = extractTabRouting(payload);
     const effectiveTabId = opts?.targetTabId ?? payloadTabId;
-    const contextUserId = opts?.context?.callerUserId;
+    const scopedUserId = scopedCaller(callerUserId, opts?.context);
     const effectiveOwnerCheck =
-      opts?.ownerCheck ??
-      (callerUserId ? { userId: callerUserId } : undefined) ??
-      (contextUserId ? { userId: contextUserId } : undefined);
+      opts?.ownerCheck ?? (scopedUserId ? { userId: scopedUserId } : undefined);
     const effectiveOpts =
       effectiveTabId || effectiveOwnerCheck
         ? {
@@ -510,7 +523,7 @@ export function createRelayHandlers(
     context?: HandlerContext
   ): Promise<APIResponse<T>> {
     const { targetTabId, callerUserId, cleaned } = extractTabRouting(payload);
-    const effectiveCallerUserId = callerUserId ?? context?.callerUserId;
+    const effectiveCallerUserId = scopedCaller(callerUserId, context);
     const opts =
       targetTabId || effectiveCallerUserId
         ? {
@@ -702,7 +715,7 @@ export function createRelayHandlers(
       // Try relaying to the browser first for live render log data
       try {
         const { cleaned, callerUserId } = extractTabRouting(query ?? {});
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const effectiveUserId = scopedCaller(callerUserId, context);
         const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand('getRenderLog', cleaned, liveOpts);
         if (
@@ -777,7 +790,7 @@ export function createRelayHandlers(
       // the shared cross-tab cache — dispatch a live snapshot to that tab and
       // propagate routing errors instead of another tab's elements.
       if (targetTabId !== undefined) {
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const effectiveUserId = scopedCaller(callerUserId, context);
         const live = await relayCommand<ControlSnapshot>(
           'getControlSnapshot',
           {},
@@ -837,7 +850,7 @@ export function createRelayHandlers(
 
     async getElement(id, options, context) {
       const { targetTabId, callerUserId } = extractTabRouting(options ?? {});
-      const effectiveUserId = callerUserId ?? context?.callerUserId;
+      const effectiveUserId = scopedCaller(callerUserId, context);
 
       // P0 (plan 2026-06-12 item 1): a PINNED read must never fall back to
       // the shared cross-tab cache — propagate the routing/timeout error.
@@ -984,7 +997,7 @@ export function createRelayHandlers(
       // the shared cross-tab cache — dispatch a live snapshot to that tab and
       // propagate routing errors instead of another tab's components.
       if (targetTabId !== undefined) {
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const effectiveUserId = scopedCaller(callerUserId, context);
         const live = await relayCommand<ControlSnapshot>(
           'getControlSnapshot',
           {},
@@ -1217,7 +1230,7 @@ export function createRelayHandlers(
     async getControlSnapshot(request, context) {
       const recency = parseRecency(request?.recency);
       const { targetTabId, callerUserId } = extractTabRouting(request ?? {});
-      const effectiveUserId = callerUserId ?? context?.callerUserId;
+      const effectiveUserId = scopedCaller(callerUserId, context);
 
       // Item 3 (plan 2026-06-12): an explicitly PINNED snapshot read (either
       // spelling — public `?tabId=`/body `tabId` or internal `targetTabId`)
@@ -1403,7 +1416,7 @@ export function createRelayHandlers(
       const isGrouped = params?.group === true;
       try {
         const { cleaned, callerUserId } = extractTabRouting(params ?? {});
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const effectiveUserId = scopedCaller(callerUserId, context);
         const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<ConsoleErrorsResult | GroupedResult>(
           'getConsoleErrors',
@@ -1457,7 +1470,7 @@ export function createRelayHandlers(
     async getSemanticSnapshot(options, context) {
       try {
         const { cleaned, callerUserId } = extractTabRouting(options ?? {});
-        const effectiveUserId = callerUserId ?? context?.callerUserId;
+        const effectiveUserId = scopedCaller(callerUserId, context);
         const liveOpts = effectiveUserId ? { ownerCheck: { userId: effectiveUserId } } : undefined;
         const result = await relay.queueCommand<SemanticSnapshot>(
           'getSemanticSnapshot',
