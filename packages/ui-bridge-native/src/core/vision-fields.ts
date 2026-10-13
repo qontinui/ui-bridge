@@ -24,21 +24,29 @@
  *   - `interactable` ← the element's `actions` (press/click/tap/...) or its
  *     interactive `type` (button/input/switch/...). Mirrors web's
  *     "has a click-type handler OR is an interactive tag".
- *   - `text` ← `state.value` / `state.textContent` / `label` (human-visible).
+ *   - `text` ← `state.value` / `state.textContent` / `label` (human-visible) —
+ *     never for an `image`, which paints no text: its label is its
+ *     accessibility label, i.e. its alt (see {@link projectVisionFields}).
  *   - `role` ← `type` mapped to the ARIA-ish vocabulary the analyzer expects.
  *   - `fg_color`/`bg_color` ← parsed from `flatStyle.color` /
  *     `flatStyle.backgroundColor` when the host wired styles via
  *     `captureStyle`/`updateElementStyle`. Same source the design inspector
- *     reads. Absent when no style was wired (analyzer soft-skips).
+ *     reads. Absent when no style was wired (analyzer soft-skips) — and absent
+ *     for `transparent` or any partial alpha, which are UNKNOWN, never black
+ *     and never flattened (see {@link parseColorToRgb}).
  *   - `font_size_px` ← `flatStyle.fontSize` (RN number is already px).
  *   - `font_family` ← `flatStyle.fontFamily`.
+ *   - `media` ← for an `image`: its laid-out size, the object-fit its resize
+ *     mode paints, its accessibility label as the text alternative, a digest of
+ *     its source URL and whether it is on screen (see {@link projectMedia}).
  *
  * These fields are emitted directly in the runner-native snake_case shape so a
  * visual-audit caller can post the snapshot through with no transform — same
  * rationale as `bbox` emitting `{x,y,w,h}` (see {@link NativeElementBbox}).
  */
 
-import type { NativeElementState, NativeElementType } from './types';
+import { sha256Hex } from './sha256';
+import type { NativeElementState, NativeElementType, NativeLayout } from './types';
 
 /** Linear RGB triple, runner-native shape (`qontinui_vision_core::Rgb`). */
 export interface VisionRgb {
@@ -62,6 +70,36 @@ export interface VisionElementFields {
   bg_color?: VisionRgb;
   font_size_px?: number;
   font_family?: string;
+  media?: VisionMedia;
+}
+
+/** CSS `object-fit` keywords — the vocabulary of `ElementMedia.object_fit`. */
+export type VisionObjectFit = 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+
+/**
+ * The part of vision-core's `ElementMedia` (qontinui-schemas
+ * `rust-vision-core/src/element_media.rs`) a native registry can measure. Every
+ * field but `kind` is omitted when unknown — absence is "not measured", never
+ * zero, `false` or "none".
+ */
+export interface VisionMedia {
+  /** A native image is vision-core's `img`. */
+  kind: 'img';
+  /** Laid-out size in dp (`state.layout`), before the pixel-ratio scaling `bbox` applies. */
+  rendered_px?: { w: number; h: number };
+  /** The CSS object-fit the image's resize mode paints as (see {@link resolveObjectFit}). */
+  object_fit?: VisionObjectFit;
+  /**
+   * The text alternative, read as one measurement. Projected only from a
+   * recorded accessibility label — `{ decorative: false, text }`. With no
+   * label RN may simply not expose the image, so "missing" cannot be told
+   * from "decorative", and the whole record is omitted.
+   */
+  alt?: { decorative: boolean; text?: string };
+  /** Lowercase hex SHA-256 of the source URL, query kept (see {@link resolveImageSource}). */
+  src_digest?: string;
+  /** Whether the measured rect intersects the element's clip region (`computeInViewport`). */
+  in_viewport?: boolean;
 }
 
 /**
@@ -202,6 +240,11 @@ export function deriveText(
 // Common CSS/RN named colors. RN accepts the full CSS named-color set; we
 // cover the ones a design system realistically declares inline. Anything
 // outside this map + the hex/rgb parsers returns undefined (analyzer skips).
+//
+// `transparent` is deliberately NOT here. It used to map to {0,0,0}, which
+// made a transparent background read as OPAQUE BLACK — so light text over an
+// image (where the background really is the image) could PASS a contrast check
+// against a black that does not exist. It now parses to undefined: unknown.
 const NAMED_COLORS: Readonly<Record<string, VisionRgb>> = {
   black: { r: 0, g: 0, b: 0 },
   white: { r: 255, g: 255, b: 255 },
@@ -211,7 +254,6 @@ const NAMED_COLORS: Readonly<Record<string, VisionRgb>> = {
   gray: { r: 128, g: 128, b: 128 },
   grey: { r: 128, g: 128, b: 128 },
   silver: { r: 192, g: 192, b: 192 },
-  transparent: { r: 0, g: 0, b: 0 },
   orange: { r: 255, g: 165, b: 0 },
   yellow: { r: 255, g: 255, b: 0 },
   purple: { r: 128, g: 0, b: 128 },
@@ -221,16 +263,34 @@ const NAMED_COLORS: Readonly<Record<string, VisionRgb>> = {
 const clamp255 = (n: number): number => Math.max(0, Math.min(255, Math.round(n)));
 
 /**
- * Parse an RN/CSS color string into a runner-native `{r,g,b}` triple, dropping
- * alpha (the runner's `Rgb` has no alpha; the analyzers convert to Lab/sRGB on
- * demand). Supports:
+ * The alpha of an `rgba()` component (`0.5`, `50%`), or undefined when it
+ * does not parse. CSS clamps an alpha above 1 to 1.
+ */
+function parseAlpha(p: string): number | undefined {
+  const pct = p.endsWith('%');
+  const n = parseFloat(pct ? p.slice(0, -1) : p);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(1, pct ? n / 100 : n);
+}
+
+/**
+ * Parse an RN/CSS color string into a runner-native `{r,g,b}` triple — for a
+ * FULLY OPAQUE color only. Supports:
  *   - `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`
  *   - `rgb(r,g,b)` / `rgba(r,g,b,a)` (integer or %),
  *   - named colors (subset).
- * Returns `undefined` for `undefined`, non-strings, or unrecognized formats so
- * the snapshot omits the field and the analyzer soft-skips rather than seeing a
- * bogus color. RN integer colors (e.g. `processColor` output) are not handled —
- * inline styles in app source are strings.
+ * Returns `undefined` for `undefined`, non-strings, unrecognized formats,
+ * `transparent`, and ANY alpha below 1, so the snapshot omits the field and
+ * the analyzer reads it as unmeasured rather than seeing a bogus color.
+ *
+ * Why partial alpha is unknown rather than flattened: the runner's `Rgb` has
+ * no alpha channel, and a translucent color is composited over whatever lies
+ * beneath it — which a snapshot does not carry. Dropping the alpha would turn
+ * half-transparent black over a white screen (mid-grey) into BLACK, and a
+ * contrast check over that fabricated black can pass illegible text.
+ *
+ * RN integer colors (e.g. `processColor` output) are not handled — inline
+ * styles in app source are strings.
  */
 export function parseColorToRgb(input: unknown): VisionRgb | undefined {
   if (typeof input !== 'string') return undefined;
@@ -241,10 +301,11 @@ export function parseColorToRgb(input: unknown): VisionRgb | undefined {
     return NAMED_COLORS[raw];
   }
 
-  // Hex: #rgb, #rgba, #rrggbb, #rrggbbaa
+  // Hex: #rgb, #rgba, #rrggbb, #rrggbbaa — an alpha digit pair must be `ff`.
   if (raw.startsWith('#')) {
     const hex = raw.slice(1);
     if (hex.length === 3 || hex.length === 4) {
+      if (hex.length === 4 && hex[3] !== 'f') return undefined;
       const r = parseInt(hex[0] + hex[0], 16);
       const g = parseInt(hex[1] + hex[1], 16);
       const b = parseInt(hex[2] + hex[2], 16);
@@ -252,6 +313,7 @@ export function parseColorToRgb(input: unknown): VisionRgb | undefined {
       return undefined;
     }
     if (hex.length === 6 || hex.length === 8) {
+      if (hex.length === 8 && hex.slice(6, 8) !== 'ff') return undefined;
       const r = parseInt(hex.slice(0, 2), 16);
       const g = parseInt(hex.slice(2, 4), 16);
       const b = parseInt(hex.slice(4, 6), 16);
@@ -265,7 +327,11 @@ export function parseColorToRgb(input: unknown): VisionRgb | undefined {
   const rgbMatch = raw.match(/^rgba?\(([^)]+)\)$/);
   if (rgbMatch) {
     const parts = rgbMatch[1].split(',').map((p) => p.trim());
-    if (parts.length < 3) return undefined;
+    if (parts.length < 3 || parts.length > 4) return undefined;
+    if (parts.length === 4) {
+      const alpha = parseAlpha(parts[3]);
+      if (alpha === undefined || alpha < 1) return undefined;
+    }
     const channel = (p: string): number | undefined => {
       if (p.endsWith('%')) {
         const pct = parseFloat(p.slice(0, -1));
@@ -307,6 +373,123 @@ export function parseFontSizePx(input: unknown): number | undefined {
   return undefined;
 }
 
+/** A non-empty string, or undefined — RN reads resize props with `||`. */
+function nonEmptyString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * RN's own `objectFit` style → resize mode map (react-native
+ * `Libraries/Image/ImageUtils.js`). `scale-down` is NOT implemented by RN: it
+ * paints as `contain`, so that is what it maps to here too.
+ */
+const OBJECT_FIT_TO_RESIZE_MODE: Readonly<Record<string, string>> = {
+  contain: 'contain',
+  cover: 'cover',
+  fill: 'stretch',
+  'scale-down': 'contain',
+  none: 'none',
+};
+
+/**
+ * RN resize mode → the CSS object-fit that paints the same layout. `center`
+ * ("scale down if bigger, never up, centred") is exactly CSS `scale-down`.
+ * `repeat` TILES the image, which no object-fit paints, so it maps to nothing
+ * and the field is omitted rather than approximated.
+ */
+const RESIZE_MODE_TO_OBJECT_FIT: Readonly<Record<string, VisionObjectFit>> = {
+  cover: 'cover',
+  contain: 'contain',
+  stretch: 'fill',
+  center: 'scale-down',
+  none: 'none',
+};
+
+/**
+ * The object-fit an RN `Image` actually paints with, from what the registry
+ * recorded — RN's own precedence (`Image.ios.js` / `Image.android.js`): the
+ * `objectFit` style, then the `resizeMode` prop, then the `resizeMode` style.
+ *
+ * RN's final fallback is `'cover'`, and it is NOT applied here: an element
+ * registered as `type: 'image'` need not be RN's `Image` (an `expo-image`, a
+ * `FastImage` and an SVG wrapper all register the same way), so a mode the
+ * registry never saw is UNKNOWN rather than RN's default.
+ */
+export function resolveObjectFit(
+  props: Record<string, unknown> | undefined,
+  flatStyle: Record<string, unknown> | undefined
+): VisionObjectFit | undefined {
+  const styleFit = nonEmptyString(flatStyle?.objectFit);
+  const mode =
+    (styleFit !== undefined ? OBJECT_FIT_TO_RESIZE_MODE[styleFit] : undefined) ??
+    nonEmptyString(props?.resizeMode) ??
+    nonEmptyString(flatStyle?.resizeMode);
+  return mode !== undefined ? RESIZE_MODE_TO_OBJECT_FIT[mode] : undefined;
+}
+
+/**
+ * The URL an RN `Image` displays, from its recorded props — RN's own
+ * precedence (`getImageSourcesFromImageProps`): `srcSet`, then `src`, then
+ * `source`. Undefined when the displayed URL cannot be named:
+ *   - a `srcSet`, or a `source` array of several candidates — RN picks one by
+ *     size and density at render time, so which one shows is unknown;
+ *   - a `require()`d asset (`source` is a number) — it has no URL;
+ *   - no `props` recorded at all (the host never captured them).
+ */
+export function resolveImageSource(props: Record<string, unknown> | undefined): string | undefined {
+  if (!props) return undefined;
+  if (props.srcSet !== undefined && props.srcSet !== null) return undefined;
+  const src = nonEmptyString(props.src);
+  if (src !== undefined) return src;
+  const source = props.source;
+  const one = Array.isArray(source) ? (source.length === 1 ? source[0] : undefined) : source;
+  if (one && typeof one === 'object') {
+    return nonEmptyString((one as Record<string, unknown>).uri);
+  }
+  return undefined;
+}
+
+/**
+ * The vision-core `ElementMedia` record for a native image — what the registry
+ * can actually measure about it. Every other `ElementMedia` fact (intrinsic
+ * size, load state, format, weight, LCP, slot) is omitted, i.e. unmeasured:
+ * RN exposes none of them to the registry.
+ */
+export function projectMedia(args: {
+  layout: NativeLayout | null | undefined;
+  props: Record<string, unknown> | undefined;
+  flatStyle: Record<string, unknown> | undefined;
+  accessibilityLabel: string | undefined;
+  inViewport: boolean | undefined;
+}): VisionMedia {
+  const { layout, props, flatStyle, accessibilityLabel, inViewport } = args;
+  const media: VisionMedia = { kind: 'img' };
+
+  if (
+    layout &&
+    Number.isFinite(layout.width) &&
+    Number.isFinite(layout.height) &&
+    layout.width >= 0 &&
+    layout.height >= 0
+  ) {
+    media.rendered_px = { w: layout.width, h: layout.height };
+  }
+
+  const objectFit = resolveObjectFit(props, flatStyle);
+  if (objectFit !== undefined) media.object_fit = objectFit;
+
+  // An image the registry records an accessibility label for is announced
+  // with it, so it has a text alternative and is not decorative.
+  const altText = accessibilityLabel?.trim();
+  if (altText) media.alt = { decorative: false, text: altText };
+
+  const src = resolveImageSource(props);
+  if (src !== undefined) media.src_digest = sha256Hex(src);
+
+  if (inViewport !== undefined) media.in_viewport = inViewport;
+  return media;
+}
+
 /**
  * Project the analyzer-facing fields for one registered element. Pure — takes
  * the already-resolved state + the element's static metadata, returns the
@@ -318,6 +501,11 @@ export function parseFontSizePx(input: unknown): number | undefined {
  * are populated for ALL elements so the elements analyzer's coverage counts
  * are accurate — matching the web SDK, which emits role/text/interactable for
  * every element it discovers regardless of viewport position.
+ *
+ * An `image` carries NO `text`: an RN `Image` paints none, and its label is
+ * its accessibility label — the alt, which vision-core's `Element` forbids in
+ * `text` (it would make the image read as a visible label to the elements and
+ * color analyzers). It carries `media` instead.
  */
 export function projectVisionFields(args: {
   type: NativeElementType;
@@ -329,8 +517,23 @@ export function projectVisionFields(args: {
    * because `inferActions` synthesizes press/click for every element.
    */
   handlerNames: readonly string[] | undefined;
-  state: Pick<NativeElementState, 'value' | 'textContent'>;
+  state: Pick<NativeElementState, 'value' | 'textContent'> & {
+    layout?: NativeLayout | null;
+  };
   flatStyle: Record<string, unknown> | undefined;
+  /**
+   * The element's recorded props (`registerElement({ props })` /
+   * `captureProps`) — read for an image's `source` / `src` / `srcSet` and
+   * `resizeMode`.
+   */
+  props?: Record<string, unknown>;
+  /** The accessibility label the registry recorded (`identifier.accessibilityLabel`). */
+  accessibilityLabel?: string;
+  /**
+   * Whether the measured rect intersects the element's clip region
+   * (`computeInViewport` in `registry.ts`); undefined when either is unknown.
+   */
+  inViewport?: boolean;
 }): VisionElementFields {
   const { type, label, handlerNames, state, flatStyle } = args;
 
@@ -338,8 +541,18 @@ export function projectVisionFields(args: {
     interactable: deriveInteractable(type, handlerNames),
   };
 
-  const text = deriveText(state, label);
-  if (text !== undefined) fields.text = text;
+  if (type === 'image') {
+    fields.media = projectMedia({
+      layout: state.layout,
+      props: args.props,
+      flatStyle,
+      accessibilityLabel: args.accessibilityLabel,
+      inViewport: args.inViewport,
+    });
+  } else {
+    const text = deriveText(state, label);
+    if (text !== undefined) fields.text = text;
+  }
 
   const role = roleForType(type);
   if (role !== undefined) fields.role = role;

@@ -5,6 +5,8 @@
  * Adapted from ui-bridge for React Native environments.
  */
 
+import type { VisionMedia } from './vision-fields';
+
 // We use a generic type for native element refs to avoid dependency on specific
 // react-native versions. In practice, these will be View, TextInput, etc.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -656,7 +658,9 @@ export interface NativeBridgeSnapshot {
      * Human-visible text (`state.value` / `state.textContent` / `label`).
      * Runner's elements analyzer (`no_text`) + color analyzer (contrast gate)
      * read this. Omitted when the element carries no text. Snake_case shape
-     * matches the Rust `Element.text: Option<String>`.
+     * matches the Rust `Element.text: Option<String>`. Never set for an
+     * `image`: its label is its accessibility label — the alt, which lives in
+     * {@link media} — and vision-core forbids alt text in `text`.
      */
     text?: string;
     /**
@@ -669,17 +673,19 @@ export interface NativeBridgeSnapshot {
     /**
      * Foreground (text/icon) color as `{r,g,b}`, parsed from
      * `flatStyle.color`. Present only when the host wired styles via
-     * `captureStyle`/`updateElementStyle` AND the value parsed. Feeds the
-     * runner's color analyzer (WCAG contrast). RN has no `getComputedStyle`,
-     * so this is the declared style color, not a resolved-up-the-tree value.
+     * `captureStyle`/`updateElementStyle` AND the value parsed as a FULLY
+     * OPAQUE color. Feeds the runner's color analyzer (WCAG contrast). RN has
+     * no `getComputedStyle`, so this is the declared style color, not a
+     * resolved-up-the-tree value.
      */
     fg_color?: { r: number; g: number; b: number };
     /**
      * Background color as `{r,g,b}`, parsed from `flatStyle.backgroundColor`.
      * Same source/limits as {@link fg_color}. RN does NOT resolve the effective
-     * opaque ancestor background — a transparent/absent backgroundColor is
-     * omitted, and the color analyzer soft-skips (or samples pixels under the
-     * bbox) when either color is missing.
+     * opaque ancestor background — a `transparent`, partially transparent or
+     * absent backgroundColor is omitted (UNKNOWN: never black, never flattened
+     * to its opaque RGB), and the color analyzer soft-skips (or samples pixels
+     * under the bbox) when either color is missing.
      */
     bg_color?: { r: number; g: number; b: number };
     /**
@@ -693,6 +699,14 @@ export interface NativeBridgeSnapshot {
      * (family drift). Omitted when no fontFamily was declared.
      */
     font_family?: string;
+    /**
+     * vision-core `ElementMedia` (`Element.media`), on `image` elements only:
+     * the laid-out size, the object-fit its resize mode paints, its
+     * accessibility label as the text alternative, a digest of its source URL
+     * and whether it is on screen. Each fact is omitted when the registry
+     * cannot measure it. See {@link projectVisionFields}.
+     */
+    media?: VisionMedia;
   }>;
   /** All registered components */
   components: Array<{
