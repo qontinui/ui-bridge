@@ -353,13 +353,14 @@ export {
   getExtendedComputedStyles,
   getElementDesignData,
   getCSSCustomProperties,
+  indexCustomProperties,
   captureStateVariations,
   captureResponsiveSnapshots,
   computeContrastRatio,
   checkContrastCompliance,
   DEFAULT_VIEWPORTS,
 } from './design-inspector';
-export type { DesignRegistryLike } from './design-inspector';
+export type { CustomPropertyIndex, DesignRegistryLike } from './design-inspector';
 
 // Form Diff Tracking
 export { captureFormSnapshot, diffFormSnapshots, summarizeFormDiff } from './form-diff';

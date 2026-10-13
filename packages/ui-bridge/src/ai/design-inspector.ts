@@ -129,10 +129,21 @@ export function getExtendedComputedStyles(el: HTMLElement): ExtendedComputedStyl
 
 /**
  * Get full design data for an element, including optional pseudo-elements.
+ *
+ * `customProperties` says how to read the element's CSS custom properties: an
+ * index built once for a batch of elements (`indexCustomProperties`), or
+ * `false` to skip them because nothing downstream reads them. Absent, they are
+ * read for this element alone.
  */
 export function getElementDesignData(
   el: HTMLElement,
-  opts?: { includePseudoElements?: boolean; elementId?: string; label?: string; type?: string }
+  opts?: {
+    includePseudoElements?: boolean;
+    elementId?: string;
+    label?: string;
+    type?: string;
+    customProperties?: CustomPropertyIndex | false;
+  }
 ): ElementDesignData {
   const rect = el.getBoundingClientRect();
   const styles = getExtendedComputedStyles(el);
@@ -147,7 +158,8 @@ export function getElementDesignData(
     }
   }
 
-  const customProperties = getCSSCustomProperties(el);
+  const customProperties =
+    opts?.customProperties === false ? {} : getCSSCustomProperties(el, opts?.customProperties);
 
   return {
     elementId: opts?.elementId || el.id || el.getAttribute('data-testid') || '',
@@ -350,12 +362,111 @@ export function checkContrastCompliance(
 // ============================================================================
 
 /**
+ * The custom properties a document's stylesheets declare, read rule-first for a
+ * batch of elements.
+ *
+ * Reading one element at a time calls `el.matches()` on every top-level style
+ * rule, so a batch costs elements × rules. Measured on qontinui.io's production
+ * stylesheets with 1,120 registered elements (plan
+ * 2026-10-13-image-generation-and-visual-judgment, Phase 6), that was 184,800
+ * `matches()` calls, about 43 ms of every `/design/evaluate`. Only 6 of the 165
+ * top-level style rules declared a custom property. The index reads the rules
+ * once, keeps those that declare one, and queries each of them once with
+ * `querySelectorAll`. The same batch then cost about 1 ms.
+ *
+ * Its scope is the per-element walk's: top-level `CSSStyleRule`s of readable
+ * stylesheets. Grouping rules (`@media`, `@layer`, `@supports`) are not
+ * entered.
+ */
+export interface CustomPropertyIndex {
+  /** The document whose stylesheets and elements were indexed. */
+  readonly document: Document;
+  /**
+   * The elements `declared` answers for (all of the document's when `null`).
+   * Any other element is matched rule by rule.
+   */
+  readonly scope: ReadonlySet<Element> | null;
+  /** The custom properties declared by the rules each element matches, in rule order. */
+  readonly declared: ReadonlyMap<Element, readonly string[]>;
+}
+
+/** The top-level style rules of a document's readable stylesheets, in cascade-source order. */
+function* topLevelStyleRules(doc: Document): Generator<CSSStyleRule> {
+  try {
+    for (const sheet of doc.styleSheets) {
+      let rules: CSSRuleList;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        // Cross-origin stylesheet — skip
+        continue;
+      }
+      for (const rule of rules) {
+        if (rule instanceof CSSStyleRule) yield rule;
+      }
+    }
+  } catch {
+    // Stylesheet access failed — yield what was read
+  }
+}
+
+/** The custom properties (`--*`) a rule declares. */
+function declaredCustomProperties(rule: CSSStyleRule): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < rule.style.length; i++) {
+    const prop = rule.style[i];
+    if (prop.startsWith('--')) names.push(prop);
+  }
+  return names;
+}
+
+/**
+ * Index the custom properties the document's stylesheets declare, for the
+ * `candidates` (every element of the document when omitted). Read once, then
+ * pass the index to `getCSSCustomProperties` / `getElementDesignData` for each
+ * element of the batch.
+ */
+export function indexCustomProperties(
+  doc: Document = document,
+  candidates?: Iterable<Element>
+): CustomPropertyIndex {
+  const scope = candidates ? new Set(candidates) : null;
+  const declared = new Map<Element, string[]>();
+  for (const rule of topLevelStyleRules(doc)) {
+    const names = declaredCustomProperties(rule);
+    if (names.length === 0) continue;
+    let matched: NodeListOf<Element>;
+    try {
+      matched = doc.querySelectorAll(rule.selectorText);
+    } catch {
+      // Invalid selector — skip
+      continue;
+    }
+    for (const el of matched) {
+      if (scope && !scope.has(el)) continue;
+      const list = declared.get(el);
+      if (list) list.push(...names);
+      else declared.set(el, [...names]);
+    }
+  }
+  return { document: doc, scope, declared };
+}
+
+/**
  * Extract CSS custom properties (--var-name) applied to an element.
  *
- * Reads inline style custom properties and walks document.styleSheets
- * for rules matching the element. Returns resolved values.
+ * Reads inline style custom properties and the custom properties declared by
+ * stylesheet rules matching the element. Returns resolved values.
+ *
+ * With an `index` (`indexCustomProperties`), the rules are not walked again:
+ * the index answers for the elements of its document in its scope. Any other
+ * element — detached, in a shadow tree, or outside the scope — is matched
+ * against every top-level style rule, as without an index.
  */
-export function getCSSCustomProperties(el: HTMLElement): Record<string, string> {
+export function getCSSCustomProperties(
+  el: HTMLElement,
+  index?: CustomPropertyIndex
+): Record<string, string> {
   const result: Record<string, string> = {};
   const computed = window.getComputedStyle(el);
 
@@ -367,41 +478,40 @@ export function getCSSCustomProperties(el: HTMLElement): Record<string, string> 
     }
   }
 
-  // 2. Walk stylesheets for rules matching this element
-  try {
-    for (const sheet of document.styleSheets) {
-      let rules: CSSRuleList;
-      try {
-        rules = sheet.cssRules;
-      } catch {
-        // Cross-origin stylesheet — skip
-        continue;
-      }
-
-      for (const rule of rules) {
-        if (!(rule instanceof CSSStyleRule)) continue;
-
-        try {
-          if (!el.matches(rule.selectorText)) continue;
-        } catch {
-          // Invalid selector — skip
-          continue;
-        }
-
-        for (let i = 0; i < rule.style.length; i++) {
-          const prop = rule.style[i];
-          if (prop.startsWith('--')) {
-            // Use getComputedStyle for resolved value
-            result[prop] = computed.getPropertyValue(prop).trim();
-          }
-        }
-      }
-    }
-  } catch {
-    // Stylesheet access failed — return what we have
+  // 2. Custom properties declared by the stylesheet rules matching this element
+  const declared =
+    index !== undefined && indexCovers(index, el)
+      ? (index.declared.get(el) ?? [])
+      : matchedCustomProperties(el);
+  for (const prop of declared) {
+    // Use getComputedStyle for resolved value
+    result[prop] = computed.getPropertyValue(prop).trim();
   }
 
   return result;
+}
+
+/**
+ * Whether the index answers for `el`: an element of the indexed document
+ * (`querySelectorAll` reaches no detached node and no shadow tree) in its scope.
+ */
+function indexCovers(index: CustomPropertyIndex, el: Element): boolean {
+  return el.getRootNode() === index.document && (index.scope === null || index.scope.has(el));
+}
+
+/** The custom properties declared by the top-level style rules `el` matches, one rule at a time. */
+function matchedCustomProperties(el: HTMLElement): string[] {
+  const names: string[] = [];
+  for (const rule of topLevelStyleRules(document)) {
+    try {
+      if (!el.matches(rule.selectorText)) continue;
+    } catch {
+      // Invalid selector — skip
+      continue;
+    }
+    names.push(...declaredCustomProperties(rule));
+  }
+  return names;
 }
 
 // ============================================================================
