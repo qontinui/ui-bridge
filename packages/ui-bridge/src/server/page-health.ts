@@ -156,7 +156,12 @@ function isVisible(el: DiscoveredElement): boolean {
  * before it could hand inputs over (e.g. creating the snapshot threw).
  */
 export function pageHealthUnknown(
-  code: 'producer_failed' | 'input_missing' | 'producer_not_run' | 'app_unreachable' | 'stale_input',
+  code:
+    | 'producer_failed'
+    | 'input_missing'
+    | 'producer_not_run'
+    | 'app_unreachable'
+    | 'stale_input',
   detail: string,
   options: PageHealthOptions & { observedAt?: ObservationTime | null } = {}
 ): PageHealthObservation {
@@ -200,14 +205,7 @@ const LOADING_PHRASES = [
   'fetching',
 ];
 
-const EMPTY_PHRASES = [
-  'no data',
-  'no results',
-  'nothing here',
-  'empty',
-  'no items',
-  'get started',
-];
+const EMPTY_PHRASES = ['no data', 'no results', 'nothing here', 'empty', 'no items', 'get started'];
 
 const CSS_SIGNALS = ['spin', 'pulse', 'skeleton', 'loading', 'shimmer'];
 
@@ -272,6 +270,55 @@ export function diagnosePageHealth(
   }
 }
 
+/**
+ * Build a {@link PageHealthInput} from a registry snapshot, AS RECEIVED.
+ *
+ * The one input-building step every `@qontinui/ui-bridge` transport shares —
+ * the in-page server handler, the relay handler, and the in-app `pageHealth`
+ * command (`react/commandHandlers.ts`). (`ui-bridge-server` and
+ * `ui-bridge-native` carry their own analyzers.) A missing `elements` key reaches the producer
+ * as missing, never as `[]` (`?? []` is how "could not see" turns into "saw
+ * nothing"), and a missing `components` array is a `null` count, not zero.
+ */
+export function pageHealthInputFromSnapshot(snapshot: unknown): PageHealthInput {
+  const raw = (typeof snapshot === 'object' && snapshot !== null ? snapshot : {}) as {
+    elements?: unknown;
+    components?: unknown;
+    timestamp?: unknown;
+    snapshotId?: unknown;
+  };
+  return {
+    elements: raw.elements,
+    registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
+    observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
+    // Attribute the answer to the snapshot it analyzed when the registry
+    // stamped one.
+    source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
+  };
+}
+
+/**
+ * Take a registry snapshot and run the page-health producer over it. Never
+ * throws: a snapshot that could not be taken is `unknown{producer_failed}`,
+ * an answer rather than a transport error.
+ */
+export function diagnoseSnapshotPageHealth(
+  takeSnapshot: () => unknown,
+  options: PageHealthOptions = {}
+): PageHealthObservation {
+  let snapshot: unknown;
+  try {
+    snapshot = takeSnapshot();
+  } catch (err) {
+    return pageHealthUnknown(
+      'producer_failed',
+      `could not take the registry snapshot: ${err instanceof Error ? err.message : String(err)}`,
+      options
+    );
+  }
+  return diagnosePageHealth(pageHealthInputFromSnapshot(snapshot), options);
+}
+
 function observe(
   input: PageHealthInput,
   producer: ObservationProducer,
@@ -308,7 +355,10 @@ function observe(
   return analyze(elements, base);
 }
 
-function analyze(elements: DiscoveredElement[], base: ObservationProvenanceInit): PageHealthObservation {
+function analyze(
+  elements: DiscoveredElement[],
+  base: ObservationProvenanceInit
+): PageHealthObservation {
   const findings: PageHealthFinding[] = [];
 
   // Considered = every visible element; measured = the visible ones carrying
@@ -416,8 +466,7 @@ function analyze(elements: DiscoveredElement[], base: ObservationProvenanceInit)
     const t = el.type || 'unknown';
     typeCounts[t] = (typeCounts[t] ?? 0) + 1;
   }
-  const allNav =
-    elements.length > 5 && Object.keys(typeCounts).every((k) => NAV_TYPES.has(k));
+  const allNav = elements.length > 5 && Object.keys(typeCounts).every((k) => NAV_TYPES.has(k));
   const diversitySeverity: PageHealthSeverity = allNav ? 'WARNING' : 'OK';
 
   findings.push({
@@ -474,11 +523,7 @@ function analyze(elements: DiscoveredElement[], base: ObservationProvenanceInit)
 
   let textSeverity: PageHealthSeverity = 'OK';
   if (detectedErrors.length > 0) textSeverity = 'CRITICAL';
-  else if (
-    detectedLoading.length > 0 ||
-    detectedCss.length > 0 ||
-    detectedEmpty.length > 0
-  )
+  else if (detectedLoading.length > 0 || detectedCss.length > 0 || detectedEmpty.length > 0)
     textSeverity = 'WARNING';
 
   findings.push({
@@ -537,9 +582,7 @@ function analyze(elements: DiscoveredElement[], base: ObservationProvenanceInit)
   });
 
   // --- Step 8: ASCII heatmap ------------------------------------------------
-  const heatmap: string[] = grid.map((row) =>
-    row.map((filled) => (filled ? '#' : '.')).join('')
-  );
+  const heatmap: string[] = grid.map((row) => row.map((filled) => (filled ? '#' : '.')).join(''));
 
   // --- Step 9: Worst severity rollup ----------------------------------------
   const summary = worstSeverity(findings);

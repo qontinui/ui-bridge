@@ -30,7 +30,7 @@ import type {
   EffectRecordEntry,
 } from '../control';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
-import { diagnosePageHealth, pageHealthUnknown } from './page-health';
+import { diagnosePageHealth, pageHealthInputFromSnapshot, pageHealthUnknown } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import type { SemanticSnapshot } from '../ai';
 import type { Recency as RecencyType } from '../core/recency';
@@ -2106,11 +2106,7 @@ export function createRelayHandlers(
     // The hit-test survives the trip because the page already ran it and
     // stamped `occludedBy` / `occludedPct` onto each element's state, so this
     // is a projection of a measurement, not a re-derivation of one.
-    async visibility(params?: {
-      minRatio?: number;
-      includeExpected?: boolean;
-      recency?: string;
-    }) {
+    async visibility(params?: { minRatio?: number; includeExpected?: boolean; recency?: string }) {
       try {
         // Populate the cache before reading it. Every other cache-reading
         // handler here (`getElements`, `rankElements`, `getComponents`, …)
@@ -2235,15 +2231,7 @@ export function createRelayHandlers(
             staleMeta()
           );
         }
-        return success(
-          diagnosePageHealth({
-            elements: raw.elements,
-            registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
-            observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
-            source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
-          }),
-          staleMeta()
-        );
+        return success(diagnosePageHealth(pageHealthInputFromSnapshot(raw)), staleMeta());
       } catch (err) {
         // An unknown is an answer: never let a malformed cache turn into a
         // rejected handler.

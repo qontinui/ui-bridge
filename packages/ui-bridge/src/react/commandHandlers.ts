@@ -61,6 +61,7 @@ import { createStableRef, resolveStableRef } from '../core/stable-ref';
 import type { StableElementRef } from '../core/stable-ref';
 import type { AnyCapturedEvent } from '../debug/browser-capture-types';
 import { buildComponentNotFoundError } from '../server/component-not-found';
+import { diagnoseSnapshotPageHealth } from '../server/page-health';
 import {
   readValuePrimitive,
   findByTextPrimitive,
@@ -1075,6 +1076,23 @@ export async function executeCommand(
     if (!skipSettle) {
       await awaitDOMSettledRelay(settleTimeout);
     }
+  }
+
+  // `pageHealth` — the SDK's page-health producer, run IN the app. It answers
+  // exactly what the server `pageHealth` handler (`/control/page-health`)
+  // answers: an `Observation<PageHealthValue>` (producer `sdk/page-health`)
+  // over the live global registry's snapshot, through the same shared
+  // `diagnoseSnapshotPageHealth`, so a WS client (the qontinui-runner) can
+  // forward to the app instead of re-implementing the analyzer.
+  //
+  // "Could not look" is an ANSWER: a snapshot that throws, a snapshot with no
+  // `elements`, or an empty registry is a typed `unknown` observation — never
+  // a rejected command, never a CRITICAL report over zero elements. That is
+  // why it is answered BEFORE the shared registry prologue below: a throw from
+  // `getAllElements` & co. would otherwise reject the command. The snapshot,
+  // the producer's only input, is taken inside the producer's guard.
+  if (action === 'pageHealth') {
+    return diagnoseSnapshotPageHealth(() => getGlobalRegistry().createSnapshot());
   }
 
   // Read elements, components, and workflows from the live global registry

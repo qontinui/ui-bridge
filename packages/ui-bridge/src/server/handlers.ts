@@ -50,7 +50,7 @@ import type {
 } from '../control';
 import { getGlobalEffectStore } from '../control/effect-store';
 import { applyCanonicalFindFilter, type FindFilterableElement } from '../core/find-filter';
-import { diagnosePageHealth, pageHealthUnknown } from './page-health';
+import { diagnoseSnapshotPageHealth } from './page-health';
 import { buildVisibilityReport } from './visibility-report';
 import { scanDOMForInteractiveElements, countDOMInteractiveElements } from './dom-fallback';
 import { matchesElementSelector, type MatchableElement } from './selector-match';
@@ -5407,37 +5407,7 @@ export function createHandlers(
      * `status: "unknown"` with a typed `unknown.code` — never a CRITICAL
      * report over zero elements, and never an `error(...)`.
      */
-    pageHealth: async () => {
-      let snapshot: ReturnType<typeof registry.createSnapshot>;
-      try {
-        snapshot = registry.createSnapshot();
-      } catch (err) {
-        return success(
-          pageHealthUnknown(
-            'producer_failed',
-            `could not take the registry snapshot: ${(err as Error).message}`
-          )
-        );
-      }
-      const raw = snapshot as {
-        elements?: unknown;
-        components?: unknown;
-        timestamp?: number;
-        snapshotId?: unknown;
-      };
-      return success(
-        diagnosePageHealth({
-          // Handed over as received: a missing `elements` key must reach the
-          // producer as missing, not as `[]`.
-          elements: raw.elements,
-          registeredComponents: Array.isArray(raw.components) ? raw.components.length : null,
-          observedAt: typeof raw.timestamp === 'number' ? raw.timestamp : null,
-          // Attribute the answer to the snapshot it analyzed when the
-          // registry stamped one.
-          source: typeof raw.snapshotId === 'string' ? { snapshotId: raw.snapshotId } : null,
-        })
-      );
-    },
+    pageHealth: async () => success(diagnoseSnapshotPageHealth(() => registry.createSnapshot())),
 
     /**
      * `/control/visibility` — WHAT IS COVERING WHAT, page-wide.
