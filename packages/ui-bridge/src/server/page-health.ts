@@ -337,7 +337,10 @@ export function diagnosePageHealth(
  *
  * The one input-building step every `@qontinui/ui-bridge` transport shares —
  * the in-page server handler, the relay handler, and the in-app `pageHealth`
- * command (`react/commandHandlers.ts`). (`ui-bridge-server` and
+ * command (`react/commandHandlers.ts`). Exported from the package root and
+ * `@qontinui/ui-bridge/observation` so a host answering page health over its
+ * own transport (the qontinui-runner webview's `pageHealth` IPC) calls this
+ * step instead of restating it. (`ui-bridge-server` and
  * `ui-bridge-native` carry their own analyzers.) A missing `elements` key reaches the producer
  * as missing, never as `[]` (`?? []` is how "could not see" turns into "saw
  * nothing"), and a missing `components` array is a `null` count, not zero.

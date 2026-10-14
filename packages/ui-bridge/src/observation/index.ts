@@ -29,6 +29,8 @@ export {
 
 export {
   diagnosePageHealth,
+  diagnoseSnapshotPageHealth,
+  pageHealthInputFromSnapshot,
   pageHealthUnknown,
   SDK_PAGE_HEALTH_PRODUCER_ID,
   type PageHealthValue,
