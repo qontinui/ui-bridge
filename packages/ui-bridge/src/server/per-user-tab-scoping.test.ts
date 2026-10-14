@@ -62,7 +62,7 @@ class InMemoryBus implements RelayBus {
   unregisterTab(tabId: string): void {
     this.present.delete(tabId);
   }
-  async isTabKnown(tabId: string): Promise<boolean> {
+  async isTabKnown(tabId: string): Promise<boolean | null> {
     return this.present.has(tabId);
   }
   async close(): Promise<void> {
@@ -219,21 +219,26 @@ describe('§4.2 · CommandRelay ownership registry', () => {
 // claimed userId. A genuine re-login carries the new user's proof and
 // still transfers; a self-asserted claim is refused, prior owner intact.
 describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
+  /** A verified caller opens `tabId`'s command stream and registers it. */
+  function ownVerified(relay: CommandRelay, tabId: string, userId: string) {
+    const stream = relay.openCommandStream(() => {}, tabId, userId);
+    const claim = relay.recordRegistration(
+      tabId,
+      { userId, sessionId: `${userId}-s1` },
+      { callerUserId: userId },
+    );
+    expect(claim.ownershipAssigned).toBe(true);
+    return stream;
+  }
+
   it('refuses an ownership takeover asserted without a matching proven identity', () => {
     const relay = freshRelay();
     // Alice legitimately owns her tab (proven identity == claimed userId).
-    const claimed = relay.recordRegistration(
-      'victim-tab',
-      { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
-    );
-    expect(claimed.ownershipAssigned).toBe(true);
+    ownVerified(relay, 'victim-tab', 'alice');
     expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
 
-    // Attacker knows `victim-tab` and asserts a userId in the body, but the
-    // auth gate proved they are `mallory` — the claim is NOT theirs to make.
-    // Attacker cannot prove they are alice: they supply no proven identity
-    // (unauthenticated / no X-Caller-User-Id) yet assert `mallory` in the
+    // Attacker knows `victim-tab`, supplies no proven identity
+    // (unauthenticated / no X-Caller-User-Id) and asserts `mallory` in the
     // body to grab the tab. Refused — an unproven claim never transfers.
     const stolen = relay.recordRegistration(
       'victim-tab',
@@ -249,11 +254,7 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
 
   it('refuses a body-asserted userId that the proven caller cannot back', () => {
     const relay = freshRelay();
-    relay.recordRegistration(
-      'victim-tab',
-      { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
-    );
+    ownVerified(relay, 'victim-tab', 'alice');
 
     // Classic exploit: attacker (proven `mallory`) POSTs a heartbeat that
     // *claims* to be alice in the body to pass any naive body-only check.
@@ -271,56 +272,167 @@ describe('§4.2 · recordRegistration ownership-transfer proof gate', () => {
     });
   });
 
-  it('allows a genuine re-login once the previous owner has gone quiet: proven new identity, same tab', () => {
+  it("refuses an unproven refresh of a verified owner's session", () => {
+    const relay = freshRelay();
+    ownVerified(relay, 'victim-tab', 'alice');
+    // No proof, but the right userId: it would keep alice's session "live".
+    const res = relay.recordRegistration('victim-tab', { userId: 'alice', sessionId: 'forged' });
+    expect(res).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' });
+    expect(relay.getOwnership('victim-tab')).toMatchObject({ sessionId: 'alice-s1' });
+  });
+
+  it("a quiet owner's tab cannot be transferred while the owner's stream is open", () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       const relay = freshRelay({ tabActiveWindowMs: 30_000 });
-      relay.recordRegistration(
-        'shared-tab',
-        { userId: 'alice', sessionId: 'alice-s1' },
-        { callerUserId: 'alice' },
-      );
-      expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
-
-      // Same physical browser tab; the operator logs out of alice and into
-      // bob. The auth gate now proves `bob`, and the heartbeat body claims
-      // `bob`. While alice's session on the tab is still live, the transfer
-      // is refused: a proven identity is not, by itself, a claim on a tab
-      // another user is using.
-      const early = relay.recordRegistration(
+      ownVerified(relay, 'shared-tab', 'alice');
+      // Alice's heartbeats stop (an expired session, a sleeping laptop) but her
+      // stream stays open, so the tab's commands still reach her browser.
+      vi.setSystemTime(Date.now() + 60_000);
+      const takeover = relay.recordRegistration(
         'shared-tab',
         { userId: 'bob', sessionId: 'bob-s1' },
         { callerUserId: 'bob' },
       );
-      expect(early).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' });
+      expect(takeover).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' });
       expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'alice' });
-
-      // Alice's heartbeats stopped with the logout; past the active window
-      // bob's next heartbeat takes the tab.
-      vi.setSystemTime(Date.now() + 30_001);
-      const relogin = relay.recordRegistration(
-        'shared-tab',
-        { userId: 'bob', sessionId: 'bob-s1' },
-        { callerUserId: 'bob' },
-      );
-      expect(relogin.ownershipAssigned).toBe(true);
-      expect(relay.getOwnership('shared-tab')).toMatchObject({
-        userId: 'bob',
-        sessionId: 'bob-s1',
-      });
       relay.destroy();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('leaves the current owner heartbeat path unchanged (same-owner refresh, no proof needed)', () => {
+  it('a re-login reopens the stream under the new identity and claims the tab afresh', () => {
     const relay = freshRelay();
-    relay.recordRegistration(
-      'my-tab',
-      { userId: 'alice', sessionId: 'alice-s1' },
-      { callerUserId: 'alice' },
+    const aliceStream = ownVerified(relay, 'shared-tab', 'alice');
+    // Same physical browser tab; the operator logs out of alice and into bob.
+    // Bob cannot open the stream while alice holds the tab...
+    expect(() => relay.openCommandStream(() => {}, 'shared-tab', 'bob')).toThrow(OwnerMismatchError);
+    // ...so the old stream closes, which ends alice's ownership...
+    aliceStream.unsubscribe();
+    expect(relay.getOwnership('shared-tab')).toBeNull();
+    // ...and bob reopens it and registers the tab.
+    relay.openCommandStream(() => {}, 'shared-tab', 'bob');
+    const relogin = relay.recordRegistration(
+      'shared-tab',
+      { userId: 'bob', sessionId: 'bob-s1' },
+      { callerUserId: 'bob' },
     );
+    expect(relogin.ownershipAssigned).toBe(true);
+    expect(relay.getOwnership('shared-tab')).toMatchObject({ userId: 'bob', sessionId: 'bob-s1' });
+    relay.destroy();
+  });
+
+  it("an id claimed while its owner's stream reconnects does not lock the owner out", () => {
+    const relay = freshRelay();
+    const aliceStream = ownVerified(relay, 'tab-a', 'alice');
+    aliceStream.unsubscribe();
+    // Between alice's stream closing and her reconnect, mallory claims the id.
+    relay.recordRegistration('tab-a', { userId: 'mallory', sessionId: 'm1' }, { callerUserId: 'mallory' });
+    // Alice reconnects and re-registers her tab; the heartbeat-only record is gone.
+    ownVerified(relay, 'tab-a', 'alice');
+    // And mallory can no longer claim it.
+    const again = relay.recordRegistration(
+      'tab-a',
+      { userId: 'mallory', sessionId: 'm1' },
+      { callerUserId: 'mallory' },
+    );
+    expect(again).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' });
+    expect(relay.getOwnership('tab-a')).toMatchObject({ userId: 'alice' });
+    relay.destroy();
+  });
+
+  it("only the stream's holder is told its stream is bound to another identity", () => {
+    const relay = freshRelay();
+    const aliceStream = ownVerified(relay, 'tab-a', 'alice');
+    const claim = (streamId?: string) =>
+      relay.recordRegistration(
+        'tab-a',
+        { userId: 'bob', sessionId: 'b1' },
+        { callerUserId: 'bob', ...(streamId ? { streamId } : {}) },
+      );
+    // The page holding alice's stream re-logged in as bob.
+    expect(claim(aliceStream.streamId)).toEqual({
+      ownershipAssigned: false,
+      rejectedReason: 'STREAM_IDENTITY_CHANGED',
+    });
+    // Anyone else learns nothing more than a refusal.
+    expect(claim()).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' });
+    expect(claim('00000000-0000-4000-8000-000000000000')).toEqual({
+      ownershipAssigned: false,
+      rejectedReason: 'OWNER_CHANGE_UNVERIFIED',
+    });
+    relay.destroy();
+  });
+
+  it('a tab with no stream here transfers to a proven re-login once the owner has gone quiet', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // The tab streams on another instance; heartbeats reach this one.
+      const relay = freshRelay({ tabActiveWindowMs: 30_000 });
+      relay.recordRegistration('far-tab', { userId: 'alice', sessionId: 'a1' }, { callerUserId: 'alice' });
+      const early = relay.recordRegistration(
+        'far-tab',
+        { userId: 'bob', sessionId: 'b1' },
+        { callerUserId: 'bob' },
+      );
+      expect(early).toEqual({ ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' });
+      vi.setSystemTime(Date.now() + 30_001);
+      const late = relay.recordRegistration(
+        'far-tab',
+        { userId: 'bob', sessionId: 'b1' },
+        { callerUserId: 'bob' },
+      );
+      expect(late.ownershipAssigned).toBe(true);
+      expect(relay.getOwnership('far-tab')).toMatchObject({ userId: 'bob' });
+      relay.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a heartbeat-only record holds the tab while the owner's stream is live on another instance", async () => {
+    const bus = new InMemoryBus();
+    const prefix = Math.random().toString(36).slice(2, 8);
+    const a = freshRelay({ bus, globalPrefix: `__scopeA_${prefix}` });
+    const b = freshRelay({ bus, globalPrefix: `__scopeB_${prefix}` });
+    // alice's stream is on A; her heartbeats also land on B.
+    ownVerified(a, 'tab-a', 'alice');
+    b.recordRegistration('tab-a', { userId: 'alice', sessionId: 'a1' }, { callerUserId: 'alice' });
+
+    // mallory knows the id and opens its stream on B: refused, record kept.
+    const streamedElsewhere = await b.isTabStreamedElsewhere('tab-a');
+    expect(streamedElsewhere).toBe(true);
+    expect(() =>
+      b.openCommandStream(() => {}, 'tab-a', 'mallory', { streamedElsewhere }),
+    ).toThrow(OwnerMismatchError);
+    // With a bus and no answer (none asked, or the registry unreadable), the
+    // tab is held too.
+    expect(() => b.openCommandStream(() => {}, 'tab-a', 'mallory')).toThrow(OwnerMismatchError);
+    expect(() =>
+      b.openCommandStream(() => {}, 'tab-a', 'mallory', { streamedElsewhere: null }),
+    ).toThrow(OwnerMismatchError);
+    // An unreadable registry reads as unknown, never as absent.
+    bus.isTabKnown = async () => null;
+    expect(await b.isTabStreamedElsewhere('tab-a')).toBeNull();
+    expect(b.getOwnership('tab-a')).toMatchObject({ userId: 'alice' });
+
+    a.destroy();
+    b.destroy();
+    await bus.close();
+  });
+
+  it('a stream opened with no identity cannot replace a verified one', () => {
+    const relay = freshRelay();
+    ownVerified(relay, 'tab-a', 'alice');
+    expect(() => relay.openCommandStream(() => {}, 'tab-a', undefined)).toThrow(OwnerMismatchError);
+    expect(relay.getOwnership('tab-a')).toMatchObject({ userId: 'alice' });
+    relay.destroy();
+  });
+
+  it('leaves the current owner heartbeat path unchanged (same-owner refresh)', () => {
+    const relay = freshRelay();
+    ownVerified(relay, 'my-tab', 'alice');
     const first = relay.getOwnership('my-tab');
 
     // Ordinary heartbeat refresh from the current owner: sessionId updates,

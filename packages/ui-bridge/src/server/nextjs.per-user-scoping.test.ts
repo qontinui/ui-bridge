@@ -156,7 +156,8 @@ describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () 
   });
 
   /** Alice legitimately owns `victim-tab` (proven identity == claimed). */
-  async function seedAlice(): Promise<void> {
+  async function seedAlice(): Promise<{ unsubscribe: () => void }> {
+    const stream = relay.openCommandStream(() => {}, 'victim-tab', 'alice');
     const req = makeRequest('POST', '/heartbeat', {
       headers: { 'X-Caller-User-Id': 'alice' },
       body: {
@@ -167,6 +168,7 @@ describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () 
     const res = await routes.POST(req, { params: { path: ['heartbeat'] } });
     expect(res.status).toBe(200);
     expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+    return stream;
   }
 
   it('attacker who knows the tabId but proves no matching identity CANNOT take it over', async () => {
@@ -213,8 +215,8 @@ describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () 
     expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
   });
 
-  it('genuine re-login (auth-proven new identity, same tab) transfers ownership once the previous owner is quiet', async () => {
-    await seedAlice();
+  it('genuine re-login (auth-proven new identity, same tab) registers once the stream is reopened under it', async () => {
+    const aliceStream = await seedAlice();
     const relogin = () =>
       makeRequest('POST', '/heartbeat', {
         headers: { 'X-Caller-User-Id': 'bob' },
@@ -224,31 +226,72 @@ describe('Next.js · POST /heartbeat ownership-transfer proof gate (§4.2)', () 
         },
       });
 
-    // Same physical tab; operator logs out of alice, into bob. While alice's
-    // session on the tab is live, the transfer is refused.
-    const early = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
-    expect(early.status).toBe(200);
-    const earlyJson = (await early.json()) as {
-      data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
-    };
-    expect(earlyJson.data.ownershipAssigned).toBe(false);
-    expect(earlyJson.data.ownerChangeRejected).toBe('OWNER_SESSION_LIVE');
-    expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
-
-    // Past the active window (alice's heartbeats stopped with the logout),
-    // bob's heartbeat takes the tab.
+    // Same physical tab; operator logs out of alice, into bob. While the tab's
+    // stream is alice's, bob's claim is refused however quiet alice has been.
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      vi.setSystemTime(Date.now() + 30_001);
-      const res = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
-      expect(res.status).toBe(200);
-      const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
-      // No rejection flag present when ownership was assigned.
-      expect(json.data.ownershipAssigned).toBeUndefined();
-      expect(relay.getOwnership('victim-tab')).toMatchObject({
-        userId: 'bob',
-        sessionId: 'bob-s1',
+      vi.setSystemTime(Date.now() + 60_000);
+      const early = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
+      expect(early.status).toBe(200);
+      const earlyJson = (await early.json()) as {
+        data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
+      };
+      expect(earlyJson.data.ownershipAssigned).toBe(false);
+      expect(earlyJson.data.ownerChangeRejected).toBe('OWNER_CHANGE_UNVERIFIED');
+      expect(relay.getOwnership('victim-tab')).toMatchObject({ userId: 'alice' });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The SDK reopens the stream on the refusal: alice's closes, bob's opens,
+    // and bob's next heartbeat registers the tab.
+    aliceStream.unsubscribe();
+    relay.openCommandStream(() => {}, 'victim-tab', 'bob');
+    const res = await routes.POST(relogin(), { params: { path: ['heartbeat'] } });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { data: { ownershipAssigned?: boolean } };
+    // No rejection flag present when ownership was assigned.
+    expect(json.data.ownershipAssigned).toBeUndefined();
+    expect(relay.getOwnership('victim-tab')).toMatchObject({
+      userId: 'bob',
+      sessionId: 'bob-s1',
+    });
+  });
+
+  it("a scoped heartbeat reads every tab another user holds alike, and claims none of them", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // alice: a registered live tab, a registered tab gone quiet, and a tab
+      // streaming to her whose first heartbeat has not landed.
+      relay.openCommandStream(() => {}, 'live-tab', 'alice');
+      relay.recordRegistration('live-tab', { userId: 'alice', sessionId: 'a' }, { callerUserId: 'alice' });
+      relay.openCommandStream(() => {}, 'quiet-tab', 'alice');
+      relay.recordRegistration('quiet-tab', { userId: 'alice', sessionId: 'a' }, { callerUserId: 'alice' });
+      relay.openCommandStream(() => {}, 'pending-tab', 'alice');
+      vi.setSystemTime(Date.now() + 60_000);
+      relay.recordRegistration('live-tab', { userId: 'alice', sessionId: 'a' }, { callerUserId: 'alice' });
+
+      const answers: unknown[] = [];
+      for (const tabId of ['live-tab', 'quiet-tab', 'pending-tab']) {
+        const res = await routes.POST(
+          makeRequest('POST', '/heartbeat', {
+            headers: { 'X-Caller-User-Id': 'mallory' },
+            body: { tabId, registrationMetadata: { userId: 'mallory', sessionId: 'm' } },
+          }),
+          { params: { path: ['heartbeat'] } },
+        );
+        expect(res.status).toBe(200);
+        const json = (await res.json()) as { data: unknown };
+        answers.push(json.data);
+      }
+      expect(answers[0]).toEqual({
+        received: true,
+        ownershipAssigned: false,
+        ownerChangeRejected: 'OWNER_CHANGE_UNVERIFIED',
       });
+      for (const answer of answers) expect(answer).toEqual(answers[0]);
+      expect(relay.getOwnership('pending-tab')).toBeNull();
+      expect(relay.getOwnership('quiet-tab')).toMatchObject({ userId: 'alice' });
     } finally {
       vi.useRealTimers();
     }

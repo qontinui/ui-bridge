@@ -179,6 +179,38 @@ gate:
 `authenticate` is not that gate on its own: it answers yes or no and supplies no
 identity.
 
+Under the gate, a scoped caller sees only its own tabs:
+
+- **A verified stream binds its tab.** While a tab's command stream, opened
+  under a verified identity, is open on an instance, only that identity can
+  claim the tab there, however long its heartbeats have been quiet. A stream
+  opened with no identity cannot replace it. A tab that has no stream on the
+  instance (its stream is on another one) transfers to another proven user only
+  after its owner's heartbeats have stopped for the tab's active window.
+- **A claim made without the stream does not lock the owner out.** A heartbeat
+  can register a tab id that has no stream on the instance. When the tab has
+  no stream on any instance (per the relay bus, if there is one), that record
+  does not stop a verified user opening the tab's stream there, and the stream
+  then binds the tab. While the tab's stream is live on another instance, the
+  record holds it. Another user who knows a tab id can still open its stream
+  first while the owner reconnects, which locks the owner out of that tab.
+- **One answer for every tab it may not address.** A tab owned by another
+  user, a tab that does not exist and a tab whose first heartbeat has not
+  registered it yet all answer the same `404 TAB_NOT_FOUND`, and that answer
+  lists only the caller's own tabs. A refused heartbeat claim still answers
+  `200` with `ownershipAssigned: false`. For a scoped caller,
+  `ownerChangeRejected` is always `OWNER_CHANGE_UNVERIFIED`, with one
+  exception. When the heartbeat names the `streamId` of the stream bound to
+  the tab, the reason is `STREAM_IDENTITY_CHANGED`. The relay sends a stream's
+  id only down that stream, so only the page that holds it gets this answer.
+  The tab keeps its owner, or stays unowned. This uniformity covers refusals
+  only: a heartbeat for an id that nothing holds is accepted and registers it,
+  so a caller that already knows a tab id can tell whether anything holds it.
+- **A re-login reopens the stream.** The browser SDK sends its `streamId` with
+  each heartbeat. On `STREAM_IDENTITY_CHANGED` it reopens the stream under the
+  current identity, and the tab registers to the new user once the old stream
+  has closed. It reports any refusal once through its `onError` callback.
+
 :::note Routes a scoped caller is refused
 Under the per-user gate, routes that name no tab or user answer
 `403 SCOPED_CALLER_UNSUPPORTED` to any request carrying `X-Caller-User-Id`:
