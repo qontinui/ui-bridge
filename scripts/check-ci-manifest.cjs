@@ -317,8 +317,11 @@ function inlineReadings(code) {
  * executable suffix, lowercased. PowerShell and cmd resolve commands without
  * regard to case (`Choco`, `CHOCO`, `RunAs` run choco and runas), and so do the
  * default macOS and Windows file systems, so the sets it is looked up in are
- * matched case-insensitively. That holds in POSIX shell code too, where it
- * refuses an upper-case word naming one (`SUDO=1`, `$APT`): rename the variable.
+ * matched case-insensitively. That holds for every word of inline code too, in
+ * either reading (inlineReadings) and whatever role the word plays: a POSIX shell
+ * variable (`SUDO=1`, `$APT`), a node or python identifier (`const APT = 1`), a
+ * PowerShell variable (`$Su`), a word in a string (`"Run Brew later"`) or in a
+ * comment. Each is refused as the command it spells: rename it or reword it.
  */
 function commandName(word) {
   return word
@@ -548,7 +551,9 @@ function validateManifest(manifest) {
             `packages or escalates to root, and this lane runs on a user's own machine: it would ` +
             `fail every dispatch without passwordless sudo, or change the host for every other ` +
             `program on it (header items 1, 2 and 9). Run it in a GitHub-hosted ci.yml job ` +
-            `listed in EXCLUDED_JOBS instead.`
+            `listed in EXCLUDED_JOBS instead. Inline code is read word by word, case-` +
+            `insensitively, so a variable, identifier, string or comment that spells one of ` +
+            `these commands is refused too: if that is what was flagged, rename or reword it.`
         );
       }
     }
