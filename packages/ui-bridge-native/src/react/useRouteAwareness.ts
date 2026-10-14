@@ -103,7 +103,12 @@ export interface UseRouteAwarenessOptions {
 }
 
 function effectiveInfo(info: RouteInfo, unmatched: boolean): RouteInfo {
-  return unmatched ? { ...info, pattern: null, params: undefined } : info;
+  if (!unmatched) return info;
+  // Omit `params` outright rather than set it to `undefined`: an in-process
+  // reader of `getRouteInfo()` then sees no `params` key at all, the same
+  // shape the snapshot's JSON wire form has.
+  const { params: _dropped, ...rest } = info;
+  return { ...rest, pattern: null };
 }
 
 /**

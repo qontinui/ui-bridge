@@ -59,7 +59,10 @@ export interface RouteInfo {
   /**
    * Route pattern (e.g., "/tasks/:id" or "/tasks/[id]") — a TEMPLATE, never the
    * concrete pathname. `null` means "no pattern is known" (e.g. a 404); derive it
-   * with `routePatternFromParams`, which returns `null` rather than leak.
+   * with a router helper that returns `null` rather than leak —
+   * `routePatternFromParams` on the web, `expoRouterPattern` or
+   * `reactNavigationPattern` on React Native (`@qontinui/ui-bridge/native`
+   * re-exports this type).
    */
   pattern?: string | null;
   /**
