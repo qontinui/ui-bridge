@@ -122,6 +122,7 @@ const REFUSED = [
   [['node', "--eval=require('child_process').execSync('apk add x')"], 'node --eval … apk add'],
   [['node', '-pe', "require('child_process').execSync('pkexec true')"], 'node -pe … pkexec'],
   [['node', '--print', "require('child_process').execSync('gsudo x')"], 'node --print … gsudo'],
+  [['node', '-p', "require('child_process').execSync('doas true')"], 'node -p … doas'],
   [
     ['python', '-c', "import subprocess; subprocess.run(['winget', 'install', 'x'])"],
     'python -c … winget',
