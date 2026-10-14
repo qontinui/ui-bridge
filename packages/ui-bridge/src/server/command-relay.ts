@@ -904,8 +904,8 @@ export class CommandRelay {
       // The mismatch surfaces as `TAB_NOT_FOUND` at the HTTP layer so the
       // caller cannot distinguish "tab does not exist" from "tab belongs
       // to someone else". `assertOwnership` is a no-op for tabs that have
-      // no ownership record yet — those fall through to the TAB_NOT_FOUND
-      // path below regardless.
+      // no ownership record yet — those are refused by the strict-mode
+      // check after the transport lookup below, with the same error.
       if (ownerCheck) {
         this.assertOwnership(targetTabId, ownerCheck.userId);
       }
@@ -915,7 +915,7 @@ export class CommandRelay {
         // instance (Vercel serverless fan-out). Consult the shared presence
         // registry; if the tab is known elsewhere, dispatch via the bus (which
         // routes the command to the holding instance and the response back).
-        if (this.bus && (await this.bus.isTabKnown(targetTabId))) {
+        if (this.bus && (await this.bus.isTabKnown(targetTabId)) === true) {
           return this.sendCommand<T>(action, payload, options);
         }
         // Owner-scoped TAB_NOT_FOUND: redact the connectedTabs list to the
@@ -936,12 +936,15 @@ export class CommandRelay {
       // it. A local tab with no ownership record yet (its stream is open, its
       // first heartbeat has not landed) is nobody's to a scoped caller, as bus
       // receivers already rule, so it is refused like another user's tab.
-      if (ownerCheck && !this.isOwnedBy(targetTabId, ownerCheck.userId)) {
-        throw new OwnerMismatchError(
-          targetTabId,
-          ownerCheck.userId,
-          this.tabListeners.get(targetTabId)?.userId ?? ''
-        );
+      // And a stream opened under a verified identity carries only that
+      // user's commands, whatever the ownership record says.
+      const boundUserId = this.tabListeners.get(targetTabId)?.userId;
+      if (
+        ownerCheck &&
+        (!this.isOwnedBy(targetTabId, ownerCheck.userId) ||
+          (boundUserId !== undefined && boundUserId !== ownerCheck.userId))
+      ) {
+        throw new OwnerMismatchError(targetTabId, ownerCheck.userId, boundUserId ?? '');
       }
       if (!this.isTabActive(targetTabId)) {
         const lastBeat = this.tabHeartbeats.get(targetTabId);
@@ -1755,17 +1758,21 @@ export class CommandRelay {
 
   /**
    * Open a command stream on behalf of a verified caller (per-user tab
-   * scoping, §4.2). With no caller this is {@link subscribeToCommands}. With
-   * one, the stream must name its tab, and that tab may not be registered to
-   * another user, nor (before it registers) already be streaming to another
-   * user. A refusal throws `OwnerMismatchError`, which the HTTP layer answers
+   * scoping, §4.2). With no caller this is {@link subscribeToCommands}, except
+   * that it may not replace a stream a verified caller opened. With one, the
+   * stream must name its tab, and that tab may not be registered to another
+   * user whose stream is on this instance, nor (before it registers) already
+   * be streaming to another user. Another user's record with no stream here
+   * is dropped rather than obeyed. A refusal throws `OwnerMismatchError`,
+   * which the HTTP layer answers
    * as TAB_NOT_FOUND. The returned `streamId` is fresh per stream; see
    * `resolveCommand` for what it binds.
    */
   openCommandStream(
     listener: CommandListener,
     tabId: string | undefined,
-    callerUserId?: string | null
+    callerUserId?: string | null,
+    options?: { streamedElsewhere?: boolean | null }
   ): { streamId: string; unsubscribe: () => void } {
     const userId = callerUserId || undefined;
     if (userId) {
@@ -1774,14 +1781,48 @@ export class CommandRelay {
       }
       const owner = this.tabOwnership.get(tabId);
       if (owner && owner.userId !== userId) {
-        throw new OwnerMismatchError(tabId, userId, owner.userId);
+        // A tab whose stream is here, or (per the bus) on another instance,
+        // stays its owner's. A record with no stream anywhere (a
+        // heartbeat-only claim) does not hold the tab against a verified
+        // stream: otherwise anyone who knows a tab id could claim it while
+        // its owner's stream reconnects and lock the owner out. With a bus
+        // and no answer from it (none asked, or the registry unreadable), the
+        // tab is held.
+        const streamedElsewhere =
+          options?.streamedElsewhere === undefined ? this.bus !== null : options.streamedElsewhere;
+        if (
+          this.tabListeners.has(tabId) ||
+          this.wsClients.has(tabId) ||
+          streamedElsewhere !== false
+        ) {
+          throw new OwnerMismatchError(tabId, userId, owner.userId);
+        }
+        this.tabOwnership.delete(tabId);
       }
       const live = this.tabListeners.get(tabId);
       if (!owner && live?.userId && live.userId !== userId) {
         throw new OwnerMismatchError(tabId, userId, live.userId);
       }
+    } else if (tabId) {
+      // A stream with no identity may not replace one a verified caller
+      // opened: it would receive that user's commands and answer for them.
+      const live = this.tabListeners.get(tabId);
+      if (live?.userId) {
+        throw new OwnerMismatchError(tabId, '', live.userId);
+      }
     }
     return this.addCommandListener(listener, tabId, userId);
+  }
+
+  /**
+   * Whether `tabId`'s stream is held by ANOTHER instance, per the bus's
+   * presence registry. False with no bus, or when the stream is here; null
+   * when the registry could not be read. Answers {@link openCommandStream}'s
+   * `streamedElsewhere`.
+   */
+  async isTabStreamedElsewhere(tabId: string): Promise<boolean | null> {
+    if (!this.bus || this.tabListeners.has(tabId) || this.wsClients.has(tabId)) return false;
+    return this.bus.isTabKnown(tabId);
   }
 
   private addCommandListener(
@@ -1832,7 +1873,8 @@ export class CommandRelay {
         // legacy path, fire-and-forget broadcast), the check is skipped.
         if (env.senderUserId !== undefined) {
           const owner = this.tabOwnership.get(id);
-          if (!owner || owner.userId !== env.senderUserId) {
+          const bound = current.userId !== undefined && current.userId !== env.senderUserId;
+          if (!owner || owner.userId !== env.senderUserId || bound) {
             if (this.bus) {
               this.bus.publishResponse({
                 commandId: env.commandId,
@@ -2048,7 +2090,8 @@ export class CommandRelay {
    *
    * Re-registration under a DIFFERENT `userId` (e.g. a tab survives a
    * re-login) is permitted ONLY when the new user is AUTH-PROVEN, not
-   * merely asserted. `metadata.userId` rides in the (browser-supplied)
+   * merely asserted, and never over a stream verified as another user.
+   * `metadata.userId` rides in the (browser-supplied)
    * heartbeat body and is therefore untrusted on its own: without a
    * proof gate, anyone who learns a victim's `tabId` could POST a
    * heartbeat claiming any `userId` and silently seize ownership of the
@@ -2058,22 +2101,29 @@ export class CommandRelay {
    * proved and injected as `X-Caller-User-Id` (never a browser value).
    * The rule:
    *
-   *   - Same-owner heartbeat (existing owner === claimed userId): always
-   *     a refresh — `sessionId`/`lastSeen` updated in place. No proof
-   *     needed; you already hold the tab and the claim matches.
-   *   - TRANSFER (a DIFFERENT user already owns the tab): the claimed
-   *     `userId` MUST be auth-proven and equal to `callerUserId`. An
-   *     unauthenticated (`callerUserId` absent) or mismatched claim is
-   *     REFUSED and the prior owner is left untouched — this is the
-   *     takeover primitive being closed. A genuine re-login carries the
-   *     new user's proven identity and therefore still transfers, once
-   *     the previous owner's own heartbeats for the tab have stopped for
-   *     `tabActiveWindowMs` (`OWNER_SESSION_LIVE` until then).
-   *   - First CLAIM (tab has no owner yet — bootstrap): honored, so a
-   *     header-less / single-trust-domain deployment can still register
-   *     tabs. A *present* proven identity must still match the claimed
-   *     `userId` (you cannot bootstrap a tab under an identity you
-   *     cannot back).
+   *   - STREAM BINDING first. A command stream opened on this instance by
+   *     a verified caller binds its tab to that identity for as long as it
+   *     is open. A claim for such a tab must be PROVEN as that same user: a
+   *     claim for another user is refused however long the owner's
+   *     heartbeats have been quiet (a quiet owner may still hold the stream,
+   *     and the stream is what receives the tab's commands), and an unproven
+   *     claim is refused so it cannot refresh the owner's session either.
+   *     When the refused claimant presents the bound stream's own
+   *     `streamId` (sent only down that stream, so only its holder has it),
+   *     the reason is `STREAM_IDENTITY_CHANGED`: the page holding the stream
+   *     now runs as another user, and reopening the stream fixes it.
+   *   - Same-owner heartbeat (existing owner === claimed userId): a
+   *     refresh — `sessionId`/`lastSeen` updated in place.
+   *   - TRANSFER (a DIFFERENT user owns the tab, which has no verified
+   *     stream here — e.g. its stream is on another instance): the claimed
+   *     `userId` MUST be auth-proven and equal to `callerUserId`, and the
+   *     owner's heartbeats for the tab must have stopped for
+   *     `tabActiveWindowMs` (`OWNER_SESSION_LIVE` until then). An unproven
+   *     claim is REFUSED and the prior owner is left untouched.
+   *   - First CLAIM (tab has no owner here): honored. A record made with no
+   *     verified stream here never blocks a verified caller from opening
+   *     the tab's stream (see `openCommandStream`), so an id claimed ahead
+   *     of its owner's reconnect does not lock the owner out.
    *
    * Returns whether ownership was (re)assigned so the HTTP layer can
    * surface the refusal without bricking the heartbeat loop.
@@ -2081,10 +2131,10 @@ export class CommandRelay {
   recordRegistration(
     tabId: string,
     metadata: { userId: string; sessionId: string },
-    options?: { callerUserId?: string | null }
+    options?: { callerUserId?: string | null; streamId?: string }
   ): {
     ownershipAssigned: boolean;
-    rejectedReason?: 'OWNER_CHANGE_UNVERIFIED' | 'OWNER_SESSION_LIVE';
+    rejectedReason?: 'OWNER_CHANGE_UNVERIFIED' | 'OWNER_SESSION_LIVE' | 'STREAM_IDENTITY_CHANGED';
   } {
     const now = Date.now();
     const proven = options?.callerUserId;
@@ -2094,9 +2144,20 @@ export class CommandRelay {
     // covers a same-owner "refresh" spoof — an attacker proving `mallory`
     // but claiming `userId: alice` (the current owner) to overwrite her
     // session must not slip through the refresh branch below. Absent proof
-    // (header-less deployment) skips this — see the transfer guard.
+    // (header-less deployment) skips this — see the stream binding and the
+    // transfer guard.
     if (proven != null && proven !== metadata.userId) {
       return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
+    }
+
+    // Stream binding: a verified stream for this tab binds it to its user.
+    const stream = this.tabListeners.get(tabId);
+    if (stream?.userId !== undefined && (proven == null || stream.userId !== metadata.userId)) {
+      const holder = options?.streamId !== undefined && options.streamId === stream.streamId;
+      return {
+        ownershipAssigned: false,
+        rejectedReason: holder ? 'STREAM_IDENTITY_CHANGED' : 'OWNER_CHANGE_UNVERIFIED',
+      };
     }
 
     const existing = this.tabOwnership.get(tabId);
@@ -2107,30 +2168,16 @@ export class CommandRelay {
     }
 
     if (existing) {
-      // TRANSFER of an already-owned tab. Given the proof-vs-claim check
-      // above, a present proof already equals the claimed userId; the only
-      // remaining refusal is an UNAUTHENTICATED transfer (no proof at all),
-      // which is the takeover primitive — refuse, prior owner stands.
+      // TRANSFER of a tab with no verified stream here. Given the checks
+      // above, a present proof equals the claimed userId; an UNAUTHENTICATED
+      // transfer is the takeover primitive — refuse, prior owner stands.
       if (proven == null) {
         return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
       }
       // A proven identity still may not take a tab from an owner whose
-      // session is live: the owner's own heartbeat for this tab arrived within
-      // the active window. A re-login in the same tab stops the previous
-      // owner's heartbeats, so the new owner takes over once they go quiet.
+      // heartbeats for it are still arriving.
       if (now - existing.lastSeen < this.tabActiveWindowMs) {
         return { ownershipAssigned: false, rejectedReason: 'OWNER_SESSION_LIVE' };
-      }
-    }
-    // First claim / bootstrap: allowed (a present proof already backs the
-    // claimed userId via the check above; absent proof bootstraps a tab in
-    // a header-less deployment) — unless it contradicts the verified user the
-    // tab is already streaming to. Before it registers, a tab is the stream
-    // opener's, as `openCommandStream` rules for a second stream.
-    if (!existing) {
-      const streamUserId = this.tabListeners.get(tabId)?.userId;
-      if (streamUserId !== undefined && streamUserId !== metadata.userId) {
-        return { ownershipAssigned: false, rejectedReason: 'OWNER_CHANGE_UNVERIFIED' };
       }
     }
 

@@ -886,8 +886,9 @@ function handleRelayRoute(
       // .userId` is caller-asserted. When the proven identity is present
       // it must match the claimed userId, otherwise the transfer is
       // refused and the prior owner stands — closing the "know a tabId,
-      // steal the tab" takeover primitive while still allowing a genuine
-      // re-login (which carries the new user's proven identity).
+      // steal the tab" takeover primitive. A tab streaming here under a
+      // verified identity is claimable only by that identity; a re-login
+      // reopens the stream under the new one (see `recordRegistration`).
       const callerUserId =
         request.headers.get('x-caller-user-id') ??
         request.headers.get('X-Caller-User-Id') ??
@@ -895,7 +896,10 @@ function handleRelayRoute(
       const registration = relay.recordRegistration(
         heartbeatTabId,
         { userId, sessionId },
-        { callerUserId }
+        {
+          callerUserId,
+          ...(typeof body?.streamId === 'string' ? { streamId: body.streamId as string } : {}),
+        }
       );
       // A refused claim leaves the tab exactly as its owner left it: no
       // heartbeat time, url or title is taken from the refused request.
@@ -915,18 +919,25 @@ function handleRelayRoute(
       const tabRegistered = registration.ownershipAssigned
         ? diag.connectedTabs.includes(heartbeatTabId)
         : undefined;
+      // A scoped caller learns why only when it holds the tab's stream (a
+      // stream id is sent down that stream alone). Any other reason would
+      // tell a tab another user owns from one they are only streaming.
+      const ownerChangeRejected =
+        callerUserId && registration.rejectedReason !== 'STREAM_IDENTITY_CHANGED'
+          ? 'OWNER_CHANGE_UNVERIFIED'
+          : registration.rejectedReason;
       return jsonResponse({
         success: true,
         data: {
           received: true,
           ...(tabRegistered === undefined ? {} : { tabRegistered }),
           // Observability: signals an ownership claim/transfer was refused
-          // because the claimed userId was not auth-proven. Not a fatal
+          // (see `recordRegistration` for the rules). Not a fatal
           // heartbeat error — the loop continues; the tab simply keeps its
           // prior (or no) owner. Absent when ownership was assigned.
           ...(registration.ownershipAssigned
             ? {}
-            : { ownershipAssigned: false, ownerChangeRejected: registration.rejectedReason }),
+            : { ownershipAssigned: false, ownerChangeRejected }),
         },
         timestamp: Date.now(),
       });
@@ -1145,7 +1156,10 @@ function handleRelayRoute(
 /**
  * SSE stream that delivers commands from the relay to browser tabs.
  */
-function createCommandStreamResponse(request: NextRequest, relay: CommandRelay): Response {
+async function createCommandStreamResponse(
+  request: NextRequest,
+  relay: CommandRelay
+): Promise<Response> {
   const url = new URL(request.url);
   const tabId = url.searchParams.get('tabId') ?? undefined;
   const encoder = new TextEncoder();
@@ -1180,6 +1194,10 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
       return false;
     }
   };
+  // Whether another instance holds this tab's stream decides whether a
+  // heartbeat-only record here may be set aside (see `openCommandStream`).
+  const streamedElsewhere =
+    callerUserId && tabId ? await relay.isTabStreamedElsewhere(tabId) : false;
   let opened: { streamId: string; unsubscribe: () => void };
   try {
     opened = relay.openCommandStream(
@@ -1188,7 +1206,8 @@ function createCommandStreamResponse(request: NextRequest, relay: CommandRelay):
         if (!send(encoder.encode(`data: ${JSON.stringify(command)}\n\n`))) cleanup();
       },
       tabId,
-      callerUserId
+      callerUserId,
+      { streamedElsewhere }
     );
   } catch (err) {
     if ((err as { name?: unknown })?.name === 'OwnerMismatchError') return tabNotFoundResponse();

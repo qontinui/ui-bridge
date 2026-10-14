@@ -194,10 +194,19 @@ describe('the command stream opens only for a tab the caller may hold', () => {
     unregistered.close();
   });
 
-  it('with no identity, any stream opens as before', async () => {
+  it('with no identity, a stream opens for a tab no verified caller streams', async () => {
     const admin = await openStream(r.routes, 'tab-x');
     expect(admin.response.status).toBe(200);
     admin.close();
+  });
+
+  it("with no identity, a stream cannot replace a verified user's stream", async () => {
+    const res = await call(r.routes, 'GET', '/commands/stream?tabId=tab-a');
+    expect(res.status).toBe(404);
+    expect((await json(res)).code).toBe('TAB_NOT_FOUND');
+    // tab-a's commands still go down its owner's stream.
+    void call(r.routes, 'POST', '/tabs/tab-a/activate', { caller: 'user-a' });
+    await r.tabA.command('tabActivate');
   });
 });
 
@@ -368,7 +377,7 @@ describe('closing or activating a tab requires owning it', () => {
   });
 });
 
-describe("a tab cannot be taken over while its owner's session is live", () => {
+describe("a tab cannot be taken over while its owner's stream is open", () => {
   // Reviewer probe S20.
   it("a verified heartbeat claiming another user's live tab is refused and changes nothing", async () => {
     const r = await rig();
@@ -377,7 +386,7 @@ describe("a tab cannot be taken over while its owner's session is live", () => {
       data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
     };
     expect(body.data.ownershipAssigned).toBe(false);
-    expect(body.data.ownerChangeRejected).toBe('OWNER_SESSION_LIVE');
+    expect(body.data.ownerChangeRejected).toBe('OWNER_CHANGE_UNVERIFIED');
     expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
     // Nothing the refused heartbeat carried reached the tab's record.
     const tabs = (await json(await call(r.routes, 'GET', '/tabs', { caller: 'user-a' }))) as {
@@ -395,19 +404,84 @@ describe("a tab cannot be taken over while its owner's session is live", () => {
     r.relay.destroy();
   });
 
-  it('a re-login in the same tab takes over once the previous owner has gone quiet', async () => {
+  it("a quiet owner's open stream keeps the tab, so another user's close never reaches it", async () => {
     const r = await rig({ tabActiveWindowMs: 60 });
-    const early = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
-    expect(
-      ((await json(early)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
-    ).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 90));
+    const takeover = await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    expect(
+      ((await json(takeover)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBe(false);
+    expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
+    const close = await call(r.routes, 'POST', '/tabs/tab-a/close', { caller: 'user-b' });
+    expect(close.status).toBe(404);
+    expect(r.tabA.events.some((e) => e.action === 'tabClose')).toBe(false);
+    r.tabA.close();
+    r.tabB.close();
+    r.relay.destroy();
+  });
+
+  it('a re-login reopens the stream under the new identity, then registers the tab', async () => {
+    const r = await rig();
+    for (let i = 0; i < 50 && !r.tabA.streamId(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The page holding tab-a's stream now runs as user-c, and says which
+    // stream it holds: it is told that stream is bound to another identity.
+    const early = await call(r.routes, 'POST', '/heartbeat', {
+      caller: 'user-c',
+      body: {
+        tabId: 'tab-a',
+        streamId: r.tabA.streamId(),
+        registrationMetadata: { userId: 'user-c', sessionId: 'session-c' },
+      },
+    });
+    expect(
+      (
+        (await json(early)) as {
+          data: { ownershipAssigned?: boolean; ownerChangeRejected?: string };
+        }
+      ).data
+    ).toMatchObject({ ownershipAssigned: false, ownerChangeRejected: 'STREAM_IDENTITY_CHANGED' });
+    // Without the stream id, the same claim is an ordinary refusal.
+    const blind = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
+    expect(
+      ((await json(blind)) as { data: { ownerChangeRejected?: string } }).data.ownerChangeRejected
+    ).toBe('OWNER_CHANGE_UNVERIFIED');
+    r.tabA.close();
+    for (let i = 0; i < 100 && r.relay.getOwnership('tab-a'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const reopened = await openStream(r.routes, 'tab-a', 'user-c');
+    expect(reopened.response.status).toBe(200);
     const late = await heartbeat(r.routes, 'tab-a', 'user-c', 'user-c');
     expect(
       ((await json(late)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
     ).toBeUndefined();
     expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-c');
+    reopened.close();
+    r.tabB.close();
+    r.relay.destroy();
+  });
+
+  it("a tab id claimed while its owner's stream reconnects does not lock the owner out", async () => {
+    const r = await rig();
     r.tabA.close();
+    for (let i = 0; i < 100 && r.relay.getOwnership('tab-a'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    const reopened = await openStream(r.routes, 'tab-a', 'user-a');
+    expect(reopened.response.status).toBe(200);
+    const beat = await heartbeat(r.routes, 'tab-a', 'user-a', 'user-a');
+    expect(
+      ((await json(beat)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBeUndefined();
+    const squat = await heartbeat(r.routes, 'tab-a', 'user-b', 'user-b');
+    expect(
+      ((await json(squat)) as { data: { ownershipAssigned?: boolean } }).data.ownershipAssigned
+    ).toBe(false);
+    expect(r.relay.getOwnership('tab-a')?.userId).toBe('user-a');
+    reopened.close();
     r.tabB.close();
     r.relay.destroy();
   });
@@ -490,15 +564,14 @@ describe('across instances, a result is held to where the command went', () => {
       });
     // A dispatches, B holds tab-a's stream, C is any other instance.
     const [a, b, c] = [relay('A'), relay('B'), relay('C')];
-    for (const instance of [a, b]) {
-      instance.recordRegistration(
-        'tab-a',
-        { userId: 'user-a', sessionId: 's-a' },
-        { callerUserId: 'user-a' }
-      );
-    }
     const delivered: Array<{ commandId: string }> = [];
     const stream = b.openCommandStream((command) => delivered.push(command), 'tab-a', 'user-a');
+    // tab-a registers where its stream is.
+    b.recordRegistration(
+      'tab-a',
+      { userId: 'user-a', sessionId: 's-a' },
+      { callerUserId: 'user-a' }
+    );
 
     const answer = a.queueCommand<Record<string, unknown>>(
       'find',

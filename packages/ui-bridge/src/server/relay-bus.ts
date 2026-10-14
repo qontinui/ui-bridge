@@ -90,8 +90,12 @@ export interface RelayBus {
   registerTab(tabId: string, ttlSeconds: number): void;
   /** Remove `tabId` from the shared registry (on disconnect). */
   unregisterTab(tabId: string): void;
-  /** True if `tabId` is present in the shared registry (any instance). */
-  isTabKnown(tabId: string): Promise<boolean>;
+  /**
+   * True if `tabId` is present in the shared registry (any instance), false
+   * if it is absent, and null when the registry could not be read — unknown,
+   * which a caller deciding to hold a tab must not read as absent.
+   */
+  isTabKnown(tabId: string): Promise<boolean | null>;
 
   /** Release underlying connections. */
   close(): Promise<void>;
@@ -226,11 +230,11 @@ export class RedisRelayBus implements RelayBus {
     void this.pub.del(`${TAB_PRESENCE_PREFIX}${tabId}`);
   }
 
-  async isTabKnown(tabId: string): Promise<boolean> {
+  async isTabKnown(tabId: string): Promise<boolean | null> {
     try {
       return (await this.pub.exists(`${TAB_PRESENCE_PREFIX}${tabId}`)) > 0;
     } catch {
-      return false;
+      return null;
     }
   }
 
