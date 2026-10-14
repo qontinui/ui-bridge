@@ -37,18 +37,26 @@
 //
 // What this cannot read, it refuses in a test that test:smoke does not select:
 // a `createRequire` (under any local name, the require it returns cannot be
-// followed), an `import()` or `require()` whose specifier is not a literal, and
-// a relative specifier that resolves to no file, each in the test file or in a
+// followed), an `import()` or `require()` whose specifier is not a literal, an
+// `import.meta.glob()` (a pattern, not a module: the files it loads are not
+// read), and a relative specifier that resolves to no file, each in the test file or in a
 // reached module that is not package source. A test file that test:smoke selects
 // is not refused for those: it runs where Chromium is installed anyway.
 //
 // Anywhere, test:smoke file or not, a `chromiumAvailable()` call inside a `try`
 // block is refused: a `catch` around it swallows the throw that is the gate's
-// whole enforcement, misplaced file and missing Chromium alike.
+// whole enforcement, misplaced file and missing Chromium alike. That holds under
+// any name the gate reaches the call by: a renamed import (`as gate`), a
+// namespace member, and a name a relative module re-exports it as
+// (`export { chromiumAvailable as haveChromium } from ...`, `export * from ...`,
+// or a local `export { gate as haveChromium }`), followed transitively.
 //
 // LIMITS. Package source is read for `executablePath(` only, so a skip gate
-// exported from a `src/` module that reaches Chromium another way (its own
-// playwright import with a computed `chromium[ep]()`) passes. A package import is
+// exported from a `src/` module that reaches Chromium another way passes: its own
+// playwright import with a computed `chromium[ep]()`, or a launch probe such as
+// `chromium.launch().then(() => true, () => false)` in a test-only helper that
+// sits under `src/` as a file (`src/testing.ts`) rather than in a test-only
+// directory. A package import is
 // never followed, a workspace package included
 // (`@qontinui/ui-bridge-headless`), and neither is a path alias (`@/x`): only the
 // BROWSER_MODULES names count among package imports, so a skip gate living in
@@ -56,13 +64,16 @@
 // AST passes too: a computed property on a module this check never sees as a
 // browser (`launchers[name][ep]()`), `eval` and `new Function`,
 // `process.getBuiltinModule('module')['create' + 'Require']`, and a
-// `chromiumAvailable` bound by destructuring a dynamic import. Helpers are read
-// from the working tree, the test files from the commit.
+// `chromiumAvailable` bound by destructuring a dynamic import. A re-exported gate
+// is recognised only under a NAMED import called directly (`haveChromium()`):
+// called as a namespace member of a helper (`h.haveChromium()`), or re-bound
+// (`export const haveChromium = chromiumAvailable`), it passes.
 //
-// The test files are every TRACKED `*.test.*`, `*.spec.*` and `*.e2e.*` file
-// (git ls-files), so the verdict is a property of the commit rather than of the
-// working tree. Whether test:smoke selects one is test-support/smoke-selection.mjs,
-// the same answer the runtime gate uses.
+// The LIST of test files is every TRACKED `*.test.*`, `*.spec.*` and `*.e2e.*`
+// file (git ls-files), so an untracked test file is not checked. The CONTENT of
+// every file read, test files and helpers alike, comes from the working tree.
+// Whether test:smoke selects one is test-support/smoke-selection.mjs, the same
+// answer the runtime gate uses.
 //
 // Usage:
 //   node scripts/check-browser-test-placement.mjs        # verify (CI)
@@ -132,21 +143,38 @@ export function moduleFacts(source, fileName) {
     true,
     scriptKind(fileName)
   );
-  const facts = { uses: [], imports: [], unreadable: [], swallowed: [] };
+  const facts = {
+    uses: [],
+    imports: [],
+    unreadable: [],
+    swallowed: [],
+    tryCalls: [],
+    gateExports: new Set(),
+    forwards: [],
+  };
   const lineOf = (node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
   const add = (list, node, what) => facts[list].push({ line: lineOf(node), what });
   const browserModule = (node) =>
     node !== undefined && ts.isStringLiteralLike(node) && BROWSER_MODULES.has(node.text);
 
-  // The local names chromiumAvailable is imported under (`as gate`).
+  // The local names chromiumAvailable is imported under (`as gate`), and every
+  // other name imported from a relative module, which may re-export the gate
+  // under a new name (`export { chromiumAvailable as haveChromium } from ...`).
   const gateNames = new Set(['chromiumAvailable']);
+  const relativeImports = new Map();
   for (const statement of file.statements) {
     const named = statement.importClause?.namedBindings;
     if (!ts.isImportDeclaration(statement) || named === undefined || !ts.isNamedImports(named))
       continue;
     for (const element of named.elements) {
-      if ((element.propertyName ?? element.name).text === 'chromiumAvailable')
-        gateNames.add(element.name.text);
+      const imported = (element.propertyName ?? element.name).text;
+      if (imported === 'chromiumAvailable') gateNames.add(element.name.text);
+      else if (relative(statement.moduleSpecifier) && !element.isTypeOnly) {
+        relativeImports.set(element.name.text, {
+          specifier: statement.moduleSpecifier.text,
+          imported,
+        });
+      }
     }
   }
 
@@ -157,6 +185,36 @@ export function moduleFacts(source, fileName) {
       facts.imports.push({ line: lineOf(node), specifier: specifier.text });
     else if (specifier === undefined || !ts.isStringLiteralLike(specifier))
       add('unreadable', node, `${how}() with a computed specifier`);
+  };
+
+  /**
+   * The names an export declaration gives the gate (`gateExports`), and the
+   * names it forwards from a relative module that may (`forwards`): a re-export
+   * from one (`export { x as y } from './m'`, `export * from './m'`) or a local
+   * export of a name imported from one.
+   */
+  const exported = (node) => {
+    const from = relative(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
+    if (node.exportClause === undefined) {
+      if (from !== undefined)
+        facts.forwards.push({ specifier: from, imported: '*', exported: '*' });
+      return;
+    }
+    if (!ts.isNamedExports(node.exportClause)) return;
+    for (const element of node.exportClause.elements) {
+      if (element.isTypeOnly) continue;
+      const local = (element.propertyName ?? element.name).text;
+      const name = element.name.text;
+      if (node.moduleSpecifier === undefined) {
+        if (gateNames.has(local)) facts.gateExports.add(name);
+        else if (relativeImports.has(local))
+          facts.forwards.push({ ...relativeImports.get(local), exported: name });
+      } else if (local === 'chromiumAvailable') {
+        facts.gateExports.add(name);
+      } else if (from !== undefined) {
+        facts.forwards.push({ specifier: from, imported: local, exported: name });
+      }
+    }
   };
 
   const visit = (node, inTry) => {
@@ -174,6 +232,7 @@ export function moduleFacts(source, fileName) {
         facts.imports.push({ line: lineOf(node), specifier: node.moduleSpecifier.text });
       }
     } else if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
+      exported(node);
       if (browserModule(node.moduleSpecifier)) {
         add('uses', node, `export from '${node.moduleSpecifier.text}'`);
       } else if (relative(node.moduleSpecifier)) {
@@ -195,7 +254,14 @@ export function moduleFacts(source, fileName) {
         : ts.isIdentifier(callee)
           ? callee.text
           : undefined;
-      if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+      if (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isMetaProperty(callee.expression) &&
+        callee.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        /^glob/.test(calleeName)
+      ) {
+        add('unreadable', node, `import.meta.${calleeName}()`);
+      } else if (callee.kind === ts.SyntaxKind.ImportKeyword) {
         loads(node, 'import', first);
       } else if (ts.isIdentifier(callee) && callee.text === 'require') {
         loads(node, 'require', first);
@@ -212,6 +278,14 @@ export function moduleFacts(source, fileName) {
           (ts.isPropertyAccessExpression(callee) && calleeName === 'chromiumAvailable'))
       ) {
         add('swallowed', node, `${callee.getText(file)}() inside a try block`);
+      } else if (inTry && ts.isIdentifier(callee) && relativeImports.has(callee.text)) {
+        // Whether the imported name is the gate is settled by checkPlacement,
+        // which can read the module it comes from.
+        facts.tryCalls.push({
+          line: lineOf(node),
+          what: `${callee.text}() inside a try block`,
+          ...relativeImports.get(callee.text),
+        });
       }
     }
     ts.forEachChild(node, (child) => visit(child, inTry));
@@ -292,6 +366,22 @@ export function checkPlacement(files, { read = readFromDisk } = {}) {
     return cache.get(file);
   };
 
+  /** Whether `file` exports the gate as `name`, itself or through what it forwards. */
+  const exportsGate = (file, name, visiting = new Set()) => {
+    if (file === GATE) return name === 'chromiumAvailable';
+    const key = `${file}\0${name}`;
+    if (visiting.has(key) || sourceOf(file) === undefined) return false;
+    visiting.add(key);
+    const facts = factsOf(file);
+    if (facts.gateExports.has(name)) return true;
+    return facts.forwards.some((forward) => {
+      if (forward.exported !== name && forward.exported !== '*') return false;
+      const target = resolveRelative(file, forward.specifier, sourceOf).file;
+      const imported = forward.exported === '*' ? name : forward.imported;
+      return target !== undefined && exportsGate(target, imported, visiting);
+    });
+  };
+
   const reaching = [];
   const violations = [];
   const swallowed = [];
@@ -314,6 +404,12 @@ export function checkPlacement(files, { read = readFromDisk } = {}) {
       if (!swallowedSeen.has(module)) {
         swallowedSeen.add(module);
         swallowed.push(...facts.swallowed.map((entry) => ({ ...entry, file: module })));
+        for (const { line, what, specifier, imported } of facts.tryCalls) {
+          const from = resolveRelative(module, specifier, sourceOf).file;
+          if (from !== undefined && exportsGate(from, imported)) {
+            swallowed.push({ line, what, file: module });
+          }
+        }
       }
       for (const { line, specifier } of facts.imports) {
         const resolved = resolveRelative(module, specifier, sourceOf);

@@ -190,6 +190,15 @@ const REFUSED = [
   ],
   [['ash', '-c', 'apk add chromium'], 'ash -c … apk add'],
   [['tcsh', '-c', 'sudo true'], 'tcsh -c … sudo'],
+  // PowerShell and cmd resolve commands without regard to case.
+  [['pwsh', '-Command', 'Choco install x'], 'pwsh -Command … Choco'],
+  [['cmd', '/c', 'CHOCO install x'], 'cmd /c … CHOCO'],
+  [['WinGet.exe', 'install', 'x'], 'WinGet.exe'],
+  [['PowerShell.exe', '-Command', 'Scoop install x'], 'PowerShell.exe -Command … Scoop'],
+  // Start-Process -Verb RunAs runs a program as administrator.
+  [['pwsh', '-Command', 'Start-Process -Verb RunAs pwsh'], 'pwsh -Command … RunAs'],
+  [['pwsh', '-Command', "Start-Process pwsh -verb 'runas'"], 'pwsh -Command … runas'],
+  [['pwsh', '-Command', 'Start-Process pwsh -Verb:RunAs'], 'pwsh -Command … -Verb:RunAs'],
 ];
 
 // [argv, the words the failure quotes]: code the rule cannot read at all.

@@ -22,8 +22,10 @@
  * both rules are enforced by THROWING, so a caller that catches the throw
  * (`try { HAVE = chromiumAvailable() } catch {}`) skips silently instead.
  * scripts/check-browser-test-placement.mjs refuses a chromiumAvailable() call
- * written inside a `try` block, but not a catch further up the stack (a helper
- * that wraps the call, itself called inside a `try`).
+ * written inside a `try` block, under a renamed import, a namespace member, or a
+ * name a relative module re-exports it as, but not a catch further up the stack
+ * (a helper that wraps the call, itself called inside a `try`), nor a re-export
+ * called as a namespace member or re-bound to a new const (its LIMITS).
  *
  * A test that gates on Chromium WITHOUT this gate (its own playwright import or
  * `executablePath(` call) is the other half: scripts/check-browser-test-placement.mjs
