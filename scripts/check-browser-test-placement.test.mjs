@@ -509,6 +509,61 @@ test('the call is refused under a name a relative module re-exports the gate as'
   );
 });
 
+test('the call is refused under a default import of a module default-exporting the gate', () => {
+  const GATE_FROM_SUPPORT = '../../../../test-support/chromium-gate.mjs';
+  const smoke = inWrapperTests('frame-pixels-smoke.test.ts');
+  const calling = "import hc from './support/g.js';\ntry { hc(); } catch {}";
+  const swallowedVia = (modules, source = calling) =>
+    where(checkWith(smoke, source, modules).swallowed);
+  const expected = [
+    'packages/ui-bridge-wrapper/tests/frame-pixels-smoke.test.ts 2: hc() inside a try block',
+  ];
+  // export default <the imported gate>
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        `import { chromiumAvailable } from '${GATE_FROM_SUPPORT}';\nexport default chromiumAvailable;`,
+    }),
+    expected
+  );
+  // export { chromiumAvailable as default } from <the gate>
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        `export { chromiumAvailable as default } from '${GATE_FROM_SUPPORT}';`,
+    }),
+    expected
+  );
+  // export default <a name a relative module gave the gate>, imported beside a named import.
+  assert.deepEqual(
+    swallowedVia(
+      {
+        [inWrapperTests('support/g.ts')]:
+          "import { inner } from './inner.js';\nexport default inner;\nexport const x = 1;",
+        [inWrapperTests('support/inner.ts')]:
+          `export { chromiumAvailable as inner } from '${GATE_FROM_SUPPORT}';`,
+      },
+      "import hc, { x } from './support/g.js';\ntry { hc(x); } catch {}"
+    ),
+    ['packages/ui-bridge-wrapper/tests/frame-pixels-smoke.test.ts 2: hc() inside a try block']
+  );
+  // `export *` forwards no default, and a default that is not the gate is not refused.
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]: "export * from './inner.js';",
+      [inWrapperTests('support/inner.ts')]:
+        `export { chromiumAvailable as default } from '${GATE_FROM_SUPPORT}';`,
+    }),
+    []
+  );
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]: 'export default function hc() { return true; }',
+    }),
+    []
+  );
+});
+
 test('import.meta.glob() is refused as unreadable, in a test file and in a helper', () => {
   const glob = "const mods = import.meta.glob('./support/*.ts', { eager: true });";
   assert.deepEqual(where(refused(inWrapperTests('frame-pixels.test.ts'), glob)[0].unreadable), [

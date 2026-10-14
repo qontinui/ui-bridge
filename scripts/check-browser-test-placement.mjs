@@ -46,10 +46,13 @@
 // Anywhere, test:smoke file or not, a `chromiumAvailable()` call inside a `try`
 // block is refused: a `catch` around it swallows the throw that is the gate's
 // whole enforcement, misplaced file and missing Chromium alike. That holds under
-// any name the gate reaches the call by: a renamed import (`as gate`), a
-// namespace member, and a name a relative module re-exports it as
-// (`export { chromiumAvailable as haveChromium } from ...`, `export * from ...`,
-// or a local `export { gate as haveChromium }`), followed transitively.
+// these names for the gate (the rest are in LIMITS): a renamed import
+// (`as gate`), a namespace member of the gate module, and a name a relative
+// module re-exports it as, named or default, followed transitively:
+// `export { chromiumAvailable as haveChromium } from ...`, `export * from ...`
+// (which, as in ES modules, forwards no default), a local
+// `export { gate as haveChromium }`, `export { chromiumAvailable as default } from ...`
+// and `export default gate`, called through a named or a default import.
 //
 // LIMITS. Package source is read for `executablePath(` only, so a skip gate
 // exported from a `src/` module that reaches Chromium another way passes: its own
@@ -65,9 +68,11 @@
 // browser (`launchers[name][ep]()`), `eval` and `new Function`,
 // `process.getBuiltinModule('module')['create' + 'Require']`, and a
 // `chromiumAvailable` bound by destructuring a dynamic import. A re-exported gate
-// is recognised only under a NAMED import called directly (`haveChromium()`):
-// called as a namespace member of a helper (`h.haveChromium()`), or re-bound
-// (`export const haveChromium = chromiumAvailable`), it passes.
+// is recognised only under a named or default import called directly
+// (`haveChromium()`, `hc()`): called as a namespace member of a helper
+// (`h.haveChromium()`), re-bound (`export const haveChromium = chromiumAvailable`),
+// or default-exported as an expression other than its bare name
+// (`export default (chromiumAvailable)`), it passes.
 //
 // The LIST of test files is every TRACKED `*.test.*`, `*.spec.*` and `*.e2e.*`
 // file (git ls-files), so an untracked test file is not checked. The CONTENT of
@@ -159,13 +164,22 @@ export function moduleFacts(source, fileName) {
 
   // The local names chromiumAvailable is imported under (`as gate`), and every
   // other name imported from a relative module, which may re-export the gate
-  // under a new name (`export { chromiumAvailable as haveChromium } from ...`).
+  // under a new name (`export { chromiumAvailable as haveChromium } from ...`)
+  // or as its default (`export default gate`; recorded as imported 'default').
   const gateNames = new Set(['chromiumAvailable']);
   const relativeImports = new Map();
   for (const statement of file.statements) {
-    const named = statement.importClause?.namedBindings;
-    if (!ts.isImportDeclaration(statement) || named === undefined || !ts.isNamedImports(named))
-      continue;
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined || clause.isTypeOnly) continue;
+    if (clause.name !== undefined && relative(statement.moduleSpecifier)) {
+      relativeImports.set(clause.name.text, {
+        specifier: statement.moduleSpecifier.text,
+        imported: 'default',
+      });
+    }
+    const named = clause.namedBindings;
+    if (named === undefined || !ts.isNamedImports(named)) continue;
     for (const element of named.elements) {
       const imported = (element.propertyName ?? element.name).text;
       if (imported === 'chromiumAvailable') gateNames.add(element.name.text);
@@ -231,6 +245,13 @@ export function moduleFacts(source, fileName) {
       } else if (relative(node.moduleSpecifier) && !typeOnlyImport) {
         facts.imports.push({ line: lineOf(node), specifier: node.moduleSpecifier.text });
       }
+    } else if (ts.isExportAssignment(node) && ts.isIdentifier(node.expression)) {
+      // `export default gate` (and `export = gate`): the gate, or a name a
+      // relative module may give it, becomes this module's default.
+      const local = node.expression.text;
+      if (gateNames.has(local)) facts.gateExports.add('default');
+      else if (relativeImports.has(local))
+        facts.forwards.push({ ...relativeImports.get(local), exported: 'default' });
     } else if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
       exported(node);
       if (browserModule(node.moduleSpecifier)) {
@@ -376,6 +397,8 @@ export function checkPlacement(files, { read = readFromDisk } = {}) {
     if (facts.gateExports.has(name)) return true;
     return facts.forwards.some((forward) => {
       if (forward.exported !== name && forward.exported !== '*') return false;
+      // `export *` forwards every name but the default.
+      if (forward.exported === '*' && name === 'default') return false;
       const target = resolveRelative(file, forward.specifier, sourceOf).file;
       const imported = forward.exported === '*' ? name : forward.imported;
       return target !== undefined && exportsGate(target, imported, visiting);
