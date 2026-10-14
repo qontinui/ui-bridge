@@ -439,6 +439,96 @@ test('the call is refused under a renamed import, a namespace, and in a helper',
   assert.equal(swallowed.length, 1);
 });
 
+test('the call is refused under a name a relative module re-exports the gate as', () => {
+  const GATE_FROM_SUPPORT = '../../../../test-support/chromium-gate.mjs';
+  const smoke = inWrapperTests('frame-pixels-smoke.test.ts');
+  const calling =
+    "import { haveChromium } from './support/g.js';\ntry { haveChromium(); } catch {}";
+  const swallowedVia = (modules, source = calling) =>
+    where(checkWith(smoke, source, modules).swallowed);
+  const expected = [
+    'packages/ui-bridge-wrapper/tests/frame-pixels-smoke.test.ts 2: haveChromium() inside a try block',
+  ];
+  // export { chromiumAvailable as haveChromium } from <the gate>
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        `export { chromiumAvailable as haveChromium } from '${GATE_FROM_SUPPORT}';`,
+    }),
+    expected
+  );
+  // A local export of the imported gate, under a new name.
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]: [
+        `import { chromiumAvailable as gate } from '${GATE_FROM_SUPPORT}';`,
+        'export { gate as haveChromium };',
+      ].join('\n'),
+    }),
+    expected
+  );
+  // Through a barrel's `export *` and a second rename, imported under a third name.
+  assert.deepEqual(
+    swallowedVia(
+      {
+        [inWrapperTests('support/index.ts')]: "export * from './g.js';",
+        [inWrapperTests('support/g.ts')]: "export { inner as haveChromium } from './inner.js';",
+        [inWrapperTests('support/inner.ts')]:
+          `export * from '${GATE_FROM_SUPPORT}';\nexport { chromiumAvailable as inner } from '${GATE_FROM_SUPPORT}';`,
+      },
+      "import { haveChromium as hc } from './support';\nbeforeAll(() => { try { hc(); } catch {} });"
+    ),
+    ['packages/ui-bridge-wrapper/tests/frame-pixels-smoke.test.ts 2: hc() inside a try block']
+  );
+  // Re-exported by name from a specifier this check does not follow.
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        "export { chromiumAvailable as haveChromium } from '#test-support/chromium-gate.mjs';",
+    }),
+    expected
+  );
+  // A local export of a name a relative module gave the gate.
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        "import { inner } from './inner.js';\nexport { inner as haveChromium };",
+      [inWrapperTests('support/inner.ts')]:
+        `export { chromiumAvailable as inner } from '${GATE_FROM_SUPPORT}';`,
+    }),
+    expected
+  );
+  // A re-export cycle ends, and a name that is not the gate is not refused.
+  assert.deepEqual(
+    swallowedVia({
+      [inWrapperTests('support/g.ts')]:
+        "export * from './h.js';\nexport { other as haveChromium } from './h.js';",
+      [inWrapperTests('support/h.ts')]: "export * from './g.js';\nexport const other = () => true;",
+    }),
+    []
+  );
+});
+
+test('import.meta.glob() is refused as unreadable, in a test file and in a helper', () => {
+  const glob = "const mods = import.meta.glob('./support/*.ts', { eager: true });";
+  assert.deepEqual(where(refused(inWrapperTests('frame-pixels.test.ts'), glob)[0].unreadable), [
+    '1: import.meta.glob()',
+  ]);
+  const { violations } = checkWith(
+    inWrapperTests('frame-pixels.test.ts'),
+    "import './support/l.js';",
+    {
+      [inWrapperTests('support/l.ts')]: 'export const all = import.meta.globEager("./*.ts");',
+    }
+  );
+  assert.deepEqual(where(violations[0].unreadable), [
+    'packages/ui-bridge-wrapper/tests/support/l.ts 1: import.meta.globEager()',
+  ]);
+  assert.deepEqual(refused(inWrapperTests('frame-pixels-smoke.test.ts'), glob), []);
+  const meta = "const u = import.meta.url;\nconst p = import.meta.resolve('./x.js');";
+  assert.deepEqual(moduleFacts(meta, 'x.test.ts').unreadable, []);
+});
+
 test('the verdict fails on a swallowed call alone, and on a violation alone', () => {
   const swallowing = verdict([
     {

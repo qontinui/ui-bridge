@@ -312,13 +312,28 @@ function inlineReadings(code) {
   return [script.filter(Boolean), shell.filter(Boolean)];
 }
 
-/** The command an argv word names: its last path component, less a Windows executable suffix. */
+/**
+ * The command an argv word names: its last path component, less a Windows
+ * executable suffix, lowercased. PowerShell and cmd resolve commands without
+ * regard to case (`Choco`, `CHOCO`, `RunAs` run choco and runas), and so do the
+ * default macOS and Windows file systems, so the sets it is looked up in are
+ * matched case-insensitively. That holds in POSIX shell code too, where it
+ * refuses an upper-case word naming one (`SUDO=1`, `$APT`): rename the variable.
+ */
 function commandName(word) {
   return word
     .split(/[\\/]/)
     .pop()
-    .replace(/\.(exe|cmd|bat|com)$/i, '');
+    .replace(/\.(exe|cmd|bat|com)$/i, '')
+    .toLowerCase();
 }
+
+/**
+ * PowerShell's `Start-Process ... -Verb RunAs` runs a program as administrator.
+ * `-Verb RunAs` reads as two words and the second is HOST_PACKAGE_WORDS's runas;
+ * this is the one-word form, `-Verb:RunAs`, any case and any quoting.
+ */
+const RUNAS_VERB = /^-verb:['"]?runas['"]?$/i;
 
 /**
  * What in an argv would change the host, or null when nothing would:
@@ -359,7 +374,9 @@ function commandName(word) {
 function hostChange(argv) {
   for (let t = 0; t < argv.length; t += 1) {
     const name = commandName(argv[t]);
-    if (HOST_PACKAGE_WORDS.has(name)) return { quoted: argv[t], unreadable: false };
+    if (HOST_PACKAGE_WORDS.has(name) || RUNAS_VERB.test(argv[t])) {
+      return { quoted: argv[t], unreadable: false };
+    }
     const interpreter = INLINE_INTERPRETERS.get(name);
     if (interpreter) {
       const inline = inlineHostChange(argv, t, interpreter);
