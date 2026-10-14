@@ -1135,14 +1135,14 @@ all.
 
 | `data.status` | Meaning |
 |---|---|
-| `measured` | The analyzer looked; the report is in `data.value`. `data.provenance.coverage.unmeasured` lists visible elements it could NOT place (no geometry) — a non-empty list means the report is degraded, not that the page is empty. |
+| `measured` | The analyzer looked; the report is in `data.value`. `data.provenance.coverage.unmeasured` counts the elements it could NOT place, by the input that stopped it: `geometry` (visible, but no `normalizedRect`; mobile: no measured layout) or `visibility` (the snapshot carried no boolean `state.visible`, so the element may be on screen — it is never assumed hidden). A non-empty list means the report is degraded, not that the page is empty. |
 | `unknown` | The analyzer could not look. `data.unknown.code` says why; there is no `value` and no severity. Never read this as a healthy page OR a broken one. |
 
 `unknown.code` values page-health emits:
 
 | Code | Cause | Next action |
 |---|---|---|
-| `input_missing` | The snapshot carried no `elements` array, every visible element lacks geometry, or (mobile) the viewport is unknown | Re-snapshot once the page has settled; on mobile supply `viewport` |
+| `input_missing` | The snapshot carried no `elements` array; or elements exist but **none is both visible and carrying geometry** — the visible ones lack geometry, some never stated `state.visible`, or **every element reports `visible: false`** (`unknown.detail` tallies why — web/server from `state.visibilityReason`: `hidden` / `off-screen` / `occluded` / `no-layout`, e.g. `hidden=1, occluded=2`; mobile: `unmounted=N, off-screen route or otherwise=M`); or (mobile) the viewport is unknown | Re-snapshot once the page has settled; on mobile supply `viewport`. In the all-hidden case whatever IS on screen is not a registered element — on the web SDK, `POST /control/visibility` names the occluder; never read it as a blank page |
 | `producer_not_run` | Zero registered elements and zero registered components — nothing has registered yet | Wait for the page to load / the UI Bridge provider to mount |
 | `app_unreachable` | (Relay) the browser tab could not be reached and nothing is cached | Reconnect the tab |
 | `producer_failed` | The snapshot or the analyzer threw; `unknown.detail` names it | Retry once, then read the detail |
@@ -1178,7 +1178,7 @@ Response shape:
       "observedAt": "2026-09-30T12:00:00.000Z",    // snapshot time
       "evaluatedAt": "2026-09-30T12:00:00.012Z",   // analyzer run time
       "coverage": {
-        "considered": 120,                          // visible elements
+        "considered": 120,                          // visible elements + those with no boolean state.visible
         "measured": 117,                            // ... of which carried geometry
         "unmeasured": [{ "dimension": "geometry", "count": 3, "code": "input_missing" }]
       },
