@@ -124,6 +124,9 @@ describe('useRouteAwareness', () => {
     const page = h.bridge.registry.createSnapshot().page;
     expect(page?.route?.pattern).toBeNull();
     expect(JSON.stringify(page)).not.toContain('secret-sentinel');
+    // No `params` key in-process either, not merely an `undefined` one.
+    expect(h.bridge.registry.getRouteInfo()).not.toHaveProperty('params');
+    expect(page?.route).not.toHaveProperty('params');
     h.unmount();
   });
 
