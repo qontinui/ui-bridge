@@ -14,9 +14,11 @@
  * `apk --no-cache add chromium`, the usual Dockerfile form, passed. A third
  * review found the same words passing inside an interpreter's inline code
  * (`sh -c "apt-get install ..."`, `node -e "...execSync('sudo ...')"`) and four
- * escalators missing. Each shape is pinned below both ways round: refused (each
- * review's probes first), refused as unreadable, and allowed (words the rule must
- * not take for a host change).
+ * escalators missing. A sixth found code attached to its flag (`python3 -cCODE`,
+ * `env -SCODE`), words a shell builds from quotes (`ap''t-get`), PowerShell 5.1's
+ * positional command and five interpreters passing unread. Each shape is pinned
+ * below both ways round: refused (each review's probes first), refused as
+ * unreadable, and allowed (words the rule must not take for a host change).
  *
  * Usage:  node scripts/check-ci-manifest.test.cjs
  * Exit:   0 all passed / 1 one or more failed
@@ -136,6 +138,58 @@ const REFUSED = [
   [['bash', '-c', 'bash -c \'node -e "x" ; dnf install x\''], 'bash -c … bash -c … node -e … dnf'],
   [['sh', '-c', 'port -N install chromium'], 'sh -c … port -N install'],
   [['sh', '-c', '/usr/bin/sudo -n true'], 'sh -c … /usr/bin/sudo'],
+  // The sixth review's probes. Code ATTACHED to its flag is the code.
+  [['python3', '-cimport os; os.system("sudo apt-get install x")'], 'python3 -c … sudo'],
+  [['python3', '-Icimport os; os.system("apt install x")'], 'python3 -Ic … apt'],
+  [['perl', '-esystem("sudo apt-get install x")'], 'perl -e … sudo'],
+  [['perl', '-wlEsystem "yum install x"'], 'perl -wlE … yum'],
+  [['ruby', '-esystem("sudo apt-get install x")'], 'ruby -e … sudo'],
+  [['cmd', '/cchoco install chromium'], 'cmd /c … choco'],
+  [['cmd', '/s', '/Kwinget install x'], 'cmd /K … winget'],
+  // env -S / --split-string run their string as argv, like a shell's -c.
+  [['env', '-S', 'sudo apt-get install -y x'], 'env -S … sudo'],
+  [['env', '-Ssudo apt-get install x'], 'env -S … sudo'],
+  [['env', '-iS', 'apk add chromium'], 'env -iS … apk add'],
+  [['env', '--split-string', 'brew install x'], 'env --split-string … brew'],
+  [['env', '--split-string=dnf install x'], 'env --split-string … dnf'],
+  // Quotes and backslashes are removed before splitting, as a shell builds a word.
+  [['bash', '-c', "ap''t-get install x"], 'bash -c … apt-get'],
+  [['bash', '-c', 'a\\pt-get install x'], 'bash -c … apt-get'],
+  [['sh', '-c', "s'u'do true"], 'sh -c … sudo'],
+  [['sh', '-c', '\\sudo true'], 'sh -c … \\sudo'],
+  [['bash', '-c', "a$'p't-get install x"], 'bash -c … apt-get'],
+  // ...and a string literal is still a word of its own in a script.
+  [['node', '-e', "require('child_process').execSync('sudo'+' true')"], 'node -e … sudo'],
+  [['node', '-e', "execSync('sudo'.trim())"], 'node -e … sudo'],
+  [
+    ['cmd', '/c', 'C:\\ProgramData\\chocolatey\\bin\\choco.exe install x'],
+    'cmd /c … C:\\ProgramData\\chocolatey\\bin\\choco.exe',
+  ],
+  // PowerShell 5.1 runs its first word that is not an option as -Command.
+  [['powershell', 'choco install x'], 'powershell … choco'],
+  [['powershell', '-NoProfile', 'winget install x'], 'powershell … winget'],
+  [['powershell', '-ExecutionPolicy', 'Bypass', 'scoop install x'], 'powershell … scoop'],
+  // -CommandWithArgs / -cwa, and -Command:<code>.
+  [['pwsh', '-CommandWithArgs', 'choco install $args[0]', 'x'], 'pwsh -CommandWithArgs … choco'],
+  [['pwsh', '-cwa', 'winget install x'], 'pwsh -cwa … winget'],
+  [['pwsh', '-Command:choco install x'], 'pwsh -Command … choco'],
+  // The other interpreters the review listed.
+  [['npx', '-c', 'sudo apt-get install x'], 'npx -c … sudo'],
+  [['npx', '--yes', '--call=apt-get install x'], 'npx --call … apt-get'],
+  [['npm', 'exec', '-c', 'sudo true'], 'npm exec -c … sudo'],
+  [['npm', 'x', '--call', 'brew install x'], 'npm x --call … brew'],
+  [['fish', '-c', 'sudo true'], 'fish -c … sudo'],
+  [['fish', '--command=brew install x'], 'fish --command … brew'],
+  [['fish', '-C', 'sudo true'], 'fish -C … sudo'],
+  [['bun', '-e', 'Bun.spawnSync(["sudo","true"])'], 'bun -e … sudo'],
+  [['bun', '--print', 'Bun.spawnSync(["apt-get","install","x"])'], 'bun --print … apt-get'],
+  [['deno', 'eval', 'new Deno.Command("sudo").outputSync()'], 'deno eval … sudo'],
+  [
+    ['deno', '-q', 'eval', "new Deno.Command('brew', { args: ['install', 'x'] })"],
+    'deno eval … brew',
+  ],
+  [['ash', '-c', 'apk add chromium'], 'ash -c … apk add'],
+  [['tcsh', '-c', 'sudo true'], 'tcsh -c … sudo'],
 ];
 
 // [argv, the words the failure quotes]: code the rule cannot read at all.
@@ -154,6 +208,10 @@ const UNREADABLE = [
   [['perl', '-'], 'perl -'],
   [['ruby', '-'], 'ruby -'],
   [['sh', '-c', 'pwsh -enc ZQBj'], 'sh -c … pwsh -enc'],
+  [['fish', '-'], 'fish -'],
+  [['npx', '-c', '-'], 'npx -c -'],
+  [['env', '-S', 'pwsh -enc ZQBj'], 'env -S … pwsh -enc'],
+  [['powershell', '-NoProfile', '-'], 'powershell -'],
 ];
 
 // Words the rule must not take for a host change.
@@ -193,6 +251,26 @@ const ALLOWED = [
   ['pwsh', '-File', 'scripts/build.ps1'],
   // `-ExecutionPolicy` is not `-EncodedCommand`.
   ['pwsh', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/build.ps1'],
+  // PowerShell 5.1 reads a -File script's name and arguments as code: no host word here.
+  ['powershell', '-NoProfile', '-File', 'scripts/build.ps1', 'install'],
+  // env's lone `-` is an empty environment, not stdin; its -S code that changes nothing.
+  ['env', '-', 'npm', 'ci'],
+  ['env', '-S', 'npm ci'],
+  ['env', 'NODE_ENV=production', 'npm', 'run', 'build'],
+  // Attached code that changes nothing on the host, and options that are not code.
+  ['python3', '-cprint(1)'],
+  ['python3', '-W', 'ignore', '-c', "print('ok')"],
+  ['perl', '-eprint 1'],
+  ['cmd', '/cnpm run build'],
+  ['node', '--input-type=module', '-e', 'console.log(1)'],
+  // The shell reading must not merge a quoted argument into a host word.
+  ['bash', '-c', "echo 'ap' 't-get'"],
+  // npm and npx running a package, or a script, rather than inline code.
+  ['npm', 'exec', 'vitest', 'run'],
+  ['npx', '--yes', 'prettier', '--check', '.'],
+  ['deno', 'run', 'scripts/eval.ts'],
+  ['bun', 'run', 'build'],
+  ['fish', 'scripts/build.fish'],
 ];
 
 for (const [argv, quoted] of REFUSED) {

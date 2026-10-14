@@ -224,45 +224,92 @@ const AMBIGUOUS_PACKAGE_MANAGERS = new Map([
 
 /**
  * Interpreters that run code given INLINE in argv. `code` matches the flag that
- * introduces it, and the code is every word after that flag: a shell's `-c`
- * string together with the positional words it may run, `cmd /c`'s whole
- * command line. `unreadable` matches the flags whose code this rule cannot read
- * (encoded, or read from stdin); a lone `-`, the program read from stdin, is
- * unreadable for every interpreter. Options are `-x` words, and `/x` ones for
- * cmd and PowerShell.
+ * introduces it. The code is every word after that flag (a shell's `-c` string
+ * together with the positional words it may run, `cmd /c`'s whole command line),
+ * plus, where the interpreter accepts code ATTACHED to its flag
+ * (`python3 -cCODE`, `perl -eCODE`, `cmd /cCODE`, `env -SCODE`, `--eval=CODE`),
+ * the rest of that word: `code`'s first capture group that matched.
+ *
+ * `unreadable` matches the flags whose code this rule cannot read (encoded, or
+ * read from stdin). A lone `-`, the program read from stdin, is unreadable for
+ * every interpreter but env, whose `-` means an empty environment. `positional`
+ * marks PowerShell 5.1, which runs its first word that is not an option as
+ * `-Command`, so the rule reads every word from there on as code (a `-File`
+ * script's name and arguments included, which over-reads them). `skip` matches a subcommand read past on the
+ * way to the flag (`npm exec -c`). Options are `-x` words, and `/x` ones for cmd
+ * and PowerShell.
  */
+const SHELL = { code: /^-[A-Za-z]*c[A-Za-z]*$/, unreadable: /^-[A-Za-z]*s[A-Za-z]*$/ };
+const POWERSHELL = {
+  // -Command and its prefixes down to -c, -CommandWithArgs and -cwa, each also
+  // as -Command:<code>; -EncodedCommand, -enc, -ec, -e.
+  code: /^[-/](?:c|co|com|comm|comma|comman|command|cwa|commandwithargs)(?::(.*))?$/is,
+  unreadable:
+    /^[-/](e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)$/i,
+  slashOptions: true,
+};
+// -e, -p, or both (-pe); --eval and --print, or --eval=<code>. Neither node
+// nor bun takes code attached to a short flag (`node -e1` is a bad option).
+const JS_EVAL = { code: /^(?:-[A-Za-z]*[ep][A-Za-z]*|--eval|--print)$|^--(?:eval|print)=(.*)$/s };
+// npx -c <code> and npm exec -c <code>: the code runs in a shell.
+const NPM_CALL = { code: /^(?:-c|--call)$|^--call=(.*)$/s };
+
 const INLINE_INTERPRETERS = new Map([
-  ...['sh', 'bash', 'zsh', 'dash', 'ksh'].map((shell) => [
+  // -c alone or in a cluster (-ec, -xc); -s reads the commands from stdin.
+  ...['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh', 'tcsh'].map((shell) => [
     shell,
-    // -c alone or in a cluster (-ec, -xc); -s reads the commands from stdin.
-    { code: /^-[A-Za-z]*c[A-Za-z]*$/, unreadable: /^-[A-Za-z]*s[A-Za-z]*$/ },
+    SHELL,
   ]),
-  ['cmd', { code: /^\/[ck]$/i, slashOptions: true }],
-  ...['pwsh', 'powershell'].map((shell) => [
-    shell,
+  // -c / -C (--init-command) alone or in a cluster, --command, --command=<code>.
+  ['fish', { code: /^-[A-Za-z]*[cC][A-Za-z]*$|^--(?:command|init-command)(?:=(.*))?$/s }],
+  // /c or /k, and everything after it in the same word (`/cchoco install x`).
+  ['cmd', { code: /^\/[ck](.*)$/is, slashOptions: true }],
+  ['pwsh', POWERSHELL],
+  ['powershell', { ...POWERSHELL, positional: true }],
+  ['node', JS_EVAL],
+  ['bun', JS_EVAL],
+  ['deno', { code: /^eval$/ }],
+  // -c, or a cluster ending in it (-Ic); code attached after it is the code.
+  ...['python', 'python3', 'py'].map((python) => [python, { code: /^-[A-Za-z]*?c(.*)$/s }]),
+  ['perl', { code: /^-[A-Za-z]*?[eE](.*)$/s }],
+  ['ruby', { code: /^-[A-Za-z]*?e(.*)$/s }],
+  // -S <string> / --split-string: env splits the string and runs it as argv.
+  [
+    'env',
     {
-      // -Command and its prefixes down to -c; -EncodedCommand, -enc, -ec, -e.
-      code: /^[-/](c|co|com|comm|comma|comman|command)$/i,
-      unreadable:
-        /^[-/](e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)$/i,
-      slashOptions: true,
+      code: /^-[A-Za-z0-9]*?S(.*)$|^--split-string(?:=(.*))?$/s,
+      dashIsStdin: false,
     },
-  ]),
-  // -e, -p, or both (-pe); --eval and --print, or --eval=<code>.
-  ['node', { code: /^(-[A-Za-z]*[ep][A-Za-z]*|--eval|--print)$|^--(eval|print)=/ }],
-  ...['python', 'python3', 'py'].map((python) => [python, { code: /^-[A-Za-z]*c$/ }]),
-  ['perl', { code: /^-[A-Za-z]*[eE][A-Za-z]*$/ }],
-  ['ruby', { code: /^-[A-Za-z]*e[A-Za-z]*$/ }],
+  ],
+  ['npx', NPM_CALL],
+  ['npm', { ...NPM_CALL, skip: /^(?:exec|x)$/ }],
 ]);
 
+/** Around a command in shell or script code: whitespace and these, never part of a name. */
+const CODE_SEPARATORS = /[\s;&|<>(){}[\],`$=!]+/;
+
 /**
- * The words of inline code: split on whitespace and on the punctuation a shell
- * or a script puts around a command (quotes, brackets, `;`, `&`, `|`, `<`, `>`,
- * backticks, `$`, `=`, `,`, `!`). The code is NOT parsed: every word is read,
- * whatever role it plays, so the rule over-reads rather than under-reads.
+ * Two readings of inline code as words, each read on its own.
+ *
+ * - The SHELL reading removes quotes and backslashes before splitting, as a
+ *   shell does when it builds a word: `ap''t-get`, `a\pt-get` and `su"d"o` are
+ *   the words apt-get and sudo, and so is `$'sudo'`.
+ * - The SCRIPT reading splits on quotes and keeps backslashes, so a string
+ *   literal is a word of its own (`'sudo'.trim()`, `"sudo"+x`) and a Windows
+ *   path keeps the separators commandName reads (`C:\x\choco.exe`).
+ *
+ * The code is NOT parsed: every word of each reading is read, whatever role it
+ * plays (an argument, a string, a comment), and either reading refuses. What it
+ * does not do is RUN the code, so a word the code assembles at run time passes
+ * it (LIMITS, at hostChange).
  */
-function inlineWords(code) {
-  return code.split(/[\s;&|<>(){}[\],'"`$=!]+/).filter(Boolean);
+function inlineReadings(code) {
+  const shell = code
+    .replace(/\$(?=['"])/g, '')
+    .replace(/['"\\]/g, '')
+    .split(CODE_SEPARATORS);
+  const script = code.split(/['"]/).flatMap((part) => part.split(CODE_SEPARATORS));
+  return [script.filter(Boolean), shell.filter(Boolean)];
 }
 
 /** The command an argv word names: its last path component, less a Windows executable suffix. */
@@ -286,16 +333,28 @@ function commandName(word) {
  * `apk` (a build target), `port 3000` and `--port 3000` all pass.
  *
  * After an interpreter's inline-code flag (`sh -c`, `node -e`, `python3 -c`,
- * INLINE_INTERPRETERS), the rule reads the code's words for the same things, so
- * `bash -c "sudo apt-get ..."` and `node -e "...execSync('apt-get ...')"` are
- * refused like the argv they hide. Code it cannot read is refused outright.
+ * `env -S`, INLINE_INTERPRETERS), the rule reads the code's words for the same
+ * things, so `bash -c "sudo apt-get ..."` and `node -e "...execSync('apt-get ...')"`
+ * are refused like the argv they hide. Code passed in a form the rule knows it
+ * cannot read, encoded (`pwsh -EncodedCommand`) or from stdin (`bash -s`, a
+ * lone `-`), is refused outright.
  *
  * LIMITS. It reads the manifest's argv, and the inline code of those
- * interpreters as words, and follows nothing else: a script FILE
- * (`bash scripts/x.sh`, `node scripts/x.mjs`, `pwsh -File x.ps1`) and an npm
- * script (`npm run x`, whose body may run `sudo apt-get ...`) both pass it
- * unread. Keep host-changing work out of the files and the package.json scripts
- * a step runs.
+ * interpreters as words, and follows nothing else:
+ * - a script FILE (`bash scripts/x.sh`, `node scripts/x.mjs`, `pwsh -File x.ps1`,
+ *   a module node preloads with `-r` or `--import`) and a package.json or
+ *   deno.json script (`npm run x`, `deno task x`, whose body may run
+ *   `sudo apt-get ...`) pass it unread;
+ * - inline code is read, never run, so a word the code BUILDS at run time
+ *   passes: a variable or a command substitution inside a name
+ *   (`ap${X}t-get`, `$(printf sudo)`), a glob (`/usr/bin/su?o`), a string
+ *   concatenated in a script (`'su' + 'do'`), or decoded data;
+ * - a program that runs a string as code but is not in INLINE_INTERPRETERS
+ *   passes with its code unread: `awk 'BEGIN { system("...") }'`, `php -r`,
+ *   `lua -e`, `Rscript -e`, `osascript -e`, `pnpm dlx -c`, `yarn exec`,
+ *   `git -c alias.x='!...'`, `make --eval`.
+ * Keep host-changing work out of the files and the package.json scripts a step
+ * runs, and out of code a step builds.
  */
 function hostChange(argv) {
   for (let t = 0; t < argv.length; t += 1) {
@@ -325,34 +384,59 @@ function hostChange(argv) {
   return null;
 }
 
+/** The host change in `inline`, the words of code run by `prefix` (`bash -c`), or null. */
+function codeHostChange(prefix, inline) {
+  if (inline[0] === '-') return { quoted: `${prefix} -`, unreadable: true };
+  for (const words of inlineReadings(inline.join(' '))) {
+    const inner = hostChange(words);
+    if (inner !== null) {
+      return { quoted: `${prefix} … ${inner.quoted}`, unreadable: inner.unreadable };
+    }
+  }
+  return null;
+}
+
 /**
  * The host change in the inline code of the interpreter at argv[t], or an
  * unreadable form of that code, or null. Its options are read until the first
  * word that is neither an option nor, possibly, an option's value: that word is
- * a script file, and what follows it belongs to the script.
+ * a script file, and what follows it belongs to the script (for PowerShell 5.1,
+ * that word is the code).
  */
-function inlineHostChange(argv, t, { code, unreadable, slashOptions = false }) {
+function inlineHostChange(argv, t, interpreter) {
+  const {
+    code,
+    unreadable,
+    skip,
+    positional = false,
+    slashOptions = false,
+    dashIsStdin = true,
+  } = interpreter;
   const isOption = (word) => word.startsWith('-') || (slashOptions && word.startsWith('/'));
+  let via = argv[t];
   let mayBeOptionValue = false;
   for (let s = t + 1; s < argv.length; s += 1) {
     const word = argv[s];
-    if (word === '-' || unreadable?.test(word)) {
-      return { quoted: `${argv[t]} ${word}`, unreadable: true };
+    if ((dashIsStdin && word === '-') || unreadable?.test(word)) {
+      return { quoted: `${via} ${word}`, unreadable: true };
     }
-    if (code.test(word)) {
-      const attached =
-        word.startsWith('--') && word.includes('=') ? [word.slice(word.indexOf('=') + 1)] : [];
-      const inline = [...attached, ...argv.slice(s + 1)];
-      const flag = attached.length > 0 ? word.slice(0, word.indexOf('=')) : word;
-      if (inline[0] === '-') return { quoted: `${argv[t]} ${flag} -`, unreadable: true };
-      const inner = hostChange(inline.flatMap(inlineWords));
-      if (inner === null) return null;
-      return { quoted: `${argv[t]} ${flag} … ${inner.quoted}`, unreadable: inner.unreadable };
+    const flag = code.exec(word);
+    if (flag !== null) {
+      const attached = flag.slice(1).find((group) => group !== undefined && group !== '');
+      const shown =
+        attached === undefined ? word : word.slice(0, -attached.length).replace(/[=:]$/, '');
+      const inline = attached === undefined ? argv.slice(s + 1) : [attached, ...argv.slice(s + 1)];
+      return codeHostChange(`${via} ${shown}`, inline);
+    }
+    if (skip?.test(word)) {
+      via = `${via} ${word}`;
+      continue;
     }
     if (isOption(word)) {
       mayBeOptionValue = !word.includes('=');
       continue;
     }
+    if (positional) return codeHostChange(via, argv.slice(s));
     if (!mayBeOptionValue) return null;
     mayBeOptionValue = false;
   }
@@ -474,10 +558,17 @@ function validateManifest(manifest) {
       const wd = step.working_dir;
       if (typeof wd !== 'string' || !wd) {
         fail(`ci.toml ${label}: working_dir must be a non-empty string`);
-      } else if (path.posix.isAbsolute(wd) || wd.startsWith('/') || wd.startsWith('\\') || wd.includes(':')) {
+      } else if (
+        path.posix.isAbsolute(wd) ||
+        wd.startsWith('/') ||
+        wd.startsWith('\\') ||
+        wd.includes(':')
+      ) {
         fail(`ci.toml ${label}: working_dir ${JSON.stringify(wd)} must be repo-relative`);
       } else if (wd.split(/[\\/]/).some((c) => c === '..')) {
-        fail(`ci.toml ${label}: working_dir ${JSON.stringify(wd)} must not contain parent components`);
+        fail(
+          `ci.toml ${label}: working_dir ${JSON.stringify(wd)} must not contain parent components`
+        );
       } else if (!fs.existsSync(path.join(REPO_ROOT, wd))) {
         // Not a runner rule — the executor canonicalizes at run time and would
         // fail there. Catching it here turns a dispatch-time failure on a user's
@@ -674,7 +765,9 @@ function checkNpmScriptsResolve(steps) {
     const dir = step.working_dir ?? '.';
     const scripts = scriptsFor(dir);
     if (!scripts) {
-      fail(`ci.toml step '${step.name}': no package.json at ${dir}/ to resolve \`npm run ${name}\``);
+      fail(
+        `ci.toml step '${step.name}': no package.json at ${dir}/ to resolve \`npm run ${name}\``
+      );
       continue;
     }
     if (!(name in scripts)) {

@@ -24,9 +24,18 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { browserUses, checkPlacement } from './check-browser-test-placement.mjs';
+import {
+  browserUses,
+  checkPlacement,
+  GATE,
+  isPackageSource,
+  moduleFacts,
+  resolveRelative,
+  verdict,
+} from './check-browser-test-placement.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK = path.join(REPO_ROOT, 'scripts', 'check-browser-test-placement.mjs');
@@ -47,6 +56,26 @@ function test(name, fn) {
 
 const whats = (source, file = 'x.test.ts') => browserUses(source, file).map((use) => use.what);
 const refused = (file, source) => checkPlacement([{ file, source }]).violations;
+
+/** A module reader over `modules` ({ absolute path: source }), then the real tree. */
+function reader(modules) {
+  return (file) => {
+    if (Object.hasOwn(modules, file)) return modules[file];
+    try {
+      return statSync(file).isFile() ? readFileSync(file, 'utf8') : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+/** checkPlacement over one test file, with `modules` as the helpers it may import. */
+const checkWith = (file, source, modules = {}) =>
+  checkPlacement([{ file, source }], { read: reader(modules) });
+const where = (entries) =>
+  entries.map(
+    (entry) =>
+      `${entry.file ? `${path.relative(REPO_ROOT, entry.file)} ` : ''}${entry.line}: ${entry.what}`
+  );
 
 // Review case (iii): a test that gates on Chromium with no shared gate at all.
 const OWN_GATE = [
@@ -165,6 +194,277 @@ test('a test file reaching nothing is not counted at all', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The sixth review's probes: a browser reached through a helper (A), through
+// a renamed createRequire and a computed property (B), and through a computed
+// import() (D). Each went unread when only the test file was.
+// ---------------------------------------------------------------------------
+
+const HELPER = inWrapperTests('support/have-chromium.ts');
+const HELPER_SOURCE = [
+  "import { existsSync } from 'node:fs';",
+  "import { chromium } from 'playwright';",
+  '',
+  'export const HAVE_CHROMIUM = existsSync(chromium.executablePath());',
+].join('\n');
+const USES_HELPER = [
+  "import { describe, it } from 'vitest';",
+  "import { HAVE_CHROMIUM } from './support/have-chromium.js';",
+  "describe.skipIf(!HAVE_CHROMIUM)('a real-Chromium test', () => it('runs', () => {}));",
+].join('\n');
+
+test('(A) a non-smoke test importing a helper that gates on Chromium is refused', () => {
+  const { violations, reaching } = checkWith(inWrapperTests('frame-pixels.test.ts'), USES_HELPER, {
+    [HELPER]: HELPER_SOURCE,
+  });
+  assert.equal(violations.length, 1);
+  assert.deepEqual(reaching, [inWrapperTests('frame-pixels.test.ts')]);
+  assert.deepEqual(where(violations[0].uses), [
+    "packages/ui-bridge-wrapper/tests/support/have-chromium.ts 2: import from 'playwright'",
+    'packages/ui-bridge-wrapper/tests/support/have-chromium.ts 4: executablePath(',
+  ]);
+});
+
+test('(A) the same import from a test:smoke file is admitted', () => {
+  const { violations } = checkWith(inWrapperTests('frame-pixels-smoke.test.ts'), USES_HELPER, {
+    [HELPER]: HELPER_SOURCE,
+  });
+  assert.deepEqual(violations, []);
+});
+
+test('(A) the helper is followed through a re-export and an index file', () => {
+  const source = "import { HAVE_CHROMIUM } from './support';\nexport { HAVE_CHROMIUM };";
+  const { violations } = checkWith(inWrapperTests('frame-pixels.test.ts'), source, {
+    [inWrapperTests('support/index.ts')]: "export * from './gate-reexport.js';",
+    [inWrapperTests('support/gate-reexport.ts')]:
+      "export { HAVE_CHROMIUM } from './have-chromium';",
+    [HELPER]: HELPER_SOURCE,
+  });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].uses.length, 2);
+});
+
+test('(A) the helper is followed through a literal dynamic import() and require()', () => {
+  for (const source of [
+    "const { HAVE_CHROMIUM } = await import('./support/have-chromium.js');",
+    "const { HAVE_CHROMIUM } = require('./support/have-chromium');",
+    "import gate = require('./support/have-chromium');",
+  ]) {
+    const { violations } = checkWith(inWrapperTests('frame-pixels.test.ts'), source, {
+      [HELPER]: HELPER_SOURCE,
+    });
+    assert.equal(violations.length, 1, source);
+  }
+});
+
+test('(A) a type-only import of the helper is not followed', () => {
+  const source = "import type { Gate } from './support/have-chromium.js';";
+  const { violations, reaching } = checkWith(inWrapperTests('frame-pixels.test.ts'), source, {
+    [HELPER]: HELPER_SOURCE,
+  });
+  assert.deepEqual([violations, reaching], [[], []]);
+});
+
+const CREATE_REQUIRE = [
+  "import { createRequire as makeLoader } from 'node:module';",
+  'const load = makeLoader(import.meta.url);',
+  "const { chromium } = load('playwright');",
+  "const ep = 'executable' + 'Path';",
+  'export const HAVE = Boolean(chromium[ep]());',
+].join('\n');
+
+test('(B) a renamed createRequire with a computed executablePath is refused as unreadable', () => {
+  const violations = refused(inWrapperTests('frame-pixels.test.ts'), CREATE_REQUIRE);
+  assert.equal(violations.length, 1);
+  assert.deepEqual(violations[0].uses, []);
+  assert.deepEqual(where(violations[0].unreadable), ['1: createRequire']);
+});
+
+test('(B) module.createRequire in a reached helper is refused as unreadable', () => {
+  const { violations } = checkWith(
+    inWrapperTests('frame-pixels.test.ts'),
+    "import './support/loader.mjs';",
+    {
+      [inWrapperTests('support/loader.mjs')]:
+        "import module from 'node:module';\nconst req = module.createRequire(import.meta.url);",
+    }
+  );
+  assert.deepEqual(where(violations[0].unreadable), [
+    'packages/ui-bridge-wrapper/tests/support/loader.mjs 2: createRequire',
+  ]);
+});
+
+test('(B) createRequire in a test:smoke file is admitted', () => {
+  assert.deepEqual(refused(inWrapperTests('frame-pixels-smoke.test.ts'), CREATE_REQUIRE), []);
+});
+
+test('(D) import() with a computed module name is refused as unreadable', () => {
+  const source = [
+    "const name = ['play', 'wright'].join('');",
+    'const { chromium } = await import(name);',
+  ].join('\n');
+  const violations = refused(inWrapperTests('frame-pixels.test.ts'), source);
+  assert.equal(violations.length, 1);
+  assert.deepEqual(where(violations[0].unreadable), ['2: import() with a computed specifier']);
+});
+
+test('(D) a template import() and a computed require() are refused too', () => {
+  assert.deepEqual(
+    moduleFacts('await import(`./${x}.js`);\nrequire(name);', 'x.test.ts').unreadable.map(
+      (entry) => entry.what
+    ),
+    ['import() with a computed specifier', 'require() with a computed specifier']
+  );
+});
+
+test('an import cycle is read once per module and ends', () => {
+  const { violations } = checkWith(
+    inWrapperTests('frame-pixels.test.ts'),
+    "import './support/a.js';",
+    {
+      [inWrapperTests('support/a.ts')]: "import './b.js';",
+      [inWrapperTests('support/b.ts')]:
+        "import './a.js';\nimport '../frame-pixels.test.ts';\nimport './have-chromium.js';",
+      [HELPER]: HELPER_SOURCE,
+    }
+  );
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].uses.length, 2);
+});
+
+test('a relative import that resolves to no file is refused as unreadable', () => {
+  const violations = refused(
+    inWrapperTests('frame-pixels.test.ts'),
+    "import { x } from './support/no-such-helper.js';"
+  );
+  assert.deepEqual(where(violations[0].unreadable), [
+    "1: './support/no-such-helper.js', which resolves to no file",
+  ]);
+});
+
+test('an import of a file that is not code is not followed', () => {
+  const { violations } = checkWith(
+    inWrapperTests('frame-pixels.test.ts'),
+    "import data from './fixtures/frame.json';\nimport svg from './fixtures/frame.svg?raw';",
+    {
+      [inWrapperTests('fixtures/frame.json')]: '{"executablePath": 1}',
+      [inWrapperTests('fixtures/frame.svg')]: '<svg/>',
+    }
+  );
+  assert.deepEqual(violations, []);
+});
+
+test('the gate itself is not followed', () => {
+  const source = "import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';";
+  assert.equal(
+    resolveRelative(inWrapperTests('x.test.ts'), '../../../test-support/chromium-gate.mjs').file,
+    GATE
+  );
+  assert.deepEqual(refused(inWrapperTests('frame-pixels.test.ts'), source), []);
+});
+
+test('package source is read for executablePath( alone', () => {
+  const launcher = path.join(REPO_ROOT, 'packages/ui-bridge-wrapper/src/launch-fake.ts');
+  assert.equal(isPackageSource(launcher), true);
+  assert.equal(isPackageSource(HELPER), false);
+  assert.equal(isPackageSource(path.join(REPO_ROOT, 'packages/x/src/__tests__/helper.ts')), false);
+  const source = "import { launch } from '../src/launch-fake.js';";
+  // Product code importing Playwright, loading by a computed specifier: not refused.
+  const quiet = checkWith(inWrapperTests('frame-pixels.test.ts'), source, {
+    [launcher]: "import { chromium } from 'playwright';\nawait import(name);\nimport './gone.js';",
+  });
+  assert.deepEqual([quiet.violations, quiet.reaching], [[], []]);
+  // ...but a skip gate exported from it is.
+  const gated = checkWith(inWrapperTests('frame-pixels.test.ts'), source, {
+    [launcher]:
+      "import { chromium } from 'playwright';\nexport const ok = chromium.executablePath();",
+  });
+  assert.deepEqual(where(gated.violations[0].uses), [
+    'packages/ui-bridge-wrapper/src/launch-fake.ts 2: executablePath(',
+  ]);
+});
+
+test("vi.importActual('playwright') reaches a browser", () => {
+  assert.deepEqual(whats("const pw = await vi.importActual('playwright');"), [
+    "vi.importActual('playwright')",
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// A chromiumAvailable() call inside a try block: its catch swallows the gate's
+// throw, so the test skips silently instead. Refused even in a test:smoke file.
+// ---------------------------------------------------------------------------
+
+test('chromiumAvailable() inside a try block is refused, in a smoke file too', () => {
+  const source = [
+    "import { chromiumAvailable } from '../../../test-support/chromium-gate.mjs';",
+    'let HAVE = false;',
+    'try {',
+    '  HAVE = chromiumAvailable();',
+    '} catch {}',
+  ].join('\n');
+  const { swallowed, violations } = checkWith(inWrapperTests('frame-pixels-smoke.test.ts'), source);
+  assert.deepEqual(violations, []);
+  assert.deepEqual(where(swallowed), [
+    'packages/ui-bridge-wrapper/tests/frame-pixels-smoke.test.ts 4: chromiumAvailable() inside a try block',
+  ]);
+});
+
+test('the call is refused under a renamed import, a namespace, and in a helper', () => {
+  const renamed = [
+    "import { chromiumAvailable as gate } from '../../../test-support/chromium-gate.mjs';",
+    'try { gate(); } catch {}',
+  ].join('\n');
+  assert.deepEqual(
+    moduleFacts(renamed, 'x.test.ts').swallowed.map((entry) => entry.what),
+    ['gate() inside a try block']
+  );
+  const namespace = "import * as g from './gate.mjs';\ntry { g.chromiumAvailable(); } finally {}";
+  assert.equal(moduleFacts(namespace, 'x.test.ts').swallowed.length, 1);
+  const shared = { [inWrapperTests('support/h.mjs')]: 'try { chromiumAvailable(); } catch {}' };
+  const twice = checkPlacement(
+    [
+      { file: inWrapperTests('a-smoke.test.ts'), source: "import './support/h.mjs';" },
+      { file: inWrapperTests('b-smoke.test.ts'), source: "import './support/h.mjs';" },
+    ],
+    { read: reader(shared) }
+  );
+  assert.equal(twice.swallowed.length, 1, 'a helper two tests share is reported once');
+  const { swallowed } = checkWith(
+    inWrapperTests('frame-pixels-smoke.test.ts'),
+    "import './support/h.mjs';",
+    {
+      [inWrapperTests('support/h.mjs')]: 'try { chromiumAvailable(); } catch {}',
+    }
+  );
+  assert.equal(swallowed.length, 1);
+});
+
+test('the verdict fails on a swallowed call alone, and on a violation alone', () => {
+  const swallowing = verdict([
+    {
+      file: inWrapperTests('frame-pixels-smoke.test.ts'),
+      source: 'try { chromiumAvailable(); } catch {}',
+    },
+  ]);
+  assert.equal(swallowing.status, 1);
+  assert.match(swallowing.stderr, /failed \(1 finding\(s\)\)[\s\S]*inside a try block/);
+  const misplaced = verdict([{ file: inWrapperTests('frame-pixels.test.ts'), source: OWN_GATE }]);
+  assert.equal(misplaced.status, 1);
+  assert.match(misplaced.stderr, /frame-pixels\.test\.ts reaches a real browser/);
+  const clean = verdict([{ file: inWrapperTests('plain.test.ts'), source: 'x();' }]);
+  assert.deepEqual([clean.status, clean.stderr], [0, '']);
+  assert.equal(verdict([]).status, 1);
+});
+
+test('the call outside a try block, or in its catch or finally, is not', () => {
+  const source = [
+    'const HAVE = chromiumAvailable();',
+    'try { x(); } catch { chromiumAvailable(); } finally { chromiumAvailable(); }',
+  ].join('\n');
+  assert.deepEqual(moduleFacts(source, 'x.test.ts').swallowed, []);
+});
+
+// ---------------------------------------------------------------------------
 // The entry-point split, and the tracked tree. Importing the check must not run
 // it, or every case above would run a whole-repo check as a side effect; and a
 // check that ran nothing when invoked would exit 0, silently.
@@ -189,6 +489,18 @@ test('running it as a script checks the tracked tree, which passes', () => {
     out,
     /^browser-test placement OK: \d+ tracked test file\(s\) read; \d+ reach a real browser/
   );
+});
+
+test('it reads every tracked *.test.*, *.spec.* and *.e2e.* file', () => {
+  const tracked = execFileSync('git', ['ls-files'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    .split('\n')
+    .filter((file) => /\.(test|spec|e2e)\.[cm]?[jt]sx?$/.test(file));
+  assert.ok(
+    tracked.some((file) => file.endsWith('.e2e.ts')),
+    'the tree has an *.e2e.ts file'
+  );
+  const out = execFileSync(process.execPath, [CHECK], { encoding: 'utf8' });
+  assert.match(out, new RegExp(`^browser-test placement OK: ${tracked.length} tracked test file`));
 });
 
 if (failed) {

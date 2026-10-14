@@ -18,7 +18,12 @@
  * argument, and refuses one. LIMIT: a helper that calls the gate is judged
  * against each test file that imports it only because every vitest config here
  * isolates test files, which is vitest's default. Under `isolate: false` a
- * cached helper is evaluated, and judged, for its first importer alone.
+ * cached helper is evaluated, and judged, for its first importer alone. LIMIT:
+ * both rules are enforced by THROWING, so a caller that catches the throw
+ * (`try { HAVE = chromiumAvailable() } catch {}`) skips silently instead.
+ * scripts/check-browser-test-placement.mjs refuses a chromiumAvailable() call
+ * written inside a `try` block, but not a catch further up the stack (a helper
+ * that wraps the call, itself called inside a `try`).
  *
  * A test that gates on Chromium WITHOUT this gate (its own playwright import or
  * `executablePath(` call) is the other half: scripts/check-browser-test-placement.mjs
