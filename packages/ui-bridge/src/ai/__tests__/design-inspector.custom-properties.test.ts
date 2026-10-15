@@ -115,4 +115,23 @@ describe('indexCustomProperties', () => {
       [],
     ]);
   });
+  it('an unreadable (cross-origin) sheet before a readable one does not hide the readable one', () => {
+    const card = div('card');
+    const readable = style.sheet as CSSStyleSheet;
+    // A cross-origin sheet throws a SecurityError when its rules are read.
+    const crossOrigin = {
+      get cssRules(): CSSRuleList {
+        throw new DOMException('cross-origin stylesheet', 'SecurityError');
+      },
+    } as unknown as CSSStyleSheet;
+    vi.spyOn(document, 'styleSheets', 'get').mockReturnValue([
+      crossOrigin,
+      readable,
+    ] as unknown as StyleSheetList);
+
+    expect(getCSSCustomProperties(card, indexCustomProperties(document, [card]))).toEqual({
+      '--pad': '8px',
+    });
+    expect(getCSSCustomProperties(card)).toEqual({ '--pad': '8px' });
+  });
 });
