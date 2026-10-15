@@ -212,8 +212,18 @@ class MediaFacts(BaseModel):
     src: str | None = None
     alt_text: str | None = Field(None, alias="altText")
     is_decorative: bool = Field(alias="isDecorative")
-    natural_width: float | None = Field(None, alias="naturalWidth")
-    natural_height: float | None = Field(None, alias="naturalHeight")
+    natural_width: float | None = Field(
+        None,
+        alias="naturalWidth",
+        description=(
+            "Pixels of the displayed FILE: the browser's density-corrected naturalWidth "
+            "de-corrected by the displayed srcset candidate (a 2x 800px file is 800, not "
+            "400). Unmeasured when the candidate's density cannot be established."
+        ),
+    )
+    natural_height: float | None = Field(
+        None, alias="naturalHeight", description="De-corrected like natural_width."
+    )
     rendered_width: float = Field(alias="renderedWidth")
     rendered_height: float = Field(alias="renderedHeight")
     device_pixel_ratio: float | None = Field(None, alias="devicePixelRatio")

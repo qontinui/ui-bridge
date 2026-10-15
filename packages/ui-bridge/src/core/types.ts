@@ -485,9 +485,15 @@ export interface MediaFacts {
   altText?: string;
   /** Decorative: empty `alt`, `role="presentation"`, or an `aria-hidden` SVG. Background images always are. */
   isDecorative: boolean;
-  /** Intrinsic width in px (`naturalWidth` / `videoWidth` / the canvas backing store). */
+  /**
+   * Intrinsic width in px of what is displayed: the image FILE's pixels
+   * (`naturalWidth` de-corrected by the displayed srcset candidate's density —
+   * the browser reports a `2x` 800px file as 400), `videoWidth`, or the canvas
+   * backing store. Unmeasured when the candidate's density cannot be
+   * established.
+   */
   naturalWidth?: number;
-  /** Intrinsic height in px. */
+  /** Intrinsic height in px (de-corrected like `naturalWidth`). */
   naturalHeight?: number;
   /** Rendered (border-box) width in CSS px. */
   renderedWidth: number;

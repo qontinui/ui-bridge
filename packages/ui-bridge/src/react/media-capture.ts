@@ -28,6 +28,7 @@ import type {
   MediaType,
 } from '../core/types';
 import { Observation, type UnknownCode } from '../observation/observation';
+import { displayedCandidateDensity } from './srcset-density';
 
 declare const __SDK_VERSION__: string;
 
@@ -572,18 +573,22 @@ function measureReplacedStyle(b: FactsBuilder, cs: CSSStyleDeclaration | undefin
   else b.miss('aspectRatio', 'capability_unavailable_in_build');
 }
 
-/** `naturalWidth/Height` and `effectiveResolution`, given an intrinsic size (or not). */
+/**
+ * `naturalWidth/Height` and `effectiveResolution`, given an intrinsic size —
+ * or the code saying why there is none (`undefined` = not decoded yet).
+ */
 function measureResolution(
   b: FactsBuilder,
-  natural: { width: number; height: number } | undefined,
+  natural: { width: number; height: number } | { code: UnknownCode } | undefined,
   rect: DOMRect,
   cs: CSSStyleDeclaration | undefined,
   defaultFit: string
 ): void {
-  if (!natural || !(natural.width > 0 && natural.height > 0)) {
-    b.miss('naturalWidth', 'input_missing');
-    b.miss('naturalHeight', 'input_missing');
-    b.miss('effectiveResolution', 'input_missing');
+  if (!natural || 'code' in natural || !(natural.width > 0 && natural.height > 0)) {
+    const code = natural && 'code' in natural ? natural.code : 'input_missing';
+    b.miss('naturalWidth', code);
+    b.miss('naturalHeight', code);
+    b.miss('effectiveResolution', code);
     return;
   }
   b.facts.naturalWidth = natural.width;
@@ -629,6 +634,29 @@ export function inferMediaType(element: Element): MediaType {
     default:
       return 'image'; // img, or role="img"
   }
+}
+
+/**
+ * The pixel size of the FILE an `<img>` displays. The browser's
+ * `naturalWidth` / `naturalHeight` are density-corrected for a srcset
+ * candidate (a `2x` 800x600 file reads 400x300), so they are multiplied back
+ * by the displayed candidate's density. When that density cannot be
+ * established the size is a typed unknown — never the corrected number
+ * reported as the file's.
+ */
+function filePixels(
+  img: HTMLImageElement,
+  rect: DOMRect,
+  cs: CSSStyleDeclaration | undefined
+): { width: number; height: number } | { code: UnknownCode } {
+  const resolved = displayedCandidateDensity(img, contentBox(rect, cs).width);
+  if ('code' in resolved) return { code: resolved.code };
+  // The browser rounds the corrected size to whole CSS px; rounding the
+  // product recovers the file's whole pixels to within half a density step.
+  return {
+    width: Math.round(img.naturalWidth * resolved.density),
+    height: Math.round(img.naturalHeight * resolved.density),
+  };
 }
 
 /** Facts for an `<img>` — also the image half of a `<picture>` (`host`). */
@@ -678,13 +706,7 @@ function measureImage(b: FactsBuilder, img: HTMLImageElement, host: Element): vo
   // (unmeasured, `input_missing`).
   if (b.facts.loadingState !== 'error') {
     const loaded = img.complete && img.naturalWidth > 0;
-    measureResolution(
-      b,
-      loaded ? { width: img.naturalWidth, height: img.naturalHeight } : undefined,
-      rect,
-      cs,
-      'fill'
-    );
+    measureResolution(b, loaded ? filePixels(img, rect, cs) : undefined, rect, cs, 'fill');
     measureFormatAndWeight(b, src);
   }
   measurePaintTiming(b, host === img ? [img] : [host, img]);
