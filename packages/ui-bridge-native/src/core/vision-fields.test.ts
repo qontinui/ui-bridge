@@ -434,7 +434,8 @@ describe('projectMedia / projectVisionFields — image elements', () => {
       handlerNames: undefined,
       state: { layout: LAYOUT },
       flatStyle: { resizeMode: 'stretch', backgroundColor: 'transparent' },
-      props: { source: { uri: SHARED_SRC } },
+      // The host spread bridgeProps (accessibilityLabel) and captured them.
+      props: { source: { uri: SHARED_SRC }, accessibilityLabel: 'Hero banner' },
       accessibilityLabel: 'Hero banner',
       inViewport: true,
     });
@@ -493,15 +494,21 @@ describe('projectMedia / projectVisionFields — image elements', () => {
 });
 
 describe('projectMedia — alt: RN has no alt="" rule; decorative only from an explicit hide signal', () => {
+  // `label` is the image's announced label: the registry's when no props were
+  // recorded, else the captured `accessibilityLabel` prop (a host that spread
+  // bridgeProps and captured them).
   const altOf = (
-    accessibilityLabel: string | undefined,
+    label: string | undefined,
     props: Record<string, unknown> | undefined = undefined
   ) =>
     projectMedia({
       layout: LAYOUT,
-      props,
+      props:
+        props === undefined || label === undefined
+          ? props
+          : { ...props, accessibilityLabel: label },
       flatStyle: undefined,
-      accessibilityLabel,
+      accessibilityLabel: props === undefined ? label : undefined,
       inViewport: undefined,
     }).alt;
 
@@ -555,7 +562,7 @@ describe('projectMedia — alt: RN has no alt="" rule; decorative only from an e
   });
 });
 
-describe('resolveImageLabel — RN precedence aria-label ?? accessibilityLabel ?? alt, then the registry', () => {
+describe('resolveImageLabel — RN precedence aria-label ?? accessibilityLabel ?? alt; the registry label only without props', () => {
   const altOf = (props: Record<string, unknown> | undefined, registryLabel?: string) =>
     projectMedia({
       layout: LAYOUT,
@@ -569,7 +576,7 @@ describe('resolveImageLabel — RN precedence aria-label ?? accessibilityLabel ?
     expect(altOf({ alt: 'Sunrise' })).toEqual({ decorative: false, text: 'Sunrise' });
   });
 
-  it('aria-label beats accessibilityLabel beats alt beats the registry label', () => {
+  it('aria-label beats accessibilityLabel beats alt; the registry label is never consulted beside props', () => {
     const all = { 'aria-label': 'A', accessibilityLabel: 'B', alt: 'C' };
     expect(altOf(all, 'R')).toEqual({ decorative: false, text: 'A' });
     expect(altOf({ accessibilityLabel: 'B', alt: 'C' }, 'R')).toEqual({
@@ -577,8 +584,19 @@ describe('resolveImageLabel — RN precedence aria-label ?? accessibilityLabel ?
       text: 'B',
     });
     expect(altOf({ alt: 'C' }, 'R')).toEqual({ decorative: false, text: 'C' });
-    expect(altOf({}, 'R')).toEqual({ decorative: false, text: 'R' });
+  });
+
+  it('no props recorded at all: the registry label is the reading', () => {
     expect(altOf(undefined, 'R')).toEqual({ decorative: false, text: 'R' });
+    expect(resolveImageLabel(undefined, 'R')).toBe('R');
+  });
+
+  // A host that does not spread bridgeProps onto the Image still has a
+  // registry label; the image announces none, so no alt may be claimed.
+  it('a props record with no label omits the alt even with a registry label', () => {
+    expect(altOf({}, 'R')).toBeUndefined();
+    expect(altOf({ source: { uri: SHARED_SRC } }, 'R')).toBeUndefined();
+    expect(resolveImageLabel({}, 'R')).toBeUndefined();
   });
 
   it('a set-but-empty prop wins as RN `??` does, and then omits the alt', () => {
@@ -647,7 +665,7 @@ describe('createSnapshot emits image media', () => {
       type: 'image',
       label: 'Hero',
       accessibilityLabel: 'Hero',
-      props: { source: { uri: SHARED_SRC }, resizeMode: 'center' },
+      props: { source: { uri: SHARED_SRC }, resizeMode: 'center', accessibilityLabel: 'Hero' },
       flatStyle: { backgroundColor: 'transparent' },
     });
     registry.updateElementState('hero', {

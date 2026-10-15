@@ -103,7 +103,8 @@ export interface VisionMedia {
    * for the rule): `{ decorative: true }` only from an explicit RN hide
    * signal in the recorded props (see {@link isHiddenFromAccessibility});
    * otherwise `{ decorative: false, text }` from the label RN announces
-   * (`aria-label ?? accessibilityLabel ?? alt`, then the registry's label —
+   * (`aria-label ?? accessibilityLabel ?? alt`; the registry's label only when
+   * no props were recorded —
    * see {@link resolveImageLabel}) when it is non-empty after stripping ASCII
    * whitespace; otherwise the
    * whole record is OMITTED. RN has no `alt=""` convention, so an empty or
@@ -511,17 +512,23 @@ export function isHiddenFromAccessibility(props: Record<string, unknown> | undef
 /**
  * The label an RN `Image` announces, in RN's own precedence
  * (`aria-label ?? accessibilityLabel ?? alt`, react-native 0.81.5 `Image`):
- * the first of those props that is set wins, even when it is empty. With
- * none of them recorded, the registry's own `accessibilityLabel` (from the
- * element's identifier) is the fallback. Undefined when the winning value is
- * not a string — nothing readable was announced.
+ * the first of those props that is set wins, even when it is empty.
+ *
+ * The registry's own `accessibilityLabel` (from the element's identifier) is
+ * the fallback ONLY when the host recorded no props at all — then the props
+ * were never read, and the identifier is the best reading there is. A props
+ * record carrying none of the three is MEASURED: the image announces no
+ * label, and a registry label must not claim one for it (a host that does
+ * not spread the bridge's props onto the `Image` would otherwise report an
+ * alt the image does not have). Undefined in that case, and when the winning
+ * value is not a string — nothing readable was announced.
  */
 export function resolveImageLabel(
   props: Record<string, unknown> | undefined,
   registryLabel: string | undefined
 ): string | undefined {
-  const own = props?.['aria-label'] ?? props?.accessibilityLabel ?? props?.alt;
-  if (own === undefined || own === null) return registryLabel;
+  if (props === undefined) return registryLabel;
+  const own = props['aria-label'] ?? props.accessibilityLabel ?? props.alt;
   return typeof own === 'string' ? own : undefined;
 }
 
