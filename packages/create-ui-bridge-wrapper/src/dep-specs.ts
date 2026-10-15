@@ -30,18 +30,18 @@
  * which is correct, because a low floor is merely generous rather than wrong.
  * `^0.1.0` was caught because its ceiling is `<0.2.0`.
  *
- * NOTE: these ranges resolve to `@qontinui/ui-bridge-wrapper@0.7.1` and
- * `@qontinui/ui-bridge-headless@0.4.0`, and both of those published tarballs
- * declare `@qontinui/ui-bridge-cli-args`, which has never been published. Until
- * that first publish happens a standalone scaffold cannot `npm install` at all.
- * That break is not caused by these specs — it hits every direct consumer of
- * wrapper and headless identically — but the old stale `^0.1.0` did MASK it,
- * because wrapper 0.1.5 / headless 0.1.0 predate the cli-args dependency.
+ * The floors were raised to the wrapper 0.8.0 release line (headless 0.6.0,
+ * engine 0.28.0). That wrapper drives `launchHeadlessTab` with
+ * `deviceScaleFactor` / `colorScheme` / `pinnedTabId`, which headless 0.5.0
+ * does not know, and publishes a relay `tabKey` that only the 0.28.0+ injected
+ * bundle reads. These floors keep a scaffold from pairing wrapper 0.8.0 with
+ * an older headless or engine (for example through an existing lockfile),
+ * which installs cleanly and then fails at runtime.
  */
 export const REGISTRY_DEP_SPECS: Readonly<Record<string, string>> = {
-  '@qontinui/ui-bridge': '>=0.22.0 <1',
-  '@qontinui/ui-bridge-wrapper': '>=0.7.0 <1',
-  '@qontinui/ui-bridge-headless': '>=0.4.0 <1',
+  '@qontinui/ui-bridge': '>=0.28.0 <1',
+  '@qontinui/ui-bridge-wrapper': '>=0.8.0 <1',
+  '@qontinui/ui-bridge-headless': '>=0.6.0 <1',
 };
 
 /**
