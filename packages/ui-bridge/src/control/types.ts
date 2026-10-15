@@ -560,7 +560,7 @@ export interface FindRequest {
   settleTimeout?: number;
   /**
    * Media rows (images, video, SVG, canvas, …) are INCLUDED unless this is
-   * `false` — the superset invariant. Before ui-bridge 0.31.0 the executor
+   * `false` — the superset invariant. Before ui-bridge 0.33.0 the executor
    * arm needed this flag to return any media row at all.
    */
   includeMedia?: boolean;

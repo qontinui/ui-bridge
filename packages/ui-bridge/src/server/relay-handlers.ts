@@ -120,6 +120,16 @@ function readRelayInnerFailure(result: unknown): { message: string; code: string
   );
 }
 
+/**
+ * Is a relay command's `data` the browser's typed find refusal — an inner
+ * `success: false` carrying the `refusal` the canonical filter raised?
+ */
+function isRelayFindRefusal(result: unknown): boolean {
+  if (!readRelayInnerFailure(result)) return false;
+  const refusal = (result as Record<string, unknown>).refusal;
+  return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
+}
+
 /** Maximum allowed response size for fallback screenshots (10 MB) */
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
 
@@ -1256,11 +1266,13 @@ export function createRelayHandlers(
           : undefined);
       const result = await relayCommand<FindResponse>('find', payload, { targetTabId, context });
       if (result.success) return result;
-      // The browser ANSWERED, with a typed refusal (a request the canonical
-      // filter will not honour — it would refuse it over the cache too). That
-      // is the answer; falling back to the cache would replace a precise
-      // failure with a guess.
-      if (readRelayInnerFailure(result.data)) return result;
+      // The browser ANSWERED with a typed refusal (a request the canonical
+      // filter will not honour, carrying `refusal`): it would refuse it over
+      // the cache too, so that is the answer, and falling back would replace a
+      // precise failure with a guess. Any OTHER browser-side failure (a
+      // handler that threw, an unready page) still falls back to the cache,
+      // as every failure did before the canonical filter.
+      if (isRelayFindRefusal(result.data)) return result;
       // P0 (plan 2026-06-12 item 1): a PINNED read must NEVER be answered from
       // the caller's snapshot cache — that cache is last-writer-wins across
       // ALL the caller's tabs, so serving it would silently return another

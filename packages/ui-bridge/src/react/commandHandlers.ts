@@ -540,7 +540,7 @@ function elementToFindResult(e: RegisteredElement) {
     category: e.category,
     stableRef: createStableRef(e),
     // The media row's observation, scrubbed against the element's own
-    // verdict. This producer emitted none until ui-bridge 0.31.0, so a media
+    // verdict. This producer emitted none until ui-bridge 0.33.0, so a media
     // find over the relay carried its facts only inside `state`.
     mediaMetadata: scrubMediaMetadata(e.mediaMetadata, verdictOf(e.element)),
   };

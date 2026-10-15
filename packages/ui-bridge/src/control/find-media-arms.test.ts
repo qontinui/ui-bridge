@@ -372,7 +372,18 @@ describe('arm-specific behaviour', () => {
     const relay = new CommandRelay({ globalPrefix: `__uiBridgeRefusal_${Math.random()}` });
     const queue = vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
       if (action === 'find') {
-        return { success: false, error: 'contradiction', code: 'UB-VALIDATION-ERROR' };
+        // What commandHandlers' find answers for a FindRefusalError.
+        return {
+          success: false,
+          error: 'contradiction',
+          code: 'UB-VALIDATION-ERROR',
+          refusal: {
+            code: 'UB-VALIDATION-ERROR',
+            options: ['mediaOnly', 'interactiveOnly'],
+            transport: 'relay',
+            detail: 'contradiction',
+          },
+        };
       }
       return getGlobalRegistry().createSnapshot();
     }) as never);
@@ -380,10 +391,22 @@ describe('arm-specific behaviour', () => {
     const res = await createRelayHandlers(relay).find({ mediaOnly: true, interactiveOnly: true });
     expect(res.success).toBe(false);
     expect(res.code).toBe('UB-VALIDATION-ERROR');
-    expect(queue).not.toHaveBeenCalledWith(
-      'getControlSnapshot',
-      expect.anything(),
-      expect.anything()
-    );
+    // Only the find went out: no cache refresh. (`toHaveBeenCalledWith` with
+    // `expect.anything()` never matched here, because the third argument is
+    // undefined, so it could not fail.)
+    expect(queue.mock.calls.map(([action]) => action)).toEqual(['find']);
+  });
+  it('a browser failure that is NOT a typed refusal still falls back to the cache', async () => {
+    const relay = new CommandRelay({ globalPrefix: `__uiBridgeInnerFail_${Math.random()}` });
+    const queue = vi.spyOn(relay, 'queueCommand').mockImplementation((async (action: string) => {
+      // A page-side handler that threw: an inner failure with no `refusal`.
+      if (action === 'find') return { success: false, error: 'handler crashed' };
+      return getGlobalRegistry().createSnapshot();
+    }) as never);
+
+    const res = await createRelayHandlers(relay).find({ mediaOnly: true });
+    expect(res.success).toBe(true);
+    expect(queue.mock.calls.map(([action]) => action)).toEqual(['find', 'getControlSnapshot']);
+    expect((res.data?.elements ?? []).length).toBeGreaterThan(0);
   });
 });
