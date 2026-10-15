@@ -491,11 +491,14 @@ describe('projectMedia / projectVisionFields — image elements', () => {
   });
 });
 
-describe('projectMedia — alt loses ASCII whitespace; a label that strips to nothing is decorative', () => {
-  const altOf = (accessibilityLabel: string | undefined) =>
+describe('projectMedia — alt: RN has no alt="" rule; decorative only from an explicit hide signal', () => {
+  const altOf = (
+    accessibilityLabel: string | undefined,
+    props: Record<string, unknown> | undefined = undefined
+  ) =>
     projectMedia({
       layout: LAYOUT,
-      props: undefined,
+      props,
       flatStyle: undefined,
       accessibilityLabel,
       inViewport: undefined,
@@ -506,14 +509,48 @@ describe('projectMedia — alt loses ASCII whitespace; a label that strips to no
     expect(altOf('\u00a0Hero')).toEqual({ decorative: false, text: '\u00a0Hero' });
   });
 
-  it('reads a label that strips to nothing as decorative, as alt="" is', () => {
-    expect(altOf(' \t\n\f\r ')).toEqual({ decorative: true });
-    expect(altOf('')).toEqual({ decorative: true });
-  });
-
-  it('leaves the alt unmeasured when no label is recorded', () => {
+  it('omits the alt for an empty or whitespace-only label, as for a missing one', () => {
+    expect(altOf(' \t\n\f\r ')).toBeUndefined();
+    expect(altOf('')).toBeUndefined();
     expect(altOf(undefined)).toBeUndefined();
   });
+
+  it.each([
+    [{ accessible: false }],
+    [{ importantForAccessibility: 'no' }],
+    [{ importantForAccessibility: 'no-hide-descendants' }],
+    [{ accessibilityElementsHidden: true }],
+    [{ 'aria-hidden': true }],
+  ])('is decorative only on an explicit hide signal: %j', (props) => {
+    expect(altOf(undefined, props)).toEqual({ decorative: true });
+    expect(altOf('', props)).toEqual({ decorative: true });
+    expect(altOf('Hero', props)).toEqual({ decorative: true });
+  });
+
+  it.each([
+    [{ accessible: true }],
+    [{ importantForAccessibility: 'yes' }],
+    [{ importantForAccessibility: 'auto' }],
+    [{ accessibilityElementsHidden: false }],
+    [{ 'aria-hidden': 'true' }],
+    [{}],
+  ])('a non-hiding prop set keeps the label rule: %j', (props) => {
+    expect(altOf('', props)).toBeUndefined();
+    expect(altOf('Hero', props)).toEqual({ decorative: false, text: 'Hero' });
+  });
+});
+
+describe('resolveObjectFit — own map entries only', () => {
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'a %j resize mode or objectFit style is unknown, never a prototype member',
+    (key) => {
+      expect(resolveObjectFit({ resizeMode: key }, undefined)).toBeUndefined();
+      expect(resolveObjectFit(undefined, { resizeMode: key })).toBeUndefined();
+      expect(resolveObjectFit(undefined, { objectFit: key })).toBeUndefined();
+      // An unknown objectFit style falls through to the resizeMode prop, as RN does.
+      expect(resolveObjectFit({ resizeMode: 'cover' }, { objectFit: key })).toBe('cover');
+    }
+  );
 });
 
 describe('computeInViewport — never promotes an unknown to "on screen"', () => {

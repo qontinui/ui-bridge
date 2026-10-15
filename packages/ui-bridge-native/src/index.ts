@@ -96,6 +96,7 @@ export {
   projectMedia,
   resolveObjectFit,
   resolveImageSource,
+  isHiddenFromAccessibility,
   deriveInteractable,
   deriveText,
   roleForType,
