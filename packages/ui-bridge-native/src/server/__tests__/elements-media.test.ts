@@ -36,7 +36,8 @@ function buildServer() {
     type: 'image',
     label: 'Hero',
     accessibilityLabel: 'Hero',
-    props: { source: { uri: SHARED_SRC }, resizeMode: 'stretch' },
+    // The host spread bridgeProps (accessibilityLabel) and captured them.
+    props: { source: { uri: SHARED_SRC }, resizeMode: 'stretch', accessibilityLabel: 'Hero' },
     flatStyle: { backgroundColor: 'transparent' },
   });
   registry.updateElementState('hero', {
