@@ -9,6 +9,10 @@
  * with a measured observation whose effective resolution reads the device
  * pixel ratio.
  *
+ * A srcset image reports its FILE's pixels: the browser's `naturalWidth` is
+ * density-corrected for the chosen candidate (a `2x` 800x600 file reads
+ * 400x300), and the capture de-corrects it (Phase 7 review, M1).
+ *
  * It imports only modules that exist before Phase 5, so with the phase's
  * production hunks reverted it fails on its assertion, never on an import.
  */
@@ -24,11 +28,12 @@ function decodedImage(
   attrs: Record<string, string>,
   natural: [number, number],
   box: [number, number],
-  parent: Element = document.body
+  parent: Element = document.body,
+  currentSrc?: string
 ): HTMLImageElement {
   const img = document.createElement('img');
   for (const [k, v] of Object.entries(attrs)) img.setAttribute(k, v);
-  const src = new URL(attrs.src ?? '', location.href).href;
+  const src = new URL(currentSrc ?? attrs.src ?? '', location.href).href;
   Object.defineProperty(img, 'complete', { configurable: true, get: () => true });
   Object.defineProperty(img, 'naturalWidth', { configurable: true, get: () => natural[0] });
   Object.defineProperty(img, 'naturalHeight', { configurable: true, get: () => natural[1] });
@@ -86,4 +91,36 @@ it('the injected runtime registers every image with a DPR-aware observation', ()
   }
   const pic = media.filter((e) => e.id === 'img-pic')[0];
   expect(pic.type).toBe('picture');
+});
+
+it('the injected runtime reports a 2x srcset image at its file pixels, not the corrected ones', () => {
+  const prior = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+  restores.push(() => {
+    if (prior) Object.defineProperty(window, 'devicePixelRatio', prior);
+  });
+
+  // The browser chose the 2x candidate and reports its 800x600 file as
+  // 400x300; drawn in a 400x300 CSS box at DPR 2 it is exactly what is shown.
+  decodedImage(
+    { alt: 'Hero', src: '/hero-400.png', srcset: '/hero-400.png 1x, /hero-800.png 2x' },
+    [400, 300],
+    [400, 300],
+    document.body,
+    '/hero-800.png'
+  );
+
+  const registry = new UIBridgeRegistry();
+  const stop = observeAndSeed(registry, document.body);
+  stop();
+
+  const media = registry.getAllMediaElements();
+  expect(media.map((e) => e.id)).toEqual(['img-hero']);
+  const obs = media[0].mediaMetadata as unknown as {
+    status: string;
+    value: { naturalWidth?: number; naturalHeight?: number; effectiveResolution?: number };
+  };
+  expect(obs.status).toBe('measured');
+  expect([obs.value.naturalWidth, obs.value.naturalHeight]).toEqual([800, 600]);
+  expect(obs.value.effectiveResolution).toBe(1);
 });
