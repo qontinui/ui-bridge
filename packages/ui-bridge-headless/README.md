@@ -96,7 +96,7 @@ await tab.close();
 ### Device pixel ratio and colour scheme
 
 `deviceScaleFactor` and `colorScheme` are browser-CONTEXT options (in the
-release after 0.5.0): the page reads them back as `window.devicePixelRatio` and
+0.6.0 and later): the page reads them back as `window.devicePixelRatio` and
 `matchMedia('(prefers-color-scheme: dark)')`, and a screenshot is
 `viewport × deviceScaleFactor` pixels.
 

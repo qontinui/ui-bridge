@@ -156,7 +156,7 @@ rather than being measured as if it had applied. (Chromium's
 `--force-device-scale-factor` passed through `--launch-arg` does **not** reach
 the page — Playwright's viewport emulation overrides it.) Needs
 `@qontinui/ui-bridge-headless` with `deviceScaleFactor`/`colorScheme` support
-(the release after 0.5.0).
+(0.6.0 or later).
 
 ```bash
 # one frame at a Retina DPR in dark mode, paired with its snapshot
