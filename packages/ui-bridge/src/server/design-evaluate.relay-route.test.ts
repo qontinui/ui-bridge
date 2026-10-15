@@ -211,4 +211,40 @@ describe('POST /design/evaluate through a relay app', () => {
       'save',
     ]);
   });
+  it('the page reads its stylesheets once per evaluation, and not at all when no metric reads them', async () => {
+    await mountRelayApp();
+    const style = document.createElement('style');
+    style.textContent = ':root { --brand: #123456; } button { --pad: 4px; }';
+    document.head.appendChild(style);
+    const sheets = vi.spyOn(document, 'styleSheets', 'get');
+    try {
+      // A context that enables no metric reading custom properties: the page
+      // never walks its stylesheets.
+      const skipped = await post('/design/evaluate', {
+        customContext: {
+          name: 'no-custom-properties',
+          description: 'customPropertyConsistency off',
+          metrics: {
+            customPropertyConsistency: {
+              enabled: false,
+              weight: 0,
+              thresholds: { good: 80, warning: 50 },
+            },
+          },
+        },
+      });
+      expect(skipped.body.success).toBe(true);
+      expect(sheets).not.toHaveBeenCalled();
+
+      // The default context reads them: one pass for the whole batch, not one
+      // per element.
+      const read = await post('/design/evaluate', { context: 'general' });
+      expect(read.body.success).toBe(true);
+      expect(read.body.data!.totalElements).toBe(2);
+      expect(sheets).toHaveBeenCalledTimes(1);
+    } finally {
+      sheets.mockRestore();
+      style.remove();
+    }
+  });
 });
