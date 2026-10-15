@@ -99,12 +99,13 @@ export interface VisionMedia {
   /** The CSS object-fit the image's resize mode paints as (see {@link resolveObjectFit}). */
   object_fit?: VisionObjectFit;
   /**
-   * The text alternative, read as one measurement, from the recorded
-   * accessibility label: stripped of ASCII whitespace (the rule every
-   * converter applies), `{ decorative: false, text }`, or `{ decorative: true }`
-   * when a label is present but strips to nothing — as `alt=""` is. With no
-   * label RN may simply not expose the image, so "missing" cannot be told
-   * from "decorative", and the whole record is omitted.
+   * The text alternative, read as one measurement (see {@link projectMedia}
+   * for the rule): `{ decorative: true }` only from an explicit RN hide
+   * signal in the recorded props; otherwise `{ decorative: false, text }` from
+   * a label that is non-empty after stripping ASCII whitespace; otherwise the
+   * whole record is OMITTED. RN has no `alt=""` convention, so an empty or
+   * whitespace-only label is no reading of the alternative, exactly like a
+   * missing one.
    */
   alt?: { decorative: boolean; text?: string };
   /** Lowercase hex SHA-256 of the source URL, query kept (see {@link resolveImageSource}). */
@@ -385,8 +386,10 @@ export function parseFontSizePx(input: unknown): number | undefined {
 }
 
 /**
- * HTML's "ASCII whitespace" at either end: tab, LF, FF, CR, space — the
- * alt-text rule all three snapshot converters share. Deliberately not
+ * HTML's "ASCII whitespace" at either end: tab, LF, FF, CR, space — the same
+ * STRIPPING the web converters apply to alt text, so one label reads the same
+ * text on every surface. Only the stripping is shared: what an EMPTY result
+ * means is not (see {@link projectMedia}). Deliberately not
  * `String.prototype.trim`, which also strips U+00A0 and every other Unicode
  * space.
  */
@@ -402,13 +405,13 @@ function nonEmptyString(v: unknown): string | undefined {
  * `Libraries/Image/ImageUtils.js`). `scale-down` is NOT implemented by RN: it
  * paints as `contain`, so that is what it maps to here too.
  */
-const OBJECT_FIT_TO_RESIZE_MODE: Readonly<Record<string, string>> = {
-  contain: 'contain',
-  cover: 'cover',
-  fill: 'stretch',
-  'scale-down': 'contain',
-  none: 'none',
-};
+const OBJECT_FIT_TO_RESIZE_MODE: ReadonlyMap<string, string> = new Map([
+  ['contain', 'contain'],
+  ['cover', 'cover'],
+  ['fill', 'stretch'],
+  ['scale-down', 'contain'],
+  ['none', 'none'],
+]);
 
 /**
  * RN resize mode → the CSS object-fit that paints the same layout. `center`
@@ -416,13 +419,16 @@ const OBJECT_FIT_TO_RESIZE_MODE: Readonly<Record<string, string>> = {
  * `repeat` TILES the image, which no object-fit paints, so it maps to nothing
  * and the field is omitted rather than approximated.
  */
-const RESIZE_MODE_TO_OBJECT_FIT: Readonly<Record<string, VisionObjectFit>> = {
-  cover: 'cover',
-  contain: 'contain',
-  stretch: 'fill',
-  center: 'scale-down',
-  none: 'none',
-};
+const RESIZE_MODE_TO_OBJECT_FIT: ReadonlyMap<string, VisionObjectFit> = new Map<
+  string,
+  VisionObjectFit
+>([
+  ['cover', 'cover'],
+  ['contain', 'contain'],
+  ['stretch', 'fill'],
+  ['center', 'scale-down'],
+  ['none', 'none'],
+]);
 
 /**
  * The object-fit an RN `Image` actually paints with, from what the registry
@@ -438,12 +444,14 @@ export function resolveObjectFit(
   props: Record<string, unknown> | undefined,
   flatStyle: Record<string, unknown> | undefined
 ): VisionObjectFit | undefined {
+  // Maps, not object literals: these strings come from the app, and an object
+  // lookup would answer for inherited prototype keys (`constructor`, …).
   const styleFit = nonEmptyString(flatStyle?.objectFit);
   const mode =
-    (styleFit !== undefined ? OBJECT_FIT_TO_RESIZE_MODE[styleFit] : undefined) ??
+    (styleFit !== undefined ? OBJECT_FIT_TO_RESIZE_MODE.get(styleFit) : undefined) ??
     nonEmptyString(props?.resizeMode) ??
     nonEmptyString(flatStyle?.resizeMode);
-  return mode !== undefined ? RESIZE_MODE_TO_OBJECT_FIT[mode] : undefined;
+  return mode !== undefined ? RESIZE_MODE_TO_OBJECT_FIT.get(mode) : undefined;
 }
 
 /**
@@ -466,6 +474,24 @@ export function resolveImageSource(props: Record<string, unknown> | undefined): 
     return nonEmptyString((one as Record<string, unknown>).uri);
   }
   return undefined;
+}
+
+/**
+ * Whether the recorded props EXPLICITLY take the element out of the
+ * accessibility tree — RN's only "presentational" signals: `accessible={false}`,
+ * `importantForAccessibility="no"` / `"no-hide-descendants"` (Android),
+ * `accessibilityElementsHidden` (iOS) and `aria-hidden` (RN 0.71+). False when
+ * no props were recorded: absence of the signal is not the signal.
+ */
+export function isHiddenFromAccessibility(props: Record<string, unknown> | undefined): boolean {
+  if (!props) return false;
+  return (
+    props.accessible === false ||
+    props.importantForAccessibility === 'no' ||
+    props.importantForAccessibility === 'no-hide-descendants' ||
+    props.accessibilityElementsHidden === true ||
+    props['aria-hidden'] === true
+  );
 }
 
 /**
@@ -497,13 +523,18 @@ export function projectMedia(args: {
   const objectFit = resolveObjectFit(props, flatStyle);
   if (objectFit !== undefined) media.object_fit = objectFit;
 
-  // An image the registry records an accessibility label for is announced
-  // with it, so it has a text alternative and is not decorative — unless the
-  // label strips to nothing under HTML's ASCII-whitespace rule, which reads
-  // as `alt=""` does: decorative.
-  if (typeof accessibilityLabel === 'string') {
+  // The text alternative. RN has no `alt=""` convention: an empty label is
+  // not a declaration that the image is presentational, so it is read like a
+  // missing one. Presentational is only ever an EXPLICIT RN signal — the
+  // element is removed from the accessibility tree — and then no text is
+  // needed. Otherwise a label that survives ASCII-whitespace stripping is the
+  // alternative, and with none the record is omitted: RN may simply not
+  // expose the image, so "missing" cannot be told from "unread".
+  if (isHiddenFromAccessibility(props)) {
+    media.alt = { decorative: true };
+  } else if (typeof accessibilityLabel === 'string') {
     const text = accessibilityLabel.replace(ASCII_WHITESPACE_EDGES, '');
-    media.alt = text ? { decorative: false, text } : { decorative: true };
+    if (text) media.alt = { decorative: false, text };
   }
 
   const src = resolveImageSource(props);
