@@ -5,6 +5,7 @@ import {
   projectVisionFields,
   projectMedia,
   resolveObjectFit,
+  resolveImageLabel,
   resolveImageSource,
   deriveInteractable,
   deriveText,
@@ -520,7 +521,6 @@ describe('projectMedia — alt: RN has no alt="" rule; decorative only from an e
     [{ importantForAccessibility: 'no' }],
     [{ importantForAccessibility: 'no-hide-descendants' }],
     [{ accessibilityElementsHidden: true }],
-    [{ 'aria-hidden': true }],
   ])('is decorative only on an explicit hide signal: %j', (props) => {
     expect(altOf(undefined, props)).toEqual({ decorative: true });
     expect(altOf('', props)).toEqual({ decorative: true });
@@ -537,6 +537,58 @@ describe('projectMedia — alt: RN has no alt="" rule; decorative only from an e
   ])('a non-hiding prop set keeps the label rule: %j', (props) => {
     expect(altOf('', props)).toBeUndefined();
     expect(altOf('Hero', props)).toEqual({ decorative: false, text: 'Hero' });
+  });
+
+  // RN `Image` never reads aria-hidden (only View maps it): still announced.
+  it('aria-hidden does not hide an image', () => {
+    expect(altOf('Hero', { 'aria-hidden': true })).toEqual({ decorative: false, text: 'Hero' });
+    expect(altOf(undefined, { 'aria-hidden': true })).toBeUndefined();
+  });
+
+  // RN `Image`: accessible = props.alt !== undefined ? true : props.accessible.
+  it('accessible={false} does not hide an image that has an alt', () => {
+    expect(altOf(undefined, { accessible: false, alt: 'Hero' })).toEqual({
+      decorative: false,
+      text: 'Hero',
+    });
+    expect(altOf(undefined, { accessible: false, alt: '' })).toBeUndefined();
+  });
+});
+
+describe('resolveImageLabel — RN precedence aria-label ?? accessibilityLabel ?? alt, then the registry', () => {
+  const altOf = (props: Record<string, unknown> | undefined, registryLabel?: string) =>
+    projectMedia({
+      layout: LAYOUT,
+      props,
+      flatStyle: undefined,
+      accessibilityLabel: registryLabel,
+      inViewport: undefined,
+    }).alt;
+
+  it('an image labelled only via alt gets its alt', () => {
+    expect(altOf({ alt: 'Sunrise' })).toEqual({ decorative: false, text: 'Sunrise' });
+  });
+
+  it('aria-label beats accessibilityLabel beats alt beats the registry label', () => {
+    const all = { 'aria-label': 'A', accessibilityLabel: 'B', alt: 'C' };
+    expect(altOf(all, 'R')).toEqual({ decorative: false, text: 'A' });
+    expect(altOf({ accessibilityLabel: 'B', alt: 'C' }, 'R')).toEqual({
+      decorative: false,
+      text: 'B',
+    });
+    expect(altOf({ alt: 'C' }, 'R')).toEqual({ decorative: false, text: 'C' });
+    expect(altOf({}, 'R')).toEqual({ decorative: false, text: 'R' });
+    expect(altOf(undefined, 'R')).toEqual({ decorative: false, text: 'R' });
+  });
+
+  it('a set-but-empty prop wins as RN `??` does, and then omits the alt', () => {
+    expect(resolveImageLabel({ 'aria-label': '', alt: 'C' }, 'R')).toBe('');
+    expect(altOf({ 'aria-label': '', alt: 'C' }, 'R')).toBeUndefined();
+  });
+
+  it('a null prop falls through; a non-string winner is unreadable', () => {
+    expect(resolveImageLabel({ 'aria-label': null, alt: 'C' }, 'R')).toBe('C');
+    expect(resolveImageLabel({ alt: 42 }, 'R')).toBeUndefined();
   });
 });
 

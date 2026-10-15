@@ -101,8 +101,11 @@ export interface VisionMedia {
   /**
    * The text alternative, read as one measurement (see {@link projectMedia}
    * for the rule): `{ decorative: true }` only from an explicit RN hide
-   * signal in the recorded props; otherwise `{ decorative: false, text }` from
-   * a label that is non-empty after stripping ASCII whitespace; otherwise the
+   * signal in the recorded props (see {@link isHiddenFromAccessibility});
+   * otherwise `{ decorative: false, text }` from the label RN announces
+   * (`aria-label ?? accessibilityLabel ?? alt`, then the registry's label —
+   * see {@link resolveImageLabel}) when it is non-empty after stripping ASCII
+   * whitespace; otherwise the
    * whole record is OMITTED. RN has no `alt=""` convention, so an empty or
    * whitespace-only label is no reading of the alternative, exactly like a
    * missing one.
@@ -477,21 +480,49 @@ export function resolveImageSource(props: Record<string, unknown> | undefined): 
 }
 
 /**
- * Whether the recorded props EXPLICITLY take the element out of the
- * accessibility tree — RN's only "presentational" signals: `accessible={false}`,
- * `importantForAccessibility="no"` / `"no-hide-descendants"` (Android),
- * `accessibilityElementsHidden` (iOS) and `aria-hidden` (RN 0.71+). False when
- * no props were recorded: absence of the signal is not the signal.
+ * Whether an RN `Image`'s recorded props EXPLICITLY take it out of the
+ * accessibility tree — the only "presentational" signals an image has, read
+ * the way react-native's own `Image` reads them (checked against 0.81.5
+ * `Image.ios.js` / `Image.android.js`):
+ *
+ * - `accessible={false}` — but ONLY when `alt` is absent: `Image` forces
+ *   `accessible: props.alt !== undefined ? true : props.accessible`, so an
+ *   image with an `alt` is accessible whatever `accessible` says;
+ * - `importantForAccessibility="no"` / `"no-hide-descendants"` (an Android
+ *   prop) and `accessibilityElementsHidden` (an iOS prop). Each is honoured
+ *   on BOTH platforms: the snapshot does not know which platform will render
+ *   the component, and either prop is the developer's stated intent that the
+ *   image is not part of what assistive technology announces.
+ *
+ * `aria-hidden` is deliberately NOT a signal here: RN maps it only on `View`,
+ * and `Image` never reads it, so an image carrying it is still announced.
+ * False when no props were recorded: absence of the signal is not the signal.
  */
 export function isHiddenFromAccessibility(props: Record<string, unknown> | undefined): boolean {
   if (!props) return false;
   return (
-    props.accessible === false ||
+    (props.accessible === false && props.alt === undefined) ||
     props.importantForAccessibility === 'no' ||
     props.importantForAccessibility === 'no-hide-descendants' ||
-    props.accessibilityElementsHidden === true ||
-    props['aria-hidden'] === true
+    props.accessibilityElementsHidden === true
   );
+}
+
+/**
+ * The label an RN `Image` announces, in RN's own precedence
+ * (`aria-label ?? accessibilityLabel ?? alt`, react-native 0.81.5 `Image`):
+ * the first of those props that is set wins, even when it is empty. With
+ * none of them recorded, the registry's own `accessibilityLabel` (from the
+ * element's identifier) is the fallback. Undefined when the winning value is
+ * not a string — nothing readable was announced.
+ */
+export function resolveImageLabel(
+  props: Record<string, unknown> | undefined,
+  registryLabel: string | undefined
+): string | undefined {
+  const own = props?.['aria-label'] ?? props?.accessibilityLabel ?? props?.alt;
+  if (own === undefined || own === null) return registryLabel;
+  return typeof own === 'string' ? own : undefined;
 }
 
 /**
@@ -528,12 +559,14 @@ export function projectMedia(args: {
   // missing one. Presentational is only ever an EXPLICIT RN signal — the
   // element is removed from the accessibility tree — and then no text is
   // needed. Otherwise a label that survives ASCII-whitespace stripping is the
-  // alternative, and with none the record is omitted: RN may simply not
-  // expose the image, so "missing" cannot be told from "unread".
+  // alternative — read in RN's own label precedence (see resolveImageLabel) —
+  // and with none the record is omitted: RN may simply not expose the image,
+  // so "missing" cannot be told from "unread".
   if (isHiddenFromAccessibility(props)) {
     media.alt = { decorative: true };
-  } else if (typeof accessibilityLabel === 'string') {
-    const text = accessibilityLabel.replace(ASCII_WHITESPACE_EDGES, '');
+  } else {
+    const label = resolveImageLabel(props, accessibilityLabel);
+    const text = label?.replace(ASCII_WHITESPACE_EDGES, '');
     if (text) media.alt = { decorative: false, text };
   }
 
