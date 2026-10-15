@@ -97,6 +97,7 @@ export {
   resolveObjectFit,
   resolveImageSource,
   isHiddenFromAccessibility,
+  resolveImageLabel,
   deriveInteractable,
   deriveText,
   roleForType,
