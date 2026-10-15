@@ -205,7 +205,9 @@ describe('an unresolvable candidate is UNMEASURED, never guessed', () => {
       src: '/same.png',
       currentSrc: abs('/same.png'),
       natural: [400, 300],
-      attrs: { srcset: '/same.png 2x' }, // src is the implicit 1x candidate
+      // The srcset has no 1x and no w candidate, so `src` joins the img's
+      // source set as its 1x candidate: one URL, two densities.
+      attrs: { srcset: '/same.png 2x' },
     });
     const obs = captureMediaMetadata(img);
     expect(measured(obs).naturalWidth).toBeUndefined();
@@ -238,20 +240,97 @@ describe('parseSrcset', () => {
     expect(parseSrcset('a.png 2x 800w, b.png foo, c.png 0x, d.png 3x')).toEqual([
       { url: 'd.png', density: 3 },
     ]);
+    // Not valid HTML floating-point numbers.
+    expect(parseSrcset('a.png 1.x, b.png +2x, c.png 1.e2x, d.png .5x')).toEqual([
+      { url: 'd.png', density: 0.5 },
+    ]);
+  });
+});
+
+describe('next/image shapes (src repeats a srcset candidate)', () => {
+  const nx = (w: number) => `/_next/image?url=%2Fhero.png&w=${w}&q=75`;
+
+  it('x-kind (`w=640 1x, w=1080 2x`, src = the 2x URL) at DPR 2 reads the 2x file', () => {
+    restores.push(setDevicePixelRatio(2));
+    const img = makeImage({
+      alt: 'hero',
+      src: nx(1080),
+      currentSrc: abs(nx(1080)),
+      natural: [540, 360], // the 1080x720 file, density-corrected by 2
+      rendered: [540, 360],
+      attrs: { srcset: `${nx(640)} 1x, ${nx(1080)} 2x` },
+    });
+    const facts = measured(captureMediaMetadata(img));
+    // The srcset holds a 1x candidate, so src is NOT a second (1x) reading.
+    expect([facts.naturalWidth, facts.naturalHeight]).toEqual([1080, 720]);
+    expect(facts.effectiveResolution).toBe(1);
+  });
+
+  it('w-kind (src = the largest candidate) reads the file through the w descriptor', () => {
+    stubMatchMedia({ width: 960, height: 800 });
+    const img = makeImage({
+      alt: 'hero',
+      src: nx(1920),
+      currentSrc: abs(nx(1920)),
+      natural: [960, 540], // 1920w over a 100vw = 960px source size: density 2
+      rendered: [960, 540],
+      attrs: { srcset: `${nx(640)} 640w, ${nx(1080)} 1080w, ${nx(1920)} 1920w`, sizes: '100vw' },
+    });
+    const facts = measured(captureMediaMetadata(img));
+    expect([facts.naturalWidth, facts.naturalHeight]).toEqual([1920, 1080]);
+  });
+
+  it('a <picture> <source> never takes the img src as a candidate', () => {
+    restores.push(setDevicePixelRatio(2));
+    const picture = document.createElement('picture');
+    const source = document.createElement('source');
+    source.setAttribute('srcset', '/p.webp 2x');
+    picture.appendChild(source);
+    document.body.appendChild(picture);
+    // src names the same URL; it belongs to the img's own source set, which
+    // has no srcset, so it is that set's 1x candidate — a different set.
+    const img = makeImage({
+      alt: 'p',
+      src: '/p.png',
+      currentSrc: abs('/p.webp'),
+      natural: [200, 100],
+      parent: picture,
+    });
+    expect(measured(captureMediaMetadata(img)).naturalWidth).toBe(400);
   });
 });
 
 describe('resolveSourceSize', () => {
-  it('reads px, vw against the confirmed viewport, and auto as the layout width', () => {
+  it('reads px, absolute units, and vw/vh against the confirmed viewport', () => {
     stubMatchMedia({ width: 1200, height: 900 });
     expect(resolveSourceSize('300px', undefined)).toEqual({ px: 300 });
+    expect(resolveSourceSize('1in', undefined)).toEqual({ px: 96 });
     expect(resolveSourceSize('25vw', undefined)).toEqual({ px: 300 });
-    expect(resolveSourceSize('auto', 321)).toEqual({ px: 321 });
     expect(resolveSourceSize('(max-width: 10px) 5px, 50vh', undefined)).toEqual({ px: 450 });
   });
 
-  it('refuses font-relative lengths rather than assuming a font size', () => {
+  it('honours sizes="auto" only as the first entry of a lazy image', () => {
+    expect(resolveSourceSize('auto, 200px', 321, true)).toEqual({ px: 321 });
+    // Not lazy: the auto entry is skipped and the next one is read.
+    expect(resolveSourceSize('auto, 200px', 321, false)).toEqual({ px: 200 });
+    // Not first: skipped even on a lazy image.
+    stubMatchMedia({ width: 1200, height: 900 });
+    expect(resolveSourceSize('(max-width: 1px) 5px, auto, 200px', 321, true)).toEqual({
+      px: 200,
+    });
+  });
+
+  it('skips an invalid entry and reads the next, as the browser does', () => {
+    expect(resolveSourceSize('50%, 300px', undefined)).toEqual({ px: 300 });
+    expect(resolveSourceSize('-10px, 200px', undefined)).toEqual({ px: 200 });
+    expect(resolveSourceSize('12, banana, 10furlongs, 150px', undefined)).toEqual({ px: 150 });
+  });
+
+  it('refuses font-relative lengths and math functions rather than assuming a value', () => {
     expect(resolveSourceSize('20em', undefined)).toMatchObject({
+      code: 'capability_unavailable_in_build',
+    });
+    expect(resolveSourceSize('calc(100vw - 2rem), 300px', undefined)).toMatchObject({
       code: 'capability_unavailable_in_build',
     });
   });
