@@ -1,17 +1,20 @@
-<!-- BEGIN License & CLA preamble — added 2026-04-29 during AGPL rollout -->
+<!-- BEGIN License & DCO preamble — relicensed under MIT, and the CLA replaced by the DCO, 2026-10-17 -->
 
-## License & CLA
+## License & DCO
 
-This project is licensed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`). See [`LICENSE`](LICENSE) for the full text. Contributors should be aware:
+This project is licensed under the **MIT License** (`MIT`). See [`LICENSE`](LICENSE) for the full text.
 
-- AGPL is a strong copyleft license. Anyone who runs a modified version of this project as a network service must publish their modifications under AGPL too.
-- For typical self-hosting, internal use, forking, or contributing back, AGPL behaves like GPL.
+Contributions are accepted under the **[Developer Certificate of Origin (DCO) 1.1](https://developercertificate.org)** — there is no Contributor License Agreement to sign. Certify that you wrote (or otherwise have the right to submit) your contribution by adding a `Signed-off-by` trailer to every commit:
 
-All non-trivial contributions require signing the qontinui Contributor License Agreement (CLA). The CLA is administered via [cla-assistant.io](https://cla-assistant.io/) — when you open a pull request, the CLA bot will comment with a one-click sign link, and signing applies across all qontinui repositories. The CLA text lives in [`CLA.md`](CLA.md). It grants Joshua Spinak the right to relicense your contribution under any future license; you retain copyright in your contributions.
+```bash
+git commit -s -m "your message"
+```
+
+`-s` appends `Signed-off-by: Your Name <your@email>` from your `git config user.name` / `user.email`. Your contributions are licensed under the same MIT License as the project (inbound = outbound), and you retain copyright in them.
 
 The remainder of this document covers contribution mechanics specific to this repository.
 
-<!-- END License & CLA preamble -->
+<!-- END License & DCO preamble -->
 
 # Contributing to UI Bridge
 
@@ -117,12 +120,12 @@ ui-bridge/
 
 4. **Commit your changes**
 
-   Use clear, descriptive commit messages:
+   Use clear, descriptive commit messages, and sign off every commit (`-s`, see License & DCO above):
 
    ```bash
-   git commit -m "feat: add workflow pause/resume functionality"
-   git commit -m "fix: resolve element state not updating on blur"
-   git commit -m "docs: add Tauri integration guide"
+   git commit -s -m "feat: add workflow pause/resume functionality"
+   git commit -s -m "fix: resolve element state not updating on blur"
+   git commit -s -m "docs: add Tauri integration guide"
    ```
 
    Commit message format:
@@ -358,4 +361,4 @@ Include:
 
 ## License
 
-UI Bridge is licensed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`); see [`LICENSE`](LICENSE). By contributing, you agree that your contributions are licensed under AGPL-3.0-or-later and you sign the [Contributor License Agreement](CLA.md) — which additionally grants Joshua Spinak the right to relicense your contribution (e.g. under a commercial/dual license). The CLA is retained on UI Bridge specifically because it is the embeddable library where the dual-/commercial-license lever is a real revenue path; the other qontinui apps use the DCO instead.
+UI Bridge is licensed under the **MIT License** (`MIT`); see [`LICENSE`](LICENSE). By contributing, you agree that your contributions are licensed under the MIT License, and you certify the [Developer Certificate of Origin 1.1](https://developercertificate.org) by signing off every commit (`git commit -s`) — see License & DCO at the top of this document.

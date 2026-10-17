@@ -283,10 +283,6 @@ const UNGUARDED_DOCS = [
     why: 'contributor templates and workflow notes — not product documentation',
   },
   {
-    at: 'CLA.md',
-    why: 'a legal agreement — its text is negotiated, not maintained against the API',
-  },
-  {
     at: 'STATEMENT_OF_PURPOSE.md',
     why: 'a project charter — prose about intent, with no install or import instructions',
   },
@@ -299,7 +295,7 @@ const UNGUARDED_DOCS = [
  * Deliberately NOT a roster of paths, and deliberately with no exemption list.
  *
  * DOC_SURFACES needs both because markdown is an open set of trees that get
- * added, moved and emptied, and because some of it (a CLA, a charter, an issue
+ * added, moved and emptied, and because some of it (a charter, an issue
  * template) genuinely documents nothing about the API. Source comments have
  * neither property. There is exactly one rule — a fenced TypeScript block in a
  * comment is an example, wherever it sits — and a per-path roster over the ~700
