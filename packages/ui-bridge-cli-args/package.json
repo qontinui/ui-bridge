@@ -1,6 +1,6 @@
 {
   "name": "@qontinui/ui-bridge-cli-args",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared CLI argument primitives for the UI Bridge package bins — the single home for the flag-shaped-value swallow guard, unknown-flag rejection, and the shared --quiet/--help kit.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
