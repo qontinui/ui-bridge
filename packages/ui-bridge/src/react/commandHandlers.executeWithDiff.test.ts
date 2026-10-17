@@ -17,11 +17,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   executeCommand,
   __peekRelayChangeTrackerForTest,
-  __resetRelayChangeTrackerForTest,
+  __resetRelayForTest,
   type BridgeAccess,
 } from './commandHandlers';
 import { CompositeIdleDetector } from '../idle';
-import { registerRelayTrafficBase, getRelayTrafficBases } from '../relay/relay-traffic';
+import {
+  registerRelayTrafficBase,
+  getRelayTrafficBases,
+  isRelayOwnTraffic,
+} from '../relay/relay-traffic';
 import { startRelayClient } from '../relay/relay-client';
 import { getGlobalRegistry } from '../core/registry';
 import { CommandRelay } from '../server/command-relay';
@@ -33,6 +37,11 @@ const emptyBridge: BridgeAccess = {
   components: [],
   workflows: [],
 };
+
+// Every test starts and ends with the relay's network plumbing torn down
+// (relay-created tracker uninstalled, idle detector destroyed, bases cleared).
+beforeEach(() => __resetRelayForTest());
+afterEach(() => __resetRelayForTest());
 
 /** jsdom has no layout, so `offsetParent` is null for everything and the
  *  relay's visibility gate would refuse every action. Stub it truthy. */
@@ -348,7 +357,7 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
   let host: HTMLElement;
 
   beforeEach(() => {
-    __resetRelayChangeTrackerForTest();
+    __resetRelayForTest();
     host = document.createElement('div');
     makeVisible(host);
     document.body.appendChild(host);
@@ -362,7 +371,7 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     host.remove();
     getGlobalRegistry().clear();
     delete (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__;
-    __resetRelayChangeTrackerForTest();
+    __resetRelayForTest();
     vi.restoreAllMocks();
   });
 
@@ -410,16 +419,22 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     });
   }, 30_000);
 
-  it("the relay-created tracker ignores the relay's own traffic (its registered base paths)", async () => {
-    registerRelayTrafficBase('/relay-own-base');
+  it("the relay-created tracker drops exactly the relay's own endpoints, nothing that merely contains the base", async () => {
+    registerRelayTrafficBase('/ui-bridge');
     getGlobalRegistry().registerElement('mixed', host, {
       type: 'custom',
       customActions: {
         load: {
           id: 'load',
           handler: () => {
-            void fetch('/relay-own-base/heartbeat').catch(() => undefined);
-            void fetch('/api/orders').catch(() => undefined);
+            for (const url of [
+              '/ui-bridge/heartbeat',
+              '/ui-bridge/commands',
+              '/ui-bridge-demo/x',
+              '/api/next?next=/ui-bridge',
+            ]) {
+              void fetch(url).catch(() => undefined);
+            }
             return { ok: true };
           },
         },
@@ -437,7 +452,7 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     const urls = result.timeline.events
       .filter((e) => e.type === 'network-request-started')
       .map((e) => e.url);
-    expect(urls).toEqual([`${location.origin}/api/orders`]);
+    expect(urls).toEqual([`${location.origin}/ui-bridge-demo/x`, `${location.origin}/api/next`]);
   }, 30_000);
 
   it('startRelayClient registers its base path as relay traffic', () => {
@@ -453,14 +468,79 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     }
   });
 
-  it('an app-supplied tracker is left as the app configured it', async () => {
-    const addIgnorePattern = vi.fn();
-    (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = {
-      networkTracker: { onEvent: () => () => undefined, addIgnorePattern },
+  it('an app-supplied tracker is filtered by the relay adapters, its config untouched', async () => {
+    registerRelayTrafficBase('/ui-bridge');
+    const listeners = new Set<(e: unknown) => void>();
+    const appTracker = {
+      config: { ignorePatterns: [] as string[] },
+      onEvent: (cb: (e: unknown) => void) => {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
     };
-    registerRelayTrafficBase('/relay-other-base');
+    (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = { networkTracker: appTracker };
+    getGlobalRegistry().registerElement('app', host, {
+      type: 'custom',
+      customActions: {
+        go: {
+          id: 'go',
+          handler: () => {
+            for (const url of [
+              '/ui-bridge/commands/stream?tabId=t',
+              'https://cdn.example/ui-bridge/x.js',
+            ]) {
+              const event = {
+                type: 'request-start',
+                timestamp: Date.now(),
+                entry: { request: { id: url, url, method: 'GET', startedAt: Date.now() } },
+              };
+              listeners.forEach((l) => l(event));
+            }
+            return { ok: true };
+          },
+        },
+      },
+    });
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'app', action: 'go' },
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    )) as { timeline: { events: Array<Record<string, unknown>> } };
+    const urls = result.timeline.events
+      .filter((e) => e.type === 'network-request-started')
+      .map((e) => e.url);
+    expect(urls).toEqual(['https://cdn.example/ui-bridge/x.js']);
+    expect(appTracker.config.ignorePatterns).toEqual([]);
+  }, 30_000);
+
+  it('switching trackers rebuilds the idle detector and the relay ChangeTracker together', async () => {
     await run();
-    expect(addIgnorePattern).not.toHaveBeenCalled();
+    const first = __peekRelayChangeTrackerForTest();
+    const destroy = vi.spyOn(CompositeIdleDetector.prototype, 'destroy');
+    (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = {
+      networkTracker: { onEvent: () => () => undefined },
+    };
+    await run();
+    expect(__peekRelayChangeTrackerForTest()).not.toBe(first);
+    expect(destroy).toHaveBeenCalledOnce();
+    // Same tracker on the next call: nothing is rebuilt.
+    const second = __peekRelayChangeTrackerForTest();
+    await run();
+    expect(__peekRelayChangeTrackerForTest()).toBe(second);
+    expect(destroy).toHaveBeenCalledOnce();
+  }, 30_000);
+
+  it('the reset helper uninstalls the relay-created tracker, restoring fetch', async () => {
+    const original = globalThis.fetch;
+    await run();
+    expect(globalThis.fetch).not.toBe(original);
+    __resetRelayForTest();
+    expect(globalThis.fetch).toBe(original);
+    expect(getRelayTrafficBases()).toEqual([]);
   }, 30_000);
 
   it("records the page's NetworkRequestTracker when the app exposes one", async () => {
@@ -533,4 +613,34 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     );
     expect(getSignal.mock.calls.filter(([name]) => name === 'dom')).toHaveLength(0);
   }, 30_000);
+});
+
+describe('isRelayOwnTraffic — an exact endpoint predicate', () => {
+  it('matches only {base}/commands/stream, {base}/commands and {base}/heartbeat on the base origin', () => {
+    registerRelayTrafficBase('/ui-bridge');
+    expect(isRelayOwnTraffic('/ui-bridge/commands')).toBe(true);
+    expect(isRelayOwnTraffic('/ui-bridge/commands/stream?tabId=a')).toBe(true);
+    expect(isRelayOwnTraffic(`${location.origin}/ui-bridge/heartbeat`)).toBe(true);
+    expect(isRelayOwnTraffic('/ui-bridge-demo/x')).toBe(false);
+    expect(isRelayOwnTraffic('https://cdn/ui-bridge/x.js')).toBe(false);
+    expect(isRelayOwnTraffic('https://cdn/ui-bridge/heartbeat')).toBe(false);
+    expect(isRelayOwnTraffic('/api?next=/ui-bridge')).toBe(false);
+    expect(isRelayOwnTraffic('/ui-bridge/commands/other')).toBe(false);
+  });
+
+  it("base '/' ignores only the three endpoints", () => {
+    registerRelayTrafficBase('/');
+    expect(isRelayOwnTraffic('/commands')).toBe(true);
+    expect(isRelayOwnTraffic('/commands/stream')).toBe(true);
+    expect(isRelayOwnTraffic('/heartbeat')).toBe(true);
+    expect(isRelayOwnTraffic('/')).toBe(false);
+    expect(isRelayOwnTraffic('/api/items')).toBe(false);
+    expect(isRelayOwnTraffic('/commands/x')).toBe(false);
+  });
+
+  it('an absolute base matches its own origin only', () => {
+    registerRelayTrafficBase('http://127.0.0.1:9876/ui-bridge/relay');
+    expect(isRelayOwnTraffic('http://127.0.0.1:9876/ui-bridge/relay/heartbeat')).toBe(true);
+    expect(isRelayOwnTraffic(`${location.origin}/ui-bridge/relay/heartbeat`)).toBe(false);
+  });
 });

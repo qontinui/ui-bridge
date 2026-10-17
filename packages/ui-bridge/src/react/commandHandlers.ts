@@ -40,7 +40,7 @@ import {
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { NetworkRequestTracker } from '../network/tracker';
-import { onRelayTrafficBase } from '../relay/relay-traffic';
+import { isRelayOwnTraffic, __clearRelayTrafficForTest } from '../relay/relay-traffic';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type {
   ActionDiffResult,
@@ -664,42 +664,67 @@ function isLikelyLightColor(color: string): boolean {
   return l >= 0 && l > 0.6;
 }
 
-// Idle detector singleton (lazy-initialized)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let idleDetector: any = null;
+/** A network event source: what the relay's idle detector and timeline subscribe to. */
+type RelayNetworkSource = Pick<NetworkRequestTracker, 'onEvent'>;
 
 /**
  * The relay's NetworkRequestTracker: the app's own (`__UI_BRIDGE__.
- * networkTracker`, read per call) when it set one, else ONE tracker this
- * dispatcher creates and installs lazily. The idle detector and the relay
- * ChangeTracker both listen on it instead of each patching fetch/XHR —
- * mirroring `createHandlers` in `server/handlers.ts`.
+ * networkTracker`) when it set one, else ONE tracker this dispatcher creates
+ * and installs lazily. Resolved once per relay call; the idle detector and the
+ * relay ChangeTracker both listen on the resolved tracker — through
+ * {@link withoutRelayTraffic}, never by changing its config — mirroring
+ * `createHandlers` in `server/handlers.ts`.
  */
 let relayNetworkTracker: NetworkRequestTracker | null = null;
 
-function currentRelayNetworkTracker(): Pick<NetworkRequestTracker, 'onEvent'> {
+function resolveRelayNetworkTracker(): RelayNetworkSource {
   const appTracker = getBridge().networkTracker;
   if (appTracker) return appTracker;
   if (!relayNetworkTracker) {
     const tracker = new NetworkRequestTracker();
-    // Only the tracker the relay creates: ignore the relay's own traffic
-    // (SSE connect, result POST, heartbeat). An app-supplied tracker is left
-    // exactly as the app configured it.
-    onRelayTrafficBase((base) => tracker.addIgnorePattern(base));
     tracker.install();
     relayNetworkTracker = tracker;
   }
   return relayNetworkTracker;
 }
 
-async function getIdleDetector() {
-  if (idleDetector) return idleDetector;
+/**
+ * An `onEvent` adapter over `source` that drops the relay's own endpoints
+ * (`isRelayOwnTraffic`): the transport carrying a command is not page
+ * activity. Works for an app-supplied tracker without touching its config.
+ */
+function withoutRelayTraffic(source: RelayNetworkSource): RelayNetworkSource {
+  return {
+    onEvent: (callback) =>
+      source.onEvent((event) => {
+        if (!isRelayOwnTraffic(event.entry.request.url)) callback(event);
+      }),
+  };
+}
+
+// Idle detector (lazy), always over the currently resolved network tracker:
+// rebuilt when that tracker changes, so idle and timeline never disagree.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let idleDetector: any = null;
+let idleDetectorSource: RelayNetworkSource | null = null;
+
+async function getIdleDetector(source: RelayNetworkSource = resolveRelayNetworkTracker()) {
+  if (idleDetector && idleDetectorSource === source) return idleDetector;
   try {
     const { CompositeIdleDetector } = await import('../idle');
+    if (idleDetector && idleDetectorSource === source) return idleDetector;
+    if (idleDetector) {
+      try {
+        idleDetector.destroy();
+      } catch {
+        // A failing teardown must not block the replacement.
+      }
+    }
     const detector = CompositeIdleDetector.create({
-      network: { tracker: currentRelayNetworkTracker() as NetworkRequestTracker },
+      network: { tracker: withoutRelayTraffic(source) as NetworkRequestTracker },
     });
     idleDetector = detector;
+    idleDetectorSource = source;
     return detector;
   } catch {
     return null;
@@ -716,8 +741,11 @@ async function getIdleDetector() {
  * strictly smaller than what the snapshot endpoint returned moments
  * earlier — the long-standing 193-vs-118 divergence symptom.
  */
-async function awaitDOMSettledRelay(timeout = 500): Promise<void> {
-  const detector = await getIdleDetector();
+async function awaitDOMSettledRelay(
+  timeout = 500,
+  source: RelayNetworkSource = resolveRelayNetworkTracker()
+): Promise<void> {
+  const detector = await getIdleDetector(source);
   if (!detector) return;
   const domSignal = detector.getSignal?.('dom');
   if (!domSignal || domSignal.isIdle?.()) return;
@@ -1139,7 +1167,9 @@ const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The relay's ChangeTracker — one per page, built lazily on first use.
+ * The relay's ChangeTracker — one per page, built lazily on first use and
+ * rebuilt only when the resolved network tracker changes (its idle detector
+ * and timeline network feed are bound to that tracker).
  *
  * Its action deps resolve through `relayTrackerBridge`, the bridge of the
  * call in flight: the relay dispatcher is handed one `BridgeAccess` per page,
@@ -1147,6 +1177,8 @@ const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
  * registry.
  */
 let relayTracker: import('../ai').ChangeTracker | null = null;
+let relayTrackerSource: RelayNetworkSource | null = null;
+let relayTrackerBridge: BridgeAccess | null = null;
 
 /** A declared-state view that always reads the CURRENT global registry. */
 function liveRegistryView(): StateRegistryLike {
@@ -1158,85 +1190,79 @@ function liveRegistryView(): StateRegistryLike {
   };
 }
 type UIBridgeRegistryOn = ReturnType<typeof getGlobalRegistry>['on'];
-let relayTrackerBuilding: Promise<import('../ai').ChangeTracker> | null = null;
-let relayTrackerBridge: BridgeAccess | null = null;
 
-async function getRelayChangeTracker(): Promise<import('../ai').ChangeTracker> {
-  if (relayTracker) return relayTracker;
-  if (!relayTrackerBuilding) {
-    relayTrackerBuilding = (async () => {
-      const { ChangeTracker, createSnapshotManager } = await import('../ai');
-      const idle = await getIdleDetector();
-      const bridgeNow = (): BridgeAccess => {
-        if (!relayTrackerBridge) throw new Error('relay ChangeTracker used outside a command');
-        return relayTrackerBridge;
-      };
-      const tracker = new ChangeTracker({
-        snapshotManager: createSnapshotManager(),
-        idleDetector: idle,
-        // The registry snapshot carries no workflow-run plane on this
-        // transport; the diff never reads it. Read the CURRENT global
-        // registry each time (it can be replaced, e.g. by the injected runtime).
-        createControlSnapshot: () => ({ ...getGlobalRegistry().createSnapshot(), activeRuns: [] }),
-        refreshElements: () => {
-          try {
-            getGlobalRegistry().refreshScrapedText();
-          } catch {
-            // A failing label refresh must not fail the diff.
-          }
+async function getRelayChangeTracker(
+  source: RelayNetworkSource
+): Promise<import('../ai').ChangeTracker> {
+  if (relayTracker && relayTrackerSource === source) return relayTracker;
+  const { ChangeTracker, createSnapshotManager } = await import('../ai');
+  const idle = await getIdleDetector(source);
+  const network = withoutRelayTraffic(source);
+  const bridgeNow = (): BridgeAccess => {
+    if (!relayTrackerBridge) throw new Error('relay ChangeTracker used outside a command');
+    return relayTrackerBridge;
+  };
+  const tracker = new ChangeTracker({
+    snapshotManager: createSnapshotManager(),
+    idleDetector: idle,
+    // The registry snapshot carries no workflow-run plane on this
+    // transport; the diff never reads it. Read the CURRENT global
+    // registry each time (it can be replaced, e.g. by the injected runtime).
+    createControlSnapshot: () => ({ ...getGlobalRegistry().createSnapshot(), activeRuns: [] }),
+    refreshElements: () => {
+      try {
+        getGlobalRegistry().refreshScrapedText();
+      } catch {
+        // A failing label refresh must not fail the diff.
+      }
+    },
+    // The action runs through this dispatcher's own arms. `skipSettle`:
+    // the tracker owns timing — a settle inside the action would be
+    // recorded as action time and push every offset late.
+    executeNLAction: async (instruction) =>
+      (await executeCommand(
+        'aiExecute',
+        { instruction, skipSettle: true },
+        bridgeNow()
+      )) as NLActionResponse,
+    executeElementAction: async (elementId, request) =>
+      executeCommand(
+        'executeElementAction',
+        {
+          id: elementId,
+          request: { action: request.action, ...request.params },
+          skipSettle: true,
         },
-        // The action runs through this dispatcher's own arms. `skipSettle`:
-        // the tracker owns timing — a settle inside the action would be
-        // recorded as action time and push every offset late.
-        executeNLAction: async (instruction) =>
-          (await executeCommand(
-            'aiExecute',
-            { instruction, skipSettle: true },
-            bridgeNow()
-          )) as NLActionResponse,
-        executeElementAction: async (elementId, request) =>
-          executeCommand(
-            'executeElementAction',
-            {
-              id: elementId,
-              request: { action: request.action, ...request.params },
-              skipSettle: true,
+        bridgeNow()
+      ),
+    // The same tracker the idle detector listens on, minus relay traffic.
+    subscribeNetworkEvents: (callback) =>
+      network.onEvent((event) =>
+        callback({
+          type: event.type,
+          timestamp: event.timestamp,
+          entry: {
+            request: {
+              id: event.entry.request.id,
+              url: event.entry.request.url,
+              method: event.entry.request.method,
+              startedAt: event.entry.request.startedAt,
             },
-            bridgeNow()
-          ),
-        // The relay's NetworkRequestTracker (the app's when it set one), read
-        // when each recording subscribes.
-        subscribeNetworkEvents: (callback) =>
-          currentRelayNetworkTracker().onEvent((event) =>
-            callback({
-              type: event.type,
-              timestamp: event.timestamp,
-              entry: {
-                request: {
-                  id: event.entry.request.id,
-                  url: event.entry.request.url,
-                  method: event.entry.request.method,
-                  startedAt: event.entry.request.startedAt,
-                },
-                response: event.entry.response
-                  ? {
-                      statusCode: event.entry.response.statusCode,
-                      durationMs: event.entry.response.durationMs,
-                    }
-                  : undefined,
-                ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
-              },
-            })
-          ),
-        states: stateSourceFromRegistry(liveRegistryView()),
-      });
-      relayTracker = tracker;
-      return tracker;
-    })().finally(() => {
-      relayTrackerBuilding = null;
-    });
-  }
-  return relayTrackerBuilding;
+            response: event.entry.response
+              ? {
+                  statusCode: event.entry.response.statusCode,
+                  durationMs: event.entry.response.durationMs,
+                }
+              : undefined,
+            ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
+          },
+        })
+      ),
+    states: stateSourceFromRegistry(liveRegistryView()),
+  });
+  relayTracker = tracker;
+  relayTrackerSource = source;
+  return tracker;
 }
 
 /** Test-only: the lazily-built relay tracker, or `null` before first use. */
@@ -1244,10 +1270,24 @@ export function __peekRelayChangeTrackerForTest(): import('../ai').ChangeTracker
   return relayTracker;
 }
 
-/** Test-only: drop the lazily-built relay tracker (it captures the page's network tracker). */
-export function __resetRelayChangeTrackerForTest(): void {
+/**
+ * Test-only: tear the relay's network plumbing down — uninstall the tracker
+ * the relay created (restoring fetch/XHR), destroy the idle detector, drop the
+ * relay ChangeTracker, and forget every registered relay base.
+ */
+export function __resetRelayForTest(): void {
+  relayNetworkTracker?.destroy();
+  relayNetworkTracker = null;
+  try {
+    idleDetector?.destroy();
+  } catch {
+    // ignore
+  }
+  idleDetector = null;
+  idleDetectorSource = null;
   relayTracker = null;
-  relayTrackerBuilding = null;
+  relayTrackerSource = null;
+  __clearRelayTrafficForTest();
 }
 
 /**
@@ -1289,12 +1329,15 @@ async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<A
   const eId = req.elementAction?.elementId ?? req.elementId;
   const eAct = req.elementAction?.action ?? req.action;
   const eParams = req.elementAction?.params ?? req.params;
+  // Resolve the network tracker ONCE for this call: the pre-settle, the idle
+  // detector and the timeline all use the same one.
+  const source = resolveRelayNetworkTracker();
+  const tracker = await getRelayChangeTracker(source);
   // One pre-read settle, BEFORE the timeline's zero, so the before-snapshot
   // sees the settled registry (the inner action calls skip their own).
   if ((payload as { skipSettle?: unknown }).skipSettle !== true) {
-    await awaitDOMSettledRelay(req.settleTimeout);
+    await awaitDOMSettledRelay(req.settleTimeout, source);
   }
-  const tracker = await getRelayChangeTracker();
   relayTrackerBridge = bridge;
   return tracker.executeWithDiff({
     instruction: req.instruction,

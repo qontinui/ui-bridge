@@ -16,8 +16,10 @@
 
 import { it, expect, afterEach, beforeEach } from 'vitest';
 import { setGlobalRegistry, UIBridgeRegistry } from '../core/registry';
+import { __resetRelayForTest } from '../react/commandHandlers';
 
 beforeEach(() => {
+  __resetRelayForTest();
   delete window.__uiBridgeInjected;
   delete window.__uiBridgeInjectedConfig;
   document.body.innerHTML = '';
@@ -32,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetRelayForTest();
   delete window.__uiBridgeInjected;
   setGlobalRegistry(new UIBridgeRegistry());
   document.body.innerHTML = '';

@@ -448,16 +448,6 @@ export class NetworkRequestTracker {
   // Private — Helpers
   // =========================================================================
 
-  /**
-   * Ignore requests whose URL contains `pattern` from now on (same substring
-   * rule as `NetworkTrackerConfig.ignorePatterns`). Idempotent.
-   */
-  addIgnorePattern(pattern: string): void {
-    if (pattern.length > 0 && !this.config.ignorePatterns.includes(pattern)) {
-      this.config.ignorePatterns.push(pattern);
-    }
-  }
-
   private shouldIgnore(url: string): boolean {
     return this.config.ignorePatterns.some((p) => url.includes(p));
   }
