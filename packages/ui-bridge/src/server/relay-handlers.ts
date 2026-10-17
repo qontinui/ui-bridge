@@ -1947,6 +1947,21 @@ export function createRelayHandlers(
       return relayCommand('pageScroll', request, ctxOpts(context));
     },
 
+    // In-situ asset override — the browser-side dispatcher enforces the
+    // dev-controls gate; a tab that has not opted in answers
+    // `capability_unavailable_in_build`.
+    async mediaOverride(request: unknown, context) {
+      return relayCommand('mediaOverride', request, ctxOpts(context));
+    },
+
+    async mediaOverrideRestore(request: unknown, context) {
+      return relayCommand('mediaOverrideRestore', request, ctxOpts(context));
+    },
+
+    async mediaOverrideList(context) {
+      return relayCommand('mediaOverrideList', {}, ctxOpts(context));
+    },
+
     // ========================================================================
     // Annotations
     // ========================================================================

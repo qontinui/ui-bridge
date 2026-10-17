@@ -801,6 +801,23 @@ function error<T = unknown>(message: string, code?: string): APIResponse<T> {
   };
 }
 
+/**
+ * The answer every media-override route gives on a transport with no browser
+ * context: `capability_unavailable_in_build`, typed, so a caller never reads a
+ * 2xx as "applied".
+ */
+function mediaOverrideUnavailable(command: string): APIResponse<unknown> {
+  return {
+    success: false,
+    error:
+      `${command} rewrites the live DOM, which these direct (Node-side) handlers cannot ` +
+      `reach. Use the relay handlers or the injected runtime (inject-cli).`,
+    code: 'UB-CAPABILITY-UNAVAILABLE',
+    data: { code: 'capability_unavailable_in_build', reason: 'no_browser_context' },
+    timestamp: Date.now(),
+  };
+}
+
 // `buildComponentNotFoundError` now lives in its own zero-dependency module
 // (`./component-not-found`) so browser-side consumers (the relay command
 // dispatcher, the injected runtime bundle) can import it without pulling the
@@ -6305,6 +6322,13 @@ export function createHandlers(
     pageScroll: async (_request) => {
       return error('pageScroll requires browser context — use relay-handlers', 'NOT_IMPLEMENTED');
     },
+
+    // The asset override rewrites the live DOM, which this Node-side handler
+    // set has no handle on. A typed capability statement, never a silent
+    // success: the relay handlers and the injected runtime serve it.
+    mediaOverride: async (_request) => mediaOverrideUnavailable('mediaOverride'),
+    mediaOverrideRestore: async (_request) => mediaOverrideUnavailable('mediaOverrideRestore'),
+    mediaOverrideList: async () => mediaOverrideUnavailable('mediaOverrideList'),
 
     clipboardWrite: async (_request) => {
       return error(

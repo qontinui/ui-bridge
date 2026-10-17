@@ -968,6 +968,17 @@ export interface UIBridgeServerHandlers {
   ) => Promise<APIResponse<unknown>>;
   pageScroll: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
 
+  // In-situ asset override — dev control (see `control/media-override.ts`)
+  /** POST /control/media/override — swap one image slot's source in place. */
+  mediaOverride: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
+  /** DELETE /control/media/override — restore one override (`overrideId`) or all, verified. */
+  mediaOverrideRestore: (
+    request: unknown,
+    context?: HandlerContext
+  ) => Promise<APIResponse<unknown>>;
+  /** GET /control/media/override — the overrides still active. */
+  mediaOverrideList: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
+
   // Clipboard endpoints (browser gesture-based)
   clipboardWrite: (request: unknown, context?: HandlerContext) => Promise<APIResponse<unknown>>;
   clipboardRead: (context?: HandlerContext) => Promise<APIResponse<unknown>>;
@@ -2134,6 +2145,26 @@ export const UI_BRIDGE_ROUTES: RouteDefinition[] = [
   { method: 'POST', path: '/control/page/forward', handler: 'pageGoForward' },
   { method: 'POST', path: '/control/page/evaluate', handler: 'pageEvaluate', bodyRequired: true },
   { method: 'POST', path: '/control/page/scroll', handler: 'pageScroll', bodyRequired: true },
+
+  // In-situ asset override (plan 2026-10-13-image-generation-and-visual-judgment,
+  // Phase 18). A DEV CONTROL: it answers only in a realm that opted in
+  // (`core/dev-controls.ts` — the injected runtime, or an app passing
+  // `features.devControls` on a dev build), and `capability_unavailable_in_build`
+  // everywhere else. GET lists what is still overridden, so a caller can prove
+  // the page ended restored.
+  { method: 'GET', path: '/control/media/override', handler: 'mediaOverrideList' },
+  {
+    method: 'POST',
+    path: '/control/media/override',
+    handler: 'mediaOverride',
+    bodyRequired: true,
+  },
+  {
+    method: 'DELETE',
+    path: '/control/media/override',
+    handler: 'mediaOverrideRestore',
+    bodyRequired: true,
+  },
 
   // Clipboard (relay to browser for gesture-based access)
   {
