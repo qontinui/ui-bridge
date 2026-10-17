@@ -3,9 +3,11 @@
  *
  * Captures LCP (Largest Contentful Paint) and CLS (Cumulative Layout Shift)
  * using PerformanceObserver. Simplified implementation — no npm dependency.
+ * Layout shifts come from the shared `perf/` observer.
  */
 
 import type { AnyCapturedEvent } from '../browser-capture-types';
+import { observeLayoutShifts } from '../../perf';
 
 type Emit = (event: AnyCapturedEvent) => void;
 
@@ -37,16 +39,14 @@ export function installWebVitalsCapture(emit: Emit): () => void {
     // Not supported
   }
 
-  // CLS — accumulate layout shift values
-  try {
-    let clsValue = 0;
-    const clsObserver = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        // Only count shifts without recent input
-        if (!(entry as PerformanceEntry & { hadRecentInput?: boolean }).hadRecentInput) {
-          clsValue += (entry as PerformanceEntry & { value?: number }).value ?? 0;
-        }
-      }
+  // CLS — accumulate layout shift values. The layout-shift observer is the
+  // shared one in `perf/` (also feeding the change tracker's timeline); a
+  // webview without the entry type yields no CLS event at all, never a 0.
+  let clsValue = 0;
+  const cls = observeLayoutShifts(
+    (sample) => {
+      // Only count shifts without recent input
+      if (!sample.hadRecentInput) clsValue += sample.value;
       emit({
         type: 'web-vital',
         timestamp: Date.now(),
@@ -54,12 +54,9 @@ export function installWebVitalsCapture(emit: Emit): () => void {
         metric: 'CLS',
         value: Math.round(clsValue * 1000) / 1000,
       });
-    });
-    clsObserver.observe({ type: 'layout-shift', buffered: true });
-    observers.push(clsObserver);
-  } catch {
-    // Not supported
-  }
+    },
+    { buffered: true }
+  );
 
   // INP — track worst-case interaction duration
   try {
@@ -93,5 +90,6 @@ export function installWebVitalsCapture(emit: Emit): () => void {
     for (const obs of observers) {
       obs.disconnect();
     }
+    cls?.disconnect();
   };
 }

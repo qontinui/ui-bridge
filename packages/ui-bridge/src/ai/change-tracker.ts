@@ -30,7 +30,6 @@ import type {
   SnapshotBookmark,
   NLActionResponse,
   ChangeTimeline,
-  TimelineEvent,
   DiffSummaryOptions,
   StructuredChangeAnalysis,
   TableChangeAnalysis,
@@ -45,6 +44,13 @@ import type { CompositeIdleDetector } from '../idle';
 import { detectTable, detectList } from './table-extraction';
 import { classList } from '../core/class-name';
 import { getGlobalBookmarkStore } from './bookmarks';
+import { probePerfEntrySupport, type PerfEntrySupport } from '../perf';
+import {
+  TimelineRecorder,
+  type TimelineNetworkSubscriber,
+  type TimelineStateSource,
+} from './timeline-recorder';
+import { buildTimelineSummary } from './timeline-summary';
 
 // ============================================================================
 // Configuration
@@ -106,16 +112,15 @@ export interface ChangeTrackerDeps {
    * The callback receives events from NetworkRequestTracker.onEvent.
    * Returns an unsubscribe function.
    */
-  subscribeNetworkEvents?: (
-    callback: (event: {
-      type: string;
-      timestamp: number;
-      entry: {
-        request: { url: string; method: string; startedAt: number };
-        response?: { statusCode: number; durationMs: number };
-      };
-    }) => void
-  ) => () => void;
+  subscribeNetworkEvents?: TimelineNetworkSubscriber;
+
+  /**
+   * The app's declared UI states — the registry behind `useActiveStates`
+   * (optional). When provided, the interaction timeline records
+   * `state-entered` / `state-exited` events and `expectStates` can be
+   * answered; without it an `expectStates` answer is `unknown`.
+   */
+  states?: TimelineStateSource;
 }
 
 /** ChangeTracker configuration */
@@ -204,9 +209,17 @@ export class ChangeTracker {
   // Last diff for categorization
   private lastDiff: SemanticDiff | null = null;
 
+  /**
+   * What this webview's PerformanceObserver supports, probed once at install.
+   * A missing entry type surfaces in every timeline summary as `unknown`
+   * (`performance_observer_unsupported`), never as a measured 0.
+   */
+  readonly perfSupport: PerfEntrySupport;
+
   constructor(deps: ChangeTrackerDeps, config?: Partial<ChangeTrackerConfig>) {
     this.deps = deps;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.perfSupport = probePerfEntrySupport();
     // Propagate the configured cap to the shared bookmark store. Last
     // constructor wins, but every host today initialises with the same cap
     // (50) so this is fine in practice.
@@ -223,8 +236,61 @@ export class ChangeTracker {
    * Flow: snapshot before → execute action → wait for idle → snapshot after → diff
    */
   async executeWithDiff(request: ActionWithDiffRequest): Promise<ActionDiffResult> {
+    // The timeline is the default; `timeline: false` is the only opt-out.
+    const timelineOn = request.timeline !== false;
+    const expect =
+      request.expectStates && request.expectStates.length > 0
+        ? { stateIds: [...request.expectStates], withinMs: request.withinMs }
+        : null;
+    if (expect) {
+      if (!timelineOn) {
+        throw new Error(
+          'expectStates is answered from the timeline; it cannot be combined with timeline: false'
+        );
+      }
+      if (
+        typeof expect.withinMs !== 'number' ||
+        !Number.isFinite(expect.withinMs) ||
+        expect.withinMs < 0
+      ) {
+        throw new Error('expectStates requires withinMs: a finite, non-negative number of ms');
+      }
+    }
+
     const startTime = performance.now();
 
+    // Push sources (layout shifts, long tasks, animations, network, states)
+    // are installed BEFORE the action so what it triggers synchronously is seen.
+    const recorder = timelineOn
+      ? new TimelineRecorder(
+          {
+            perfSupport: this.perfSupport,
+            subscribeNetworkEvents: this.deps.subscribeNetworkEvents,
+            states: this.deps.states,
+          },
+          startTime
+        )
+      : null;
+    recorder?.start();
+    try {
+      return await this.executeWithDiffInner(
+        request,
+        startTime,
+        recorder,
+        expect as { stateIds: string[]; withinMs: number } | null
+      );
+    } finally {
+      // Idempotent: a normal run has already stopped it; a throw must not leak listeners.
+      recorder?.stop();
+    }
+  }
+
+  private async executeWithDiffInner(
+    request: ActionWithDiffRequest,
+    startTime: number,
+    recorder: TimelineRecorder | null,
+    expect: { stateIds: string[]; withinMs: number } | null
+  ): Promise<ActionDiffResult> {
     // Track push events during action execution for fast-path optimization
     let changeReceivedDuringAction = false;
     const unsubscribeChanges = this.deps.subscribeChanges?.(() => {
@@ -264,21 +330,22 @@ export class ChangeTracker {
       );
     }
 
-    // 3. Wait for idle / settle, optionally recording a timeline
+    // 3. Wait for idle / settle, recording the timeline unless opted out
     const settleTimeout = request.settleTimeout ?? this.config.defaultSettleTimeout;
     const settleMinStable = request.settleMinStable ?? this.config.defaultSettleMinStable;
     let settleTimedOut = false;
     let timeline: ChangeTimeline | undefined;
 
-    if (request.timeline) {
-      // Record intermediate snapshots during settling
+    if (recorder) {
       timeline = await this.recordTimeline(
+        recorder,
         beforeSnapshot,
         startTime,
         settleTimeout,
         settleMinStable,
         request.timelineInterval ?? 100,
-        request.scope
+        request.scope,
+        expect
       );
       settleTimedOut = !timeline.settled;
     } else if (this.deps.idleDetector) {
@@ -674,27 +741,33 @@ export class ChangeTracker {
   // ==========================================================================
 
   /**
-   * Record a timeline of changes during the settle period.
+   * Record the interaction timeline for one action.
    *
-   * Takes intermediate snapshots at regular intervals and records what changed
-   * at each step, producing a time-ordered sequence of events.
+   * Polls registry snapshots at `intervalMs` and records element / page
+   * changes into `recorder` (which is already collecting the push sources).
+   * The UI is settled once no significant change has been seen for
+   * `settleMinStable` AND, when an idle detector is wired, it reports idle —
+   * so network / loading signals still hold settle back. When `expect` is
+   * set, recording continues past settle until every expected state has
+   * entered or the caller's `withinMs` has elapsed, so a negative answer is a
+   * measured one. The recorder is stopped here and the summary derived.
    */
   private async recordTimeline(
+    recorder: TimelineRecorder,
     beforeSnapshot: SemanticSnapshot,
     actionStartTime: number,
     settleTimeout: number,
     settleMinStable: number,
     intervalMs: number,
-    scope?: string
+    scope: string | undefined,
+    expect: { stateIds: string[]; withinMs: number } | null
   ): Promise<ChangeTimeline> {
-    const events: TimelineEvent[] = [];
     let lastSnapshot = beforeSnapshot;
     let stableMs = 0;
     let settled = false;
     const timelineStart = performance.now();
 
-    // Record the action event
-    events.push({
+    recorder.record({
       offsetMs: 0,
       type: 'action',
       summary: 'Action executed',
@@ -713,37 +786,33 @@ export class ChangeTracker {
         ? this.computeScopedDiff(lastSnapshot, currentSnapshot, scope)
         : computeDiff(lastSnapshot, currentSnapshot, this.config.diffConfig);
 
-      const hasChanges = hasSignificantChanges(incrementalDiff);
+      if (hasSignificantChanges(incrementalDiff)) {
+        stableMs = 0;
+        const { appeared, disappeared, modified } = incrementalDiff.changes;
 
-      if (hasChanges) {
-        stableMs = 0; // Reset stable counter
-
-        // Record appeared
-        if (incrementalDiff.changes.appeared.length > 0) {
-          events.push({
+        if (appeared.length > 0) {
+          recorder.record({
             offsetMs,
             type: 'elements-appeared',
-            summary: `${incrementalDiff.changes.appeared.length} element(s) appeared`,
-            elementIds: incrementalDiff.changes.appeared.map((e) => e.elementId),
-            count: incrementalDiff.changes.appeared.length,
+            summary: `${appeared.length} element(s) appeared`,
+            elementIds: appeared.map((e) => e.elementId),
+            count: appeared.length,
           });
         }
 
-        // Record disappeared
-        if (incrementalDiff.changes.disappeared.length > 0) {
-          events.push({
+        if (disappeared.length > 0) {
+          recorder.record({
             offsetMs,
             type: 'elements-disappeared',
-            summary: `${incrementalDiff.changes.disappeared.length} element(s) disappeared`,
-            elementIds: incrementalDiff.changes.disappeared.map((e) => e.elementId),
-            count: incrementalDiff.changes.disappeared.length,
+            summary: `${disappeared.length} element(s) disappeared`,
+            elementIds: disappeared.map((e) => e.elementId),
+            count: disappeared.length,
           });
         }
 
-        // Record modified
-        const significantMods = incrementalDiff.changes.modified.filter((m) => m.significant);
+        const significantMods = modified.filter((m) => m.significant);
         if (significantMods.length > 0) {
-          events.push({
+          recorder.record({
             offsetMs,
             type: 'elements-modified',
             summary: `${significantMods.length} element(s) modified`,
@@ -752,21 +821,23 @@ export class ChangeTracker {
           });
         }
 
-        // Record page changes
         if (incrementalDiff.pageChanges?.urlChanged) {
-          events.push({
+          const url = incrementalDiff.pageChanges.newUrl ?? null;
+          recorder.record({
             offsetMs,
             type: 'page-changed',
-            summary: `URL changed to ${incrementalDiff.pageChanges.newUrl ?? 'unknown'}`,
+            summary: `URL changed to ${url ?? 'unknown'}`,
+            url,
           });
         }
 
         lastSnapshot = currentSnapshot;
       } else {
         stableMs += intervalMs;
-        if (stableMs >= settleMinStable) {
+        const idle = this.deps.idleDetector ? this.deps.idleDetector.isIdle() : true;
+        if (stableMs >= settleMinStable && idle) {
           settled = true;
-          events.push({
+          recorder.record({
             offsetMs,
             type: 'settled',
             summary: `UI settled after ${stableMs}ms of stability`,
@@ -776,10 +847,30 @@ export class ChangeTracker {
       }
     }
 
+    // Keep observing until every expected state has entered or the caller's
+    // window has closed.
+    if (expect) {
+      const pending = (): boolean => expect.stateIds.some((id) => !recorder.hasEntered(id));
+      while (pending()) {
+        const remaining = expect.withinMs - (performance.now() - actionStartTime);
+        if (remaining <= 0) break;
+        await sleep(Math.min(intervalMs, remaining));
+      }
+    }
+
+    const capture = recorder.stop();
+    const states = this.deps.states;
     return {
-      events,
+      events: capture.events,
       settleMs: Math.round(performance.now() - timelineStart),
       settled,
+      summary: buildTimelineSummary({
+        capture,
+        settled,
+        expect,
+        stateSourceAvailable: states !== undefined,
+        isDeclared: (id) => states?.isDeclared(id) ?? false,
+      }),
     };
   }
 
@@ -1937,7 +2028,5 @@ function sleep(ms: number): Promise<void> {
  *   warning that fires on a variable-specifier dynamic import.
  */
 async function loadTauriEventModule(specifier: string): Promise<unknown> {
-  return import(
-    /* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ specifier
-  );
+  return import(/* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ specifier);
 }

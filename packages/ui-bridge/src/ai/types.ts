@@ -14,6 +14,8 @@ import type {
 import type { DiscoveredElement } from '../control/types';
 import type { RecoverySuggestion, UiBridgeErrorCode } from '../diagnostics';
 import type { Scrubbed } from '../core/redaction';
+import type { Observation } from '../observation/observation';
+import type { DetectedAnimation } from '../idle/detected-animation';
 
 // Canonical recovery suggestion (D6). Re-exported here so existing
 // `from './types'` import sites keep resolving; the single definition lives in
@@ -866,10 +868,28 @@ export interface ActionWithDiffRequest {
   scope?: string;
   /** Whether to categorize the diff (default: true) */
   categorize?: boolean;
-  /** Whether to record a change timeline during settling (default: false) */
+  /**
+   * Record the interaction timeline (default: `true`). The timeline is the
+   * default; `false` is the explicit opt-out, which settles through the idle
+   * detector alone and returns no `timeline`.
+   */
   timeline?: boolean;
   /** Timeline polling interval during settling (ms, default: 100) */
   timelineInterval?: number;
+  /**
+   * Declared UI state ids (the registry's states, as `useActiveStates` reads
+   * them) the caller expects the action to enter. Each is answered in
+   * `timeline.summary.expectedStates`. Requires `withinMs` and a recorded
+   * timeline (`timeline !== false`).
+   */
+  expectStates?: string[];
+  /**
+   * The window (ms from action start) an expected state must be entered
+   * within. The caller's threshold — the SDK ships none. Recording continues
+   * until every expected state has entered or this window has elapsed, even
+   * past settle, so a negative is a measured one.
+   */
+  withinMs?: number;
   /** If set, include a budget-aware text summary capped at this many characters */
   summaryBudget?: number;
   /** If true, detect and analyze table/list structural changes */
@@ -899,7 +919,7 @@ export interface ActionDiffResult {
   diff: SemanticDiff;
   /** Semantic category (if categorize was true) */
   categorized?: CategorizedDiff;
-  /** Change timeline (if timeline was requested) */
+  /** Interaction timeline — present unless the request opted out with `timeline: false` */
   timeline?: ChangeTimeline;
   /** Whether idle settling timed out */
   settleTimedOut: boolean;
@@ -913,34 +933,202 @@ export interface ActionDiffResult {
   timestamp: number;
 }
 
-/** A timeline of changes during the settle period */
+/**
+ * The interaction timeline: action -> every observed event -> settled, each
+ * with its offset from the action, plus a derived {@link TimelineSummary}.
+ */
 export interface ChangeTimeline {
-  /** Individual timestamped events */
+  /** Timestamped events, ordered by `offsetMs` (ties keep arrival order). */
   events: TimelineEvent[];
-  /** Total settle duration (ms) */
+  /** Total recording duration (ms) — settle, extended by any `withinMs` window. */
   settleMs: number;
-  /** Whether the UI reached a stable state */
+  /** Whether the UI reached a stable state within `settleTimeout`. */
   settled: boolean;
+  /** Values derived from `events`; every field an {@link Observation}. */
+  summary: TimelineSummary;
 }
 
-/** A single event in the change timeline */
-export interface TimelineEvent {
+/** Fields every {@link TimelineEvent} carries. */
+export interface TimelineEventBase {
   /** Time offset from action start (ms) */
   offsetMs: number;
-  /** Type of event */
-  type:
-    | 'action'
-    | 'elements-appeared'
-    | 'elements-disappeared'
-    | 'elements-modified'
-    | 'page-changed'
-    | 'settled';
   /** Human-readable summary */
   summary: string;
-  /** Element IDs involved (if applicable) */
-  elementIds?: string[];
+}
+
+/** The action itself — always the first event, at offset 0. */
+export interface ActionTimelineEvent extends TimelineEventBase {
+  type: 'action';
+}
+
+/** Registered elements appeared, disappeared or were modified between two polls. */
+export interface ElementsTimelineEvent extends TimelineEventBase {
+  type: 'elements-appeared' | 'elements-disappeared' | 'elements-modified';
+  /** Element IDs involved */
+  elementIds: string[];
   /** Number of elements affected */
-  count?: number;
+  count: number;
+}
+
+/** The page URL changed. */
+export interface PageChangedTimelineEvent extends TimelineEventBase {
+  type: 'page-changed';
+  /** The new URL, or `null` when the diff did not carry one. */
+  url: string | null;
+}
+
+/** The UI was stable for `settleMinStable` (and the idle detector, when present, reported idle). */
+export interface SettledTimelineEvent extends TimelineEventBase {
+  type: 'settled';
+}
+
+/** One `layout-shift` PerformanceObserver entry. */
+export interface LayoutShiftTimelineEvent extends TimelineEventBase {
+  type: 'layout-shift';
+  /** The shift score (Layout Instability API `value`). */
+  value: number;
+  /** The browser's `hadRecentInput` flag for this shift. */
+  hadRecentInput: boolean;
+  /** `ElementFingerprintData.hash` of each shifted element still in the document. */
+  shiftedFingerprints: string[];
+  /** Shift sources whose node was gone (or not an element) when the entry was read. */
+  unattributedSourceCount: number;
+}
+
+/** A CSS animation or transition started. */
+export interface AnimationStartedTimelineEvent extends TimelineEventBase {
+  type: 'animation-started';
+  animation: DetectedAnimation;
+}
+
+/** A CSS animation or transition ended or was cancelled. */
+export interface AnimationEndedTimelineEvent extends TimelineEventBase {
+  type: 'animation-ended';
+  animation: DetectedAnimation;
+  endReason: 'finished' | 'cancelled';
+}
+
+/** One `longtask` PerformanceObserver entry. */
+export interface LongTaskTimelineEvent extends TimelineEventBase {
+  type: 'long-task';
+  /** Task duration (ms). */
+  durationMs: number;
+}
+
+/** A tracked network request started. */
+export interface NetworkRequestStartedTimelineEvent extends TimelineEventBase {
+  type: 'network-request-started';
+  /** The network tracker's request id, or `null` when the source supplies none. */
+  requestId: string | null;
+  method: string;
+  url: string;
+}
+
+/** A tracked network request completed or failed. */
+export interface NetworkRequestFinishedTimelineEvent extends TimelineEventBase {
+  type: 'network-request-finished';
+  requestId: string | null;
+  method: string;
+  url: string;
+  /** HTTP status, or `null` when no response arrived. */
+  statusCode: number | null;
+  /** Request duration as the tracker measured it, or `null` without a response. */
+  durationMs: number | null;
+  /** The request errored or answered >= 400. */
+  failed: boolean;
+}
+
+/** A declared UI state became active / inactive. */
+export interface StateTimelineEvent extends TimelineEventBase {
+  type: 'state-entered' | 'state-exited';
+  stateId: string;
+}
+
+/** A single event in the interaction timeline. Discriminated on `type`. */
+export type TimelineEvent =
+  | ActionTimelineEvent
+  | ElementsTimelineEvent
+  | PageChangedTimelineEvent
+  | SettledTimelineEvent
+  | LayoutShiftTimelineEvent
+  | AnimationStartedTimelineEvent
+  | AnimationEndedTimelineEvent
+  | LongTaskTimelineEvent
+  | NetworkRequestStartedTimelineEvent
+  | NetworkRequestFinishedTimelineEvent
+  | StateTimelineEvent;
+
+/** Every {@link TimelineEvent} `type`, in declaration order. */
+export type TimelineEventType = TimelineEvent['type'];
+
+/**
+ * How an expected state fared inside the caller's `withinMs` window. Exactly
+ * one key is present:
+ * - `enteredAtMs` — the state became active at this offset (<= `withinMs`);
+ * - `notEnteredWithinMs` — it did not become active within the window (the
+ *   window is echoed, so a negative carries its own bound);
+ * - `activeThroughoutWithinMs` — it was already active when the action ran and
+ *   stayed active for the whole window, so it never "entered".
+ */
+export type ExpectedStateOutcome =
+  | { enteredAtMs: number }
+  | { notEnteredWithinMs: number }
+  | { activeThroughoutWithinMs: number };
+
+/** One `expectStates` entry and its answer. */
+export interface ExpectedStateResult {
+  stateId: string;
+  outcome: Observation<ExpectedStateOutcome>;
+}
+
+/**
+ * Values derived from a {@link ChangeTimeline}. EVERY field is an
+ * {@link Observation}: `measured` with the value, `absent` when the producer
+ * looked over the whole window and the thing did not occur, or `unknown` with
+ * a closed `UnknownCode` when it could not look. `measured(0)` and `unknown`
+ * are different shapes on the wire. No field is a verdict and no threshold is
+ * applied — thresholds are the caller's.
+ */
+export interface TimelineSummary {
+  /**
+   * Offset of the first event that is neither `action` nor `settled`.
+   * `unknown{no_event_before_timeout}` when nothing happened in the window.
+   */
+  firstResponseMs: Observation<number>;
+  /**
+   * Offset of the `settled` event. `unknown{no_event_before_timeout}` when the
+   * UI did not settle within `settleTimeout`.
+   */
+  settleMs: Observation<number>;
+  /**
+   * Sum of `layout-shift` values in the window (shifts with recent input
+   * included; each event carries `hadRecentInput`).
+   * `unknown{performance_observer_unsupported}` where the entry type is missing.
+   */
+  layoutShiftTotal: Observation<number>;
+  /** Number of `layout-shift` events. Same unknown rule as `layoutShiftTotal`. */
+  layoutShiftCount: Observation<number>;
+  /**
+   * Offset of the LAST layout shift minus `firstResponseMs` — how long after
+   * the UI first responded it was still moving. `absent` when no shift
+   * occurred; unknown when the entry type is unsupported or nothing responded.
+   */
+  layoutShiftAfterFirstResponseMs: Observation<number>;
+  /**
+   * Animations/transitions running when recording ended: started in the
+   * window without ending, plus those `document.getAnimations()` reports
+   * running. Where `getAnimations` is missing the value is degraded and
+   * `provenance.coverage.unmeasured` names the gap (animations started before
+   * the action and still running cannot be seen).
+   */
+  animationsUnsettledAtEnd: Observation<DetectedAnimation[]>;
+  /**
+   * Sum of `long-task` durations (ms).
+   * `unknown{performance_observer_unsupported}` where `longtask` is missing.
+   */
+  longTaskTotalMs: Observation<number>;
+  /** One entry per requested `expectStates` id, in request order; `[]` when none were requested. */
+  expectedStates: ExpectedStateResult[];
 }
 
 /** Predicate for waitForChange — declarative conditions for detecting specific changes */

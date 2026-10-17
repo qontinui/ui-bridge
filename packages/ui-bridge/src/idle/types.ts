@@ -6,6 +6,7 @@
  */
 
 import type { NetworkRequestTracker } from '../network/tracker';
+import type { DetectedAnimation } from './detected-animation';
 
 // ============================================================================
 // Signal Interface
@@ -114,12 +115,10 @@ export interface AnimationSignalStatus extends SignalStatus {
   animations: DetectedAnimation[];
 }
 
-export interface DetectedAnimation {
-  name: string;
-  targetElement?: string;
-  durationMs?: number;
-  isInfinite: boolean;
-}
+// `DetectedAnimation` lives in a leaf module so the interaction timeline's
+// wire types (`ai/types.ts`) can name it without pulling the network tracker
+// into every program that type-checks them.
+export type { DetectedAnimation } from './detected-animation';
 
 // ============================================================================
 // Composite Types

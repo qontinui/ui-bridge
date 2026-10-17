@@ -388,8 +388,18 @@ describe('ChangeTracker', () => {
 
       const first = tracker.peekBuffer();
       expect(first).toHaveLength(2);
-      expect(first[0]).toMatchObject({ type: 'route-change', from: '/a', to: '/b', recordedAt: 1000 });
-      expect(first[1]).toMatchObject({ type: 'route-change', from: '/b', to: '/c', recordedAt: 2000 });
+      expect(first[0]).toMatchObject({
+        type: 'route-change',
+        from: '/a',
+        to: '/b',
+        recordedAt: 1000,
+      });
+      expect(first[1]).toMatchObject({
+        type: 'route-change',
+        from: '/b',
+        to: '/c',
+        recordedAt: 2000,
+      });
 
       // Repeating peek must yield the same data (does NOT drain).
       const second = tracker.peekBuffer();
@@ -745,6 +755,7 @@ describe('ChangeTracker', () => {
 
       await testTracker.executeWithDiff({
         instruction: 'click save',
+        timeline: false,
         settleTimeout: 2000,
         settleMinStable: 100,
       });
@@ -767,6 +778,7 @@ describe('ChangeTracker', () => {
 
       const result = await testTracker.executeWithDiff({
         instruction: 'click save',
+        timeline: false,
         settleTimeout: 100,
       });
 
@@ -1154,10 +1166,24 @@ describe('ChangeTracker', () => {
       ).toBe(true);
     });
 
+    it('records the timeline by default — no flag needed', async () => {
+      const testTracker = new ChangeTracker(deps);
+      const result = await testTracker.executeWithDiff({
+        instruction: 'click',
+        settleMinStable: 10,
+        timelineInterval: 10,
+      });
+
+      expect(result.timeline).toBeDefined();
+      expect(result.timeline!.events[0].type).toBe('action');
+      expect(result.timeline!.summary).toBeDefined();
+    });
+
     it('should not include timeline when timeline=false', async () => {
       const testTracker = new ChangeTracker(deps);
       const result = await testTracker.executeWithDiff({
         instruction: 'click',
+        timeline: false,
         settleMinStable: 10,
       });
 

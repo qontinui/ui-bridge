@@ -1309,6 +1309,7 @@ export function createHandlers(
               timestamp: event.timestamp,
               entry: {
                 request: {
+                  id: event.entry.request.id,
                   url: event.entry.request.url,
                   method: event.entry.request.method,
                   startedAt: event.entry.request.startedAt,
@@ -1319,11 +1320,35 @@ export function createHandlers(
                       durationMs: event.entry.response.durationMs,
                     }
                   : undefined,
+                ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
               },
             });
           });
         }
       : undefined,
+
+    // The declared-state registry behind `useActiveStates`, so the
+    // interaction timeline records state-entered / state-exited and can
+    // answer `expectStates`.
+    states:
+      registry.getActiveStates && registry.getState && registry.on
+        ? {
+            getActiveStates: () =>
+              // The live registry answers ids; the RegistryLike contract says
+              // UIState objects. Accept either.
+              ((registry.getActiveStates?.() ?? []) as Array<string | { id: string }>).map((s) =>
+                typeof s === 'string' ? s : s.id
+              ),
+            isDeclared: (stateId: string) => registry.getState?.(stateId) !== undefined,
+            subscribe: (callback) =>
+              registry.on?.('element:stateChanged', (event: BridgeEvent) => {
+                const data = event.data as { stateId?: unknown; active?: unknown } | undefined;
+                if (typeof data?.stateId === 'string' && typeof data.active === 'boolean') {
+                  callback({ stateId: data.stateId, active: data.active });
+                }
+              }) ?? (() => {}),
+          }
+        : undefined,
   });
 
   // -----------------------------------------------------------------------
