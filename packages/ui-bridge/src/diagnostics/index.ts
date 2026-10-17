@@ -336,4 +336,11 @@ export const UNKNOWN_CODE_DIAGNOSTICS: Readonly<Record<UnknownCode, UiBridgeErro
   model_reply_unparseable: 'UB-OBS-MODEL-REPLY-UNPARSEABLE',
   needs_multi_frame_input: 'UB-OBS-NEEDS-MULTI-FRAME-INPUT',
   stale_input: 'UB-OBS-STALE-INPUT',
+  frontier_open: 'UB-OBS-FRONTIER-OPEN',
+  ledger_schema_absent: 'UB-OBS-LEDGER-SCHEMA-ABSENT',
+  ledger_write_failing: 'UB-OBS-LEDGER-WRITE-FAILING',
+  no_observations: 'UB-OBS-NO-OBSERVATIONS',
+  to_node_unobserved: 'UB-OBS-TO-NODE-UNOBSERVED',
+  performance_observer_unsupported: 'UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED',
+  no_event_before_timeout: 'UB-OBS-NO-EVENT-BEFORE-TIMEOUT',
 };

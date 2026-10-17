@@ -75,7 +75,21 @@ export type UnknownCode =
   /** The question needs more than one frame (e.g. `animation_settled`). */
   | 'needs_multi_frame_input'
   /** The input is known to be stale. */
-  | 'stale_input';
+  | 'stale_input'
+  /** The answer depends on frontier entries (declared edges never observed) that are still open. */
+  | 'frontier_open'
+  /** The observation ledger's storage does not exist in this deployment (its migration has not landed). */
+  | 'ledger_schema_absent'
+  /** The observation ledger exists but its writes are currently failing. */
+  | 'ledger_write_failing'
+  /** The ledger holds no observations at all for the question asked. */
+  | 'no_observations'
+  /** The query's destination node has never been observed. */
+  | 'to_node_unobserved'
+  /** The webview's `PerformanceObserver` does not support the entry type the measurement needs (e.g. `layout-shift`, `longtask`). */
+  | 'performance_observer_unsupported'
+  /** The awaited event did not occur before the observation window closed. */
+  | 'no_event_before_timeout';
 
 /** Every {@link UnknownCode}, in the canonical (wire-contract) order. */
 export const UNKNOWN_CODES: readonly UnknownCode[] = [
@@ -88,6 +102,13 @@ export const UNKNOWN_CODES: readonly UnknownCode[] = [
   'model_reply_unparseable',
   'needs_multi_frame_input',
   'stale_input',
+  'frontier_open',
+  'ledger_schema_absent',
+  'ledger_write_failing',
+  'no_observations',
+  'to_node_unobserved',
+  'performance_observer_unsupported',
+  'no_event_before_timeout',
 ] as const;
 
 /** Type guard: is `value` one of the closed {@link UnknownCode} members? */

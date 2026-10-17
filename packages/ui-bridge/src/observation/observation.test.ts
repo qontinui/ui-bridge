@@ -208,8 +208,16 @@ describe('UnknownCode', () => {
       'model_reply_unparseable',
       'needs_multi_frame_input',
       'stale_input',
+      'frontier_open',
+      'ledger_schema_absent',
+      'ledger_write_failing',
+      'no_observations',
+      'to_node_unobserved',
+      'performance_observer_unsupported',
+      'no_event_before_timeout',
     ]);
     expect(isUnknownCode('stale_input')).toBe(true);
+    expect(isUnknownCode('performance_observer_unsupported')).toBe(true);
     expect(isUnknownCode('healthy')).toBe(false);
   });
 });

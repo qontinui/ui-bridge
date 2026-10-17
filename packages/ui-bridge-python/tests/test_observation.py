@@ -203,3 +203,26 @@ class TestFindRequest:
     def test_a_non_positive_threshold_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             FindRequest(oversize_threshold=0)
+
+
+def test_unknown_code_is_the_closed_wire_set_in_contract_order() -> None:
+    # Mirrors UNKNOWN_CODES in packages/ui-bridge/src/observation/observation.ts
+    # and UnknownCode::ALL in qontinui-schemas rust-vision-core.
+    assert [c.value for c in UnknownCode] == [
+        "app_unreachable",
+        "capability_unavailable_in_build",
+        "producer_failed",
+        "producer_not_run",
+        "input_missing",
+        "below_confidence_floor",
+        "model_reply_unparseable",
+        "needs_multi_frame_input",
+        "stale_input",
+        "frontier_open",
+        "ledger_schema_absent",
+        "ledger_write_failing",
+        "no_observations",
+        "to_node_unobserved",
+        "performance_observer_unsupported",
+        "no_event_before_timeout",
+    ]

@@ -51,6 +51,13 @@ class UnknownCode(str, Enum):
     MODEL_REPLY_UNPARSEABLE = "model_reply_unparseable"
     NEEDS_MULTI_FRAME_INPUT = "needs_multi_frame_input"
     STALE_INPUT = "stale_input"
+    FRONTIER_OPEN = "frontier_open"
+    LEDGER_SCHEMA_ABSENT = "ledger_schema_absent"
+    LEDGER_WRITE_FAILING = "ledger_write_failing"
+    NO_OBSERVATIONS = "no_observations"
+    TO_NODE_UNOBSERVED = "to_node_unobserved"
+    PERFORMANCE_OBSERVER_UNSUPPORTED = "performance_observer_unsupported"
+    NO_EVENT_BEFORE_TIMEOUT = "no_event_before_timeout"
 
 
 class ObservationProducer(BaseModel):

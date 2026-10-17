@@ -43,12 +43,19 @@ export type UiBridgeErrorCode =
   | "UB-OBS-APP-UNREACHABLE"
   | "UB-OBS-BELOW-CONFIDENCE-FLOOR"
   | "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD"
+  | "UB-OBS-FRONTIER-OPEN"
   | "UB-OBS-INPUT-MISSING"
+  | "UB-OBS-LEDGER-SCHEMA-ABSENT"
+  | "UB-OBS-LEDGER-WRITE-FAILING"
   | "UB-OBS-MODEL-REPLY-UNPARSEABLE"
   | "UB-OBS-NEEDS-MULTI-FRAME-INPUT"
+  | "UB-OBS-NO-EVENT-BEFORE-TIMEOUT"
+  | "UB-OBS-NO-OBSERVATIONS"
+  | "UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED"
   | "UB-OBS-PRODUCER-FAILED"
   | "UB-OBS-PRODUCER-NOT-RUN"
   | "UB-OBS-STALE-INPUT"
+  | "UB-OBS-TO-NODE-UNOBSERVED"
   | "UB-PAGE-LOAD-ERROR"
   | "UB-PARSE-ERROR"
   | "UB-STALE-ELEMENT"
@@ -97,12 +104,19 @@ export const UI_BRIDGE_ERROR_CODES: readonly UiBridgeErrorCode[] = [
   "UB-OBS-APP-UNREACHABLE",
   "UB-OBS-BELOW-CONFIDENCE-FLOOR",
   "UB-OBS-CAPABILITY-UNAVAILABLE-IN-BUILD",
+  "UB-OBS-FRONTIER-OPEN",
   "UB-OBS-INPUT-MISSING",
+  "UB-OBS-LEDGER-SCHEMA-ABSENT",
+  "UB-OBS-LEDGER-WRITE-FAILING",
   "UB-OBS-MODEL-REPLY-UNPARSEABLE",
   "UB-OBS-NEEDS-MULTI-FRAME-INPUT",
+  "UB-OBS-NO-EVENT-BEFORE-TIMEOUT",
+  "UB-OBS-NO-OBSERVATIONS",
+  "UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED",
   "UB-OBS-PRODUCER-FAILED",
   "UB-OBS-PRODUCER-NOT-RUN",
   "UB-OBS-STALE-INPUT",
+  "UB-OBS-TO-NODE-UNOBSERVED",
   "UB-PAGE-LOAD-ERROR",
   "UB-PARSE-ERROR",
   "UB-STALE-ELEMENT",
@@ -602,6 +616,17 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     category: "system",
   },
+  "UB-OBS-FRONTIER-OPEN": {
+    description: "Observation unknown: the answer depends on frontier entries (declared affordances never yet activated) that are still open, so a negative answer would be a claim about unexplored territory.",
+    commonCauses: [
+      "The explorer has not activated every declared affordance on the reachable nodes",
+      "Some affordances are not declared safe to activate, so they stay frontier",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Run the explorer (or drive the remaining frontier affordances) and ask again", confidence: 0.6, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
   "UB-OBS-INPUT-MISSING": {
     description: "Observation unknown: a required input was absent (no `elements` array, no geometry/bbox, no frame, no viewport). This says nothing about the page itself.",
     commonCauses: [
@@ -613,6 +638,28 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     recoveryTemplate: [
       { suggestion: "Re-take the snapshot once the page has settled, then observe again", command: "wait for page to load", confidence: 0.6, retryable: true, priority: 1 },
       { suggestion: "Supply the missing input explicitly (e.g. a snapshot or viewport) if the route accepts it", confidence: 0.5, retryable: false, priority: 2 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-LEDGER-SCHEMA-ABSENT": {
+    description: "Observation unknown: the observation ledger's storage does not exist in this deployment, so nothing could be recorded or read.",
+    commonCauses: [
+      "The ledger's database migration has not landed on this backend",
+      "The producer is pointed at a database without the ledger tables",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Apply the ledger migration on this deployment, then observe again", confidence: 0.6, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-LEDGER-WRITE-FAILING": {
+    description: "Observation unknown: the observation ledger exists but its writes are failing, so recent observations are missing from it.",
+    commonCauses: [
+      "The database is unreachable or rejecting writes",
+      "A schema mismatch between the producer and the ledger",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Check the producer's log for the failing ledger write and fix it, then observe again", confidence: 0.6, retryable: true, priority: 1 },
     ],
     category: "system",
   },
@@ -634,6 +681,39 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     recoveryTemplate: [
       { suggestion: "Use a check that decides from one frame, or supply a prior frame/baseline", confidence: 0.5, retryable: false, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NO-EVENT-BEFORE-TIMEOUT": {
+    description: "Observation unknown: the awaited event did not occur before the observation window closed, so the timing it would have measured does not exist for this run.",
+    commonCauses: [
+      "The action produced no observable response",
+      "The response arrived after the observation window closed",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Widen the observation window (e.g. settleTimeout) or check that the action took effect", confidence: 0.5, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-NO-OBSERVATIONS": {
+    description: "Observation unknown: the ledger holds no observations at all for the question asked, so nothing can be said either way.",
+    commonCauses: [
+      "Nothing has driven the app since the ledger started recording",
+      "The filter (app, run, window) matches no recorded observation",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Drive the app (or run the explorer) so observations are recorded, then ask again", confidence: 0.6, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-PERFORMANCE-OBSERVER-UNSUPPORTED": {
+    description: "Observation unknown: the webview's PerformanceObserver does not support the entry type this measurement needs (e.g. layout-shift, longtask), so the value was not measured — it is not zero.",
+    commonCauses: [
+      "The webview engine (e.g. WebKitGTK, Safari) does not implement the entry type",
+      "PerformanceObserver is absent from this environment",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Measure in a Chromium-based webview, or treat the field as not measured", confidence: 0.6, retryable: false, priority: 1 },
     ],
     category: "system",
   },
@@ -670,6 +750,17 @@ export const DIAGNOSTICS: Record<UiBridgeErrorCode, DiagnosticEntry> = {
     ],
     recoveryTemplate: [
       { suggestion: "Refresh the snapshot and observe again", confidence: 0.7, retryable: true, priority: 1 },
+    ],
+    category: "system",
+  },
+  "UB-OBS-TO-NODE-UNOBSERVED": {
+    description: "Observation unknown: the query's destination node has never been observed, so whether it is reachable is not known.",
+    commonCauses: [
+      "The destination has not been visited by any recorded run",
+      "The destination id is misspelled or belongs to another app",
+    ],
+    recoveryTemplate: [
+      { suggestion: "Check the destination id, or drive the app to that node once, then ask again", confidence: 0.5, retryable: true, priority: 1 },
     ],
     category: "system",
   },
