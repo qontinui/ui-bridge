@@ -40,7 +40,8 @@ import {
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
-import type { SemanticSnapshot } from '../ai/types';
+import type { ActionWithDiffRequest, NLActionResponse, SemanticSnapshot } from '../ai/types';
+import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { hasNestedQuantifiers } from '../core/param-schema';
 import {
@@ -2705,55 +2706,79 @@ export async function executeCommand(
     // ======================================================================
 
     case 'executeWithDiff': {
-      const {
-        instruction,
-        elementAction,
-        elementId,
-        action: act,
-        params,
-      } = payload as {
-        instruction?: string;
-        elementAction?: { elementId: string; action: string; params?: P };
+      // The SAME producer the direct transport runs (`ChangeTracker.
+      // executeWithDiff` over the live global registry), so a relay consumer
+      // gets the identical `ActionDiffResult` — semantic diff, settle and the
+      // default-on interaction timeline (`timeline: false` opts out;
+      // `expectStates` + `withinMs` answered from the declared-state registry).
+      // The action itself still runs through this dispatcher's own arms, so the
+      // relay's action semantics are unchanged.
+      const req = payload as Partial<ActionWithDiffRequest> & {
         elementId?: string;
         action?: string;
         params?: P;
       };
-      const before = elements.map(elementToSnapshot);
-      let actionResult: unknown;
-      if (instruction) {
+      const eId = req.elementAction?.elementId ?? req.elementId;
+      const eAct = req.elementAction?.action ?? req.action;
+      const eParams = req.elementAction?.params ?? req.params;
+      const { ChangeTracker, createSnapshotManager } = await import('../ai');
+      const tracker = new ChangeTracker({
+        snapshotManager: createSnapshotManager(),
+        idleDetector: null,
+        // The registry snapshot carries no workflow-run plane on this
+        // transport; the diff never reads it.
+        createControlSnapshot: () => ({ ...registry.createSnapshot(), activeRuns: [] }),
+        refreshElements: () => {
+          try {
+            registry.refreshScrapedText();
+          } catch {
+            // A failing label refresh must not fail the diff.
+          }
+        },
         // Natural language instruction — resolve via aiExecute
-        actionResult = await executeCommand('aiExecute', { instruction }, bridge);
-      } else {
+        executeNLAction: async (instruction) =>
+          (await executeCommand('aiExecute', { instruction }, bridge)) as NLActionResponse,
         // Direct element action (from elementAction or legacy flat fields)
-        const eId = elementAction?.elementId ?? elementId;
-        const eAct = elementAction?.action ?? act;
-        const eParams = elementAction?.params ?? params;
-        actionResult = await executeCommand(
-          'executeElementAction',
-          { id: eId, request: { action: eAct, ...eParams } },
-          bridge
-        );
-      }
-      await new Promise((r) => setTimeout(r, 100)); // Brief wait for DOM to settle
-      const after = elements.map(elementToSnapshot);
-      const diff = { before: before.length, after: after.length, timestamp: Date.now() };
-      // The action's verdict, strictly: only an object carrying a literal
-      // `success: true` succeeded. Same field the in-process producer
-      // (`ChangeTracker.executeWithDiff`) emits, so a consumer reads one name
-      // whichever transport answered.
+        executeElementAction: async (elementId, request) =>
+          executeCommand(
+            'executeElementAction',
+            { id: elementId, request: { action: request.action, ...request.params } },
+            bridge
+          ),
+        states: stateSourceFromRegistry(registry as unknown as StateRegistryLike),
+      });
+      const result = await tracker.executeWithDiff({
+        instruction: req.instruction,
+        elementAction:
+          req.instruction === undefined && eId !== undefined && eAct !== undefined
+            ? { elementId: eId, action: eAct, params: eParams }
+            : undefined,
+        settleTimeout: req.settleTimeout,
+        settleMinStable: req.settleMinStable,
+        scope: req.scope,
+        categorize: req.categorize,
+        timeline: req.timeline,
+        timelineInterval: req.timelineInterval,
+        expectStates: req.expectStates,
+        withinMs: req.withinMs,
+        summaryBudget: req.summaryBudget,
+        analyzeStructured: req.analyzeStructured,
+      });
+      // The action's verdict is the tracker's own, strict reading: only a
+      // literal `success: true` succeeded.
+      const { actionResult } = result;
+      if (result.actionSuccess) return result;
       const inner =
         actionResult !== null && typeof actionResult === 'object' && !Array.isArray(actionResult)
           ? (actionResult as Record<string, unknown>)
           : undefined;
-      const actionSuccess = inner?.success === true;
-      if (actionSuccess) return { actionSuccess, actionResult, diff };
       // A failed action is a failed command. This payload used to carry no
       // verdict at all, so `relayCommand`'s inner-failure lift
       // (`readRelayInnerFailure`, keyed on a literal `success: false`) never
       // fired and the caller got an outer success. Report it the way every
       // other relay command does — `success: false` plus the inner action's
       // `error` and code carriers, hoisted so the lift can read them — while
-      // keeping `actionResult` and `diff`, which are diagnostic.
+      // keeping the whole diff result (diff, timeline), which is diagnostic.
       const hoist = (key: 'code' | 'errorCode'): Record<string, string> =>
         typeof inner?.[key] === 'string' && (inner[key] as string).length > 0
           ? { [key]: inner[key] as string }
@@ -2770,9 +2795,7 @@ export async function executeCommand(
         ...hoist('code'),
         ...(nestedErrorCode ? { errorCode: nestedErrorCode } : {}),
         ...hoist('errorCode'),
-        actionSuccess,
-        actionResult,
-        diff,
+        ...result,
       };
     }
 

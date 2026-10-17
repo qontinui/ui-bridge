@@ -141,3 +141,113 @@ describe('relay executeWithDiff · the action verdict is on the payload and the 
     expect((result.data as unknown as Record<string, unknown>).actionSuccess).toBe(true);
   });
 });
+
+describe('relay executeWithDiff · the same ChangeTracker result as the direct transport', () => {
+  let host: HTMLElement;
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    makeVisible(host);
+    document.body.appendChild(host);
+    const registry = getGlobalRegistry();
+    registry.registerState({ id: 'saved-toast', name: 'Saved toast', elements: [] });
+    registry.registerElement('pane', host, {
+      type: 'custom',
+      customActions: {
+        save: {
+          id: 'save',
+          handler: () => {
+            setTimeout(() => getGlobalRegistry().activateState('saved-toast'), 30);
+            return { ok: true };
+          },
+        },
+        noop: { id: 'noop', handler: () => ({ ok: true }) },
+      },
+    });
+  });
+
+  afterEach(() => {
+    host.remove();
+    getGlobalRegistry().clear();
+  });
+
+  const FAST = { settleMinStable: 20, timelineInterval: 10, settleTimeout: 2000 };
+
+  it('returns the timeline by default, with a summary of Observations and a semantic diff', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      { elementAction: { elementId: 'pane', action: 'noop' }, ...FAST },
+      emptyBridge
+    )) as Record<string, unknown>;
+    expect(result.actionSuccess).toBe(true);
+    const timeline = result.timeline as {
+      events: Array<{ type: string }>;
+      summary: Record<string, { status?: string }>;
+    };
+    expect(timeline.events[0].type).toBe('action');
+    expect(timeline.summary.settleMs.status).toBe('measured');
+    // jsdom has no PerformanceObserver: unknown, never a measured 0.
+    expect(timeline.summary.layoutShiftTotal).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'performance_observer_unsupported' },
+    });
+    expect((result.diff as { changes?: unknown }).changes).toBeDefined();
+  });
+
+  it('timeline: false opts out', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'pane', action: 'noop' },
+        timeline: false,
+        settleMinStable: 10,
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+    expect(result.actionSuccess).toBe(true);
+    expect(result.timeline).toBeUndefined();
+  });
+
+  it('forwards expectStates + withinMs to the declared-state registry', async () => {
+    const entered = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'pane', action: 'save' },
+        ...FAST,
+        expectStates: ['saved-toast'],
+        withinMs: 10_000,
+      },
+      emptyBridge
+    )) as { timeline: { summary: { expectedStates: Array<{ outcome: { value?: object } }> } } };
+    expect(entered.timeline.summary.expectedStates[0].outcome).toMatchObject({
+      status: 'measured',
+      value: { enteredAtMs: expect.any(Number) },
+    });
+
+    getGlobalRegistry().deactivateState('saved-toast');
+    const missed = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'pane', action: 'noop' },
+        ...FAST,
+        expectStates: ['saved-toast'],
+        withinMs: 100,
+      },
+      emptyBridge
+    )) as { timeline: { summary: { expectedStates: Array<{ outcome: unknown }> } } };
+    expect(missed.timeline.summary.expectedStates[0].outcome).toMatchObject({
+      status: 'measured',
+      value: { notEnteredWithinMs: 100 },
+    });
+  }, 30_000);
+
+  it('legacy flat elementId/action fields still drive the action', async () => {
+    const result = (await executeCommand(
+      'executeWithDiff',
+      { elementId: 'pane', action: 'noop', ...FAST },
+      emptyBridge
+    )) as Record<string, unknown>;
+    expect(result.actionSuccess).toBe(true);
+    expect(result.timeline).toBeDefined();
+  });
+});

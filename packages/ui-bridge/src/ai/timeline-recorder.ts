@@ -61,6 +61,39 @@ export interface TimelineStateSource {
   subscribe(callback: (event: { stateId: string; active: boolean }) => void): () => void;
 }
 
+/** The slice of a UI Bridge registry a {@link TimelineStateSource} reads. */
+export interface StateRegistryLike {
+  getActiveStates?(): ReadonlyArray<string | { id: string }>;
+  getState?(id: string): unknown;
+  on?(type: 'element:stateChanged', listener: (event: { data?: unknown }) => void): () => void;
+}
+
+/**
+ * Adapt a registry (the live `UIBridgeRegistry`, or a server-side
+ * `RegistryLike`) into a {@link TimelineStateSource}, or `undefined` when it
+ * cannot report declared states. One adapter for every transport, so the
+ * direct and relay producers see states identically.
+ */
+export function stateSourceFromRegistry(
+  registry: StateRegistryLike
+): TimelineStateSource | undefined {
+  if (!registry.getActiveStates || !registry.getState || !registry.on) return undefined;
+  return {
+    // The live registry answers ids; RegistryLike's contract says UIState
+    // objects. Accept either.
+    getActiveStates: () =>
+      (registry.getActiveStates?.() ?? []).map((s) => (typeof s === 'string' ? s : s.id)),
+    isDeclared: (stateId) => registry.getState?.(stateId) !== undefined,
+    subscribe: (callback) =>
+      registry.on?.('element:stateChanged', (event) => {
+        const data = event.data as { stateId?: unknown; active?: unknown } | undefined;
+        if (typeof data?.stateId === 'string' && typeof data.active === 'boolean') {
+          callback({ stateId: data.stateId, active: data.active });
+        }
+      }) ?? (() => {}),
+  };
+}
+
 /** What the recorder listens to. Every source is optional except the probe result. */
 export interface TimelineRecorderSources {
   /** PerformanceObserver support, probed when the tracker was installed. */

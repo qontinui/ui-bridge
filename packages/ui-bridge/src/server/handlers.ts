@@ -148,6 +148,7 @@ import type {
 } from '../ai';
 import { parseNLAssertion as parseNLAssertionShared } from '../ai/nl-assertion-parser';
 import { find } from '../ai/find';
+import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { captureFormSnapshot, diffFormSnapshots } from '../ai/form-diff';
 import { discoverForms } from '../ai/form-discovery';
 import type { FormDiscoveryElement } from '../ai/form-discovery';
@@ -1330,25 +1331,7 @@ export function createHandlers(
     // The declared-state registry behind `useActiveStates`, so the
     // interaction timeline records state-entered / state-exited and can
     // answer `expectStates`.
-    states:
-      registry.getActiveStates && registry.getState && registry.on
-        ? {
-            getActiveStates: () =>
-              // The live registry answers ids; the RegistryLike contract says
-              // UIState objects. Accept either.
-              ((registry.getActiveStates?.() ?? []) as Array<string | { id: string }>).map((s) =>
-                typeof s === 'string' ? s : s.id
-              ),
-            isDeclared: (stateId: string) => registry.getState?.(stateId) !== undefined,
-            subscribe: (callback) =>
-              registry.on?.('element:stateChanged', (event: BridgeEvent) => {
-                const data = event.data as { stateId?: unknown; active?: unknown } | undefined;
-                if (typeof data?.stateId === 'string' && typeof data.active === 'boolean') {
-                  callback({ stateId: data.stateId, active: data.active });
-                }
-              }) ?? (() => {}),
-          }
-        : undefined,
+    states: stateSourceFromRegistry(registry as unknown as StateRegistryLike),
   });
 
   // -----------------------------------------------------------------------
@@ -3007,6 +2990,10 @@ export function createHandlers(
           withDiff?: boolean;
           summaryBudget?: number;
           analyzeStructured?: boolean;
+          timeline?: boolean;
+          timelineInterval?: number;
+          expectStates?: string[];
+          withinMs?: number;
         };
         if (!reqExtra.skipSettle && !reqExtra.withDiff) {
           await awaitDOMSettled(reqExtra.settleTimeout);
@@ -3025,6 +3012,11 @@ export function createHandlers(
             categorize: true,
             summaryBudget: reqExtra.summaryBudget,
             analyzeStructured: reqExtra.analyzeStructured,
+            // The interaction timeline: default-on, `timeline: false` opts out.
+            timeline: reqExtra.timeline,
+            timelineInterval: reqExtra.timelineInterval,
+            expectStates: reqExtra.expectStates,
+            withinMs: reqExtra.withinMs,
           });
 
           // Merge NL action response with diff result

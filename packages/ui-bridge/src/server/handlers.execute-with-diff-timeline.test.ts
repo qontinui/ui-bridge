@@ -87,4 +87,59 @@ describe('direct executeWithDiff · timeline and declared states', () => {
       value: { notEnteredWithinMs: 150 },
     });
   }, 30_000);
+
+  describe('aiExecute withDiff forwards the timeline fields', () => {
+    let button: HTMLButtonElement;
+
+    beforeEach(() => {
+      button = document.createElement('button');
+      button.textContent = 'Publish';
+      Object.defineProperty(button, 'offsetParent', {
+        configurable: true,
+        get: () => document.body,
+      });
+      // jsdom has no layout: give the button a box so the click is not refused.
+      button.getBoundingClientRect = () =>
+        ({ x: 0, y: 0, width: 80, height: 24, top: 0, left: 0, right: 80, bottom: 24 }) as DOMRect;
+      button.addEventListener('click', () => {
+        setTimeout(() => registry.activateState('saved-toast'), 30);
+      });
+      document.body.appendChild(button);
+      registry.registerElement('publish-button', button, {
+        type: 'button',
+        label: 'Publish',
+        actions: ['click'],
+      });
+    });
+
+    afterEach(() => button.remove());
+
+    it('expectStates + withinMs are answered; timeline: false opts out', async () => {
+      const withTimeline = await handlers.aiExecute!({
+        instruction: 'click Publish',
+        withDiff: true,
+        settleMinStable: 20,
+        timelineInterval: 10,
+        expectStates: ['saved-toast'],
+        withinMs: 10_000,
+      } as never);
+      expect(withTimeline.success).toBe(true);
+      expect((withTimeline.data as unknown as { success?: unknown }).success).toBe(true);
+      const timeline = (withTimeline.data as unknown as { timeline: ActionDiffResult['timeline'] })
+        .timeline!;
+      expect(timeline.summary.expectedStates[0]).toMatchObject({
+        stateId: 'saved-toast',
+        outcome: { status: 'measured', value: { enteredAtMs: expect.any(Number) } },
+      });
+
+      const without = await handlers.aiExecute!({
+        instruction: 'click Publish',
+        withDiff: true,
+        settleMinStable: 10,
+        timeline: false,
+      } as never);
+      expect(without.success).toBe(true);
+      expect((without.data as unknown as { timeline?: unknown }).timeline).toBeUndefined();
+    }, 30_000);
+  });
 });
