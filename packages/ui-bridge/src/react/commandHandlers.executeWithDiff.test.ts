@@ -324,4 +324,14 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
     expect(viaRelay.success).toBe(false);
     expect(String(viaRelay.error).length).toBeGreaterThan(0);
   }, 30_000);
+
+  it('plain aiExecute over the relay: a failed action is already an OUTER failure', async () => {
+    const handlers = createRelayHandlers(relayRunningTheDispatcher());
+    const failed = await handlers.aiExecute!({ instruction: 'click Nonexistent widget' } as never);
+    expect(failed.success).toBe(false);
+    expect(String(failed.error).length).toBeGreaterThan(0);
+
+    const ok = await handlers.aiExecute!({ instruction: 'click Publish' } as never);
+    expect(ok.success).toBe(true);
+  }, 30_000);
 });

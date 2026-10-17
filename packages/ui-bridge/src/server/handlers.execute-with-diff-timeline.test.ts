@@ -163,5 +163,19 @@ describe('direct executeWithDiff · timeline and declared states', () => {
       expect(data.diff).toBeDefined();
       expect(data.timeline).toBeDefined();
     }, 30_000);
+
+    it('plain aiExecute (no withDiff): a FAILED action is an outer failure, the response under data', async () => {
+      const failed = await handlers.aiExecute!({
+        instruction: 'click Nonexistent widget',
+      } as never);
+      expect(failed.success).toBe(false);
+      expect(String(failed.error).length).toBeGreaterThan(0);
+      expect(typeof failed.code).toBe('string');
+      expect((failed.data as unknown as { success: boolean }).success).toBe(false);
+
+      const ok = await handlers.aiExecute!({ instruction: 'click Publish' } as never);
+      expect(ok.success).toBe(true);
+      expect((ok.data as unknown as { success: boolean }).success).toBe(true);
+    }, 30_000);
   });
 });

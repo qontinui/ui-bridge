@@ -3042,6 +3042,22 @@ export function createHandlers(
         }
 
         const result = await nlExecutor.execute(request);
+        // The action's verdict is the envelope's, strictly (only a literal
+        // `success: true` succeeded): a failed NL action is an OUTER failure,
+        // the full response kept under `data` as diagnostic.
+        if (result?.success !== true) {
+          const inner = describeInnerFailure(
+            result,
+            'The action did not report success and supplied no error message.'
+          );
+          return {
+            success: false,
+            error: inner.message,
+            code: inner.code as UiBridgeErrorCode,
+            data: result,
+            timestamp: Date.now(),
+          };
+        }
         return success(result);
       } catch (err) {
         return error((err as Error).message, 'AI_EXECUTE_ERROR');
