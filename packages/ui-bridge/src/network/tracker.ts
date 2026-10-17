@@ -55,6 +55,7 @@ export class NetworkRequestTracker {
   constructor(config?: NetworkTrackerConfig) {
     this.config = {
       ignorePatterns: config?.ignorePatterns ?? [],
+      ignore: config?.ignore ?? (() => false),
       maxEntries: config?.maxEntries ?? 200,
       trackXHR: config?.trackXHR ?? true,
       maxBodyPreview: config?.maxBodyPreview ?? 500,
@@ -284,10 +285,15 @@ export class NetworkRequestTracker {
         entry.requestId = tracker.extractRequestId(response.headers);
 
         // Capture response body preview
-        entry.response.bodyPreview = await tracker.captureResponsePreview(
-          response.clone(),
-          isError
-        );
+        // Clone ONLY when the body will be read. An unread clone tees the
+        // body and buffers it for as long as the original is consumed — for a
+        // long-lived stream, forever.
+        if (isError || !tracker.config.errorBodiesOnly) {
+          entry.response.bodyPreview = await tracker.captureResponsePreview(
+            response.clone(),
+            isError
+          );
+        }
 
         tracker.inFlight.delete(id);
         tracker.completed.push(entry);
@@ -449,7 +455,7 @@ export class NetworkRequestTracker {
   // =========================================================================
 
   private shouldIgnore(url: string): boolean {
-    return this.config.ignorePatterns.some((p) => url.includes(p));
+    return this.config.ignorePatterns.some((p) => url.includes(p)) || this.config.ignore(url);
   }
 
   private generateId(): string {

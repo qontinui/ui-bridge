@@ -18,6 +18,8 @@ import {
   executeCommand,
   __peekRelayChangeTrackerForTest,
   __resetRelayForTest,
+  __relayTrackerBuildCountForTest,
+  __peekRelayNetworkTrackerForTest,
   type BridgeAccess,
 } from './commandHandlers';
 import { CompositeIdleDetector } from '../idle';
@@ -515,6 +517,55 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
       .map((e) => e.url);
     expect(urls).toEqual(['https://cdn.example/ui-bridge/x.js']);
     expect(appTracker.config.ignorePatterns).toEqual([]);
+  }, 30_000);
+
+  it("the relay-created tracker passes the relay's own endpoints straight through: no entry, no clone", async () => {
+    registerRelayTrafficBase('/ui-bridge');
+    const original = vi.fn(async () => new Response('stream', { status: 200 }));
+    const saved = globalThis.fetch;
+    globalThis.fetch = original as unknown as typeof fetch;
+    try {
+      getGlobalRegistry().registerElement('sse', host, {
+        type: 'custom',
+        customActions: {
+          open: {
+            id: 'open',
+            handler: () => {
+              void fetch('/ui-bridge/commands/stream?tabId=t', {
+                headers: { Authorization: 'Bearer relay-secret' },
+              });
+              return { ok: true };
+            },
+          },
+        },
+      });
+      await executeCommand(
+        'executeWithDiff',
+        {
+          elementAction: { elementId: 'sse', action: 'open' },
+          settleMinStable: 20,
+          timelineInterval: 10,
+        },
+        emptyBridge
+      );
+      const tracker = __peekRelayNetworkTrackerForTest()!;
+      expect(tracker).not.toBeNull();
+      expect(original).toHaveBeenCalledWith('/ui-bridge/commands/stream?tabId=t', {
+        headers: { Authorization: 'Bearer relay-secret' },
+      });
+      expect(tracker.getInFlight()).toEqual([]);
+      expect(tracker.getCompleted()).toEqual([]);
+      expect(JSON.stringify(tracker.getAll())).not.toContain('relay-secret');
+    } finally {
+      __resetRelayForTest();
+      globalThis.fetch = saved;
+    }
+  }, 30_000);
+
+  it('concurrent first calls build ONE relay ChangeTracker', async () => {
+    const before = __relayTrackerBuildCountForTest();
+    await Promise.all([run(), run(), run()]);
+    expect(__relayTrackerBuildCountForTest() - before).toBe(1);
   }, 30_000);
 
   it('switching trackers rebuilds the idle detector and the relay ChangeTracker together', async () => {

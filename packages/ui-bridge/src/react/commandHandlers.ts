@@ -681,7 +681,10 @@ function resolveRelayNetworkTracker(): RelayNetworkSource {
   const appTracker = getBridge().networkTracker;
   if (appTracker) return appTracker;
   if (!relayNetworkTracker) {
-    const tracker = new NetworkRequestTracker();
+    // The relay's own endpoints bypass this tracker entirely (straight to the
+    // original fetch): its long-lived SSE stream is never wrapped, and the
+    // relay's Authorization header never lands in an entry.
+    const tracker = new NetworkRequestTracker({ ignore: isRelayOwnTraffic });
     tracker.install();
     relayNetworkTracker = tracker;
   }
@@ -1195,8 +1198,26 @@ async function getRelayChangeTracker(
   source: RelayNetworkSource
 ): Promise<import('../ai').ChangeTracker> {
   if (relayTracker && relayTrackerSource === source) return relayTracker;
+  // Concurrent first calls share one build per source.
+  const pending = relayTrackerBuilds.get(source);
+  if (pending) return pending;
+  const build = buildRelayChangeTracker(source).finally(() => relayTrackerBuilds.delete(source));
+  relayTrackerBuilds.set(source, build);
+  return build;
+}
+
+const relayTrackerBuilds = new Map<RelayNetworkSource, Promise<import('../ai').ChangeTracker>>();
+
+let relayTrackerBuildCount = 0;
+
+async function buildRelayChangeTracker(
+  source: RelayNetworkSource
+): Promise<import('../ai').ChangeTracker> {
+  relayTrackerBuildCount++;
   const { ChangeTracker, createSnapshotManager } = await import('../ai');
   const idle = await getIdleDetector(source);
+  // Re-check after the awaits: another call may have finished a build.
+  if (relayTracker && relayTrackerSource === source) return relayTracker;
   const network = withoutRelayTraffic(source);
   const bridgeNow = (): BridgeAccess => {
     if (!relayTrackerBridge) throw new Error('relay ChangeTracker used outside a command');
@@ -1265,6 +1286,16 @@ async function getRelayChangeTracker(
   return tracker;
 }
 
+/** Test-only: how many relay ChangeTracker builds have started. */
+export function __relayTrackerBuildCountForTest(): number {
+  return relayTrackerBuildCount;
+}
+
+/** Test-only: the NetworkRequestTracker the relay created, or `null`. */
+export function __peekRelayNetworkTrackerForTest(): NetworkRequestTracker | null {
+  return relayNetworkTracker;
+}
+
 /** Test-only: the lazily-built relay tracker, or `null` before first use. */
 export function __peekRelayChangeTrackerForTest(): import('../ai').ChangeTracker | null {
   return relayTracker;
@@ -1287,6 +1318,7 @@ export function __resetRelayForTest(): void {
   idleDetectorSource = null;
   relayTracker = null;
   relayTrackerSource = null;
+  relayTrackerBuilds.clear();
   __clearRelayTrafficForTest();
 }
 

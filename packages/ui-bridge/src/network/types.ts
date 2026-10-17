@@ -88,6 +88,12 @@ export interface WaitForRequestResult {
 export interface NetworkTrackerConfig {
   /** URL patterns to ignore (substring match). */
   ignorePatterns?: string[];
+  /**
+   * Predicate over the request URL; `true` ignores it exactly as an
+   * `ignorePatterns` hit does — the request goes straight to the original
+   * fetch/XHR, with no entry, no event and no body capture.
+   */
+  ignore?: (url: string) => boolean;
   /** Maximum number of completed entries to retain (default: 200). */
   maxEntries?: number;
   /** Whether to intercept XMLHttpRequest in addition to fetch (default: true). */

@@ -1261,4 +1261,48 @@ describe('NetworkRequestTracker', () => {
       expect(uniqueIds.size).toBe(3);
     });
   });
+
+  // ==========================================================================
+  // ignore predicate and body cloning
+  // ==========================================================================
+
+  describe('ignore predicate', () => {
+    it('an ignored URL goes straight to the original fetch: no entry, no event', async () => {
+      tracker = createTracker({ ignore: (url) => url.endsWith('/commands/stream') });
+      const events: NetworkEvent[] = [];
+      tracker.onEvent((e) => events.push(e));
+      const response = await fetch('/ui-bridge/commands/stream', {
+        headers: { Authorization: 'Bearer secret' },
+      });
+      expect(response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledWith('/ui-bridge/commands/stream', {
+        headers: { Authorization: 'Bearer secret' },
+      });
+      expect(tracker.getInFlight()).toEqual([]);
+      expect(tracker.getCompleted()).toEqual([]);
+      expect(events).toEqual([]);
+    });
+  });
+
+  describe('response body cloning', () => {
+    it('a 200 response with errorBodiesOnly is never cloned (no tee buffering a stream)', async () => {
+      const response = okResponse('streaming body');
+      const clone = vi.spyOn(response, 'clone');
+      mockFetch.mockResolvedValueOnce(response);
+      tracker = createTracker();
+      await fetch('/api/stream');
+      expect(clone).not.toHaveBeenCalled();
+      expect(tracker.getCompleted()[0].response?.bodyPreview).toBeUndefined();
+    });
+
+    it('an error response is cloned and its preview captured', async () => {
+      const response = errorResponse(500, 'Internal Server Error', 'boom');
+      const clone = vi.spyOn(response, 'clone');
+      mockFetch.mockResolvedValueOnce(response);
+      tracker = createTracker();
+      await fetch('/api/fail');
+      expect(clone).toHaveBeenCalledOnce();
+      expect(tracker.getCompleted()[0].response?.bodyPreview).toBe('boom');
+    });
+  });
 });
