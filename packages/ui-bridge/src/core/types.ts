@@ -2432,6 +2432,15 @@ export interface UIBridgeFeatures {
   control?: boolean;
   /** Enable debug tools (inspector, metrics) */
   debug?: boolean;
+  /**
+   * Enable the DEV CONTROLS — commands that alter what the page renders
+   * (`POST /control/media/override`). Default false. Opt in on a dev build
+   * only, resolved by the app's own bundler:
+   * `devControls: process.env.NODE_ENV === 'development'`. A production
+   * bundle with this on exposes page-altering commands on that deployment.
+   * See `core/dev-controls.ts`.
+   */
+  devControls?: boolean;
 }
 
 /**

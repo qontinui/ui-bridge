@@ -6,6 +6,7 @@
  * React hooks — pure setup routines that the provider calls on first render.
  */
 
+import { enableDevControls } from '../core/dev-controls';
 import type { UIBridgeFeatures, UIBridgeConfig, BridgeEventListener } from '../core/types';
 import { UIBridgeRegistry, setGlobalRegistry } from '../core/registry';
 import { UIBridgeWSClient, createWSClient } from '../core/websocket-client';
@@ -94,6 +95,10 @@ export function initializeUIBridge({
     : null;
 
   const metrics = features.debug ? createMetricsCollector() : null;
+
+  // Dev controls are an explicit app opt-in (see core/dev-controls.ts); the
+  // provider never turns them off once something in the realm turned them on.
+  if (features.devControls === true) enableDevControls('provider-feature');
 
   // Always-on capture — lightweight and needed for action responses.
   const browserCapture = new BrowserEventCapture(browserCaptureConfig);

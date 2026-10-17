@@ -109,3 +109,36 @@ export type {
 } from './effect-inference';
 export { createInferredSignatureRegistry } from './effect-signatures';
 export type { InferredRegistryOptions } from './effect-signatures';
+
+// In-situ asset override — a dev control (plan 2026-10-13-image-generation-
+// and-visual-judgment, Phase 18). Exported so an embedded host (the
+// qontinui-runner's own webview hook) can serve the same engine the relay
+// dispatcher does.
+export {
+  applyMediaOverride,
+  restoreMediaOverrides,
+  listMediaOverrides,
+  validateMediaOverrideRequest,
+  DEFAULT_OVERRIDE_TTL_MS,
+  MIN_OVERRIDE_TTL_MS,
+  MAX_OVERRIDE_TTL_MS,
+  DEFAULT_DECODE_TIMEOUT_MS,
+  MAX_DECODE_TIMEOUT_MS,
+} from './media-override';
+export type {
+  MediaOverrideRequest,
+  MediaOverrideRestoreRequest,
+  MediaOverrideSource,
+  MediaOverrideMode,
+  MediaOverrideErrorCode,
+  MediaOverrideFailure,
+  MediaOverrideReadiness,
+  MediaOverrideTarget,
+  MediaOverrideSuccess,
+  MediaOverrideRestoreSuccess,
+  MediaOverrideListEntry,
+  MediaOverrideListSuccess,
+  RestoreMismatch,
+  RestoreResult,
+  ValidatedMediaOverride,
+} from './media-override';

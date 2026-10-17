@@ -346,6 +346,7 @@ export default tseslint.config(
           'packages/ui-bridge/src/ai/search-engine.ts',
           'packages/ui-bridge/src/ai/semantic-snapshot.ts',
           'packages/ui-bridge/src/control/action-executor.ts',
+          'packages/ui-bridge/src/control/media-override.ts',
         ],
         // redaction-surface:projection-modules:end
         // redaction-surface:projection-module-ignores:start

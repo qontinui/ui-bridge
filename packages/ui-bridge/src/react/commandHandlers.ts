@@ -103,6 +103,12 @@ import {
   type ElementSnapshot,
 } from '../ai/wait-for-element';
 import { mapInternalErrorCode } from '../diagnostics';
+import { devControlsDisabledResponse, devControlsEnabled } from '../core/dev-controls';
+import {
+  applyMediaOverride,
+  listMediaOverrides,
+  restoreMediaOverrides,
+} from '../control/media-override';
 import { listContexts } from '../specs/quality-contexts';
 import {
   captureQualityBaseline,
@@ -3864,6 +3870,25 @@ export async function executeCommand(
         timestamp: Date.now(),
       };
     }
+
+    // ======================================================================
+    // In-situ asset override — a DEV CONTROL (core/dev-controls.ts). It
+    // rewrites what the page renders, so it answers only in a realm that
+    // opted in: the injected runtime, or an app passing features.devControls
+    // on a dev build. Everywhere else: capability_unavailable_in_build.
+    // ======================================================================
+
+    case 'mediaOverride':
+      if (!devControlsEnabled()) return devControlsDisabledResponse('mediaOverride');
+      return applyMediaOverride(payload, (id) => getElement(id)?.element);
+
+    case 'mediaOverrideRestore':
+      if (!devControlsEnabled()) return devControlsDisabledResponse('mediaOverrideRestore');
+      return restoreMediaOverrides(payload);
+
+    case 'mediaOverrideList':
+      if (!devControlsEnabled()) return devControlsDisabledResponse('mediaOverrideList');
+      return listMediaOverrides();
 
     case 'clipboardWrite': {
       const clipText = (payload as { text?: string })?.text ?? '';

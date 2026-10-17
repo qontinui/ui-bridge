@@ -199,3 +199,13 @@ export type {
 // its wire shape — exported because the runner's background-observer snapshot
 // builder is a ninth emitter outside this repo and must not re-implement it.
 export { serializeElementCustomActions } from './element-actions';
+
+// Dev controls — the opt-in gate for page-altering commands (the media
+// override). See dev-controls.ts for who may opt in and why.
+export {
+  enableDevControls,
+  devControlsEnabled,
+  devControlsSource,
+  DEV_CONTROLS_DISABLED_CODE,
+} from './dev-controls';
+export type { DevControlsSource } from './dev-controls';
