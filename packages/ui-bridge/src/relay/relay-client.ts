@@ -29,6 +29,7 @@
  * restarting the client.
  */
 
+import { registerRelayTrafficBase } from './relay-traffic';
 import { safeJsonStringify } from '../core/wire-json';
 
 // SSE reconnection delay (10s to avoid Next.js route recompilation cascades)
@@ -361,6 +362,8 @@ export function startRelayClient(config: RelayClientConfig): RelayClientHandle {
     version,
     onError = (message: string, error?: unknown) => console.error(message, error),
   } = config;
+  // The relay's own traffic: a tracker the dispatcher creates ignores it.
+  registerRelayTrafficBase(basePath);
   // An explicit `config.tabId` IS a caller-owned pin — persist it so an
   // embedded hook that later calls `resolveTabId()` in this same document
   // adopts it rather than minting a competing id.

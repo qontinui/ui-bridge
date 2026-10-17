@@ -40,6 +40,7 @@ import {
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { NetworkRequestTracker } from '../network/tracker';
+import { onRelayTrafficBase } from '../relay/relay-traffic';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type {
   ActionDiffResult,
@@ -680,8 +681,13 @@ function currentRelayNetworkTracker(): Pick<NetworkRequestTracker, 'onEvent'> {
   const appTracker = getBridge().networkTracker;
   if (appTracker) return appTracker;
   if (!relayNetworkTracker) {
-    relayNetworkTracker = new NetworkRequestTracker();
-    relayNetworkTracker.install();
+    const tracker = new NetworkRequestTracker();
+    // Only the tracker the relay creates: ignore the relay's own traffic
+    // (SSE connect, result POST, heartbeat). An app-supplied tracker is left
+    // exactly as the app configured it.
+    onRelayTrafficBase((base) => tracker.addIgnorePattern(base));
+    tracker.install();
+    relayNetworkTracker = tracker;
   }
   return relayNetworkTracker;
 }

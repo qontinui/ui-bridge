@@ -21,6 +21,8 @@ import {
   type BridgeAccess,
 } from './commandHandlers';
 import { CompositeIdleDetector } from '../idle';
+import { registerRelayTrafficBase, getRelayTrafficBases } from '../relay/relay-traffic';
+import { startRelayClient } from '../relay/relay-client';
 import { getGlobalRegistry } from '../core/registry';
 import { CommandRelay } from '../server/command-relay';
 import { createRelayHandlers } from '../server/relay-handlers';
@@ -406,6 +408,59 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
       url: `${location.origin}/api/items`,
       hasQuery: true,
     });
+  }, 30_000);
+
+  it("the relay-created tracker ignores the relay's own traffic (its registered base paths)", async () => {
+    registerRelayTrafficBase('/relay-own-base');
+    getGlobalRegistry().registerElement('mixed', host, {
+      type: 'custom',
+      customActions: {
+        load: {
+          id: 'load',
+          handler: () => {
+            void fetch('/relay-own-base/heartbeat').catch(() => undefined);
+            void fetch('/api/orders').catch(() => undefined);
+            return { ok: true };
+          },
+        },
+      },
+    });
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'mixed', action: 'load' },
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    )) as { timeline: { events: Array<Record<string, unknown>> } };
+    const urls = result.timeline.events
+      .filter((e) => e.type === 'network-request-started')
+      .map((e) => e.url);
+    expect(urls).toEqual([`${location.origin}/api/orders`]);
+  }, 30_000);
+
+  it('startRelayClient registers its base path as relay traffic', () => {
+    const client = startRelayClient({
+      basePath: '/relay-client-base',
+      execute: () => undefined,
+      heartbeatIntervalMs: 60_000,
+    });
+    try {
+      expect(getRelayTrafficBases()).toContain('/relay-client-base');
+    } finally {
+      client.stop();
+    }
+  });
+
+  it('an app-supplied tracker is left as the app configured it', async () => {
+    const addIgnorePattern = vi.fn();
+    (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = {
+      networkTracker: { onEvent: () => () => undefined, addIgnorePattern },
+    };
+    registerRelayTrafficBase('/relay-other-base');
+    await run();
+    expect(addIgnorePattern).not.toHaveBeenCalled();
   }, 30_000);
 
   it("records the page's NetworkRequestTracker when the app exposes one", async () => {
