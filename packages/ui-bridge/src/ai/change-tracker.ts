@@ -29,6 +29,7 @@ import type {
   BufferedTauriEvent,
   SnapshotBookmark,
   NLActionResponse,
+  NLActionWithDiffResponse,
   ChangeTimeline,
   DiffSummaryOptions,
   StructuredChangeAnalysis,
@@ -1985,6 +1986,42 @@ function diffLists(
   }
 
   return null;
+}
+
+// ============================================================================
+// aiExecute + withDiff
+// ============================================================================
+
+/**
+ * Merge an NL-driven {@link ActionDiffResult} into the NL action's own
+ * response — the one shape `aiExecute` with `withDiff: true` answers on every
+ * transport. `success` is the tracker's strict `actionSuccess`; a failed action
+ * always carries an `error` (the action's own, or a stated fallback), so the
+ * caller can lift it to an outer failure.
+ */
+export function mergeNLActionWithDiff(result: ActionDiffResult): NLActionWithDiffResponse {
+  const nl =
+    result.actionResult !== null &&
+    typeof result.actionResult === 'object' &&
+    !Array.isArray(result.actionResult)
+      ? (result.actionResult as NLActionResponse)
+      : ({} as NLActionResponse);
+  const error =
+    result.actionSuccess || (typeof nl.error === 'string' && nl.error.length > 0)
+      ? nl.error
+      : 'The action did not report success and supplied no error message.';
+  return {
+    ...nl,
+    success: result.actionSuccess,
+    ...(error !== undefined ? { error } : {}),
+    actionSuccess: result.actionSuccess,
+    diff: result.diff,
+    categorized: result.categorized,
+    budgetSummary: result.budgetSummary,
+    structuredChanges: result.structuredChanges,
+    settleTimedOut: result.settleTimedOut,
+    timeline: result.timeline,
+  };
 }
 
 // ============================================================================

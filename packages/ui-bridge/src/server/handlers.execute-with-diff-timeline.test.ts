@@ -141,5 +141,27 @@ describe('direct executeWithDiff · timeline and declared states', () => {
       expect(without.success).toBe(true);
       expect((without.data as unknown as { timeline?: unknown }).timeline).toBeUndefined();
     }, 30_000);
+
+    it('a FAILED action is an outer failure, the merged diff result kept under data', async () => {
+      const result = await handlers.aiExecute!({
+        instruction: 'click Nonexistent widget',
+        withDiff: true,
+        settleMinStable: 10,
+        timelineInterval: 10,
+      } as never);
+      expect(result.success).toBe(false);
+      expect(String(result.error).length).toBeGreaterThan(0);
+      expect(typeof result.code).toBe('string');
+      const data = result.data as unknown as {
+        success: boolean;
+        actionSuccess: boolean;
+        timeline?: unknown;
+        diff?: unknown;
+      };
+      expect(data.success).toBe(false);
+      expect(data.actionSuccess).toBe(false);
+      expect(data.diff).toBeDefined();
+      expect(data.timeline).toBeDefined();
+    }, 30_000);
   });
 });

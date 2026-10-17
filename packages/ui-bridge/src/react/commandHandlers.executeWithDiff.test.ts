@@ -251,3 +251,77 @@ describe('relay executeWithDiff · the same ChangeTracker result as the direct t
     expect(result.timeline).toBeDefined();
   });
 });
+
+describe('relay aiExecute withDiff · the shared tracker path', () => {
+  let button: HTMLButtonElement;
+
+  beforeEach(() => {
+    const registry = getGlobalRegistry();
+    registry.registerState({ id: 'saved-toast', name: 'Saved toast', elements: [] });
+    button = document.createElement('button');
+    button.textContent = 'Publish';
+    makeVisible(button);
+    button.addEventListener('click', () => {
+      setTimeout(() => getGlobalRegistry().activateState('saved-toast'), 30);
+    });
+    document.body.appendChild(button);
+    registry.registerElement('publish-button', button, {
+      type: 'button',
+      label: 'Publish',
+      actions: ['click'],
+    });
+  });
+
+  afterEach(() => {
+    button.remove();
+    getGlobalRegistry().clear();
+  });
+
+  it('answers the NL response merged with the diff and the timeline', async () => {
+    const result = (await executeCommand(
+      'aiExecute',
+      {
+        instruction: 'click Publish',
+        withDiff: true,
+        settleMinStable: 20,
+        timelineInterval: 10,
+        expectStates: ['saved-toast'],
+        withinMs: 10_000,
+      },
+      emptyBridge
+    )) as Record<string, unknown>;
+    expect(result.success).toBe(true);
+    expect(result.actionSuccess).toBe(true);
+    expect(result.executedAction).toBeDefined();
+    expect((result.diff as { changes?: unknown }).changes).toBeDefined();
+    const timeline = result.timeline as {
+      summary: { expectedStates: Array<{ outcome: unknown }> };
+    };
+    expect(timeline.summary.expectedStates[0].outcome).toMatchObject({
+      status: 'measured',
+      value: { enteredAtMs: expect.any(Number) },
+    });
+  }, 30_000);
+
+  it('a failed action is success:false with an error, and an OUTER failure through relayCommand', async () => {
+    const payload = {
+      instruction: 'click Nonexistent widget',
+      withDiff: true,
+      settleMinStable: 10,
+      timelineInterval: 10,
+    };
+    const direct = (await executeCommand('aiExecute', payload, emptyBridge)) as Record<
+      string,
+      unknown
+    >;
+    expect(direct.success).toBe(false);
+    expect(direct.actionSuccess).toBe(false);
+    expect(String(direct.error).length).toBeGreaterThan(0);
+    expect(direct.timeline).toBeDefined();
+
+    const handlers = createRelayHandlers(relayRunningTheDispatcher());
+    const viaRelay = await handlers.aiExecute!(payload as never);
+    expect(viaRelay.success).toBe(false);
+    expect(String(viaRelay.error).length).toBeGreaterThan(0);
+  }, 30_000);
+});

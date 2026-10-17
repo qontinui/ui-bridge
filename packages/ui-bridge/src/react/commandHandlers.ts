@@ -40,7 +40,12 @@ import {
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
-import type { ActionWithDiffRequest, NLActionResponse, SemanticSnapshot } from '../ai/types';
+import type {
+  ActionDiffResult,
+  ActionWithDiffRequest,
+  NLActionResponse,
+  SemanticSnapshot,
+} from '../ai/types';
 import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-recorder';
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { hasNestedQuantifiers } from '../core/param-schema';
@@ -1099,6 +1104,71 @@ const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
   'getPageSummary',
 ]);
 
+/**
+ * `executeWithDiff` on the relay transport: the SAME producer the direct
+ * transport runs (`ChangeTracker.executeWithDiff` over the live global
+ * registry), so a relay consumer gets the identical `ActionDiffResult` —
+ * semantic diff, settle and the default-on interaction timeline (`timeline:
+ * false` opts out; `expectStates` + `withinMs` answered from the
+ * declared-state registry). The action itself still runs through this
+ * dispatcher's own arms (`aiExecute`, `executeElementAction`), so the relay's
+ * action semantics are unchanged.
+ */
+async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<ActionDiffResult> {
+  const registry = getGlobalRegistry();
+  const req = payload as Partial<ActionWithDiffRequest> & {
+    elementId?: string;
+    action?: string;
+    params?: P;
+  };
+  const eId = req.elementAction?.elementId ?? req.elementId;
+  const eAct = req.elementAction?.action ?? req.action;
+  const eParams = req.elementAction?.params ?? req.params;
+  const { ChangeTracker, createSnapshotManager } = await import('../ai');
+  const tracker = new ChangeTracker({
+    snapshotManager: createSnapshotManager(),
+    idleDetector: null,
+    // The registry snapshot carries no workflow-run plane on this
+    // transport; the diff never reads it.
+    createControlSnapshot: () => ({ ...registry.createSnapshot(), activeRuns: [] }),
+    refreshElements: () => {
+      try {
+        registry.refreshScrapedText();
+      } catch {
+        // A failing label refresh must not fail the diff.
+      }
+    },
+    // Natural language instruction — resolve via the plain aiExecute arm
+    executeNLAction: async (instruction) =>
+      (await executeCommand('aiExecute', { instruction }, bridge)) as NLActionResponse,
+    // Direct element action (from elementAction or legacy flat fields)
+    executeElementAction: async (elementId, request) =>
+      executeCommand(
+        'executeElementAction',
+        { id: elementId, request: { action: request.action, ...request.params } },
+        bridge
+      ),
+    states: stateSourceFromRegistry(registry as unknown as StateRegistryLike),
+  });
+  return tracker.executeWithDiff({
+    instruction: req.instruction,
+    elementAction:
+      req.instruction === undefined && eId !== undefined && eAct !== undefined
+        ? { elementId: eId, action: eAct, params: eParams }
+        : undefined,
+    settleTimeout: req.settleTimeout,
+    settleMinStable: req.settleMinStable,
+    scope: req.scope,
+    categorize: req.categorize,
+    timeline: req.timeline,
+    timelineInterval: req.timelineInterval,
+    expectStates: req.expectStates,
+    withinMs: req.withinMs,
+    summaryBudget: req.summaryBudget,
+    analyzeStructured: req.analyzeStructured,
+  });
+}
+
 export async function executeCommand(
   action: string,
   payload: P,
@@ -1117,7 +1187,11 @@ export async function executeCommand(
       typeof (payload as { settleTimeout?: unknown })?.settleTimeout === 'number'
         ? ((payload as { settleTimeout?: number }).settleTimeout as number)
         : undefined;
-    const skipSettle = (payload as { skipSettle?: unknown })?.skipSettle === true;
+    const skipSettle =
+      (payload as { skipSettle?: unknown })?.skipSettle === true ||
+      // `aiExecute` with `withDiff` settles inside the change tracker, as the
+      // direct transport's does; settling first would hide the response.
+      (action === 'aiExecute' && (payload as { withDiff?: unknown })?.withDiff === true);
     if (!skipSettle) {
       await awaitDOMSettledRelay(settleTimeout);
     }
@@ -2508,6 +2582,13 @@ export async function executeCommand(
     }
 
     case 'aiExecute': {
+      // `withDiff: true` — the shared tracker path, answering the same merged
+      // shape as the direct transport's `aiExecute` (`success` IS the strict
+      // `actionSuccess`, a failure always carries `error` for the relay lift).
+      if ((payload as { withDiff?: unknown }).withDiff === true) {
+        const { mergeNLActionWithDiff } = await import('../ai');
+        return mergeNLActionWithDiff(await relayExecuteWithDiff(payload, bridge));
+      }
       const t0 = performance.now();
       const { parseNLInstruction, createSearchEngine } = await import('../ai');
       const { instruction, confidenceThreshold = 0.7 } = payload as {
@@ -2706,64 +2787,8 @@ export async function executeCommand(
     // ======================================================================
 
     case 'executeWithDiff': {
-      // The SAME producer the direct transport runs (`ChangeTracker.
-      // executeWithDiff` over the live global registry), so a relay consumer
-      // gets the identical `ActionDiffResult` — semantic diff, settle and the
-      // default-on interaction timeline (`timeline: false` opts out;
-      // `expectStates` + `withinMs` answered from the declared-state registry).
-      // The action itself still runs through this dispatcher's own arms, so the
-      // relay's action semantics are unchanged.
-      const req = payload as Partial<ActionWithDiffRequest> & {
-        elementId?: string;
-        action?: string;
-        params?: P;
-      };
-      const eId = req.elementAction?.elementId ?? req.elementId;
-      const eAct = req.elementAction?.action ?? req.action;
-      const eParams = req.elementAction?.params ?? req.params;
-      const { ChangeTracker, createSnapshotManager } = await import('../ai');
-      const tracker = new ChangeTracker({
-        snapshotManager: createSnapshotManager(),
-        idleDetector: null,
-        // The registry snapshot carries no workflow-run plane on this
-        // transport; the diff never reads it.
-        createControlSnapshot: () => ({ ...registry.createSnapshot(), activeRuns: [] }),
-        refreshElements: () => {
-          try {
-            registry.refreshScrapedText();
-          } catch {
-            // A failing label refresh must not fail the diff.
-          }
-        },
-        // Natural language instruction — resolve via aiExecute
-        executeNLAction: async (instruction) =>
-          (await executeCommand('aiExecute', { instruction }, bridge)) as NLActionResponse,
-        // Direct element action (from elementAction or legacy flat fields)
-        executeElementAction: async (elementId, request) =>
-          executeCommand(
-            'executeElementAction',
-            { id: elementId, request: { action: request.action, ...request.params } },
-            bridge
-          ),
-        states: stateSourceFromRegistry(registry as unknown as StateRegistryLike),
-      });
-      const result = await tracker.executeWithDiff({
-        instruction: req.instruction,
-        elementAction:
-          req.instruction === undefined && eId !== undefined && eAct !== undefined
-            ? { elementId: eId, action: eAct, params: eParams }
-            : undefined,
-        settleTimeout: req.settleTimeout,
-        settleMinStable: req.settleMinStable,
-        scope: req.scope,
-        categorize: req.categorize,
-        timeline: req.timeline,
-        timelineInterval: req.timelineInterval,
-        expectStates: req.expectStates,
-        withinMs: req.withinMs,
-        summaryBudget: req.summaryBudget,
-        analyzeStructured: req.analyzeStructured,
-      });
+      // The SAME producer the direct transport runs — see `relayExecuteWithDiff`.
+      const result = await relayExecuteWithDiff(payload, bridge);
       // The action's verdict is the tracker's own, strict reading: only a
       // literal `success: true` succeeded.
       const { actionResult } = result;

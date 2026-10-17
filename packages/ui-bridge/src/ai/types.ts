@@ -934,6 +934,23 @@ export interface ActionDiffResult {
 }
 
 /**
+ * `aiExecute` with `withDiff: true`: the NL action's own response, with the
+ * diff result merged in. `success` IS `actionSuccess` (strict), and a failed
+ * action always carries an `error`.
+ */
+export type NLActionWithDiffResponse = NLActionResponse &
+  Pick<
+    ActionDiffResult,
+    | 'actionSuccess'
+    | 'diff'
+    | 'categorized'
+    | 'timeline'
+    | 'settleTimedOut'
+    | 'budgetSummary'
+    | 'structuredChanges'
+  >;
+
+/**
  * The interaction timeline: action -> every observed event -> settled, each
  * with its offset from the action, plus a derived {@link TimelineSummary}.
  */

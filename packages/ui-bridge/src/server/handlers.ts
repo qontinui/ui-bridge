@@ -170,6 +170,7 @@ import {
   SemanticSnapshotManager,
   SemanticDiffManager,
   ChangeTracker,
+  mergeNLActionWithDiff,
   generatePageSummary,
   extractPageData,
   segmentPageRegions,
@@ -3019,17 +3020,25 @@ export function createHandlers(
             withinMs: reqExtra.withinMs,
           });
 
-          // Merge NL action response with diff result
-          const nlResult = diffResult.actionResult as NLActionResponse;
-          return success({
-            ...nlResult,
-            diff: diffResult.diff,
-            categorized: diffResult.categorized,
-            budgetSummary: diffResult.budgetSummary,
-            structuredChanges: diffResult.structuredChanges,
-            settleTimedOut: diffResult.settleTimedOut,
-            timeline: diffResult.timeline,
-          } as unknown as NLActionResponse);
+          // The NL action's response with the diff merged in — the same shape
+          // the relay transport answers. The action's verdict is the
+          // envelope's: a failed action is an OUTER failure (as
+          // `executeWithDiff` reports it), with the merged result under `data`.
+          const merged = mergeNLActionWithDiff(diffResult);
+          if (!merged.actionSuccess) {
+            const inner = describeInnerFailure(
+              diffResult.actionResult,
+              'The action did not report success and supplied no error message.'
+            );
+            return {
+              success: false,
+              error: inner.message,
+              code: inner.code as UiBridgeErrorCode,
+              data: merged,
+              timestamp: Date.now(),
+            };
+          }
+          return success(merged);
         }
 
         const result = await nlExecutor.execute(request);

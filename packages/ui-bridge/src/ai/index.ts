@@ -56,6 +56,7 @@ export type {
   CategorizedDiff,
   ActionWithDiffRequest,
   ActionDiffResult,
+  NLActionWithDiffResponse,
   ChangePredicate,
   WaitForChangeOptions,
   BufferedChange,
@@ -262,7 +263,12 @@ export {
 export type { SemanticDiffConfig } from './semantic-diff';
 
 // Change Tracker
-export { ChangeTracker, createChangeTracker, analyzeStructuredChanges } from './change-tracker';
+export {
+  ChangeTracker,
+  createChangeTracker,
+  analyzeStructuredChanges,
+  mergeNLActionWithDiff,
+} from './change-tracker';
 export type { ChangeTrackerDeps, ChangeTrackerConfig } from './change-tracker';
 
 // Bookmark Store (B2) — process-wide singleton shared by ChangeTracker
