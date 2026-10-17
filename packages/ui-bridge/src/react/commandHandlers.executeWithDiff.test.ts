@@ -375,10 +375,37 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
       emptyBridge
     ) as Promise<{ timeline: { observedSources: string[]; events: Array<{ type: string }> } }>;
 
-  it('gates settle on the idle detector and says network was NOT observed without a tracker', async () => {
-    const result = await run();
+  it('gates settle on the idle detector; a fetch after the action is recorded by the relay network tracker', async () => {
+    getGlobalRegistry().registerElement('fetcher', host, {
+      type: 'custom',
+      customActions: {
+        load: {
+          id: 'load',
+          handler: () => {
+            // The page fetches after the action (no server here: it errors).
+            void fetch('/api/items?page=2').catch(() => undefined);
+            return { ok: true };
+          },
+        },
+      },
+    });
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'fetcher', action: 'load' },
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    )) as { timeline: { observedSources: string[]; events: Array<Record<string, unknown>> } };
     expect(result.timeline.observedSources).toContain('idle-detector');
-    expect(result.timeline.observedSources).not.toContain('network');
+    expect(result.timeline.observedSources).toContain('network');
+    const started = result.timeline.events.find((e) => e.type === 'network-request-started');
+    expect(started).toMatchObject({
+      method: 'GET',
+      url: `${location.origin}/api/items`,
+      hasQuery: true,
+    });
   }, 30_000);
 
   it("records the page's NetworkRequestTracker when the app exposes one", async () => {
@@ -433,9 +460,22 @@ describe('relay executeWithDiff · inputs: idle detector, network, one tracker, 
     expect(__peekRelayChangeTrackerForTest()).toBe(first);
   }, 30_000);
 
-  it('the inner action runs with skipSettle — no pre-read DOM settle inside the timed window', async () => {
+  it('settles ONCE before the timeline; the inner action runs with skipSettle', async () => {
     const getSignal = vi.spyOn(CompositeIdleDetector.prototype, 'getSignal');
     await run();
-    expect(getSignal.mock.calls.filter(([name]) => name === 'dom')).toEqual([]);
+    // Exactly one pre-read DOM settle (relayExecuteWithDiff's), none inside the action.
+    expect(getSignal.mock.calls.filter(([name]) => name === 'dom')).toHaveLength(1);
+    getSignal.mockClear();
+    await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'pane', action: 'noop' },
+        skipSettle: true,
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    );
+    expect(getSignal.mock.calls.filter(([name]) => name === 'dom')).toHaveLength(0);
   }, 30_000);
 });

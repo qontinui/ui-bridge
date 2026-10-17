@@ -1189,10 +1189,11 @@ export interface TimelineSummary {
    * window without ending, plus those `document.getAnimations()` reports
    * running. Where `getAnimations` is missing the value is degraded:
    * `provenance.coverage.unmeasured` carries
-   * `{ dimension: 'animations-running-before-action', count: 0, code: 'input_missing' }` —
+   * `{ dimension: 'animations-running-before-action(count-unknowable)', count: 0, code: 'input_missing' }` —
    * animations started before the action and still running cannot be seen,
-   * and how many there are is unknowable, so `count: 0` there means "an
-   * unknown number", not "none".
+   * and how many there are is unknowable (the dimension name says so; the
+   * count carries no meaning). With no DOM at all the field is
+   * `unknown{input_missing}`.
    */
   animationsUnsettledAtEnd: Observation<DetectedAnimation[]>;
   /**

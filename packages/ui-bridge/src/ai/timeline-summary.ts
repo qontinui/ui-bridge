@@ -244,7 +244,7 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
   let animationsUnsettledAtEnd: Observation<DetectedAnimation[]>;
   if (!observedSources.includes('animation-events')) {
     animationsUnsettledAtEnd = Observation.unknown(
-      'capability_unavailable_in_build',
+      'input_missing',
       'no DOM to observe animation events on',
       prov(TIMELINE_PRODUCERS.animations, { considered: 0, measured: 0 })
     );
@@ -254,9 +254,9 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
     if (!observedSources.includes('get-animations')) {
       // Without getAnimations, an animation that started before the action and
       // is still running produced no event in the window: unseen, and how many
-      // there are is unknowable — count 0 here means "an unknown number".
+      // there are is unknowable — the dimension name says so; count is 0.
       unmeasured.push({
-        dimension: 'animations-running-before-action',
+        dimension: 'animations-running-before-action(count-unknowable)',
         count: 0,
         code: 'input_missing',
       });
@@ -279,7 +279,7 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
       );
     if (!observedSources.includes('states') || capture.activeStatesAtStart === null) {
       return Observation.unknown(
-        'capability_unavailable_in_build',
+        'input_missing',
         'this host wires no declared-state registry into the change tracker',
         stateProv(0)
       );

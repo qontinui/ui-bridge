@@ -39,7 +39,7 @@ import {
 } from '../core/snapshot-signature';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
-import type { NetworkRequestTracker } from '../network/tracker';
+import { NetworkRequestTracker } from '../network/tracker';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type {
   ActionDiffResult,
@@ -189,8 +189,8 @@ interface UIBridgeGlobal {
   renderLog?: { getEntries?: () => unknown[] };
   /**
    * The page's NetworkRequestTracker, when the app exposes one. The relay's
-   * interaction timeline records `network-request-*` events from it; without
-   * it the timeline reports `network` as not observed.
+   * idle detector and interaction timeline listen on it; without it the relay
+   * creates and installs its own.
    */
   networkTracker?: Pick<NetworkRequestTracker, 'onEvent'>;
 }
@@ -667,11 +667,32 @@ function isLikelyLightColor(color: string): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let idleDetector: any = null;
 
+/**
+ * The relay's NetworkRequestTracker: the app's own (`__UI_BRIDGE__.
+ * networkTracker`, read per call) when it set one, else ONE tracker this
+ * dispatcher creates and installs lazily. The idle detector and the relay
+ * ChangeTracker both listen on it instead of each patching fetch/XHR —
+ * mirroring `createHandlers` in `server/handlers.ts`.
+ */
+let relayNetworkTracker: NetworkRequestTracker | null = null;
+
+function currentRelayNetworkTracker(): Pick<NetworkRequestTracker, 'onEvent'> {
+  const appTracker = getBridge().networkTracker;
+  if (appTracker) return appTracker;
+  if (!relayNetworkTracker) {
+    relayNetworkTracker = new NetworkRequestTracker();
+    relayNetworkTracker.install();
+  }
+  return relayNetworkTracker;
+}
+
 async function getIdleDetector() {
   if (idleDetector) return idleDetector;
   try {
     const { CompositeIdleDetector } = await import('../idle');
-    const detector = CompositeIdleDetector.create();
+    const detector = CompositeIdleDetector.create({
+      network: { tracker: currentRelayNetworkTracker() as NetworkRequestTracker },
+    });
     idleDetector = detector;
     return detector;
   } catch {
@@ -1140,7 +1161,6 @@ async function getRelayChangeTracker(): Promise<import('../ai').ChangeTracker> {
     relayTrackerBuilding = (async () => {
       const { ChangeTracker, createSnapshotManager } = await import('../ai');
       const idle = await getIdleDetector();
-      const networkTracker = getBridge().networkTracker;
       const bridgeNow = (): BridgeAccess => {
         if (!relayTrackerBridge) throw new Error('relay ChangeTracker used outside a command');
         return relayTrackerBridge;
@@ -1178,32 +1198,30 @@ async function getRelayChangeTracker(): Promise<import('../ai').ChangeTracker> {
             },
             bridgeNow()
           ),
-        // The page's NetworkRequestTracker, when the app exposes one; without
-        // it the timeline says `network` was not observed.
-        subscribeNetworkEvents: networkTracker
-          ? (callback) =>
-              networkTracker.onEvent((event) =>
-                callback({
-                  type: event.type,
-                  timestamp: event.timestamp,
-                  entry: {
-                    request: {
-                      id: event.entry.request.id,
-                      url: event.entry.request.url,
-                      method: event.entry.request.method,
-                      startedAt: event.entry.request.startedAt,
-                    },
-                    response: event.entry.response
-                      ? {
-                          statusCode: event.entry.response.statusCode,
-                          durationMs: event.entry.response.durationMs,
-                        }
-                      : undefined,
-                    ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
-                  },
-                })
-              )
-          : undefined,
+        // The relay's NetworkRequestTracker (the app's when it set one), read
+        // when each recording subscribes.
+        subscribeNetworkEvents: (callback) =>
+          currentRelayNetworkTracker().onEvent((event) =>
+            callback({
+              type: event.type,
+              timestamp: event.timestamp,
+              entry: {
+                request: {
+                  id: event.entry.request.id,
+                  url: event.entry.request.url,
+                  method: event.entry.request.method,
+                  startedAt: event.entry.request.startedAt,
+                },
+                response: event.entry.response
+                  ? {
+                      statusCode: event.entry.response.statusCode,
+                      durationMs: event.entry.response.durationMs,
+                    }
+                  : undefined,
+                ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
+              },
+            })
+          ),
         states: stateSourceFromRegistry(liveRegistryView()),
       });
       relayTracker = tracker;
@@ -1265,6 +1283,11 @@ async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<A
   const eId = req.elementAction?.elementId ?? req.elementId;
   const eAct = req.elementAction?.action ?? req.action;
   const eParams = req.elementAction?.params ?? req.params;
+  // One pre-read settle, BEFORE the timeline's zero, so the before-snapshot
+  // sees the settled registry (the inner action calls skip their own).
+  if ((payload as { skipSettle?: unknown }).skipSettle !== true) {
+    await awaitDOMSettledRelay(req.settleTimeout);
+  }
   const tracker = await getRelayChangeTracker();
   relayTrackerBridge = bridge;
   return tracker.executeWithDiff({

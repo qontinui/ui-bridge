@@ -14,6 +14,7 @@ import { buildTimelineSummary } from './timeline-summary';
 import type { SemanticSnapshot, ChangeTimeline, TimelineEvent } from './types';
 import type { ControlSnapshot } from '../control/types';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
+import { redactRequestUrl } from './timeline-recorder';
 import type {
   TimelineCapture,
   TimelineNetworkEvent,
@@ -493,7 +494,7 @@ describe('animations', () => {
       // jsdom has no document.getAnimations: the gap is named, not hidden.
       expect(unsettled.provenance.coverage.unmeasured).toEqual([
         {
-          dimension: 'animations-running-before-action',
+          dimension: 'animations-running-before-action(count-unknowable)',
           count: 0,
           code: 'input_missing',
         },
@@ -577,7 +578,7 @@ describe('expectStates', () => {
     expect(ofType(result.timeline!, 'state-entered')[0].stateId).toBe('saved-toast');
   }, 30_000);
 
-  it('an undeclared state is unknown{input_missing}; no state registry is unknown{capability_unavailable_in_build}', async () => {
+  it('an undeclared state is unknown{input_missing}; no state registry is unknown{input_missing}', async () => {
     const declared = await new ChangeTracker(
       fixtureDeps({ states: stateSource([]) })
     ).executeWithDiff({
@@ -601,7 +602,7 @@ describe('expectStates', () => {
     });
     expect(noRegistry.timeline!.summary.expectedStates[0].outcome).toMatchObject({
       status: 'unknown',
-      unknown: { code: 'capability_unavailable_in_build' },
+      unknown: { code: 'input_missing' },
     });
   });
 
@@ -969,7 +970,7 @@ describe('getAnimations and event tracking agree', () => {
 describe('expectStates bounds', () => {
   it('no state source: answers unknown at once, without waiting out withinMs', async () => {
     const t0 = performance.now();
-    const result = await new ChangeTracker(fixtureDeps()).executeWithDiff({
+    const result = await new ChangeTracker(fixtureDeps(), { maxWithinMs: 20_000 }).executeWithDiff({
       elementAction: { elementId: 'save', action: 'click' },
       settleMinStable: 20,
       timelineInterval: 10,
@@ -979,7 +980,7 @@ describe('expectStates bounds', () => {
     expect(performance.now() - t0).toBeLessThan(15_000);
     expect(result.timeline!.summary.expectedStates[0].outcome).toMatchObject({
       status: 'unknown',
-      unknown: { code: 'capability_unavailable_in_build' },
+      unknown: { code: 'input_missing' },
     });
   }, 30_000);
 
@@ -990,7 +991,9 @@ describe('expectStates bounds', () => {
       subscribe: () => () => {},
     };
     const t0 = performance.now();
-    const result = await new ChangeTracker(fixtureDeps({ states })).executeWithDiff({
+    const result = await new ChangeTracker(fixtureDeps({ states }), {
+      maxWithinMs: 20_000,
+    }).executeWithDiff({
       elementAction: { elementId: 'save', action: 'click' },
       settleMinStable: 20,
       timelineInterval: 10,
@@ -1045,5 +1048,65 @@ describe('the expected-state window is compared unrounded', () => {
       status: 'measured',
       value: { notEnteredWithinMs: 2000 },
     });
+  });
+});
+
+describe('redactRequestUrl', () => {
+  it('http(s): origin + pathname; data: and blob: report the scheme only', () => {
+    expect(redactRequestUrl('https://api.example.com/v1/x?token=a#f')).toEqual({
+      url: 'https://api.example.com/v1/x',
+      hasQuery: true,
+    });
+    expect(redactRequestUrl('data:text/plain;base64,c2VjcmV0?x=1')).toEqual({
+      url: 'data:',
+      hasQuery: false,
+    });
+    expect(redactRequestUrl('blob:https://app.example.com/1b2c-secret-uuid')).toEqual({
+      url: 'blob:',
+      hasQuery: false,
+    });
+  });
+});
+
+describe('maxWithinMs defaults to defaultWaitTimeout', () => {
+  it('a withinMs over defaultWaitTimeout is refused when no ceiling is configured', async () => {
+    const tracker = new ChangeTracker(fixtureDeps(), { defaultWaitTimeout: 500 });
+    const err = await tracker
+      .executeWithDiff({
+        elementAction: { elementId: 'save', action: 'click' },
+        expectStates: ['x'],
+        withinMs: 501,
+      })
+      .catch((e: unknown) => e);
+    expect((err as ChangeTrackerRequestError).code).toBe('WITHIN_MS_EXCEEDS_CEILING');
+  });
+});
+
+describe('layout-shift sources are fingerprinted at stop()', () => {
+  it('a source removed from the document before the recording ends is unattributed', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    const { content } = mountPage();
+    const gone = document.createElement('div');
+    document.body.append(gone);
+    const executeElementAction = vi.fn(async () => {
+      FakePerformanceObserver.emit('layout-shift', [
+        {
+          startTime: performance.now(),
+          value: 0.1,
+          hadRecentInput: false,
+          sources: [{ node: content }, { node: gone }],
+        },
+      ]);
+      gone.remove();
+      return { success: true };
+    });
+    const result = await new ChangeTracker(fixtureDeps({ executeElementAction })).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    const shift = ofType(result.timeline!, 'layout-shift')[0];
+    expect(shift.shiftedFingerprints).toHaveLength(1);
+    expect(shift.unattributedSourceCount).toBe(1);
   });
 });

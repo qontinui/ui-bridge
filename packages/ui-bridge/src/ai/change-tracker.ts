@@ -140,7 +140,7 @@ export interface ChangeTrackerConfig {
   maxBookmarks: number;
   /**
    * Ceiling on a request's `withinMs` (ms): how long `expectStates` may keep a
-   * recording open. A request over it is refused with
+   * recording open. Defaults to `defaultWaitTimeout`. A request over it is refused with
    * {@link ChangeTrackerRequestError} `WITHIN_MS_EXCEEDS_CEILING`.
    */
   maxWithinMs: number;
@@ -154,14 +154,14 @@ export interface ChangeTrackerConfig {
   diffConfig?: Partial<SemanticDiffConfig>;
 }
 
-const DEFAULT_CONFIG: ChangeTrackerConfig = {
+/** `maxWithinMs` defaults to the configured `defaultWaitTimeout` (see the constructor). */
+const DEFAULT_CONFIG: Omit<ChangeTrackerConfig, 'maxWithinMs'> = {
   defaultSettleTimeout: 5000,
   defaultSettleMinStable: 300,
   defaultPollInterval: 200,
   defaultWaitTimeout: 10000,
   maxBufferSize: 1000,
   maxBookmarks: 50,
-  maxWithinMs: 60_000,
   timelineMaxEventsPerType: 500,
 };
 
@@ -250,7 +250,9 @@ export class ChangeTracker {
 
   constructor(deps: ChangeTrackerDeps, config?: Partial<ChangeTrackerConfig>) {
     this.deps = deps;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    const merged = { ...DEFAULT_CONFIG, ...config };
+    // The expectStates ceiling is the tracker's own wait budget unless set.
+    this.config = { ...merged, maxWithinMs: config?.maxWithinMs ?? merged.defaultWaitTimeout };
     this.perfSupport = probePerfEntrySupport();
     // Propagate the configured cap to the shared bookmark store. Last
     // constructor wins, but every host today initialises with the same cap

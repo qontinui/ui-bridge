@@ -17,8 +17,9 @@
  * offset is from that instant, and anything observed earlier is dropped.
  *
  * The listeners do the minimum (capture a reference and a timestamp);
- * fingerprinting and computed-style reads are deferred to `stop()`, so the
- * page's own animation events are not slowed by observation. Each event type
+ * fingerprinting and computed-style reads — for animations AND layout-shift
+ * sources — are deferred to `stop()`, so the page's own events are not slowed
+ * by observation. Each event type
  * is capped (`maxEventsPerType`, a count — not a timing threshold); overflow
  * is counted and reported, never silently dropped.
  *
@@ -31,6 +32,7 @@ import type { DetectedAnimation } from '../idle/detected-animation';
 import type {
   AnimationEndedTimelineEvent,
   AnimationStartedTimelineEvent,
+  LayoutShiftTimelineEvent,
   TimelineEvent,
   TimelineEventType,
   TimelineSource,
@@ -191,6 +193,10 @@ export function redactRequestUrl(raw: string): { url: string; hasQuery: boolean 
     const base =
       typeof location !== 'undefined' && location.href ? location.href : 'http://localhost/';
     const u = new URL(raw, base);
+    // data:, blob:, … carry their payload in the "path": report the scheme only.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      return { url: u.protocol, hasQuery: false };
+    }
     return { url: `${u.origin}${u.pathname}`, hasQuery: u.search.length > 1 };
   } catch {
     const q = raw.indexOf('?');
@@ -217,6 +223,10 @@ export class TimelineRecorder {
   private readonly cleanups: Array<() => void> = [];
   private readonly perfHandles: PerfObserverHandle[] = [];
   private readonly pendingAnimations: PendingAnimation[] = [];
+  private readonly pendingShifts: Array<{
+    event: LayoutShiftTimelineEvent;
+    elements: Array<Element | null>;
+  }> = [];
   /** Running animations keyed by element, then name — the dedupe identity. */
   private readonly running = new Map<Element | null, Map<string, PendingAnimation>>();
   private readonly entered = new Set<string>();
@@ -280,25 +290,21 @@ export class TimelineRecorder {
       (samples) => {
         for (const sample of samples) {
           if (this.actionStart === null || sample.startTime < this.actionStart) continue;
-          const fingerprints: string[] = [];
-          let unattributed = 0;
-          for (const source of sample.sources) {
+          // Keep element references only; fingerprints are computed at stop().
+          const elements = sample.sources.map((source) => {
             const node = source.node;
-            const el =
-              node && node.nodeType === 1 ? (node as Element) : (node?.parentElement ?? null);
-            const fp = el && el.isConnected ? fingerprintOf(el) : undefined;
-            if (fp !== undefined) fingerprints.push(fp);
-            else unattributed++;
-          }
-          this.record({
+            return node && node.nodeType === 1 ? (node as Element) : (node?.parentElement ?? null);
+          });
+          const event: LayoutShiftTimelineEvent = {
             offsetMs: Math.round(sample.startTime - this.actionStart),
             type: 'layout-shift',
             summary: `Layout shift ${sample.value.toFixed(4)} (${sample.sources.length} source(s))`,
             value: sample.value,
             hadRecentInput: sample.hadRecentInput,
-            shiftedFingerprints: fingerprints,
-            unattributedSourceCount: unattributed,
-          });
+            shiftedFingerprints: [],
+            unattributedSourceCount: 0,
+          };
+          if (this.record(event)) this.pendingShifts.push({ event, elements });
         }
       },
       { support: perfSupport }
@@ -539,6 +545,14 @@ export class TimelineRecorder {
       };
     };
     for (const p of this.pendingAnimations) p.event.animation = detail(p);
+    // Layout-shift sources: an element that left the document is unattributed.
+    for (const { event, elements } of this.pendingShifts) {
+      for (const el of elements) {
+        const hash = el && el.isConnected ? fp(el) : undefined;
+        if (hash !== undefined) event.shiftedFingerprints.push(hash);
+        else event.unattributedSourceCount++;
+      }
+    }
 
     // Unsettled: started without ending, plus getAnimations — one entry per element + name.
     const unsettled: DetectedAnimation[] = [];
