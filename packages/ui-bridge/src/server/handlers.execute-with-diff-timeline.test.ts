@@ -179,3 +179,51 @@ describe('direct executeWithDiff · timeline and declared states', () => {
     }, 30_000);
   });
 });
+
+it('createHandlers inline: executeWithDiff answers an Observation-shaped timeline summary by default, and an expectStates miss is notEnteredWithinMs', async () => {
+  const registry = new UIBridgeRegistry();
+  const handlers = createHandlers(
+    registry as unknown as RegistryLike,
+    new DefaultActionExecutor(registry) as never
+  );
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  registry.registerState({ id: 'saved-toast', name: 'Saved toast', elements: [] });
+  registry.registerElement('noop-host', host, {
+    type: 'custom',
+    customActions: { noop: { id: 'noop', handler: () => ({ ok: true }) } },
+  });
+  try {
+    // No `timeline` option: the timeline is on by default.
+    const plain = await handlers.executeWithDiff!({
+      elementAction: { elementId: 'noop-host', action: 'noop' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    expect(plain.success).toBe(true);
+    const summary = (plain.data as ActionDiffResult).timeline!.summary;
+    for (const field of [summary.firstResponseMs, summary.layoutShiftTotal]) {
+      expect(['measured', 'absent', 'unknown']).toContain(field.status);
+      expect(field.provenance).toMatchObject({
+        producer: { id: expect.any(String), version: expect.any(String) },
+        evaluatedAt: expect.any(String),
+        coverage: expect.any(Object),
+      });
+    }
+
+    const missed = await handlers.executeWithDiff!({
+      elementAction: { elementId: 'noop-host', action: 'noop' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+      expectStates: ['saved-toast'],
+      withinMs: 150,
+    });
+    expect((missed.data as ActionDiffResult).timeline!.summary.expectedStates[0]).toMatchObject({
+      stateId: 'saved-toast',
+      outcome: { status: 'measured', value: { notEnteredWithinMs: 150 } },
+    });
+  } finally {
+    host.remove();
+    registry.clear();
+  }
+}, 30_000);
