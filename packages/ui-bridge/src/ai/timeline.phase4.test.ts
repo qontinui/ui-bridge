@@ -9,11 +9,16 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ChangeTracker, type ChangeTrackerDeps } from './change-tracker';
+import { ChangeTracker, ChangeTrackerRequestError, type ChangeTrackerDeps } from './change-tracker';
+import { buildTimelineSummary } from './timeline-summary';
 import type { SemanticSnapshot, ChangeTimeline, TimelineEvent } from './types';
 import type { ControlSnapshot } from '../control/types';
 import type { SemanticSnapshotManager } from './semantic-snapshot';
-import type { TimelineNetworkEvent, TimelineStateSource } from './timeline-recorder';
+import type {
+  TimelineCapture,
+  TimelineNetworkEvent,
+  TimelineStateSource,
+} from './timeline-recorder';
 import { probePerfEntrySupport, observeLayoutShifts } from '../perf';
 import { installWebVitalsCapture } from '../debug/captures/web-vitals';
 import { installLongTaskCapture } from '../debug/captures/long-tasks';
@@ -170,7 +175,9 @@ describe('perf/ probe', () => {
       layoutShift: false,
       longTask: false,
       supportedEntryTypes: null,
+      observerAvailable: false,
     });
+    expect(observeLayoutShifts(() => {})).toBeNull();
   });
 
   it('web-vitals CLS and long-task capture use the shared observers', () => {
@@ -184,7 +191,8 @@ describe('perf/ probe', () => {
     ]);
     FakePerformanceObserver.emit('longtask', [{ startTime: 3, duration: 80.4 }]);
     const cls = emitted.filter((e) => e.metric === 'CLS').map((e) => e.value);
-    expect(cls).toEqual([0.2, 0.2]); // the recent-input shift is excluded from CLS
+    // One CLS event per observer batch; the recent-input shift is excluded.
+    expect(cls).toEqual([0.2]);
     expect(emitted.find((e) => e.type === 'long-task')?.durationMs).toBe(80);
     stopVitals();
     stopLong();
@@ -273,7 +281,7 @@ describe('timeline default-on', () => {
 describe('layout shifts', () => {
   it('a banner inserted 300ms after the click yields a layout-shift at ≈300ms', async () => {
     installPerformanceObserver(['layout-shift', 'longtask']);
-    const { content } = mountPage();
+    const { button, content } = mountPage();
     let networkListener: ((e: TimelineNetworkEvent) => void) | null = null;
     const subscribeNetworkEvents = vi.fn((cb: (e: TimelineNetworkEvent) => void) => {
       networkListener = cb;
@@ -283,7 +291,9 @@ describe('layout shifts', () => {
     });
 
     const executeElementAction = vi.fn(async () => {
-      // The app responds at once (a save request goes out)…
+      // The app responds at once: the button reads "Saving…" (a visible
+      // response) and a save request goes out (work, not a response)…
+      button.textContent = 'Saving…';
       networkListener?.({
         type: 'request-start',
         timestamp: Date.now(),
@@ -336,7 +346,8 @@ describe('layout shifts', () => {
     expect(ofType(timeline, 'network-request-started')[0]).toMatchObject({
       requestId: 'r1',
       method: 'POST',
-      url: '/api/save',
+      url: `${location.origin}/api/save`,
+      hasQuery: false,
     });
 
     const { summary } = timeline;
@@ -483,11 +494,14 @@ describe('animations', () => {
       expect(unsettled.provenance.coverage.unmeasured).toEqual([
         {
           dimension: 'animations-running-before-action',
-          count: 1,
-          code: 'capability_unavailable_in_build',
+          count: 0,
+          code: 'input_missing',
         },
       ]);
+      // Element details were filled in at stop(), not in the listener.
+      expect(typeof unsettled.value[0].targetElement).toBe('string');
     }
+    expect(typeof ended[0].animation.targetElement).toBe('string');
   });
 });
 
@@ -668,8 +682,368 @@ describe('network events', () => {
       requestId: 'a',
       statusCode: 500,
       durationMs: 12,
-      failed: true,
+      // An HTTP error status is not `errored` — the request did not throw.
+      errored: false,
     });
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+});
+
+// ============================================================================
+// Review round: offsets, sources, caps, network redaction, rounding
+// ============================================================================
+
+describe('offsets are from the action call, not the before-snapshot', () => {
+  it('a slow before-snapshot does not push the first offset late; earlier events are dropped', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    const { content } = mountPage();
+    let calls = 0;
+    const executeElementAction = vi.fn(async () => {
+      FakePerformanceObserver.emit('layout-shift', [
+        {
+          startTime: performance.now(),
+          value: 0.05,
+          hadRecentInput: false,
+          sources: [{ node: content }],
+        },
+      ]);
+      return { success: true };
+    });
+    const tracker = new ChangeTracker(
+      fixtureDeps({
+        executeElementAction,
+        snapshotManager: {
+          createSnapshot: vi.fn(() => {
+            if (calls++ === 0) {
+              // Before-snapshot: burn 150ms, and a long task lands BEFORE the action.
+              const until = performance.now() + 150;
+              while (performance.now() < until) {
+                /* busy */
+              }
+              FakePerformanceObserver.emit('longtask', [
+                { startTime: performance.now() - 10, duration: 60 },
+              ]);
+            }
+            return domSnapshot();
+          }),
+        } as unknown as SemanticSnapshotManager,
+      })
+    );
+    const result = await tracker.executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    const shift = ofType(result.timeline!, 'layout-shift')[0];
+    expect(shift.offsetMs).toBeLessThan(50);
+    expect(ofType(result.timeline!, 'long-task')).toEqual([]);
+    expect(result.timeline!.events[0]).toMatchObject({ type: 'action', offsetMs: 0 });
+  });
+
+  it('a throwing action still unsubscribes and disconnects every observer', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    const unsubscribe = vi.fn();
+    const tracker = new ChangeTracker(
+      fixtureDeps({
+        subscribeChanges: vi.fn(() => unsubscribe),
+        executeElementAction: vi.fn(async () => {
+          throw new Error('boom');
+        }),
+      })
+    );
+    await expect(
+      tracker.executeWithDiff({ elementAction: { elementId: 'save', action: 'click' } })
+    ).rejects.toThrow('boom');
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(FakePerformanceObserver.live.size).toBe(0);
+  });
+});
+
+describe('observed sources', () => {
+  it('lists what was looked at, so a missing network means unknown, not none', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    const result = await new ChangeTracker(fixtureDeps()).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    const sources = result.timeline!.observedSources;
+    expect(sources).toEqual(['snapshot-poll', 'layout-shift', 'long-task', 'animation-events']);
+    expect(sources).not.toContain('network');
+    expect(result.timeline!.summary.firstResponseMs.provenance.source).toMatchObject({
+      observedSources: sources,
+    });
+  });
+});
+
+describe('response events', () => {
+  it('network requests and long tasks are not a response the user sees', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    let listener: ((e: TimelineNetworkEvent) => void) | null = null;
+    const executeElementAction = vi.fn(async () => {
+      listener?.({
+        type: 'request-start',
+        timestamp: Date.now(),
+        entry: { request: { id: 'q', url: '/api', method: 'GET', startedAt: Date.now() } },
+      });
+      FakePerformanceObserver.emit('longtask', [{ startTime: performance.now(), duration: 70 }]);
+      return { success: true };
+    });
+    const result = await new ChangeTracker(
+      fixtureDeps({
+        executeElementAction,
+        subscribeNetworkEvents: (cb) => {
+          listener = cb;
+          return () => (listener = null);
+        },
+      })
+    ).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    expect(ofType(result.timeline!, 'network-request-started')).toHaveLength(1);
+    expect(ofType(result.timeline!, 'long-task')).toHaveLength(1);
+    expect(result.timeline!.summary.firstResponseMs).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'no_event_before_timeout' },
+    });
+  });
+});
+
+describe('network redaction and window', () => {
+  it('carries origin + pathname and hasQuery, never the query; requests started before the action are dropped', async () => {
+    let listener: ((e: TimelineNetworkEvent) => void) | null = null;
+    const executeElementAction = vi.fn(async () => {
+      listener?.({
+        type: 'request-start',
+        timestamp: Date.now(),
+        entry: {
+          request: { id: 'old', url: '/api/poll', method: 'GET', startedAt: Date.now() - 5000 },
+        },
+      });
+      const request = {
+        id: 'new',
+        url: '/api/save?token=s3cret#frag',
+        method: 'POST',
+        startedAt: Date.now(),
+      };
+      listener?.({ type: 'request-start', timestamp: Date.now(), entry: { request } });
+      listener?.({
+        type: 'request-error',
+        timestamp: Date.now(),
+        entry: { request, error: 'Failed to fetch' },
+      });
+      return { success: true };
+    });
+    const result = await new ChangeTracker(
+      fixtureDeps({
+        executeElementAction,
+        subscribeNetworkEvents: (cb) => {
+          listener = cb;
+          return () => (listener = null);
+        },
+      })
+    ).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    const started = ofType(result.timeline!, 'network-request-started');
+    expect(started.map((e) => e.requestId)).toEqual(['new']);
+    expect(started[0].url).toBe(`${location.origin}/api/save`);
+    expect(started[0].hasQuery).toBe(true);
+    const finished = ofType(result.timeline!, 'network-request-finished')[0];
+    expect(finished).toMatchObject({ statusCode: null, errored: true, hasQuery: true });
+    expect(JSON.stringify(result.timeline)).not.toContain('s3cret');
+    expect(JSON.stringify(result.timeline)).not.toContain('frag');
+  });
+});
+
+describe('per-type cap', () => {
+  it('keeps maxEventsPerType events and reports the overflow as unmeasured coverage', async () => {
+    installPerformanceObserver(['layout-shift', 'longtask']);
+    const executeElementAction = vi.fn(async () => {
+      FakePerformanceObserver.emit(
+        'longtask',
+        [1, 2, 3, 4, 5].map(() => ({ startTime: performance.now(), duration: 60 }))
+      );
+      return { success: true };
+    });
+    const result = await new ChangeTracker(fixtureDeps({ executeElementAction }), {
+      timelineMaxEventsPerType: 2,
+    }).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    expect(ofType(result.timeline!, 'long-task')).toHaveLength(2);
+    const total = result.timeline!.summary.longTaskTotalMs;
+    expect(total).toMatchObject({ status: 'measured', value: 120 });
+    expect(total.provenance.coverage.unmeasured).toEqual([
+      { dimension: 'timeline-events:long-task', count: 3, code: 'input_missing' },
+    ]);
+  });
+});
+
+describe('PerformanceObserver without a supportedEntryTypes list', () => {
+  beforeEach(() => {
+    installPerformanceObserver([]);
+    (FakePerformanceObserver as unknown as { supportedEntryTypes?: unknown }).supportedEntryTypes =
+      undefined;
+  });
+
+  it('try-observes: entries confirm support and are measured', async () => {
+    const handle = observeLayoutShifts(() => {});
+    expect(handle?.probe).toBe('try-observe');
+    handle?.disconnect();
+    const executeElementAction = vi.fn(async () => {
+      FakePerformanceObserver.emit('layout-shift', [
+        { startTime: performance.now(), value: 0.3, hadRecentInput: false, sources: [] },
+      ]);
+      return { success: true };
+    });
+    const result = await new ChangeTracker(fixtureDeps({ executeElementAction })).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    expect(result.timeline!.summary.layoutShiftTotal).toMatchObject({
+      status: 'measured',
+      value: 0.3,
+    });
+    expect(result.timeline!.summary.layoutShiftTotal.provenance.source).toMatchObject({
+      supportProbe: 'try-observe',
+    });
+  });
+
+  it('try-observes: silence is unconfirmed support — unknown, not a measured 0', async () => {
+    const result = await new ChangeTracker(fixtureDeps()).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+    });
+    expect(result.timeline!.summary.layoutShiftTotal).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'performance_observer_unsupported' },
+    });
+  });
+});
+
+describe('getAnimations and event tracking agree', () => {
+  it('an animation seen by both appears once in animationsUnsettledAtEnd', async () => {
+    const { button } = mountPage();
+    const effect = {
+      target: button,
+      getTiming: () => ({ duration: 400, iterations: Infinity }),
+    };
+    const anims = [{ playState: 'running', animationName: 'pulse', effect, id: '' }];
+    (document as unknown as { getAnimations: () => unknown[] }).getAnimations = () => anims;
+    try {
+      const executeElementAction = vi.fn(async () => {
+        const ev = new Event('animationstart', { bubbles: true });
+        Object.assign(ev, { animationName: 'pulse' });
+        button.dispatchEvent(ev);
+        return { success: true };
+      });
+      const result = await new ChangeTracker(fixtureDeps({ executeElementAction })).executeWithDiff(
+        {
+          elementAction: { elementId: 'save', action: 'click' },
+          settleMinStable: 20,
+          timelineInterval: 10,
+        }
+      );
+      const unsettled = result.timeline!.summary.animationsUnsettledAtEnd;
+      expect(unsettled.status).toBe('measured');
+      if (unsettled.status === 'measured') {
+        expect(unsettled.value.map((a) => a.name)).toEqual(['pulse']);
+        expect(unsettled.provenance.coverage.unmeasured).toEqual([]);
+      }
+      expect(result.timeline!.observedSources).toContain('get-animations');
+    } finally {
+      delete (document as unknown as { getAnimations?: unknown }).getAnimations;
+    }
+  });
+});
+
+describe('expectStates bounds', () => {
+  it('no state source: answers unknown at once, without waiting out withinMs', async () => {
+    const t0 = performance.now();
+    const result = await new ChangeTracker(fixtureDeps()).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+      expectStates: ['saved-toast'],
+      withinMs: 20_000,
+    });
+    expect(performance.now() - t0).toBeLessThan(15_000);
+    expect(result.timeline!.summary.expectedStates[0].outcome).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'capability_unavailable_in_build' },
+    });
+  }, 30_000);
+
+  it('an undeclared id is not waited for', async () => {
+    const states: TimelineStateSource = {
+      getActiveStates: () => [],
+      isDeclared: () => false,
+      subscribe: () => () => {},
+    };
+    const t0 = performance.now();
+    const result = await new ChangeTracker(fixtureDeps({ states })).executeWithDiff({
+      elementAction: { elementId: 'save', action: 'click' },
+      settleMinStable: 20,
+      timelineInterval: 10,
+      expectStates: ['nope'],
+      withinMs: 20_000,
+    });
+    expect(performance.now() - t0).toBeLessThan(15_000);
+    expect(result.timeline!.summary.expectedStates[0].outcome).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'input_missing' },
+    });
+  }, 30_000);
+
+  it('withinMs over the configured ceiling is refused with a typed error', async () => {
+    const tracker = new ChangeTracker(fixtureDeps(), { maxWithinMs: 1000 });
+    const err = await tracker
+      .executeWithDiff({
+        elementAction: { elementId: 'save', action: 'click' },
+        expectStates: ['x'],
+        withinMs: 1001,
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ChangeTrackerRequestError);
+    expect((err as ChangeTrackerRequestError).code).toBe('WITHIN_MS_EXCEEDS_CEILING');
+  });
+});
+
+describe('the expected-state window is compared unrounded', () => {
+  it('an entry at 2000.4ms is NOT within 2000ms, though its event offset rounds to 2000', () => {
+    const capture: TimelineCapture = {
+      events: [
+        { offsetMs: 0, type: 'action', summary: 'Action executed' },
+        { offsetMs: 2000, type: 'state-entered', summary: 'State entered: s', stateId: 's' },
+      ],
+      recordedUntilMs: 2000.4,
+      observedSources: ['snapshot-poll', 'states'],
+      layoutShiftProbe: null,
+      longTaskProbe: null,
+      unsettledAnimations: [],
+      activeStatesAtStart: [],
+      stateTransitions: [{ stateId: 's', active: true, atMs: 2000.4 }],
+      droppedByType: {},
+      perfSupport: probePerfEntrySupport(),
+    };
+    const summary = buildTimelineSummary({
+      capture,
+      settled: false,
+      expect: { stateIds: ['s'], withinMs: 2000 },
+      isDeclared: () => true,
+    });
+    expect(summary.expectedStates[0].outcome).toMatchObject({
+      status: 'measured',
+      value: { notEnteredWithinMs: 2000 },
+    });
   });
 });

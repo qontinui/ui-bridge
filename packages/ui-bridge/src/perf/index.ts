@@ -7,13 +7,18 @@
  * never disagree on what a layout shift is or on whether this webview can see
  * one.
  *
- * Support is PROBED, never assumed: `PerformanceObserver.supportedEntryTypes`
- * is the only reliable signal (several engines silently ignore an unknown
- * `observe({ type })` rather than throwing), and an engine without the entry
- * type — WebKitGTK is the expected case — must surface as "could not look",
- * never as a measured zero. The observe helpers therefore return `null` when
- * the type is unsupported, and callers turn that `null` into an `unknown`
- * observation (`performance_observer_unsupported`).
+ * Support is PROBED, never assumed. `PerformanceObserver.supportedEntryTypes`
+ * is the primary signal: an engine that lists the type supports it, and an
+ * engine whose list omits it — WebKitGTK is the expected case — must surface
+ * as "could not look", never as a measured zero; the observe helpers return
+ * `null` there, and callers turn that into an `unknown` observation
+ * (`performance_observer_unsupported`).
+ *
+ * An engine that has `PerformanceObserver` but no static list at all is
+ * handled by TRYING `observe({ type })`: a throw means unsupported. Several
+ * engines silently ignore an unknown type instead of throwing, so a
+ * try-observed handle reports `probe: 'try-observe'`, and a consumer that saw
+ * no entries through it must not read that silence as a confirmed zero.
  */
 
 /** The entry types this module observes. */
@@ -21,23 +26,27 @@ export type PerfEntryKind = 'layout-shift' | 'longtask';
 
 /** What this webview's PerformanceObserver can observe. */
 export interface PerfEntrySupport {
-  /** `layout-shift` entries are supported. */
+  /** `layout-shift` is in the static `supportedEntryTypes` list. */
   layoutShift: boolean;
-  /** `longtask` entries are supported. */
+  /** `longtask` is in the static `supportedEntryTypes` list. */
   longTask: boolean;
   /**
    * The raw `PerformanceObserver.supportedEntryTypes` list, or `null` when it
    * could not be read (no `PerformanceObserver`, or an engine predating the
-   * static property — in which case nothing is reported as supported).
+   * static property — the observe helpers then try `observe({ type })`).
    */
   supportedEntryTypes: readonly string[] | null;
+  /** Whether a `PerformanceObserver` constructor exists at all. */
+  observerAvailable: boolean;
 }
 
 /** Read `PerformanceObserver.supportedEntryTypes` now. Never throws. */
 export function probePerfEntrySupport(): PerfEntrySupport {
   let types: readonly string[] | null = null;
+  let observerAvailable = false;
   try {
-    if (typeof PerformanceObserver !== 'undefined') {
+    if (typeof PerformanceObserver === 'function') {
+      observerAvailable = true;
       const raw = (PerformanceObserver as unknown as { supportedEntryTypes?: unknown })
         .supportedEntryTypes;
       if (Array.isArray(raw) && raw.every((t) => typeof t === 'string')) {
@@ -51,6 +60,7 @@ export function probePerfEntrySupport(): PerfEntrySupport {
     layoutShift: types !== null && types.includes('layout-shift'),
     longTask: types !== null && types.includes('longtask'),
     supportedEntryTypes: types,
+    observerAvailable,
   };
 }
 
@@ -79,8 +89,13 @@ export interface LongTaskSample {
   duration: number;
 }
 
+/** How a handle's entry-type support was established. */
+export type PerfSupportProbe = 'listed' | 'try-observe';
+
 /** A live observer. */
 export interface PerfObserverHandle {
+  /** `listed`: the static list names the type. `try-observe`: no list; `observe` did not throw. */
+  readonly probe: PerfSupportProbe;
   /** Deliver any entries the browser has queued but not yet dispatched. */
   flush(): void;
   /** Stop observing. Idempotent. */
@@ -110,21 +125,26 @@ function toLayoutShiftSample(entry: PerformanceEntry): LayoutShiftSample {
 
 function observeEntries(
   type: PerfEntryKind,
-  supported: boolean,
+  listed: boolean,
+  support: PerfEntrySupport,
   onEntries: (entries: PerformanceEntry[]) => void,
   buffered: boolean
 ): PerfObserverHandle | null {
-  if (!supported || typeof PerformanceObserver === 'undefined') return null;
+  if (!support.observerAvailable || typeof PerformanceObserver !== 'function') return null;
+  // A list that exists and omits the type is a definitive "unsupported".
+  if (!listed && support.supportedEntryTypes !== null) return null;
+  const probe: PerfSupportProbe = listed ? 'listed' : 'try-observe';
   let observer: PerformanceObserver;
   try {
     observer = new PerformanceObserver((list) => onEntries(list.getEntries()));
     observer.observe({ type, buffered } as PerformanceObserverInit);
   } catch {
-    // Advertised but refused: the honest reading is still "could not look".
+    // Refused: the honest reading is "could not look".
     return null;
   }
   let connected = true;
   return {
+    probe,
     flush() {
       if (!connected) return;
       try {
@@ -143,35 +163,39 @@ function observeEntries(
 }
 
 /**
- * Observe `layout-shift` entries. Returns `null` when this webview cannot
- * observe them — the caller must report that as unknown, never as zero.
+ * Observe `layout-shift` entries, one callback per observer batch. Returns
+ * `null` when this webview cannot observe them — the caller must report that
+ * as unknown, never as zero.
  */
 export function observeLayoutShifts(
-  onSample: (sample: LayoutShiftSample) => void,
+  onBatch: (samples: LayoutShiftSample[]) => void,
   options: ObservePerfOptions = {}
 ): PerfObserverHandle | null {
   const support = options.support ?? probePerfEntrySupport();
   return observeEntries(
     'layout-shift',
     support.layoutShift,
-    (entries) => entries.forEach((e) => onSample(toLayoutShiftSample(e))),
+    support,
+    (entries) => onBatch(entries.map(toLayoutShiftSample)),
     options.buffered ?? false
   );
 }
 
 /**
- * Observe `longtask` entries. Returns `null` when this webview cannot observe
- * them — the caller must report that as unknown, never as zero.
+ * Observe `longtask` entries, one callback per observer batch. Returns `null`
+ * when this webview cannot observe them — the caller must report that as
+ * unknown, never as zero.
  */
 export function observeLongTasks(
-  onSample: (sample: LongTaskSample) => void,
+  onBatch: (samples: LongTaskSample[]) => void,
   options: ObservePerfOptions = {}
 ): PerfObserverHandle | null {
   const support = options.support ?? probePerfEntrySupport();
   return observeEntries(
     'longtask',
     support.longTask,
-    (entries) => entries.forEach((e) => onSample({ startTime: e.startTime, duration: e.duration })),
+    support,
+    (entries) => onBatch(entries.map((e) => ({ startTime: e.startTime, duration: e.duration }))),
     options.buffered ?? false
   );
 }

@@ -13,8 +13,14 @@
  * verdict is reported the way every other relay command reports failure.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { executeCommand, type BridgeAccess } from './commandHandlers';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  executeCommand,
+  __peekRelayChangeTrackerForTest,
+  __resetRelayChangeTrackerForTest,
+  type BridgeAccess,
+} from './commandHandlers';
+import { CompositeIdleDetector } from '../idle';
 import { getGlobalRegistry } from '../core/registry';
 import { CommandRelay } from '../server/command-relay';
 import { createRelayHandlers } from '../server/relay-handlers';
@@ -333,5 +339,103 @@ describe('relay aiExecute withDiff · the shared tracker path', () => {
 
     const ok = await handlers.aiExecute!({ instruction: 'click Publish' } as never);
     expect(ok.success).toBe(true);
+  }, 30_000);
+});
+
+describe('relay executeWithDiff · inputs: idle detector, network, one tracker, no inner settle', () => {
+  let host: HTMLElement;
+
+  beforeEach(() => {
+    __resetRelayChangeTrackerForTest();
+    host = document.createElement('div');
+    makeVisible(host);
+    document.body.appendChild(host);
+    getGlobalRegistry().registerElement('pane', host, {
+      type: 'custom',
+      customActions: { noop: { id: 'noop', handler: () => ({ ok: true }) } },
+    });
+  });
+
+  afterEach(() => {
+    host.remove();
+    getGlobalRegistry().clear();
+    delete (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__;
+    __resetRelayChangeTrackerForTest();
+    vi.restoreAllMocks();
+  });
+
+  const run = () =>
+    executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'pane', action: 'noop' },
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    ) as Promise<{ timeline: { observedSources: string[]; events: Array<{ type: string }> } }>;
+
+  it('gates settle on the idle detector and says network was NOT observed without a tracker', async () => {
+    const result = await run();
+    expect(result.timeline.observedSources).toContain('idle-detector');
+    expect(result.timeline.observedSources).not.toContain('network');
+  }, 30_000);
+
+  it("records the page's NetworkRequestTracker when the app exposes one", async () => {
+    let listener: ((e: unknown) => void) | null = null;
+    (globalThis as { __UI_BRIDGE__?: unknown }).__UI_BRIDGE__ = {
+      networkTracker: {
+        onEvent: (cb: (e: unknown) => void) => {
+          listener = cb;
+          return () => (listener = null);
+        },
+      },
+    };
+    getGlobalRegistry().registerElement('net', host, {
+      type: 'custom',
+      customActions: {
+        fetch: {
+          id: 'fetch',
+          handler: () => {
+            listener?.({
+              type: 'request-start',
+              timestamp: Date.now(),
+              entry: {
+                request: { id: 'n1', url: '/api/x?y=1', method: 'GET', startedAt: Date.now() },
+              },
+            });
+            return { ok: true };
+          },
+        },
+      },
+    });
+    const result = (await executeCommand(
+      'executeWithDiff',
+      {
+        elementAction: { elementId: 'net', action: 'fetch' },
+        settleMinStable: 20,
+        timelineInterval: 10,
+      },
+      emptyBridge
+    )) as { timeline: { observedSources: string[]; events: Array<Record<string, unknown>> } };
+    expect(result.timeline.observedSources).toContain('network');
+    expect(result.timeline.events.find((e) => e.type === 'network-request-started')).toMatchObject({
+      requestId: 'n1',
+      hasQuery: true,
+    });
+  }, 30_000);
+
+  it('builds ONE relay ChangeTracker, reused across calls', async () => {
+    await run();
+    const first = __peekRelayChangeTrackerForTest();
+    expect(first).not.toBeNull();
+    await run();
+    expect(__peekRelayChangeTrackerForTest()).toBe(first);
+  }, 30_000);
+
+  it('the inner action runs with skipSettle — no pre-read DOM settle inside the timed window', async () => {
+    const getSignal = vi.spyOn(CompositeIdleDetector.prototype, 'getSignal');
+    await run();
+    expect(getSignal.mock.calls.filter(([name]) => name === 'dom')).toEqual([]);
   }, 30_000);
 });

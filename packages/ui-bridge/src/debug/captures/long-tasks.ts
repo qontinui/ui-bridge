@@ -17,13 +17,15 @@ export function installLongTaskCapture(emit: Emit): () => void {
   }
 
   const handle = observeLongTasks(
-    (sample) => {
-      emit({
-        type: 'long-task',
-        timestamp: Date.now(),
-        url: window.location.href,
-        durationMs: Math.round(sample.duration),
-      });
+    (samples) => {
+      for (const sample of samples) {
+        emit({
+          type: 'long-task',
+          timestamp: Date.now(),
+          url: window.location.href,
+          durationMs: Math.round(sample.duration),
+        });
+      }
     },
     { buffered: true }
   );

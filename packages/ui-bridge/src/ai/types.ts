@@ -955,15 +955,48 @@ export type NLActionWithDiffResponse = NLActionResponse &
  * with its offset from the action, plus a derived {@link TimelineSummary}.
  */
 export interface ChangeTimeline {
-  /** Timestamped events, ordered by `offsetMs` (ties keep arrival order). */
+  /**
+   * Timestamped events, ordered by `offsetMs` (ties keep arrival order). Every
+   * offset is from `actionStart` — `performance.now()` taken immediately
+   * before the action ran; anything observed earlier is dropped.
+   */
   events: TimelineEvent[];
-  /** Total recording duration (ms) — settle, extended by any `withinMs` window. */
-  settleMs: number;
+  /**
+   * How long the timeline was recorded, from action start (ms): the settle
+   * window, extended by any `withinMs` window. Not the settle time — that is
+   * `summary.settleMs` (an Observation; the offset of the `settled` event).
+   */
+  recordedMs: number;
   /** Whether the UI reached a stable state within `settleTimeout`. */
   settled: boolean;
+  /**
+   * The sources this recording could observe. A source NOT listed was not
+   * looked at, so its events' absence means "unknown", never "none" (e.g. no
+   * `network` → no `network-request-*` events is not "no requests").
+   */
+  observedSources: TimelineSource[];
   /** Values derived from `events`; every field an {@link Observation}. */
   summary: TimelineSummary;
 }
+
+/** A source of timeline events. */
+export type TimelineSource =
+  /** Registry snapshot polling: elements-*, page-changed, settled. Always observed. */
+  | 'snapshot-poll'
+  /** The idle detector gated `settled`. */
+  | 'idle-detector'
+  /** PerformanceObserver `layout-shift`. */
+  | 'layout-shift'
+  /** PerformanceObserver `longtask`. */
+  | 'long-task'
+  /** DOM animation / transition events. */
+  | 'animation-events'
+  /** `document.getAnimations()` at the end of the recording. */
+  | 'get-animations'
+  /** A NetworkRequestTracker. */
+  | 'network'
+  /** The declared-state registry. */
+  | 'states';
 
 /** Fields every {@link TimelineEvent} carries. */
 export interface TimelineEventBase {
@@ -1032,27 +1065,36 @@ export interface LongTaskTimelineEvent extends TimelineEventBase {
   durationMs: number;
 }
 
-/** A tracked network request started. */
+/**
+ * A tracked network request started at or after action start. `url` is the
+ * request's origin + pathname only — the query string and fragment are never
+ * carried; `hasQuery` says whether there was one.
+ */
 export interface NetworkRequestStartedTimelineEvent extends TimelineEventBase {
   type: 'network-request-started';
   /** The network tracker's request id, or `null` when the source supplies none. */
   requestId: string | null;
   method: string;
+  /** Origin + pathname. */
   url: string;
+  /** The request URL carried a query string (not reported). */
+  hasQuery: boolean;
 }
 
-/** A tracked network request completed or failed. */
+/** A tracked network request (started at or after action start) finished. */
 export interface NetworkRequestFinishedTimelineEvent extends TimelineEventBase {
   type: 'network-request-finished';
   requestId: string | null;
   method: string;
+  /** Origin + pathname. */
   url: string;
+  hasQuery: boolean;
   /** HTTP status, or `null` when no response arrived. */
   statusCode: number | null;
   /** Request duration as the tracker measured it, or `null` without a response. */
   durationMs: number | null;
-  /** The request errored or answered >= 400. */
-  failed: boolean;
+  /** The request threw (no HTTP response). An HTTP error status is NOT `errored` — read `statusCode`. */
+  errored: boolean;
 }
 
 /** A declared UI state became active / inactive. */
@@ -1105,11 +1147,22 @@ export interface ExpectedStateResult {
  * a closed `UnknownCode` when it could not look. `measured(0)` and `unknown`
  * are different shapes on the wire. No field is a verdict and no threshold is
  * applied — thresholds are the caller's.
+ *
+ * Every field's `provenance.source` carries `window` and `observedSources`
+ * (see {@link ChangeTimeline.observedSources}). When the recorder dropped
+ * events of a type because it hit its per-type cap
+ * (`ChangeTrackerConfig.timelineMaxEventsPerType`), each field derived from
+ * that type is degraded: `provenance.coverage.unmeasured` carries
+ * `{ dimension: 'timeline-events:<type>', count: <dropped>, code: 'input_missing' }`.
  */
 export interface TimelineSummary {
   /**
-   * Offset of the first event that is neither `action` nor `settled`.
-   * `unknown{no_event_before_timeout}` when nothing happened in the window.
+   * Offset of the first RESPONSE event: `elements-appeared`,
+   * `elements-disappeared`, `elements-modified`, `page-changed`,
+   * `layout-shift`, `animation-started`, `animation-ended`, `state-entered`
+   * or `state-exited`. Not `action`, `settled`, `long-task` or
+   * `network-request-*` — work the page does is not a response the user sees.
+   * `unknown{no_event_before_timeout}` when nothing responded in the window.
    */
   firstResponseMs: Observation<number>;
   /**
@@ -1134,9 +1187,12 @@ export interface TimelineSummary {
   /**
    * Animations/transitions running when recording ended: started in the
    * window without ending, plus those `document.getAnimations()` reports
-   * running. Where `getAnimations` is missing the value is degraded and
-   * `provenance.coverage.unmeasured` names the gap (animations started before
-   * the action and still running cannot be seen).
+   * running. Where `getAnimations` is missing the value is degraded:
+   * `provenance.coverage.unmeasured` carries
+   * `{ dimension: 'animations-running-before-action', count: 0, code: 'input_missing' }` —
+   * animations started before the action and still running cannot be seen,
+   * and how many there are is unknowable, so `count: 0` there means "an
+   * unknown number", not "none".
    */
   animationsUnsettledAtEnd: Observation<DetectedAnimation[]>;
   /**

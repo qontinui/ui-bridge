@@ -68,6 +68,7 @@ export type {
   TimelineEvent,
   TimelineEventType,
   TimelineEventBase,
+  TimelineSource,
   ActionTimelineEvent,
   ElementsTimelineEvent,
   PageChangedTimelineEvent,
@@ -268,6 +269,8 @@ export {
   createChangeTracker,
   analyzeStructuredChanges,
   mergeNLActionWithDiff,
+  ChangeTrackerRequestError,
+  type ChangeTrackerRequestErrorCode,
 } from './change-tracker';
 export type { ChangeTrackerDeps, ChangeTrackerConfig } from './change-tracker';
 

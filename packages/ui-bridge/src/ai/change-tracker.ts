@@ -138,6 +138,18 @@ export interface ChangeTrackerConfig {
   maxBufferSize: number;
   /** Maximum number of bookmarks */
   maxBookmarks: number;
+  /**
+   * Ceiling on a request's `withinMs` (ms): how long `expectStates` may keep a
+   * recording open. A request over it is refused with
+   * {@link ChangeTrackerRequestError} `WITHIN_MS_EXCEEDS_CEILING`.
+   */
+  maxWithinMs: number;
+  /**
+   * Per-event-type cap on the events one timeline keeps (a count, not a
+   * timing). Overflow is counted and reported in the summary's
+   * `provenance.coverage.unmeasured`.
+   */
+  timelineMaxEventsPerType: number;
   /** Diff configuration to use */
   diffConfig?: Partial<SemanticDiffConfig>;
 }
@@ -149,7 +161,26 @@ const DEFAULT_CONFIG: ChangeTrackerConfig = {
   defaultWaitTimeout: 10000,
   maxBufferSize: 1000,
   maxBookmarks: 50,
+  maxWithinMs: 60_000,
+  timelineMaxEventsPerType: 500,
 };
+
+/** Why `executeWithDiff` refused a request before running anything. */
+export type ChangeTrackerRequestErrorCode =
+  | 'EXPECT_STATES_REQUIRES_TIMELINE'
+  | 'EXPECT_STATES_REQUIRES_WITHIN_MS'
+  | 'WITHIN_MS_EXCEEDS_CEILING';
+
+/** A malformed `executeWithDiff` request. Typed so transports can surface `code`. */
+export class ChangeTrackerRequestError extends Error {
+  constructor(
+    readonly code: ChangeTrackerRequestErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ChangeTrackerRequestError';
+  }
+}
 
 // ============================================================================
 // ChangeTracker
@@ -239,65 +270,79 @@ export class ChangeTracker {
   async executeWithDiff(request: ActionWithDiffRequest): Promise<ActionDiffResult> {
     // The timeline is the default; `timeline: false` is the only opt-out.
     const timelineOn = request.timeline !== false;
-    const expect =
-      request.expectStates && request.expectStates.length > 0
-        ? { stateIds: [...request.expectStates], withinMs: request.withinMs }
-        : null;
-    if (expect) {
-      if (!timelineOn) {
-        throw new Error(
-          'expectStates is answered from the timeline; it cannot be combined with timeline: false'
-        );
-      }
-      if (
-        typeof expect.withinMs !== 'number' ||
-        !Number.isFinite(expect.withinMs) ||
-        expect.withinMs < 0
-      ) {
-        throw new Error('expectStates requires withinMs: a finite, non-negative number of ms');
-      }
-    }
+    const expect = this.validateExpect(request, timelineOn);
 
     const startTime = performance.now();
 
-    // Push sources (layout shifts, long tasks, animations, network, states)
-    // are installed BEFORE the action so what it triggers synchronously is seen.
-    const recorder = timelineOn
-      ? new TimelineRecorder(
-          {
-            perfSupport: this.perfSupport,
-            subscribeNetworkEvents: this.deps.subscribeNetworkEvents,
-            states: this.deps.states,
-          },
-          startTime
-        )
-      : null;
-    recorder?.start();
-    try {
-      return await this.executeWithDiffInner(
-        request,
-        startTime,
-        recorder,
-        expect as { stateIds: string[]; withinMs: number } | null
-      );
-    } finally {
-      // Idempotent: a normal run has already stopped it; a throw must not leak listeners.
-      recorder?.stop();
-    }
-  }
-
-  private async executeWithDiffInner(
-    request: ActionWithDiffRequest,
-    startTime: number,
-    recorder: TimelineRecorder | null,
-    expect: { stateIds: string[]; withinMs: number } | null
-  ): Promise<ActionDiffResult> {
     // Track push events during action execution for fast-path optimization
     let changeReceivedDuringAction = false;
     const unsubscribeChanges = this.deps.subscribeChanges?.(() => {
       changeReceivedDuringAction = true;
     });
 
+    // Push sources (layout shifts, long tasks, animations, network, states)
+    // are installed before the action; the recorder keeps nothing until the
+    // action start is marked.
+    const recorder = timelineOn
+      ? new TimelineRecorder({
+          perfSupport: this.perfSupport,
+          subscribeNetworkEvents: this.deps.subscribeNetworkEvents,
+          states: this.deps.states,
+          idleDetector: this.deps.idleDetector !== null,
+          maxEventsPerType: this.config.timelineMaxEventsPerType,
+        })
+      : null;
+    try {
+      recorder?.start();
+      return await this.executeWithDiffInner(
+        request,
+        startTime,
+        recorder,
+        expect,
+        () => changeReceivedDuringAction
+      );
+    } finally {
+      unsubscribeChanges?.();
+      // Idempotent: a normal run has already stopped it; a throw must not leak listeners.
+      recorder?.stop();
+    }
+  }
+
+  /** Validate `expectStates` / `withinMs`; `null` when no states are expected. */
+  private validateExpect(
+    request: ActionWithDiffRequest,
+    timelineOn: boolean
+  ): { stateIds: string[]; withinMs: number } | null {
+    if (!request.expectStates || request.expectStates.length === 0) return null;
+    if (!timelineOn) {
+      throw new ChangeTrackerRequestError(
+        'EXPECT_STATES_REQUIRES_TIMELINE',
+        'expectStates is answered from the timeline; it cannot be combined with timeline: false'
+      );
+    }
+    const withinMs = request.withinMs;
+    if (typeof withinMs !== 'number' || !Number.isFinite(withinMs) || withinMs < 0) {
+      throw new ChangeTrackerRequestError(
+        'EXPECT_STATES_REQUIRES_WITHIN_MS',
+        'expectStates requires withinMs: a finite, non-negative number of ms'
+      );
+    }
+    if (withinMs > this.config.maxWithinMs) {
+      throw new ChangeTrackerRequestError(
+        'WITHIN_MS_EXCEEDS_CEILING',
+        `withinMs ${withinMs} exceeds this tracker's ceiling of ${this.config.maxWithinMs}ms (ChangeTrackerConfig.maxWithinMs)`
+      );
+    }
+    return { stateIds: [...request.expectStates], withinMs };
+  }
+
+  private async executeWithDiffInner(
+    request: ActionWithDiffRequest,
+    startTime: number,
+    recorder: TimelineRecorder | null,
+    expect: { stateIds: string[]; withinMs: number } | null,
+    changeReceivedDuringAction: () => boolean
+  ): Promise<ActionDiffResult> {
     // Refresh elements for accurate snapshot
     this.deps.refreshElements?.();
 
@@ -305,9 +350,11 @@ export class ChangeTracker {
     const beforeControl = this.deps.createControlSnapshot();
     const beforeSnapshot = this.deps.snapshotManager.createSnapshot(beforeControl);
 
-    // 2. Execute action
+    // 2. Execute action. Timeline offsets are from HERE — immediately before
+    // the action call — not from the before-snapshot.
     let actionResult: unknown;
     let actionSuccess: boolean;
+    recorder?.markActionStart(performance.now());
 
     if (request.instruction && this.deps.executeNLAction) {
       const nlResult = await this.deps.executeNLAction(request.instruction);
@@ -341,7 +388,6 @@ export class ChangeTracker {
       timeline = await this.recordTimeline(
         recorder,
         beforeSnapshot,
-        startTime,
         settleTimeout,
         settleMinStable,
         request.timelineInterval ?? 100,
@@ -374,7 +420,7 @@ export class ChangeTracker {
     let diff: SemanticDiff;
     if (
       this.deps.subscribeChanges &&
-      !changeReceivedDuringAction &&
+      !changeReceivedDuringAction() &&
       afterControl.elements?.length === beforeControl.elements?.length
     ) {
       // Fast path: push events indicate nothing changed, element count matches
@@ -408,9 +454,6 @@ export class ChangeTracker {
     const structuredChanges = request.analyzeStructured
       ? analyzeStructuredChanges(beforeSnapshot, afterSnapshot)
       : undefined;
-
-    // Cleanup push event subscription
-    unsubscribeChanges?.();
 
     return {
       actionSuccess,
@@ -756,7 +799,6 @@ export class ChangeTracker {
   private async recordTimeline(
     recorder: TimelineRecorder,
     beforeSnapshot: SemanticSnapshot,
-    actionStartTime: number,
     settleTimeout: number,
     settleMinStable: number,
     intervalMs: number,
@@ -767,12 +809,7 @@ export class ChangeTracker {
     let stableMs = 0;
     let settled = false;
     const timelineStart = performance.now();
-
-    recorder.record({
-      offsetMs: 0,
-      type: 'action',
-      summary: 'Action executed',
-    });
+    const actionStartTime = recorder.getActionStart() ?? timelineStart;
 
     while (performance.now() - timelineStart < settleTimeout) {
       await sleep(intervalMs);
@@ -848,28 +885,29 @@ export class ChangeTracker {
       }
     }
 
-    // Keep observing until every expected state has entered or the caller's
-    // window has closed.
-    if (expect) {
-      const pending = (): boolean => expect.stateIds.some((id) => !recorder.hasEntered(id));
-      while (pending()) {
-        const remaining = expect.withinMs - (performance.now() - actionStartTime);
+    // Keep observing until every expected DECLARED state has entered or the
+    // caller's window has closed. Nothing to wait for without a state source
+    // (the answer is unknown), or for an undeclared id (likewise).
+    const states = this.deps.states;
+    if (expect && states) {
+      const watched = expect.stateIds.filter((id) => states.isDeclared(id));
+      while (watched.some((id) => !recorder.hasEntered(id))) {
+        const remaining = expect.withinMs - recorder.elapsedMs();
         if (remaining <= 0) break;
         await sleep(Math.min(intervalMs, remaining));
       }
     }
 
     const capture = recorder.stop();
-    const states = this.deps.states;
     return {
       events: capture.events,
-      settleMs: Math.round(performance.now() - timelineStart),
+      recordedMs: Math.round(capture.recordedUntilMs),
       settled,
+      observedSources: capture.observedSources,
       summary: buildTimelineSummary({
         capture,
         settled,
         expect,
-        stateSourceAvailable: states !== undefined,
         isDeclared: (id) => states?.isDeclared(id) ?? false,
       }),
     };

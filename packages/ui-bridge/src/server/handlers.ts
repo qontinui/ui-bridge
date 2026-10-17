@@ -170,6 +170,7 @@ import {
   SemanticSnapshotManager,
   SemanticDiffManager,
   ChangeTracker,
+  ChangeTrackerRequestError,
   mergeNLActionWithDiff,
   generatePageSummary,
   extractPageData,
@@ -3060,6 +3061,7 @@ export function createHandlers(
         }
         return success(result);
       } catch (err) {
+        if (err instanceof ChangeTrackerRequestError) return error(err.message, err.code);
         return error((err as Error).message, 'AI_EXECUTE_ERROR');
       }
     },
@@ -3434,6 +3436,7 @@ export function createHandlers(
         }
         return success(result);
       } catch (err) {
+        if (err instanceof ChangeTrackerRequestError) return error(err.message, err.code);
         return error((err as Error).message, 'EXECUTE_WITH_DIFF_ERROR');
       }
     },

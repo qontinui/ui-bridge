@@ -8,15 +8,21 @@
  * constant: the only bound applied is the caller's own `withinMs`.
  */
 
-import { Observation, type ObservationProvenance } from '../observation/observation';
+import {
+  Observation,
+  type ObservationProvenance,
+  type UnmeasuredDimension,
+} from '../observation/observation';
 import type { DetectedAnimation } from '../idle/detected-animation';
 import type {
   ExpectedStateOutcome,
   ExpectedStateResult,
   TimelineEvent,
+  TimelineEventType,
   TimelineSummary,
 } from './types';
 import type { TimelineCapture } from './timeline-recorder';
+import type { PerfSupportProbe } from '../perf';
 
 declare const __SDK_VERSION__: string;
 
@@ -32,6 +38,23 @@ export const TIMELINE_PRODUCERS = {
   states: 'sdk/timeline/state-registry',
 } as const;
 
+/**
+ * The event types that count as the UI RESPONDING to the action. Not
+ * `action`, `settled`, `long-task` or `network-request-*`: work the page does
+ * is not a response the user sees. Mirrored in `TimelineSummary.firstResponseMs`.
+ */
+export const RESPONSE_EVENT_TYPES: ReadonlySet<TimelineEventType> = new Set<TimelineEventType>([
+  'elements-appeared',
+  'elements-disappeared',
+  'elements-modified',
+  'page-changed',
+  'layout-shift',
+  'animation-started',
+  'animation-ended',
+  'state-entered',
+  'state-exited',
+]);
+
 /** The caller's expected-state question. */
 export interface ExpectStatesInput {
   stateIds: string[];
@@ -44,8 +67,6 @@ export interface BuildTimelineSummaryInput {
   settled: boolean;
   /** The caller's `expectStates` + `withinMs`, or `null` when none were asked. */
   expect: ExpectStatesInput | null;
-  /** Whether the host wired a declared-state source at all. */
-  stateSourceAvailable: boolean;
   /** Declared-ness of each expected state id, read from the state source. */
   isDeclared: (stateId: string) => boolean;
   /** When the recording ended (sample time). Defaults to now. */
@@ -56,11 +77,6 @@ function sdkVersion(): string {
   return typeof __SDK_VERSION__ === 'string' ? __SDK_VERSION__ : 'unknown';
 }
 
-/** Neither the action itself nor the settle marker is a response. */
-function isResponse(event: TimelineEvent): boolean {
-  return event.type !== 'action' && event.type !== 'settled';
-}
-
 /**
  * Derive the summary. Never throws for a well-formed capture; an
  * `ObservationError` here would be a bug in this module.
@@ -69,24 +85,39 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
   const { capture, settled, expect } = input;
   const observedAt = input.observedAt ?? Date.now();
   const evaluatedAt = new Date();
-  const window = { fromMs: 0, toMs: capture.recordedUntilMs };
+  const window = { fromMs: 0, toMs: Math.round(capture.recordedUntilMs) };
+  const observedSources = capture.observedSources;
+
+  /** Truncation gaps for the given event types (the recorder's per-type cap). */
+  const dropped = (types: readonly TimelineEventType[]): UnmeasuredDimension[] =>
+    types
+      .filter((t) => (capture.droppedByType[t] ?? 0) > 0)
+      .map((t) => ({
+        dimension: `timeline-events:${t}`,
+        count: capture.droppedByType[t]!,
+        code: 'input_missing' as const,
+      }));
 
   const prov = (
     producer: string,
-    coverage: { considered: number; measured: number },
+    coverage: { considered: number; measured: number; unmeasured?: UnmeasuredDimension[] },
     source: Record<string, unknown> = {}
   ): ObservationProvenance =>
     Observation.provenance({
       producer: { id: producer, version: sdkVersion() },
       observedAt,
       evaluatedAt,
-      coverage: { ...coverage, unmeasured: [] },
-      source: { window, ...source },
+      coverage: {
+        considered: coverage.considered,
+        measured: coverage.measured,
+        unmeasured: coverage.unmeasured ?? [],
+      },
+      source: { window, observedSources, ...source },
     });
 
   const events = capture.events;
-  const responses = events.filter(isResponse);
-  const first = responses[0];
+  const first = events.find((e) => RESPONSE_EVENT_TYPES.has(e.type));
+  const responseGaps = dropped([...RESPONSE_EVENT_TYPES]);
 
   // ── firstResponseMs ──────────────────────────────────────────────────────
   const firstResponseMs: Observation<number> = first
@@ -94,15 +125,13 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
         first.offsetMs,
         prov(
           TIMELINE_PRODUCERS.events,
-          { considered: events.length, measured: events.length },
-          {
-            eventType: first.type,
-          }
+          { considered: events.length, measured: events.length, unmeasured: responseGaps },
+          { eventType: first.type }
         )
       )
     : Observation.unknown(
         'no_event_before_timeout',
-        `no event other than the action itself occurred in the ${capture.recordedUntilMs}ms window`,
+        `nothing responded to the action in the ${window.toMs}ms window`,
         prov(TIMELINE_PRODUCERS.events, { considered: events.length, measured: events.length })
       );
 
@@ -121,41 +150,52 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
         );
 
   // ── layout shifts ────────────────────────────────────────────────────────
-  const perfSource = { supportedEntryTypes: capture.perfSupport.supportedEntryTypes };
-  const shiftUnsupported = (): Observation<number> =>
-    Observation.unknown(
-      'performance_observer_unsupported',
-      "this webview's PerformanceObserver does not support the 'layout-shift' entry type",
-      prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 0, measured: 0 }, perfSource)
-    );
+  const perfSource = (probe: PerfSupportProbe | null): Record<string, unknown> => ({
+    supportedEntryTypes: capture.perfSupport.supportedEntryTypes,
+    supportProbe: probe,
+  });
+  const shiftSource = perfSource(capture.layoutShiftProbe);
   const shifts = events.filter(
     (e): e is Extract<TimelineEvent, { type: 'layout-shift' }> => e.type === 'layout-shift'
   );
-  const shiftProv = (): ObservationProvenance =>
+  const shiftGaps = dropped(['layout-shift']);
+  // A try-observed handle that delivered nothing has not confirmed the engine
+  // supports the type (some engines silently ignore it): not a measured zero.
+  const shiftUnconfirmed = capture.layoutShiftProbe === 'try-observe' && shifts.length === 0;
+  const shiftUnknown = (): Observation<number> =>
+    Observation.unknown(
+      'performance_observer_unsupported',
+      shiftUnconfirmed
+        ? "this webview lists no supportedEntryTypes and delivered no 'layout-shift' entry, so support is unconfirmed"
+        : "this webview's PerformanceObserver does not support the 'layout-shift' entry type",
+      prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 0, measured: 0 }, shiftSource)
+    );
+  const shiftProv = (extra: Record<string, unknown> = {}): ObservationProvenance =>
     prov(
       TIMELINE_PRODUCERS.performanceObserver,
-      { considered: shifts.length, measured: shifts.length },
-      perfSource
+      { considered: shifts.length, measured: shifts.length, unmeasured: shiftGaps },
+      { ...shiftSource, ...extra }
     );
+  const shiftsObservable = capture.layoutShiftProbe !== null && !shiftUnconfirmed;
 
-  const layoutShiftTotal = capture.layoutShiftObserved
+  const layoutShiftTotal = shiftsObservable
     ? Observation.measured(
         shifts.reduce((sum, s) => sum + s.value, 0),
         shiftProv()
       )
-    : shiftUnsupported();
-  const layoutShiftCount = capture.layoutShiftObserved
+    : shiftUnknown();
+  const layoutShiftCount = shiftsObservable
     ? Observation.measured(shifts.length, shiftProv())
-    : shiftUnsupported();
+    : shiftUnknown();
 
   let layoutShiftAfterFirstResponseMs: Observation<number>;
-  if (!capture.layoutShiftObserved) {
-    layoutShiftAfterFirstResponseMs = shiftUnsupported();
+  if (!shiftsObservable) {
+    layoutShiftAfterFirstResponseMs = shiftUnknown();
   } else if (shifts.length === 0) {
     // Looked over the whole window (one window considered, measured in full)
     // and no shift occurred.
     layoutShiftAfterFirstResponseMs = Observation.absent(
-      prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 1, measured: 1 }, perfSource)
+      prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 1, measured: 1 }, shiftSource)
     );
   } else if (!first) {
     layoutShiftAfterFirstResponseMs = Observation.unknown(
@@ -167,11 +207,7 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
     const last = shifts[shifts.length - 1];
     layoutShiftAfterFirstResponseMs = Observation.measured(
       last.offsetMs - first.offsetMs,
-      prov(
-        TIMELINE_PRODUCERS.performanceObserver,
-        { considered: shifts.length, measured: shifts.length },
-        { ...perfSource, lastShiftAtMs: last.offsetMs, firstResponseAtMs: first.offsetMs }
-      )
+      shiftProv({ lastShiftAtMs: last.offsetMs, firstResponseAtMs: first.offsetMs })
     );
   }
 
@@ -179,24 +215,34 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
   const longTasks = events.filter(
     (e): e is Extract<TimelineEvent, { type: 'long-task' }> => e.type === 'long-task'
   );
-  const longTaskTotalMs: Observation<number> = capture.longTaskObserved
+  const longSource = perfSource(capture.longTaskProbe);
+  const longObservable =
+    capture.longTaskProbe !== null &&
+    !(capture.longTaskProbe === 'try-observe' && longTasks.length === 0);
+  const longTaskTotalMs: Observation<number> = longObservable
     ? Observation.measured(
         longTasks.reduce((sum, t) => sum + t.durationMs, 0),
         prov(
           TIMELINE_PRODUCERS.performanceObserver,
-          { considered: longTasks.length, measured: longTasks.length },
-          perfSource
+          {
+            considered: longTasks.length,
+            measured: longTasks.length,
+            unmeasured: dropped(['long-task']),
+          },
+          longSource
         )
       )
     : Observation.unknown(
         'performance_observer_unsupported',
-        "this webview's PerformanceObserver does not support the 'longtask' entry type",
-        prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 0, measured: 0 }, perfSource)
+        capture.longTaskProbe === 'try-observe'
+          ? "this webview lists no supportedEntryTypes and delivered no 'longtask' entry, so support is unconfirmed"
+          : "this webview's PerformanceObserver does not support the 'longtask' entry type",
+        prov(TIMELINE_PRODUCERS.performanceObserver, { considered: 0, measured: 0 }, longSource)
       );
 
   // ── animations ───────────────────────────────────────────────────────────
   let animationsUnsettledAtEnd: Observation<DetectedAnimation[]>;
-  if (!capture.animationEventsObserved) {
+  if (!observedSources.includes('animation-events')) {
     animationsUnsettledAtEnd = Observation.unknown(
       'capability_unavailable_in_build',
       'no DOM to observe animation events on',
@@ -204,43 +250,34 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
     );
   } else {
     const n = capture.unsettledAnimations.length;
+    const unmeasured: UnmeasuredDimension[] = dropped(['animation-started', 'animation-ended']);
+    if (!observedSources.includes('get-animations')) {
+      // Without getAnimations, an animation that started before the action and
+      // is still running produced no event in the window: unseen, and how many
+      // there are is unknowable — count 0 here means "an unknown number".
+      unmeasured.push({
+        dimension: 'animations-running-before-action',
+        count: 0,
+        code: 'input_missing',
+      });
+    }
     animationsUnsettledAtEnd = Observation.measured(
       capture.unsettledAnimations,
-      Observation.provenance({
-        producer: { id: TIMELINE_PRODUCERS.animations, version: sdkVersion() },
-        observedAt,
-        evaluatedAt,
-        coverage: {
-          considered: n,
-          measured: n,
-          // Without getAnimations, an animation that started before the action
-          // and is still running produced no event in the window: unseen.
-          unmeasured: capture.getAnimationsAvailable
-            ? []
-            : [
-                {
-                  dimension: 'animations-running-before-action',
-                  count: 1,
-                  code: 'capability_unavailable_in_build',
-                },
-              ],
-        },
-        source: { window, getAnimations: capture.getAnimationsAvailable },
-      })
+      prov(TIMELINE_PRODUCERS.animations, { considered: n, measured: n, unmeasured })
     );
   }
 
   // ── expected states ──────────────────────────────────────────────────────
-  const expectedStates: ExpectedStateResult[] = (expect?.stateIds ?? []).map((stateId) => ({
-    stateId,
-    outcome: expectedStateOutcome(stateId),
-  }));
-
-  function expectedStateOutcome(stateId: string): Observation<ExpectedStateOutcome> {
+  const stateGaps = dropped(['state-entered', 'state-exited']);
+  const expectedStateOutcome = (stateId: string): Observation<ExpectedStateOutcome> => {
     const withinMs = expect!.withinMs;
     const stateProv = (considered: number): ObservationProvenance =>
-      prov(TIMELINE_PRODUCERS.states, { considered, measured: considered }, { withinMs });
-    if (!input.stateSourceAvailable || capture.activeStatesAtStart === null) {
+      prov(
+        TIMELINE_PRODUCERS.states,
+        { considered, measured: considered, unmeasured: considered > 0 ? stateGaps : [] },
+        { withinMs }
+      );
+    if (!observedSources.includes('states') || capture.activeStatesAtStart === null) {
       return Observation.unknown(
         'capability_unavailable_in_build',
         'this host wires no declared-state registry into the change tracker',
@@ -254,28 +291,30 @@ export function buildTimelineSummary(input: BuildTimelineSummaryInput): Timeline
         stateProv(0)
       );
     }
-    const mine = events.filter(
-      (e): e is Extract<TimelineEvent, { type: 'state-entered' | 'state-exited' }> =>
-        (e.type === 'state-entered' || e.type === 'state-exited') && e.stateId === stateId
-    );
-    const entered = mine.find((e) => e.type === 'state-entered' && e.offsetMs <= withinMs);
+    // Transitions are uncapped and compared UNROUNDED against the window.
+    const mine = capture.stateTransitions.filter((t) => t.stateId === stateId);
+    const entered = mine.find((t) => t.active && t.atMs <= withinMs);
     if (entered) {
-      return Observation.measured({ enteredAtMs: entered.offsetMs }, stateProv(1));
+      return Observation.measured({ enteredAtMs: Math.round(entered.atMs) }, stateProv(1));
     }
     if (capture.recordedUntilMs < withinMs) {
       return Observation.unknown(
         'no_event_before_timeout',
-        `recording stopped at ${capture.recordedUntilMs}ms, before the ${withinMs}ms window closed`,
+        `recording stopped at ${window.toMs}ms, before the ${withinMs}ms window closed`,
         stateProv(0)
       );
     }
     const wasActive = capture.activeStatesAtStart.includes(stateId);
-    const exitedInWindow = mine.some((e) => e.type === 'state-exited' && e.offsetMs <= withinMs);
+    const exitedInWindow = mine.some((t) => !t.active && t.atMs <= withinMs);
     if (wasActive && !exitedInWindow) {
       return Observation.measured({ activeThroughoutWithinMs: withinMs }, stateProv(1));
     }
     return Observation.measured({ notEnteredWithinMs: withinMs }, stateProv(1));
-  }
+  };
+  const expectedStates: ExpectedStateResult[] = (expect?.stateIds ?? []).map((stateId) => ({
+    stateId,
+    outcome: expectedStateOutcome(stateId),
+  }));
 
   return {
     firstResponseMs,

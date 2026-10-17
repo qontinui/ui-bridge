@@ -44,9 +44,12 @@ export function installWebVitalsCapture(emit: Emit): () => void {
   // webview without the entry type yields no CLS event at all, never a 0.
   let clsValue = 0;
   const cls = observeLayoutShifts(
-    (sample) => {
-      // Only count shifts without recent input
-      if (!sample.hadRecentInput) clsValue += sample.value;
+    (samples) => {
+      for (const sample of samples) {
+        // Only count shifts without recent input
+        if (!sample.hadRecentInput) clsValue += sample.value;
+      }
+      // One CLS event per observer batch, as before the move to perf/.
       emit({
         type: 'web-vital',
         timestamp: Date.now(),

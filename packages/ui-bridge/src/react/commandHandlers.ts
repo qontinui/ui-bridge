@@ -39,6 +39,7 @@ import {
 } from '../core/snapshot-signature';
 import { parseNLAssertion } from '../ai/nl-assertion-parser';
 import { getGlobalStubRegistry, validateStubRequest, type StubRequestSpec } from '../network/stubs';
+import type { NetworkRequestTracker } from '../network/tracker';
 import { getGlobalBookmarkStore } from '../ai/bookmarks';
 import type {
   ActionDiffResult,
@@ -186,6 +187,12 @@ interface UIBridgeGlobal {
   navigateHandler?: (url: string) => void;
   /** Render log access for getRenderLog relay command */
   renderLog?: { getEntries?: () => unknown[] };
+  /**
+   * The page's NetworkRequestTracker, when the app exposes one. The relay's
+   * interaction timeline records `network-request-*` events from it; without
+   * it the timeline reports `network` as not observed.
+   */
+  networkTracker?: Pick<NetworkRequestTracker, 'onEvent'>;
 }
 
 interface BrowserCapture {
@@ -1105,6 +1112,141 @@ const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The relay's ChangeTracker — one per page, built lazily on first use.
+ *
+ * Its action deps resolve through `relayTrackerBridge`, the bridge of the
+ * call in flight: the relay dispatcher is handed one `BridgeAccess` per page,
+ * so the holder only ever moves between equivalent views of the same
+ * registry.
+ */
+let relayTracker: import('../ai').ChangeTracker | null = null;
+
+/** A declared-state view that always reads the CURRENT global registry. */
+function liveRegistryView(): StateRegistryLike {
+  return {
+    getActiveStates: () => getGlobalRegistry().getActiveStates(),
+    getState: (id) => getGlobalRegistry().getState(id),
+    on: (type, listener) =>
+      getGlobalRegistry().on(type, listener as Parameters<UIBridgeRegistryOn>[1]),
+  };
+}
+type UIBridgeRegistryOn = ReturnType<typeof getGlobalRegistry>['on'];
+let relayTrackerBuilding: Promise<import('../ai').ChangeTracker> | null = null;
+let relayTrackerBridge: BridgeAccess | null = null;
+
+async function getRelayChangeTracker(): Promise<import('../ai').ChangeTracker> {
+  if (relayTracker) return relayTracker;
+  if (!relayTrackerBuilding) {
+    relayTrackerBuilding = (async () => {
+      const { ChangeTracker, createSnapshotManager } = await import('../ai');
+      const idle = await getIdleDetector();
+      const networkTracker = getBridge().networkTracker;
+      const bridgeNow = (): BridgeAccess => {
+        if (!relayTrackerBridge) throw new Error('relay ChangeTracker used outside a command');
+        return relayTrackerBridge;
+      };
+      const tracker = new ChangeTracker({
+        snapshotManager: createSnapshotManager(),
+        idleDetector: idle,
+        // The registry snapshot carries no workflow-run plane on this
+        // transport; the diff never reads it. Read the CURRENT global
+        // registry each time (it can be replaced, e.g. by the injected runtime).
+        createControlSnapshot: () => ({ ...getGlobalRegistry().createSnapshot(), activeRuns: [] }),
+        refreshElements: () => {
+          try {
+            getGlobalRegistry().refreshScrapedText();
+          } catch {
+            // A failing label refresh must not fail the diff.
+          }
+        },
+        // The action runs through this dispatcher's own arms. `skipSettle`:
+        // the tracker owns timing — a settle inside the action would be
+        // recorded as action time and push every offset late.
+        executeNLAction: async (instruction) =>
+          (await executeCommand(
+            'aiExecute',
+            { instruction, skipSettle: true },
+            bridgeNow()
+          )) as NLActionResponse,
+        executeElementAction: async (elementId, request) =>
+          executeCommand(
+            'executeElementAction',
+            {
+              id: elementId,
+              request: { action: request.action, ...request.params },
+              skipSettle: true,
+            },
+            bridgeNow()
+          ),
+        // The page's NetworkRequestTracker, when the app exposes one; without
+        // it the timeline says `network` was not observed.
+        subscribeNetworkEvents: networkTracker
+          ? (callback) =>
+              networkTracker.onEvent((event) =>
+                callback({
+                  type: event.type,
+                  timestamp: event.timestamp,
+                  entry: {
+                    request: {
+                      id: event.entry.request.id,
+                      url: event.entry.request.url,
+                      method: event.entry.request.method,
+                      startedAt: event.entry.request.startedAt,
+                    },
+                    response: event.entry.response
+                      ? {
+                          statusCode: event.entry.response.statusCode,
+                          durationMs: event.entry.response.durationMs,
+                        }
+                      : undefined,
+                    ...(event.entry.error !== undefined ? { error: event.entry.error } : {}),
+                  },
+                })
+              )
+          : undefined,
+        states: stateSourceFromRegistry(liveRegistryView()),
+      });
+      relayTracker = tracker;
+      return tracker;
+    })().finally(() => {
+      relayTrackerBuilding = null;
+    });
+  }
+  return relayTrackerBuilding;
+}
+
+/** Test-only: the lazily-built relay tracker, or `null` before first use. */
+export function __peekRelayChangeTrackerForTest(): import('../ai').ChangeTracker | null {
+  return relayTracker;
+}
+
+/** Test-only: drop the lazily-built relay tracker (it captures the page's network tracker). */
+export function __resetRelayChangeTrackerForTest(): void {
+  relayTracker = null;
+  relayTrackerBuilding = null;
+}
+
+/**
+ * {@link relayExecuteWithDiff}, with a malformed request (a typed
+ * `ChangeTrackerRequestError`) answered as a failed command carrying its
+ * `code`, the way every other relay command reports failure.
+ */
+async function relayExecuteWithDiffOrRefusal(
+  payload: P,
+  bridge: BridgeAccess
+): Promise<{ result: ActionDiffResult } | { refusal: Record<string, unknown> }> {
+  try {
+    return { result: await relayExecuteWithDiff(payload, bridge) };
+  } catch (err) {
+    const { ChangeTrackerRequestError } = await import('../ai');
+    if (err instanceof ChangeTrackerRequestError) {
+      return { refusal: { success: false, error: err.message, code: err.code } };
+    }
+    throw err;
+  }
+}
+
+/**
  * `executeWithDiff` on the relay transport: the SAME producer the direct
  * transport runs (`ChangeTracker.executeWithDiff` over the live global
  * registry), so a relay consumer gets the identical `ActionDiffResult` —
@@ -1115,7 +1257,6 @@ const LABEL_REFRESH_ACTIONS: ReadonlySet<string> = new Set([
  * action semantics are unchanged.
  */
 async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<ActionDiffResult> {
-  const registry = getGlobalRegistry();
   const req = payload as Partial<ActionWithDiffRequest> & {
     elementId?: string;
     action?: string;
@@ -1124,32 +1265,8 @@ async function relayExecuteWithDiff(payload: P, bridge: BridgeAccess): Promise<A
   const eId = req.elementAction?.elementId ?? req.elementId;
   const eAct = req.elementAction?.action ?? req.action;
   const eParams = req.elementAction?.params ?? req.params;
-  const { ChangeTracker, createSnapshotManager } = await import('../ai');
-  const tracker = new ChangeTracker({
-    snapshotManager: createSnapshotManager(),
-    idleDetector: null,
-    // The registry snapshot carries no workflow-run plane on this
-    // transport; the diff never reads it.
-    createControlSnapshot: () => ({ ...registry.createSnapshot(), activeRuns: [] }),
-    refreshElements: () => {
-      try {
-        registry.refreshScrapedText();
-      } catch {
-        // A failing label refresh must not fail the diff.
-      }
-    },
-    // Natural language instruction — resolve via the plain aiExecute arm
-    executeNLAction: async (instruction) =>
-      (await executeCommand('aiExecute', { instruction }, bridge)) as NLActionResponse,
-    // Direct element action (from elementAction or legacy flat fields)
-    executeElementAction: async (elementId, request) =>
-      executeCommand(
-        'executeElementAction',
-        { id: elementId, request: { action: request.action, ...request.params } },
-        bridge
-      ),
-    states: stateSourceFromRegistry(registry as unknown as StateRegistryLike),
-  });
+  const tracker = await getRelayChangeTracker();
+  relayTrackerBridge = bridge;
   return tracker.executeWithDiff({
     instruction: req.instruction,
     elementAction:
@@ -2587,7 +2704,9 @@ export async function executeCommand(
       // `actionSuccess`, a failure always carries `error` for the relay lift).
       if ((payload as { withDiff?: unknown }).withDiff === true) {
         const { mergeNLActionWithDiff } = await import('../ai');
-        return mergeNLActionWithDiff(await relayExecuteWithDiff(payload, bridge));
+        const outcome = await relayExecuteWithDiffOrRefusal(payload, bridge);
+        if ('refusal' in outcome) return outcome.refusal;
+        return mergeNLActionWithDiff(outcome.result);
       }
       const t0 = performance.now();
       const { parseNLInstruction, createSearchEngine } = await import('../ai');
@@ -2788,7 +2907,9 @@ export async function executeCommand(
 
     case 'executeWithDiff': {
       // The SAME producer the direct transport runs — see `relayExecuteWithDiff`.
-      const result = await relayExecuteWithDiff(payload, bridge);
+      const outcome = await relayExecuteWithDiffOrRefusal(payload, bridge);
+      if ('refusal' in outcome) return outcome.refusal;
+      const { result } = outcome;
       // The action's verdict is the tracker's own, strict reading: only a
       // literal `success: true` succeeded.
       const { actionResult } = result;
