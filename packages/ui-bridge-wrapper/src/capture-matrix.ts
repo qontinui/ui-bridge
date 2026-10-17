@@ -14,6 +14,7 @@
 
 import { relative } from 'node:path';
 import type { FrameColorScheme, FrameError, FrameRecord } from './frame-capture.js';
+import type { NetworkEmulation } from './network-throttle.js';
 
 /** A CSS-pixel viewport. */
 export interface MatrixViewport {
@@ -102,6 +103,8 @@ export interface MatrixCellReport {
   /** Every action's output line, exactly as exec mode prints it (relative path). */
   results: string | null;
   pairs: MatrixPair[];
+  /** The network emulation applied in this cell (`--throttle` / `--no-cache`); null when none. */
+  network?: NetworkEmulation | null;
 }
 
 /** `<dir>/matrix.json`. */

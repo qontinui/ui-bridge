@@ -179,6 +179,36 @@ directory must be empty or not exist yet: a non-empty one is refused before any
 browser launches, and is never cleared. `--viewport` sides are at most 8192 CSS
 pixels.
 
+### Candidates in situ: the media override, a slow network and a timeline
+
+The injected runtime serves the SDK's `mediaOverride` dev control, so a
+candidate image can be judged in the slot it is meant for, then removed:
+
+```bash
+ui-bridge-inject --url http://127.0.0.1:3000/ --throttle slow-3g --no-cache \
+  --exec 'mediaOverride {"slotId":"hero","src":"http://127.0.0.1:8080/cand.png"}' \
+  --exec 'captureTimeline {"dir":"./tl","frames":6,"intervalMs":200,"reload":false}' \
+  --exec 'mediaOverrideRestore {}' --exec 'mediaOverrideList {}'
+```
+
+`mediaOverride` answers only after the browser decoded the candidate and its
+`currentSrc` names it (inside a `<picture>` every `<source srcset>` is replaced
+too); one it cannot confirm is rolled back and fails the step.
+`mediaOverrideRestore` puts every attribute back and verifies it, and
+`mediaOverrideList` returning `active: []` is the proof the page ended restored.
+`--throttle <slow-3g|fast-3g|latency=<ms>,down=<kbps>,up=<kbps>>` applies CDP
+network emulation once the page is ready (it persists across a reload) and
+`--no-cache` disables the HTTP cache; what Chromium accepted is stamped as
+`network` on timeline results, matrix cells and the relay info line.
+`captureTimeline` screenshots the page `frames` times, `intervalMs` apart, each
+frame stamped with its offset; `"reload":true` starts the clock at a fresh
+navigation commit (the loading-to-loaded timeline) and waits for the runtime to
+settle again. `"during":{"action":"mediaOverride","payload":{...}}` runs the
+override concurrently with the frames, so the timeline shows the candidate
+arriving (under `--throttle`, its slow-network load) while the override still
+confirms decode before it answers. In `--capture-matrix` a relative `dir` lands
+in each cell's directory.
+
 #### Sourcing credentials from SSM (qontinui operators)
 
 The bins read credentials from env / flags only — they intentionally do **not**
