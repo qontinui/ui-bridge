@@ -35,6 +35,19 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createTransport } from './create-transport.js';
 import { consumeValue } from './cli-args.js';
+import { InjectCliArgError } from './inject-cli-errors.js';
+import {
+  applyNetworkEmulation,
+  parseThrottle,
+  type NetworkEmulation,
+  type NetworkProfile,
+  type ThrottlePage,
+} from './network-throttle.js';
+import {
+  parseCaptureTimelinePayload,
+  registerTimelineCapture,
+  CAPTURE_TIMELINE_ACTION,
+} from './timeline-capture.js';
 import { returnedFailureError, thrownError, type CliActionError } from './action-outcome.js';
 import {
   captureFrameInLockstep,
@@ -113,6 +126,42 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
     so an N-step run still prints N lines in order. Neither shadows an in-page
     action id — the injected dispatcher defines neither.
 
+  A timed multi-frame capture (CLI-side too):
+
+      captureTimeline {"dir":"<dir>","frames":8,"intervalMs":250,"reload":false}
+        Screenshot the page 'frames' times (1..120), one every 'intervalMs'
+        (0..10000), into <dir>/frame-<k>.png — the loading-to-loaded timeline
+        of a slot, NOT a lockstep pair (it records movement on purpose). <dir>
+        must be empty or not exist. With "reload":true the clock starts at a
+        fresh navigation commit, so frame 1 is the page before it painted; the
+        reload drops any media override, and the action waits for the injected
+        runtime to settle again ('readyTimeoutMs', default 30000) so the next
+        step finds a drivable page. In --capture-matrix a relative <dir> lands
+        inside each cell's directory.
+        Result: {"success","dir","reloaded","intervalMs","startedAt",
+                 "frames":[{"index","path","offsetMs","capturedAt","width","height"}],
+                 "devicePixelRatio","cssViewport","colorScheme","runtimeReady","network"}
+        A frame that could not be taken carries "error" and fails the step.
+        "during":{"action":"mediaOverride","payload":{...}} runs that in-page
+        action CONCURRENTLY with the frames, so the timeline shows the candidate
+        ARRIVING (under --throttle, its slow-network load) while the override
+        still confirms decode before it answers; its result rides on the line
+        as "during" and a failed action fails the step. Not with "reload".
+
+  Swapping an image in place (dev control, served by the injected runtime):
+
+      mediaOverride {"slotId":"hero","src":"/candidate.png"}
+      mediaOverride {"elementId":"img-logo","srcset":"/c-1x.avif 1x, /c-2x.avif 2x"}
+      mediaOverride {"slotId":"hero","src":"/c.png","sources":[{"type":"image/avif","srcset":"/c.avif"}]}
+      mediaOverride {"slotId":"banner","backgroundImage":"/c.png","ttlMs":60000}
+        Swap one slot's image, wait for decode() and confirm currentSrc before
+        answering (an override that cannot be confirmed is rolled back and
+        fails). Inside a <picture> every <source srcset> is replaced too.
+      mediaOverrideRestore {"overrideId":"mo-…"}   (or {} for all)
+        Put the originals back and verify each attribute reads back.
+      mediaOverrideList {}
+        What is still overridden — the proof the page ended restored.
+
   Exec output & exit code:
     One JSON line per action, in order, on stdout — ALWAYS one line per action,
     including failures. An action that succeeded prints {"action":..,"result":..}.
@@ -165,6 +214,21 @@ Frames (Variant A):
                                Both are read back from the page after launch; a page
                                that reports anything else fails the run
                                (EMULATION_NOT_APPLIED) instead of being measured as if.
+
+Network (every mode; applied to the page once it is ready, before any action):
+  --throttle <profile>         Emulate a slow network on the page (CDP
+                               Network.emulateNetworkConditions). <profile> is
+                               slow-3g (2000 ms, 400/400 kbit/s), fast-3g (563 ms,
+                               1475/675 kbit/s), or latency=<ms>,down=<kbps>,up=<kbps>.
+                               It persists across reloads of the page, so a
+                               captureTimeline {"reload":true} loads throttled.
+  --no-cache                   Disable the HTTP cache too (Network.setCacheDisabled):
+                               a warm cache would let a "slow" reload paint at once.
+                               What was applied is stamped as "network" on every
+                               captureTimeline result, each capture-matrix cell, and
+                               the relay info line; CDP has no getter, so the stamp
+                               says what Chromium ACCEPTED, and a refused command
+                               fails the run rather than measuring unthrottled.
 
 Capture matrix (its own mode):
   --capture-matrix <dir>       Run the plan once per --viewport × --dpr × --color-scheme
@@ -251,6 +315,12 @@ Examples:
     --exec 'executeElementAction {"id":"open","request":{"action":"click"}}' \\
     --exec 'getControlSnapshot {}'
 
+  # A candidate in its real slot, its slow-network load timeline, then restored
+  ui-bridge-inject --url http://127.0.0.1:3000/ --throttle slow-3g --no-cache \
+    --exec 'mediaOverride {"slotId":"hero","src":"http://127.0.0.1:8080/cand.png"}' \
+    --exec 'captureTimeline {"dir":"./tl","frames":6,"intervalMs":200}' \
+    --exec 'mediaOverrideRestore {}' --exec 'mediaOverrideList {}'
+
   # Capture matrix: 2 breakpoints x 2 schemes x 2 DPRs = 8 frame-and-snapshot pairs
   ui-bridge-inject --url http://127.0.0.1:3000/ --capture-matrix ./matrix \\
     --viewport 390x844,1280x720 --color-scheme light,dark --dpr 1,2
@@ -301,6 +371,10 @@ export interface InjectCliArgs {
   captureMatrix: string | null;
   /** Path to a Playwright storageState JSON file to seed the context (from --storage-state). */
   storageState: string | null;
+  /** `--throttle` network profile, or null. */
+  throttle: NetworkProfile | null;
+  /** `--no-cache`: also disable the HTTP cache. */
+  noCache: boolean;
   /** Extra Chromium launch args collected from --launch-arg flags (in order). */
   launchArgs: string[];
   /** Variant-A actions collected from --exec flags (in order). */
@@ -311,16 +385,7 @@ export interface InjectCliArgs {
   help: boolean;
 }
 
-/**
- * Error raised by `parseArgs`/validation. The thin CLI wrapper catches this and
- * calls `die()`; tests assert on it WITHOUT triggering `process.exit`.
- */
-export class InjectCliArgError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InjectCliArgError';
-  }
-}
+export { InjectCliArgError };
 
 /** Split an `--exec` value into `{ action, payload }`. Payload defaults to `{}`. */
 function parseExecValue(raw: string): ExecAction {
@@ -434,6 +499,8 @@ export function parseArgs(argv: string[]): InjectCliArgs {
     screenshot: null,
     captureMatrix: null,
     storageState: null,
+    throttle: null,
+    noCache: false,
     launchArgs: [],
     execActions: [],
     execStdin: false,
@@ -629,6 +696,17 @@ export function parseArgs(argv: string[]): InjectCliArgs {
         args.screenshot = raw;
         break;
       }
+      case '--throttle': {
+        const raw = consumeValue('--throttle', argv[++i], mkError);
+        if (raw === null)
+          throw new InjectCliArgError('--throttle expects a profile (got <missing>)');
+        if (args.throttle !== null) throw new InjectCliArgError('--throttle given twice');
+        args.throttle = parseThrottle(raw);
+        break;
+      }
+      case '--no-cache':
+        args.noCache = true;
+        break;
       case '--capture-matrix': {
         const raw = consumeValue('--capture-matrix', argv[++i], mkError);
         if (raw === null || raw.length === 0) {
@@ -1025,6 +1103,7 @@ export function validateWaitActions(actions: readonly ExecAction[]): void {
   for (const { action, payload } of actions) {
     if (action === 'waitForSelector') parseWaitForSelectorPayload(payload);
     else if (action === 'sleep') parseSleepPayload(payload);
+    else if (action === CAPTURE_TIMELINE_ACTION) parseCaptureTimelinePayload(payload);
   }
 }
 
@@ -1065,6 +1144,41 @@ export function registerWaitActions(registrar: {
     await page.waitForSelector(selector, { state, timeout: timeoutMs });
     return { waited: true, selector, state, elapsedMs: Date.now() - startedAt };
   });
+}
+
+/**
+ * The private action id the network emulation is applied under, against the
+ * transport context's page. A double-underscore id: never an in-page action.
+ */
+export const APPLY_NETWORK_ACTION = '__inject_cli_apply_network';
+
+/**
+ * Register the network emulation (`--throttle` / `--no-cache`) under
+ * {@link APPLY_NETWORK_ACTION}. Dispatched once, right after `ready()`, so
+ * every exec step and every frame runs under it.
+ */
+export function registerNetworkEmulation(
+  registrar: { register(action: string, fn: (params: unknown, ctx: unknown) => unknown): void },
+  args: Pick<InjectCliArgs, 'throttle' | 'noCache'>
+): void {
+  registrar.register(APPLY_NETWORK_ACTION, async (_params: unknown, ctx: unknown) => {
+    const page = (ctx as { page?: ThrottlePage } | null | undefined)?.page;
+    if (!page || typeof page.context !== 'function') {
+      throw new InjectCliArgError(
+        `--throttle/--no-cache need the transport's page handle, which this context does not expose`
+      );
+    }
+    return applyNetworkEmulation(page, args.throttle, args.noCache);
+  });
+}
+
+/** Apply the requested network emulation to a READY transport; null when none was asked for. */
+async function applyNetwork(
+  transport: { dispatch(actionId: string, params?: unknown): Promise<unknown> },
+  args: Pick<InjectCliArgs, 'throttle' | 'noCache'>
+): Promise<NetworkEmulation | null> {
+  if (args.throttle === null && !args.noCache) return null;
+  return (await transport.dispatch(APPLY_NETWORK_ACTION)) as NetworkEmulation | null;
 }
 
 function die(msg: string): never {
@@ -1336,17 +1450,24 @@ async function runExec(
 
   // CLI-side waits must win the id lookup below, which forwards anything
   // unregistered into the page realm.
+  let network: NetworkEmulation | null = null;
   registerWaitActions(transport);
   registerFrameCapture(transport);
+  registerNetworkEmulation(transport, args);
+  registerTimelineCapture(transport, () => network);
 
   log(args.quiet, `[ui-bridge-inject] launching injected transport (exec mode)`);
   try {
     await transport.ready();
+    network = await applyNetwork(transport, args);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[ui-bridge-inject] ready failed: ${msg}\n`);
     await transport.close().catch(() => {});
     process.exit(1);
+  }
+  if (network) {
+    log(args.quiet, `[ui-bridge-inject] network emulation applied: ${JSON.stringify(network)}`);
   }
 
   const screenshot = args.screenshot;
@@ -1407,13 +1528,17 @@ async function runMatrixCell(
     kind: 'injected',
     options: buildCellTransportOptions(args, cell),
   });
+  let network: NetworkEmulation | null = null;
   registerWaitActions(transport);
   registerFrameCapture(transport);
+  registerNetworkEmulation(transport, args);
+  registerTimelineCapture(transport, () => network, cellDir);
   log(args.quiet, `[ui-bridge-inject] capture matrix: cell ${id}`);
 
   try {
     ensurePrivateDir(cellDir);
     await transport.ready();
+    network = await applyNetwork(transport, args);
   } catch (err) {
     await transport.close().catch(() => {});
     const e = thrownError(err);
@@ -1456,6 +1581,7 @@ async function runMatrixCell(
       status: anyError ? 'incomplete' : 'captured',
       results: manifestPath(dir, resultsPath),
       pairs,
+      network,
     };
   } catch (err) {
     const e = thrownError(err);
@@ -1602,8 +1728,11 @@ async function runRelay(
   );
   log(args.quiet, `[ui-bridge-inject] url: ${args.url} relay: ${args.relay}`);
 
+  registerNetworkEmulation(transport, args);
+  let network: NetworkEmulation | null = null;
   try {
     await transport.ready();
+    network = await applyNetwork(transport, args);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[ui-bridge-inject] ready failed: ${msg}\n`);
@@ -1620,6 +1749,7 @@ async function runRelay(
       tabId: info.tabId,
       uiBridgeRegistered: info.uiBridgeRegistered,
       url: args.url,
+      network,
     })}\n`
   );
 
