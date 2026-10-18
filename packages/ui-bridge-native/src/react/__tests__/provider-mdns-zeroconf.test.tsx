@@ -111,8 +111,8 @@ describe('UIBridgeNativeProvider mDNS advertisement', () => {
     expect(constructed).toBe(1);
     expect(published).toHaveLength(1);
     const call = published[0]!;
-    expect(call.type).toBe('_uibridge');
-    expect(call.protocol).toBe('_tcp.');
+    expect(call.type).toBe('uibridge');
+    expect(call.protocol).toBe('tcp');
     expect(call.domain).toBe('local.');
     expect(call.name).toBe('UIBridge-abcdef01');
     expect(call.port).toBe(8087);
@@ -174,7 +174,7 @@ describe('UIBridgeNativeProvider mDNS advertisement', () => {
 
     expect(constructed).toBe(1);
     expect(published).toHaveLength(1);
-    expect(published[0]!.type).toBe('_uibridge');
+    expect(published[0]!.type).toBe('uibridge');
   });
 });
 
