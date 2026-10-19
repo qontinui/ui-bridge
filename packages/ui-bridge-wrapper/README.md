@@ -194,8 +194,13 @@ ui-bridge-inject --url http://127.0.0.1:3000/ --throttle slow-3g --no-cache \
 `mediaOverride` answers only after the browser decoded the candidate and its
 `currentSrc` names it (inside a `<picture>` every `<source srcset>` is replaced
 too); one it cannot confirm is rolled back and fails the step.
-`mediaOverrideRestore` puts every attribute back and verifies it, and
-`mediaOverrideList` returning `active: []` is the proof the page ended restored.
+A `loading="lazy"` slot is loaded eagerly while overridden, so an offscreen one
+still decodes. `mediaOverrideRestore` puts every attribute back and verifies
+what the browser then RENDERS (the slot's `currentSrc` back on an original URL,
+or the computed `background-image` off the candidate): only `verified: true`
+with `status: "restored"` is a clean restore, and `restored_with_drift` (the app
+rewrote a value meanwhile) or `verified: false` is an unknown one.
+`mediaOverrideList` returning `active: []` proves nothing is still overridden.
 `--throttle <slow-3g|fast-3g|latency=<ms>,down=<kbps>,up=<kbps>>` applies CDP
 network emulation once the page is ready (it persists across a reload) and
 `--no-cache` disables the HTTP cache; what Chromium accepted is stamped as

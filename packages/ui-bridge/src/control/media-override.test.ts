@@ -6,14 +6,20 @@
  * the override reads back: `decode()` resolves (or rejects) and sets
  * `currentSrc` to the candidate the browser would pick — the first `<source>`
  * srcset URL inside a `<picture>`, else the first `<img srcset>` URL, else
- * `src`. Everything else — what is written, what is restored, what the DOM
- * reads back — is the real DOM.
+ * `src`. `currentSrc` changes ONLY when a decode settles, as a real image's
+ * current request changes only once its load completes, so a restore that
+ * does not wait for the original to load reads the candidate still current.
+ * An `<img loading="lazy">` models an OFFSCREEN lazy image: it never loads,
+ * so its decode never settles. Everything else — what is written, what is
+ * restored, what the DOM reads back — is the real DOM.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyMediaOverride,
+  cssUrl,
   listMediaOverrides,
+  parseSrcsetUrls,
   resetMediaOverridesForTest,
   restoreMediaOverrides,
   validateMediaOverrideRequest,
@@ -31,14 +37,14 @@ import { createActionExecutor } from './action-executor';
 // A minimal browser model for decode()/currentSrc
 // ---------------------------------------------------------------------------
 
-type DecodeBehaviour = 'pick' | 'reject' | 'hang' | { stuckOn: string };
+type DecodeBehaviour = 'pick' | 'reject' | 'hang' | 'deferred' | { stuckOn: string };
 let decodeBehaviour: DecodeBehaviour = 'pick';
+/** Decodes held by the 'deferred' behaviour; each call settles one. */
+let pendingDecodes: Array<() => void> = [];
 const CURRENT = Symbol('currentSrc');
 
 function firstUrl(srcset: string | null): string | null {
-  if (!srcset) return null;
-  const first = srcset.split(/,\s+/)[0]?.trim().split(/\s+/)[0];
-  return first ?? null;
+  return parseSrcsetUrls(srcset ?? '')[0] ?? null;
 }
 
 function browserPick(img: HTMLImageElement): string {
@@ -72,11 +78,23 @@ beforeEach(() => {
     this: HTMLImageElement & { [CURRENT]?: string }
   ) {
     const b = decodeBehaviour;
+    if ((this.getAttribute('loading') ?? '').toLowerCase() === 'lazy') {
+      return new Promise<void>(() => {});
+    }
     if (b === 'reject') return Promise.reject(new Error('EncodingError: broken image'));
     if (b === 'hang') return new Promise<void>(() => {});
+    if (b === 'deferred') {
+      return new Promise<void>((resolve) =>
+        pendingDecodes.push(() => {
+          this[CURRENT] = browserPick(this);
+          resolve();
+        })
+      );
+    }
     this[CURRENT] = typeof b === 'object' ? b.stuckOn : browserPick(this);
     return Promise.resolve();
   };
+  pendingDecodes = [];
   resetMediaOverridesForTest();
   resetDevControlsForTest();
   document.body.innerHTML = '';
@@ -106,8 +124,8 @@ async function apply(req: Record<string, unknown>): Promise<MediaOverrideSuccess
   return res;
 }
 
-function restoreAll(): MediaOverrideRestoreSuccess {
-  const res = restoreMediaOverrides({});
+async function restoreAll(): Promise<MediaOverrideRestoreSuccess> {
+  const res = await restoreMediaOverrides({});
   if (!res.success) throw new Error(`restore failed: ${res.code}`);
   return res;
 }
@@ -132,7 +150,7 @@ describe('override and exact restore', () => {
     expect(res.target).toMatchObject({ slotId: 'hero', tag: 'img', inPicture: false });
     expect(document.body.innerHTML).not.toBe(before);
 
-    const restored = restoreAll();
+    const restored = await restoreAll();
     expect(restored.restored).toHaveLength(1);
     expect(restored.restored[0]).toMatchObject({ status: 'restored', verified: true, drift: [] });
     expect(restored.remaining).toBe(0);
@@ -150,7 +168,7 @@ describe('override and exact restore', () => {
     expect(img.hasAttribute('srcset')).toBe(false);
     expect(img.hasAttribute('sizes')).toBe(false);
     expect(res.ready.currentSrc).toBe(abs('/c.png'));
-    restoreAll();
+    await restoreAll();
     expect(document.body.innerHTML).toBe(before);
   });
 
@@ -161,7 +179,7 @@ describe('override and exact restore', () => {
     expect(document.querySelector('img')!.getAttribute('srcset')).toBe(
       '/c-1x.png 1x, /c-2x.png 2x'
     );
-    restoreAll();
+    await restoreAll();
     const img = document.querySelector('img')!;
     expect(img.hasAttribute('srcset')).toBe(false);
     expect(img.hasAttribute('sizes')).toBe(false);
@@ -183,7 +201,7 @@ describe('override and exact restore', () => {
     expect(sources[1]!.getAttribute('srcset')).toBe('/c.png');
     expect(res.target.inPicture).toBe(true);
     expect(res.ready.currentSrc).toBe(abs('/c.png'));
-    restoreAll();
+    await restoreAll();
     expect(document.body.innerHTML).toBe(before);
   });
 
@@ -210,22 +228,23 @@ describe('override and exact restore', () => {
     expect(s[1]!.getAttribute('srcset')).toBe('/c.webp');
     expect(s[2]!.getAttribute('srcset')).toBe('/c.png');
     expect(res.ready.currentSrc).toBe(abs('/c.avif'));
-    restoreAll();
+    await restoreAll();
     expect(document.body.innerHTML).toBe(before);
   });
 
-  it('overrides a CSS background-image and restores the whole style attribute exactly', async () => {
+  it('overrides a CSS background-image and restores the style attribute exactly', async () => {
     mount(
       '<div data-ui-bridge-image-slot="bg" style="color: red; background-image: url(/o.png)"></div>'
     );
     const before = document.body.innerHTML;
     const res = await apply({ slotId: 'bg', backgroundImage: '/c.png' });
     const div = document.querySelector('div')!;
-    expect(div.style.getPropertyValue('background-image')).toContain('/c.png');
-    expect(div.getAttribute('style')).toMatch(/background-image: url\("\/c\.png"\) !important;$/);
+    expect(div.style.getPropertyValue('background-image')).toBe('url("/c.png")');
+    expect(div.style.getPropertyPriority('background-image')).toBe('important');
     expect(div.style.getPropertyValue('color')).toBe('red');
     expect(res.mode).toBe('background');
-    restoreAll();
+    expect(res.originals).toEqual({ 'style.background-image': 'url("/o.png")' });
+    await restoreAll();
     expect(document.body.innerHTML).toBe(before);
   });
 
@@ -233,7 +252,7 @@ describe('override and exact restore', () => {
     mount('<section data-ui-bridge-image-slot="bg"></section>');
     const before = document.body.innerHTML;
     await apply({ slotId: 'bg', backgroundImage: '/c.png' });
-    restoreAll();
+    await restoreAll();
     expect(document.querySelector('section')!.hasAttribute('style')).toBe(false);
     expect(document.body.innerHTML).toBe(before);
   });
@@ -247,7 +266,7 @@ describe('override and exact restore', () => {
     expect(second.replaced).toBe(true);
     expect(second.originals['img.src']).toBe('/orig.png');
     expect(listMediaOverrides().active).toHaveLength(1);
-    restoreAll();
+    await restoreAll();
     expect(document.body.innerHTML).toBe(before);
   });
 
@@ -259,7 +278,7 @@ describe('override and exact restore', () => {
     );
     expect(res.success).toBe(true);
     expect((res as MediaOverrideSuccess).target.elementId).toBe('logo-el');
-    restoreAll();
+    await restoreAll();
     expect(el.getAttribute('src')).toBe('/o.png');
   });
 });
@@ -322,34 +341,44 @@ describe('decode and currentSrc confirmation', () => {
     expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
   });
 
-  it('reports the candidate in pixels from a detached decode, not the slot’s density-scaled size', async () => {
+  it('reports the candidate in pixels from the slot element itself, not its density-scaled size', async () => {
     // Real Chromium keeps the slot's previous srcset density after a src-only
-    // swap (the wrapper's real-browser smoke pins it). Model that: the slot
-    // reads half its pixels, a detached decode reads all of them.
-    const natural = (connected: number, detached: number) => ({
+    // swap (the wrapper's real-browser smoke pins it), so the slot's
+    // naturalWidth reads half its pixels. createImageBitmap(slot) reads the
+    // element's own decoded image at full size — and fetches nothing.
+    const saved = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'naturalWidth');
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', {
       configurable: true,
-      get(this: HTMLImageElement) {
-        return this.isConnected ? connected : detached;
-      },
+      get: () => 160,
     });
-    const proto = HTMLImageElement.prototype;
-    const saved = (['naturalWidth', 'naturalHeight'] as const).map(
-      (k) => [k, Object.getOwnPropertyDescriptor(proto, k)] as const
+    const bitmaps: unknown[] = [];
+    const close = vi.fn();
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async (source: unknown) => {
+        bitmaps.push(source);
+        return { width: 320, height: 180, close };
+      })
     );
-    Object.defineProperty(proto, 'naturalWidth', natural(160, 320));
-    Object.defineProperty(proto, 'naturalHeight', natural(90, 180));
     try {
       mount(
         '<img data-ui-bridge-image-slot="s" src="/o.png" srcset="/o.png 2048w" sizes="1024px">'
       );
       const res = await apply({ slotId: 's', src: '/c.png' });
       expect(res.ready).toMatchObject({ naturalWidth: 320, naturalHeight: 180 });
+      expect(bitmaps).toEqual([document.querySelector('img')]);
+      expect(close).toHaveBeenCalledOnce();
     } finally {
-      for (const [k, d] of saved) {
-        if (d) Object.defineProperty(proto, k, d);
-        else delete (proto as unknown as Record<string, unknown>)[k];
-      }
+      vi.unstubAllGlobals();
+      if (saved) Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', saved);
+      else delete (HTMLImageElement.prototype as unknown as Record<string, unknown>).naturalWidth;
     }
+  });
+
+  it('an engine with no createImageBitmap reports the size unmeasured (null), never 0', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const res = await apply({ slotId: 's', src: '/c.png' });
+    expect(res.ready).toMatchObject({ naturalWidth: null, naturalHeight: null });
   });
 });
 
@@ -365,14 +394,16 @@ describe('TTL and drift', () => {
     vi.useFakeTimers();
     // The timer was armed before fake timers took over; re-arm under them.
     await apply({ slotId: 's', src: '/c.png', ttlMs: 1000 });
-    vi.advanceTimersByTime(1001);
+    await vi.advanceTimersByTimeAsync(1001);
     expect(document.body.innerHTML).toBe(before);
     const list = listMediaOverrides();
     expect(list.active).toEqual([]);
     expect(list.recentlyExpired).toEqual([
       expect.objectContaining({ overrideId: res.overrideId, trigger: 'ttl', verified: true }),
     ]);
-    const late = restoreMediaOverrides({ overrideId: res.overrideId }) as MediaOverrideFailure;
+    const late = (await restoreMediaOverrides({
+      overrideId: res.overrideId,
+    })) as MediaOverrideFailure;
     expect(late.code).toBe('NOT_FOUND');
     expect(late.error).toContain('expired');
   });
@@ -382,16 +413,18 @@ describe('TTL and drift', () => {
     await apply({ slotId: 's', src: '/c.png' });
     const img = document.querySelector('img')!;
     img.setAttribute('src', '/app-newer.png');
-    const res = restoreAll();
+    const res = await restoreAll();
     expect(res.restored[0]!.drift).toContain('img.src');
     expect(img.getAttribute('src')).toBe('/app-newer.png');
+    // The page is the app's now, not the original: never a verified restore.
+    expect(res.restored[0]).toMatchObject({ status: 'restored_with_drift', verified: false });
   });
 
   it('a target that left the DOM is reported detached, never verified', async () => {
     mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
     await apply({ slotId: 's', src: '/c.png' });
     document.body.innerHTML = '';
-    const res = restoreAll();
+    const res = await restoreAll();
     expect(res.restored[0]).toMatchObject({ status: 'detached', verified: null });
   });
 });
@@ -455,7 +488,7 @@ describe('targets and validation', () => {
     expect(JSON.stringify(res)).not.toContain('X-Amz-Signature');
     expect(res.originals['img.src']).toBe('[REDACTED]');
     expect(res.applied['img.src']).toBe('/c.png');
-    restoreAll();
+    await restoreAll();
     expect(document.querySelector('img')!.getAttribute('src')).toContain('X-Amz-Signature=secret');
   });
 });
@@ -524,5 +557,275 @@ describe('dev-controls gate', () => {
       expect(res.code).toBe('UB-CAPABILITY-UNAVAILABLE');
       expect(res.data).toMatchObject({ code: 'capability_unavailable_in_build' });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The restore proof is about what the browser RENDERS (review r2, HIGH/MED)
+// ---------------------------------------------------------------------------
+
+describe('restore verification reads the rendered state', () => {
+  it('a restore whose <img> still renders the candidate is NOT verified', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    await apply({ slotId: 's', src: '/c.png' });
+    // The attributes go back, but the browser keeps showing the candidate.
+    decodeBehaviour = { stuckOn: abs('/c.png') };
+    const res = await restoreAll();
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
+    expect(res.restored[0]).toMatchObject({ status: 'restored', verified: false });
+    expect(res.restored[0]!.mismatches).toEqual([
+      { key: 'rendered.currentSrc', expected: '', actual: abs('/c.png') },
+    ]);
+  });
+
+  it('waits for the original to load before judging currentSrc', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    await apply({ slotId: 's', src: '/c.png' });
+    decodeBehaviour = 'deferred';
+    const pending = restoreMediaOverrides({});
+    // The DOM is restored at once; the verdict waits for the load.
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
+    await vi.waitFor(() => expect(pendingDecodes).toHaveLength(1));
+    pendingDecodes.shift()!();
+    const res = (await pending) as MediaOverrideRestoreSuccess;
+    expect(res.restored[0]).toMatchObject({ status: 'restored', verified: true, mismatches: [] });
+  });
+
+  it('a background restore whose computed style still shows the candidate is NOT verified', async () => {
+    mount('<div data-ui-bridge-image-slot="bg" style="background-image: url(/o.png)"></div>');
+    await apply({ slotId: 'bg', backgroundImage: '/c.png' });
+    const real = window.getComputedStyle.bind(window);
+    const spy = vi
+      .spyOn(window, 'getComputedStyle')
+      .mockImplementation(
+        (el: Element) =>
+          ({ ...real(el), backgroundImage: `url("${abs('/c.png')}")` }) as CSSStyleDeclaration
+      );
+    try {
+      const res = await restoreAll();
+      expect(res.restored[0]).toMatchObject({ status: 'restored', verified: false });
+      expect(res.restored[0]!.mismatches.map((m) => m.key)).toEqual(['rendered.background-image']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('background arm owns only its own declaration', () => {
+  it('keeps an inline style the app wrote while the override was up', async () => {
+    mount(
+      '<div data-ui-bridge-image-slot="bg" style="color: red; background-image: url(/o.png)"></div>'
+    );
+    await apply({ slotId: 'bg', backgroundImage: '/c.png' });
+    const div = document.querySelector('div')!;
+    div.style.setProperty('opacity', '0.5');
+    div.style.setProperty('color', 'blue');
+    const res = await restoreAll();
+    expect(res.restored[0]).toMatchObject({ status: 'restored', verified: true, drift: [] });
+    expect(div.style.getPropertyValue('opacity')).toBe('0.5');
+    expect(div.style.getPropertyValue('color')).toBe('blue');
+    expect(div.style.getPropertyValue('background-image')).toBe('url("/o.png")');
+    expect(div.style.getPropertyPriority('background-image')).toBe('');
+  });
+
+  it('an element that had no style attribute keeps only what the app added', async () => {
+    mount('<div data-ui-bridge-image-slot="bg"></div>');
+    await apply({ slotId: 'bg', backgroundImage: '/c.png' });
+    const div = document.querySelector('div')!;
+    div.style.setProperty('opacity', '0.5');
+    await restoreAll();
+    expect(div.getAttribute('style')).toBe('opacity: 0.5;');
+  });
+
+  it('a background-image the app rewrote is drift, left as the app set it', async () => {
+    mount('<div data-ui-bridge-image-slot="bg" style="background-image: url(/o.png)"></div>');
+    await apply({ slotId: 'bg', backgroundImage: '/c.png' });
+    const div = document.querySelector('div')!;
+    div.style.setProperty('background-image', 'url("/app.png")');
+    const res = await restoreAll();
+    expect(res.restored[0]).toMatchObject({
+      status: 'restored_with_drift',
+      verified: false,
+      drift: ['style.background-image'],
+    });
+    expect(div.style.getPropertyValue('background-image')).toBe('url("/app.png")');
+  });
+});
+
+describe('one record per element written to', () => {
+  it('a <picture> slot and its <img> by elementId are ONE override, restored to the page original', async () => {
+    mount(
+      '<picture data-ui-bridge-image-slot="p"><source type="image/webp" srcset="/o.webp">' +
+        '<img id="pi" src="/o.png"></picture>'
+    );
+    const before = document.body.innerHTML;
+    const img = document.getElementById('pi')!;
+    const first = await apply({ slotId: 'p', src: '/c1.png' });
+    const second = await applyMediaOverride({ elementId: 'pic-img', src: '/c2.png' }, (id) =>
+      id === 'pic-img' ? img : undefined
+    );
+    expect(second).toMatchObject({ success: true, overrideId: first.overrideId, replaced: true });
+    expect((second as MediaOverrideSuccess).originals['img.src']).toBe('/o.png');
+    expect(listMediaOverrides().active).toHaveLength(1);
+    const res = await restoreAll();
+    expect(res.restored).toHaveLength(1);
+    expect(res.restored[0]!.verified).toBe(true);
+    expect(document.body.innerHTML).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lazy offscreen slots (review r2)
+// ---------------------------------------------------------------------------
+
+describe('a loading="lazy" slot', () => {
+  it('is loaded eagerly for the override, and gets its lazy attribute back on restore', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png" loading="lazy">');
+    const before = document.body.innerHTML;
+    const res = await apply({ slotId: 's', src: '/c.png', decodeTimeoutMs: 50 });
+    const img = document.querySelector('img')!;
+    expect(img.getAttribute('loading')).toBe('eager');
+    expect(res.ready.currentSrc).toBe(abs('/c.png'));
+    expect(res.originals['img.loading']).toBe('lazy');
+    const restored = await restoreAll();
+    // `lazy` goes back only AFTER the original rendered, or its load would be
+    // deferred and currentSrc would stay on the candidate.
+    expect(restored.restored[0]).toMatchObject({ status: 'restored', verified: true });
+    expect(document.body.innerHTML).toBe(before);
+  });
+
+  it('a slot that is not lazy gets no loading attribute written', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const res = await apply({ slotId: 's', src: '/c.png' });
+    expect(Object.keys(res.applied)).not.toContain('img.loading');
+    expect(document.querySelector('img')!.hasAttribute('loading')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// URLs: CSS escaping, the srcset grammar, the scheme allowlist (review r2)
+// ---------------------------------------------------------------------------
+
+describe('cssUrl', () => {
+  it('hex-escapes every control character and every unsafe character', () => {
+    expect(cssUrl('/a.png')).toBe('url("/a.png")');
+    expect(cssUrl('/a\f.png')).toBe('url("/a\\c .png")');
+    expect(cssUrl('/a\n\r\t\v\0\x7f.png')).toBe('url("/a\\a \\d \\9 \\b \\0 \\7f .png")');
+    expect(cssUrl('/x") ; color: blue; ("')).toBe(
+      'url("/x\\22 \\29 \\20 \\3b \\20 color:\\20 blue\\3b \\20 \\28 \\22 ")'
+    );
+    expect(cssUrl('/\\é.png')).toBe('url("/\\5c \\e9 .png")');
+    expect(cssUrl('data:image/png;base64,AA==')).toBe('url("data:image/png\\3b base64,AA==")');
+  });
+
+  it('no candidate URL can break out of the background-image declaration', async () => {
+    mount('<div data-ui-bridge-image-slot="bg" style="background-image: url(/o.png)"></div>');
+    const before = document.body.innerHTML;
+    const div = document.querySelector('div')!;
+    await applyMediaOverride(
+      { slotId: 'bg', backgroundImage: '/x\f"); color: blue; ("' },
+      noElement
+    );
+    expect(div.style.getPropertyValue('color')).toBe('');
+    // eslint-disable-next-line no-control-regex
+    expect(div.getAttribute('style')).not.toMatch(/[\x00-\x1f]/);
+    await restoreMediaOverrides({});
+    expect(document.body.innerHTML).toBe(before);
+  });
+});
+
+describe('parseSrcsetUrls (the HTML srcset grammar)', () => {
+  it.each([
+    ['/a.png 1x, /b.png 2x', ['/a.png', '/b.png']],
+    ['/a.png 1x,/b.png 2x', ['/a.png', '/b.png']],
+    ['/a.png 100w,/b.png 200w,/c.png 300w', ['/a.png', '/b.png', '/c.png']],
+    ['/a.png,, /b.png', ['/a.png', '/b.png']],
+    ['  /a.png  ', ['/a.png']],
+    ['data:image/png;base64,AA== 1x, /b.png 2x', ['data:image/png;base64,AA==', '/b.png']],
+    ['/a.png (x, y) 1x, /b.png', ['/a.png', '/b.png']],
+    ['', []],
+  ])('%j', (srcset, urls) => {
+    expect(parseSrcsetUrls(srcset)).toEqual(urls);
+  });
+
+  it('a candidate after a comma with no space is accepted as the rendered one', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    decodeBehaviour = { stuckOn: abs('/c-2x.png') };
+    const res = await applyMediaOverride(
+      { slotId: 's', srcset: '/c-1x.png 1x,/c-2x.png 2x' },
+      noElement
+    );
+    expect(res).toMatchObject({ success: true, ready: { currentSrc: abs('/c-2x.png') } });
+  });
+});
+
+describe('candidate URL schemes', () => {
+  it.each([
+    [{ src: 'javascript:alert(1)' }],
+    [{ src: 'file:///etc/passwd' }],
+    [{ src: 'data:text/html,<script>1</script>' }],
+    [{ srcset: '/ok.png 1x, ftp://h/x.png 2x' }],
+    [{ src: '/ok.png', sources: [{ srcset: 'chrome://settings/x.png' }] }],
+    [{ backgroundImage: 'JavaScript:alert(1)' }],
+  ])('refuses %j, typed, before touching the page', async (fields) => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const before = document.body.innerHTML;
+    const res = (await applyMediaOverride(
+      { slotId: 's', ...fields },
+      noElement
+    )) as MediaOverrideFailure;
+    expect(res).toMatchObject({ success: false, code: 'UNSUPPORTED_URL_SCHEME' });
+    expect(document.body.innerHTML).toBe(before);
+  });
+
+  it.each([
+    'https://cdn.example/c.png',
+    'http://127.0.0.1:8080/c.png',
+    'blob:https://app.example/1b2c',
+    'data:image/png;base64,iVBORw0KGgo=',
+    '/c.png',
+    '//cdn.example/c.png',
+  ])('accepts %s', async (src) => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const res = await applyMediaOverride({ slotId: 's', src }, noElement);
+    expect(res).toMatchObject({ success: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A restore that lands while an apply still awaits its decode (review r2)
+// ---------------------------------------------------------------------------
+
+describe('a concurrent restore or override during an apply', () => {
+  it('a DELETE while the apply awaits its decode makes the apply report OVERRIDE_CANCELLED', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const before = document.body.innerHTML;
+    decodeBehaviour = 'deferred';
+    const applying = applyMediaOverride({ slotId: 's', src: '/c.png' }, noElement);
+    await vi.waitFor(() => expect(pendingDecodes).toHaveLength(1));
+    decodeBehaviour = 'pick';
+    const restore = (await restoreMediaOverrides({})) as MediaOverrideRestoreSuccess;
+    expect(restore.restored).toHaveLength(1);
+    pendingDecodes.shift()!();
+    const res = (await applying) as MediaOverrideFailure;
+    expect(res).toMatchObject({ success: false, code: 'OVERRIDE_CANCELLED' });
+    expect(res.error).toContain('trigger: request');
+    expect(document.body.innerHTML).toBe(before);
+    expect(listMediaOverrides().active).toEqual([]);
+  });
+
+  it('a later override on the same slot supersedes an awaiting one, which neither succeeds nor rolls it back', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    decodeBehaviour = 'deferred';
+    const first = applyMediaOverride({ slotId: 's', src: '/c1.png' }, noElement);
+    await vi.waitFor(() => expect(pendingDecodes).toHaveLength(1));
+    const second = applyMediaOverride({ slotId: 's', src: '/c2.png' }, noElement);
+    await vi.waitFor(() => expect(pendingDecodes).toHaveLength(2));
+    pendingDecodes.shift()!();
+    pendingDecodes.shift()!();
+    expect(await first).toMatchObject({ success: false, code: 'OVERRIDE_CANCELLED' });
+    expect(await second).toMatchObject({ success: true, ready: { currentSrc: abs('/c2.png') } });
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/c2.png');
+    expect(listMediaOverrides().active).toHaveLength(1);
   });
 });

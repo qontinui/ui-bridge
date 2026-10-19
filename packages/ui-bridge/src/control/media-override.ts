@@ -15,8 +15,9 @@
  *
  *  - The originals are recorded before anything is written: each attribute's
  *    exact value, or its absence (an absent attribute is restored by REMOVING
- *    it, never by writing `""`), and an element's whole `style` attribute for
- *    the background arm, so the restored DOM is the DOM that was there.
+ *    it, never by writing `""`). The background arm owns ONE inline
+ *    declaration, `background-image`, and records only that one, so an inline
+ *    style the app writes while the override is up survives the restore.
  *  - `<picture>` is overridden whole. A browser picks a `<source>` before it
  *    ever looks at the `<img>`, so changing only `img.src` leaves the original
  *    showing. Every `<source srcset>` is replaced too (per type when the caller
@@ -25,13 +26,24 @@
  *  - Nothing is reported ready until the browser has DECODED the new image and
  *    `currentSrc` names one of the candidates the caller supplied. An override
  *    that cannot get there is undone before it answers, so a capture can never
- *    run against a half-applied or still-loading swap.
+ *    run against a half-applied or still-loading swap. A `loading="lazy"` slot
+ *    is switched to `eager` for the override's lifetime, because an offscreen
+ *    lazy image never loads, so it would never decode.
  *  - A TTL restores the page by itself, so a caller that dies mid-run cannot
  *    leave the page altered.
+ *  - A restore is verified against what the browser RENDERS, not against what
+ *    was just written: the `<img>`'s `currentSrc` must be back on an original
+ *    URL, or the computed `background-image` must no longer show the
+ *    candidate. Reading back an attribute the restore itself wrote could
+ *    never fail, so it is not the proof.
  *  - A restore never clobbers the app. If the app rewrote an attribute after
  *    the override (a re-render with a new `src`), that attribute is left as
  *    the app set it and reported as `drift`, rather than reverted to a value
- *    older than the app's own.
+ *    older than the app's own. A restore with drift is `restored_with_drift`
+ *    and NEVER `verified`: what the page shows is then the app's choice, not
+ *    the original, and may still be the candidate.
+ *  - Candidate URLs are http(s), `blob:`, `data:image/*`, or relative to the
+ *    page. Any other scheme is refused, typed (`UNSUPPORTED_URL_SCHEME`).
  *
  * It is a DEV CONTROL (`core/dev-controls.ts`): the command handlers answer
  * `capability_unavailable_in_build` unless the realm opted in.
@@ -95,6 +107,9 @@ export type MediaOverrideErrorCode =
   | 'DECODE_TIMEOUT'
   | 'CURRENT_SRC_MISMATCH'
   | 'NOT_FOUND'
+  | 'UNSUPPORTED_URL_SCHEME'
+  /** A concurrent DELETE, TTL or later override on the same target won while the decode was awaited. */
+  | 'OVERRIDE_CANCELLED'
   | 'capability_unavailable_in_build';
 
 export interface MediaOverrideFailure {
@@ -112,12 +127,16 @@ export interface MediaOverrideReadiness {
   /** `img.currentSrc`, or the resolved background URL. */
   currentSrc: string;
   /**
-   * The candidate's size in image PIXELS, from a detached decode of
-   * `currentSrc`. Not the slot's own `naturalWidth`: that is divided by the
-   * density the browser selected, and Chromium keeps the density of the
-   * slot's PREVIOUS srcset choice after a src-only swap, so a 100 px candidate
-   * in a slot that last chose a 2x source reads 50. `null` when the detached
-   * decode could not measure it (unmeasured, never 0).
+   * The candidate's size in image PIXELS. For an `<img>` it is read from the
+   * slot element itself, through `createImageBitmap(img)` over the image it
+   * just decoded — no second fetch, so `--no-cache` costs nothing extra. Not
+   * the slot's `naturalWidth`: that is divided by the density the browser
+   * selected, and Chromium keeps the density of the slot's PREVIOUS srcset
+   * choice after a src-only swap, so a 100 px candidate in a slot that last
+   * chose a 2x source reads 50. For a background it is the decode probe's own
+   * size (the probe has no srcset, so density 1). `null` when it could not be
+   * measured — no `createImageBitmap`, or an image with no intrinsic size —
+   * unmeasured, never 0.
    */
   naturalWidth: number | null;
   naturalHeight: number | null;
@@ -157,13 +176,28 @@ export interface RestoreMismatch {
 export interface RestoreResult {
   overrideId: string;
   /**
-   * `restored` — every attribute is back (or left as the app rewrote it, see
-   * `drift`). `detached` — the target left the DOM; there is nothing to
-   * restore and nothing was verified.
+   * `restored` — every attribute the override wrote was put back; `verified`
+   * says whether the browser then RENDERS the original. `restored_with_drift`
+   * — the app rewrote at least one attribute after the override, so that one
+   * was left as the app set it (`drift`); the page is the app's, not the
+   * original, and the restore is never verified. `detached` — the target left
+   * the DOM; there is nothing to restore and nothing was verified.
    */
-  status: 'restored' | 'detached';
-  /** True only when every restored attribute reads back as its original. `null` when detached. */
+  status: 'restored' | 'restored_with_drift' | 'detached';
+  /**
+   * True only when no attribute drifted, every restored attribute reads back
+   * as its original, AND the rendered state is off the candidate: the
+   * `<img>`'s `currentSrc` is on an original URL again (waited for, bounded by
+   * the override's `decodeTimeoutMs`), or the computed `background-image` no
+   * longer shows the candidate. `false` otherwise — read it as an UNKNOWN
+   * restore, never as a clean page. `null` when detached.
+   */
   verified: boolean | null;
+  /**
+   * What did not come back. Attribute keys (`img.src`) compare the DOM;
+   * `rendered.currentSrc` and `rendered.background-image` compare what the
+   * browser shows.
+   */
   mismatches: RestoreMismatch[];
   /** Attributes the app changed after the override; left as the app set them. */
   drift: string[];
@@ -200,6 +234,13 @@ export const MIN_OVERRIDE_TTL_MS = 1_000;
 export const MAX_OVERRIDE_TTL_MS = 900_000;
 export const DEFAULT_DECODE_TIMEOUT_MS = 10_000;
 export const MAX_DECODE_TIMEOUT_MS = 60_000;
+/**
+ * Bound on each step an apply takes AFTER its decode wait: measuring the
+ * candidate's pixels on success, or verifying the rollback on failure. A
+ * caller's transport budget must keep this much headroom above
+ * `decodeTimeoutMs` (the qontinui-runner keeps 2 s).
+ */
+export const POST_DECODE_WAIT_MS = 1_000;
 const RECENTLY_EXPIRED_LIMIT = 20;
 
 // ============================================================================
@@ -324,30 +365,168 @@ export function validateMediaOverrideRequest(raw: unknown): ValidatedMediaOverri
 }
 
 // ============================================================================
+// URLs: srcset grammar, scheme allowlist, CSS escaping
+// ============================================================================
+
+const isSrcsetSpace = (c: string): boolean =>
+  c === ' ' || c === '\t' || c === '\n' || c === '\f' || c === '\r';
+
+/**
+ * The URLs of a `srcset`, parsed per the HTML "parse a srcset attribute"
+ * grammar: a URL is a run of non-whitespace (so a `data:` URL keeps its
+ * commas), trailing commas end a candidate with no descriptors, and a
+ * descriptor list ends at the first comma outside parentheses — whether or
+ * not whitespace follows it (`a.png 1x,b.png 2x` is two candidates).
+ */
+export function parseSrcsetUrls(srcset: string): string[] {
+  const urls: string[] = [];
+  const n = srcset.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && (isSrcsetSpace(srcset[i]!) || srcset[i] === ',')) i++;
+    if (i >= n) break;
+    const start = i;
+    while (i < n && !isSrcsetSpace(srcset[i]!)) i++;
+    let url = srcset.slice(start, i);
+    if (url.endsWith(',')) {
+      url = url.replace(/,+$/, '');
+      if (url) urls.push(url);
+      continue;
+    }
+    urls.push(url);
+    let inParens = false;
+    while (i < n) {
+      const c = srcset[i]!;
+      i++;
+      if (c === '(') inParens = true;
+      else if (c === ')') inParens = false;
+      else if (c === ',' && !inParens) break;
+    }
+  }
+  return urls;
+}
+
+const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'blob:']);
+
+/**
+ * Why `url` may not be a candidate, or `null` when it may. Allowed: http,
+ * https, `blob:`, `data:image/*`, and a reference with no scheme, which
+ * resolves against the page and so loads from the page's own origin.
+ */
+function schemeProblem(url: string): string | null {
+  const m = /^[\s]*([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
+  if (!m) return null;
+  const scheme = `${m[1]!.toLowerCase()}:`;
+  if (ALLOWED_SCHEMES.has(scheme)) return null;
+  if (scheme === 'data:' && /^[\s]*data:image\//i.test(url)) return null;
+  return (
+    `${JSON.stringify(scheme)} is not an override scheme; a candidate must be http(s), ` +
+    `blob:, data:image/*, or relative to the page`
+  );
+}
+
+/** Every URL a validated request would make the page load. */
+function requestUrls(req: ValidatedMediaOverride): string[] {
+  const out: string[] = [];
+  if (req.src !== null) out.push(req.src);
+  if (req.srcset !== null) out.push(...parseSrcsetUrls(req.srcset));
+  for (const s of req.sources ?? []) out.push(...parseSrcsetUrls(s.srcset));
+  if (req.backgroundImage !== null) out.push(req.backgroundImage);
+  return out;
+}
+
+/** Code points left as themselves inside a quoted CSS `url("…")`. */
+const CSS_URL_SAFE = /^[A-Za-z0-9\-._~:/?#[\]@!$&*+,=%]$/;
+
+/**
+ * CSS `url("…")` for a URL. Every code point outside a small safe set —
+ * every control character (form feed and NUL included), quotes, backslash,
+ * parentheses, `;`, whitespace and all non-ASCII — is written as a CSS hex
+ * escape `\HH ` (the trailing space ends the escape and is consumed by the
+ * parser). No URL can therefore end the string or the declaration.
+ */
+export function cssUrl(url: string): string {
+  let out = '';
+  for (const ch of url) {
+    out += CSS_URL_SAFE.test(ch) ? ch : `\\${ch.codePointAt(0)!.toString(16)} `;
+  }
+  return `url("${out}")`;
+}
+
+function resolveUrl(u: string): string {
+  try {
+    return new URL(u, document.baseURI).href;
+  } catch {
+    return u;
+  }
+}
+
+// ============================================================================
 // State
 // ============================================================================
 
 /**
- * One attribute the override wrote: where, what was there, what we put there.
- * `key` names it in responses (`img.src`, `source[1].srcset`, `style`).
+ * One value the override wrote: where, what was there, what we put there.
+ * `kind: 'attr'` is an element attribute; `kind: 'style'` is ONE inline CSS
+ * declaration (`attr` names the property), read and written through the
+ * element's `style` declaration block so other inline declarations are never
+ * touched. A style value is `<value>` or `<value> !important`, `null` when
+ * the declaration is absent. `key` names it in responses (`img.src`,
+ * `source[1].srcset`, `style.background-image`).
  */
 interface AttrRecord {
   key: string;
   el: Element;
+  kind: 'attr' | 'style';
   attr: string;
   original: string | null;
   applied: string | null;
-  /** The original is a URL (or a style holding one) that a redaction boundary hides. */
+  /** The original is a URL a redaction boundary hides. */
   url: boolean;
+  /** Restored only after the rendered state settled (`img.loading`). */
+  restoreLast?: boolean;
 }
+
+/** What the restore verifies against the RENDERED page. */
+type RenderProbe =
+  | {
+      kind: 'image';
+      img: HTMLImageElement;
+      /** `currentSrc` before the first override. */
+      originalCurrentSrc: string;
+      /** Every URL the original markup offers, resolved. */
+      originalUrls: Set<string>;
+    }
+  | {
+      kind: 'background';
+      /** Computed `background-image` before the first override. */
+      originalComputed: string;
+      /** The candidate, resolved and as given. */
+      candidate: { resolved: string; raw: string };
+    };
 
 interface OverrideRecord {
   overrideId: string;
   mode: MediaOverrideMode;
-  /** The element the caller targeted (identity used to detect a re-override). */
+  /** The element the override writes to: the `<img>`, or the background's element. */
+  targetEl: Element;
+  /** The element the caller named (redaction is judged on it). */
   anchor: Element;
   target: MediaOverrideTarget;
   attrs: AttrRecord[];
+  render: RenderProbe;
+  /**
+   * Background arm: the whole `style` attribute before the first override and
+   * right after the latest one. When nothing else touched the attribute in
+   * between, the restore writes the original text back verbatim (byte-exact);
+   * otherwise it restores only the `background-image` declaration.
+   */
+  styleAttr: { original: string | null; applied: string | null } | null;
+  decodeTimeoutMs: number;
+  /** Bumped by every apply, so an apply can tell a later one superseded it. */
+  generation: number;
+  /** Set when the record was restored; an awaiting apply reports it. */
+  restoredBy: RestoreResult['trigger'] | null;
   appliedAt: number;
   expiresAt: number;
   timer: ReturnType<typeof setTimeout> | null;
@@ -413,6 +592,13 @@ function resolveTarget(
   }
 
   if (req.backgroundImage !== null) {
+    if (!(anchor as Partial<ElementCSSInlineStyle>).style) {
+      return {
+        ok: false,
+        code: 'TARGET_NOT_AN_IMAGE',
+        error: `the <${anchor.tagName.toLowerCase()}> target has no inline style to override`,
+      };
+    }
     return { ok: true, anchor, img: null, picture: null };
   }
 
@@ -448,35 +634,45 @@ function resolveTarget(
 }
 
 // ============================================================================
-// Apply
+// Reading and writing one recorded value
 // ============================================================================
-
-function readAttr(el: Element, attr: string): string | null {
-  return el.getAttribute(attr);
-}
 
 function writeAttr(el: Element, attr: string, value: string | null): void {
   if (value === null) el.removeAttribute(attr);
   else el.setAttribute(attr, value);
 }
 
-/** CSS `url("…")` for a URL, quoted so no URL can break out into other declarations. */
-function cssUrl(url: string): string {
-  return `url("${url.replace(/["\\\n\r]/g, (c) => (c === '\n' || c === '\r' ? '' : `\\${c}`))}")`;
+function styleOf(el: Element): CSSStyleDeclaration {
+  return (el as unknown as ElementCSSInlineStyle).style;
 }
 
-/**
- * The element's own style text with a `background-image` declaration appended.
- * Appended LAST so it beats any earlier `background`/`background-image` in the
- * same attribute, and `!important` so it beats stylesheet rules. Built as text
- * rather than through `style.setProperty`, so the result does not depend on how
- * an engine re-serializes the declaration block.
- */
-function styleWithBackground(original: string | null, url: string): string {
-  const base = (original ?? '').trim();
-  const sep = base === '' ? '' : base.endsWith(';') ? ' ' : '; ';
-  return `${base}${sep}background-image: ${cssUrl(url)} !important;`;
+const IMPORTANT = ' !important';
+
+function readValue(a: Pick<AttrRecord, 'el' | 'kind' | 'attr'>): string | null {
+  if (a.kind === 'attr') return a.el.getAttribute(a.attr);
+  const style = styleOf(a.el);
+  const value = style.getPropertyValue(a.attr);
+  if (value === '') return null;
+  return style.getPropertyPriority(a.attr) === 'important' ? `${value}${IMPORTANT}` : value;
 }
+
+function writeValue(a: Pick<AttrRecord, 'el' | 'kind' | 'attr'>, value: string | null): void {
+  if (a.kind === 'attr') {
+    writeAttr(a.el, a.attr, value);
+    return;
+  }
+  const style = styleOf(a.el);
+  if (value === null) style.removeProperty(a.attr);
+  else if (value.endsWith(IMPORTANT)) {
+    style.setProperty(a.attr, value.slice(0, -IMPORTANT.length), 'important');
+  } else style.setProperty(a.attr, value, '');
+}
+
+// ============================================================================
+// Apply
+// ============================================================================
+
+type PlannedWrite = Omit<AttrRecord, 'original'>;
 
 /**
  * Plan the attribute writes for a request. Each entry's `original` is read
@@ -485,21 +681,35 @@ function styleWithBackground(original: string | null, url: string): string {
 function planImageWrites(
   req: ValidatedMediaOverride,
   img: HTMLImageElement,
-  picture: Element | null
-): Array<Omit<AttrRecord, 'original'>> {
-  const writes: Array<Omit<AttrRecord, 'original'>> = [];
+  picture: Element | null,
+  reuse: OverrideRecord | null
+): PlannedWrite[] {
+  const writes: PlannedWrite[] = [];
+  const attr = (
+    key: string,
+    el: Element,
+    name: string,
+    applied: string | null,
+    url: boolean
+  ): PlannedWrite => ({ key, el, kind: 'attr', attr: name, applied, url });
+  // An offscreen `loading="lazy"` image never loads, so it would never
+  // decode. Eager for the override's lifetime; written FIRST so the load the
+  // src write starts is already eager, and restored LAST (after the restore
+  // re-rendered the original), or the original's load would be deferred and
+  // `currentSrc` would stay on the candidate.
+  const lazy = (img.getAttribute('loading') ?? '').toLowerCase() === 'lazy';
+  if (lazy || reuse?.attrs.some((a) => a.key === 'img.loading')) {
+    writes.push({ ...attr('img.loading', img, 'loading', 'eager', false), restoreLast: true });
+  }
   // The <img>: `src` keeps the original as the srcset fallback unless given;
   // `src` alone clears srcset/sizes, or the browser would keep choosing from them.
-  if (req.src !== null)
-    writes.push({ key: 'img.src', el: img, attr: 'src', applied: req.src, url: true });
+  if (req.src !== null) writes.push(attr('img.src', img, 'src', req.src, true));
   if (req.srcset !== null) {
-    writes.push({ key: 'img.srcset', el: img, attr: 'srcset', applied: req.srcset, url: true });
-    if (req.sizes !== null) {
-      writes.push({ key: 'img.sizes', el: img, attr: 'sizes', applied: req.sizes, url: false });
-    }
+    writes.push(attr('img.srcset', img, 'srcset', req.srcset, true));
+    if (req.sizes !== null) writes.push(attr('img.sizes', img, 'sizes', req.sizes, false));
   } else {
-    writes.push({ key: 'img.srcset', el: img, attr: 'srcset', applied: null, url: true });
-    writes.push({ key: 'img.sizes', el: img, attr: 'sizes', applied: null, url: false });
+    writes.push(attr('img.srcset', img, 'srcset', null, true));
+    writes.push(attr('img.sizes', img, 'sizes', null, false));
   }
   if (picture) {
     const fallbackSrcset = req.srcset ?? (req.src as string);
@@ -513,20 +723,8 @@ function planImageWrites(
         req.sources?.find((s) => s.type === undefined);
       const srcset = match ? match.srcset : fallbackSrcset;
       const sizes = match ? (match.sizes ?? null) : req.srcset !== null ? req.sizes : null;
-      writes.push({
-        key: `source[${i}].srcset`,
-        el: source,
-        attr: 'srcset',
-        applied: srcset,
-        url: true,
-      });
-      writes.push({
-        key: `source[${i}].sizes`,
-        el: source,
-        attr: 'sizes',
-        applied: sizes,
-        url: false,
-      });
+      writes.push(attr(`source[${i}].srcset`, source, 'srcset', srcset, true));
+      writes.push(attr(`source[${i}].sizes`, source, 'sizes', sizes, false));
     });
   }
   return writes;
@@ -534,31 +732,23 @@ function planImageWrites(
 
 /** Every URL the caller offered, resolved against the document, for the currentSrc check. */
 function candidateUrls(req: ValidatedMediaOverride): Set<string> {
+  return new Set(requestUrls(req).map(resolveUrl));
+}
+
+/** Every URL the slot's ORIGINAL markup offers, resolved — what a verified restore may show. */
+function originalImageUrls(img: HTMLImageElement, picture: Element | null): Set<string> {
   const out = new Set<string>();
-  const add = (u: string): void => {
-    try {
-      out.add(new URL(u, document.baseURI).href);
-    } catch {
-      out.add(u);
-    }
-  };
-  const addSrcset = (s: string): void => {
-    for (const candidate of s.split(/,\s+/)) {
-      const url = candidate.trim().split(/\s+/)[0];
-      if (url) add(url);
-    }
-  };
-  if (req.src !== null) add(req.src);
-  if (req.srcset !== null) addSrcset(req.srcset);
-  for (const s of req.sources ?? []) addSrcset(s.srcset);
-  if (req.backgroundImage !== null) add(req.backgroundImage);
+  const src = img.getAttribute('src');
+  if (src) out.add(resolveUrl(src));
+  for (const u of parseSrcsetUrls(img.getAttribute('srcset') ?? '')) out.add(resolveUrl(u));
+  for (const c of picture ? Array.from(picture.children) : []) {
+    if (c.tagName.toLowerCase() !== 'source') continue;
+    for (const u of parseSrcsetUrls(c.getAttribute('srcset') ?? '')) out.add(resolveUrl(u));
+  }
   return out;
 }
 
 class DecodeTimeout extends Error {}
-
-/** Least time the pixel-size probe gets after the slot itself decoded. */
-const PIXEL_PROBE_FLOOR_MS = 1_000;
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -591,7 +781,6 @@ async function awaitImageReady(
         'HTMLImageElement.decode is unavailable in this engine, so the swap cannot be confirmed',
     };
   }
-  const deadline = Date.now() + timeoutMs;
   try {
     await withTimeout(img.decode(), timeoutMs);
   } catch (err) {
@@ -614,11 +803,7 @@ async function awaitImageReady(
         `candidates supplied; the browser is still showing something else`,
     };
   }
-  // A floor, not the bare remainder: the probe re-decodes a resource the slot
-  // just decoded, and a decode that used the whole budget must still be
-  // measurable. Callers size their transport budget with headroom above
-  // decodeTimeoutMs (the runner keeps 2 s), which this floor stays inside.
-  const size = await pixelSize(currentSrc, Math.max(deadline - Date.now(), PIXEL_PROBE_FLOOR_MS));
+  const size = await pixelSize(img);
   return {
     ok: true,
     ready: { decoded: true, currentSrc, naturalWidth: size.width, naturalHeight: size.height },
@@ -626,31 +811,42 @@ async function awaitImageReady(
 }
 
 /**
- * The pixel size of `url`, decoded in a detached `<img>` with no srcset (so
- * density 1) — the size a resolution judgment needs. The resource is the one
- * the slot just decoded, so this is normally a cache hit. A failed or
- * timed-out probe is unmeasured (`null`), never a guess.
+ * The pixel size of the image the slot element just decoded, through
+ * `createImageBitmap(img)`: it reads the element's own decoded image data —
+ * no request, so it is the same under `--no-cache` — at its full pixel size,
+ * not divided by any srcset density. Bounded by {@link POST_DECODE_WAIT_MS}.
+ * Unmeasurable (no `createImageBitmap`, an SVG with no intrinsic size, a
+ * timeout) is `null`, never a guess.
  */
 async function pixelSize(
-  url: string,
-  timeoutMs: number
+  img: HTMLImageElement
 ): Promise<{ width: number | null; height: number | null }> {
-  const probe = new Image();
-  probe.src = url;
+  const unmeasured = { width: null, height: null };
+  if (typeof createImageBitmap !== 'function') return unmeasured;
+  const pending = createImageBitmap(img);
   try {
-    await withTimeout(probe.decode(), timeoutMs);
+    const bitmap = await withTimeout(pending, POST_DECODE_WAIT_MS);
+    const size = { width: bitmap.width || null, height: bitmap.height || null };
+    bitmap.close?.();
+    return size;
   } catch {
-    return { width: null, height: null };
+    pending.then((b) => b.close?.()).catch(() => {});
+    return unmeasured;
   }
-  return { width: probe.naturalWidth || null, height: probe.naturalHeight || null };
 }
 
+/**
+ * A background has no element-level decode, so a detached probe decodes the
+ * candidate to confirm the browser can (one extra request for the URL when
+ * the HTTP cache is disabled), and the computed style confirms the element
+ * shows it.
+ */
 async function awaitBackgroundReady(
   el: Element,
   url: string,
   timeoutMs: number
 ): Promise<Readiness> {
-  const resolved = new URL(url, document.baseURI).href;
+  const resolved = resolveUrl(url);
   const probe = new Image();
   if (typeof probe.decode !== 'function') {
     return {
@@ -713,10 +909,25 @@ function armTtl(rec: OverrideRecord, ttlMs: number): void {
   rec.expiresAt = Date.now() + ttlMs;
   rec.timer = setTimeout(() => {
     if (active.get(rec.overrideId) !== rec) return;
-    const result = restoreRecord(rec, 'ttl');
-    recentlyExpired.push(result);
-    if (recentlyExpired.length > RECENTLY_EXPIRED_LIMIT) recentlyExpired.shift();
+    void restoreRecord(rec, 'ttl', rec.decodeTimeoutMs).then((result) => {
+      recentlyExpired.push(result);
+      if (recentlyExpired.length > RECENTLY_EXPIRED_LIMIT) recentlyExpired.shift();
+    });
   }, ttlMs);
+}
+
+function failure(
+  code: MediaOverrideErrorCode,
+  error: string,
+  rolledBack?: RestoreResult
+): MediaOverrideFailure {
+  return {
+    success: false,
+    code,
+    error,
+    ...(rolledBack ? { rolledBack } : {}),
+    timestamp: Date.now(),
+  };
 }
 
 /**
@@ -729,48 +940,74 @@ export async function applyMediaOverride(
   resolveElement: (id: string) => Element | null | undefined
 ): Promise<MediaOverrideSuccess | MediaOverrideFailure> {
   const req = validateMediaOverrideRequest(raw);
-  if (typeof req === 'string') {
-    return { success: false, code: 'INVALID_REQUEST', error: req, timestamp: Date.now() };
+  if (typeof req === 'string') return failure('INVALID_REQUEST', req);
+  for (const u of requestUrls(req)) {
+    const problem = schemeProblem(u);
+    if (problem !== null) return failure('UNSUPPORTED_URL_SCHEME', problem);
   }
   const resolved = resolveTarget(req, resolveElement);
-  if (!resolved.ok) {
-    return { success: false, code: resolved.code, error: resolved.error, timestamp: Date.now() };
-  }
+  if (!resolved.ok) return failure(resolved.code, resolved.error);
   const { anchor, img, picture } = resolved;
 
-  const existing = Array.from(active.values()).find((r) => r.anchor === anchor);
   const mode: MediaOverrideMode = req.backgroundImage !== null ? 'background' : 'image';
+  // One record per element WRITTEN TO: a `<picture>` slot and its `<img>`
+  // named by elementId are one target, never two records each holding the
+  // other's candidate as its "original".
+  const targetEl: Element = mode === 'background' ? anchor : (img as HTMLImageElement);
+  const existing = Array.from(active.values()).find((r) => r.targetEl === targetEl);
   if (existing && existing.mode !== mode) {
     // A swap of mechanism (image ⇄ background) on one target: undo the first
-    // completely, then start again from the true originals.
-    restoreRecord(existing, 'request');
+    // completely, then start again from the true originals. Its result is not
+    // reported, so it does not wait on the render.
+    await restoreRecord(existing, 'request', 0);
   }
   const reuse = existing && existing.mode === mode ? existing : null;
 
-  const planned =
-    mode === 'background'
-      ? [
-          {
-            key: 'style',
-            el: anchor,
-            attr: 'style',
-            applied: '',
-            url: true,
-          },
-        ]
-      : planImageWrites(req, img as HTMLImageElement, picture);
-
-  // Originals: the FIRST override's record wins, so a chain of candidates on
-  // one slot restores to what the page had, not to the previous candidate.
-  const attrs: AttrRecord[] = planned.map((w) => {
-    const prior = reuse?.attrs.find((a) => a.key === w.key && a.el === w.el);
-    const original = prior ? prior.original : readAttr(w.el, w.attr);
-    const applied =
-      mode === 'background'
-        ? styleWithBackground(original, req.backgroundImage as string)
-        : w.applied;
-    return { ...w, original, applied };
-  });
+  let attrs: AttrRecord[];
+  let styleAttr: OverrideRecord['styleAttr'] = null;
+  let render: RenderProbe;
+  if (mode === 'background') {
+    const write: PlannedWrite = {
+      key: 'style.background-image',
+      el: anchor,
+      kind: 'style',
+      attr: 'background-image',
+      applied: `${cssUrl(req.backgroundImage as string)}${IMPORTANT}`,
+      url: true,
+    };
+    const prior = reuse?.attrs.find((a) => a.key === write.key);
+    attrs = [{ ...write, original: prior ? prior.original : readValue(write) }];
+    styleAttr = {
+      original: reuse?.styleAttr ? reuse.styleAttr.original : anchor.getAttribute('style'),
+      applied: null,
+    };
+    const candidate = {
+      resolved: resolveUrl(req.backgroundImage as string),
+      raw: req.backgroundImage as string,
+    };
+    render =
+      reuse?.render.kind === 'background'
+        ? { ...reuse.render, candidate }
+        : {
+            kind: 'background',
+            originalComputed: getComputedStyle(anchor).backgroundImage,
+            candidate,
+          };
+  } else {
+    const image = img as HTMLImageElement;
+    // Originals: the FIRST override's record wins, so a chain of candidates on
+    // one slot restores to what the page had, not to the previous candidate.
+    attrs = planImageWrites(req, image, picture, reuse).map((w) => {
+      const prior = reuse?.attrs.find((a) => a.key === w.key && a.el === w.el);
+      return { ...w, original: prior ? prior.original : readValue(w) };
+    });
+    render = reuse?.render ?? {
+      kind: 'image',
+      img: image,
+      originalCurrentSrc: image.currentSrc,
+      originalUrls: originalImageUrls(image, picture),
+    };
+  }
   // A re-override that no longer writes an attribute the first one did (src
   // alone after srcset) must still put that attribute back eventually.
   if (reuse) {
@@ -778,18 +1015,23 @@ export async function applyMediaOverride(
       const dropped = !attrs.some((a) => a.key === prior.key && a.el === prior.el);
       // Same no-clobber rule as a restore: only an attribute still holding
       // what the override wrote goes back.
-      if (dropped && readAttr(prior.el, prior.attr) === prior.applied) {
-        writeAttr(prior.el, prior.attr, prior.original);
-      }
+      if (dropped && readValue(prior) === prior.applied) writeValue(prior, prior.original);
     }
   }
 
-  for (const a of attrs) writeAttr(a.el, a.attr, a.applied);
+  for (const a of attrs) {
+    writeValue(a, a.applied);
+    // A style value is stored as the engine serialized it, so the restore's
+    // "still what we wrote?" test compares like with like.
+    if (a.kind === 'style') a.applied = readValue(a);
+  }
+  if (styleAttr) styleAttr.applied = anchor.getAttribute('style');
 
-  const tag = (mode === 'background' ? anchor : (img as HTMLImageElement)).tagName.toLowerCase();
+  const tag = targetEl.tagName.toLowerCase();
   const rec: OverrideRecord = reuse ?? {
     overrideId: nextOverrideId(),
     mode,
+    targetEl,
     anchor,
     target: {
       slotId: req.slotId,
@@ -798,28 +1040,55 @@ export async function applyMediaOverride(
       inPicture: picture !== null,
     },
     attrs,
+    render,
+    styleAttr,
+    decodeTimeoutMs: req.decodeTimeoutMs,
+    generation: 0,
+    restoredBy: null,
     appliedAt: Date.now(),
     expiresAt: 0,
     timer: null,
   };
   rec.attrs = attrs;
+  rec.render = render;
+  rec.styleAttr = styleAttr;
+  rec.decodeTimeoutMs = req.decodeTimeoutMs;
   rec.appliedAt = Date.now();
+  rec.generation += 1;
+  const generation = rec.generation;
   active.set(rec.overrideId, rec);
+  // Armed now, not after the decode, so a caller that dies mid-apply still
+  // gets its page back; long enough to outlast this apply's own waits, so it
+  // cannot cancel the apply it guards. Re-armed from the confirmed moment.
+  armTtl(rec, req.ttlMs + req.decodeTimeoutMs + POST_DECODE_WAIT_MS);
 
   const readiness =
     mode === 'background'
       ? await awaitBackgroundReady(anchor, req.backgroundImage as string, req.decodeTimeoutMs)
       : await awaitImageReady(img as HTMLImageElement, candidateUrls(req), req.decodeTimeoutMs);
 
+  // While this apply awaited the decode, a DELETE, the TTL, or a later
+  // override on the same target may have taken the record over. Its outcome
+  // stands; this apply must not report a swap that is no longer on the page,
+  // nor roll back what the later one wrote.
+  if (active.get(rec.overrideId) !== rec) {
+    return failure(
+      'OVERRIDE_CANCELLED',
+      `override ${rec.overrideId} was restored (trigger: ${rec.restoredBy ?? 'unknown'}) while ` +
+        `its decode was awaited; the page is not showing this candidate`
+    );
+  }
+  if (rec.generation !== generation) {
+    return failure(
+      'OVERRIDE_CANCELLED',
+      `a later override on the same target superseded this one while its decode was awaited; ` +
+        `override ${rec.overrideId} now holds that later candidate`
+    );
+  }
+
   if (!readiness.ok) {
-    const rolledBack = restoreRecord(rec, 'rollback');
-    return {
-      success: false,
-      code: readiness.code,
-      error: `${readiness.error}. The override was rolled back.`,
-      rolledBack,
-      timestamp: Date.now(),
-    };
+    const rolledBack = await restoreRecord(rec, 'rollback', POST_DECODE_WAIT_MS);
+    return failure(readiness.code, `${readiness.error}. The override was rolled back.`, rolledBack);
   }
 
   armTtl(rec, req.ttlMs);
@@ -842,12 +1111,72 @@ export async function applyMediaOverride(
 // Restore
 // ============================================================================
 
-function restoreRecord(rec: OverrideRecord, trigger: RestoreResult['trigger']): RestoreResult {
+/**
+ * Put one recorded value back unless the app rewrote it since. Returns false
+ * for drift.
+ */
+function restoreValue(a: AttrRecord): boolean {
+  if (readValue(a) !== a.applied) return false;
+  writeValue(a, a.original);
+  return true;
+}
+
+/**
+ * Wait (bounded) for the `<img>` to finish loading what the restore wrote, so
+ * `currentSrc` reports the rendered result rather than the candidate still
+ * current while the original loads. A decode that fails or times out is not
+ * an error here — `currentSrc` is then judged as it stands.
+ */
+async function settleImage(img: HTMLImageElement, waitMs: number): Promise<void> {
+  if (waitMs <= 0 || typeof img.decode !== 'function') return;
+  try {
+    await withTimeout(img.decode(), waitMs);
+  } catch {
+    // judged below on currentSrc as it stands
+  }
+}
+
+/** Compare what the browser now renders with the original. */
+function renderMismatch(rec: OverrideRecord, hide: (v: string) => string): RestoreMismatch | null {
+  const r = rec.render;
+  if (r.kind === 'image') {
+    const now = r.img.currentSrc;
+    if (now === r.originalCurrentSrc || r.originalUrls.has(now)) return null;
+    return {
+      key: 'rendered.currentSrc',
+      expected: hide(r.originalCurrentSrc),
+      actual: hide(now),
+    };
+  }
+  const computed = getComputedStyle(rec.targetEl).backgroundImage;
+  const shows = (css: string): boolean =>
+    css.includes(r.candidate.resolved) || css.includes(r.candidate.raw);
+  // A candidate identical to the original cannot be told apart by rendering.
+  if (shows(r.originalComputed)) return null;
+  if (!shows(computed)) return null;
+  return {
+    key: 'rendered.background-image',
+    expected: hide(r.originalComputed),
+    actual: hide(computed),
+  };
+}
+
+/**
+ * Restore one record. The DOM writes happen synchronously, before the first
+ * await, so a caller that does not wait still leaves the page restored; the
+ * rendered check then waits up to `waitMs` for the original to load.
+ */
+async function restoreRecord(
+  rec: OverrideRecord,
+  trigger: RestoreResult['trigger'],
+  waitMs: number
+): Promise<RestoreResult> {
   if (rec.timer !== null) clearTimeout(rec.timer);
   rec.timer = null;
+  rec.restoredBy = trigger;
   active.delete(rec.overrideId);
 
-  if (!rec.anchor.isConnected) {
+  if (!rec.anchor.isConnected || !rec.targetEl.isConnected) {
     return {
       overrideId: rec.overrideId,
       status: 'detached',
@@ -860,21 +1189,40 @@ function restoreRecord(rec: OverrideRecord, trigger: RestoreResult['trigger']): 
 
   const drift: string[] = [];
   const restored: AttrRecord[] = [];
+  const restore = (a: AttrRecord): void => {
+    if (restoreValue(a)) restored.push(a);
+    else drift.push(a.key);
+  };
+
+  const sa = rec.styleAttr;
   for (const a of rec.attrs) {
-    if (readAttr(a.el, a.attr) !== a.applied) {
-      // The app rewrote it after the override. Its value is newer than our
-      // original, so it stays.
-      drift.push(a.key);
+    if (a.restoreLast) continue;
+    if (a.kind === 'style' && sa && rec.targetEl.getAttribute('style') === sa.applied) {
+      // Nothing but the override touched the style attribute: put its exact
+      // original text back (byte-exact, no re-serialization).
+      writeAttr(rec.targetEl, 'style', sa.original);
+      restored.push(a);
       continue;
     }
-    writeAttr(a.el, a.attr, a.original);
-    restored.push(a);
+    restore(a);
+    // The declaration alone was restored; an attribute that did not exist
+    // before and now holds nothing goes away too.
+    if (a.kind === 'style' && sa?.original === null && rec.targetEl.getAttribute('style') === '') {
+      rec.targetEl.removeAttribute('style');
+    }
   }
 
   const redact = isContentRedacted(rec.anchor as HTMLElement);
   const mismatches: RestoreMismatch[] = [];
+  if (drift.length === 0) {
+    if (rec.render.kind === 'image') await settleImage(rec.render.img, waitMs);
+    const m = renderMismatch(rec, (v) => (redact && v !== '' ? REDACTED_VALUE : v));
+    if (m) mismatches.push(m);
+  }
+  for (const a of rec.attrs) if (a.restoreLast) restore(a);
+
   for (const a of restored) {
-    const actual = readAttr(a.el, a.attr);
+    const actual = readValue(a);
     if (actual !== a.original) {
       const hide = (v: string | null): string | null =>
         redact && a.url && v !== null ? REDACTED_VALUE : v;
@@ -883,54 +1231,48 @@ function restoreRecord(rec: OverrideRecord, trigger: RestoreResult['trigger']): 
   }
   return {
     overrideId: rec.overrideId,
-    status: 'restored',
-    verified: mismatches.length === 0,
+    status: drift.length > 0 ? 'restored_with_drift' : 'restored',
+    verified: drift.length === 0 && mismatches.length === 0,
     mismatches,
     drift,
     trigger,
   };
 }
 
-/** Restore one override (by id) or all of them, verifying each attribute reads back. */
-export function restoreMediaOverrides(
+/**
+ * Restore one override (by id) or all of them, verifying each against what
+ * the browser renders. Each restore waits at most its override's
+ * `decodeTimeoutMs` for the original to load; they run concurrently.
+ */
+export async function restoreMediaOverrides(
   raw: unknown
-): MediaOverrideRestoreSuccess | MediaOverrideFailure {
+): Promise<MediaOverrideRestoreSuccess | MediaOverrideFailure> {
   const r = (raw ?? {}) as MediaOverrideRestoreRequest;
   if (typeof r !== 'object' || Array.isArray(r)) {
-    return {
-      success: false,
-      code: 'INVALID_REQUEST',
-      error: 'body must be a JSON object',
-      timestamp: Date.now(),
-    };
+    return failure('INVALID_REQUEST', 'body must be a JSON object');
   }
   if (r.overrideId !== undefined && !isNonEmptyString(r.overrideId)) {
-    return {
-      success: false,
-      code: 'INVALID_REQUEST',
-      error: 'overrideId must be a non-empty string',
-      timestamp: Date.now(),
-    };
+    return failure('INVALID_REQUEST', 'overrideId must be a non-empty string');
   }
   let targets: OverrideRecord[];
   if (r.overrideId !== undefined) {
     const rec = active.get(r.overrideId);
     if (!rec) {
       const expired = recentlyExpired.find((e) => e.overrideId === r.overrideId);
-      return {
-        success: false,
-        code: 'NOT_FOUND',
-        error: expired
+      return failure(
+        'NOT_FOUND',
+        expired
           ? `override ${r.overrideId} already expired and was restored by its TTL (verified: ${String(expired.verified)})`
-          : `no active override ${r.overrideId}`,
-        timestamp: Date.now(),
-      };
+          : `no active override ${r.overrideId}`
+      );
     }
     targets = [rec];
   } else {
     targets = Array.from(active.values());
   }
-  const restored = targets.map((rec) => restoreRecord(rec, 'request'));
+  const restored = await Promise.all(
+    targets.map((rec) => restoreRecord(rec, 'request', rec.decodeTimeoutMs))
+  );
   return { success: true, restored, remaining: active.size, timestamp: Date.now() };
 }
 
@@ -944,7 +1286,7 @@ export function listMediaOverrides(): MediaOverrideListSuccess {
       target: rec.target,
       appliedAt: rec.appliedAt,
       expiresAt: rec.expiresAt,
-      connected: rec.anchor.isConnected,
+      connected: rec.targetEl.isConnected,
     })),
     recentlyExpired: [...recentlyExpired],
     timestamp: Date.now(),

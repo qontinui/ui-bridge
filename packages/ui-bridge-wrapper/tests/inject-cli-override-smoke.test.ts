@@ -13,7 +13,12 @@
  *     latency (Chromium applied it, measured, not assumed);
  *   - `captureTimeline` records frames with increasing offsets;
  *   - `mediaOverrideRestore` puts every attribute back (the DOM reads back
- *     byte-identical) and `mediaOverrideList` is empty afterwards.
+ *     byte-identical), its `verified` is the RENDERED state (the slot's
+ *     `currentSrc` back on the original), and `mediaOverrideList` is empty
+ *     afterwards;
+ *   - an offscreen `loading="lazy"` slot still decodes the candidate (it is
+ *     loaded eagerly for the override) and gets `lazy` back on restore;
+ *   - a background override keeps an inline style the app wrote meanwhile.
  *
  * Gated on a Playwright Chromium being installed, as the other smokes are.
  */
@@ -129,6 +134,14 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>override</
 <picture data-ui-bridge-image-slot="pic"><source type="image/png" srcset="/orig.png"><img src="/orig.png" alt="pic"></picture>
 </body></html>`;
 
+const LAZY_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>lazy</title>
+<style>html,body{margin:0;background:#fff} img{display:block;width:100px;height:100px}
+#far{position:absolute;left:20px;top:6000px} #bg{width:100px;height:100px}</style>
+</head><body>
+<div id="bg" data-ui-bridge-image-slot="bg" style="background-image: url(/orig.png)"></div>
+<img id="far" data-ui-bridge-image-slot="far" src="/orig.png" loading="lazy" alt="far">
+</body></html>`;
+
 const DENSE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>dense</title>
 <style>html,body{margin:0;background:#fff} img{display:block;width:100px;height:100px}</style>
 </head><body>
@@ -149,7 +162,9 @@ beforeAll(async () => {
       res.end(GREEN);
     } else {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(req.url?.startsWith('/dense') ? DENSE_PAGE : PAGE);
+      res.end(
+        req.url?.startsWith('/dense') ? DENSE_PAGE : req.url?.startsWith('/lazy') ? LAZY_PAGE : PAGE
+      );
     }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -189,8 +204,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
 
     const lines: ExecLine[] = [];
     let swapMs = 0;
-    let domBefore = '';
-    let domAfter = '';
+    let domBefore: string | undefined;
+    let domAfter: string | undefined;
     try {
       await transport.ready();
       network = await transport.dispatch(APPLY_NETWORK_ACTION);
@@ -266,10 +281,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
     const frame = readFileSync(snap!.frame!.path);
     expect(pixel(frame, 70, 70)).toEqual([0, 200, 0]);
     expect(pixel(frame, 250, 70)).toEqual([0, 200, 0]);
-    // 5. Restored, verified, nothing left active, and the DOM is the DOM it was.
-    const restored = (restore!.result as { restored: { verified: boolean }[] }).restored;
+    // 5. Restored, verified against the rendered page, nothing left active,
+    //    and the DOM is the DOM it was.
+    const restored = (restore!.result as { restored: { verified: boolean; status: string }[] })
+      .restored;
     expect(restored).toHaveLength(2);
-    expect(restored.every((r) => r.verified)).toBe(true);
+    expect(restored.every((r) => r.verified && r.status === 'restored')).toBe(true);
     expect(list!.result).toMatchObject({ success: true, active: [] });
     expect(domAfter).toBe(domBefore);
   }, 60_000);
@@ -310,5 +327,78 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
       applied: { 'img.src': `${url}cand.png`, 'img.srcset': null, 'img.sizes': null },
       ready: { currentSrc: `${url}cand.png`, naturalWidth: 100, naturalHeight: 100 },
     });
+  }, 60_000);
+
+  it('an offscreen lazy slot decodes the candidate and gets lazy back; a background keeps the app’s inline style', async () => {
+    const args = parseArgs([
+      '--url',
+      `${url}lazy`,
+      '--viewport',
+      '400x200',
+      '--exec',
+      'getControlSnapshot {}',
+      '--quiet',
+    ]);
+    const transport = createTransport({ kind: 'injected', options: buildTransportOptions(args) });
+    type Page = { evaluate<R, A>(fn: (a: A) => R, arg: A): Promise<R> };
+    transport.register('__eval', (p: unknown, ctx: unknown) =>
+      (ctx as { page: Page }).page.evaluate(
+        (what: string) => {
+          const far = document.getElementById('far') as HTMLImageElement;
+          const bg = document.getElementById('bg') as HTMLElement;
+          if (what === 'state') {
+            return {
+              loading: far.getAttribute('loading'),
+              currentSrc: far.currentSrc,
+              opacity: bg.style.getPropertyValue('opacity'),
+              bgImage: getComputedStyle(bg).backgroundImage,
+            };
+          }
+          bg.style.setProperty('opacity', '0.5');
+          return null;
+        },
+        (p as { what: string }).what
+      )
+    );
+    const lines: ExecLine[] = [];
+    let during: unknown;
+    let after: unknown;
+    try {
+      await transport.ready();
+      const run = async (action: string, payload: unknown): Promise<void> => {
+        const anyError = await executeActions(
+          transport,
+          [{ action, payload }],
+          () => null,
+          (line) => lines.push(line)
+        );
+        expect(anyError, JSON.stringify(lines.filter((l) => l.error))).toBe(false);
+      };
+      await run('mediaOverride', { slotId: 'far', src: `${url}cand.png`, decodeTimeoutMs: 5000 });
+      await run('mediaOverride', { slotId: 'bg', backgroundImage: `${url}cand.png` });
+      during = await transport.dispatch('__eval', { what: 'state' });
+      // The app writes an inline style while the override is up.
+      await transport.dispatch('__eval', { what: 'app-write' });
+      await run('mediaOverrideRestore', {});
+      after = await transport.dispatch('__eval', { what: 'state' });
+    } finally {
+      await transport.close().catch(() => {});
+    }
+    expect(lines[0]!.result).toMatchObject({
+      success: true,
+      applied: { 'img.loading': 'eager' },
+      originals: { 'img.loading': 'lazy' },
+      ready: { currentSrc: `${url}cand.png`, naturalWidth: 100 },
+    });
+    expect(lines[1]!.result).toMatchObject({ success: true, mode: 'background' });
+    expect(during).toMatchObject({ loading: 'eager', currentSrc: `${url}cand.png` });
+    expect((during as { bgImage: string }).bgImage).toContain('cand.png');
+    const restored = (lines[2]!.result as { restored: { verified: boolean; status: string }[] })
+      .restored;
+    expect(restored).toHaveLength(2);
+    expect(restored.every((r) => r.verified && r.status === 'restored')).toBe(true);
+    expect(after).toMatchObject({ loading: 'lazy', currentSrc: `${url}orig.png`, opacity: '0.5' });
+    expect((after as { bgImage: string }).bgImage).toContain('orig.png');
+    expect((after as { bgImage: string }).bgImage).not.toContain('cand.png');
   }, 60_000);
 });
