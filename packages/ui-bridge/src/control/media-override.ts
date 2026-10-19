@@ -42,8 +42,22 @@
  *    older than the app's own. A restore with drift is `restored_with_drift`
  *    and NEVER `verified`: what the page shows is then the app's choice, not
  *    the original, and may still be the candidate.
- *  - Candidate URLs are http(s), `blob:`, `data:image/*`, or relative to the
- *    page. Any other scheme is refused, typed (`UNSUPPORTED_URL_SCHEME`).
+ *  - Candidate URLs are http(s), `blob:`, `data:image/*`, or the page's own
+ *    scheme (what a relative reference resolves to). The scheme is the one
+ *    the browser's URL parser resolves, never a pattern over the raw text, so
+ *    characters the parser strips cannot disguise one. Any other scheme is
+ *    refused, typed (`UNSUPPORTED_URL_SCHEME`).
+ *
+ * TRANSPORT BUDGETS. An apply can take up to `decodeTimeoutMs` plus
+ * {@link POST_DECODE_WAIT_MS}; a restore up to its `verifyTimeoutMs` (default:
+ * the override's own `decodeTimeoutMs`). A transport that times commands out
+ * must leave {@link MEDIA_OVERRIDE_TRANSPORT_HEADROOM_MS} above both, or a slow
+ * swap comes back as a bare transport timeout instead of the typed result
+ * (with its rollback). {@link fitMediaOverrideBudget} does that fit: it fills
+ * an absent wait with one that fits and refuses one that does not. The
+ * relay's handlers apply it against the relay's command timeout (the smaller
+ * of its WebSocket and SSE timeouts, 10 s and 8 s by default, so a 6 s
+ * ceiling); the qontinui-runner applies its own (`fit_decode_budget`).
  *
  * It is a DEV CONTROL (`core/dev-controls.ts`): the command handlers answer
  * `capability_unavailable_in_build` unless the realm opted in.
@@ -55,6 +69,11 @@
 
 import { isContentRedacted, REDACTED_VALUE } from '../core/redaction';
 import { IMAGE_SLOT_ATTR } from '../react/media-capture';
+import {
+  DEFAULT_DECODE_TIMEOUT_MS,
+  MAX_DECODE_TIMEOUT_MS,
+  POST_DECODE_WAIT_MS,
+} from './media-override-budget';
 
 // ============================================================================
 // Contract
@@ -93,6 +112,11 @@ export interface MediaOverrideRequest {
 /** Body of `DELETE /control/media/override`. Omit `overrideId` to restore all. */
 export interface MediaOverrideRestoreRequest {
   overrideId?: string;
+  /**
+   * Bound on each restore's wait for the original to render. Default: the
+   * override's own `decodeTimeoutMs`. A transport sets it to fit its budget.
+   */
+  verifyTimeoutMs?: number;
 }
 
 export type MediaOverrideMode = 'image' | 'background';
@@ -232,15 +256,13 @@ export interface MediaOverrideListSuccess {
 export const DEFAULT_OVERRIDE_TTL_MS = 120_000;
 export const MIN_OVERRIDE_TTL_MS = 1_000;
 export const MAX_OVERRIDE_TTL_MS = 900_000;
-export const DEFAULT_DECODE_TIMEOUT_MS = 10_000;
-export const MAX_DECODE_TIMEOUT_MS = 60_000;
-/**
- * Bound on each step an apply takes AFTER its decode wait: measuring the
- * candidate's pixels on success, or verifying the rollback on failure. A
- * caller's transport budget must keep this much headroom above
- * `decodeTimeoutMs` (the qontinui-runner keeps 2 s).
- */
-export const POST_DECODE_WAIT_MS = 1_000;
+export {
+  DEFAULT_DECODE_TIMEOUT_MS,
+  MAX_DECODE_TIMEOUT_MS,
+  POST_DECODE_WAIT_MS,
+  MEDIA_OVERRIDE_TRANSPORT_HEADROOM_MS,
+  fitMediaOverrideBudget,
+} from './media-override-budget';
 const RECENTLY_EXPIRED_LIMIT = 20;
 
 // ============================================================================
@@ -409,19 +431,40 @@ export function parseSrcsetUrls(srcset: string): string[] {
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'blob:']);
 
 /**
- * Why `url` may not be a candidate, or `null` when it may. Allowed: http,
- * https, `blob:`, `data:image/*`, and a reference with no scheme, which
- * resolves against the page and so loads from the page's own origin.
+ * Why `url` may not be a candidate, or `null` when it may. The scheme judged
+ * is the one the WHATWG URL parser resolves against the page — the same parse
+ * the browser applies when the attribute or `url()` is loaded — so leading
+ * C0 controls, spaces, tabs or newlines the parser strips cannot make a
+ * scheme look like a relative reference. Allowed: http, https, `blob:`,
+ * `data:image/*`, and the page's own scheme (what a relative reference
+ * resolves to, so it loads from where the page itself came from).
  */
+/** The page's own scheme, or `null` when its base URL does not parse. */
+function pageSchemeOf(): string | null {
+  try {
+    return new URL(document.baseURI).protocol;
+  } catch {
+    return null;
+  }
+}
+
 function schemeProblem(url: string): string | null {
-  const m = /^[\s]*([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
-  if (!m) return null;
-  const scheme = `${m[1]!.toLowerCase()}:`;
+  let resolved: URL;
+  try {
+    resolved = new URL(url, document.baseURI);
+  } catch {
+    return `${JSON.stringify(url)} is not a URL the page can resolve`;
+  }
+  const scheme = resolved.protocol;
   if (ALLOWED_SCHEMES.has(scheme)) return null;
-  if (scheme === 'data:' && /^[\s]*data:image\//i.test(url)) return null;
+  if (scheme === 'data:') {
+    if (/^data:image\//i.test(resolved.href)) return null;
+  } else {
+    if (scheme === pageSchemeOf() && scheme !== 'javascript:') return null;
+  }
   return (
     `${JSON.stringify(scheme)} is not an override scheme; a candidate must be http(s), ` +
-    `blob:, data:image/*, or relative to the page`
+    `blob:, data:image/*, or the page's own scheme`
   );
 }
 
@@ -1057,9 +1100,12 @@ export async function applyMediaOverride(
   rec.generation += 1;
   const generation = rec.generation;
   active.set(rec.overrideId, rec);
-  // Armed now, not after the decode, so a caller that dies mid-apply still
-  // gets its page back; long enough to outlast this apply's own waits, so it
-  // cannot cancel the apply it guards. Re-armed from the confirmed moment.
+  // Re-armed now, before the decode, and long enough to outlast this apply's
+  // own bounded waits. A re-override inherits the record's armed TTL, which
+  // could otherwise lapse mid-decode and cancel the very apply that is
+  // replacing its candidate. (A caller that abandons an apply needs no TTL
+  // during it: the bounded decode wait ends in a rollback either way.)
+  // Re-armed from the confirmed moment below.
   armTtl(rec, req.ttlMs + req.decodeTimeoutMs + POST_DECODE_WAIT_MS);
 
   const readiness =
@@ -1242,7 +1288,8 @@ async function restoreRecord(
 /**
  * Restore one override (by id) or all of them, verifying each against what
  * the browser renders. Each restore waits at most its override's
- * `decodeTimeoutMs` for the original to load; they run concurrently.
+ * `decodeTimeoutMs` (or `verifyTimeoutMs`, when smaller) for the original to
+ * load; they run concurrently.
  */
 export async function restoreMediaOverrides(
   raw: unknown
@@ -1254,6 +1301,14 @@ export async function restoreMediaOverrides(
   if (r.overrideId !== undefined && !isNonEmptyString(r.overrideId)) {
     return failure('INVALID_REQUEST', 'overrideId must be a non-empty string');
   }
+  const verify = boundedInt(
+    r.verifyTimeoutMs,
+    'verifyTimeoutMs',
+    0,
+    MAX_DECODE_TIMEOUT_MS,
+    MAX_DECODE_TIMEOUT_MS
+  );
+  if (typeof verify === 'string') return failure('INVALID_REQUEST', verify);
   let targets: OverrideRecord[];
   if (r.overrideId !== undefined) {
     const rec = active.get(r.overrideId);
@@ -1271,7 +1326,7 @@ export async function restoreMediaOverrides(
     targets = Array.from(active.values());
   }
   const restored = await Promise.all(
-    targets.map((rec) => restoreRecord(rec, 'request', rec.decodeTimeoutMs))
+    targets.map((rec) => restoreRecord(rec, 'request', Math.min(rec.decodeTimeoutMs, verify)))
   );
   return { success: true, restored, remaining: active.size, timestamp: Date.now() };
 }

@@ -15,6 +15,7 @@ import { componentActionInvocation } from './component-action-invocation';
 import { scopedCallerRefusal } from './scoped-refusal';
 import { buildComponentNotFoundError } from './handlers';
 import { describeInnerFailure } from './inner-failure';
+import { fitMediaOverrideBudget } from '../control/media-override-budget';
 import type {
   UIBridgeServerHandlers,
   APIResponse,
@@ -281,6 +282,16 @@ export function createRelayHandlers(
   const version = options?.version ?? '0.1.0';
   const screenshotFallbackUrl = options?.screenshotFallbackUrl;
   const injectedSpecs = options?.specs ?? [];
+
+  /**
+   * The relay's command timeout for a page-side wait to fit under. A relay
+   * double without the getter (a test stub) is held to the SSE default, the
+   * smaller one.
+   */
+  const relayCommandBudgetMs = (): number => {
+    const budget = (relay as Partial<Pick<CommandRelay, 'commandBudgetMs'>>).commandBudgetMs;
+    return typeof budget === 'number' && budget > 0 ? budget : 8_000;
+  };
 
   // Server-side render log, fed by `__addRenderLogEntry`. Its entries name no
   // tab or user, so only the unscoped caller reads it (per-user tab scoping,
@@ -1950,12 +1961,24 @@ export function createRelayHandlers(
     // In-situ asset override — the browser-side dispatcher enforces the
     // dev-controls gate; a tab that has not opted in answers
     // `capability_unavailable_in_build`.
+    //
+    // Relay budget: the page-side waits (an apply's `decodeTimeoutMs`, a
+    // restore's `verifyTimeoutMs`) are fitted below the relay's command
+    // timeout (`relay.commandBudgetMs`: min of wsTimeoutMs 10 s / sseTimeoutMs
+    // 8 s by default) minus MEDIA_OVERRIDE_TRANSPORT_HEADROOM_MS (2 s): an
+    // absent wait is filled (6 s by default), a larger one is refused, so a
+    // slow swap answers with its typed DECODE_TIMEOUT + rollback, or an
+    // unverified restore, instead of a bare relay timeout.
     async mediaOverride(request: unknown, context) {
-      return relayCommand('mediaOverride', request, ctxOpts(context));
+      const fit = fitMediaOverrideBudget('apply', request, relayCommandBudgetMs());
+      if (!fit.ok) return error(fit.error, 'INVALID_REQUEST');
+      return relayCommand('mediaOverride', fit.payload, ctxOpts(context));
     },
 
     async mediaOverrideRestore(request: unknown, context) {
-      return relayCommand('mediaOverrideRestore', request, ctxOpts(context));
+      const fit = fitMediaOverrideBudget('restore', request, relayCommandBudgetMs());
+      if (!fit.ok) return error(fit.error, 'INVALID_REQUEST');
+      return relayCommand('mediaOverrideRestore', fit.payload, ctxOpts(context));
     },
 
     async mediaOverrideList(context) {
@@ -2237,12 +2260,11 @@ export function createRelayHandlers(
       // so callers can detect "idle detection unavailable" without 500ing.
       let idleSignals: StateSummary['idleSignals'] = null;
       try {
-        const idleResp =
-          await relayCommand<NonNullable<StateSummary['idleSignals']>>(
-            'getIdleStatus',
-            {},
-            ctxOpts(context)
-          );
+        const idleResp = await relayCommand<NonNullable<StateSummary['idleSignals']>>(
+          'getIdleStatus',
+          {},
+          ctxOpts(context)
+        );
         if (idleResp.success && idleResp.data) idleSignals = idleResp.data;
       } catch {
         idleSignals = null;
@@ -2386,7 +2408,9 @@ export function createRelayHandlers(
         // A cache already marked stale (a DOM change event, or another call's
         // failed fetch) is refreshed too, so `stale_input` below means the
         // refresh this call made (or awaited) failed, not an older attempt's.
-        await refreshSnapshotIfNeeded(scope, resolveRecency(undefined),
+        await refreshSnapshotIfNeeded(
+          scope,
+          resolveRecency(undefined),
           !Array.isArray(cachedElements) ||
             cachedElements.length === 0 ||
             scope.cache.staleSince !== null

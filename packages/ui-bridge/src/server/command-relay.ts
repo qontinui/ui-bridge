@@ -383,6 +383,16 @@ export class CommandRelay {
   private connectionReadyResolve: (() => void) | null;
   private connectionReady: Promise<void>;
 
+  /**
+   * The command timeout a command can rely on whichever path delivers it: the
+   * smaller of the WebSocket and SSE timeouts (a bus-routed command uses the
+   * SSE one). A handler whose command waits in the page on its own bound (the
+   * media override's decode wait) sizes that bound below this.
+   */
+  get commandBudgetMs(): number {
+    return Math.min(this.wsTimeoutMs, this.sseTimeoutMs);
+  }
+
   constructor(options?: CommandRelayOptions) {
     this.prefix = options?.globalPrefix ?? '__uiBridge';
     this.wsTimeoutMs = options?.wsTimeoutMs ?? 10_000;
@@ -1624,9 +1634,10 @@ export class CommandRelay {
   }
 
   /** The responder fields a forwarded response carries over the bus. */
-  private responderEnvelope(
-    responder: CommandResponder | undefined
-  ): { responderUserId?: string; streamId?: string } {
+  private responderEnvelope(responder: CommandResponder | undefined): {
+    responderUserId?: string;
+    streamId?: string;
+  } {
     return {
       ...(responder?.callerUserId ? { responderUserId: responder.callerUserId } : {}),
       ...(responder?.streamId !== undefined ? { streamId: responder.streamId } : {}),

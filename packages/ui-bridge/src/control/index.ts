@@ -89,10 +89,7 @@ export {
 export type { EffectRecordEntry } from './effect-store';
 // D3 Effect Calculus — Phase 3b (workflow composition)
 export { composeSignatures } from './effect-composition';
-export type {
-  CompositionStep,
-  ComposedPrediction,
-} from './effect-composition';
+export type { CompositionStep, ComposedPrediction } from './effect-composition';
 export type { WorkflowEngineOptions } from './workflow-engine';
 // D3 Effect Calculus — Phase 4 (signature inference from recording history)
 export {
@@ -124,6 +121,9 @@ export {
   MAX_OVERRIDE_TTL_MS,
   DEFAULT_DECODE_TIMEOUT_MS,
   MAX_DECODE_TIMEOUT_MS,
+  POST_DECODE_WAIT_MS,
+  MEDIA_OVERRIDE_TRANSPORT_HEADROOM_MS,
+  fitMediaOverrideBudget,
 } from './media-override';
 export type {
   MediaOverrideRequest,

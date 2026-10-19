@@ -829,3 +829,116 @@ describe('a concurrent restore or override during an apply', () => {
     expect(listMediaOverrides().active).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review r3: the scheme the URL PARSER resolves, the restore's own bound, and
+// the TTL during an apply
+// ---------------------------------------------------------------------------
+
+describe('candidate URL schemes are judged as the URL parser resolves them', () => {
+  it.each([
+    ['tab inside the scheme', 'java\tscript:alert(1)'],
+    ['newline inside the scheme', 'java\nscript:alert(1)'],
+    ['carriage return inside the scheme', 'javas\rcript:alert(1)'],
+    ['leading C0 control', '\x01javascript:alert(1)'],
+    ['leading NUL and space', '\x00 javascript:alert(1)'],
+    ['tab inside a data: media type', 'data:text/\thtml,<b>x</b>'],
+    ['tab inside an unlisted scheme', 'fi\tle:///etc/passwd'],
+    [
+      'an image media type that is not the data: URL’s own',
+      'data:text/html;x=data:image/png,<b>x</b>',
+    ],
+  ])('refuses %s', async (_label, src) => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const before = document.body.innerHTML;
+    for (const body of [{ src }, { backgroundImage: src }]) {
+      const res = (await applyMediaOverride(
+        { slotId: 's', ...body },
+        noElement
+      )) as MediaOverrideFailure;
+      expect(res).toMatchObject({ success: false, code: 'UNSUPPORTED_URL_SCHEME' });
+    }
+    expect(document.body.innerHTML).toBe(before);
+  });
+
+  it.each(['c.png', './c.png', '?v=2', '#frag', 'data:image/png;\tbase64,iVBORw0KGgo='])(
+    'still accepts %j',
+    async (src) => {
+      mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+      const res = await applyMediaOverride({ slotId: 's', src }, noElement);
+      expect(res).toMatchObject({ success: true });
+    }
+  );
+});
+
+describe('the restore wait is bounded by verifyTimeoutMs', () => {
+  it('a restore that cannot see the original load answers, unverified, within verifyTimeoutMs', async () => {
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    await apply({ slotId: 's', src: '/c.png', decodeTimeoutMs: 60_000 });
+    decodeBehaviour = 'hang';
+    vi.useFakeTimers();
+    let settled: MediaOverrideRestoreSuccess | null = null;
+    void restoreMediaOverrides({ verifyTimeoutMs: 500 }).then(
+      (r) => (settled = r as MediaOverrideRestoreSuccess)
+    );
+    await vi.advanceTimersByTimeAsync(499);
+    expect(settled).toBeNull();
+    await vi.advanceTimersByTimeAsync(2);
+    expect(settled).not.toBeNull();
+    expect(settled!.restored[0]).toMatchObject({ status: 'restored', verified: false });
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
+  });
+
+  it('refuses a verifyTimeoutMs out of range', async () => {
+    const res = (await restoreMediaOverrides({ verifyTimeoutMs: -1 })) as MediaOverrideFailure;
+    expect(res).toMatchObject({ success: false, code: 'INVALID_REQUEST' });
+  });
+});
+
+describe('the TTL while an apply awaits its decode', () => {
+  it('an abandoned apply whose decode hangs still ends with the page restored, at its bound, not the TTL', async () => {
+    vi.useFakeTimers();
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const before = document.body.innerHTML;
+    decodeBehaviour = 'hang';
+    // The caller fires the apply and dies: nobody awaits it.
+    void applyMediaOverride(
+      { slotId: 's', src: '/c.png', ttlMs: 1_000, decodeTimeoutMs: 5_000 },
+      noElement
+    );
+    await vi.advanceTimersByTimeAsync(4_000);
+    // The TTL is not allowed to cut the decode wait short.
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/c.png');
+    expect(listMediaOverrides().active).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(document.body.innerHTML).toBe(before);
+    expect(listMediaOverrides().active).toEqual([]);
+  });
+
+  it('a re-override is not cancelled by the record’s earlier TTL lapsing mid-decode', async () => {
+    vi.useFakeTimers();
+    mount('<img data-ui-bridge-image-slot="s" src="/o.png">');
+    const first = await apply({ slotId: 's', src: '/c1.png', ttlMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(900);
+    decodeBehaviour = 'deferred';
+    const second = applyMediaOverride({ slotId: 's', src: '/c2.png', ttlMs: 1_000 }, noElement);
+    await vi.waitFor(() => expect(pendingDecodes).toHaveLength(1));
+    // Past the first apply's TTL (armed at t=0 for 1 s).
+    await vi.advanceTimersByTimeAsync(600);
+    pendingDecodes.shift()!();
+    expect(await second).toMatchObject({
+      success: true,
+      overrideId: first.overrideId,
+      replaced: true,
+      ready: { currentSrc: abs('/c2.png') },
+    });
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/c2.png');
+    // ...and its own TTL still restores the page afterwards.
+    decodeBehaviour = 'pick';
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
+    expect(listMediaOverrides().recentlyExpired).toEqual([
+      expect.objectContaining({ overrideId: first.overrideId, trigger: 'ttl' }),
+    ]);
+  });
+});
