@@ -111,6 +111,14 @@ export interface MediaOverrideReadiness {
   decoded: true;
   /** `img.currentSrc`, or the resolved background URL. */
   currentSrc: string;
+  /**
+   * The candidate's size in image PIXELS, from a detached decode of
+   * `currentSrc`. Not the slot's own `naturalWidth`: that is divided by the
+   * density the browser selected, and Chromium keeps the density of the
+   * slot's PREVIOUS srcset choice after a src-only swap, so a 100 px candidate
+   * in a slot that last chose a 2x source reads 50. `null` when the detached
+   * decode could not measure it (unmeasured, never 0).
+   */
   naturalWidth: number | null;
   naturalHeight: number | null;
 }
@@ -549,6 +557,9 @@ function candidateUrls(req: ValidatedMediaOverride): Set<string> {
 
 class DecodeTimeout extends Error {}
 
+/** Least time the pixel-size probe gets after the slot itself decoded. */
+const PIXEL_PROBE_FLOOR_MS = 1_000;
+
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -580,6 +591,7 @@ async function awaitImageReady(
         'HTMLImageElement.decode is unavailable in this engine, so the swap cannot be confirmed',
     };
   }
+  const deadline = Date.now() + timeoutMs;
   try {
     await withTimeout(img.decode(), timeoutMs);
   } catch (err) {
@@ -602,15 +614,35 @@ async function awaitImageReady(
         `candidates supplied; the browser is still showing something else`,
     };
   }
+  // A floor, not the bare remainder: the probe re-decodes a resource the slot
+  // just decoded, and a decode that used the whole budget must still be
+  // measurable. Callers size their transport budget with headroom above
+  // decodeTimeoutMs (the runner keeps 2 s), which this floor stays inside.
+  const size = await pixelSize(currentSrc, Math.max(deadline - Date.now(), PIXEL_PROBE_FLOOR_MS));
   return {
     ok: true,
-    ready: {
-      decoded: true,
-      currentSrc,
-      naturalWidth: img.naturalWidth || null,
-      naturalHeight: img.naturalHeight || null,
-    },
+    ready: { decoded: true, currentSrc, naturalWidth: size.width, naturalHeight: size.height },
   };
+}
+
+/**
+ * The pixel size of `url`, decoded in a detached `<img>` with no srcset (so
+ * density 1) — the size a resolution judgment needs. The resource is the one
+ * the slot just decoded, so this is normally a cache hit. A failed or
+ * timed-out probe is unmeasured (`null`), never a guess.
+ */
+async function pixelSize(
+  url: string,
+  timeoutMs: number
+): Promise<{ width: number | null; height: number | null }> {
+  const probe = new Image();
+  probe.src = url;
+  try {
+    await withTimeout(probe.decode(), timeoutMs);
+  } catch {
+    return { width: null, height: null };
+  }
+  return { width: probe.naturalWidth || null, height: probe.naturalHeight || null };
 }
 
 async function awaitBackgroundReady(

@@ -321,6 +321,36 @@ describe('decode and currentSrc confirmation', () => {
     expect(res.code).toBe('capability_unavailable_in_build');
     expect(document.querySelector('img')!.getAttribute('src')).toBe('/o.png');
   });
+
+  it('reports the candidate in pixels from a detached decode, not the slot’s density-scaled size', async () => {
+    // Real Chromium keeps the slot's previous srcset density after a src-only
+    // swap (the wrapper's real-browser smoke pins it). Model that: the slot
+    // reads half its pixels, a detached decode reads all of them.
+    const natural = (connected: number, detached: number) => ({
+      configurable: true,
+      get(this: HTMLImageElement) {
+        return this.isConnected ? connected : detached;
+      },
+    });
+    const proto = HTMLImageElement.prototype;
+    const saved = (['naturalWidth', 'naturalHeight'] as const).map(
+      (k) => [k, Object.getOwnPropertyDescriptor(proto, k)] as const
+    );
+    Object.defineProperty(proto, 'naturalWidth', natural(160, 320));
+    Object.defineProperty(proto, 'naturalHeight', natural(90, 180));
+    try {
+      mount(
+        '<img data-ui-bridge-image-slot="s" src="/o.png" srcset="/o.png 2048w" sizes="1024px">'
+      );
+      const res = await apply({ slotId: 's', src: '/c.png' });
+      expect(res.ready).toMatchObject({ naturalWidth: 320, naturalHeight: 180 });
+    } finally {
+      for (const [k, d] of saved) {
+        if (d) Object.defineProperty(proto, k, d);
+        else delete (proto as unknown as Record<string, unknown>)[k];
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

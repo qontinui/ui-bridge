@@ -129,6 +129,12 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>override</
 <picture data-ui-bridge-image-slot="pic"><source type="image/png" srcset="/orig.png"><img src="/orig.png" alt="pic"></picture>
 </body></html>`;
 
+const DENSE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>dense</title>
+<style>html,body{margin:0;background:#fff} img{display:block;width:100px;height:100px}</style>
+</head><body>
+<img data-ui-bridge-image-slot="dense" src="/orig.png" srcset="/orig.png 200w" sizes="100px" alt="dense">
+</body></html>`;
+
 let server: Server;
 let url: string;
 let dir: string;
@@ -143,7 +149,7 @@ beforeAll(async () => {
       res.end(GREEN);
     } else {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(PAGE);
+      res.end(req.url?.startsWith('/dense') ? DENSE_PAGE : PAGE);
     }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -266,5 +272,43 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('in-situ asset override (real Chromium)',
     expect(restored.every((r) => r.verified)).toBe(true);
     expect(list!.result).toMatchObject({ success: true, active: [] });
     expect(domAfter).toBe(domBefore);
+  }, 60_000);
+
+  it('reports the candidate in pixels, never scaled by the slot’s previous srcset density', async () => {
+    // The slot's ORIGINAL selection has density 2 (a 200w source in a 100px
+    // slot). Chromium keeps that density on the element after a src-only
+    // swap, so the slot's own naturalWidth reads the 100px candidate as 50 —
+    // a resolution judgment built on it would be off by the old density.
+    const args = parseArgs([
+      '--url',
+      `${url}dense`,
+      '--viewport',
+      '400x200',
+      '--exec',
+      'getControlSnapshot {}',
+      '--quiet',
+    ]);
+    const transport = createTransport({ kind: 'injected', options: buildTransportOptions(args) });
+    const lines: ExecLine[] = [];
+    try {
+      await transport.ready();
+      const anyError = await executeActions(
+        transport,
+        [
+          { action: 'mediaOverride', payload: { slotId: 'dense', src: `${url}cand.png` } },
+          { action: 'mediaOverrideRestore', payload: {} },
+        ],
+        () => null,
+        (line) => lines.push(line)
+      );
+      expect(anyError, JSON.stringify(lines.filter((l) => l.error))).toBe(false);
+    } finally {
+      await transport.close().catch(() => {});
+    }
+    expect(lines[0]!.result).toMatchObject({
+      success: true,
+      applied: { 'img.src': `${url}cand.png`, 'img.srcset': null, 'img.sizes': null },
+      ready: { currentSrc: `${url}cand.png`, naturalWidth: 100, naturalHeight: 100 },
+    });
   }, 60_000);
 });
