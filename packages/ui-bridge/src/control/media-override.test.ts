@@ -719,14 +719,58 @@ describe('cssUrl', () => {
   });
 
   it('no candidate URL can break out of the background-image declaration', async () => {
+    // jsdom's CSSOM does not parse an escaped url() faithfully (it keeps the
+    // old value, so the apply answers CURRENT_SRC_MISMATCH and rolls back
+    // whatever cssUrl did). So this test reads what the override WRITES: every
+    // setProperty call it makes on the slot's inline style, captured before the
+    // currentSrc check and independent of whether the apply succeeds.
     mount('<div data-ui-bridge-image-slot="bg" style="background-image: url(/o.png)"></div>');
     const before = document.body.innerHTML;
     const div = document.querySelector('div')!;
-    await applyMediaOverride(
-      { slotId: 'bg', backgroundImage: '/x\f"); color: blue; ("' },
-      noElement
+    const candidate = '/x\f"); color: blue; z-index: 9; ("';
+    const writes: Array<{ property: string; value: string; priority: string }> = [];
+    // Recorded and passed through, so jsdom still sees every write.
+    const proto = Object.getPrototypeOf(div.style) as CSSStyleDeclaration;
+    const realSetProperty = proto.setProperty;
+    const setProperty = vi.spyOn(proto, 'setProperty').mockImplementation(function (
+      this: CSSStyleDeclaration,
+      property: string,
+      value: string | null,
+      priority?: string
+    ) {
+      if (this === div.style)
+        writes.push({ property, value: value ?? '', priority: priority ?? '' });
+      return realSetProperty.call(this, property, value, priority);
+    });
+    try {
+      await applyMediaOverride({ slotId: 'bg', backgroundImage: candidate }, noElement);
+    } finally {
+      setProperty.mockRestore();
+    }
+
+    // The override writes ONE property, background-image, and nothing else.
+    expect(writes.length).toBeGreaterThan(0);
+    expect(new Set(writes.map((w) => w.property))).toEqual(new Set(['background-image']));
+    // The apply's own write is the !important one (a rollback writes the
+    // original back without it).
+    const important = writes.filter((w) => w.priority === 'important');
+    expect(important).toHaveLength(1);
+    const applied = important[0]!;
+    // The written value is one quoted url() token: no raw quote, backslash
+    // other than a hex escape, parenthesis, semicolon, whitespace or control
+    // character inside it, so it cannot end the string or the declaration.
+    expect(applied.value).toMatch(
+      /^url\("(?:[A-Za-z0-9\-._~:/?#[\]@!$&*+,=%]|\\[0-9a-f]{1,6} )*"\)$/
     );
+    // ...and it still carries the candidate, byte for byte, once unescaped.
+    const unescaped = applied.value
+      .slice('url("'.length, -'")'.length)
+      .replace(/\\([0-9a-f]{1,6}) /g, (_m, hex: string) => String.fromCodePoint(parseInt(hex, 16)));
+    expect(unescaped).toBe(candidate);
+
+    // Whatever jsdom made of it, nothing leaked into the element's style.
     expect(div.style.getPropertyValue('color')).toBe('');
+    expect(div.style.getPropertyValue('z-index')).toBe('');
     // eslint-disable-next-line no-control-regex
     expect(div.getAttribute('style')).not.toMatch(/[\x00-\x1f]/);
     await restoreMediaOverrides({});
