@@ -17,7 +17,7 @@
  * `@qontinui/ui-bridge-native` keeps a package-local copy
  * (`src/control/actionVocabulary.ts`), because `@qontinui/ui-bridge` is only
  * an optional peer of that package. The runner's Phase 1 copy (in flight,
- * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) mirrors this table. Each
+ * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) will mirror this table. Each
  * copy's tests assert the entries as literals; keep them in sync.
  */
 

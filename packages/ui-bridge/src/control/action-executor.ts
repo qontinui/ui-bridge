@@ -1699,8 +1699,9 @@ export class DefaultActionExecutor implements ActionExecutor {
           error instanceof UnknownActionError ? 'UB-UNSUPPORTED-ACTION' : 'UB-ACTION-FAILED';
         failureDetails = buildActionFailureDetails(errorCode, message, {
           elementId,
-          // The canonical `errorCode` stays `UB-ACTION-FAILED` — the handler's
-          // vocabulary is not the SDK taxonomy. Its `code` and the fields it
+          // The canonical `errorCode` stays `UB-ACTION-FAILED` (except an
+          // `UnknownActionError`, which is `UB-UNSUPPORTED-ACTION` like the
+          // early gate) — the handler's vocabulary is not the SDK taxonomy. Its `code` and the fields it
           // attached ride in `context`, which is exactly the untyped bag the
           // other failure paths already use for their discriminators.
           context: handlerError

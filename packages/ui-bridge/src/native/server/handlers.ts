@@ -337,7 +337,7 @@ export function createServerHandlers(
       const response = await executor.executeAction(id, body);
 
       if (!response.success) {
-        return error(response.error || 'Action failed', 'ACTION_FAILED');
+        return error(response.error || 'Action failed', response.code ?? 'ACTION_FAILED');
       }
 
       return success(response);
