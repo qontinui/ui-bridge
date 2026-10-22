@@ -143,6 +143,15 @@ function decideVerdict(
  *   inside a registered container that also holds the covered element),
  *   DOM id match
  *
+ * Only a modal whose `blocking` is exactly `true` contributes identities. The
+ * detector also reports non-blocking UI it matched by a library or custom
+ * selector (a docked `.MuiDrawer-root`, an open Headless UI menu, a non-modal
+ * Radix popover); once registered, such a node's own stamp names whatever
+ * unregistered child of it was hit, and admitting it would mark a real
+ * occlusion "expected". `false` or a missing flag (a page SDK that never
+ * sent one, over the relay) is not blocking. This matches `describeOccluder`,
+ * whose dialog override uses only selectors the detector judges blocking.
+ *
  * Class and bare-tag descriptors are deliberately NOT matched. They are not
  * identities, and a false positive here is expensive: an entry marked expected
  * is dropped from the default response, so a loose rule would hide the genuine
@@ -152,8 +161,9 @@ function decideVerdict(
 function modalIdentities(modalContext: SnapshotModalContext): Set<string> {
   const ids = new Set<string>();
   for (const modal of modalContext.modals ?? []) {
-    if (modal?.id) ids.add(modal.id);
-    if (modal?.bridgeId) ids.add(modal.bridgeId);
+    if (modal?.blocking !== true) continue;
+    if (modal.id) ids.add(modal.id);
+    if (modal.bridgeId) ids.add(modal.bridgeId);
   }
   return ids;
 }
