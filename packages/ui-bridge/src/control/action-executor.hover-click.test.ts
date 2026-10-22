@@ -191,7 +191,7 @@ describe('DefaultActionExecutor — hoverClick (hover-revealed control)', () => 
       const result = await executor.executeAction('css-btn', { action: 'hoverClick' });
       expect(result.success, `hoverClick failed: ${result.error}`).toBe(true);
       expect(pointerEventsAtClick).toBe('auto');
-      expect(result.forcedHover?.applied?.rulesCloned).toBe(1);
+      expect(result.forcedHover?.applied?.rulesRewritten).toBe(1);
       expect(result.forcedHover?.released).toMatchObject({ released: true, restore: 'verified' });
       expect(getComputedStyle(button).pointerEvents).toBe('none');
       expect(getForcedPseudoState()).toBeNull();

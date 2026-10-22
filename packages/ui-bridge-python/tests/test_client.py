@@ -117,14 +117,14 @@ class TestUIBridgeClientActions:
                 "success": True,
                 "durationMs": 5.0,
                 "timestamp": 1234567890,
-                "forcedHover": {"applied": {"rulesCloned": 2, "revealed": []}},
+                "forcedHover": {"applied": {"rulesRewritten": 2, "revealed": []}},
             },
         }
 
         with patch.object(client._client, "request", return_value=mock_response) as req:
             result = client.hover("header-1", hold_ms=1000)
 
-            assert result.forced_hover == {"applied": {"rulesCloned": 2, "revealed": []}}
+            assert result.forced_hover == {"applied": {"rulesRewritten": 2, "revealed": []}}
             assert req.call_args[1]["json"] == {"action": "hover", "params": {"holdMs": 1000}}
 
     def test_focus(self, client, mock_response):

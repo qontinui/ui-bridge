@@ -437,3 +437,33 @@ curl -s -X POST "$BASE/ai/change-buffer/drain" \
 ```
 
 If that filter is empty, the click was cosmetic — no request fired.
+
+## 8. Force a hover, see what it reveals, release it
+
+`hover` puts the target into its real CSS `:hover` appearance. Every
+same-origin `:hover` selector is rewritten in place to
+`:is(:hover,[data-ui-bridge-pseudo-hover])` and the target plus all its
+ancestors are marked, so `hover:` and `group-hover:` rules apply. The hover is
+held until `unhover`, the next `hover`, a completed write-class action (`click`,
+`type`, …) or `holdMs` (default 30 000, ceiling 300 000).
+
+```bash
+curl -s -X POST "$BASE/control/element/zone-header/action" \
+  -H 'Content-Type: application/json' -d '{"action":"hover","params":{"holdMs":5000}}' \
+  | jq '.data.forcedHover.applied | {rulesRewritten, unreadableSheets, complete, settled, revealed}'
+curl -s -X POST "$BASE/control/element/zone-header/action" \
+  -H 'Content-Type: application/json' -d '{"action":"unhover"}' \
+  | jq '.data.forcedHover.released | {released, restore, drift, selectorDrift}'
+```
+
+`complete: false` means a sheet was unreadable (cross-origin) or a rewrite was
+refused: what the hover reveals is then UNKNOWN-complete. `restore` is
+`verified` only when every revealed element reads its pre-hover values again.
+
+**Breaking (0.36.0): the relay `getElementStateStyles` response shape.** Over
+the relay (qontinui-web, the runner's WS route) it used to return
+`{ id, baseStyles, stateStyles: { hover: 'Requires interaction', … } }` without
+interacting at all. It now returns the HTTP handler's shape,
+`{ elementId, stateStyles: StateStyles[], timestamp }`, with each state really
+applied: `hover`/`active` forced as above, `focus` through `el.focus()`. A held
+agent hover is suspended for the read and re-applied afterwards.

@@ -648,7 +648,7 @@ class ActionResponse(BaseModel):
     wait_duration_ms: float | None = Field(None, alias="waitDurationMs")
     forced_hover: dict[str, Any] | None = Field(None, alias="forcedHover")
     """What a ``hover``/``hoverClick``/``unhover`` forced or released:
-    ``applied`` (``rulesCloned``, ``revealed``, ``settled``, ``unreadableSheets``,
+    ``applied`` (``rulesRewritten``, ``revealed``, ``settled``, ``unreadableSheets``,
     ``expiresAt``, ...) and/or ``released`` (``released``, ``restore``,
     ``drift``). Also present on a write-class action that released a held hover.
     """

@@ -4,9 +4,9 @@
  * 2026-10-22-ui-bridge-hover-forces-the-css-hover-state, Phases 1-2).
  *
  * jsdom cannot parse CSS nesting or `@layer`, and has no `:hover` and no
- * transitions, so a jsdom-only test of the twin-rule rewrite would be green
+ * transitions, so a jsdom-only test of the selector rewrite would be green
  * with the feature broken. Every case here reads COMPUTED STYLE in a real
- * Chromium: the twin either makes the browser draw the hovered appearance or
+ * Chromium: the rewrite either makes the browser draw the hovered appearance or
  * the case fails.
  *
  * The module under test is bundled from source with esbuild (the same module
@@ -94,7 +94,7 @@ const read = (page: Page, sel: string): Promise<{ opacity: string; pe: string }>
   }, sel);
 
 /** Every rule in every readable sheet (adopted and shadow included) whose text names the attribute. */
-const twinsLeft = (page: Page): Promise<number> =>
+const rewritesLeft = (page: Page): Promise<number> =>
   page.evaluate(() => {
     let n = 0;
     const walk = (list: CSSRuleList): void => {
@@ -201,7 +201,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
       );
       expect(await read(page, '#tool')).toEqual({ opacity: '1', pe: 'auto' });
       // group-hover:opacity-100, group-hover:pointer-events-auto, hover:bg-*, [&:hover]:underline
-      expect(report.rulesCloned).toBe(4);
+      expect(report.rulesRewritten).toBe(4);
       expect(report.unreadableSheets).toBe(0);
       expect(report.complete).toBe(true);
       expect(report.settled).toBe(true);
@@ -219,9 +219,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
       expect(tool.rect.width).toBeGreaterThan(0);
 
       const release = await page.evaluate(() => window.FH.releaseForcedPseudoState('explicit'));
-      expect(release).toMatchObject({ released: true, restore: 'verified', rulesRemoved: 4 });
+      expect(release).toMatchObject({ released: true, restore: 'verified', rulesRestored: 4 });
       expect(await read(page, '#tool')).toEqual({ opacity: '0', pe: 'none' });
-      expect(await twinsLeft(page)).toBe(0);
+      expect(await rewritesLeft(page)).toBe(0);
       expect(await marksLeft(page)).toBe(0);
       await page.close();
     }, 30_000);
@@ -237,13 +237,13 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const report = await page.evaluate(async () =>
       window.FH.forcePseudoState(document.getElementById('tool'), 'hover')
     );
-    expect(report.rulesCloned).toBe(4); // the two name-only rules are not twinned
+    expect(report.rulesRewritten).toBe(4); // the two name-only rules are not rewritten
     const s = await page.evaluate(() => {
       const cs = getComputedStyle(document.getElementById('tool')!);
       return { bg: cs.backgroundColor, deco: cs.textDecorationLine };
     });
     expect(s).toEqual({ bg: 'rgb(255, 0, 0)', deco: 'underline' });
-    const twinSelectors = await page.evaluate(() => {
+    const rewritten = await page.evaluate(() => {
       const out: string[] = [];
       const walk = (list: CSSRuleList): void => {
         for (const r of Array.from(list)) {
@@ -256,12 +256,16 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
       for (const sheet of Array.from(document.styleSheets)) walk(sheet.cssRules);
       return out;
     });
-    expect(twinSelectors).toContain(
-      String.raw`.\[\&\:hover\]\:underline[data-ui-bridge-pseudo-hover]`
+    // The escaped class names survive byte for byte; only the real pseudo-class
+    // after them became `:is(:hover, [attr])`.
+    const norm = (sel: string): string => sel.replace(/\s+/g, '');
+    expect(rewritten.map(norm)).toEqual(
+      expect.arrayContaining([
+        String.raw`.\[\&\:hover\]\:underline:is(:hover,[data-ui-bridge-pseudo-hover])`,
+        String.raw`.hover\:bg-\[\#ff0000\]:is(:hover,[data-ui-bridge-pseudo-hover])`,
+      ])
     );
-    expect(twinSelectors).toContain(
-      String.raw`.hover\:bg-\[\#ff0000\][data-ui-bridge-pseudo-hover]`
-    );
+    expect(rewritten.map(norm).join(' ')).not.toContain('only-a-name');
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     await page.close();
   }, 30_000);
@@ -274,14 +278,14 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const r = await page.evaluate(() =>
       window.FH.forcePseudoState(document.getElementById('t'), 'hover')
     );
-    expect(r.rulesCloned).toBe(1);
+    expect(r.rulesRewritten).toBe(1);
     expect((await read(page, '#b')).opacity).toBe('1');
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect((await read(page, '#b')).opacity).toBe('0');
     await page.close();
   }, 30_000);
 
-  it('a nested :hover rule whose own child also contains :hover is twinned once, never revisited', async () => {
+  it('a nested :hover rule whose own child also contains :hover: both rewritten in place, once each', async () => {
     const page = await openPage(`<div class="p" id="p"><i class="c" id="c">c</i></div>`);
     await page.addStyleTag({
       content: `.c{opacity:0;pointer-events:none} .p { &:hover { .c { opacity: 1; } &:hover .c { pointer-events: auto; } } }`,
@@ -289,18 +293,29 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const r = await page.evaluate(() =>
       window.FH.forcePseudoState(document.getElementById('p'), 'hover')
     );
-    expect(r.rulesCloned).toBe(1);
+    expect(r.rulesRewritten).toBe(2);
     expect(await read(page, '#c')).toEqual({ opacity: '1', pe: 'auto' });
-    // Exactly one rule (the twin) carries the attribute at its top; its nested
-    // child was rewritten inside it rather than twinned again.
-    const twinTops = await page.evaluate(() => {
+    // No rule was inserted: `.p` still holds exactly one child rule.
+    const shape = await page.evaluate(() => {
       const outer = document.styleSheets[0].cssRules[1] as unknown as { cssRules: CSSRuleList };
-      return Array.from(outer.cssRules).map((x) => (x as CSSStyleRule).selectorText);
+      const inner = outer.cssRules[0] as unknown as CSSStyleRule & { cssRules: CSSRuleList };
+      return {
+        outerChildren: outer.cssRules.length,
+        hover: inner.selectorText.replace(/\s+/g, ''),
+        nested: Array.from(inner.cssRules).map((x) =>
+          (x as CSSStyleRule).selectorText.replace(/\s+/g, '')
+        ),
+      };
     });
-    expect(twinTops).toEqual(['&:hover', '&[data-ui-bridge-pseudo-hover]']);
+    expect(shape).toEqual({
+      outerChildren: 1,
+      hover: '&:is(:hover,[data-ui-bridge-pseudo-hover])',
+      // Whitespace is stripped for comparison: Chromium serializes `.c` as `& .c`.
+      nested: ['&.c', '&:is(:hover,[data-ui-bridge-pseudo-hover]).c'],
+    });
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect(await read(page, '#c')).toEqual({ opacity: '0', pe: 'none' });
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
@@ -312,7 +327,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const r = await page.evaluate(() =>
       window.FH.forcePseudoState(document.getElementById('btn'), 'active')
     );
-    expect(r.rulesCloned).toBe(1);
+    expect(r.rulesRewritten).toBe(1);
     expect(r.attribute).toBe('data-ui-bridge-pseudo-active');
     expect((await read(page, '#btn')).opacity).toBe('1');
     const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
@@ -347,12 +362,12 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const r = await page.evaluate(() =>
       window.FH.forcePseudoState(document.getElementById('a'), 'hover')
     );
-    expect(r.rulesCloned).toBe(1);
+    expect(r.rulesRewritten).toBe(1);
     expect(r.sheetsScanned).toBe(2);
     expect((await read(page, '#b')).opacity).toBe('1');
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect((await read(page, '#b')).opacity).toBe('0');
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
@@ -366,11 +381,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     const r = await page.evaluate(() =>
       window.FH.forcePseudoState(document.getElementById('a'), 'hover')
     );
-    expect(r.rulesCloned).toBe(1);
+    expect(r.rulesRewritten).toBe(1);
     expect((await read(page, '#b')).opacity).toBe('1');
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect((await read(page, '#b')).opacity).toBe('0');
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
@@ -386,7 +401,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
         'hover'
       )
     );
-    expect(r.rulesCloned).toBe(2);
+    expect(r.rulesRewritten).toBe(2);
     const shadowOpacity = (): Promise<string[]> =>
       page.evaluate(() => {
         const root = document.getElementById('host')!.shadowRoot!;
@@ -395,26 +410,110 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     expect(await shadowOpacity()).toEqual(['1', '1']);
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
     expect(await shadowOpacity()).toEqual(['0', '0']);
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
-  it(':not(:hover) is inverted correctly', async () => {
+  it(':not(:hover) is inverted correctly: the rest style stops applying while forced', async () => {
     const page = await openPage(`<div class="c" id="c">c</div>`);
     await page.addStyleTag({ content: `.c{opacity:1}.c:not(:hover){opacity:.5}` });
     expect((await read(page, '#c')).opacity).toBe('0.5');
     await page.evaluate(() => window.FH.forcePseudoState(document.getElementById('c'), 'hover'));
-    // The original `:not(:hover)` still matches (nothing is really hovered);
-    // its twin `:not([attr])` does not, so the forced state is decided by the
-    // original alone — exactly a real hover's reading of the original.
-    const sel = await page.evaluate(
-      () => (document.styleSheets[0].cssRules[2] as CSSStyleRule).selectorText
+    const sel = await page.evaluate(() =>
+      (document.styleSheets[0].cssRules[1] as CSSStyleRule).selectorText.replace(/\s+/g, '')
     );
-    expect(sel).toBe('.c:not([data-ui-bridge-pseudo-hover])');
-    // LIMIT, pinned: the twin cannot un-match the original, so a page whose
-    // rest style lives in `:not(:hover)` keeps it while forced.
-    expect((await read(page, '#c')).opacity).toBe('0.5');
+    expect(sel).toBe('.c:not(:is(:hover,[data-ui-bridge-pseudo-hover]))');
+    // A real hover's reading: `:not(:hover)` no longer matches the hovered element.
+    expect((await read(page, '#c')).opacity).toBe('1');
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
+    expect((await read(page, '#c')).opacity).toBe('0.5');
+    await page.close();
+  }, 30_000);
+
+  it('the target is a shadow HOST: its own :host(:hover) rule is forced', async () => {
+    const page = await openPage(`<div id="host"></div>`);
+    await page.evaluate(() => {
+      const root = document.getElementById('host')!.attachShadow({ mode: 'open' });
+      root.innerHTML = `<style>.x{opacity:0}:host(:hover) .x{opacity:1}</style><i class="x">x</i>`;
+    });
+    const r = await page.evaluate(() =>
+      window.FH.forcePseudoState(document.getElementById('host')!, 'hover')
+    );
+    expect(r.rulesRewritten).toBe(1);
+    const x = (): Promise<string> =>
+      page.evaluate(
+        () =>
+          getComputedStyle(document.getElementById('host')!.shadowRoot!.querySelector('.x')!)
+            .opacity
+      );
+    expect(await x()).toBe('1');
+    await page.evaluate(() => window.FH.releaseForcedPseudoState());
+    expect(await x()).toBe('0');
+    await page.close();
+  }, 30_000);
+
+  it('a SLOTTED target: the chain runs through its slot, so a hover rule on the slot wrapper fires', async () => {
+    const page = await openPage(`<div id="host"><span id="light">light</span></div>`);
+    await page.evaluate(() => {
+      const root = document.getElementById('host')!.attachShadow({ mode: 'open' });
+      root.innerHTML = `<style>.badge{opacity:0}.wrap:hover .badge{opacity:1}</style><div class="wrap"><slot></slot><i class="badge">b</i></div>`;
+    });
+    const r = await page.evaluate(() =>
+      window.FH.forcePseudoState(document.getElementById('light')!, 'hover')
+    );
+    expect(r.rulesRewritten).toBe(1);
+    const marked = await page.evaluate(() =>
+      document
+        .getElementById('host')!
+        .shadowRoot!.querySelector('.wrap')!
+        .hasAttribute('data-ui-bridge-pseudo-hover')
+    );
+    expect(marked).toBe(true);
+    const badge = (): Promise<string> =>
+      page.evaluate(
+        () =>
+          getComputedStyle(document.getElementById('host')!.shadowRoot!.querySelector('.badge')!)
+            .opacity
+      );
+    expect(await badge()).toBe('1');
+    await page.evaluate(() => window.FH.releaseForcedPseudoState());
+    expect(await badge()).toBe('0');
+    await page.close();
+  }, 30_000);
+
+  it('a pseudo-element-scoped :hover is not applicable and leaves the report complete', async () => {
+    const page = await openPage(`<div class="a" id="a"><i class="b" id="b">b</i></div>`);
+    await page.addStyleTag({
+      content: `::-webkit-scrollbar-thumb:hover{background:red}.b{opacity:0}.a:hover .b{opacity:1}`,
+    });
+    const r = await page.evaluate(() =>
+      window.FH.forcePseudoState(document.getElementById('a'), 'hover')
+    );
+    expect(r).toMatchObject({
+      rulesRewritten: 1,
+      rulesNotApplicable: 1,
+      rulesFailed: 0,
+      complete: true,
+    });
+    expect((await read(page, '#b')).opacity).toBe('1');
+    await page.evaluate(() => window.FH.releaseForcedPseudoState());
+    await page.close();
+  }, 30_000);
+
+  it('an index-addressed CSS-in-JS insert during the hold lands where the app meant it', async () => {
+    const page = await openPage(`<div class="a" id="a"><i class="b" id="b">b</i></div>`);
+    await page.addStyleTag({ content: `.b{opacity:0}.a:hover .b{opacity:1}` });
+    await page.evaluate(() => window.FH.forcePseudoState(document.getElementById('a'), 'hover'));
+    const order = await page.evaluate(() => {
+      const sheet = document.styleSheets[0];
+      // The app believes its sheet has 2 rules and appends at the end.
+      sheet.insertRule('.appended{color:red}', 2);
+      return Array.from(sheet.cssRules).map((r) => (r as CSSStyleRule).selectorText);
+    });
+    expect(order[2]).toBe('.appended');
+    expect(order).toHaveLength(3);
+    const rel = await page.evaluate(() => window.FH.releaseForcedPseudoState());
+    expect(rel).toMatchObject({ rulesRestored: 1, restore: 'verified' });
     await page.close();
   }, 30_000);
 
@@ -447,9 +546,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     expect(second.replaced).toMatchObject({ released: true, reason: 'replaced' });
     expect((await read(page, '#b1')).opacity).toBe('0');
     expect((await read(page, '#b2')).opacity).toBe('1');
-    expect(await twinsLeft(page)).toBe(1);
+    expect(await rewritesLeft(page)).toBe(1);
     await page.evaluate(() => window.FH.releaseForcedPseudoState());
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     await page.close();
   }, 30_000);
 
@@ -465,7 +564,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
       timeout: 5_000,
     });
     expect((await read(page, '#b')).opacity).toBe('0');
-    expect(await twinsLeft(page)).toBe(0);
+    expect(await rewritesLeft(page)).toBe(0);
     expect(await marksLeft(page)).toBe(0);
     await page.close();
   }, 30_000);

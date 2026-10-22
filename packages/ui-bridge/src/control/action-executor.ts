@@ -519,6 +519,21 @@ interface ForcedHoverResult {
 
 const FORCED_HOVER_ACTIONS = new Set<string>(['hover', 'hoverClick', 'unhover']);
 
+/**
+ * The caller's `holdMs` / `settleTimeoutMs` for `hover` and `hoverClick`.
+ * Exported so the relay path reads them exactly as the executor does.
+ */
+export function forcedHoverTiming(params: unknown): {
+  holdMs?: number;
+  settleTimeoutMs?: number;
+} {
+  const p = (params ?? {}) as { holdMs?: unknown; settleTimeoutMs?: unknown };
+  return {
+    holdMs: typeof p.holdMs === 'number' ? p.holdMs : undefined,
+    settleTimeoutMs: typeof p.settleTimeoutMs === 'number' ? p.settleTimeoutMs : undefined,
+  };
+}
+
 function isForcedHoverResult(action: string, result: unknown): result is ForcedHoverResult {
   return (
     FORCED_HOVER_ACTIONS.has(action) &&
@@ -1238,6 +1253,9 @@ export class DefaultActionExecutor implements ActionExecutor {
     // threw on a `weak` semantic-path match is precisely when the caller wants
     // to know the match was weak.
     let elementResolution: ElementResolution | undefined;
+    // A held forced hover released by this action's dispatch — reported on the
+    // failure response too, not only on success.
+    let heldRelease: ForcedHoverActionReport['released'];
 
     // Validate action name early — check built-in actions first
     const actionName = request.action;
@@ -1519,28 +1537,9 @@ export class DefaultActionExecutor implements ActionExecutor {
       // genuine action failure propagates to the catch below.
       let result: unknown;
       let effectVerification: EffectVerification | undefined;
-      // A write-class action that reached dispatch releases a held forced
-      // hover in its `finally` (sub-decision 6 of plan
-      // 2026-10-22-ui-bridge-hover-forces-the-css-hover-state): `hover` header
-      // → `click` revealed button succeeds, then the page is back at rest.
-      // Everything that returned above (resolution, freshness, wait) never
-      // dispatched, and a click/visibility REFUSAL thrown by the gate in
-      // `performAction` did not dispatch either — both keep the hold, because
-      // the runner retries exactly those.
-      let heldRelease: ForcedHoverActionReport['released'];
       let forcedHover: ForcedHoverActionReport | undefined;
       const dispatch = (): Promise<unknown> =>
-        releaseAfter(
-          request.action,
-          () => this.performAction(element, request.action, actionParams, registered),
-          {
-            onRelease: (report) => {
-              heldRelease = report;
-            },
-            notDispatched: (err) =>
-              err instanceof ElementDisabledError || err instanceof ElementNotVisibleError,
-          }
-        );
+        this.performAction(element, request.action, actionParams, registered);
       // Verify when the executor-wide flag is on OR the caller opted in for this
       // single request via `verifyEffect: true`. The per-request override lets a
       // consumer (e.g. the runner's `effect_check` step) request a verified
@@ -1554,34 +1553,56 @@ export class DefaultActionExecutor implements ActionExecutor {
             actionParams as Record<string, unknown> | undefined
           )
         : undefined;
-      if (signature) {
-        const effectParams: ActionParams = {
-          action: request.action,
-          elementId,
-          params: actionParams as Record<string, unknown> | undefined,
-          requestId: request.requestId,
-        };
-        const verified = await this.getEffectVerifier().verifyAction(
-          effectParams,
-          signature,
-          dispatch
-        );
-        result = verified.result;
-        effectVerification = verified.verification;
-        // Phase 2: record the verified cycle into the process-global effect
-        // store so the read-only `GET /effects/recent` endpoint can surface it.
-        getGlobalEffectStore().record({
-          requestId: request.requestId,
-          action: request.action,
-          elementId,
-          outcome: effectVerification.outcome,
-          cause: effectVerification.cause,
-          verification: effectVerification,
-          timestamp: Date.now(),
-        });
-      } else {
-        result = await dispatch();
-      }
+      // A write-class action that reached dispatch releases a held forced
+      // hover once it — and, when one runs, the effect verifier's
+      // post-observation — has finished (sub-decision 6 of plan
+      // 2026-10-22-ui-bridge-hover-forces-the-css-hover-state): `hover` header
+      // → `click` revealed button succeeds, then the page is back at rest.
+      // Releasing inside the verifier's window would let the un-hover show up
+      // as an effect of the click. Everything that returned above (resolution,
+      // freshness, wait) never dispatched, and a click/visibility REFUSAL thrown
+      // by the gate in `performAction` did not dispatch either — both keep the
+      // hold, because the runner retries exactly those.
+      await releaseAfter(
+        request.action,
+        async () => {
+          if (signature) {
+            const effectParams: ActionParams = {
+              action: request.action,
+              elementId,
+              params: actionParams as Record<string, unknown> | undefined,
+              requestId: request.requestId,
+            };
+            const verified = await this.getEffectVerifier().verifyAction(
+              effectParams,
+              signature,
+              dispatch
+            );
+            result = verified.result;
+            effectVerification = verified.verification;
+            // Phase 2: record the verified cycle into the process-global effect
+            // store so the read-only `GET /effects/recent` endpoint can surface it.
+            getGlobalEffectStore().record({
+              requestId: request.requestId,
+              action: request.action,
+              elementId,
+              outcome: effectVerification.outcome,
+              cause: effectVerification.cause,
+              verification: effectVerification,
+              timestamp: Date.now(),
+            });
+          } else {
+            result = await dispatch();
+          }
+        },
+        {
+          onRelease: (report) => {
+            heldRelease = report;
+          },
+          notDispatched: (err) =>
+            err instanceof ElementDisabledError || err instanceof ElementNotVisibleError,
+        }
+      );
       // `hover` / `hoverClick` / `unhover` return their forced-hover report as
       // the dispatch result; it is lifted to the response's own field.
       if (isForcedHoverResult(request.action, result)) {
@@ -1764,6 +1785,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         elementState,
         elementResolution,
         snapshotFreshness,
+        ...(heldRelease ? { forcedHover: { released: heldRelease } } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -2815,7 +2837,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // "Unknown action". Keeping it inline guarantees the behavior regardless of
     // whether the optional auto package is installed.
     if (action === 'hoverClick') {
-      return this.performHoverClick(element, params as MouseAction);
+      return this.performHoverClick(element, params);
     }
 
     // `hover` / `unhover` force and release the real CSS `:hover` state
@@ -2994,9 +3016,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     params?: Record<string, unknown>
   ): Promise<ForcedHoverResult> {
     const applied = await forcePseudoState(element, 'hover', {
-      holdMs: typeof params?.holdMs === 'number' ? params.holdMs : undefined,
-      settleTimeoutMs:
-        typeof params?.settleTimeoutMs === 'number' ? params.settleTimeoutMs : undefined,
+      ...forcedHoverTiming(params),
       registry: this.revealSource(),
       afterMark: () => dispatchHoverEnterChain(element),
     });
@@ -3016,7 +3036,7 @@ export class DefaultActionExecutor implements ActionExecutor {
    *
    * `performHoverClick`:
    *   1. Forces the real CSS `:hover` state on the target and its ancestors
-   *      (`forced-hover.ts`: attribute-selector twins of every `:hover` rule),
+   *      (`forced-hover.ts`: every `:hover` selector rewritten in place to `:is(:hover,[attr])`),
    *      so `group-hover:opacity-100 group-hover:pointer-events-auto` actually
    *      apply, and sends the enter events for JS-driven reveals. Synthetic
    *      events alone never set `:hover`; that is why this step exists.
@@ -3032,13 +3052,14 @@ export class DefaultActionExecutor implements ActionExecutor {
    */
   private async performHoverClick(
     element: HTMLElement,
-    options?: MouseAction
+    params?: Record<string, unknown>
   ): Promise<ForcedHoverResult> {
     const applied = await forcePseudoState(element, 'hover', {
+      ...forcedHoverTiming(params),
       registry: this.revealSource(),
       afterMark: () => dispatchHoverEnterChain(element),
     });
-    this.performClick(element, options);
+    this.performClick(element, params as MouseAction | undefined);
     return { forcedHover: { applied } };
   }
 

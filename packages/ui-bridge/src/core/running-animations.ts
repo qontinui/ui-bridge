@@ -25,17 +25,22 @@ export interface RunningAnimationsRead {
  * inside its `transition-delay` counts as running, which is what a settle wait
  * needs: a `delay-150` fade has not started drawing yet but will.
  *
+ * `doc` defaults to the global document; pass an element's `ownerDocument`
+ * to read the realm the element lives in (an iframe's).
+ *
  * `document.getAnimations()` flushes pending style first (per the Web
  * Animations spec), so a transition created by a class or attribute change made
  * just before the call is included.
  */
-export function readRunningAnimations(): RunningAnimationsRead {
-  if (typeof document === 'undefined' || typeof document.getAnimations !== 'function') {
+export function readRunningAnimations(
+  doc: Document | undefined = typeof document === 'undefined' ? undefined : document
+): RunningAnimationsRead {
+  if (!doc || typeof doc.getAnimations !== 'function') {
     return { animations: [], available: false };
   }
   try {
     const animations: RunningAnimation[] = [];
-    for (const animation of document.getAnimations()) {
+    for (const animation of doc.getAnimations()) {
       if (animation.playState !== 'running') continue;
       const element = (animation.effect as KeyframeEffect | null)?.target ?? null;
       animations.push({ animation, element });

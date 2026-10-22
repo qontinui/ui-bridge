@@ -21,7 +21,9 @@ export {
 export {
   forcePseudoState,
   releaseForcedPseudoState,
+  releaseForcedPseudoStateIfOwner,
   getForcedPseudoState,
+  snapshotForcedPseudoState,
   releaseAfter,
   releaseHeldAfterDispatch,
   releasesForcedPseudoState,
@@ -40,6 +42,8 @@ export type {
   ForcedPseudoRevealed,
   ForcedPseudoChange,
   ForcedPseudoDrift,
+  ForcedPseudoSelectorDrift,
+  ForcedPseudoHoldSnapshot,
   ForcedPseudoSettle,
   ForcedHoverActionReport,
   ForcedPseudoElementSource,

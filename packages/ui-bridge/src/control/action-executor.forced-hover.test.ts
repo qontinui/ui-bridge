@@ -9,12 +9,12 @@
  *
  * jsdom cascades plain top-level CSS rules in `getComputedStyle`, so a
  * `.group:hover .tool { pointer-events: auto }` rule here is forced through
- * the real twin-rule mechanism and read back as computed style. (Tailwind v4
+ * the real in-place selector rewrite and read back as computed style. (Tailwind v4
  * nesting/@layer and the paint itself are proven in real Chromium by
  * `forced-hover.smoke.test.ts`.)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { UIBridgeRegistry, getGlobalRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
@@ -95,7 +95,7 @@ describe('DefaultActionExecutor — forced hover', () => {
     expect(res.result).toBeUndefined();
     expect(res.forcedHover?.applied).toMatchObject({
       state: 'hover',
-      rulesCloned: 1,
+      rulesRewritten: 1,
       unreadableSheets: 0,
       complete: true,
     });
@@ -217,7 +217,7 @@ describe('DefaultActionExecutor — forced hover', () => {
     const res = await executor.executeAction('tool', { action: 'hoverClick' });
     expect(res.success).toBe(true);
     expect(f.clicks()).toBe(1);
-    expect(res.forcedHover?.applied?.rulesCloned).toBe(1);
+    expect(res.forcedHover?.applied?.rulesRewritten).toBe(1);
     expect(res.forcedHover?.released).toMatchObject({ released: true, reason: 'next-action' });
     expect(getForcedPseudoState()).toBeNull();
   });
@@ -233,6 +233,60 @@ describe('DefaultActionExecutor — forced hover', () => {
   it('unhover is advertised wherever hover is', () => {
     const header = registry.getElement('tool')!;
     expect(header.actions).toEqual(expect.arrayContaining(['hover', 'unhover']));
+  });
+
+  it('with effect verification on, the hold is released only AFTER the verifier finished observing', async () => {
+    registry.registerElement('tool', f.tool, { type: 'button', reveals: ['menu'] });
+    f.tool.addEventListener('click', () => {
+      const menu = document.createElement('div');
+      root.appendChild(menu);
+      registry.registerElement('menu', menu, { type: 'menu' });
+    });
+    const verifier = (
+      executor as unknown as { getEffectVerifier(): { verifyAction: (...a: unknown[]) => unknown } }
+    ).getEffectVerifier();
+    const original = verifier.verifyAction.bind(verifier);
+    let heldWhenVerifierReturned: boolean | null = null;
+    vi.spyOn(verifier, 'verifyAction').mockImplementation(async (...args: unknown[]) => {
+      const out = await original(...args);
+      heldWhenVerifierReturned = getForcedPseudoState() !== null;
+      return out;
+    });
+    await executor.executeAction('header', { action: 'hover' });
+    const click = await executor.executeAction('tool', { action: 'click', verifyEffect: true });
+    expect(click.success).toBe(true);
+    expect(click.effectVerification).toBeDefined();
+    expect(heldWhenVerifierReturned).toBe(true);
+    expect(click.forcedHover?.released?.released).toBe(true);
+    expect(getForcedPseudoState()).toBeNull();
+  });
+
+  it('a write action that dispatched and then failed reports the release on its failure response', async () => {
+    registry.registerElement('tool', f.tool, {
+      type: 'button',
+      customActions: {
+        click: {
+          id: 'click',
+          handler: () => {
+            throw new Error('handler blew up');
+          },
+        },
+      },
+    });
+    await executor.executeAction('header', { action: 'hover' });
+    f.tool.style.pointerEvents = 'auto'; // past the click gate: the handler is what fails
+    const res = await executor.executeAction('tool', { action: 'click' });
+    expect(res.success).toBe(false);
+    expect(res.forcedHover?.released).toMatchObject({ released: true, reason: 'next-action' });
+    expect(getForcedPseudoState()).toBeNull();
+  });
+
+  it('hoverClick honours holdMs and settleTimeoutMs', async () => {
+    const res = await executor.executeAction('tool', {
+      action: 'hoverClick',
+      params: { holdMs: 1234, settleTimeoutMs: 10 },
+    });
+    expect(res.forcedHover?.applied?.holdMs).toBe(1234);
   });
 
   it('there is no implicit parent-hover before an action on an opacity-0 element', async () => {
@@ -329,9 +383,42 @@ describe('relay executeElementAction — forced hover and auto-release', () => {
     const res = await relay('tool', { action: 'hoverClick' });
     expect(res.success).toBe(true);
     expect(f.clicks()).toBe(1);
-    expect(res.forcedHover.applied.rulesCloned).toBe(1);
+    expect(res.forcedHover.applied.rulesRewritten).toBe(1);
     expect(res.forcedHover.released.released).toBe(true);
     expect(getForcedPseudoState()).toBeNull();
+  });
+
+  it('a validation refusal inside dispatch (type into a non-input) keeps the hold', async () => {
+    await relay('header', { action: 'hover' });
+    const res = await relay('header', { action: 'type', text: 'x' });
+    expect(res.success).toBe(false);
+    expect(res.failureDetails.errorCode).toBe('UNSUPPORTED_ACTION');
+    expect(getForcedPseudoState()).not.toBeNull();
+    expect(res.forcedHover).toBeUndefined();
+  });
+
+  it('a write action that dispatched and then failed reports the release on its failure response', async () => {
+    getGlobalRegistry().registerElement('tool', f.tool, {
+      type: 'button',
+      customActions: {
+        click: {
+          id: 'click',
+          handler: () => {
+            throw new Error('handler blew up');
+          },
+        },
+      },
+    });
+    await relay('header', { action: 'hover' });
+    const res = await relay('tool', { action: 'click' });
+    expect(res.success).toBe(false);
+    expect(res.forcedHover.released).toMatchObject({ released: true, reason: 'next-action' });
+    expect(getForcedPseudoState()).toBeNull();
+  });
+
+  it('hover honours holdMs and settleTimeoutMs on this path too', async () => {
+    const res = await relay('tool', { action: 'hoverClick', params: { holdMs: 4321 } });
+    expect(res.forcedHover.applied.holdMs).toBe(4321);
   });
 });
 
@@ -348,6 +435,36 @@ describe('relay getElementStateStyles — reads each state for real', () => {
     style?.remove();
     root?.remove();
     getGlobalRegistry().clear();
+  });
+
+  it('borrows the pointer: an agent hover is suspended for the read and put back after', async () => {
+    style = document.createElement('style');
+    style.textContent = `.tool { pointer-events: none; } .group:hover .tool { pointer-events: auto; }
+      .btn { color: rgb(0, 0, 0); } .btn:hover { color: rgb(255, 0, 0); }`;
+    document.head.appendChild(style);
+    root = document.createElement('div');
+    root.innerHTML = `<div class="group"><span id="h">h</span><button class="tool" id="t">t</button></div><button class="btn" id="b">b</button>`;
+    document.body.appendChild(root);
+    const reg = getGlobalRegistry();
+    reg.registerElement('b', document.getElementById('b')!, { type: 'button' });
+    const executor = new DefaultActionExecutor(reg);
+    reg.registerElement('h', document.getElementById('h')!, { type: 'generic' });
+    await executor.executeAction('h', { action: 'hover', params: { holdMs: 60_000 } });
+    const tool = document.getElementById('t')!;
+    expect(getComputedStyle(tool).pointerEvents).toBe('auto');
+
+    const out = (await executeCommand(
+      'getElementStateStyles',
+      { id: 'b', states: ['hover'] },
+      emptyBridge
+    )) as { stateStyles: Array<{ state: string; styles: { color: string } }> };
+    const color = Object.fromEntries(out.stateStyles.map((s) => [s.state, s.styles.color]));
+    expect(color).toEqual({ default: 'rgb(0, 0, 0)', hover: 'rgb(255, 0, 0)' });
+
+    // The agent's hover is back, on its own target, with the TTL it had left.
+    expect(getForcedPseudoState()).toMatchObject({ target: 'span#h' });
+    expect(getComputedStyle(tool).pointerEvents).toBe('auto');
+    expect(getForcedPseudoState()!.expiresAt - Date.now()).toBeGreaterThan(50_000);
   });
 
   it('hover and active are forced, focus is real, and the element is restored after', async () => {

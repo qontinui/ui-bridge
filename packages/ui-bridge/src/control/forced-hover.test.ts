@@ -1,10 +1,10 @@
 /**
  * jsdom unit tests for the forced pseudo-state primitive: the selector
- * rewrite grammar and the hold bookkeeping (twin install/removal by identity,
- * chain marking, one-hold-at-a-time, TTL, `releaseAfter`).
+ * rewrite grammar and the hold bookkeeping (in-place selector rewrite and
+ * restore, chain marking, one-hold-at-a-time, TTL, `releaseAfter`).
  *
  * jsdom has no `:hover`, no CSS nesting, no `@layer` and no transitions, so
- * whether the twins make a real browser DRAW the hovered state is proven in
+ * whether the rewritten selectors make a real browser DRAW the hovered state is proven in
  * `forced-hover.smoke.test.ts` (real Chromium). jsdom does cascade plain
  * top-level rules in `getComputedStyle`, which is enough to check the
  * bookkeeping against computed style here.
@@ -16,6 +16,7 @@ import {
   getForcedPseudoState,
   releaseAfter,
   releaseForcedPseudoState,
+  releaseForcedPseudoStateIfOwner,
   releasesForcedPseudoState,
   rewritePseudoSelector,
   selectorHasPseudo,
@@ -24,25 +25,34 @@ import {
 } from './forced-hover';
 
 const ATTR = 'data-ui-bridge-pseudo-hover';
+/** What every forceable `:hover` becomes. */
+const H = `:is(:hover,[${ATTR}])`;
 
 describe('rewritePseudoSelector — the rewrite grammar', () => {
-  const table: Array<[string, string]> = [
-    ['.a:hover', `.a[${ATTR}]`],
-    ['.a:hover .b', `.a[${ATTR}] .b`],
-    ['.x:is(:where(.group):hover *)', `.x:is(:where(.group)[${ATTR}] *)`],
-    ['&:hover', `&[${ATTR}]`],
-    ['.c:not(:hover)', `.c:not([${ATTR}])`],
-    ['.a:has(.b:hover)', `.a:has(.b[${ATTR}])`],
-    [':host(:hover) .x', `:host([${ATTR}]) .x`],
-    ['.a:hover, .b:hover::after', `.a[${ATTR}], .b[${ATTR}]::after`],
+  const table: Array<[string, string | null]> = [
+    ['.a:hover', `.a${H}`],
+    ['.a:hover .b', `.a${H} .b`],
+    ['.x:is(:where(.group):hover *)', `.x:is(:where(.group)${H} *)`],
+    ['&:hover', `&${H}`],
+    ['.c:not(:hover)', `.c:not(${H})`],
+    ['.a:has(.b:hover)', `.a:has(.b${H})`],
+    [':host(:hover) .x', `:host(${H}) .x`],
+    ['.a:hover, .b:hover::after', `.a${H}, .b${H}::after`],
     // Escaped colons are class-name characters, never the pseudo-class.
-    [String.raw`.hover\:bg-x:hover`, String.raw`.hover\:bg-x[${ATTR}]`],
-    [String.raw`.\[\&\:hover\]\:underline:hover`, String.raw`.\[\&\:hover\]\:underline[${ATTR}]`],
+    [String.raw`.hover\:bg-x:hover`, String.raw`.hover\:bg-x` + H],
+    [String.raw`.\[\&\:hover\]\:underline:hover`, String.raw`.\[\&\:hover\]\:underline` + H],
     [String.raw`.hover\:only-a-name`, String.raw`.hover\:only-a-name`],
     // Not the pseudo-class at all.
     ['.a:hover-intent', '.a:hover-intent'],
     ['.a:hovered', '.a:hovered'],
     ['.a:focus', '.a:focus'],
+    // Scoped to a pseudo-element: cannot take an :is(), nothing to force.
+    ['::-webkit-scrollbar-thumb:hover', null],
+    ['.x::part(thumb):hover', null],
+    ['::slotted(.y):hover', null],
+    // ...but a sibling compound in the same selector list still is forceable.
+    ['.a:hover, ::-webkit-scrollbar-thumb:hover', `.a${H}, ::-webkit-scrollbar-thumb:hover`],
+    ['.a:hover::-webkit-scrollbar-thumb', `.a${H}::-webkit-scrollbar-thumb`],
   ];
   for (const [input, output] of table) {
     it(`${input} -> ${output}`, () => {
@@ -53,7 +63,7 @@ describe('rewritePseudoSelector — the rewrite grammar', () => {
 
   it(':active rewrites to its own attribute and leaves :hover alone', () => {
     expect(rewritePseudoSelector('.a:active:hover', 'active')).toBe(
-      '.a[data-ui-bridge-pseudo-active]:hover'
+      '.a:is(:active,[data-ui-bridge-pseudo-active]):hover'
     );
   });
 
@@ -119,7 +129,7 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
       .map((r) => r.cssText)
       .join('\n');
 
-  it('twins the :hover rule beside its original, marks the target and every ancestor, and reveals the group-hover child', async () => {
+  it('rewrites the :hover rule in place, marks the target and every ancestor, and reveals the group-hover child', async () => {
     const { group, header, tool } = setup(
       `.tool { pointer-events: none; } .group:hover .tool { pointer-events: auto; } .other { color: red; }`
     );
@@ -127,14 +137,15 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
 
     const report = await forcePseudoState(header, 'hover', { registry });
 
-    expect(report.rulesCloned).toBe(1);
+    expect(report.rulesRewritten).toBe(1);
     expect(report.unreadableSheets).toBe(0);
     expect(report.settled).toBe('frame-only');
     expect(report.complete).toBe(true);
     const rules = Array.from((style!.sheet as CSSStyleSheet).cssRules).map(
       (r) => (r as CSSStyleRule).selectorText
     );
-    expect(rules).toEqual(['.tool', '.group:hover .tool', `.group[${ATTR}] .tool`, '.other']);
+    // In place: no rule inserted, nothing shifted.
+    expect(rules).toEqual(['.tool', `.group${H} .tool`, '.other']);
     // Ancestor marking is what makes the group rule fire.
     for (const el of [header, group, document.body, document.documentElement]) {
       expect(el.hasAttribute(ATTR)).toBe(true);
@@ -154,35 +165,84 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
     expect(release).toMatchObject({
       released: true,
       reason: 'explicit',
-      rulesRemoved: 1,
+      rulesRestored: 1,
       rulesAlreadyGone: 0,
       restore: 'verified',
       drift: [],
     });
     expect(sheetText()).not.toContain(ATTR);
+    expect(((style!.sheet as CSSStyleSheet).cssRules[1] as CSSStyleRule).selectorText).toBe(
+      '.group:hover .tool'
+    );
     expect(document.querySelectorAll(`[${ATTR}]`)).toHaveLength(0);
     expect(getComputedStyle(tool).pointerEvents).toBe('none');
     expect(getForcedPseudoState()).toBeNull();
   });
 
-  it('removes a twin by identity even after the rules before it shifted', async () => {
+  it('never changes a sheet rule count or indices: an app inserting by index during the hold is unaffected', async () => {
     const { header } = setup(`.a { color: red; } .group:hover .tool { color: blue; }`);
-    await forcePseudoState(header, 'hover');
     const sheet = style!.sheet as CSSStyleSheet;
+    await forcePseudoState(header, 'hover');
+    expect(sheet.cssRules).toHaveLength(2);
     sheet.insertRule('.inserted-first { color: green; }', 0);
     const release = await releaseForcedPseudoState();
-    expect(release.rulesRemoved).toBe(1);
+    expect(release.rulesRestored).toBe(1);
     expect(sheetText()).not.toContain(ATTR);
-    expect(sheet.cssRules).toHaveLength(3);
+    expect(Array.from(sheet.cssRules).map((r) => (r as CSSStyleRule).selectorText)).toEqual([
+      '.inserted-first',
+      '.a',
+      '.group:hover .tool',
+    ]);
   });
 
-  it('counts a twin whose sheet was removed during the hold as already gone, not as an error', async () => {
+  it('a rewritten rule the app deleted during the hold is counted as already gone, not as an error', async () => {
     const { header } = setup(`.group:hover .tool { color: blue; }`);
     await forcePseudoState(header, 'hover');
-    const sheet = style!.sheet as CSSStyleSheet;
-    sheet.deleteRule(1);
+    (style!.sheet as CSSStyleSheet).deleteRule(0);
     const release = await releaseForcedPseudoState();
-    expect(release).toMatchObject({ released: true, rulesRemoved: 0, rulesAlreadyGone: 1 });
+    expect(release).toMatchObject({ released: true, rulesRestored: 0, rulesAlreadyGone: 1 });
+  });
+
+  it('a selector the app changed during the hold is left as the app set it and reported as drift', async () => {
+    const { header } = setup(`.group:hover .tool { color: blue; }`);
+    await forcePseudoState(header, 'hover');
+    const rule = (style!.sheet as CSSStyleSheet).cssRules[0] as CSSStyleRule;
+    rule.selectorText = '.app-changed';
+    const release = await releaseForcedPseudoState();
+    expect(release.restore).toBe('restored_with_drift');
+    expect(release.selectorDrift).toEqual([
+      { selector: '.app-changed', original: '.group:hover .tool' },
+    ]);
+    expect(rule.selectorText).toBe('.app-changed');
+  });
+
+  it('a pseudo-element-scoped :hover is not applicable, and does not make the reveal incomplete', async () => {
+    const { header } = setup(
+      `::-webkit-scrollbar-thumb:hover { color: red; } .group:hover .tool { color: blue; }`
+    );
+    const report = await forcePseudoState(header, 'hover');
+    expect(report).toMatchObject({
+      rulesRewritten: 1,
+      rulesNotApplicable: 1,
+      rulesFailed: 0,
+      complete: true,
+    });
+  });
+
+  it('a scan that throws part-way restores every selector it already rewrote', async () => {
+    const { header } = setup(`.group:hover .tool { color: blue; } .b:hover { color: red; }`);
+    const rules = (style!.sheet as CSSStyleSheet).cssRules;
+    const second = rules[1] as CSSStyleRule;
+    Object.defineProperty(second, 'selectorText', {
+      configurable: true,
+      get: () => '.b:hover',
+      set: () => {
+        throw new Error('setter blew up');
+      },
+    });
+    await expect(forcePseudoState(header, 'hover')).rejects.toThrow('setter blew up');
+    expect((rules[0] as CSSStyleRule).selectorText).toBe('.group:hover .tool');
+    expect(getForcedPseudoState()).toBeNull();
   });
 
   it('sends the leave events a real pointer would on release', async () => {
@@ -201,11 +261,11 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
     const { header, tool } = setup(`.group:hover .tool { color: blue; }`);
     await forcePseudoState(header, 'hover');
     const second = await forcePseudoState(tool, 'hover');
-    expect(second.replaced).toMatchObject({ released: true, reason: 'replaced', rulesRemoved: 1 });
-    expect(second.rulesCloned).toBe(1);
+    expect(second.replaced).toMatchObject({ released: true, reason: 'replaced', rulesRestored: 1 });
+    expect(second.rulesRewritten).toBe(1);
     expect(header.hasAttribute(ATTR)).toBe(false);
     expect(tool.hasAttribute(ATTR)).toBe(true);
-    // Exactly one twin installed, never two.
+    // Rewritten once, never twice.
     expect(sheetText().split(ATTR).length - 1).toBe(1);
   });
 
@@ -214,8 +274,9 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
       expect(await releaseForcedPseudoState()).toEqual({
         released: false,
         reason: 'explicit',
-        rulesRemoved: 0,
+        rulesRestored: 0,
         rulesAlreadyGone: 0,
+        selectorDrift: [],
         unmarkedElements: 0,
         restore: 'nothing_held',
         drift: [],
@@ -268,18 +329,60 @@ describe('forcePseudoState — bookkeeping (jsdom)', () => {
     ]);
   });
 
-  it('a :hover rule nested in @media is twinned inside the @media block', async () => {
+  it('a :hover rule nested in @media is rewritten inside the @media block', async () => {
     const { header, tool } = setup(
       `.tool { pointer-events: none; } @media screen { .group:hover .tool { pointer-events: auto; } }`
     );
     const report = await forcePseudoState(header, 'hover');
-    expect(report.rulesCloned).toBe(1);
+    expect(report.rulesRewritten).toBe(1);
     const media = (style!.sheet as CSSStyleSheet).cssRules[1] as CSSMediaRule;
     expect(Array.from(media.cssRules).map((r) => (r as CSSStyleRule).selectorText)).toEqual([
-      '.group:hover .tool',
-      `.group[${ATTR}] .tool`,
+      `.group${H} .tool`,
     ]);
     expect(getComputedStyle(tool).pointerEvents).toBe('auto');
+  });
+});
+
+describe('the hold is one per page, not one per bundle', () => {
+  afterEach(async () => {
+    await __resetForcedPseudoStateForTest();
+  });
+
+  it('lives on globalThis under Symbol.for("ui-bridge.forcedPseudo"), so a second copy of the module shares it', async () => {
+    const el = document.createElement('span');
+    document.body.appendChild(el);
+    try {
+      await forcePseudoState(el, 'hover');
+      const shared = (globalThis as unknown as Record<symbol, { hold: unknown }>)[
+        Symbol.for('ui-bridge.forcedPseudo')
+      ];
+      expect(shared.hold).not.toBeNull();
+      // A separately bundled entry point is a second evaluation of this module.
+      vi.resetModules();
+      const second = await import('./forced-hover');
+      expect(second.getForcedPseudoState()).toMatchObject({ target: 'span' });
+      const released = await second.releaseForcedPseudoState();
+      expect(released.released).toBe(true);
+      expect(getForcedPseudoState()).toBeNull();
+    } finally {
+      el.remove();
+    }
+  });
+
+  it('releaseForcedPseudoStateIfOwner releases only the hold it names', async () => {
+    const a = document.createElement('span');
+    const b = document.createElement('i');
+    document.body.append(a, b);
+    try {
+      const first = await forcePseudoState(a, 'hover');
+      const second = await forcePseudoState(b, 'hover');
+      expect((await releaseForcedPseudoStateIfOwner(first.holdId)).released).toBe(false);
+      expect(getForcedPseudoState()).toMatchObject({ holdId: second.holdId });
+      expect((await releaseForcedPseudoStateIfOwner(second.holdId)).released).toBe(true);
+    } finally {
+      a.remove();
+      b.remove();
+    }
   });
 });
 

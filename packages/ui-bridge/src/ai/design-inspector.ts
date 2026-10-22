@@ -17,7 +17,12 @@ import type {
   ResponsiveSnapshot,
 } from '../core/types';
 import { classString } from '../core/class-name';
-import { forcePseudoState, releaseForcedPseudoState } from '../control/forced-hover';
+import {
+  forcePseudoState,
+  getForcedPseudoState,
+  releaseForcedPseudoStateIfOwner,
+  snapshotForcedPseudoState,
+} from '../control/forced-hover';
 
 // ============================================================================
 // Constants
@@ -203,6 +208,30 @@ export async function captureStateVariations(
   states?: readonly InteractionStateName[]
 ): Promise<StateStyles[]> {
   const targetStates = states || INTERACTION_STATES;
+
+  // The page has ONE forced pseudo-state (one pointer). If an agent is holding
+  // a `hover` right now, inspection borrows the pointer: the agent's hold is
+  // suspended (so `default` is read at rest, not hovered), and re-applied with
+  // the TTL it had left once inspection is done. Inspection only ever releases
+  // the holds it created itself (by hold id).
+  const agentHold = snapshotForcedPseudoState();
+  if (agentHold) await releaseForcedPseudoStateIfOwner(agentHold.holdId, 'replaced');
+  try {
+    return await captureEachState(el, targetStates);
+  } finally {
+    if (agentHold && agentHold.target.isConnected && getForcedPseudoState() === null) {
+      await forcePseudoState(agentHold.target, agentHold.state, {
+        holdMs: Math.max(1, agentHold.remainingMs),
+        registry: agentHold.registry,
+      });
+    }
+  }
+}
+
+async function captureEachState(
+  el: HTMLElement,
+  targetStates: readonly InteractionStateName[]
+): Promise<StateStyles[]> {
   const defaultStyles = getExtendedComputedStyles(el);
   const results: StateStyles[] = [];
 
@@ -595,7 +624,7 @@ function computeStyleDiff(
  *
  * `hover` and `active` are user-action pseudo-classes no synthetic event can
  * set (`mouseenter` never sets `:hover`, `mousedown` never sets `:active`), so
- * they are FORCED through the CSSOM twin rules of `control/forced-hover.ts` —
+ * they are FORCED through the in-place selector rewrite of `control/forced-hover.ts` —
  * the same primitive the `hover` action uses — and released (verified) by the
  * restore. `focus` uses the real `el.focus()` and restores the previously
  * focused element. `disabled` restores the element's own prior value.
@@ -606,11 +635,12 @@ async function applyInteractionState(
 ): Promise<() => Promise<void>> {
   switch (state) {
     case 'hover':
-    case 'active':
-      await forcePseudoState(el, state);
+    case 'active': {
+      const { holdId } = await forcePseudoState(el, state);
       return async () => {
-        await releaseForcedPseudoState('explicit');
+        await releaseForcedPseudoStateIfOwner(holdId, 'explicit');
       };
+    }
     case 'focus': {
       const previous = document.activeElement;
       el.focus();

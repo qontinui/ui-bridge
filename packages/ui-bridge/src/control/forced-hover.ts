@@ -13,22 +13,25 @@
  * the next-most-faithful thing that works on every surface the SDK runs on
  * (runner WebView2, qontinui-web, headless Chromium):
  *
- *  1. CSSOM TWIN RULES. Every readable stylesheet in scope is walked. For each
- *     style rule whose own selector contains an unescaped `:hover`, the rule's
- *     `cssText` is inserted as a sibling directly after it, in the same parent
- *     (sheet, `@media`/`@supports`/`@container`/`@layer` block, or nesting
- *     parent), and the twin's `selectorText` — and that of every style rule
- *     nested inside it — is rewritten THROUGH THE CSSOM SETTER, replacing the
- *     pseudo-class with `[data-ui-bridge-pseudo-hover]`. Serialized rule text
- *     is never regex-edited: a minified `(hover:hover)` media condition would
- *     be hit. The twin sits at the same nesting, layer and condition, and an
- *     attribute selector has the same specificity as a pseudo-class (0,1,0),
- *     so the cascade order is unchanged.
+ *  1. IN-PLACE SELECTOR REWRITE. Every readable stylesheet in scope is walked,
+ *     through `@media`/`@supports`/`@container`/`@layer` blocks, CSS nesting
+ *     and `@import`. Every style rule (at any depth) whose selector contains an
+ *     unescaped `:hover` has it rewritten THROUGH THE CSSOM SETTER to
+ *     `:is(:hover,[data-ui-bridge-pseudo-hover])`. The rule keeps its exact
+ *     position, layer and condition, `:is()` takes its most specific argument
+ *     (both are 0,1,0), so the cascade is unchanged; and the real `:hover`
+ *     still works while the attribute adds a second way to match. No rule is
+ *     inserted, so a CSS-in-JS library that addresses its sheet by index never
+ *     sees a shifted index, and `:not(:hover)` becomes
+ *     `:not(:is(:hover,[attr]))`, which stops matching while forced, exactly as
+ *     under a real hover. Serialized rule text is never regex-edited: a
+ *     minified `(hover:hover)` media condition would be hit.
  *  2. MARK THE CHAIN. The attribute is set on the target and every ancestor on
- *     its composed path (crossing shadow roots to their hosts). A real `:hover`
- *     applies to the hovered element and all its ancestors, so this is the
- *     browser's own semantics, not a heuristic — and it is what makes a
- *     Tailwind `group-hover:` rule keyed on a `.group` ancestor fire.
+ *     its flat-tree path (a slotted element's slot, shadow roots crossed to
+ *     their hosts). A real `:hover` applies to the hovered element and all its
+ *     ancestors, so this is the browser's own semantics, not a heuristic — and
+ *     it is what makes a Tailwind `group-hover:` rule keyed on a `.group`
+ *     ancestor fire.
  *  3. SETTLE. `getComputedStyle` is read on the target (so a delayed transition
  *     such as `delay-150` has been CREATED), then every animation the change
  *     started is awaited, bounded by `settleTimeoutMs`. Where the platform has
@@ -40,30 +43,35 @@
  *
  * GUARANTEES (the same standard as `control/media-override.ts`):
  *
- *  - One forced state at a time, like one pointer. A new apply releases the
- *    old one first (reason `replaced`).
+ *  - One forced state at a time, like one pointer — per page, not per bundle:
+ *    the hold lives on a `globalThis` singleton, so separately bundled entry
+ *    points share it. A new apply releases the old one first (`replaced`).
  *  - It never leaks. A TTL (`holdMs`, default 30 s, ceiling 300 s) releases it
  *    by itself, so a caller that dies mid-run cannot leave the page altered.
  *    {@link releaseAfter} releases it after a dispatched write-class action.
- *  - Release removes every twin by OBJECT IDENTITY in its parent (indices shift
- *    as rules come and go), removes every attribute, sends the leave events a
- *    real pointer would (`pointerout`/`mouseout` on the target, bubbling;
- *    `pointerleave`/`mouseleave` on every marked element), waits for the
- *    resulting transitions, and then VERIFIES AGAINST WHAT RENDERS: each
+ *  - Release puts each rewritten selector back — unless the app changed it
+ *    during the hold, in which case the app's selector is left alone and
+ *    reported as `selectorDrift` — removes every attribute, sends the leave
+ *    events a real pointer would (`pointerout`/`mouseout` on the target,
+ *    bubbling; `pointerleave`/`mouseleave` on every marked element), waits for
+ *    the resulting transitions, and then VERIFIES AGAINST WHAT RENDERS: each
  *    revealed element's four properties (and the target's) must read their
  *    before-apply values. Anything else is `restored_with_drift`, naming the
  *    element and property, and never `verified`.
+ *  - A scan that throws part-way restores every selector it already rewrote.
  *  - Completeness is honest. A sheet whose `cssRules` throws (cross-origin) is
  *    counted in `unreadableSheets` and never skipped silently; `complete` is
  *    `false` whenever one was, because its `:hover` rules were not forced.
+ *    A `:hover` scoped to a pseudo-element (`::-webkit-scrollbar-thumb:hover`,
+ *    `::part(x):hover`, `::slotted(x):hover`) cannot take an `:is()` and is
+ *    counted in `rulesNotApplicable`; it does not make the reveal incomplete.
  *
  * LIMITS (documented on the action, not hidden):
  *  - App JS reading `el.matches(':hover')` still sees `false`. JS keyed on
  *    `mouseenter`/`pointerenter` is covered by the enter events the callers
  *    keep dispatching.
- *  - A rule the app inserts during the hold is not twinned; a sheet replaced
- *    during the hold drops its twins with it. Both surface as drift in the
- *    verified restore rather than being hidden.
+ *  - A rule the app inserts during the hold is not rewritten. It surfaces as
+ *    drift in the verified restore rather than being hidden.
  *  - `:hover` inside an attribute-selector string, or after an escaped
  *    backslash (`.a\\:hover`), is outside the rewrite's grammar.
  */
@@ -115,24 +123,28 @@ export interface ForcedPseudoRevealed {
 
 /** What an apply did. */
 export interface ForcedPseudoReport {
+  /** Identifies this hold, for {@link releaseForcedPseudoStateIfOwner}. */
+  holdId: number;
   state: ForcedPseudoStateName;
-  /** The attribute the twins key on and the chain carries. */
+  /** The attribute the rewritten selectors accept and the chain carries. */
   attribute: string;
   /** A short fingerprint of the target (`tag#id` / `tag.class`). */
   target: string;
-  /** Twin rules inserted (and installed) for this hold. */
-  rulesCloned: number;
-  /** Matching rules a twin could not be installed for (insert or rewrite refused). */
+  /** Style rules whose selector was rewritten in place for this hold. */
+  rulesRewritten: number;
+  /** Matching rules the browser refused the rewritten selector for. */
   rulesFailed: number;
+  /** Matching rules whose every `:<state>` is scoped to a pseudo-element: nothing to force. */
+  rulesNotApplicable: number;
   /** Stylesheets walked, including `@import`ed ones. */
   sheetsScanned: number;
   /** Stylesheets whose rules could not be read (cross-origin). Their rules were NOT forced. */
   unreadableSheets: number;
   /** The hrefs of the unreadable sheets, where they have one. */
   unreadableSheetHrefs: string[];
-  /** False when any sheet was unreadable or any twin failed: the reveal is then UNKNOWN-complete. */
+  /** False when any sheet was unreadable or any rewrite failed: the reveal is then UNKNOWN-complete. */
   complete: boolean;
-  /** Elements given the attribute: the target and its composed ancestors. */
+  /** Elements given the attribute: the target and its flat-tree ancestors. */
   markedElements: number;
   settled: ForcedPseudoSettle;
   settleMs: number;
@@ -154,24 +166,36 @@ export interface ForcedPseudoDrift {
   after: string;
 }
 
+/** A rewritten selector the app changed during the hold: left as the app set it. */
+export interface ForcedPseudoSelectorDrift {
+  /** The selector the rule carries now (the app's). */
+  selector: string;
+  /** The selector before the apply. */
+  original: string;
+}
+
 /** What a release did, and whether the page is verifiably back. */
 export interface ForcedPseudoReleaseReport {
   /** False when nothing was held: the release was a no-op. */
   released: boolean;
   reason: ForcedPseudoReleaseReason;
   state?: ForcedPseudoStateName;
-  /** Twin rules found by identity and deleted. */
-  rulesRemoved: number;
-  /** Twin rules already gone (their sheet was replaced or the app deleted them). */
+  holdId?: number;
+  /** Rewritten selectors set back to their original text. */
+  rulesRestored: number;
+  /** Rewritten rules no longer in any sheet (the sheet was replaced or the rule deleted). */
   rulesAlreadyGone: number;
+  /** Rewritten selectors the app changed during the hold, left untouched. */
+  selectorDrift: ForcedPseudoSelectorDrift[];
   unmarkedElements: number;
   settled?: ForcedPseudoSettle;
   /** How long the state was held. */
   heldMs?: number;
   /**
    * `verified`: every revealed element (and the target) reads its
-   * before-apply values again. `restored_with_drift`: at least one does not
-   * (see `drift`). `nothing_held`: there was nothing to release.
+   * before-apply values again, and no selector drifted.
+   * `restored_with_drift`: at least one did not (see `drift`, `selectorDrift`).
+   * `nothing_held`: there was nothing to release.
    */
   restore: 'verified' | 'restored_with_drift' | 'nothing_held';
   drift: ForcedPseudoDrift[];
@@ -207,11 +231,22 @@ export interface ForcePseudoStateOptions {
 
 /** The current hold, as {@link getForcedPseudoState} reports it. */
 export interface ForcedPseudoHoldInfo {
+  holdId: number;
   state: ForcedPseudoStateName;
   target: string;
   appliedAt: number;
   expiresAt: number;
   report: ForcedPseudoReport | null;
+}
+
+/** Enough of a hold to re-apply it after something else used the single pointer. */
+export interface ForcedPseudoHoldSnapshot {
+  holdId: number;
+  target: Element;
+  state: ForcedPseudoStateName;
+  /** What was left of its TTL when the snapshot was taken. */
+  remainingMs: number;
+  registry?: ForcedPseudoElementSource;
 }
 
 // ============================================================================
@@ -226,7 +261,7 @@ export const MAX_SETTLE_TIMEOUT_MS = 5_000;
 /** Bound on a single frame wait: rAF is paused in an occluded or minimized window. */
 const FRAME_WAIT_CAP_MS = 100;
 
-/** The attribute the twins key on and the marked chain carries. */
+/** The attribute the rewritten selectors accept and the marked chain carries. */
 export function pseudoStateAttribute(state: ForcedPseudoStateName): string {
   return `data-ui-bridge-pseudo-${state}`;
 }
@@ -241,52 +276,158 @@ const PSEUDO_PATTERNS: Record<ForcedPseudoStateName, RegExp> = {
   active: /(?<!\\):active(?![\w-])/g,
 };
 
-/** Whether a selector contains the forced pseudo-class (not as an escaped class-name fragment). */
-export function selectorHasPseudo(selector: string, state: ForcedPseudoStateName): boolean {
+function matchIndices(selector: string, state: ForcedPseudoStateName): number[] {
   const pattern = PSEUDO_PATTERNS[state];
   pattern.lastIndex = 0;
-  const hit = pattern.test(selector);
+  const out: number[] = [];
+  for (let m = pattern.exec(selector); m; m = pattern.exec(selector)) out.push(m.index);
   pattern.lastIndex = 0;
-  return hit;
+  return out;
 }
 
 /**
- * Replace every unescaped `:<state>` in a selector with the attribute selector.
- * `:not(:hover)` becomes `:not([attr])`, which keeps its meaning; a pseudo
- * inside `:is()`/`:where()`/`:has()` is rewritten in place.
+ * Whether the pseudo-class at `index` belongs to a pseudo-element's compound
+ * (`::-webkit-scrollbar-thumb:hover`, `::part(x):hover`, `::slotted(x):hover`).
+ * Walks back to the start of the compound — a combinator or comma at the same
+ * parenthesis depth, or the opening of an enclosing `:is(`/`:not(` — skipping
+ * parenthesized arguments, and looks for `::`.
  */
-export function rewritePseudoSelector(selector: string, state: ForcedPseudoStateName): string {
-  const pattern = PSEUDO_PATTERNS[state];
-  pattern.lastIndex = 0;
-  return selector.replace(pattern, `[${pseudoStateAttribute(state)}]`);
+function isPseudoElementScoped(selector: string, index: number): boolean {
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const ch = selector[i];
+    if (ch === ')') depth += 1;
+    else if (ch === '(') {
+      if (depth === 0) return false;
+      depth -= 1;
+    } else if (depth === 0) {
+      if (ch === ' ' || ch === '>' || ch === '+' || ch === '~' || ch === ',') return false;
+      if (ch === ':' && selector[i - 1] === ':' && selector[i - 2] !== '\\') return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a selector contains the forced pseudo-class (not as an escaped class-name fragment). */
+export function selectorHasPseudo(selector: string, state: ForcedPseudoStateName): boolean {
+  return matchIndices(selector, state).length > 0;
+}
+
+/**
+ * Rewrite every unescaped, forceable `:<state>` in a selector to
+ * `:is(:<state>,[attr])`. Returns `null` when the selector has a match but
+ * every match is scoped to a pseudo-element (nothing can be forced), and the
+ * selector unchanged when it has no match at all.
+ *
+ * `:not(:hover)` becomes `:not(:is(:hover,[attr]))`, which stops matching while
+ * forced — a real hover's reading. A pseudo inside `:is()`/`:where()`/`:has()`
+ * is rewritten in place.
+ */
+export function rewritePseudoSelector(
+  selector: string,
+  state: ForcedPseudoStateName
+): string | null {
+  const hits = matchIndices(selector, state);
+  if (hits.length === 0) return selector;
+  const forceable = hits.filter((i) => !isPseudoElementScoped(selector, i));
+  if (forceable.length === 0) return null;
+  const token = `:${state}`;
+  const replacement = `:is(${token},[${pseudoStateAttribute(state)}])`;
+  let out = '';
+  let last = 0;
+  for (const i of forceable) {
+    out += selector.slice(last, i) + replacement;
+    last = i + token.length;
+  }
+  return out + selector.slice(last);
+}
+
+// ============================================================================
+// Page-wide singleton
+// ============================================================================
+
+interface RewrittenRule {
+  rule: CSSStyleRule;
+  originalText: string;
+  rewrittenText: string;
+}
+
+interface VerifyEntry {
+  id: string;
+  element: Element;
+  before: RevealValues;
+}
+
+interface Hold {
+  holdId: number;
+  state: ForcedPseudoStateName;
+  attribute: string;
+  target: Element;
+  doc: Document;
+  rewritten: RewrittenRule[];
+  marked: Element[];
+  appliedAt: number;
+  expiresAt: number;
+  settleTimeoutMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  registry?: ForcedPseudoElementSource;
+  /** Elements whose four properties must read their before values after release. */
+  verify: VerifyEntry[];
+  report: ForcedPseudoReport | null;
+}
+
+interface ForcedPseudoGlobal {
+  hold: Hold | null;
+  /** Apply and release are serialized: a release never interleaves with an apply's settle. */
+  queue: Promise<unknown>;
+  /** Rules currently rewritten by a hold, so a scan never rewrites one twice. */
+  rewritten: WeakSet<CSSRule>;
+  nextHoldId: number;
+}
+
+/**
+ * One pointer per PAGE. tsup emits each entry point (`index`, `control`,
+ * `react`, `injected`, …) as its own bundle, so a module-level `let` would be
+ * one pointer per bundle: a hover applied through one entry could not be
+ * released through another. The state lives on `globalThis` under a registered
+ * symbol instead (the pattern of `getGlobalActionWindowRegistry`).
+ */
+const GLOBAL_KEY = Symbol.for('ui-bridge.forcedPseudo');
+
+function g(): ForcedPseudoGlobal {
+  const host = globalThis as unknown as Record<symbol, ForcedPseudoGlobal | undefined>;
+  let state = host[GLOBAL_KEY];
+  if (!state) {
+    state = { hold: null, queue: Promise.resolve(), rewritten: new WeakSet(), nextHoldId: 1 };
+    host[GLOBAL_KEY] = state;
+  }
+  return state;
+}
+
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const s = g();
+  const run = s.queue.then(fn, fn);
+  s.queue = run.catch(() => undefined);
+  return run;
 }
 
 // ============================================================================
 // CSSOM walk
 // ============================================================================
 
-/** Anything rules can be inserted into: a sheet, a grouping rule, or (CSS nesting) a style rule. */
+/** Anything that holds rules: a sheet, a grouping rule, or (CSS nesting) a style rule. */
 interface RuleContainer {
   readonly cssRules: CSSRuleList;
-  insertRule(rule: string, index?: number): number;
-  deleteRule(index: number): void;
-}
-
-interface InstalledTwin {
-  twin: CSSRule;
-  parent: RuleContainer;
 }
 
 interface ScanResult {
-  twins: InstalledTwin[];
+  rewritten: RewrittenRule[];
   rulesFailed: number;
+  rulesNotApplicable: number;
   sheetsScanned: number;
   unreadableSheets: number;
   unreadableSheetHrefs: string[];
 }
-
-/** Every twin this module has ever installed. The walker skips them, so index-order insertion never revisits one. */
-const installedTwins = new WeakSet<CSSRule>();
 
 function isStyleRule(rule: CSSRule): rule is CSSStyleRule {
   // Duck-typed so a rule from another realm (an iframe's sheet) is still
@@ -295,14 +436,12 @@ function isStyleRule(rule: CSSRule): rule is CSSStyleRule {
   return typeof (rule as Partial<CSSStyleRule>).selectorText === 'string';
 }
 
-function asContainer(rule: CSSRule): RuleContainer | null {
-  const c = rule as unknown as Partial<RuleContainer>;
-  // `@keyframes` has `cssRules` but `appendRule`, not `insertRule`, and its
-  // keyframes carry no selector — it is correctly excluded here.
-  if (c.cssRules && typeof c.insertRule === 'function' && typeof c.deleteRule === 'function') {
-    return c as RuleContainer;
-  }
-  return null;
+function childRules(rule: CSSRule): CSSRuleList | null {
+  // `@media`/`@supports`/`@container`/`@layer` blocks and (CSS nesting) style
+  // rules. `@keyframes` also has `cssRules`, but its keyframes carry no
+  // selector, so walking them is harmless.
+  const list = (rule as unknown as Partial<RuleContainer>).cssRules;
+  return list ?? null;
 }
 
 function importedSheet(rule: CSSRule): CSSStyleSheet | null {
@@ -311,93 +450,42 @@ function importedSheet(rule: CSSRule): CSSStyleSheet | null {
   return null;
 }
 
-/** Rewrite the selector of a rule and of every style rule nested inside it, through the CSSOM setter. */
-function rewriteRuleTree(rule: CSSRule, state: ForcedPseudoStateName): void {
-  if (isStyleRule(rule) && selectorHasPseudo(rule.selectorText, state)) {
-    rule.selectorText = rewritePseudoSelector(rule.selectorText, state);
+function rewriteRule(rule: CSSStyleRule, state: ForcedPseudoStateName, out: ScanResult): void {
+  const originalText = rule.selectorText;
+  const next = rewritePseudoSelector(originalText, state);
+  if (next === originalText) return;
+  if (next === null) {
+    out.rulesNotApplicable += 1;
+    return;
   }
-  const container = asContainer(rule);
-  if (!container) return;
-  for (let i = 0; i < container.cssRules.length; i++) {
-    rewriteRuleTree(container.cssRules[i], state);
+  rule.selectorText = next;
+  // The setter silently ignores a selector it cannot parse; read it back.
+  const rewrittenText = rule.selectorText;
+  if (rewrittenText === originalText) {
+    out.rulesFailed += 1;
+    return;
   }
-}
-
-function ruleIndexOf(parent: RuleContainer, rule: CSSRule): number {
-  return Array.prototype.indexOf.call(parent.cssRules, rule) as number;
-}
-
-/**
- * Insert `rule`'s twin directly after it (at `index + 1`) and rewrite it.
- * Returns the twin, or `null` when the browser refused the insert or the
- * rewrite (an invalid rewritten selector is silently ignored by the setter,
- * which would leave an exact duplicate — harmless, but not a twin).
- */
-function installTwin(
-  parent: RuleContainer,
-  rule: CSSStyleRule,
-  index: number,
-  state: ForcedPseudoStateName
-): CSSRule | null {
-  let at: number;
-  try {
-    at = parent.insertRule(rule.cssText, index + 1);
-  } catch {
-    return null;
-  }
-  const twin = parent.cssRules[at];
-  if (!twin) return null;
-  try {
-    rewriteRuleTree(twin, state);
-  } catch {
-    // fall through to the check below
-  }
-  if (!isStyleRule(twin) || selectorHasPseudo(twin.selectorText, state)) {
-    try {
-      parent.deleteRule(at);
-    } catch {
-      // A twin that cannot even be removed is a duplicate of a real rule:
-      // inert for the cascade.
-    }
-    return null;
-  }
-  installedTwins.add(twin);
-  return twin;
+  g().rewritten.add(rule);
+  out.rewritten.push({ rule, originalText, rewrittenText });
 }
 
 function walkRules(
-  parent: RuleContainer,
+  list: CSSRuleList,
   state: ForcedPseudoStateName,
   out: ScanResult,
   visit: (sheet: CSSStyleSheet) => void
 ): void {
-  const list = parent.cssRules;
+  const rewritten = g().rewritten;
   for (let i = 0; i < list.length; i++) {
     const rule = list[i];
-    if (installedTwins.has(rule)) continue;
-
     const imported = importedSheet(rule);
     if (imported) {
       visit(imported);
       continue;
     }
-
-    if (isStyleRule(rule) && selectorHasPseudo(rule.selectorText, state)) {
-      const twin = installTwin(parent, rule, i, state);
-      if (twin) {
-        out.twins.push({ twin, parent });
-        // Step over the twin just inserted at i + 1. The original is NOT
-        // descended into: its nested `:hover` rules were rewritten inside the
-        // twin, so they are twinned exactly once.
-        i += 1;
-      } else {
-        out.rulesFailed += 1;
-      }
-      continue;
-    }
-
-    const container = asContainer(rule);
-    if (container) walkRules(container, state, out, visit);
+    if (isStyleRule(rule) && !rewritten.has(rule)) rewriteRule(rule, state, out);
+    const children = childRules(rule);
+    if (children) walkRules(children, state, out, visit);
   }
 }
 
@@ -409,22 +497,26 @@ function shadowRootOf(node: Node): ShadowRoot | null {
   return null;
 }
 
-/** The target and every ancestor on its composed path, innermost first (shadow roots are crossed to their hosts). */
+/**
+ * The target and every ancestor on its flat-tree path, innermost first: a
+ * slotted element's parent is its slot, and a shadow root is crossed to its
+ * host — the path a real `:hover` propagates along.
+ */
 export function composedAncestry(target: Element): Element[] {
   const chain: Element[] = [];
   let current: Element | null = target;
   while (current) {
     chain.push(current);
-    if (current.parentElement) {
-      current = current.parentElement;
-    } else {
-      current = shadowRootOf(current)?.host ?? null;
-    }
+    current = current.assignedSlot ?? current.parentElement ?? shadowRootOf(current)?.host ?? null;
   }
   return chain;
 }
 
-/** The sheets in scope: the document's, its adopted ones, and those of every shadow root on the target's composed path. */
+/**
+ * The sheets in scope: the document's and its adopted ones, the shadow root
+ * each chain element lives in, and the open shadow root each chain element
+ * hosts (its `:host(:hover)` rules).
+ */
 function sheetsInScope(target: Element): CSSStyleSheet[] {
   const out: CSSStyleSheet[] = [];
   const seen = new Set<CSSStyleSheet>();
@@ -434,26 +526,68 @@ function sheetsInScope(target: Element): CSSStyleSheet[] {
       out.push(sheet);
     }
   };
-  const addRoot = (root: Document | ShadowRoot): void => {
+  const roots = new Set<Document | ShadowRoot>();
+  const addRoot = (root: Document | ShadowRoot | null | undefined): void => {
+    if (!root || roots.has(root)) return;
+    roots.add(root);
     for (const sheet of Array.from(root.styleSheets ?? [])) add(sheet as CSSStyleSheet);
     for (const sheet of root.adoptedStyleSheets ?? []) add(sheet);
   };
-  if (typeof document !== 'undefined') addRoot(document);
-  const roots = new Set<ShadowRoot>();
+  addRoot(target.ownerDocument);
   for (const el of composedAncestry(target)) {
-    const root = shadowRootOf(el);
-    if (root && !roots.has(root)) {
-      roots.add(root);
-      addRoot(root);
-    }
+    addRoot(shadowRootOf(el));
+    addRoot(el.shadowRoot);
   }
   return out;
 }
 
+/** Whether a rule is still in its parent's rule list (a deleted rule may keep its `parentStyleSheet`). */
+function ruleIsAttached(rule: CSSRule): boolean {
+  try {
+    const parent = (rule.parentRule as unknown as RuleContainer | null) ?? rule.parentStyleSheet;
+    return !!parent && Array.prototype.includes.call(parent.cssRules, rule);
+  } catch {
+    return false;
+  }
+}
+
+function restoreRewritten(records: RewrittenRule[]): {
+  rulesRestored: number;
+  rulesAlreadyGone: number;
+  selectorDrift: ForcedPseudoSelectorDrift[];
+} {
+  const rewritten = g().rewritten;
+  let rulesRestored = 0;
+  let rulesAlreadyGone = 0;
+  const selectorDrift: ForcedPseudoSelectorDrift[] = [];
+  for (const { rule, originalText, rewrittenText } of records) {
+    rewritten.delete(rule);
+    if (!ruleIsAttached(rule)) {
+      rulesAlreadyGone += 1;
+      continue;
+    }
+    const current = rule.selectorText;
+    if (current !== rewrittenText) {
+      // The app changed this selector while it was held. Its value is newer
+      // than our original: leave it, and say so.
+      selectorDrift.push({ selector: current, original: originalText });
+      continue;
+    }
+    try {
+      rule.selectorText = originalText;
+      rulesRestored += 1;
+    } catch {
+      selectorDrift.push({ selector: current, original: originalText });
+    }
+  }
+  return { rulesRestored, rulesAlreadyGone, selectorDrift };
+}
+
 function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
   const out: ScanResult = {
-    twins: [],
+    rewritten: [],
     rulesFailed: 0,
+    rulesNotApplicable: 0,
     sheetsScanned: 0,
     unreadableSheets: 0,
     unreadableSheetHrefs: [],
@@ -462,13 +596,11 @@ function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
   const visit = (sheet: CSSStyleSheet): void => {
     if (scanned.has(sheet)) return;
     scanned.add(sheet);
-    let rules: CSSRuleList;
+    let rules: CSSRuleList | null;
     try {
       rules = sheet.cssRules;
     } catch {
-      out.unreadableSheets += 1;
-      if (sheet.href) out.unreadableSheetHrefs.push(sheet.href);
-      return;
+      rules = null;
     }
     if (!rules) {
       out.unreadableSheets += 1;
@@ -476,9 +608,15 @@ function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
       return;
     }
     out.sheetsScanned += 1;
-    walkRules(sheet as unknown as RuleContainer, state, out, visit);
+    walkRules(rules, state, out, visit);
   };
-  for (const sheet of sheetsInScope(target)) visit(sheet);
+  try {
+    for (const sheet of sheetsInScope(target)) visit(sheet);
+  } catch (error) {
+    // Never leave a half-forced page behind a failed apply.
+    restoreRewritten(out.rewritten);
+    throw error;
+  }
   return out;
 }
 
@@ -488,7 +626,8 @@ function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
 
 function readRevealValues(el: Element): RevealValues | null {
   try {
-    const cs = getComputedStyle(el);
+    const view = el.ownerDocument?.defaultView ?? globalThis;
+    const cs = view.getComputedStyle(el);
     return {
       opacity: cs.opacity,
       visibility: cs.visibility,
@@ -511,21 +650,19 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     let done = false;
     const finish = (): void => {
-      if (!done) {
-        done = true;
-        resolve();
-      }
+      if (done) return;
+      done = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve();
     };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
-    setTimeout(finish, typeof requestAnimationFrame === 'function' ? FRAME_WAIT_CAP_MS : 0);
+    const hasRaf = typeof requestAnimationFrame === 'function';
+    if (hasRaf) requestAnimationFrame(finish);
+    timer = setTimeout(finish, hasRaf ? FRAME_WAIT_CAP_MS : 0);
   });
 }
 
@@ -538,8 +675,8 @@ function isInfinite(animation: Animation): boolean {
 }
 
 /** The animations running right now, as identities, so a settle can ignore the ones that predate the change. */
-function runningAnimationSet(): Set<Animation> {
-  return new Set(readRunningAnimations().animations.map((a) => a.animation));
+function runningAnimationSet(doc: Document): Set<Animation> {
+  return new Set(readRunningAnimations(doc).animations.map((a) => a.animation));
 }
 
 /**
@@ -547,11 +684,12 @@ function runningAnimationSet(): Set<Animation> {
  * Infinite animations (spinners) never finish and are not waited on.
  */
 async function settleAfter(
+  doc: Document,
   preexisting: Set<Animation>,
   timeoutMs: number
 ): Promise<{ settled: ForcedPseudoSettle; settleMs: number }> {
   const start = now();
-  const read = readRunningAnimations();
+  const read = readRunningAnimations(doc);
   if (!read.available) {
     await nextFrame();
     return { settled: 'frame-only', settleMs: now() - start };
@@ -561,8 +699,16 @@ async function settleAfter(
     .filter((a) => !preexisting.has(a) && !isInfinite(a));
   let settled = true;
   if (started.length > 0) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
     const allFinished = Promise.allSettled(started.map((a) => a.finished)).then(() => true);
-    settled = await Promise.race([allFinished, delay(timeoutMs).then(() => false)]);
+    try {
+      settled = await Promise.race([allFinished, timedOut]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
   // One frame so the settled style is painted, not just computed, before a capture.
   await nextFrame();
@@ -582,54 +728,23 @@ function clampSettleMs(value: number | undefined): number {
 }
 
 // ============================================================================
-// The single hold
+// Apply / release
 // ============================================================================
-
-interface VerifyEntry {
-  id: string;
-  element: Element;
-  before: RevealValues;
-}
-
-interface Hold {
-  state: ForcedPseudoStateName;
-  attribute: string;
-  target: Element;
-  twins: InstalledTwin[];
-  marked: Element[];
-  appliedAt: number;
-  expiresAt: number;
-  settleTimeoutMs: number;
-  timer: ReturnType<typeof setTimeout> | null;
-  /** Elements whose four properties must read their before values after release. */
-  verify: VerifyEntry[];
-  report: ForcedPseudoReport | null;
-}
-
-let hold: Hold | null = null;
-
-/** Apply and release are serialized: a release never interleaves with an apply's settle. */
-let queue: Promise<unknown> = Promise.resolve();
-
-function serialized<T>(fn: () => Promise<T>): Promise<T> {
-  const run = queue.then(fn, fn);
-  queue = run.catch(() => undefined);
-  return run;
-}
 
 function dispatchLeave(hold: Hold): void {
   if (hold.state !== 'hover') return;
+  const view = hold.doc.defaultView ?? globalThis;
   const make = (type: string, bubbles: boolean): Event => {
     const init = { bubbles, cancelable: type.endsWith('out'), composed: true, relatedTarget: null };
-    if (type.startsWith('pointer') && typeof PointerEvent === 'function') {
-      return new PointerEvent(type, {
+    if (type.startsWith('pointer') && typeof view.PointerEvent === 'function') {
+      return new view.PointerEvent(type, {
         ...init,
         pointerId: 1,
         pointerType: 'mouse',
         isPrimary: true,
       });
     }
-    return new MouseEvent(type, init);
+    return new view.MouseEvent(type, init);
   };
   try {
     // `out` bubbles through the chain; `leave` is sent to each marked element,
@@ -649,26 +764,13 @@ async function releaseHold(
   current: Hold,
   reason: ForcedPseudoReleaseReason
 ): Promise<ForcedPseudoReleaseReport> {
+  const s = g();
   if (current.timer !== null) clearTimeout(current.timer);
   current.timer = null;
-  if (hold === current) hold = null;
+  if (s.hold === current) s.hold = null;
 
-  const preexisting = runningAnimationSet();
-  let rulesRemoved = 0;
-  let rulesAlreadyGone = 0;
-  for (const { twin, parent } of current.twins) {
-    try {
-      const idx = ruleIndexOf(parent, twin);
-      if (idx < 0) {
-        rulesAlreadyGone += 1;
-        continue;
-      }
-      parent.deleteRule(idx);
-      rulesRemoved += 1;
-    } catch {
-      rulesAlreadyGone += 1;
-    }
-  }
+  const preexisting = runningAnimationSet(current.doc);
+  const { rulesRestored, rulesAlreadyGone, selectorDrift } = restoreRewritten(current.rewritten);
   let unmarkedElements = 0;
   for (const el of current.marked) {
     if (el.hasAttribute(current.attribute)) {
@@ -680,7 +782,7 @@ async function releaseHold(
 
   // Flush style on the target so the reverse transitions exist, then wait.
   void readRevealValues(current.target);
-  const { settled } = await settleAfter(preexisting, current.settleTimeoutMs);
+  const { settled } = await settleAfter(current.doc, preexisting, current.settleTimeoutMs);
 
   const drift: ForcedPseudoDrift[] = [];
   for (const entry of current.verify) {
@@ -703,12 +805,14 @@ async function releaseHold(
     released: true,
     reason,
     state: current.state,
-    rulesRemoved,
+    holdId: current.holdId,
+    rulesRestored,
     rulesAlreadyGone,
+    selectorDrift,
     unmarkedElements,
     settled,
     heldMs: Date.now() - current.appliedAt,
-    restore: drift.length > 0 ? 'restored_with_drift' : 'verified',
+    restore: drift.length > 0 || selectorDrift.length > 0 ? 'restored_with_drift' : 'verified',
     drift,
   };
 }
@@ -717,8 +821,9 @@ function nothingHeld(reason: ForcedPseudoReleaseReason): ForcedPseudoReleaseRepo
   return {
     released: false,
     reason,
-    rulesRemoved: 0,
+    rulesRestored: 0,
     rulesAlreadyGone: 0,
+    selectorDrift: [],
     unmarkedElements: 0,
     restore: 'nothing_held',
     drift: [],
@@ -732,8 +837,9 @@ function registeredElements(
   const out: Array<{ id: string; element: Element }> = [];
   try {
     for (const entry of source.getAllElements()) {
-      if (entry.element && entry.element.isConnected)
+      if (entry.element && entry.element.isConnected) {
         out.push({ id: entry.id, element: entry.element });
+      }
     }
   } catch {
     return out;
@@ -751,11 +857,13 @@ export function forcePseudoState(
   options: ForcePseudoStateOptions = {}
 ): Promise<ForcedPseudoReport> {
   return serialized(async () => {
-    const replaced = hold ? await releaseHold(hold, 'replaced') : undefined;
+    const s = g();
+    const replaced = s.hold ? await releaseHold(s.hold, 'replaced') : undefined;
 
     const holdMs = clampHoldMs(options.holdMs);
     const settleTimeoutMs = clampSettleMs(options.settleTimeoutMs);
     const attribute = pseudoStateAttribute(state);
+    const doc = target.ownerDocument;
 
     // Before: every registered element's four properties, and the target's.
     const before = new Map<Element, { id: string; values: RevealValues }>();
@@ -764,7 +872,7 @@ export function forcePseudoState(
       if (values) before.set(element, { id, values });
     }
     const targetBefore = readRevealValues(target);
-    const preexisting = runningAnimationSet();
+    const preexisting = runningAnimationSet(doc);
 
     const scanStart = now();
     const scan = scanSheets(target, state);
@@ -775,23 +883,26 @@ export function forcePseudoState(
 
     const appliedAt = Date.now();
     const current: Hold = {
+      holdId: s.nextHoldId++,
       state,
       attribute,
       target,
-      twins: scan.twins,
+      doc,
+      rewritten: scan.rewritten,
       marked,
       appliedAt,
       expiresAt: appliedAt + holdMs,
       settleTimeoutMs,
       timer: null,
+      registry: options.registry,
       verify: [],
       report: null,
     };
-    hold = current;
+    s.hold = current;
     // Armed BEFORE the settle wait, so even an apply whose caller dies
     // mid-settle cannot leave the page altered.
     const timer = setTimeout(() => {
-      void releaseForcedPseudoStateIf(current, 'ttl');
+      void releaseIfCurrent(current, 'ttl');
     }, holdMs);
     (timer as { unref?: () => void }).unref?.();
     current.timer = timer;
@@ -805,7 +916,7 @@ export function forcePseudoState(
     // Read the target's style first, so a delayed transition has been CREATED
     // when the settle collects animations.
     void readRevealValues(target);
-    const { settled, settleMs } = await settleAfter(preexisting, settleTimeoutMs);
+    const { settled, settleMs } = await settleAfter(doc, preexisting, settleTimeoutMs);
 
     const revealed: ForcedPseudoRevealed[] = [];
     const verify: VerifyEntry[] = [];
@@ -818,8 +929,9 @@ export function forcePseudoState(
       const changes: ForcedPseudoChange[] = [];
       for (const property of REVEAL_PROPERTIES) {
         const was = prior ? prior.values[property] : null;
-        if (was !== after[property])
+        if (was !== after[property]) {
           changes.push({ property, before: was, after: after[property] });
+        }
       }
       // A newly-registered element counts as revealed only when it draws.
       const appeared = !prior;
@@ -845,11 +957,13 @@ export function forcePseudoState(
     current.verify = verify;
 
     const report: ForcedPseudoReport = {
+      holdId: current.holdId,
       state,
       attribute,
       target: fingerprint(target),
-      rulesCloned: scan.twins.length,
+      rulesRewritten: scan.rewritten.length,
       rulesFailed: scan.rulesFailed,
+      rulesNotApplicable: scan.rulesNotApplicable,
       sheetsScanned: scan.sheetsScanned,
       unreadableSheets: scan.unreadableSheets,
       unreadableSheetHrefs: scan.unreadableSheetHrefs,
@@ -868,12 +982,12 @@ export function forcePseudoState(
   });
 }
 
-function releaseForcedPseudoStateIf(
+function releaseIfCurrent(
   expected: Hold,
   reason: ForcedPseudoReleaseReason
 ): Promise<ForcedPseudoReleaseReport> {
   return serialized(async () =>
-    hold === expected ? releaseHold(expected, reason) : nothingHeld(reason)
+    g().hold === expected ? releaseHold(expected, reason) : nothingHeld(reason)
   );
 }
 
@@ -885,18 +999,58 @@ function releaseForcedPseudoStateIf(
 export function releaseForcedPseudoState(
   reason: ForcedPseudoReleaseReason = 'explicit'
 ): Promise<ForcedPseudoReleaseReport> {
-  return serialized(async () => (hold ? releaseHold(hold, reason) : nothingHeld(reason)));
+  return serialized(async () => {
+    const current = g().hold;
+    return current ? releaseHold(current, reason) : nothingHeld(reason);
+  });
+}
+
+/**
+ * Release the forced state only if it is still the hold `holdId` names — the
+ * one the caller applied. A caller that borrowed the single pointer (the
+ * design inspector) uses this so it can never release a hold someone else
+ * applied after it.
+ */
+export function releaseForcedPseudoStateIfOwner(
+  holdId: number,
+  reason: ForcedPseudoReleaseReason = 'explicit'
+): Promise<ForcedPseudoReleaseReport> {
+  return serialized(async () => {
+    const current = g().hold;
+    return current && current.holdId === holdId
+      ? releaseHold(current, reason)
+      : nothingHeld(reason);
+  });
 }
 
 /** The current hold, or `null`. */
 export function getForcedPseudoState(): ForcedPseudoHoldInfo | null {
-  if (!hold) return null;
+  const current = g().hold;
+  if (!current) return null;
   return {
-    state: hold.state,
-    target: fingerprint(hold.target),
-    appliedAt: hold.appliedAt,
-    expiresAt: hold.expiresAt,
-    report: hold.report,
+    holdId: current.holdId,
+    state: current.state,
+    target: fingerprint(current.target),
+    appliedAt: current.appliedAt,
+    expiresAt: current.expiresAt,
+    report: current.report,
+  };
+}
+
+/**
+ * Enough of the current hold to re-apply it later (`null` when nothing is
+ * held). The design inspector takes one before it borrows the single pointer,
+ * and puts the agent's hold back afterwards.
+ */
+export function snapshotForcedPseudoState(): ForcedPseudoHoldSnapshot | null {
+  const current = g().hold;
+  if (!current) return null;
+  return {
+    holdId: current.holdId,
+    target: current.target,
+    state: current.state,
+    remainingMs: Math.max(0, current.expiresAt - Date.now()),
+    registry: current.registry,
   };
 }
 
@@ -954,19 +1108,20 @@ export async function releaseAfter<T>(
 
 /**
  * The release half of {@link releaseAfter}, for a dispatch site that cannot
- * be wrapped in a closure (the relay's `executeElementAction` calls it from
- * its own `finally`). Releases a held forced state when `action` is
- * write-class and returns the report; `undefined` when nothing was released.
+ * be wrapped in a closure (the relay's `executeElementAction` calls it itself).
+ * Releases a held forced state when `action` is write-class and returns the
+ * report; `undefined` when nothing was released. Whether anything is held is
+ * decided inside the serialized queue, never before it.
  */
 export async function releaseHeldAfterDispatch(
   action: string
 ): Promise<ForcedPseudoReleaseReport | undefined> {
-  if (!releasesForcedPseudoState(action) || !hold) return undefined;
+  if (!releasesForcedPseudoState(action)) return undefined;
   const report = await releaseForcedPseudoState('next-action');
   return report.released ? report : undefined;
 }
 
-/** Test-only: drop any hold without verification, so suites start clean. */
+/** Test-only: release any hold, so suites start clean. */
 export async function __resetForcedPseudoStateForTest(): Promise<void> {
   await releaseForcedPseudoState('explicit');
 }
