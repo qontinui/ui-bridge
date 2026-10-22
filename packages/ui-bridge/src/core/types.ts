@@ -2354,16 +2354,7 @@ export interface BridgeSnapshot {
  */
 export interface SnapshotEnrichers {
   navigationTracker?: { getSnapshotPageContext(): SnapshotPageContext };
-  modalDetector?: {
-    getSnapshotModalContext(): SnapshotModalContext;
-    /**
-     * The selectors this detector treats as modals. When present, the
-     * occlusion hit-test names a hit inside a matching element by that modal
-     * (so custom modal selectors are honoured); when absent, the default
-     * `ModalDetector` selectors are used.
-     */
-    getModalSelectors?(): readonly string[];
-  };
+  modalDetector?: { getSnapshotModalContext(): SnapshotModalContext };
   toastCapture?: { getSnapshotToastContext(): SnapshotToastContext };
   relationshipTracker?: {
     getSnapshotRelationshipContext(
