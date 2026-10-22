@@ -622,6 +622,59 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.expectedOverlaysFiltered).toBe(0);
   });
 
+  // Review round 5, probe P8: a dialog's data-testid is not a DOM id. An
+  // unrelated `<aside id="sidebar">` must not be taken for the dialog whose
+  // testid happens to be `sidebar`.
+  it("(P8) a dialog testid never matches an unrelated element's tag#id", async () => {
+    const report = await libraryMatchNextTo(() => {
+      const dialog = document.createElement('div');
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('data-testid', 'sidebar');
+      document.body.appendChild(dialog);
+      const aside = document.createElement('aside');
+      aside.id = 'sidebar';
+      document.body.appendChild(aside);
+      return aside;
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'main-title')?.occludedBy).toBe(
+      'aside#sidebar'
+    );
+  });
+
+  it('a registered element whose id equals a dialog testid is not taken for the dialog', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const dialog = document.createElement('div');
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('data-testid', 'sidebar');
+      document.body.appendChild(dialog);
+      const aside = div();
+      registry.registerElement('sidebar', aside, { type: 'generic' });
+      return aside;
+    });
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('an aria-modal element that is not a dialog (role=menu) does not name the hit', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const menu = document.createElement('div');
+      menu.id = 'account-menu';
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-modal', 'true');
+      document.body.appendChild(menu);
+      const item = document.createElement('div');
+      menu.appendChild(item);
+      registry.registerElement('account-menu-item', item, { type: 'generic' });
+      return item;
+    });
+    expect(report.occlusions.find((o) => o.element === 'main-title')?.occludedBy).toBe(
+      'account-menu-item'
+    );
+  });
+
   it('a genuine aria-modal dialog hit through an unregistered child is still expected', async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector() });

@@ -950,12 +950,19 @@ function onlyRegistryStampsBelow(stamped: Element | null, dialog: Element): bool
   return true;
 }
 
-/** A dialog's name in the order the modal detector identifies it. */
+/**
+ * A dialog's name: its stamp, else `tag#id`, else `tag[data-testid="x"]`,
+ * else a descriptor. The testid form is produced ONLY here, for a blocking
+ * dialog, and cannot be mistaken for a registry id or a DOM id, so the
+ * expected-overlay matcher can admit it against the dialog's own `testId`.
+ */
 function dialogIdentity(dialog: Element): string {
   const stamp = dialog.getAttribute('data-ui-bridge-id');
   if (stamp) return stamp;
   if (dialog.id) return describeDomNode(dialog);
-  return dialog.getAttribute('data-testid') || describeDomNode(dialog);
+  const testId = dialog.getAttribute('data-testid');
+  if (testId) return `${dialog.tagName.toLowerCase()}[data-testid="${testId}"]`;
+  return describeDomNode(dialog);
 }
 
 /** First entry of `byNode` at or above `node`, walking `parentElement`. */

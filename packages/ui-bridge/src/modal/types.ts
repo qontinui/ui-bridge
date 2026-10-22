@@ -8,8 +8,16 @@
  * Information about a detected modal/dialog
  */
 export interface ModalInfo {
-  /** Unique identifier (element id, or generated) */
+  /**
+   * Identifier: the element's DOM id, else its `data-testid`, else a generated
+   * `modal-N`. Ambiguous by construction; match on `domId` / `testId` /
+   * `bridgeId` when the KIND of identity matters.
+   */
   id: string;
+  /** The element's real DOM `id`, when it has one. */
+  domId?: string;
+  /** The element's `data-testid`, when it has one. */
+  testId?: string;
   /**
    * The modal element's `data-ui-bridge-id`, when it has one: the name an
    * occlusion report gives a registered occluder. Lets `/control/visibility`
@@ -23,9 +31,11 @@ export interface ModalInfo {
   /** Whether this modal blocks interaction with content behind it */
   blocking: boolean;
   /**
-   * WHY `blocking` is true. `element`: the element itself says so (an
-   * `alertdialog`, `[role=dialog][aria-modal=true]`, or a `<dialog>` matching
-   * `:modal`). `backdrop`: only the backdrop heuristic, a class substring
+   * WHY `blocking` is true. `element`: `isBlockingDialog` accepts the element
+   * itself (an `alertdialog`; `aria-modal="true"` on a `role=dialog`,
+   * `role=alertdialog` or `<dialog>`; or a `<dialog>` matching `:modal`) — the
+   * same predicate the registry's occlusion hit-test names a dialog by.
+   * `backdrop`: only the backdrop heuristic, a class substring
    * (`backdrop`/`overlay`/`mask`) on a neighbour, which also fires on
    * non-modal UI. Absent when not blocking, and absent from page SDKs older
    * than the field. Only `element` makes an occlusion an expected overlay in

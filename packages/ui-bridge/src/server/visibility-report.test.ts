@@ -43,9 +43,16 @@ function unattributed(descriptor: string): UnattributedCanvas {
   return { descriptor, rect: { x: 0, y: 0, width: 300, height: 150 } };
 }
 
+/**
+ * A blocking modal whose DOM id is `id` and which is registered under `id`
+ * (so `bridgeId` is `id` too): the bare-id and `tag#id` occluder forms both
+ * name it. Override `domId` / `bridgeId` / `testId` to test one kind alone.
+ */
 function modal(id: string, over: Partial<ModalInfo> = {}): ModalInfo {
   return {
     id,
+    domId: id,
+    bridgeId: id,
     type: 'dialog',
     blocking: true,
     blockingSource: 'element',
@@ -470,6 +477,49 @@ describe('buildVisibilityReport — only an ELEMENT-blocking modal makes an over
       const r = sweep({ elements: [covered({ occludedBy })], modalContext: ctx });
       expect(r.expectedOverlaysFiltered).toBe(0);
       expect(r.verdict).toBe('occlusions_found');
+    }
+  });
+});
+
+describe('buildVisibilityReport — each kind of modal identity matches only its own kind', () => {
+  const testIdOnly: SnapshotModalContext = {
+    // `id` is the testid here, exactly as the detector's generateId makes it.
+    modals: [modal('sidebar', { domId: undefined, bridgeId: undefined, testId: 'sidebar' })],
+    hasBlockingModal: true,
+    count: 1,
+  };
+
+  it('(P8) a testid is not a DOM id: an unrelated aside#sidebar is not expected', () => {
+    const r = sweep({
+      elements: [covered({ occludedBy: 'aside#sidebar' })],
+      modalContext: testIdOnly,
+    });
+    expect(r.expectedOverlaysFiltered).toBe(0);
+    expect(r.verdict).toBe('occlusions_found');
+  });
+
+  it('a testid is not a registry id: an occluder registered as `sidebar` is not expected', () => {
+    const r = sweep({ elements: [covered({ occludedBy: 'sidebar' })], modalContext: testIdOnly });
+    expect(r.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('the dialog testid form describeOccluder writes is expected', () => {
+    const r = sweep({
+      elements: [covered({ occludedBy: 'div[data-testid="sidebar"]' })],
+      modalContext: testIdOnly,
+    });
+    expect(r.expectedOverlaysFiltered).toBe(1);
+  });
+
+  it('a generated modal-N id matches nothing', () => {
+    const ctx: SnapshotModalContext = {
+      modals: [modal('modal-0', { domId: undefined, bridgeId: undefined })],
+      hasBlockingModal: true,
+      count: 1,
+    };
+    for (const occludedBy of ['modal-0', 'div#modal-0']) {
+      const r = sweep({ elements: [covered({ occludedBy })], modalContext: ctx });
+      expect(r.expectedOverlaysFiltered).toBe(0);
     }
   });
 });

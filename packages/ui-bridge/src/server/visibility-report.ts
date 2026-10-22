@@ -129,19 +129,19 @@ function decideVerdict(
  *
  * `occludedBy` is produced by `describeOccluder` (core/registry.ts) and is one
  * of: a ui-bridge registry id (when the occluder or an ancestor carries
- * `data-ui-bridge-id`), `tag#domId`, `tag.firstClass`, or a bare `tag`.
- * `ModalInfo.id` is the modal element's DOM id, its `data-testid`, or a
- * generated `modal-N`.
+ * `data-ui-bridge-id`), `tag#domId`, `tag[data-testid="x"]` (only for a
+ * blocking dialog with neither), `tag.firstClass`, or a bare `tag`.
  *
- * The two overlap on exactly the identity-bearing forms, and this matcher
- * accepts ONLY those:
+ * `ModalInfo.id` is NOT used: it is the DOM id, else the `data-testid`, else a
+ * generated `modal-N`, so `tag#<id>` against it would let an unrelated
+ * `<aside id="sidebar">` pass for a dialog whose testid is `sidebar`. Each
+ * kind of identity is matched only against its own kind:
  *
- * - `occludedBy === modal.id` — the occluder is registered under the same id
- * - `occludedBy === modal.bridgeId` — the occluder is the registered modal,
- *   whose registry id differs from its DOM id / testid
- * - `occludedBy === "<tag>#<modal.id>"` — an unregistered occluder (or one
- *   inside a registered container that also holds the covered element),
- *   DOM id match
+ * - `occludedBy === modal.bridgeId` — the occluder is the registered modal
+ *   (registry ids match only here)
+ * - `occludedBy === "<tag>#<modal.domId>"` — named by the dialog's real DOM id
+ * - `occludedBy === "<tag>[data-testid=\"<modal.testId>\"]"` — the testid form
+ *   `describeOccluder` gives a blocking dialog with no stamp and no DOM id
  *
  * Only a modal the ELEMENT itself declares blocking (`blockingSource ===
  * 'element'`: an `alertdialog`, `[role=dialog][aria-modal=true]`, or a
@@ -153,8 +153,9 @@ function decideVerdict(
  * whatever unregistered child of it was hit, and admitting it would mark a
  * real occlusion "expected". A backdrop-only verdict, `blocking: false`, or a
  * missing `blockingSource` (a page SDK older than the field, over the relay)
- * is not admitted. This is the same set `describeOccluder` names a hit by
- * (`isBlockingDialog`). Consequence, accepted: a modal that only a backdrop
+ * is not admitted. `blockingSource: 'element'` is decided by
+ * `isBlockingDialog`, the predicate `describeOccluder` names a dialog by.
+ * Consequence, accepted: a modal that only a backdrop
  * marks as blocking (a Radix/shadcn Dialog, which sets no aria-modal) is not
  * filtered and over-reports.
  *
@@ -164,21 +165,34 @@ function decideVerdict(
  * occlusion regressions this endpoint exists to surface. Under-claiming costs
  * a caller one extra entry to look at; over-claiming costs them the bug.
  */
-function modalIdentities(modalContext: SnapshotModalContext): Set<string> {
-  const ids = new Set<string>();
+interface ModalIdentities {
+  bridgeIds: Set<string>;
+  domIds: Set<string>;
+  testIds: Set<string>;
+}
+
+function modalIdentities(modalContext: SnapshotModalContext): ModalIdentities {
+  const ids: ModalIdentities = { bridgeIds: new Set(), domIds: new Set(), testIds: new Set() };
   for (const modal of modalContext.modals ?? []) {
     if (modal?.blockingSource !== 'element') continue;
-    if (modal.id) ids.add(modal.id);
-    if (modal.bridgeId) ids.add(modal.bridgeId);
+    if (modal.bridgeId) ids.bridgeIds.add(modal.bridgeId);
+    if (modal.domId) ids.domIds.add(modal.domId);
+    if (modal.testId) ids.testIds.add(modal.testId);
   }
   return ids;
 }
 
-function isTrackedOverlay(occludedBy: string, modalIds: Set<string>): boolean {
-  if (modalIds.has(occludedBy)) return true;
-  const hash = occludedBy.indexOf('#');
-  if (hash !== -1 && modalIds.has(occludedBy.slice(hash + 1))) return true;
-  return false;
+/** `tag#id`, as `describeDomNode` writes it. */
+const TAG_ID_FORM = /^[a-z][a-z0-9-]*#(.+)$/;
+/** `tag[data-testid="x"]`, as `describeOccluder` names a testid-only dialog. */
+const TAG_TESTID_FORM = /^[a-z][a-z0-9-]*\[data-testid="(.*)"\]$/;
+
+function isTrackedOverlay(occludedBy: string, modalIds: ModalIdentities): boolean {
+  if (modalIds.bridgeIds.has(occludedBy)) return true;
+  const testId = TAG_TESTID_FORM.exec(occludedBy);
+  if (testId) return modalIds.testIds.has(testId[1]);
+  const domId = TAG_ID_FORM.exec(occludedBy);
+  return domId !== null && modalIds.domIds.has(domId[1]);
 }
 
 /**
@@ -201,7 +215,7 @@ export function buildVisibilityReport(
   const detectionAvailable = input.modalContext !== undefined;
   const modalIds = detectionAvailable
     ? modalIdentities(input.modalContext as SnapshotModalContext)
-    : new Set<string>();
+    : { bridgeIds: new Set<string>(), domIds: new Set<string>(), testIds: new Set<string>() };
 
   const occlusions: VisibilityOcclusionEntry[] = [];
   let expectedOverlaysFiltered = 0;
