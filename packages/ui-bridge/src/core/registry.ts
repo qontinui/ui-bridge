@@ -53,11 +53,12 @@ import {
 import { createStableRef } from './stable-ref';
 import {
   clearRegistryStamp,
+  isRegistryStamp,
   markRegistryStamp,
   ownsRegistryStamp,
   registryStampOwner,
 } from './bridge-stamp';
-import { DEFAULT_MODAL_SELECTORS } from '../modal/modal-detector';
+import { NATIVE_SELECTORS } from '../modal/modal-detector';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -460,11 +461,6 @@ interface ElementStateOptions {
    * centre-only rule, so the dense grid stays a handful per page.
    */
   denseSampling?: boolean;
-  /**
-   * Selectors that mark a modal, for naming an occluder inside one (see
-   * `describeOccluder`). Defaults to the built-in `ModalDetector` set.
-   */
-  modalSelectors?: readonly string[];
 }
 
 /**
@@ -525,8 +521,7 @@ function getElementState(element: HTMLElement, options: ElementStateOptions = {}
     rect,
     computedStyle,
     inViewport,
-    options.denseSampling === true,
-    options.modalSelectors ?? DEFAULT_MODAL_SELECTORS
+    options.denseSampling === true
   );
 
   const state: ElementState = {
@@ -887,15 +882,23 @@ interface VisibilityVerdict {
  * unregistered overlay is still NAMED rather than reported as an anonymous
  * "something".
  *
- * A hit inside a MODAL (an element matching `modalSelectors`, the same set the
- * modal detector reports) that does not itself hold the covered element is
- * named by that modal — its stamp, else its `tag#id` — and the outermost such
- * modal wins. A heading or button inside a dialog IS that dialog, and the
- * expected-overlay matcher recognises a modal only by its own identity. This
- * has to hold even when the child is itself registered (content discovery,
- * media discovery and direct registrations all stamp their node), which is
- * why it is decided on modal membership rather than on which stamp is
- * closest.
+ * A hit inside a BLOCKING DIALOG (`dialog[open]`, `[role=dialog][aria-modal=
+ * true]`, `[role=alertdialog]`: the detector's native selectors) that does not
+ * itself hold the covered element is named by that dialog, the outermost such
+ * dialog winning: its stamp, else `tag#id`, else its `data-testid` (the
+ * detector's own identity order). A heading or button inside a dialog IS that
+ * dialog, and the expected-overlay matcher recognises a modal only by its own
+ * identity — so this must hold when the child is itself registered, since
+ * content discovery, media discovery and direct registrations all stamp their
+ * node.
+ *
+ * It is deliberately narrow, because a wrong dialog name HIDES a real
+ * occlusion as "expected":
+ * - only the dialog-shaped selectors count. The detector's library selectors
+ *   also match non-modal UI (a docked `.MuiDrawer-root`, an open Headless UI
+ *   menu or disclosure), and custom selectors carry no blocking verdict;
+ * - it overrides only REGISTRY-written stamps between the hit and the dialog.
+ *   A developer or hook stamp names its node, as it always has.
  *
  * Otherwise the hit is named by its closest stamped ancestor-or-self, so a
  * registered widget is named precisely (the minimap, not the panel holding
@@ -904,33 +907,57 @@ interface VisibilityVerdict {
  * hide the real overlay: the hit is named by its own DOM id (`tag#id`), else
  * a descriptor.
  */
-function describeOccluder(
-  hit: Element,
-  covered: Element,
-  modalSelectors: readonly string[] = DEFAULT_MODAL_SELECTORS
-): string {
-  let modal: Element | undefined;
-  for (let cur: Element | null = hit; cur && !cur.contains(covered); cur = cur.parentElement) {
-    if (matchesAnySelector(cur, modalSelectors)) modal = cur;
-  }
-  if (modal) return modal.getAttribute('data-ui-bridge-id') || describeDomNode(modal);
+function describeOccluder(hit: Element, covered: Element): string {
+  const stamped = hit.closest<HTMLElement>(STAMP_SELECTOR);
+  const dialog = outermostDialogNotHolding(hit, covered);
+  if (dialog && onlyRegistryStampsBelow(stamped, dialog)) return dialogIdentity(dialog);
 
-  const stamped = hit.closest<HTMLElement>('[data-ui-bridge-id]');
   const id = stamped?.getAttribute('data-ui-bridge-id');
   if (stamped && id && !stamped.contains(covered)) return id;
   return describeDomNode(hit);
 }
 
-/** `el.matches` over a selector list; an invalid selector never matches. */
-function matchesAnySelector(el: Element, selectors: readonly string[]): boolean {
-  for (const selector of selectors) {
-    try {
-      if (el.matches(selector)) return true;
-    } catch {
-      // An invalid (custom) selector matches nothing, as in the detector.
-    }
+const STAMP_SELECTOR = '[data-ui-bridge-id]';
+
+/** The detector's dialog-shaped selectors, joined once for `closest`. */
+const BLOCKING_DIALOG_SELECTOR = NATIVE_SELECTORS.join(', ');
+
+/**
+ * The outermost blocking dialog at or above `hit` that does not hold
+ * `covered`. Hops dialog to dialog with `closest`, so the cost is one native
+ * query per enclosing dialog rather than a selector test per ancestor.
+ */
+function outermostDialogNotHolding(hit: Element, covered: Element): Element | undefined {
+  let found: Element | undefined;
+  let cur: Element | null = hit.closest(BLOCKING_DIALOG_SELECTOR);
+  while (cur && !cur.contains(covered)) {
+    found = cur;
+    cur = cur.parentElement?.closest(BLOCKING_DIALOG_SELECTOR) ?? null;
   }
-  return false;
+  return found;
+}
+
+/**
+ * True when every stamp from `stamped` up to (not including) `dialog` was
+ * written by the registry, so naming the dialog overrides no developer or
+ * hook stamp. A stamp outside the dialog, or the dialog's own, is no
+ * obstacle: the dialog is then the closer or the same name.
+ */
+function onlyRegistryStampsBelow(stamped: Element | null, dialog: Element): boolean {
+  let cur: Element | null = stamped;
+  while (cur && cur !== dialog && dialog.contains(cur)) {
+    if (!isRegistryStamp(cur)) return false;
+    cur = cur.parentElement?.closest(STAMP_SELECTOR) ?? null;
+  }
+  return true;
+}
+
+/** A dialog's name in the order the modal detector identifies it. */
+function dialogIdentity(dialog: Element): string {
+  const stamp = dialog.getAttribute('data-ui-bridge-id');
+  if (stamp) return stamp;
+  if (dialog.id) return describeDomNode(dialog);
+  return dialog.getAttribute('data-testid') || describeDomNode(dialog);
 }
 
 /** First entry of `byNode` at or above `node`, walking `parentElement`. */
@@ -973,8 +1000,7 @@ function computeVisibilityVerdict(
   rect: DOMRect,
   style: CSSStyleDeclaration,
   inViewport: boolean,
-  denseSampling: boolean,
-  modalSelectors: readonly string[]
+  denseSampling: boolean
 ): VisibilityVerdict {
   if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
@@ -1020,7 +1046,7 @@ function computeVisibilityVerdict(
     // covering us.
     if (hit.contains(element)) continue;
     covered++;
-    const who = describeOccluder(hit, element, modalSelectors);
+    const who = describeOccluder(hit, element);
     blame.set(who, (blame.get(who) ?? 0) + 1);
   }
 
@@ -2088,11 +2114,7 @@ export class UIBridgeRegistry {
       value: undefined,
     };
     const computeState = (): ElementState => {
-      const live = getElementState(element, {
-        paintsText,
-        denseSampling,
-        modalSelectors: this.enrichers.modalDetector?.getModalSelectors?.(),
-      });
+      const live = getElementState(element, { paintsText, denseSampling });
       const overlay = stateOverridesRef.value;
       if (!overlay) return live;
       // Shallow-merge: cached overlay wins for fields the action wrote

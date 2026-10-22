@@ -380,7 +380,55 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.expectedOverlaysFiltered).toBe(1);
   });
 
-  it('a custom modal selector the detector was given names the occluder too', async () => {
+  // Review round 2: the dialog override must never turn a real occlusion into
+  // an "expected" one. Only dialog-shaped selectors count, so a docked MUI
+  // drawer (which the detector's `.MuiDrawer-root` also matches) or a custom
+  // selector names its registered child, as before the override existed.
+  it('a docked drawer is not a dialog: its registered child is named and the occlusion is reported', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const drawer = document.createElement('div');
+    drawer.className = 'MuiDrawer-root MuiDrawer-docked';
+    document.body.appendChild(drawer);
+    registry.registerElement('sidebar', drawer, { type: 'generic' });
+    const nav = div(drawer);
+    registry.registerElement('sidebar-nav', nav, { type: 'generic' });
+    document.elementFromPoint = (() => nav) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'main-title')).toMatchObject({
+      occludedBy: 'sidebar-nav',
+      isExpectedOverlay: false,
+    });
+  });
+
+  it('an open Headless UI menu is not a dialog either', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const menu = document.createElement('div');
+    menu.setAttribute('data-headlessui-state', 'open');
+    document.body.appendChild(menu);
+    registry.registerElement('user-menu', menu, { type: 'generic' });
+    const item = div(menu);
+    registry.registerElement('user-menu-item', item, { type: 'generic' });
+    document.elementFromPoint = (() => item) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'main-title')?.occludedBy).toBe(
+      'user-menu-item'
+    );
+  });
+
+  it('a custom-selector modal does not override a registered child (pinned under-claim)', async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector({ customSelectors: ['.sheet'] }) });
     const label = div();
@@ -396,8 +444,100 @@ describe('in-page /control/visibility reports the census', () => {
     document.elementFromPoint = (() => field) as typeof document.elementFromPoint;
 
     const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe(
+      'filters-query'
+    );
+  });
+
+  it('a developer/hook stamp inside a dialog keeps naming its node', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.id = 'confirm-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const ok = document.createElement('button');
+    ok.setAttribute('data-ui-bridge-id', 'confirm-ok');
+    dialog.appendChild(ok);
+    document.body.appendChild(dialog);
+    registry.registerElement('confirm-ok', ok, { type: 'button' });
+    document.elementFromPoint = (() => ok) as typeof document.elementFromPoint;
+
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe('confirm-ok');
+  });
+
+  it('a covered element INSIDE the dialog is covered by the popover, not by the dialog', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const dialog = document.createElement('div');
+    dialog.id = 'dlg';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+    registry.registerElement('dlg', dialog, { type: 'generic' });
+    const field = div(dialog);
+    field.textContent = 'Name';
+    registry.registerElement('dlg-name', field, { type: 'generic' });
+    const popover = div(dialog);
+    registry.registerElement('dlg-popover', popover, { type: 'generic' });
+    document.elementFromPoint = (() => popover) as typeof document.elementFromPoint;
+
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'dlg-name')).toMatchObject({
+      occludedBy: 'dlg-popover',
+      isExpectedOverlay: false,
+    });
+  });
+
+  it('nested dialogs: the outermost dialog that does not hold the covered element names the hit', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const outer = document.createElement('div');
+    outer.setAttribute('role', 'dialog');
+    outer.setAttribute('aria-modal', 'true');
+    document.body.appendChild(outer);
+    registry.registerElement('settings', outer, { type: 'generic' });
+    const inner = document.createElement('div');
+    inner.setAttribute('role', 'alertdialog');
+    outer.appendChild(inner);
+    registry.registerElement('settings-confirm', inner, { type: 'generic' });
+    const button = document.createElement('button');
+    inner.appendChild(button);
+    registry.registerElement('settings-confirm-ok', button, { type: 'button' });
+    document.elementFromPoint = (() => button) as typeof document.elementFromPoint;
+
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'zone-label')).toMatchObject({
+      occludedBy: 'settings',
+      isExpectedOverlay: true,
+    });
+  });
+
+  it('an unregistered dialog with only a data-testid is named by it, as the detector names it', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('data-testid', 'delete-confirm');
+    const title = document.createElement('h2');
+    dialog.appendChild(title);
+    document.body.appendChild(dialog);
+    registry.registerElement('delete-title', title, { type: 'generic' });
+    document.elementFromPoint = (() => title) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
     expect(report.expectedOverlaysFiltered).toBe(1);
-    expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
   });
 
   it('outside any modal the closest registered widget is named, not the panel holding it', async () => {
