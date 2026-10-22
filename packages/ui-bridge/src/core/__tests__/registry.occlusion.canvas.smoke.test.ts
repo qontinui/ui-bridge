@@ -25,6 +25,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { chromiumAvailable } from '../../../../../test-support/chromium-gate.mjs';
 import type { UIBridgeRegistry } from '../registry';
 import type { ElementState } from '../types';
+import type { VisibilityReport } from '../../server/types';
 
 const PLAYWRIGHT_AVAILABLE = chromiumAvailable();
 
@@ -139,6 +140,74 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('canvas-aware occlusion (real Chromium)',
       return JSON.parse(JSON.stringify(state)) as ElementState;
     }, id);
   }
+
+  /** `POST /control/visibility` through the in-page handler, over the page's registry. */
+  async function sweep(): Promise<VisibilityReport> {
+    return page.evaluate(async () => {
+      const api = (window as unknown as { __smoke: SmokeApi }).__smoke;
+      const registry = (window as unknown as { __registry: UIBridgeRegistry }).__registry;
+      const handlers = api.createHandlers(registry, new api.DefaultActionExecutor(registry), {
+        idleDetection: false,
+      });
+      const res = await handlers.visibility();
+      return JSON.parse(JSON.stringify(res.data)) as VisibilityReport;
+    });
+  }
+
+  it('the in-page sweep names the card over the terminal as hiding painted text', async () => {
+    await freshPage();
+    try {
+      const report = await sweep();
+      expect(report.verdict).toBe('occlusions_found');
+      const entry = report.occlusions.find((o) => o.element === 'terminal-surface-a');
+      expect(entry).toMatchObject({
+        occludedBy: 'div#card',
+        hidesText: true,
+        textSource: 'painted',
+      });
+      // Both xterm-like layers are inside the paintsText container.
+      expect(report.canvasCoverage).toEqual({
+        state: 'measured',
+        canvases: 2,
+        attributed: 2,
+        unattributed: [],
+      });
+      // The collapsed <details> child is not an occlusion.
+      expect(report.occlusions.map((o) => o.element)).not.toContain('content-code-block');
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it('with the overlays gone the sweep reads clear; an unregistered canvas turns it unknown_canvas', async () => {
+    await freshPage();
+    try {
+      await page.evaluate(() => {
+        document.getElementById('card')!.remove();
+        document.getElementById('strip')!.remove();
+      });
+      expect((await sweep()).verdict).toBe('clear');
+
+      await page.evaluate(() => {
+        const chart = document.createElement('canvas');
+        chart.id = 'chart';
+        chart.style.cssText = 'position:absolute; left:820px; top:0; width:180px; height:120px;';
+        document.body.appendChild(chart);
+      });
+      const report = await sweep();
+      expect(report.verdict).toBe('unknown_canvas');
+      expect(report.canvasCoverage).toEqual({
+        state: 'measured',
+        canvases: 3,
+        attributed: 2,
+        unattributed: [
+          { descriptor: 'canvas#chart', rect: { x: 820, y: 0, width: 180, height: 120 } },
+        ],
+      });
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
 
   it('reports the fixed card over the terminal container, and never a canvas layer', async () => {
     await freshPage();
