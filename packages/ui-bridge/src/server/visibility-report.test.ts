@@ -103,12 +103,8 @@ describe('buildVisibilityReport — the sweep', () => {
   it('filters hairline overlaps below minRatio, default 0.02', () => {
     const hairline = covered({ occludedPct: 1 });
     expect(sweep({ elements: [hairline] }).occlusions).toEqual([]);
-    expect(
-      sweep({ elements: [hairline], minRatio: 0 }).occlusions
-    ).toHaveLength(1);
-    expect(sweep({ elements: [hairline] }).minRatio).toBe(
-      DEFAULT_VISIBILITY_MIN_RATIO
-    );
+    expect(sweep({ elements: [hairline], minRatio: 0 }).occlusions).toHaveLength(1);
+    expect(sweep({ elements: [hairline] }).minRatio).toBe(DEFAULT_VISIBILITY_MIN_RATIO);
   });
 
   it('ranks text-hiding occlusions above blank ones, then by ratio', () => {
@@ -240,8 +236,16 @@ describe('buildVisibilityReport — the two surfaces agree', () => {
   // shape and call this function, so the reports must be identical.
   it('produces one report from in-page and relay-shaped inputs', () => {
     const live = [
-      { id: 'a', label: 'A', getState: () => ({ occludedBy: 'modal-0', occludedPct: 70, textContent: 'A' }) },
-      { id: 'b', label: 'B', getState: () => ({ occludedBy: 'toolbar', occludedPct: 40, textContent: 'B' }) },
+      {
+        id: 'a',
+        label: 'A',
+        getState: () => ({ occludedBy: 'modal-0', occludedPct: 70, textContent: 'A' }),
+      },
+      {
+        id: 'b',
+        label: 'B',
+        getState: () => ({ occludedBy: 'toolbar', occludedPct: 40, textContent: 'B' }),
+      },
     ];
     const snapshot = [
       { id: 'a', label: 'A', state: { occludedBy: 'modal-0', occludedPct: 70, textContent: 'A' } },
@@ -320,13 +324,19 @@ describe('buildVisibilityReport — canvas coverage and the four-value verdict',
     };
     expect(sweep({ elements: [clean], canvasCoverage: coverage }).verdict).toBe('unknown_canvas');
 
-    const allSwept: CanvasCoverage = { state: 'measured', canvases: 4, attributed: 4, unattributed: [] };
+    const allSwept: CanvasCoverage = {
+      state: 'measured',
+      canvases: 4,
+      attributed: 4,
+      unattributed: [],
+    };
     expect(sweep({ elements: [clean], canvasCoverage: allSwept }).verdict).toBe('clear');
   });
 
   it.each([
     'page-sdk-lacks-coverage' as const,
     'accessor-threw' as const,
+    'no-document' as const,
     'ipc-failed' as const,
   ])('coverage unavailable (%s) withholds clear: unknown_canvas, reason echoed', (reason) => {
     const coverage: CanvasCoverage = { state: 'unavailable', reason };
@@ -383,7 +393,12 @@ describe('buildVisibilityReport — painted text', () => {
   it('an occluded paintsText element hides text, sourced painted, with no DOM text', () => {
     const r = sweep({
       elements: [
-        covered({ id: 'terminal-surface-a', textContent: '', paintsText: true, occludedBy: 'div#card' }),
+        covered({
+          id: 'terminal-surface-a',
+          textContent: '',
+          paintsText: true,
+          occludedBy: 'div#card',
+        }),
       ],
     });
     expect(r.occlusions[0]).toMatchObject({
@@ -431,4 +446,3 @@ describe('buildVisibilityReport — a registered modal is recognised by its regi
     expect(r.occlusions).toEqual([]);
   });
 });
-

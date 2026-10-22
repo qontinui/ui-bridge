@@ -441,4 +441,44 @@ describe('in-page /control/visibility reports the census', () => {
     expect(threw.canvasCoverage).toEqual({ state: 'unavailable', reason: 'accessor-threw' });
     expect(threw.verdict).toBe('unknown_canvas');
   });
+
+  // Review L2: a registry with no DOM did not throw; say so, and still
+  // withhold clear.
+  it('with no document the census is unavailable as no-document, never accessor-threw', async () => {
+    const live = new UIBridgeRegistry();
+    const el = div();
+    el.textContent = 'x';
+    live.registerElement('a', el, { type: 'generic' });
+    // States read while the DOM exists: only the census runs DOM-less.
+    const states = live.getAllElements().map((e) => {
+      const state = e.getState();
+      return { ...e, getState: () => state };
+    });
+    const handlers = createHandlers(
+      {
+        getAllElements: () => states,
+        getElement: (id: string) => live.getElement(id),
+        getAllComponents: () => [],
+        getComponent: () => undefined,
+        createSnapshot: () => live.createSnapshot() as never,
+        getCanvasCoverage: () => live.getCanvasCoverage(),
+      } as RegistryLike,
+      new DefaultActionExecutor(new UIBridgeRegistry()) as never,
+      { idleDetection: false }
+    );
+    const realDocument = globalThis.document;
+    let report: VisibilityReport;
+    try {
+      // @ts-expect-error -- simulate a server-side registry with no DOM
+      delete globalThis.document;
+      expect(typeof document).toBe('undefined');
+      const res = await handlers.visibility!();
+      if (!res.success) throw new Error(JSON.stringify(res));
+      report = res.data as VisibilityReport;
+    } finally {
+      globalThis.document = realDocument;
+    }
+    expect(report.canvasCoverage).toEqual({ state: 'unavailable', reason: 'no-document' });
+    expect(report.verdict).not.toBe('clear');
+  });
 });

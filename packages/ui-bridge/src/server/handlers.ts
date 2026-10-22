@@ -897,12 +897,16 @@ function createFailureDetails(
  */
 /**
  * The live registry's canvas census, as `/control/visibility` reports it. A
- * registry without the accessor predates it; one whose accessor answers
- * `undefined` threw. Neither is "no canvases".
+ * registry without the accessor predates it; with no `document` there is
+ * nothing to count; otherwise an accessor that answers `undefined` threw.
+ * None of them is "no canvases", so each withholds `clear`.
  */
 function inPageCanvasCoverage(registry: RegistryLike): CanvasCoverage {
   if (typeof registry.getCanvasCoverage !== 'function') {
     return { state: 'unavailable', reason: 'page-sdk-lacks-coverage' };
+  }
+  if (typeof document === 'undefined') {
+    return { state: 'unavailable', reason: 'no-document' };
   }
   return registry.getCanvasCoverage() ?? { state: 'unavailable', reason: 'accessor-threw' };
 }
