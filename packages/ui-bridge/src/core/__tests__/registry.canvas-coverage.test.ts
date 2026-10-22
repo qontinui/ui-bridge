@@ -217,13 +217,16 @@ describe('the census rides every DOM-side snapshot', () => {
 });
 
 describe('in-page /control/visibility reports the census', () => {
-  async function visibility(registry: RegistryLike): Promise<VisibilityReport> {
+  async function visibility(
+    registry: RegistryLike,
+    params?: { includeExpected?: boolean }
+  ): Promise<VisibilityReport> {
     const handlers = createHandlers(
       registry,
       new DefaultActionExecutor(new UIBridgeRegistry()) as never,
       { idleDetection: false }
     );
-    const res = await handlers.visibility!();
+    const res = await handlers.visibility!(params);
     expect(res.success).toBe(true);
     return res.data as VisibilityReport;
   }
@@ -314,6 +317,106 @@ describe('in-page /control/visibility reports the census', () => {
     const report = await visibility(registry as unknown as RegistryLike);
     expect(report.expectedOverlaysFiltered).toBe(1);
     expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
+  });
+
+  // Review H1: every registration door stamps its node, so a REGISTERED child
+  // of a dialog carries its own stamp. Naming the hit by the closest stamp
+  // would report the child's id, which is neither the modal's DOM id nor its
+  // bridgeId, and the expected-overlay filter would miss the open dialog.
+  it('a REGISTERED heading inside a registered dialog is still the dialog: an expected overlay', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.id = 'confirm-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const title = document.createElement('h2');
+    title.textContent = 'Discard changes?';
+    dialog.appendChild(title);
+    document.body.appendChild(dialog);
+    registry.registerElement('confirm', dialog, { type: 'generic' });
+    // Content discovery's door: it stamps the heading with its own id.
+    registry.registerContentElement('heading-2-discard', title, {
+      contentType: 'heading',
+      contentMetadata: {} as never,
+      label: 'Discard changes?',
+    });
+    expect(title.getAttribute('data-ui-bridge-id')).toBe('heading-2-discard');
+    document.elementFromPoint = (() => title) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(1);
+    expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
+
+    // includeExpected shows WHO: the dialog, by its bridge id.
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe('confirm');
+  });
+
+  it("a registered child of an UNREGISTERED dialog is named by the dialog's DOM id", async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('dialog');
+    dialog.id = 'settings';
+    dialog.setAttribute('open', '');
+    const save = document.createElement('button');
+    save.textContent = 'Save';
+    dialog.appendChild(save);
+    document.body.appendChild(dialog);
+    registry.registerElement('settings-save', save, { type: 'button' });
+    document.elementFromPoint = (() => save) as typeof document.elementFromPoint;
+
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe(
+      'dialog#settings'
+    );
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(1);
+  });
+
+  it('a custom modal selector the detector was given names the occluder too', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector({ customSelectors: ['.sheet'] }) });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet';
+    sheet.id = 'filters-sheet';
+    const field = document.createElement('input');
+    sheet.appendChild(field);
+    document.body.appendChild(sheet);
+    registry.registerElement('filters-query', field, { type: 'input' });
+    document.elementFromPoint = (() => field) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(1);
+    expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
+  });
+
+  it('outside any modal the closest registered widget is named, not the panel holding it', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 1';
+    registry.registerElement('zone-1-label', label, { type: 'generic' });
+    const panel = div();
+    registry.registerElement('zone-2-panel', panel, { type: 'generic' });
+    const minimap = div(panel);
+    registry.registerElement('zone-2-minimap', minimap, { type: 'generic' });
+    document.elementFromPoint = (() => minimap) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'zone-1-label')?.occludedBy).toBe(
+      'zone-2-minimap'
+    );
   });
 
   it('a registry without the accessor is page-sdk-lacks-coverage; one that answers undefined threw', async () => {
