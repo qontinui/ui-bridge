@@ -356,19 +356,27 @@ describe('in-page /control/visibility reports the census', () => {
     expect(all.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe('confirm');
   });
 
-  it("a registered child of an UNREGISTERED dialog is named by the dialog's DOM id", async () => {
+  /** A `<dialog open>` whose `:modal` reads `modal` (jsdom has no showModal). */
+  function openDialog(id: string, modal: boolean): HTMLDialogElement {
+    const dialog = document.createElement('dialog');
+    dialog.id = id;
+    dialog.setAttribute('open', '');
+    const realMatches = dialog.matches.bind(dialog);
+    dialog.matches = (selector: string) => (selector === ':modal' ? modal : realMatches(selector));
+    document.body.appendChild(dialog);
+    return dialog;
+  }
+
+  it("a registered child of an UNREGISTERED modal <dialog> is named by the dialog's DOM id", async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector() });
     const label = div();
     label.textContent = 'Zone 8';
     registry.registerElement('zone-label', label, { type: 'generic' });
-    const dialog = document.createElement('dialog');
-    dialog.id = 'settings';
-    dialog.setAttribute('open', '');
+    const dialog = openDialog('settings', true);
     const save = document.createElement('button');
     save.textContent = 'Save';
     dialog.appendChild(save);
-    document.body.appendChild(dialog);
     registry.registerElement('settings-save', save, { type: 'button' });
     document.elementFromPoint = (() => save) as typeof document.elementFromPoint;
 
@@ -380,10 +388,49 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.expectedOverlaysFiltered).toBe(1);
   });
 
-  // Review round 2: the dialog override must never turn a real occlusion into
-  // an "expected" one. Only dialog-shaped selectors count, so a docked MUI
-  // drawer (which the detector's `.MuiDrawer-root` also matches) or a custom
-  // selector names its registered child, as before the override existed.
+  // Review round 3, item 2: `dialog[open]` also matches a dialog opened with
+  // show(), which blocks nothing. It is neither a dialog that names the hit
+  // nor a modal the filter admits.
+  it('a NON-modal <dialog open> (show()) is a real occlusion, named by its registered child', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = openDialog('find-bar', false);
+    const input = document.createElement('input');
+    dialog.appendChild(input);
+    registry.registerElement('find-query', input, { type: 'input' });
+    document.elementFromPoint = (() => input) as typeof document.elementFromPoint;
+
+    expect(registry.getModalContext()?.modals[0]).toMatchObject({
+      id: 'find-bar',
+      blocking: false,
+    });
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'zone-label')?.occludedBy).toBe(
+      'find-query'
+    );
+  });
+
+  it('a NON-modal <dialog open> named by its own DOM id is not expected either', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = openDialog('find-bar', false);
+    document.elementFromPoint = (() => dialog) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.occlusions.find((o) => o.element === 'zone-label')).toMatchObject({
+      occludedBy: 'dialog#find-bar',
+      isExpectedOverlay: false,
+    });
+  });
+
   it('a docked drawer is not a dialog: its registered child is named and the occlusion is reported', async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector() });
@@ -426,6 +473,112 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.occlusions.find((o) => o.element === 'main-title')?.occludedBy).toBe(
       'user-menu-item'
     );
+  });
+
+  // Review round 3: the expected-overlay FILTER admits only blocking modals.
+  // A detected but non-blocking "modal" (docked drawer, open menu, Radix
+  // popover) that is itself registered must not make its own occlusions
+  // expected when the hit is an unregistered child named by its stamp.
+  it('a registered docked drawer hit through an unregistered child is a real occlusion', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const drawer = document.createElement('div');
+    drawer.className = 'MuiDrawer-root MuiDrawer-docked';
+    document.body.appendChild(drawer);
+    registry.registerElement('sidebar', drawer, { type: 'generic' });
+    const link = div(drawer);
+    document.elementFromPoint = (() => link) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+    expect(report.occlusions.find((o) => o.element === 'main-title')).toMatchObject({
+      occludedBy: 'sidebar',
+      isExpectedOverlay: false,
+    });
+  });
+
+  it('a registered open Headless UI menu hit through an unregistered item is a real occlusion', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const menu = document.createElement('div');
+    menu.setAttribute('data-headlessui-state', 'open');
+    document.body.appendChild(menu);
+    registry.registerElement('user-menu', menu, { type: 'generic' });
+    const item = div(menu);
+    document.elementFromPoint = (() => item) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('a registered non-modal Radix popover (role=dialog, no aria-modal) is a real occlusion', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const popover = document.createElement('div');
+    popover.id = 'radix-popover-1';
+    popover.setAttribute('role', 'dialog');
+    popover.setAttribute('data-state', 'open');
+    document.body.appendChild(popover);
+    registry.registerElement('filters-popover', popover, { type: 'generic' });
+    const body = div(popover);
+    document.elementFromPoint = (() => body) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('a genuine aria-modal dialog hit through an unregistered child is still expected', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+    registry.registerElement('confirm', dialog, { type: 'generic' });
+    const text = div(dialog);
+    document.elementFromPoint = (() => text) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(report.expectedOverlaysFiltered).toBe(1);
+    expect(report.occlusions.map((o) => o.element)).not.toContain('main-title');
+  });
+
+  it('a dialog with both a DOM id and a data-testid is named by the DOM id', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.id = 'delete-dialog';
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('data-testid', 'delete-confirm');
+    const title = document.createElement('h2');
+    dialog.appendChild(title);
+    document.body.appendChild(dialog);
+    registry.registerElement('delete-title', title, { type: 'generic' });
+    document.elementFromPoint = (() => title) as typeof document.elementFromPoint;
+
+    const all = await visibility(registry as unknown as RegistryLike, { includeExpected: true });
+    expect(all.occlusions.find((o) => o.element === 'zone-label')).toMatchObject({
+      occludedBy: 'div#delete-dialog',
+      isExpectedOverlay: true,
+    });
   });
 
   it('a custom-selector modal does not override a registered child (pinned under-claim)', async () => {

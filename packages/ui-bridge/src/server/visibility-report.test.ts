@@ -446,3 +446,25 @@ describe('buildVisibilityReport — a registered modal is recognised by its regi
     expect(r.occlusions).toEqual([]);
   });
 });
+
+describe('buildVisibilityReport — only a BLOCKING modal makes an overlay expected', () => {
+  // The relay builds this report from a page's snapshot `modalStack`, so the
+  // flag may come from any page SDK. Only an explicit `blocking: true` counts:
+  // `false` (a docked drawer, an open menu, a non-modal popover) or a missing
+  // flag must never turn a real occlusion into an "expected" one.
+  it.each([
+    ['blocking: false', { blocking: false }],
+    ['no blocking flag', { blocking: undefined as unknown as boolean }],
+  ])('a modal with %s is not an expected overlay, by bridgeId or by id', (_name, over) => {
+    const ctx: SnapshotModalContext = {
+      modals: [modal('sidebar-drawer', { ...over, bridgeId: 'sidebar', type: 'drawer' })],
+      hasBlockingModal: false,
+      count: 1,
+    };
+    for (const occludedBy of ['sidebar', 'sidebar-drawer', 'div#sidebar-drawer']) {
+      const r = sweep({ elements: [covered({ occludedBy })], modalContext: ctx });
+      expect(r.expectedOverlaysFiltered).toBe(0);
+      expect(r.verdict).toBe('occlusions_found');
+    }
+  });
+});

@@ -18,18 +18,52 @@ import { readAriaLabelAttr, readAriaLabelledbyAttr } from '../core/a11y';
 // Default selectors for common modal patterns
 // ---------------------------------------------------------------------------
 
-/**
- * Native and ARIA modal selectors: the dialog-shaped, blocking subset of what
- * the detector reports. The registry's occlusion hit-test names a hit inside
- * one of these by the dialog itself (see `describeOccluder`); the library
- * selectors below are deliberately NOT used there, because some of them also
- * match non-modal UI (a docked `.MuiDrawer-root`, an open Headless UI menu).
- */
-export const NATIVE_SELECTORS: readonly string[] = [
+/** Native and ARIA modal selectors */
+const NATIVE_SELECTORS: readonly string[] = [
   'dialog[open]',
   '[role="dialog"][aria-modal="true"]',
   '[role="alertdialog"]',
 ];
+
+/**
+ * The native selectors joined for one `closest` query: the candidates for a
+ * BLOCKING DIALOG. A match is blocking only when `isBlockingDialog` agrees
+ * (`dialog[open]` also matches a dialog opened non-modally with `show()`).
+ * The registry's occlusion hit-test names a hit inside a blocking dialog by
+ * that dialog (`describeOccluder`). The library selectors are deliberately not
+ * candidates: some also match non-modal UI (a docked `.MuiDrawer-root`, an
+ * open Headless UI menu).
+ */
+export const BLOCKING_DIALOG_SELECTOR = NATIVE_SELECTORS.join(', ');
+
+/**
+ * True when `el` is a `<dialog>` shown modally (`showModal()`), read through
+ * the `:modal` pseudo-class. An engine that does not support `:modal` (it
+ * throws) answers `false`: a dialog of unknown modality must never make an
+ * overlay "expected", so the unknown case under-claims. Chromium/WebView2,
+ * Firefox and Safari all support it; jsdom parses it but implements no
+ * `showModal`, so there a dialog is never modal.
+ */
+export function isModalDialog(el: Element): boolean {
+  try {
+    return el.matches(':modal');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The element-level half of the detector's blocking verdict, without the
+ * backdrop heuristic: an `alertdialog`, an author-asserted `aria-modal="true"`,
+ * or a `<dialog>` shown modally. The detector's `blocking` is this OR a
+ * detected backdrop, so every dialog the registry names is also a modal the
+ * expected-overlay filter admits.
+ */
+export function isBlockingDialog(el: Element): boolean {
+  if (el.getAttribute('role') === 'alertdialog') return true;
+  if (el.getAttribute('aria-modal') === 'true') return true;
+  return el.tagName === 'DIALOG' && isModalDialog(el);
+}
 
 /** Popular component library selectors */
 const LIBRARY_SELECTORS = [
@@ -215,9 +249,10 @@ function detectBackdrop(el: Element): boolean {
     return true;
   }
 
-  // Native <dialog> elements with ::backdrop
+  // A native <dialog> renders ::backdrop only when shown modally
+  // (showModal(), `:modal`); one opened with show() has none.
   if (el.tagName === 'DIALOG') {
-    return true;
+    return isModalDialog(el);
   }
 
   // Check for aria-modal (typically has a backdrop)
@@ -310,14 +345,9 @@ function isEscDismissable(el: Element): boolean {
  * Determine if this modal blocks interaction with content behind it.
  */
 function isBlocking(el: Element, hasBackdropEl: boolean): boolean {
-  if (el.getAttribute('role') === 'alertdialog') return true;
-  if (el.getAttribute('aria-modal') === 'true') return true;
-  if (hasBackdropEl) return true;
-
-  // Native <dialog> opened via showModal() has aria-modal behavior
-  if (el.tagName === 'DIALOG') return true;
-
-  return false;
+  // A native <dialog> blocks only when opened via showModal() (`:modal`); one
+  // opened with show() is a non-modal dialog.
+  return isBlockingDialog(el) || hasBackdropEl;
 }
 
 /**
