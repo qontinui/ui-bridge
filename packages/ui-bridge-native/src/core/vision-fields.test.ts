@@ -375,6 +375,45 @@ describe('resolveObjectFit — what an RN Image actually paints', () => {
   });
 });
 
+describe('resolveObjectFit — an expo-image `contentFit`', () => {
+  it('reads contentFit as the CSS object-fit it already is', () => {
+    expect(resolveObjectFit({ contentFit: 'cover' }, undefined)).toBe('cover');
+    expect(resolveObjectFit({ contentFit: 'contain' }, undefined)).toBe('contain');
+    expect(resolveObjectFit({ contentFit: 'fill' }, undefined)).toBe('fill');
+    expect(resolveObjectFit({ contentFit: 'none' }, undefined)).toBe('none');
+    // expo-image paints scale-down itself; only RN's Image degrades it to contain.
+    expect(resolveObjectFit({ contentFit: 'scale-down' }, undefined)).toBe('scale-down');
+  });
+
+  it('wins over resizeMode and the style, as expo-image reads it first', () => {
+    expect(
+      resolveObjectFit({ contentFit: 'contain', resizeMode: 'cover' }, { objectFit: 'fill' })
+    ).toBe('contain');
+  });
+
+  it('is UNKNOWN when set outside the vocabulary — never a fall-through', () => {
+    expect(
+      resolveObjectFit({ contentFit: 'stretch', resizeMode: 'cover' }, undefined)
+    ).toBeUndefined();
+    expect(resolveObjectFit({ contentFit: 'constructor' }, undefined)).toBeUndefined();
+  });
+
+  it('an empty contentFit is unset, so the resize mode decides', () => {
+    expect(resolveObjectFit({ contentFit: '', resizeMode: 'cover' }, undefined)).toBe('cover');
+  });
+
+  it('reaches media.object_fit', () => {
+    const media = projectMedia({
+      layout: LAYOUT,
+      props: { source: { uri: 'https://x/a.png' }, contentFit: 'cover' },
+      flatStyle: undefined,
+      accessibilityLabel: undefined,
+      inViewport: true,
+    });
+    expect(media.object_fit).toBe('cover');
+  });
+});
+
 describe('resolveImageSource — the URL an RN Image displays', () => {
   it('reads source.uri, a one-element source array, and src (which wins)', () => {
     expect(resolveImageSource({ source: { uri: SHARED_SRC } })).toBe(SHARED_SRC);
