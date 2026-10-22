@@ -572,6 +572,47 @@ describe('the registry-owned stamp', () => {
     expect(first.hasAttribute('data-ui-bridge-id')).toBe(false);
   });
 
+  // Review round 4, probe F: moving an id to another node must not leave the
+  // old node naming it forever.
+  it("moving an id to another node hands the old node's stamp to its remaining id", () => {
+    const registry = new UIBridgeRegistry();
+    const n = document.createElement('div');
+    const m = document.createElement('div');
+    document.body.append(n, m);
+    registry.registerElement('a', n, { type: 'generic' });
+    registry.registerElement('b', n, { type: 'generic' });
+    registry.registerElement('a', m, { type: 'generic' });
+
+    expect(n.getAttribute('data-ui-bridge-id')).toBe('b');
+    expect(m.getAttribute('data-ui-bridge-id')).toBe('a');
+  });
+
+  it("moving a node's only id away leaves the old node unstamped", () => {
+    const registry = new UIBridgeRegistry();
+    const n = document.createElement('div');
+    const m = document.createElement('div');
+    document.body.append(n, m);
+    registry.registerElement('a', n, { type: 'generic' });
+    registry.registerElement('a', m, { type: 'generic' });
+
+    expect(n.hasAttribute('data-ui-bridge-id')).toBe(false);
+    expect(m.getAttribute('data-ui-bridge-id')).toBe('a');
+  });
+
+  it('a stale id-index candidate never inherits a stamp: the live entry decides', () => {
+    const registry = new UIBridgeRegistry();
+    const n = document.createElement('div');
+    document.body.appendChild(n);
+    registry.registerElement('a', n, { type: 'generic' });
+    // Corrupt the advisory index directly: `ghost` is registered nowhere.
+    (registry as unknown as { idsByNode: WeakMap<Element, Set<string>> }).idsByNode
+      .get(n)
+      ?.add('ghost');
+
+    registry.unregisterElement('a');
+    expect(n.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
   it('the stamp is never handed across registries (pinned)', () => {
     const first = new UIBridgeRegistry();
     const second = new UIBridgeRegistry();

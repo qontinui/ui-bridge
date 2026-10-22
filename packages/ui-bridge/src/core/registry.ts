@@ -1282,7 +1282,34 @@ export class UIBridgeRegistry {
    * heir without scanning every entry (a mass unmount would be quadratic).
    * Advisory: a candidate is confirmed against the live entry before use.
    */
-  private readonly idsByNode = new WeakMap<Element, Set<string>>();
+  private idsByNode = new WeakMap<Element, Set<string>>();
+
+  /**
+   * `id` no longer lives on `node` (unregistered, or moved to another node).
+   * Drop it from the node's id index and, when this registry's stamp on the
+   * node names `id`, take the stamp back and hand it to another live
+   * registration of this registry on the same node, so the node stays named.
+   *
+   * Multi-window corner, accepted: `findElement` resolves an id to one
+   * window's entry, so where the same id is registered in several windows a
+   * candidate living in another window can fail the live check and the node
+   * is left unstamped rather than mis-stamped.
+   */
+  private releaseStamp(node: Element, id: string): void {
+    const nodeIds = this.idsByNode.get(node);
+    nodeIds?.delete(id);
+    if (!ownsRegistryStamp(node, this.stampToken, id)) return;
+    node.removeAttribute('data-ui-bridge-id');
+    clearRegistryStamp(node);
+    for (const candidate of nodeIds ?? []) {
+      // The index is advisory: only a live entry on this node inherits.
+      if (this.findElement(candidate)?.element === node) {
+        node.setAttribute('data-ui-bridge-id', candidate);
+        markRegistryStamp(node, this.stampToken, candidate);
+        return;
+      }
+    }
+  }
 
   /**
    * Stable per-instance tag assigned at construction time. Used by
@@ -2217,7 +2244,8 @@ export class UIBridgeRegistry {
     if (prior) {
       this.decrementRouteCount(windowLabel, prior.route, actualId);
       if (prior.element && prior.element !== element) {
-        this.idsByNode.get(prior.element)?.delete(actualId);
+        // The id MOVES to another node: the old node must stop naming it.
+        this.releaseStamp(prior.element, actualId);
       }
     }
     bucket.set(actualId, registered);
@@ -2513,25 +2541,7 @@ export class UIBridgeRegistry {
       // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
       // not adopt it under the stale id).
       const node = registered.element;
-      const nodeIds = node ? this.idsByNode.get(node) : undefined;
-      nodeIds?.delete(id);
-      if (node && ownsRegistryStamp(node, this.stampToken, id)) {
-        node.removeAttribute('data-ui-bridge-id');
-        clearRegistryStamp(node);
-        // Another live registration of this registry on the same node still
-        // answers to a stamp: hand it the stamp, so the node stays named.
-        let heir: string | undefined;
-        for (const candidate of nodeIds ?? []) {
-          if (this.findElement(candidate)?.element === node) {
-            heir = candidate;
-            break;
-          }
-        }
-        if (heir) {
-          node.setAttribute('data-ui-bridge-id', heir);
-          markRegistryStamp(node, this.stampToken, heir);
-        }
-      }
+      if (node) this.releaseStamp(node, id);
       // F3: drop this element from the per-window/per-route tally. Note we do
       // NOT clear `everHadRegistrationsFlag` — it's a one-way latch that stays
       // true for the rest of the registry's lifetime so callers can tell
@@ -4069,6 +4079,7 @@ export class UIBridgeRegistry {
     // unregister it resets the route tally AND the sticky latch, matching
     // the lifetime semantics expected after `resetGlobalRegistry()`.
     this.routeIdsByWindow.clear();
+    this.idsByNode = new WeakMap();
     this.everHadRegistrationsFlag = false;
     // Same lifetime semantics as the latch above: a full teardown means this
     // registry has never been snapshotted again, which is UNKNOWN rather than
