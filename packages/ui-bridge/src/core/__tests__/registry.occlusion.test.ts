@@ -546,6 +546,19 @@ describe('the registry-owned stamp', () => {
     expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
   });
 
+  it('unregistering the stamp holder hands the stamp to another live id on the node', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    registry.registerElement('a', div, { type: 'generic' });
+    registry.registerElement('b', div, { type: 'generic' });
+
+    registry.unregisterElement('a');
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('b');
+    registry.unregisterElement('b');
+    expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
   it('another registry never removes a stamp this registry wrote', () => {
     const first = new UIBridgeRegistry();
     const second = new UIBridgeRegistry();

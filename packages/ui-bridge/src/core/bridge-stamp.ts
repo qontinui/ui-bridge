@@ -21,7 +21,10 @@
 
 /** Who wrote a registry stamp, and the id it wrote. */
 interface StampOwner {
-  /** The registry instance that wrote it (several registries can share a DOM). */
+  /**
+   * Token of the registry that wrote it (several registries can share a DOM).
+   * A per-registry token, not the registry, so the record holds no registry.
+   */
   owner: object;
   /** The id the registry wrote. */
   id: string;
