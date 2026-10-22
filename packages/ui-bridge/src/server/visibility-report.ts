@@ -139,9 +139,13 @@ function decideVerdict(
  *
  * - `occludedBy === modal.bridgeId` — the occluder is the registered modal
  *   (registry ids match only here)
- * - `occludedBy === "<tag>#<modal.domId>"` — named by the dialog's real DOM id
- * - `occludedBy === "<tag>[data-testid=\"<modal.testId>\"]"` — the testid form
- *   `describeOccluder` gives a blocking dialog with no stamp and no DOM id
+ * - `occludedBy === "<modal.tagName>#<modal.domId>"` — named by the dialog's
+ *   real DOM id, with the dialog's own tag
+ * - `occludedBy === "<modal.tagName>[data-testid=\"<modal.testId>\"]"` — the
+ *   testid form `describeOccluder` gives a blocking dialog with no stamp and no
+ *   DOM id
+ *
+ * The two DOM forms never match a name that is a registered element's id.
  *
  * Only a modal the ELEMENT itself declares blocking (`blockingSource ===
  * 'element'`: an `alertdialog`, `[role=dialog][aria-modal=true]`, or a
@@ -166,33 +170,43 @@ function decideVerdict(
  * a caller one extra entry to look at; over-claiming costs them the bug.
  */
 interface ModalIdentities {
+  /** Registry ids: matched exactly, and the only way a registry id matches. */
   bridgeIds: Set<string>;
-  domIds: Set<string>;
-  testIds: Set<string>;
+  /**
+   * The exact DOM-form names the dialog element itself gets from
+   * `describeOccluder`: `<tag>#<domId>` and `<tag>[data-testid="<testId>"]`,
+   * built with the dialog's own tag, so a duplicate id on another element
+   * does not match. A modal with no `tagName` contributes none.
+   */
+  domNames: Set<string>;
 }
 
 function modalIdentities(modalContext: SnapshotModalContext): ModalIdentities {
-  const ids: ModalIdentities = { bridgeIds: new Set(), domIds: new Set(), testIds: new Set() };
+  const ids: ModalIdentities = { bridgeIds: new Set(), domNames: new Set() };
   for (const modal of modalContext.modals ?? []) {
     if (modal?.blockingSource !== 'element') continue;
     if (modal.bridgeId) ids.bridgeIds.add(modal.bridgeId);
-    if (modal.domId) ids.domIds.add(modal.domId);
-    if (modal.testId) ids.testIds.add(modal.testId);
+    if (!modal.tagName) continue;
+    if (modal.domId) ids.domNames.add(`${modal.tagName}#${modal.domId}`);
+    if (modal.testId) ids.domNames.add(`${modal.tagName}[data-testid="${modal.testId}"]`);
   }
   return ids;
 }
 
-/** `tag#id`, as `describeDomNode` writes it. */
-const TAG_ID_FORM = /^[a-z][a-z0-9-]*#(.+)$/;
-/** `tag[data-testid="x"]`, as `describeOccluder` names a testid-only dialog. */
-const TAG_TESTID_FORM = /^[a-z][a-z0-9-]*\[data-testid="(.*)"\]$/;
-
-function isTrackedOverlay(occludedBy: string, modalIds: ModalIdentities): boolean {
+/**
+ * `occludedBy` names a tracked modal. A name that is itself a REGISTERED
+ * element's id is a registry id, whatever it looks like (`aside#confirm` and
+ * `div[data-testid="x"]` are legal registry ids), so it matches only a
+ * modal's `bridgeId`, never a DOM-form name.
+ */
+function isTrackedOverlay(
+  occludedBy: string,
+  modalIds: ModalIdentities,
+  registeredIds: ReadonlySet<string>
+): boolean {
   if (modalIds.bridgeIds.has(occludedBy)) return true;
-  const testId = TAG_TESTID_FORM.exec(occludedBy);
-  if (testId) return modalIds.testIds.has(testId[1]);
-  const domId = TAG_ID_FORM.exec(occludedBy);
-  return domId !== null && modalIds.domIds.has(domId[1]);
+  if (registeredIds.has(occludedBy)) return false;
+  return modalIds.domNames.has(occludedBy);
 }
 
 /**
@@ -215,7 +229,8 @@ export function buildVisibilityReport(
   const detectionAvailable = input.modalContext !== undefined;
   const modalIds = detectionAvailable
     ? modalIdentities(input.modalContext as SnapshotModalContext)
-    : { bridgeIds: new Set<string>(), domIds: new Set<string>(), testIds: new Set<string>() };
+    : { bridgeIds: new Set<string>(), domNames: new Set<string>() };
+  const registeredIds = new Set(input.elements.map((el) => el?.id).filter(Boolean) as string[]);
 
   const occlusions: VisibilityOcclusionEntry[] = [];
   let expectedOverlaysFiltered = 0;
@@ -226,7 +241,7 @@ export function buildVisibilityReport(
     if (ratio < minRatio) continue;
 
     const isExpectedOverlay = detectionAvailable
-      ? isTrackedOverlay(el.occludedBy, modalIds)
+      ? isTrackedOverlay(el.occludedBy, modalIds, registeredIds)
       : false;
 
     if (isExpectedOverlay && !includeExpected) {

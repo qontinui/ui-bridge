@@ -53,6 +53,7 @@ function modal(id: string, over: Partial<ModalInfo> = {}): ModalInfo {
     id,
     domId: id,
     bridgeId: id,
+    tagName: 'div',
     type: 'dialog',
     blocking: true,
     blockingSource: 'element',
@@ -518,6 +519,73 @@ describe('buildVisibilityReport — each kind of modal identity matches only its
       count: 1,
     };
     for (const occludedBy of ['modal-0', 'div#modal-0']) {
+      const r = sweep({ elements: [covered({ occludedBy })], modalContext: ctx });
+      expect(r.expectedOverlaysFiltered).toBe(0);
+    }
+  });
+});
+
+describe('buildVisibilityReport — a DOM-form identity names the dialog element, not a lookalike', () => {
+  const confirm = (over: Partial<ModalInfo> = {}): SnapshotModalContext => ({
+    modals: [
+      modal('confirm', {
+        bridgeId: undefined,
+        domId: 'confirm',
+        testId: 'x',
+        tagName: 'dialog',
+        ...over,
+      }),
+    ],
+    hasBlockingModal: true,
+    count: 1,
+  });
+
+  it('the dialog itself, by tag#id and by its testid form, is expected', () => {
+    for (const occludedBy of ['dialog#confirm', 'dialog[data-testid="x"]']) {
+      const r = sweep({ elements: [covered({ occludedBy })], modalContext: confirm() });
+      expect(r.expectedOverlaysFiltered).toBe(1);
+    }
+  });
+
+  it('a duplicate DOM id on another tag (aside#confirm) is not the dialog', () => {
+    const r = sweep({
+      elements: [covered({ occludedBy: 'aside#confirm' })],
+      modalContext: confirm(),
+    });
+    expect(r.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('a modal that carries no tagName matches no DOM form', () => {
+    for (const occludedBy of ['dialog#confirm', 'dialog[data-testid="x"]']) {
+      const r = sweep({
+        elements: [covered({ occludedBy })],
+        modalContext: confirm({ tagName: undefined }),
+      });
+      expect(r.expectedOverlaysFiltered).toBe(0);
+    }
+  });
+
+  it.each(['dialog#confirm', 'dialog[data-testid="x"]'])(
+    'a REGISTERED element whose registry id is literally %s is not the dialog',
+    (registryId) => {
+      const r = sweep({
+        elements: [
+          covered({ occludedBy: registryId }),
+          covered({ id: registryId, occludedBy: undefined, occludedPct: 0 }),
+        ],
+        modalContext: confirm(),
+      });
+      expect(r.expectedOverlaysFiltered).toBe(0);
+    }
+  );
+
+  it('a registry id matches a modal only exactly, never through a DOM form', () => {
+    const ctx = confirm({ bridgeId: 'confirm-dialog' });
+    expect(
+      sweep({ elements: [covered({ occludedBy: 'confirm-dialog' })], modalContext: ctx })
+        .expectedOverlaysFiltered
+    ).toBe(1);
+    for (const occludedBy of ['div#confirm-dialog', 'dialog#confirm-dialog', 'Confirm-dialog']) {
       const r = sweep({ elements: [covered({ occludedBy })], modalContext: ctx });
       expect(r.expectedOverlaysFiltered).toBe(0);
     }

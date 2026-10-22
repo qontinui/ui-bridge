@@ -19,6 +19,12 @@ export interface ModalInfo {
   /** The element's `data-testid`, when it has one. */
   testId?: string;
   /**
+   * The element's lowercase tag name. `domId` / `testId` identify the dialog
+   * only together with it (`<tag>#<domId>`), so a duplicate id on another
+   * element is not mistaken for the dialog.
+   */
+  tagName?: string;
+  /**
    * The modal element's `data-ui-bridge-id`, when it has one: the name an
    * occlusion report gives a registered occluder. Lets `/control/visibility`
    * recognise a registered modal whose registry id differs from its DOM id.
