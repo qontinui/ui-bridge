@@ -21,11 +21,7 @@ import { findElementByIdentifier } from '../core/element-identifier';
 // present in React Native — so this intra-package edge is safe for the RN
 // bundle and is what keeps the abandonment semantics from drifting between the
 // two channels.
-import {
-  runAbortable,
-  normalizeActionTimeoutMs,
-  inertAbortSignal,
-} from '../../core/abortable';
+import { runAbortable, normalizeActionTimeoutMs, inertAbortSignal } from '../../core/abortable';
 // Phase 2 (same plan). Same reasoning as `runAbortable` above: the ONE
 // validator implementation, shared with the web executor, so the documented
 // subset cannot drift between the two channels. `core/param-schema.ts` has no
@@ -35,6 +31,10 @@ import {
   formatParamValidationFailure,
   getDefaultParamValidationMode,
 } from '../../core/param-schema';
+// Plan 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary,
+// Phase 8. Same reasoning as above: `control/actionVocabulary.ts` has no
+// imports and touches no DOM API, so the ONE "did you mean" table is shared.
+import { describeUnknownAction, UnknownActionError } from '../../control/actionVocabulary';
 import type {
   ControlActionRequest,
   ControlActionResponse,
@@ -48,6 +48,24 @@ import type {
   SwipeActionParams,
   PressActionParams,
 } from './types';
+
+/**
+ * Every verb `performAction`'s switch implements — the element's accepted
+ * list when it advertises none (keep in step with `NativeStandardAction` and
+ * the switch below).
+ */
+const NATIVE_STANDARD_ACTIONS: readonly NativeStandardAction[] = [
+  'press',
+  'longPress',
+  'doubleTap',
+  'type',
+  'clear',
+  'focus',
+  'blur',
+  'scroll',
+  'swipe',
+  'toggle',
+];
 
 /**
  * Default wait options
@@ -135,6 +153,12 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof UnknownActionError
+          ? {
+              code: error.code,
+              ...(error.didYouMean !== undefined ? { didYouMean: error.didYouMean } : {}),
+            }
+          : {}),
         stack: error instanceof Error ? error.stack : undefined,
         durationMs: Date.now() - startTime,
         timestamp: Date.now(),
@@ -199,8 +223,16 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       case 'toggle':
         return this.performToggle(props);
 
-      default:
-        throw new Error(`Unknown action: ${action}`);
+      default: {
+        const custom = Object.keys(element.customActions ?? {});
+        const own = [...(element.actions ?? []), ...custom];
+        throw new UnknownActionError(
+          describeUnknownAction(action, {
+            elementId: element.id,
+            accepted: own.length > 0 ? own : [...NATIVE_STANDARD_ACTIONS, ...custom],
+          })
+        );
+      }
     }
   }
 

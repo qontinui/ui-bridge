@@ -119,7 +119,7 @@ import {
   type ElementSnapshot,
 } from '../ai/wait-for-element';
 import { mapInternalErrorCode } from '../diagnostics';
-import { describeUnknownAction } from '../control/actionVocabulary';
+import { describeUnknownAction, unknownActionContext } from '../control/actionVocabulary';
 import { devControlsDisabledResponse, devControlsEnabled } from '../core/dev-controls';
 import {
   applyMediaOverride,
@@ -2300,22 +2300,16 @@ export async function executeCommand(
           default: {
             const custom = Object.keys(registered?.customActions ?? {});
             const own = [...(registered?.actions ?? []), ...custom];
-            const all = [...RELAY_ELEMENT_ACTIONS, ...custom];
             const hint = describeUnknownAction(request.action, {
               elementId: registered?.id,
-              accepted: own.length > 0 ? own : all,
-              fallback: all,
+              accepted: own.length > 0 ? own : [...RELAY_ELEMENT_ACTIONS, ...custom],
             });
             const failure = createActionFailure(id, 'UNSUPPORTED_ACTION', hint.message, startTime);
             return refuse({
               ...failure,
               failureDetails: {
                 ...failure.failureDetails,
-                context: {
-                  action: request.action,
-                  supportedActions: hint.supportedActions,
-                  didYouMean: hint.didYouMean,
-                },
+                context: { action: request.action, ...unknownActionContext(hint) },
               },
             });
           }

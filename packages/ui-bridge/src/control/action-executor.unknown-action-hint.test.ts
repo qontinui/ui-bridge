@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry, getGlobalRegistry } from '../core/registry';
 import type { StandardAction } from '../core/types';
 import { DefaultActionExecutor } from './action-executor';
+import { getGlobalCtr, resetGlobalCtr } from '../ctr/registry';
 import { executeCommand, type BridgeAccess } from '../react/commandHandlers';
 
 describe('DefaultActionExecutor — unknown action', () => {
@@ -60,13 +61,14 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'click' });
   });
 
-  it('suggests an executable built-in the element does not advertise', async () => {
+  it('never suggests a verb the element does not advertise', async () => {
     register('name', ['click']);
     const res = await executor.executeAction('name', { action: 'fill' });
-    expect(res.failureDetails?.context).toMatchObject({
-      didYouMean: 'type',
-      supportedActions: ['click'],
-    });
+    expect(res.error).toBe(
+      "Unknown action 'fill' for element 'name'. This element accepts: click."
+    );
+    expect(res.failureDetails?.context).toEqual({ action: 'fill', supportedActions: ['click'] });
+    expect('didYouMean' in (res.failureDetails?.context ?? {})).toBe(false);
   });
 
   it('an unregistered target gets the built-in list and still a suggestion', async () => {
@@ -74,6 +76,67 @@ describe('DefaultActionExecutor — unknown action', () => {
     expect(res.error).toMatch(/^Unknown action 'dblclick'\. Supported: click, hoverClick, /);
     expect(res.error).toMatch(/Did you mean 'doubleClick'\?$/);
     expect(res.failureDetails?.context).toMatchObject({ didYouMean: 'doubleClick' });
+  });
+});
+
+describe('DefaultActionExecutor — unknown action raised inside dispatch', () => {
+  // A CTR logical name skips the early gate (the element is not resolved yet),
+  // so an unknown verb on it reaches `performAction`'s default arm, which
+  // throws `UnknownActionError`. The outer catch must report it under the SAME
+  // errorCode as the early gate, with the hint in `context`.
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    resetGlobalCtr();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+    resetGlobalCtr();
+  });
+
+  it('answers UB-UNSUPPORTED-ACTION with the built-in list and the suggestion', async () => {
+    const el = document.createElement('input');
+    el.setAttribute('data-testid', 'ctr-search');
+    container.appendChild(el);
+    getGlobalCtr().register({
+      logicalName: 'exec.search',
+      selectors: [{ strategy: 'data-testid', value: 'ctr-search', priority: 0, confidence: 1 }],
+      version: 1,
+    });
+
+    const executor = new DefaultActionExecutor(new UIBridgeRegistry());
+    const res = await executor.executeAction('exec.search', { action: 'keyDown' });
+
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/^Unknown action 'keyDown'\. Supported: /);
+    expect(res.error).toMatch(/Did you mean 'sendKeys'\?$/);
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toMatchObject({
+      action: 'keyDown',
+      code: 'UNKNOWN_ACTION',
+      didYouMean: 'sendKeys',
+    });
+  });
+
+  it('carries no didYouMean key when there is no suggestion', async () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'ctr-pane');
+    container.appendChild(el);
+    getGlobalCtr().register({
+      logicalName: 'exec.pane',
+      selectors: [{ strategy: 'data-testid', value: 'ctr-pane', priority: 0, confidence: 1 }],
+      version: 1,
+    });
+
+    const executor = new DefaultActionExecutor(new UIBridgeRegistry());
+    const res = await executor.executeAction('exec.pane', { action: 'frobnicate' });
+
+    expect(res.failureDetails?.errorCode).toBe('UB-UNSUPPORTED-ACTION');
+    expect(res.failureDetails?.context).toMatchObject({ code: 'UNKNOWN_ACTION' });
+    expect('didYouMean' in (res.failureDetails?.context ?? {})).toBe(false);
   });
 });
 

@@ -34,18 +34,21 @@ describe('DefaultNativeActionExecutor — unknown action', () => {
     );
   });
 
-  it('`fill` suggests `type` from the executable verbs when the element does not advertise it', async () => {
+  it('never suggests a verb the element does not advertise (`fill` on a pressable)', async () => {
     const executor = executorWith('name', ['focus', 'press']);
     const res = await executor.executeAction('name', { action: 'fill' });
     expect(res.code).toBe('UNKNOWN_ACTION');
-    expect(res.didYouMean).toBe('type');
+    expect('didYouMean' in res).toBe(false);
+    expect(res.error).toBe(
+      "Unknown action 'fill' for element 'name'. This element accepts: focus, press."
+    );
   });
 
   it('a verb with no plausible match carries no suggestion', async () => {
     const executor = executorWith('save', ['press']);
     const res = await executor.executeAction('save', { action: 'frobnicate' });
     expect(res.code).toBe('UNKNOWN_ACTION');
-    expect(res.didYouMean).toBeUndefined();
+    expect('didYouMean' in res).toBe(false);
     expect(res.error).toBe(
       "Unknown action 'frobnicate' for element 'save'. This element accepts: press."
     );
