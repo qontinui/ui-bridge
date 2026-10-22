@@ -56,10 +56,102 @@ export interface VisionRegion {
 // vision/capture, vision/annotate, vision/diff, vision/raw
 // ============================================================================
 
+/** An overlay rectangle drawn onto a capture (`vision/annotate`, `annotations`). */
+export interface VisionAnnotationRequest {
+  region: VisionRegion;
+  label?: string;
+  /** RGBA border color, e.g. `[255, 51, 51, 255]`. Defaults to red. */
+  borderColor?: [number, number, number, number];
+  /** Border thickness in pixels. Defaults to 2. */
+  borderThickness?: number;
+  /** Optional RGBA fill color. */
+  fillColor?: [number, number, number, number];
+}
+
+/**
+ * Per-region pixel obfuscation applied before the capture is encoded. The
+ * runner's serde renames only the variant tags, so `block_size` stays
+ * snake_case on the wire.
+ */
+export type VisionRedactRequest =
+  | { kind: 'blur'; region: VisionRegion; sigma: number }
+  | { kind: 'pixelate'; region: VisionRegion; block_size: number }
+  | { kind: 'fill'; region: VisionRegion; color: [number, number, number, number] };
+
+/** One named output of a multi-output capture (`captures: [...]`). */
+export interface VisionNamedCapture {
+  name: string;
+  region?: VisionRegion;
+  element?: string;
+  contract?: string;
+  annotations?: VisionAnnotationRequest[];
+  redact?: VisionRedactRequest[];
+}
+
+/**
+ * Inline-bytes opt-in shared by every request that answers with a
+ * {@link VisionCaptureResult}. When `true`, the response also carries the
+ * encoded image as `base64`, saving the `GET url` round-trip. The runner caps
+ * the inline size at the output contract's byte cap; over the cap it answers a
+ * typed `INLINE_TOO_LARGE` error whose context names `url` (never a truncated
+ * string). Default `false`.
+ */
+export interface VisionInlineOption {
+  inline?: boolean;
+}
+
+/** `vision/capture` / `vision/annotate` request body. */
+export interface VisionCaptureRequest extends VisionInlineOption {
+  /** Pixel-space rect to crop after capture. */
+  region?: VisionRegion;
+  /** Element id; resolved to its bbox via the runner's snapshot. */
+  element?: string;
+  /** Output contract: `claude` (default), `webp`, or `png_strict`. */
+  contract?: string;
+  /** Overlay rectangles + labels. */
+  annotations?: VisionAnnotationRequest[];
+  /** Per-region pixel obfuscation. */
+  redact?: VisionRedactRequest[];
+  /** Bypass the read-side cache (still updates on write). */
+  force?: boolean;
+  /**
+   * Multi-output fan-out: one frame feeds N derived outputs; the top-level
+   * region/element fields are ignored and the response becomes
+   * `{ captures: { name: result } }`.
+   */
+  captures?: VisionNamedCapture[];
+  /** Frame source: a device / app id. Omitted = the runner's own window. */
+  target?: string;
+}
+
+/** `vision/raw` request body. */
+export interface VisionRawRequest extends VisionInlineOption {
+  region?: VisionRegion;
+  element?: string;
+  /** Audit reason — required when the runner's raw-capture gate is on. */
+  reason?: string;
+  /** Frame source: a device / app id. Omitted = the runner's own window. */
+  target?: string;
+}
+
 /** One captured image written to the runner's vision cache. */
 export interface VisionCaptureResult {
-  /** `tmp_vision_cache/<sha256>.<ext>` (relative to the runner CWD). */
-  path: string;
+  /**
+   * Relative HTTP path that serves this capture's bytes:
+   * `/ui-bridge/vision/cache/<sha256>`. It works through every door
+   * (loopback, relay, remote) — resolve it against the runner base you called.
+   * The response never names a host file path.
+   */
+  url: string;
+  /**
+   * The encoded image, base64. Present only when the request set
+   * `inline: true` (see {@link VisionInlineOption}).
+   */
+  base64?: string;
+  /**
+   * Hex sha256 of the capture's CACHE KEY (request + frame identity), not of
+   * the image bytes — it addresses the cache entry `url` points at.
+   */
   sha256: string;
   width: number;
   height: number;
