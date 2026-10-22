@@ -192,6 +192,14 @@ table is the single source of truth, so the SDK ships stubs for all thirteen
 | `GET /vision/cache/:sha256` | Stream a cached capture |
 | `GET /vision/health` | Vision pipeline health |
 
+A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
+`url` — the relative HTTP path `/vision/cache/<sha256>` under the runner's
+`/ui-bridge` prefix — never by a host file path. Send `inline: true` on
+`capture`, `annotate` or `raw` to also receive the encoded image as `base64` in
+the same response; over the output contract's byte cap the runner answers
+`INLINE_TOO_LARGE` with the `url` instead of a truncated string. `sha256` is
+the hash of the cache key, not of the image bytes.
+
 These replaced the older `/control/*screenshot*` routes. The `/ai/media/*`
 routes were retired without a successor: image facts arrive on `find`'s media
 rows.
