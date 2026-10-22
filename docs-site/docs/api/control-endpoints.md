@@ -520,10 +520,16 @@ expected and, by default, dropped from the response.
 
 Classification runs against the snapshot's `modalStack`, populated by the
 `modalDetector` enricher (registered automatically by `UIBridgeProvider`).
-Matching is deliberately narrow: only identity-bearing forms count — the
-occluder registered under the modal's own id, or an unregistered occluder whose
-DOM id is the modal's. Class and bare-tag descriptors are not identities and
-never match, because an entry marked expected is *removed* from the default
+Only a modal the element itself declares blocking counts (`blockingSource:
+"element"`: an `alertdialog`, `aria-modal="true"` on a `role=dialog`,
+`role=alertdialog` or `<dialog>`, or a `<dialog>` opened with `showModal()`).
+A modal judged blocking only by the backdrop heuristic, or matched only by a
+library or custom selector, is never an expected overlay; a Radix/shadcn
+Dialog, which sets no `aria-modal`, therefore over-reports. Matching is
+deliberately narrow: each kind of identity matches only its own kind — the
+modal's registry id (`bridgeId`), `tag#<its real DOM id>`, or
+`tag[data-testid="<its testid>"]` (the name a blocking dialog with neither gets).
+Class and bare-tag descriptors are not identities and never match, because an entry marked expected is *removed* from the default
 response, and a loose rule would hide the very regressions this endpoint exists
 to surface.
 

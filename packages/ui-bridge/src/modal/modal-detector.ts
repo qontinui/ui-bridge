@@ -52,15 +52,23 @@ export function isModalDialog(el: Element): boolean {
 }
 
 /**
- * The element-level half of the detector's blocking verdict, without the
- * backdrop heuristic: an `alertdialog`, an author-asserted `aria-modal="true"`,
- * or a `<dialog>` shown modally. The detector's `blocking` is this OR a
- * detected backdrop, so every dialog the registry names is also a modal the
- * expected-overlay filter admits.
+ * THE blocking-dialog predicate, shared by the detector (`blockingSource:
+ * 'element'`, the only source the `/control/visibility` expected-overlay
+ * filter admits) and the registry's occlusion hit-test (`describeOccluder`
+ * names a hit by the dialog this accepts). It accepts an `alertdialog`;
+ * `aria-modal="true"` only on a dialog (`role=dialog`, `role=alertdialog`, or a
+ * native `<dialog>`), since `aria-modal` on any other role says nothing about
+ * a dialog; and a native `<dialog>` shown modally (`:modal`).
+ *
+ * Every element this accepts and that is rendered also matches
+ * `BLOCKING_DIALOG_SELECTOR`, which the hit-test uses only as a cheap
+ * prefilter before calling this.
  */
 export function isBlockingDialog(el: Element): boolean {
-  if (el.getAttribute('role') === 'alertdialog') return true;
-  if (el.getAttribute('aria-modal') === 'true') return true;
+  const role = el.getAttribute('role');
+  if (role === 'alertdialog') return true;
+  const isDialog = role === 'dialog' || el.tagName === 'DIALOG';
+  if (isDialog && el.getAttribute('aria-modal') === 'true') return true;
   return el.tagName === 'DIALOG' && isModalDialog(el);
 }
 
@@ -427,6 +435,8 @@ export class ModalDetector {
 
       const info: ModalInfo = {
         id: generateId(el, modalIndex),
+        domId: el.id || undefined,
+        testId: el.getAttribute('data-testid') ?? undefined,
         bridgeId: el.getAttribute('data-ui-bridge-id') ?? undefined,
         title: extractTitle(el),
         type: resolveType(el),

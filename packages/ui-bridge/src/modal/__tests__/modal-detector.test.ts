@@ -535,3 +535,17 @@ describe('dialog modality and the blocking source', () => {
     expect(drawerInfo).toMatchObject({ blocking: true, blockingSource: 'backdrop' });
   });
 });
+
+describe('isBlockingDialog requires a dialog for the aria-modal arm', () => {
+  it.each([
+    ['role=menu', 'menu', 'div', false],
+    ['role=dialog', 'dialog', 'div', true],
+    ['role=alertdialog', 'alertdialog', 'div', true],
+    ['native <dialog>', null, 'dialog', true],
+  ])('aria-modal="true" on %s', (_name, role, tag, expected) => {
+    const el = document.createElement(tag as string);
+    if (role) el.setAttribute('role', role as string);
+    el.setAttribute('aria-modal', 'true');
+    expect(isBlockingDialog(el)).toBe(expected);
+  });
+});
