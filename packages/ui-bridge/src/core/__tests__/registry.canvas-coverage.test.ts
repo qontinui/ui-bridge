@@ -539,6 +539,89 @@ describe('in-page /control/visibility reports the census', () => {
     expect(report.expectedOverlaysFiltered).toBe(0);
   });
 
+  // Review round 4: the detector's backdrop heuristic (a class substring
+  // `backdrop`/`overlay`/`mask` on the previous sibling or parent) is not a
+  // blocking verdict the filter may trust. Each of these used to read `clear`.
+  async function libraryMatchNextTo(
+    arrange: (registry: UIBridgeRegistry) => HTMLElement
+  ): Promise<VisibilityReport> {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Main title';
+    registry.registerElement('main-title', label, { type: 'generic' });
+    const hit = arrange(registry);
+    document.elementFromPoint = (() => hit) as typeof document.elementFromPoint;
+    return visibility(registry as unknown as RegistryLike);
+  }
+
+  it('(A) a docked drawer whose parent class contains "overlay" is a real occlusion', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const host = document.createElement('div');
+      host.className = 'layout-overlay-host';
+      document.body.appendChild(host);
+      const drawer = document.createElement('div');
+      drawer.className = 'MuiDrawer-root MuiDrawer-docked';
+      host.appendChild(drawer);
+      registry.registerElement('sidebar', drawer, { type: 'generic' });
+      return div(drawer);
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('(B) a drawer after a Tailwind `mask-*` sibling is a real occlusion', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const fade = div();
+      fade.className = 'mask-b-from-80%';
+      const drawer = document.createElement('div');
+      drawer.className = 'MuiDrawer-root MuiDrawer-docked';
+      document.body.appendChild(drawer);
+      registry.registerElement('sidebar', drawer, { type: 'generic' });
+      return div(drawer);
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  it('(C) an open Headless UI menu inside a `navbar-overlay` parent is a real occlusion', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const nav = document.createElement('div');
+      nav.className = 'navbar-overlay';
+      document.body.appendChild(nav);
+      const menu = document.createElement('div');
+      menu.setAttribute('data-headlessui-state', 'open');
+      nav.appendChild(menu);
+      registry.registerElement('user-menu', menu, { type: 'generic' });
+      return div(menu);
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
+  // Recorded decision (review round 4): a genuine Radix/shadcn modal Dialog is
+  // NOT filtered. @radix-ui/react-dialog sets no aria-modal and its overlay
+  // carries no data-radix-dialog-overlay attribute, so its content is
+  // `[role=dialog][data-state=open]`, exactly what a Radix Popover renders.
+  // The two are indistinguishable by role and data-state, and admitting both
+  // would hide a popover's real occlusions. The dialog over-reports instead:
+  // the safe direction, pinned here.
+  it('a Radix modal Dialog (no aria-modal, class-only overlay) is reported, not filtered (pinned)', async () => {
+    const report = await libraryMatchNextTo((registry) => {
+      const overlay = div();
+      overlay.className = 'fixed inset-0 bg-black/80 DialogOverlay';
+      const content = document.createElement('div');
+      content.setAttribute('role', 'dialog');
+      content.setAttribute('data-state', 'open');
+      content.id = 'radix-dialog-content';
+      document.body.appendChild(content);
+      registry.registerElement('delete-dialog', content, { type: 'generic' });
+      return div(content);
+    });
+    expect(report.verdict).toBe('occlusions_found');
+    expect(report.expectedOverlaysFiltered).toBe(0);
+  });
+
   it('a genuine aria-modal dialog hit through an unregistered child is still expected', async () => {
     const registry = new UIBridgeRegistry();
     registry.setEnrichers({ modalDetector: new ModalDetector() });

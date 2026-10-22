@@ -22,6 +22,16 @@ export interface ModalInfo {
   type: 'dialog' | 'alertdialog' | 'modal' | 'drawer' | 'popover' | 'sheet';
   /** Whether this modal blocks interaction with content behind it */
   blocking: boolean;
+  /**
+   * WHY `blocking` is true. `element`: the element itself says so (an
+   * `alertdialog`, `[role=dialog][aria-modal=true]`, or a `<dialog>` matching
+   * `:modal`). `backdrop`: only the backdrop heuristic, a class substring
+   * (`backdrop`/`overlay`/`mask`) on a neighbour, which also fires on
+   * non-modal UI. Absent when not blocking, and absent from page SDKs older
+   * than the field. Only `element` makes an occlusion an expected overlay in
+   * `/control/visibility`.
+   */
+  blockingSource?: 'element' | 'backdrop';
   /** Computed z-index of the modal */
   zIndex: number;
   /** Whether a backdrop/overlay is present */
