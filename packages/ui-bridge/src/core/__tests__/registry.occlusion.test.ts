@@ -192,3 +192,250 @@ describe('ElementState occlusion reporting', () => {
   });
 
 });
+
+/** Count `elementFromPoint` calls made while reading `id`'s state. */
+function probesFor(registry: UIBridgeRegistry, id: string): number {
+  let probes = 0;
+  const inner = document.elementFromPoint;
+  document.elementFromPoint = ((x: number, y: number) => {
+    probes++;
+    return inner.call(document, x, y);
+  }) as typeof document.elementFromPoint;
+  try {
+    stateOf(registry, id);
+  } finally {
+    document.elementFromPoint = inner;
+  }
+  return probes;
+}
+
+describe('paintsText registration option', () => {
+  it('surfaces paintsText: true on the state when registered with it', () => {
+    const registry = new UIBridgeRegistry();
+    const term = place('terminal-surface-a', 0, 0, 600, 400);
+    registry.registerElement('terminal-surface-a', term, { type: 'canvas', paintsText: true });
+
+    expect(stateOf(registry, 'terminal-surface-a').paintsText).toBe(true);
+    expect(registry.getElement('terminal-surface-a')?.paintsText).toBe(true);
+  });
+
+  it('leaves paintsText absent for an ordinary registration', () => {
+    const registry = new UIBridgeRegistry();
+    const label = place('plain', 0, 0, 200, 20, 'text');
+    registry.registerElement('plain', label, { type: 'generic' });
+
+    const st = stateOf(registry, 'plain');
+    expect('paintsText' in st).toBe(false);
+    expect(registry.getElement('plain')?.paintsText).toBeUndefined();
+  });
+
+  it('treats a registered <canvas> as implicitly paintsText, unless told otherwise', () => {
+    const registry = new UIBridgeRegistry();
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    registry.registerElement('chart', canvas, { type: 'canvas' });
+    expect(registry.getElement('chart')?.paintsText).toBe(true);
+    expect(stateOf(registry, 'chart').paintsText).toBe(true);
+
+    const decorative = document.createElement('canvas');
+    document.body.appendChild(decorative);
+    registry.registerElement('bg', decorative, { type: 'canvas', paintsText: false });
+    expect(registry.getElement('bg')?.paintsText).toBeUndefined();
+  });
+
+  it('samples a paintsText element on the dense grid: 1 + 8x8 + two 8-point edge rows', () => {
+    const registry = new UIBridgeRegistry();
+    const term = place('term', 0, 0, 600, 400);
+    registry.registerElement('term', term, { type: 'canvas', paintsText: true });
+    expect(probesFor(registry, 'term')).toBe(1 + 64 + 16);
+  });
+
+  it('sees a thin strip over the bottom edge of a tall paintsText surface; the nine-point grid does not', () => {
+    // The nine-point grid probes at 94% of 700px = y 658, leaving the last
+    // 42px unprobed, so a 16px status strip at y 684..700 is invisible to it.
+    // The dense grid's bottom edge row sits min(8px, 2%) = 8px in, at y 692.
+    const registry = new UIBridgeRegistry();
+    const term = place('term', 0, 0, 600, 700);
+    const plain = place('plain', 700, 0, 500, 700);
+    place('strip', 0, 684, 1280, 16);
+    registry.registerElement('term', term, { type: 'canvas', paintsText: true });
+    registry.registerElement('plain', plain, { type: 'generic' });
+
+    expect(stateOf(registry, 'term').occludedBy).toBe('strip');
+    expect(stateOf(registry, 'plain').occludedBy).toBeUndefined();
+  });
+
+  it('counts a hit on a descendant canvas layer as the surface itself', () => {
+    const registry = new UIBridgeRegistry();
+    const term = place('term', 0, 0, 600, 400);
+    const layer = document.createElement('canvas');
+    layer.className = 'xterm-link-layer';
+    term.appendChild(layer);
+    // The layer covers the whole surface and is painted on top of it.
+    boxes.push({ el: layer, rect: { x: 0, y: 0, w: 600, h: 400 } });
+    registry.registerElement('term', term, { type: 'canvas', paintsText: true });
+
+    const st = stateOf(registry, 'term');
+    expect(st.occludedBy).toBeUndefined();
+    expect(st.visible).toBe(true);
+  });
+});
+
+describe('collapsed disclosure is hidden, not occluded', () => {
+  /** A closed <details> holding `child`, with a canvas-like box painted under the child. */
+  function closedDetailsWithChild(): { details: HTMLDetailsElement; child: HTMLElement } {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'counts';
+    details.appendChild(summary);
+    document.body.appendChild(details);
+    const child = document.createElement('div');
+    child.textContent = 'dead: 0';
+    details.appendChild(child);
+    child.getBoundingClientRect = () =>
+      ({
+        x: 0, y: 0, width: 200, height: 40,
+        top: 0, left: 0, right: 200, bottom: 40,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    // What the measured run blamed: the terminal link layer beneath it.
+    place('canvas-under', 0, 0, 400, 400);
+    return { details, child };
+  }
+
+  type WithCheckVisibility = { checkVisibility?: unknown };
+  let savedCheckVisibility: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    savedCheckVisibility = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'checkVisibility');
+  });
+  afterEach(() => {
+    if (savedCheckVisibility) {
+      Object.defineProperty(HTMLElement.prototype, 'checkVisibility', savedCheckVisibility);
+    } else {
+      delete (HTMLElement.prototype as WithCheckVisibility).checkVisibility;
+    }
+  });
+  const stubCheckVisibility = (answer: boolean): void => {
+    Object.defineProperty(HTMLElement.prototype, 'checkVisibility', {
+      value: () => answer,
+      configurable: true,
+      writable: true,
+    });
+  };
+
+  it('reports a closed <details> child as hidden with no occluder (checkVisibility absent)', () => {
+    delete (HTMLElement.prototype as WithCheckVisibility).checkVisibility;
+    const registry = new UIBridgeRegistry();
+    const { child } = closedDetailsWithChild();
+    registry.registerElement('code-block', child, { type: 'generic' });
+
+    const st = stateOf(registry, 'code-block');
+    expect(st.visible).toBe(false);
+    expect(st.visibilityReason).toBe('hidden');
+    expect(st.occludedBy).toBeUndefined();
+  });
+
+  it('walks the ancestors even when checkVisibility exists and answers true', () => {
+    stubCheckVisibility(true);
+    const registry = new UIBridgeRegistry();
+    const { child } = closedDetailsWithChild();
+    registry.registerElement('code-block', child, { type: 'generic' });
+
+    const st = stateOf(registry, 'code-block');
+    expect(st.visibilityReason).toBe('hidden');
+    expect(st.occludedBy).toBeUndefined();
+  });
+
+  it('honours checkVisibility answering false outside any <details>', () => {
+    stubCheckVisibility(false);
+    const registry = new UIBridgeRegistry();
+    const label = place('cv-hidden', 0, 0, 200, 20, 'text');
+    place('over', 0, 0, 400, 400);
+    registry.registerElement('cv-hidden', label, { type: 'generic' });
+
+    const st = stateOf(registry, 'cv-hidden');
+    expect(st.visibilityReason).toBe('hidden');
+    expect(st.occludedBy).toBeUndefined();
+  });
+
+  it('hit-tests the child again once the <details> is opened', () => {
+    delete (HTMLElement.prototype as WithCheckVisibility).checkVisibility;
+    const registry = new UIBridgeRegistry();
+    const { details, child } = closedDetailsWithChild();
+    registry.registerElement('code-block', child, { type: 'generic' });
+    details.setAttribute('open', '');
+
+    const st = stateOf(registry, 'code-block');
+    expect(st.visibilityReason).toBe('occluded');
+    expect(st.occludedBy).toBe('canvas-under');
+  });
+
+  it('does not hide the closed <details> own <summary>', () => {
+    delete (HTMLElement.prototype as WithCheckVisibility).checkVisibility;
+    const registry = new UIBridgeRegistry();
+    const { details } = closedDetailsWithChild();
+    const summary = details.querySelector('summary') as HTMLElement;
+    summary.getBoundingClientRect = () =>
+      ({
+        x: 500, y: 500, width: 100, height: 20,
+        top: 500, left: 500, right: 600, bottom: 520,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    registry.registerElement('summary', summary, { type: 'generic' });
+
+    const st = stateOf(registry, 'summary');
+    expect(st.visible).toBe(true);
+    expect(st.visibilityReason).toBeUndefined();
+  });
+});
+
+describe('registry membership and the data-ui-bridge-id stamp', () => {
+  it('stamps data-ui-bridge-id on a directly registered node that has none', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    registry.registerElement('direct', div, { type: 'generic' });
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('direct');
+  });
+
+  it('never overwrites an existing stamp', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    div.setAttribute('data-ui-bridge-id', 'developer-id');
+    document.body.appendChild(div);
+    registry.registerElement('other-id', div, { type: 'generic' });
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('developer-id');
+  });
+
+  it('names a directly registered occluder by its registry id', () => {
+    const registry = new UIBridgeRegistry();
+    const label = place('label', 0, 0, 100, 20, 'important');
+    const card = document.createElement('div');
+    card.className = 'error-card';
+    document.body.appendChild(card);
+    boxes.push({ el: card, rect: { x: 0, y: 0, w: 400, h: 400 } });
+    registry.registerElement('label', label, { type: 'generic' });
+    registry.registerElement('app-error-card', card, { type: 'generic' });
+
+    expect(stateOf(registry, 'label').occludedBy).toBe('app-error-card');
+  });
+
+  it('getRegisteredAncestor resolves by membership, not by the attribute', () => {
+    const registry = new UIBridgeRegistry();
+    const outer = document.createElement('div');
+    const inner = document.createElement('div');
+    const leaf = document.createElement('canvas');
+    outer.appendChild(inner);
+    inner.appendChild(leaf);
+    document.body.appendChild(outer);
+    registry.registerElement('outer', outer, { type: 'generic' });
+    // A stale stamp on an unregistered node is not membership, and a
+    // registered node whose stamp was removed is still a member.
+    inner.setAttribute('data-ui-bridge-id', 'stale');
+    outer.removeAttribute('data-ui-bridge-id');
+
+    expect(registry.getRegisteredAncestor(leaf)?.id).toBe('outer');
+    expect(registry.getRegisteredAncestor(outer)?.id).toBe('outer');
+    expect(registry.getRegisteredAncestor(document.body)).toBeUndefined();
+  });
+});

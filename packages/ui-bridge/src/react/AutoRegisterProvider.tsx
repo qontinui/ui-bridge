@@ -55,8 +55,8 @@ export interface AutoRegisterProviderProps extends Omit<AutoRegisterOptions, 'ro
  *
  * Every {@link AutoRegisterOptions} field reaches the hook. The provider used
  * to list them one by one, and the list had drifted: `mediaDiscovery` (and
- * with it `includeBackgroundImages`), `logLevel` and `writeStableAttribute`
- * were accepted by type and silently dropped. Forwarding the rest of the props
+ * with it `includeBackgroundImages`) and `logLevel` were accepted by type and
+ * silently dropped. Forwarding the rest of the props
  * makes that drift impossible; only `enabled` keeps a provider-level default.
  */
 export function AutoRegisterProvider({

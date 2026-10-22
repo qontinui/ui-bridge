@@ -243,11 +243,27 @@ describe('serializeRegisteredElement (A.5 fields populate end-to-end)', () => {
     container.appendChild(div);
 
     registry.registerElement('container', div, { type: 'custom' });
+    // `registerElement` stamps `data-ui-bridge-id`, which the derived-name
+    // rung reads; drop it so the node really has nothing to emit.
+    div.removeAttribute('data-ui-bridge-id');
 
     const snap = registry.createSnapshot();
     const el = snap.elements[0];
     expect(el.ariaLabel).toBeUndefined();
     expect(el.accessibleName).toBeUndefined();
     expect(el.text).toBeUndefined();
+  });
+
+  it('names a nameless direct registration by the id registerElement stamps (derived rung)', () => {
+    const registry = getGlobalRegistry();
+    const div = document.createElement('div');
+    container.appendChild(div);
+
+    registry.registerElement('container', div, { type: 'custom' });
+
+    const el = registry.createSnapshot().elements[0];
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('container');
+    expect(el.accessibleName).toBe('container');
+    expect(el.nameSource).toBe('derived');
   });
 });
