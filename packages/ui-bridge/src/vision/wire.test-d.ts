@@ -4,44 +4,61 @@
  * Typechecked by `npm run typecheck` (tsconfig includes `.test-d.ts`; vitest
  * does not run it) — see `core/redaction.brand.test-d.ts` for the mechanism.
  *
- * A capture result names its bytes by `url`, never by a host file `path`. If
- * `path` is ever re-added, the `@ts-expect-error` below becomes unused and tsc
- * fails with TS2578.
+ * Each assertion is on the KEY, not on a value, so an optional re-addition
+ * (`path?: string`) fails exactly like a required one.
  */
 
-import type { VisionCaptureRequest, VisionCaptureResult, VisionRawRequest } from './wire';
+import type {
+  VisionCaptureRequest,
+  VisionCaptureResult,
+  VisionRawReason,
+  VisionRawRequest,
+} from './wire';
 
-const result: VisionCaptureResult = {
-  url: '/ui-bridge/vision/cache/' + '0'.repeat(64),
-  base64: 'AAAA',
-  sha256: '0'.repeat(64),
-  width: 1,
-  height: 1,
-  bytes: 3,
-  format: 'jpeg',
-  contract: 'claude_vision_v1',
+/** Compiles only when `T` is exactly `true`. */
+type Assert<T extends true> = T;
+
+/** `true` when `K` is an optional key of `T`. */
+type IsOptional<T, K extends keyof T> = object extends Pick<T, K> ? true : false;
+
+// `path` was deleted: it named a file in the runner's checkout. Present in any
+// form (required or optional), `'path' extends keyof …` turns `true` and the
+// assertion fails.
+type NoPath = Assert<'path' extends keyof VisionCaptureResult ? false : true>;
+
+// `url` is a required key; `base64` is an optional one (present only on
+// `inline: true`). Making `base64` required, or `url` optional, fails these.
+type UrlRequired = Assert<IsOptional<VisionCaptureResult, 'url'> extends false ? true : false>;
+type Base64Optional = Assert<IsOptional<VisionCaptureResult, 'base64'>>;
+
+// `inline` is an optional key of both request bodies.
+type CaptureInline = Assert<IsOptional<VisionCaptureRequest, 'inline'>>;
+type RawInline = Assert<IsOptional<VisionRawRequest, 'inline'>>;
+
+// `vision/raw`'s `reason` is required and limited to the runner's two values.
+type RawReasonRequired = Assert<
+  IsOptional<VisionRawRequest, 'reason'> extends false ? true : false
+>;
+type RawReasonValues = Assert<
+  [VisionRawReason] extends ['vga_grounding' | 'regression_baseline']
+    ? ['vga_grounding' | 'regression_baseline'] extends [VisionRawReason]
+      ? true
+      : false
+    : false
+>;
+
+const rawReq: VisionRawRequest = { inline: true, reason: 'regression_baseline' };
+// @ts-expect-error an unlisted reason is rejected by the runner, so by the type too
+const badReason: VisionRawRequest = { reason: 'audit' };
+
+export type {
+  NoPath,
+  UrlRequired,
+  Base64Optional,
+  CaptureInline,
+  RawInline,
+  RawReasonRequired,
+  RawReasonValues,
 };
-
-// @ts-expect-error `path` was deleted: it named a file in the runner's checkout.
-const removedPath: string = result.path;
-
-// `url` is required; `base64` is optional (present only on `inline: true`).
-// @ts-expect-error a capture result without `url` does not compile
-const noUrl: VisionCaptureResult = {
-  sha256: '',
-  width: 0,
-  height: 0,
-  bytes: 0,
-  format: 'png',
-  contract: 'png_strict',
-};
-const inlineBytes: string | undefined = result.base64;
-
-const captureReq: VisionCaptureRequest = { inline: true, element: 'x' };
-const rawReq: VisionRawRequest = { inline: true, reason: 'audit' };
-
-void removedPath;
-void noUrl;
-void inlineBytes;
-void captureReq;
 void rawReq;
+void badReason;

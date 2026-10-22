@@ -89,12 +89,16 @@ export interface VisionNamedCapture {
 }
 
 /**
- * Inline-bytes opt-in shared by every request that answers with a
- * {@link VisionCaptureResult}. When `true`, the response also carries the
- * encoded image as `base64`, saving the `GET url` round-trip. The runner caps
- * the inline size at the output contract's byte cap; over the cap it answers a
- * typed `INLINE_TOO_LARGE` error whose context names `url` (never a truncated
- * string). Default `false`.
+ * Inline-bytes opt-in for `vision/capture`, `vision/annotate` and `vision/raw`.
+ * When `true`, the response also carries the encoded image as `base64`,
+ * saving the `GET url` round-trip. Default `false`.
+ *
+ * Runner contract this type targets (plan
+ * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary,
+ * Phase 3 — a runner that predates it ignores `inline`): the inline size is
+ * capped at the output contract's byte cap, and over the cap the runner
+ * answers a typed `INLINE_TOO_LARGE` error whose context carries `url` and
+ * `bytes`, never a truncated string.
  */
 export interface VisionInlineOption {
   inline?: boolean;
@@ -122,14 +126,22 @@ export interface VisionCaptureRequest extends VisionInlineOption {
   captures?: VisionNamedCapture[];
   /** Frame source: a device / app id. Omitted = the runner's own window. */
   target?: string;
+  // `annotateElements` (runner `CaptureRequest.annotate_elements`) is
+  // DELIBERATELY omitted: the runner accepts the key only to reject it with
+  // HTTP 400 ("annotate_elements selector is not implemented"), so typing it
+  // would advertise a request that can never succeed. Add it when the runner
+  // implements the selector.
 }
+
+/** Why a `vision/raw` capture was taken — the runner 400s on anything else. */
+export type VisionRawReason = 'vga_grounding' | 'regression_baseline';
 
 /** `vision/raw` request body. */
 export interface VisionRawRequest extends VisionInlineOption {
   region?: VisionRegion;
   element?: string;
-  /** Audit reason — required when the runner's raw-capture gate is on. */
-  reason?: string;
+  /** Audit reason, required: the runner answers 400 when it is absent or unlisted. */
+  reason: VisionRawReason;
   /** Frame source: a device / app id. Omitted = the runner's own window. */
   target?: string;
 }
@@ -149,8 +161,9 @@ export interface VisionCaptureResult {
    */
   base64?: string;
   /**
-   * Hex sha256 of the capture's CACHE KEY (request + frame identity), not of
-   * the image bytes — it addresses the cache entry `url` points at.
+   * Hex sha256 of the capture's CACHE KEY — the string
+   * `v=1|mut=<mutation counter>|req=<request>` — not of the image bytes. It
+   * addresses the cache entry `url` points at.
    */
   sha256: string;
   width: number;
