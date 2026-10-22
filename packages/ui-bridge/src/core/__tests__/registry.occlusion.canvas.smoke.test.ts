@@ -69,6 +69,14 @@ async function bundleDist(): Promise<string> {
     platform: 'browser',
     write: false,
     logLevel: 'silent',
+    // `dist/server/handlers.mjs` keeps the headless engine as a lazy
+    // `import('@qontinui/ui-bridge-headless')` (a peer dependency tsup leaves
+    // external). Bundling for the browser would follow it into playwright-core
+    // and fail on Node builtins (`net`, `fs`, `events`) once the workspace has
+    // built ui-bridge-headless, as CI's browser-smokes job does. The smoke never
+    // reaches the launch handler, so keep the import unresolved, exactly as a
+    // real browser consumer of the SDK sees it.
+    external: ['@qontinui/ui-bridge-headless'],
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   return out.outputFiles[0].text;
