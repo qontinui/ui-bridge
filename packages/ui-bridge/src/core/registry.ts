@@ -51,7 +51,12 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
-import { clearRegistryStamp, isRegistryStamp, markRegistryStamp } from './bridge-stamp';
+import {
+  clearRegistryStamp,
+  markRegistryStamp,
+  ownsRegistryStamp,
+  registryStampOwner,
+} from './bridge-stamp';
 import { DEFAULT_MODAL_SELECTORS } from '../modal/modal-detector';
 import {
   computeSnapshotIdentity,
@@ -2194,16 +2199,22 @@ export class UIBridgeRegistry {
     // stamp (`useUIElement`, the interactive scanner) writes it BEFORE
     // registering, and the registry then leaves it alone.
     if (typeof element?.hasAttribute === 'function') {
+      const stampOwner = registryStampOwner(element);
       if (!element.hasAttribute('data-ui-bridge-id')) {
         element.setAttribute('data-ui-bridge-id', actualId);
-        markRegistryStamp(element);
+        markRegistryStamp(element, this, actualId);
       } else if (
-        isRegistryStamp(element) &&
-        element.getAttribute('data-ui-bridge-id') !== actualId
+        stampOwner &&
+        stampOwner.owner === this &&
+        stampOwner.id !== actualId &&
+        this.findElement(stampOwner.id)?.element !== element
       ) {
-        // Our own stamp from an earlier registration of this node under a
-        // different id: keep it naming the current entry.
+        // Our own stamp left over from an earlier registration of this node
+        // whose entry no longer holds it: re-point it at the current entry.
+        // A stamp a LIVE registration of this node still answers to is left
+        // alone, so unregistering this second id cannot strip the first's.
         element.setAttribute('data-ui-bridge-id', actualId);
+        markRegistryStamp(element, this, actualId);
       }
     }
     // F3: sticky latch + per-window/per-route tally
@@ -2457,7 +2468,7 @@ export class UIBridgeRegistry {
       // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
       // not adopt it under the stale id).
       const node = registered.element;
-      if (node && isRegistryStamp(node) && node.getAttribute('data-ui-bridge-id') === id) {
+      if (node && ownsRegistryStamp(node, this, id)) {
         node.removeAttribute('data-ui-bridge-id');
         clearRegistryStamp(node);
       }
