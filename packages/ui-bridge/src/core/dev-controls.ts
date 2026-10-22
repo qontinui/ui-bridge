@@ -4,7 +4,7 @@
  * Most UI Bridge commands observe, or act the way a user would (click, type,
  * navigate). A dev control does something no user can: it rewrites what the
  * page renders — `POST /control/media/override` swaps an image's source in
- * place. That is exactly what a design loop needs (see a candidate asset in
+ * place, `POST /control/text-visibility` makes every glyph transparent. That is exactly what a design loop needs (see a candidate asset in
  * its real slot, then restore), and exactly what a production deployment must
  * never expose. So these commands answer only where something has OPTED IN:
  *
