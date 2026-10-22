@@ -1273,6 +1273,13 @@ type UnstampedSnapshot = Omit<BridgeSnapshot, 'snapshotId' | 'signature'>;
 
 export class UIBridgeRegistry {
   /**
+   * Identifies this registry's `data-ui-bridge-id` stamps in the shared
+   * stamp record (`bridge-stamp.ts`). A plain token rather than `this`, so
+   * the module-level record never holds a registry alive.
+   */
+  private readonly stampToken: object = {};
+
+  /**
    * Stable per-instance tag assigned at construction time. Used by
    * UI_BRIDGE_DEBUG_FIND diagnostics to detect duplicate registry instances
    * across the React-context path (`bridge.registry`) and the module-level
@@ -2224,10 +2231,10 @@ export class UIBridgeRegistry {
       const stampOwner = registryStampOwner(element);
       if (!element.hasAttribute('data-ui-bridge-id')) {
         element.setAttribute('data-ui-bridge-id', actualId);
-        markRegistryStamp(element, this, actualId);
+        markRegistryStamp(element, this.stampToken, actualId);
       } else if (
         stampOwner &&
-        stampOwner.owner === this &&
+        stampOwner.owner === this.stampToken &&
         stampOwner.id !== actualId &&
         this.findElement(stampOwner.id)?.element !== element
       ) {
@@ -2236,7 +2243,7 @@ export class UIBridgeRegistry {
         // A stamp a LIVE registration of this node still answers to is left
         // alone, so unregistering this second id cannot strip the first's.
         element.setAttribute('data-ui-bridge-id', actualId);
-        markRegistryStamp(element, this, actualId);
+        markRegistryStamp(element, this.stampToken, actualId);
       }
     }
     // F3: sticky latch + per-window/per-route tally
@@ -2490,9 +2497,16 @@ export class UIBridgeRegistry {
       // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
       // not adopt it under the stale id).
       const node = registered.element;
-      if (node && ownsRegistryStamp(node, this, id)) {
+      if (node && ownsRegistryStamp(node, this.stampToken, id)) {
         node.removeAttribute('data-ui-bridge-id');
         clearRegistryStamp(node);
+        // Another live registration of this registry on the same node still
+        // answers to a stamp: hand it the stamp, so the node stays named.
+        const heir = this.allElements().find((e) => e.element === node);
+        if (heir) {
+          node.setAttribute('data-ui-bridge-id', heir.id);
+          markRegistryStamp(node, this.stampToken, heir.id);
+        }
       }
       // F3: drop this element from the per-window/per-route tally. Note we do
       // NOT clear `everHadRegistrationsFlag` — it's a one-way latch that stays
