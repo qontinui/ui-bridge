@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ModalDetector } from '../modal-detector';
+import { ModalDetector, isBlockingDialog, isModalDialog } from '../modal-detector';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -497,5 +497,41 @@ describe('ModalDetector', () => {
 
     const stack = detector.detect();
     expect(stack.modals[0].escDismiss).toBe(false);
+  });
+});
+
+describe('dialog modality and the blocking source', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('an engine without :modal (matches throws) reads not-modal, so a <dialog> is not blocking', () => {
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    dialog.matches = (selector: string) => {
+      if (selector === ':modal') throw new SyntaxError('unsupported pseudo-class');
+      return false;
+    };
+    expect(isModalDialog(dialog)).toBe(false);
+    expect(isBlockingDialog(dialog)).toBe(false);
+  });
+
+  it('reports blockingSource element for aria-modal, backdrop for a class-substring neighbour', () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+    const host = document.createElement('div');
+    host.className = 'layout-overlay-host';
+    const drawer = document.createElement('div');
+    drawer.className = 'MuiDrawer-root';
+    host.appendChild(drawer);
+    document.body.appendChild(host);
+
+    const modals = new ModalDetector().detect().modals;
+    const element = modals.find((m) => m.role === 'dialog');
+    expect(element).toMatchObject({ blocking: true, blockingSource: 'element' });
+    const drawerInfo = modals.find((m) => m !== element);
+    expect(drawerInfo).toMatchObject({ blocking: true, blockingSource: 'backdrop' });
   });
 });
