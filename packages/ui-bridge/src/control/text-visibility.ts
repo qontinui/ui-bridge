@@ -256,10 +256,17 @@ export interface TextVisibilityRestore {
    */
   untrustedMarkers: number;
   /**
+   * Copies that arrived carrying a marker this page DID issue but with no
+   * usable original (`u`, unknown: e.g. a copy of a copy the app had edited).
+   * They were restored from the fixed hide values only, so pins may remain;
+   * any makes `verified` false.
+   */
+  unrestorableMarkers: number;
+  /**
    * True only when every recorded element — in the document or not — reads
    * back exactly as recorded: a byte-identical attribute, or every owned
    * property back with nothing drifted — and no copy carried an untrusted
-   * marker.
+   * or unrestorable marker.
    */
   verified: boolean;
   restoredAt: number;
@@ -488,6 +495,8 @@ interface HiddenState {
   byMarker: Map<string, ElementRecord>;
   /** Copies seen carrying a well-formed marker this page did not issue. */
   untrustedMarkers: number;
+  /** Copies seen carrying an issued marker with no usable original. */
+  unrestorableMarkers: number;
   /** Prefix of this hide's marker values (unique per hide), and the next number. */
   markerPrefix: string;
   nextMarker: number;
@@ -935,6 +944,11 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
           carried.id.includes('-')
         ) {
           s.untrustedMarkers += 1;
+        } else if (carried.original === undefined && issuedHere(carried.id)) {
+          // This page issued it, but it carries no usable original (`u`: the
+          // element it was copied from had been rewritten by the app). Its
+          // pins may outlive the restore, so the restore cannot vouch for it.
+          s.unrestorableMarkers += 1;
         }
         // No trusted original: a fixed hide value it carries is the hide.
         record.originalAttr = undefined;
@@ -1126,6 +1140,7 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
     markerPrefix: `${hiddenAt.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
     nextMarker: 0,
     untrustedMarkers: 0,
+    unrestorableMarkers: 0,
     coverage: {
       scope: 'document',
       elements: 0,
@@ -1311,6 +1326,7 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
   }
   if (s.sheet && s.sheet.cssRules.length > 0) verified = false;
   if (s.untrustedMarkers > 0) verified = false;
+  if (s.unrestorableMarkers > 0) verified = false;
 
   const result: TextVisibilityRestore = {
     trigger,
@@ -1321,6 +1337,7 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     drift,
     driftCount,
     untrustedMarkers: s.untrustedMarkers,
+    unrestorableMarkers: s.unrestorableMarkers,
     verified,
     restoredAt: Date.now(),
   };

@@ -658,6 +658,29 @@ describe('a copy of a hidden element', () => {
     expect(control.restore).toMatchObject({ untrustedMarkers: 0 });
   });
 
+  it('a copy of an edited copy, inserted after the restore, is reported unrestorable', async () => {
+    document.body.innerHTML = '<p id="src" style="color: rgb(1, 2, 3)">x</p>';
+    hide();
+    // A copy the app edits before inserting it: its record has no exact
+    // original, so its own marker carries `u`.
+    const edited = document.getElementById('src')!.cloneNode(true) as HTMLElement;
+    edited.style.setProperty('margin', '3px');
+    document.body.appendChild(edited);
+    await flushObservers();
+    expect(inline(edited, '--qontinui-tv')[0]).toMatch(/^[^:]+:u:/);
+    // A copy of THAT copy, kept off the page through the restore.
+    const second = edited.cloneNode(true) as HTMLElement;
+    show();
+    document.body.appendChild(second);
+    await flushObservers();
+    hide();
+    expect(show().restore).toMatchObject({
+      unrestorableMarkers: 1,
+      untrustedMarkers: 0,
+      verified: false,
+    });
+  });
+
   it('a stale copy from 70 hides ago is still trusted and restores exactly', async () => {
     document.body.innerHTML = '<p id="src" style="color: rgb(1, 2, 3)">x</p>';
     hide();
