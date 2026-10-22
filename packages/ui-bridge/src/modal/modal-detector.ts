@@ -392,6 +392,7 @@ export class ModalDetector {
 
       const info: ModalInfo = {
         id: generateId(el, modalIndex),
+        bridgeId: el.getAttribute('data-ui-bridge-id') ?? undefined,
         title: extractTitle(el),
         type: resolveType(el),
         blocking: isBlocking(el, hasBackdropEl),

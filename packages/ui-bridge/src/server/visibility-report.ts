@@ -11,8 +11,10 @@
  * They now agree by construction. The two surfaces differ only in where their
  * inputs come from:
  *
- * - in-page — `registry.getAllElements()` + `registry.getModalContext()`
- * - relay   — `snapshot.elements` + `snapshot.modalStack`
+ * - in-page — `registry.getAllElements()` + `registry.getModalContext()` +
+ *   `registry.getCanvasCoverage()`
+ * - relay   — `snapshot.elements` + `snapshot.modalStack` +
+ *   `snapshot.canvasCoverage`
  *
  * Both feed the same shape into {@link buildVisibilityReport}, so a change to
  * the sweep lands on both at once.
@@ -51,8 +53,10 @@
 import type {
   VisibilityOcclusionEntry,
   VisibilityReport,
+  VisibilityTextSource,
 } from './types';
 import type { SnapshotModalContext } from '../modal/types';
+import type { CanvasCoverage } from '../core/types';
 
 /** Default `minRatio` — filters hairline overlaps. */
 export const DEFAULT_VISIBILITY_MIN_RATIO = 0.02;
@@ -67,6 +71,8 @@ export interface VisibilityElementInput {
   occludedBy?: string;
   occludedPct?: number;
   textContent?: string;
+  /** `state.paintsText` — the element's text is painted, not in the DOM. */
+  paintsText?: boolean;
 }
 
 export interface BuildVisibilityReportInput {
@@ -80,8 +86,41 @@ export interface BuildVisibilityReportInput {
    * `expectedOverlayDetection`.
    */
   modalContext?: SnapshotModalContext;
+  /**
+   * The canvas census, or `unavailable` with the reason it could not be taken.
+   * Required: each caller knows WHY a census is missing (the in-page accessor
+   * threw, the relay's page SDK predates it), and the report must say so.
+   */
+  canvasCoverage: CanvasCoverage;
   minRatio?: number;
   includeExpected?: boolean;
+}
+
+/**
+ * True when some visible canvas may hold text the sweep did not check: the
+ * census lists an unattributed canvas, or there is no census at all.
+ */
+function canvasUnswept(coverage: CanvasCoverage): boolean {
+  if (coverage.state === 'unavailable') return true;
+  return coverage.unattributed.length > 0;
+}
+
+/**
+ * The D3 verdict order (plan 2026-10-22-occlusion-sweep-is-blind-to-canvas-
+ * painted-text). `unavailable` coverage withholds `clear` on purpose — unlike
+ * a missing modal stack, which only disables a filter, a missing canvas census
+ * loses the ability to say "nothing is covered" truthfully. Do not soften it
+ * to match `expectedOverlayDetection`.
+ */
+function decideVerdict(
+  elementCount: number,
+  occlusionCount: number,
+  input: BuildVisibilityReportInput
+): VisibilityReport['verdict'] {
+  if (elementCount === 0) return 'unknown_empty_registry';
+  if (occlusionCount > 0) return 'occlusions_found';
+  if (canvasUnswept(input.canvasCoverage)) return 'unknown_canvas';
+  return 'clear';
 }
 
 /**
@@ -98,7 +137,11 @@ export interface BuildVisibilityReportInput {
  * accepts ONLY those:
  *
  * - `occludedBy === modal.id` — the occluder is registered under the same id
- * - `occludedBy === "<tag>#<modal.id>"` — unregistered occluder, DOM id match
+ * - `occludedBy === modal.bridgeId` — the occluder is the registered modal,
+ *   whose registry id differs from its DOM id / testid
+ * - `occludedBy === "<tag>#<modal.id>"` — an unregistered occluder (or one
+ *   inside a registered container that also holds the covered element),
+ *   DOM id match
  *
  * Class and bare-tag descriptors are deliberately NOT matched. They are not
  * identities, and a false positive here is expensive: an entry marked expected
@@ -110,6 +153,7 @@ function modalIdentities(modalContext: SnapshotModalContext): Set<string> {
   const ids = new Set<string>();
   for (const modal of modalContext.modals ?? []) {
     if (modal?.id) ids.add(modal.id);
+    if (modal?.bridgeId) ids.add(modal.bridgeId);
   }
   return ids;
 }
@@ -161,6 +205,13 @@ export function buildVisibilityReport(
     }
 
     const text = typeof el.textContent === 'string' ? el.textContent.trim() : '';
+    // A `paintsText` element's text is canvas pixels: `textContent` says
+    // nothing about it, and covering the element covers its text.
+    const textSource: VisibilityTextSource | undefined = el.paintsText
+      ? 'painted'
+      : text.length > 0
+        ? 'dom'
+        : undefined;
     occlusions.push({
       element: el.id,
       label: el.label,
@@ -168,7 +219,8 @@ export function buildVisibilityReport(
       occludedBy: el.occludedBy,
       ratio,
       isExpectedOverlay,
-      hidesText: text.length > 0,
+      hidesText: textSource !== undefined,
+      ...(textSource !== undefined ? { textSource } : {}),
       source: 'hit-test',
     });
   }
@@ -188,13 +240,9 @@ export function buildVisibilityReport(
     includeExpected,
     expectedOverlayDetection: detectionAvailable ? 'modal-stack' : 'unavailable',
     expectedOverlaysFiltered,
-    // An empty list from a registry with no elements is UNKNOWN, not
-    // "nothing is covered" — say which one this is.
-    verdict:
-      elementCount === 0
-        ? 'unknown_empty_registry'
-        : occlusions.length === 0
-          ? 'clear'
-          : 'occlusions_found',
+    canvasCoverage: input.canvasCoverage,
+    // An empty list is UNKNOWN, not "nothing is covered", when the registry
+    // was empty or a canvas went unswept — say which one this is.
+    verdict: decideVerdict(elementCount, occlusions.length, input),
   };
 }
