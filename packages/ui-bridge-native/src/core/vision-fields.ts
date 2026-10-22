@@ -435,9 +435,32 @@ const RESIZE_MODE_TO_OBJECT_FIT: ReadonlyMap<string, VisionObjectFit> = new Map<
 ]);
 
 /**
- * The object-fit an RN `Image` actually paints with, from what the registry
- * recorded — RN's own precedence (`Image.ios.js` / `Image.android.js`): the
- * `objectFit` style, then the `resizeMode` prop, then the `resizeMode` style.
+ * expo-image's `contentFit` prop already speaks CSS `object-fit`, and expo-image
+ * paints every value itself (including `scale-down`, which RN's `Image` does not).
+ */
+const CONTENT_FIT_TO_OBJECT_FIT: ReadonlyMap<string, VisionObjectFit> = new Map<
+  string,
+  VisionObjectFit
+>([
+  ['cover', 'cover'],
+  ['contain', 'contain'],
+  ['fill', 'fill'],
+  ['none', 'none'],
+  ['scale-down', 'scale-down'],
+]);
+
+/**
+ * The object-fit an image actually paints with, from what the registry
+ * recorded.
+ *
+ * An expo-image `Image` is decided by its `contentFit` prop: expo-image reads it
+ * first and falls back to `resizeMode` only when it is unset, so a recorded
+ * `contentFit` wins, and one outside the CSS vocabulary is UNKNOWN rather than a
+ * fall-through. RN's `Image` takes no `contentFit`, so for it this is RN's own
+ * precedence (`Image.ios.js` / `Image.android.js`): the `objectFit` style, then
+ * the `resizeMode` prop, then the `resizeMode` style. An expo-image with no
+ * `contentFit` takes that RN chain too: the registry does not record which
+ * component painted the element, so expo-image's own fallback cannot be applied.
  *
  * RN's final fallback is `'cover'`, and it is NOT applied here: an element
  * registered as `type: 'image'` need not be RN's `Image` (an `expo-image`, a
@@ -450,6 +473,8 @@ export function resolveObjectFit(
 ): VisionObjectFit | undefined {
   // Maps, not object literals: these strings come from the app, and an object
   // lookup would answer for inherited prototype keys (`constructor`, …).
+  const contentFit = nonEmptyString(props?.contentFit);
+  if (contentFit !== undefined) return CONTENT_FIT_TO_OBJECT_FIT.get(contentFit);
   const styleFit = nonEmptyString(flatStyle?.objectFit);
   const mode =
     (styleFit !== undefined ? OBJECT_FIT_TO_RESIZE_MODE.get(styleFit) : undefined) ??
@@ -617,8 +642,8 @@ export function projectVisionFields(args: {
   flatStyle: Record<string, unknown> | undefined;
   /**
    * The element's recorded props (`registerElement({ props })` /
-   * `captureProps`) — read for an image's `source` / `src` / `srcSet` and
-   * `resizeMode`.
+   * `captureProps`) — read for an image's `source` / `src` / `srcSet`, and its
+   * expo-image `contentFit` or RN `resizeMode`.
    */
   props?: Record<string, unknown>;
   /** The accessibility label the registry recorded (`identifier.accessibilityLabel`). */
