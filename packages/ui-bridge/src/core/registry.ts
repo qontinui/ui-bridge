@@ -4074,6 +4074,17 @@ export class UIBridgeRegistry {
    * Clear all registrations
    */
   clear(): void {
+    // A full teardown (`resetGlobalRegistry` runs this) must not leave this
+    // registry's stamps naming entries that no longer exist. Only stamps this
+    // registry wrote, still under the id they name, are removed; a developer
+    // or hook stamp stays.
+    for (const registered of this.allElements()) {
+      const node = registered.element;
+      if (node && ownsRegistryStamp(node, this.stampToken, registered.id)) {
+        node.removeAttribute('data-ui-bridge-id');
+        clearRegistryStamp(node);
+      }
+    }
     this.elementsByWindow.clear();
     this.components.clear();
     this.workflows.clear();
