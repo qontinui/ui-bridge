@@ -15,6 +15,7 @@ import type {
   WaitOptions,
 } from '../core/types';
 import { findElementByIdentifier } from '../core/element-identifier';
+import { describeUnknownAction } from './actionVocabulary';
 import { pageRectOf, isEmptyRect, intersectRects } from '../core/registry';
 import type { NativePageRect } from '../core/registry';
 // Phase 3 (plan 2026-08-20-ui-bridge-action-declaration-shape). A justified
@@ -46,6 +47,27 @@ import type {
 } from './types';
 
 /**
+ * Every verb `performAction`'s switch implements — the accepted list an
+ * unknown-action refusal names when the element advertises none (keep in step
+ * with `NativeStandardAction` and the switch below).
+ */
+const NATIVE_STANDARD_ACTIONS: readonly NativeStandardAction[] = [
+  'press',
+  'click',
+  'longPress',
+  'doubleTap',
+  'type',
+  'setValue',
+  'clear',
+  'focus',
+  'blur',
+  'scroll',
+  'scrollIntoView',
+  'swipe',
+  'toggle',
+];
+
+/**
  * Default wait options
  */
 const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
@@ -66,7 +88,9 @@ const DEFAULT_WAIT_OPTIONS: Required<WaitOptions> = {
 export class NativeActionError extends Error {
   constructor(
     message: string,
-    readonly code: string
+    readonly code: string,
+    /** The suggested verb on an `UNKNOWN_ACTION` refusal (see `./actionVocabulary`). */
+    readonly didYouMean?: string
   ) {
     super(message);
     this.name = 'NativeActionError';
@@ -345,6 +369,9 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
         success: false,
         error: errorMsg,
         ...(error instanceof NativeActionError ? { code: error.code } : {}),
+        ...(error instanceof NativeActionError && error.didYouMean !== undefined
+          ? { didYouMean: error.didYouMean }
+          : {}),
         stack: error instanceof Error ? error.stack : undefined,
         durationMs: failTime - startTime,
         timestamp: failTime,
@@ -419,8 +446,17 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       case 'toggle':
         return this.performToggle(props);
 
-      default:
-        throw new Error(`Unknown action: ${action}`);
+      default: {
+        const custom = Object.keys(element.customActions ?? {});
+        const own = [...(element.actions ?? []), ...custom];
+        const all = [...NATIVE_STANDARD_ACTIONS, ...custom];
+        const hint = describeUnknownAction(action, {
+          elementId: element.id,
+          accepted: own.length > 0 ? own : all,
+          fallback: all,
+        });
+        throw new NativeActionError(hint.message, 'UNKNOWN_ACTION', hint.didYouMean);
+      }
     }
   }
 

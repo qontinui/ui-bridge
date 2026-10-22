@@ -1,0 +1,118 @@
+/**
+ * The "did you mean" verb table (plan
+ * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary, D3 /
+ * Phase 8). The table is asserted as LITERALS so an edited or dropped entry
+ * goes red here; the same literals are asserted in the runner's
+ * `action_vocabulary.rs` and in `@qontinui/ui-bridge` (this package keeps a
+ * package-local copy: `@qontinui/ui-bridge` is only an optional peer).
+ */
+
+import { describe, it, expect } from 'vitest';
+import { ACTION_VERB_SYNONYMS, describeUnknownAction, suggestAction } from './actionVocabulary';
+
+describe('ACTION_VERB_SYNONYMS', () => {
+  it('is exactly the D3 table', () => {
+    expect(ACTION_VERB_SYNONYMS).toEqual({
+      press: ['sendKeys', 'click'],
+      keypress: ['sendKeys', 'click'],
+      keyPress: ['sendKeys', 'click'],
+      pressKey: ['sendKeys', 'click'],
+      key: ['sendKeys', 'click'],
+      keydown: ['sendKeys', 'click'],
+      keyDown: ['sendKeys', 'click'],
+      fill: ['type'],
+      input: ['type'],
+      enter: ['type'],
+      write: ['type'],
+      typeText: ['type'],
+      tap: ['click', 'press'],
+      activate: ['click', 'press'],
+      click: ['press'],
+      rightclick: ['rightClick'],
+      contextmenu: ['rightClick'],
+      contextMenu: ['rightClick'],
+      middleclick: ['middleClick'],
+      dblclick: ['doubleClick'],
+      dblClick: ['doubleClick'],
+      mouseover: ['hover'],
+      mouseenter: ['hover'],
+      scrollTo: ['scrollIntoView'],
+    });
+  });
+});
+
+describe('suggestAction', () => {
+  const terminalInput = ['focus', 'blur', 'type', 'sendKeys', 'clear'];
+  const button = ['focus', 'blur', 'click', 'hoverClick'];
+  const nativeButton = ['focus', 'blur', 'press', 'longPress', 'doubleTap'];
+
+  it('picks the first candidate the element accepts', () => {
+    expect(suggestAction('press', terminalInput)).toBe('sendKeys');
+    expect(suggestAction('press', button)).toBe('click');
+    expect(suggestAction('tap', button)).toBe('click');
+    expect(suggestAction('tap', nativeButton)).toBe('press');
+    expect(suggestAction('click', nativeButton)).toBe('press');
+    expect(suggestAction('fill', terminalInput)).toBe('type');
+    expect(suggestAction('typeText', terminalInput)).toBe('type');
+    expect(suggestAction('dblclick', ['doubleClick'])).toBe('doubleClick');
+    expect(suggestAction('contextmenu', ['rightClick'])).toBe('rightClick');
+    expect(suggestAction('middleclick', ['middleClick'])).toBe('middleClick');
+    expect(suggestAction('mouseover', ['hover'])).toBe('hover');
+    expect(suggestAction('scrollTo', ['scrollIntoView'])).toBe('scrollIntoView');
+  });
+
+  it('matches the synonym key case-insensitively', () => {
+    expect(suggestAction('PRESS', terminalInput)).toBe('sendKeys');
+    expect(suggestAction('DblClick', ['doubleClick'])).toBe('doubleClick');
+  });
+
+  it('fixes the case of an exact accepted verb', () => {
+    expect(suggestAction('sendkeys', terminalInput)).toBe('sendKeys');
+    expect(suggestAction('CLICK', button)).toBe('click');
+  });
+
+  it('never corrects a verb the element accepts exactly', () => {
+    expect(suggestAction('press', nativeButton)).toBeUndefined();
+    expect(suggestAction('click', ['click', 'press'])).toBeUndefined();
+  });
+
+  it('never suggests a verb the element would also reject', () => {
+    expect(suggestAction('press', ['focus', 'blur'])).toBeUndefined();
+    expect(suggestAction('fill', button)).toBeUndefined();
+    expect(suggestAction('frobnicate', terminalInput)).toBeUndefined();
+    expect(suggestAction('constructor', terminalInput)).toBeUndefined();
+  });
+});
+
+describe('describeUnknownAction', () => {
+  it('names the element, its verbs and the suggestion', () => {
+    const hint = describeUnknownAction('press', {
+      elementId: 'terminal.command-bar-input',
+      accepted: ['focus', 'type', 'sendKeys'],
+    });
+    expect(hint.didYouMean).toBe('sendKeys');
+    expect(hint.supportedActions).toEqual(['focus', 'type', 'sendKeys']);
+    expect(hint.message).toBe(
+      "Unknown action 'press' for element 'terminal.command-bar-input'. " +
+        "This element accepts: focus, type, sendKeys. Did you mean 'sendKeys'?"
+    );
+  });
+
+  it('falls back to the executable verbs for the suggestion only', () => {
+    const hint = describeUnknownAction('fill', {
+      elementId: 'b',
+      accepted: ['click'],
+      fallback: ['click', 'type'],
+    });
+    expect(hint.supportedActions).toEqual(['click']);
+    expect(hint.didYouMean).toBe('type');
+  });
+
+  it('omits the suggestion when there is none and labels a global list', () => {
+    const hint = describeUnknownAction('frobnicate', { accepted: ['click', 'click', 'type'] });
+    expect(hint).toEqual({
+      message: "Unknown action 'frobnicate'. Supported: click, type.",
+      supportedActions: ['click', 'type'],
+    });
+  });
+});
