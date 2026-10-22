@@ -14,6 +14,7 @@ export type {
   VisionInlineOption,
   VisionCaptureRequest,
   VisionRawRequest,
+  VisionRawReason,
   VisionCaptureResult,
   VisionCaptureResponse,
   VisionDiffResponse,
