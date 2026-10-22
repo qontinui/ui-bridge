@@ -40,9 +40,8 @@ export const BLOCKING_DIALOG_SELECTOR = NATIVE_SELECTORS.join(', ');
  * True when `el` is a `<dialog>` shown modally (`showModal()`), read through
  * the `:modal` pseudo-class. An engine that does not support `:modal` (it
  * throws) answers `false`: a dialog of unknown modality must never make an
- * overlay "expected", so the unknown case under-claims. Chromium/WebView2,
- * Firefox and Safari all support it; jsdom parses it but implements no
- * `showModal`, so there a dialog is never modal.
+ * overlay "expected", so the unknown case under-claims. jsdom parses it but
+ * implements no `showModal`, so there a dialog is never modal.
  */
 export function isModalDialog(el: Element): boolean {
   try {
@@ -432,6 +431,7 @@ export class ModalDetector {
         title: extractTitle(el),
         type: resolveType(el),
         blocking: isBlocking(el, hasBackdropEl),
+        blockingSource: isBlockingDialog(el) ? 'element' : hasBackdropEl ? 'backdrop' : undefined,
         zIndex: parseZIndex(window.getComputedStyle(el).zIndex),
         hasBackdrop: hasBackdropEl,
         closeButton: this.config.detectCloseButton ? findCloseButton(el) : undefined,

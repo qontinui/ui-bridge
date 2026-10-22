@@ -48,6 +48,7 @@ function modal(id: string, over: Partial<ModalInfo> = {}): ModalInfo {
     id,
     type: 'dialog',
     blocking: true,
+    blockingSource: 'element',
     zIndex: 100,
     hasBackdrop: true,
     escDismiss: true,
@@ -447,14 +448,18 @@ describe('buildVisibilityReport — a registered modal is recognised by its regi
   });
 });
 
-describe('buildVisibilityReport — only a BLOCKING modal makes an overlay expected', () => {
+describe('buildVisibilityReport — only an ELEMENT-blocking modal makes an overlay expected', () => {
   // The relay builds this report from a page's snapshot `modalStack`, so the
-  // flag may come from any page SDK. Only an explicit `blocking: true` counts:
-  // `false` (a docked drawer, an open menu, a non-modal popover) or a missing
-  // flag must never turn a real occlusion into an "expected" one.
+  // fields may come from any page SDK. Only `blockingSource: 'element'`
+  // counts: a non-blocking match (a docked drawer, an open menu, a non-modal
+  // popover), a backdrop-only verdict (a class substring on a neighbour), or
+  // a page SDK that sends no source must never turn a real occlusion into an
+  // "expected" one.
   it.each([
-    ['blocking: false', { blocking: false }],
-    ['no blocking flag', { blocking: undefined as unknown as boolean }],
+    ['blocking: false', { blocking: false, blockingSource: undefined }],
+    ['a backdrop-only verdict', { blocking: true, blockingSource: 'backdrop' as const }],
+    ['no blockingSource (older page SDK)', { blocking: true, blockingSource: undefined }],
+    ['no flags at all', { blocking: undefined as unknown as boolean, blockingSource: undefined }],
   ])('a modal with %s is not an expected overlay, by bridgeId or by id', (_name, over) => {
     const ctx: SnapshotModalContext = {
       modals: [modal('sidebar-drawer', { ...over, bridgeId: 'sidebar', type: 'drawer' })],

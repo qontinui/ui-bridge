@@ -143,14 +143,20 @@ function decideVerdict(
  *   inside a registered container that also holds the covered element),
  *   DOM id match
  *
- * Only a modal whose `blocking` is exactly `true` contributes identities. The
- * detector also reports non-blocking UI it matched by a library or custom
- * selector (a docked `.MuiDrawer-root`, an open Headless UI menu, a non-modal
- * Radix popover); once registered, such a node's own stamp names whatever
- * unregistered child of it was hit, and admitting it would mark a real
- * occlusion "expected". `false` or a missing flag (a page SDK that never
- * sent one, over the relay) is not blocking. This matches `describeOccluder`,
- * whose dialog override uses only selectors the detector judges blocking.
+ * Only a modal the ELEMENT itself declares blocking (`blockingSource ===
+ * 'element'`: an `alertdialog`, `[role=dialog][aria-modal=true]`, or a
+ * `<dialog>` matching `:modal`) contributes identities. The detector also
+ * reports UI it matched by a library or custom selector (a docked
+ * `.MuiDrawer-root`, an open Headless UI menu, a non-modal Radix popover),
+ * and its backdrop heuristic marks some of them blocking from a class
+ * substring on a neighbour. Once registered, such a node's own stamp names
+ * whatever unregistered child of it was hit, and admitting it would mark a
+ * real occlusion "expected". A backdrop-only verdict, `blocking: false`, or a
+ * missing `blockingSource` (a page SDK older than the field, over the relay)
+ * is not admitted. This is the same set `describeOccluder` names a hit by
+ * (`isBlockingDialog`). Consequence, accepted: a modal that only a backdrop
+ * marks as blocking (a Radix/shadcn Dialog, which sets no aria-modal) is not
+ * filtered and over-reports.
  *
  * Class and bare-tag descriptors are deliberately NOT matched. They are not
  * identities, and a false positive here is expensive: an entry marked expected
@@ -161,7 +167,7 @@ function decideVerdict(
 function modalIdentities(modalContext: SnapshotModalContext): Set<string> {
   const ids = new Set<string>();
   for (const modal of modalContext.modals ?? []) {
-    if (modal?.blocking !== true) continue;
+    if (modal?.blockingSource !== 'element') continue;
     if (modal.id) ids.add(modal.id);
     if (modal.bridgeId) ids.add(modal.bridgeId);
   }
