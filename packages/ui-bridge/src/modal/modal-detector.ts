@@ -44,6 +44,16 @@ const LIBRARY_SELECTORS = [
   '[data-headlessui-state~="open"]',
 ];
 
+/**
+ * Every selector a default `ModalDetector` matches. The registry's occlusion
+ * hit-test names a hit inside one of these by the modal itself, so the
+ * expected-overlay filter (which matches modal identities) recognises it.
+ */
+export const DEFAULT_MODAL_SELECTORS: readonly string[] = [
+  ...NATIVE_SELECTORS,
+  ...LIBRARY_SELECTORS,
+];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -335,6 +345,8 @@ export class ModalDetector {
     Pick<ModalDetectorConfig, 'detectBackdrop' | 'detectCloseButton' | 'detectPrimaryAction'>
   > & { customSelectors: string[] };
 
+  private readonly selectors: readonly string[];
+
   constructor(config: ModalDetectorConfig = {}) {
     this.config = {
       customSelectors: config.customSelectors ?? [],
@@ -342,6 +354,15 @@ export class ModalDetector {
       detectCloseButton: config.detectCloseButton ?? true,
       detectPrimaryAction: config.detectPrimaryAction ?? true,
     };
+    this.selectors = [...DEFAULT_MODAL_SELECTORS, ...this.config.customSelectors];
+  }
+
+  /**
+   * Every selector this detector treats as a modal, custom ones included.
+   * The registry reads it so an occluder inside a modal is NAMED as that modal.
+   */
+  getModalSelectors(): readonly string[] {
+    return this.selectors;
   }
 
   /**
@@ -361,11 +382,7 @@ export class ModalDetector {
     }
 
     // Collect all selectors
-    const allSelectors = [
-      ...NATIVE_SELECTORS,
-      ...LIBRARY_SELECTORS,
-      ...this.config.customSelectors,
-    ];
+    const allSelectors = this.selectors;
 
     // Query all matching elements, deduplicating
     const seen = new Set<Element>();

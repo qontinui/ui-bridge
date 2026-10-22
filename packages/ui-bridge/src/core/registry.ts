@@ -52,6 +52,7 @@ import {
 } from './a11y';
 import { createStableRef } from './stable-ref';
 import { clearRegistryStamp, isRegistryStamp, markRegistryStamp } from './bridge-stamp';
+import { DEFAULT_MODAL_SELECTORS } from '../modal/modal-detector';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -454,6 +455,11 @@ interface ElementStateOptions {
    * centre-only rule, so the dense grid stays a handful per page.
    */
   denseSampling?: boolean;
+  /**
+   * Selectors that mark a modal, for naming an occluder inside one (see
+   * `describeOccluder`). Defaults to the built-in `ModalDetector` set.
+   */
+  modalSelectors?: readonly string[];
 }
 
 /**
@@ -514,7 +520,8 @@ function getElementState(element: HTMLElement, options: ElementStateOptions = {}
     rect,
     computedStyle,
     inViewport,
-    options.denseSampling === true
+    options.denseSampling === true,
+    options.modalSelectors ?? DEFAULT_MODAL_SELECTORS
   );
 
   const state: ElementState = {
@@ -853,9 +860,7 @@ type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layou
  */
 function safeElementFromPoint(x: number, y: number): Element | null {
   try {
-    return typeof document.elementFromPoint === 'function'
-      ? document.elementFromPoint(x, y)
-      : null;
+    return typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : null;
   } catch {
     return null;
   }
@@ -877,18 +882,50 @@ interface VisibilityVerdict {
  * unregistered overlay is still NAMED rather than reported as an anonymous
  * "something".
  *
- * The hit is named by its closest stamped ancestor-or-self — a heading or
- * form inside a registered dialog IS that dialog, so the expected-overlay
- * matcher still recognises it — UNLESS that ancestor also contains the
- * covered element. Then it is a shared container (an app shell), not the
- * occluder, and blaming it would hide the real overlay: the hit is named by
- * its own DOM id (`tag#id`), else a descriptor.
+ * A hit inside a MODAL (an element matching `modalSelectors`, the same set the
+ * modal detector reports) that does not itself hold the covered element is
+ * named by that modal — its stamp, else its `tag#id` — and the outermost such
+ * modal wins. A heading or button inside a dialog IS that dialog, and the
+ * expected-overlay matcher recognises a modal only by its own identity. This
+ * has to hold even when the child is itself registered (content discovery,
+ * media discovery and direct registrations all stamp their node), which is
+ * why it is decided on modal membership rather than on which stamp is
+ * closest.
+ *
+ * Otherwise the hit is named by its closest stamped ancestor-or-self, so a
+ * registered widget is named precisely (the minimap, not the panel holding
+ * it) — UNLESS that ancestor also contains the covered element. Then it is a
+ * shared container (an app shell), not the occluder, and blaming it would
+ * hide the real overlay: the hit is named by its own DOM id (`tag#id`), else
+ * a descriptor.
  */
-function describeOccluder(hit: Element, covered: Element): string {
+function describeOccluder(
+  hit: Element,
+  covered: Element,
+  modalSelectors: readonly string[] = DEFAULT_MODAL_SELECTORS
+): string {
+  let modal: Element | undefined;
+  for (let cur: Element | null = hit; cur && !cur.contains(covered); cur = cur.parentElement) {
+    if (matchesAnySelector(cur, modalSelectors)) modal = cur;
+  }
+  if (modal) return modal.getAttribute('data-ui-bridge-id') || describeDomNode(modal);
+
   const stamped = hit.closest<HTMLElement>('[data-ui-bridge-id]');
   const id = stamped?.getAttribute('data-ui-bridge-id');
   if (stamped && id && !stamped.contains(covered)) return id;
   return describeDomNode(hit);
+}
+
+/** `el.matches` over a selector list; an invalid selector never matches. */
+function matchesAnySelector(el: Element, selectors: readonly string[]): boolean {
+  for (const selector of selectors) {
+    try {
+      if (el.matches(selector)) return true;
+    } catch {
+      // An invalid (custom) selector matches nothing, as in the detector.
+    }
+  }
+  return false;
 }
 
 /** First entry of `byNode` at or above `node`, walking `parentElement`. */
@@ -931,7 +968,8 @@ function computeVisibilityVerdict(
   rect: DOMRect,
   style: CSSStyleDeclaration,
   inViewport: boolean,
-  denseSampling: boolean
+  denseSampling: boolean,
+  modalSelectors: readonly string[]
 ): VisibilityVerdict {
   if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
@@ -977,7 +1015,7 @@ function computeVisibilityVerdict(
     // covering us.
     if (hit.contains(element)) continue;
     covered++;
-    const who = describeOccluder(hit, element);
+    const who = describeOccluder(hit, element, modalSelectors);
     blame.set(who, (blame.get(who) ?? 0) + 1);
   }
 
@@ -1403,7 +1441,8 @@ export class UIBridgeRegistry {
     if (typeof document === 'undefined') return undefined;
     try {
       const all = Array.from(document.getElementsByTagName('canvas'));
-      if (all.length === 0) return { state: 'measured', canvases: 0, attributed: 0, unattributed: [] };
+      if (all.length === 0)
+        return { state: 'measured', canvases: 0, attributed: 0, unattributed: [] };
       const byNode = this.elementsByNode();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
@@ -2044,7 +2083,11 @@ export class UIBridgeRegistry {
       value: undefined,
     };
     const computeState = (): ElementState => {
-      const live = getElementState(element, { paintsText, denseSampling });
+      const live = getElementState(element, {
+        paintsText,
+        denseSampling,
+        modalSelectors: this.enrichers.modalDetector?.getModalSelectors?.(),
+      });
       const overlay = stateOverridesRef.value;
       if (!overlay) return live;
       // Shallow-merge: cached overlay wins for fields the action wrote
@@ -2414,11 +2457,7 @@ export class UIBridgeRegistry {
       // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
       // not adopt it under the stale id).
       const node = registered.element;
-      if (
-        node &&
-        isRegistryStamp(node) &&
-        node.getAttribute('data-ui-bridge-id') === id
-      ) {
+      if (node && isRegistryStamp(node) && node.getAttribute('data-ui-bridge-id') === id) {
         node.removeAttribute('data-ui-bridge-id');
         clearRegistryStamp(node);
       }
