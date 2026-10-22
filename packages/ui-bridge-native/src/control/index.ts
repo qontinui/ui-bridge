@@ -6,3 +6,9 @@
 
 export * from './types';
 export * from './action-executor';
+export {
+  ACTION_VERB_SYNONYMS,
+  suggestAction,
+  describeUnknownAction,
+  type UnknownActionHint,
+} from './actionVocabulary';

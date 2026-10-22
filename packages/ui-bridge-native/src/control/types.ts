@@ -38,11 +38,18 @@ export interface ControlActionResponse extends NativeActionResponse {
   requestId?: string;
   /**
    * Machine-readable failure code, set only when an action failed for a
-   * reason with an honest code of its own — today only `NOT_SUPPORTED`
-   * (`scrollIntoView` with no usable declared scroll container). Absent on
-   * every other failure, which the HTTP handler reports as `ACTION_FAILED`.
+   * reason with an honest code of its own: `NOT_SUPPORTED` (`scrollIntoView`
+   * with no usable declared scroll container) or `UNKNOWN_ACTION` (a verb the
+   * element does not implement; the message lists the element's accepted
+   * verbs). Absent on every other failure, which the HTTP handler reports as
+   * `ACTION_FAILED`.
    */
   code?: string;
+  /**
+   * On an `UNKNOWN_ACTION` refusal, the verb the caller most likely meant
+   * (`tap` → `press`), when the element accepts one. See `./actionVocabulary`.
+   */
+  didYouMean?: string;
   /** Retry count */
   retryCount?: number;
 }
