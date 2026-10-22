@@ -24,6 +24,8 @@ export {
   releaseForcedPseudoStateIfOwner,
   getForcedPseudoState,
   snapshotForcedPseudoState,
+  reapplyIfIdle,
+  FORCED_PSEUDO_STATE_VERSION,
   releaseAfter,
   releaseHeldAfterDispatch,
   releasesForcedPseudoState,

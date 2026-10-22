@@ -517,6 +517,26 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     await page.close();
   }, 30_000);
 
+  it('a sheet removed or un-adopted during the hold counts its rewritten rules as already gone', async () => {
+    const page = await openPage(`<div class="a" id="a"><i class="b" id="b">b</i></div>`);
+    const rel = await page.evaluate(async () => {
+      const style = document.createElement('style');
+      style.textContent = '.a:hover .b{opacity:1}';
+      document.head.appendChild(style);
+      const adopted = new CSSStyleSheet();
+      adopted.replaceSync('.a:hover .b{color:red}');
+      document.adoptedStyleSheets = [adopted];
+      await window.FH.forcePseudoState(document.getElementById('a'), 'hover');
+      // A removed <style> keeps its rule objects and their parent pointers;
+      // an un-adopted sheet keeps all of them. Neither draws any more.
+      style.remove();
+      document.adoptedStyleSheets = [];
+      return window.FH.releaseForcedPseudoState();
+    });
+    expect(rel).toMatchObject({ rulesRestored: 0, rulesAlreadyGone: 2, restore: 'verified' });
+    await page.close();
+  }, 30_000);
+
   it('a cross-origin sheet is counted in unreadableSheets and makes the report incomplete', async () => {
     foreignFiles.set('/x.css', { type: 'text/css', body: `.zz:hover{color:red}` });
     const page = await openPage(

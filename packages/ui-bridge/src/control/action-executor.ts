@@ -203,6 +203,7 @@ import {
   releaseForcedPseudoState,
   type ForcedHoverActionReport,
   type ForcedPseudoElementSource,
+  type ForcedPseudoReport,
 } from './forced-hover';
 
 /**
@@ -534,6 +535,28 @@ export function forcedHoverTiming(params: unknown): {
   };
 }
 
+/**
+ * The forced hover a `hoverClick` applied before its click threw, keyed by the
+ * thrown error. A side table rather than a property on the error, so nothing
+ * leaks into the handler-error envelope that copies an error's own fields.
+ */
+const appliedBeforeFailure = new WeakMap<Error, ForcedPseudoReport>();
+
+/** The `forcedHover` field of a failure response: what was applied and/or released. */
+function forcedHoverOnFailure(
+  error: unknown,
+  released: ForcedHoverActionReport['released']
+): { forcedHover?: ForcedHoverActionReport } {
+  const applied = error instanceof Error ? appliedBeforeFailure.get(error) : undefined;
+  if (!applied && !released) return {};
+  return {
+    forcedHover: {
+      ...(applied ? { applied } : {}),
+      ...(released ? { released } : {}),
+    },
+  };
+}
+
 function isForcedHoverResult(action: string, result: unknown): result is ForcedHoverResult {
   return (
     FORCED_HOVER_ACTIONS.has(action) &&
@@ -760,6 +783,22 @@ class ElementNotVisibleError extends Error {
     super(message);
     this.name = 'ElementNotVisibleError';
     this.visibilityReason = visibilityReason;
+  }
+}
+
+/**
+ * The action was refused by its own argument/target validation BEFORE it
+ * touched the page: `type` on a non-input, malformed `sendKeys`, a missing
+ * `value`, a refused or form-less `submit`/`reset`, an unknown verb. A plain
+ * `Error` subclass, so the failure response is unchanged (`UB-ACTION-FAILED`
+ * with the same message); the type exists so `releaseAfter` can tell "did not
+ * dispatch" from "dispatched and failed", and keep a held forced hover for the
+ * retry instead of releasing it.
+ */
+export class ActionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ActionValidationError';
   }
 }
 
@@ -1538,8 +1577,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       let result: unknown;
       let effectVerification: EffectVerification | undefined;
       let forcedHover: ForcedHoverActionReport | undefined;
-      const dispatch = (): Promise<unknown> =>
-        this.performAction(element, request.action, actionParams, registered);
+      // Set the moment dispatch is actually entered: an effect verifier that
+      // throws in its own pre-observation never reached the page, and must not
+      // release a held hover.
+      let reachedDispatch = false;
+      const dispatch = (): Promise<unknown> => {
+        reachedDispatch = true;
+        return this.performAction(element, request.action, actionParams, registered);
+      };
       // Verify when the executor-wide flag is on OR the caller opted in for this
       // single request via `verifyEffect: true`. The per-request override lets a
       // consumer (e.g. the runner's `effect_check` step) request a verified
@@ -1599,8 +1644,11 @@ export class DefaultActionExecutor implements ActionExecutor {
           onRelease: (report) => {
             heldRelease = report;
           },
+          dispatched: () => reachedDispatch,
           notDispatched: (err) =>
-            err instanceof ElementDisabledError || err instanceof ElementNotVisibleError,
+            err instanceof ElementDisabledError ||
+            err instanceof ElementNotVisibleError ||
+            err instanceof ActionValidationError,
         }
       );
       // `hover` / `hoverClick` / `unhover` return their forced-hover report as
@@ -1785,7 +1833,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         elementState,
         elementResolution,
         snapshotFreshness,
-        ...(heldRelease ? { forcedHover: { released: heldRelease } } : {}),
+        ...forcedHoverOnFailure(error, heldRelease),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -2964,7 +3012,7 @@ export class DefaultActionExecutor implements ActionExecutor {
             signal: inertAbortSignal(),
           });
         }
-        throw new Error(`Unknown action: ${action}`);
+        throw new ActionValidationError(`Unknown action: ${action}`);
       }
     }
   }
@@ -3059,7 +3107,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       registry: this.revealSource(),
       afterMark: () => dispatchHoverEnterChain(element),
     });
-    this.performClick(element, params as MouseAction | undefined);
+    try {
+      this.performClick(element, params as MouseAction | undefined);
+    } catch (error) {
+      // The hover WAS applied; the failure response must say so (see
+      // `forcedHoverOnFailure`), exactly as the relay's does.
+      if (error instanceof Error) appliedBeforeFailure.set(error, applied);
+      throw error;
+    }
     return { forcedHover: { applied } };
   }
 
@@ -3079,7 +3134,7 @@ export class DefaultActionExecutor implements ActionExecutor {
 
   private async performType(element: HTMLElement, options?: TypeAction): Promise<void> {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      throw new Error('Type action requires an input or textarea element');
+      throw new ActionValidationError('Type action requires an input or textarea element');
     }
 
     // Validate that the caller provided the required `text` parameter.
@@ -3095,7 +3150,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       const hint = hasValueAlias
         ? ' Got `value` — the `type` action expects `text` instead. (Tip: `select`/`setValue` use `value`, but `type` uses `text`.)'
         : '';
-      throw new Error(
+      throw new ActionValidationError(
         `Type action requires a 'text' string parameter (the characters to type into the field).${hint}`
       );
     }
@@ -3125,7 +3180,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // caller forgot the array (or sent it as `value: "Enter"` — a common
     // mistake), making the misuse undebuggable.
     if (!Array.isArray(options?.keys) || options.keys.length === 0) {
-      throw new Error(
+      throw new ActionValidationError(
         "sendKeys action requires a non-empty 'keys' array of {key: '<KeyName>', modifiers?} descriptors or key-name strings. (Example: { keys: [{ key: 'Enter' }] } or { keys: ['Enter'] }.)"
       );
     }
@@ -3140,7 +3195,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // before any key is dispatched, never half-way through the sequence.
     const normalized = normalizeKeyDescriptors(options.keys);
     if (!normalized.ok) {
-      throw new Error(`sendKeys: ${normalized.error}`);
+      throw new ActionValidationError(`sendKeys: ${normalized.error}`);
     }
 
     element.focus();
@@ -3230,7 +3285,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     // matches no <option>, and the action returns success with the select
     // unchanged — an invisible failure mode.
     if (options?.value === undefined || options.value === null) {
-      throw new Error(
+      throw new ActionValidationError(
         "select action requires a 'value' parameter (string or string[]) — the option value(s) to select."
       );
     }
@@ -3248,7 +3303,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         }
         return;
       }
-      throw new Error(
+      throw new ActionValidationError(
         `Cannot select on ${element.tagName}. Use a <select> element or a combobox (role="combobox").`
       );
     }
@@ -3330,7 +3385,7 @@ export class DefaultActionExecutor implements ActionExecutor {
     options?: import('./types').AutocompleteAction
   ): Promise<void> {
     if (!options?.searchText) {
-      throw new Error('Autocomplete action requires searchText parameter');
+      throw new ActionValidationError('Autocomplete action requires searchText parameter');
     }
 
     const timeout = options.suggestionTimeout ?? 2000;
@@ -3577,7 +3632,7 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performSetValue(element: HTMLElement, params?: Record<string, unknown>): void {
     const value = params?.value as string | undefined;
     if (value === undefined) {
-      throw new Error('setValue requires a "value" parameter');
+      throw new ActionValidationError('setValue requires a "value" parameter');
     }
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       applyValueMutation(element, { value, mode: 'replace', blur: false });
@@ -3589,7 +3644,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // value to set — the caller saw `success: true` and an unchanged page.
       // Throwing matches `performSubmit`'s "no form found" arm and the relay's
       // `UNSUPPORTED_ACTION` for the same case (`react/commandHandlers.ts`).
-      throw new Error(
+      throw new ActionValidationError(
         `setValue is not supported on <${element.tagName.toLowerCase()}> — it applies to input, textarea and select elements.`
       );
     }
@@ -3602,9 +3657,9 @@ export class DefaultActionExecutor implements ActionExecutor {
       // handler's `preventDefault` is honoured. A hand-dispatched `submit`
       // before it made every handler run twice.
       const refused = requestFormSubmit(form, element);
-      if (refused) throw new Error(refused);
+      if (refused) throw new ActionValidationError(refused);
     } else {
-      throw new Error('No form found for submit action');
+      throw new ActionValidationError('No form found for submit action');
     }
   }
 
@@ -3615,7 +3670,7 @@ export class DefaultActionExecutor implements ActionExecutor {
       // every handler run twice.
       form.reset();
     } else {
-      throw new Error('No form found for reset action');
+      throw new ActionValidationError('No form found for reset action');
     }
   }
 

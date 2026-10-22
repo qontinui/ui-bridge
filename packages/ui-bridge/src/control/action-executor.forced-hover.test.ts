@@ -289,6 +289,50 @@ describe('DefaultActionExecutor — forced hover', () => {
     expect(res.forcedHover?.applied?.holdMs).toBe(1234);
   });
 
+  it('a validation refusal inside dispatch keeps the hold: type into a non-input, submit with no form', async () => {
+    await executor.executeAction('header', { action: 'hover' });
+    const typed = await executor.executeAction('header', {
+      action: 'type',
+      params: { text: 'x' },
+    });
+    expect(typed.success).toBe(false);
+    expect(typed.error).toMatch(/requires an input or textarea/);
+    expect(typed.forcedHover).toBeUndefined();
+    const submitted = await executor.executeAction('header', { action: 'submit' });
+    expect(submitted.success).toBe(false);
+    expect(submitted.error).toMatch(/No form found/);
+    expect(getForcedPseudoState()).not.toBeNull();
+    expect(pointerEvents(f.tool)).toBe('auto');
+  });
+
+  it('an effect verifier that fails before calling dispatch keeps the hold', async () => {
+    registry.registerElement('tool', f.tool, { type: 'button', reveals: ['menu'] });
+    const verifier = (
+      executor as unknown as { getEffectVerifier(): { verifyAction: (...a: unknown[]) => unknown } }
+    ).getEffectVerifier();
+    vi.spyOn(verifier, 'verifyAction').mockImplementation(async () => {
+      throw new Error('pre-observation failed');
+    });
+    await executor.executeAction('header', { action: 'hover' });
+    const click = await executor.executeAction('tool', { action: 'click', verifyEffect: true });
+    expect(click.success).toBe(false);
+    expect(f.clicks()).toBe(0);
+    expect(getForcedPseudoState()).not.toBeNull();
+  });
+
+  it('a hoverClick whose click throws reports the applied hover (and its release) on the failure', async () => {
+    vi.spyOn(
+      executor as unknown as { performClick: (...a: unknown[]) => void },
+      'performClick'
+    ).mockImplementation(() => {
+      throw new Error('click blew up');
+    });
+    const res = await executor.executeAction('tool', { action: 'hoverClick' });
+    expect(res.success).toBe(false);
+    expect(res.forcedHover?.applied?.rulesRewritten).toBe(1);
+    expect(res.forcedHover?.released).toMatchObject({ released: true, reason: 'next-action' });
+  });
+
   it('there is no implicit parent-hover before an action on an opacity-0 element', async () => {
     // The deleted inline fallback hovered the parent of any opacity-0 target
     // (a bubbling mouseover React turns into onMouseEnter). A JS-driven reveal
@@ -465,6 +509,27 @@ describe('relay getElementStateStyles — reads each state for real', () => {
     expect(getForcedPseudoState()).toMatchObject({ target: 'span#h' });
     expect(getComputedStyle(tool).pointerEvents).toBe('auto');
     expect(getForcedPseudoState()!.expiresAt - Date.now()).toBeGreaterThan(50_000);
+  });
+
+  it('the re-applied agent hover replays its JS half (the enter events) too', async () => {
+    style = document.createElement('style');
+    style.textContent = `.btn { color: rgb(0, 0, 0); } .btn:hover { color: rgb(255, 0, 0); }`;
+    document.head.appendChild(style);
+    root = document.createElement('div');
+    root.innerHTML = `<div class="group" id="g"><span id="h">h</span></div><button class="btn" id="b">b</button>`;
+    document.body.appendChild(root);
+    let enters = 0;
+    document.getElementById('g')!.addEventListener('mouseenter', () => (enters += 1));
+    const reg = getGlobalRegistry();
+    reg.registerElement('b', document.getElementById('b')!, { type: 'button' });
+    reg.registerElement('h', document.getElementById('h')!, { type: 'generic' });
+    const executor = new DefaultActionExecutor(reg);
+    await executor.executeAction('h', { action: 'hover' });
+    const afterHover = enters;
+    expect(afterHover).toBeGreaterThan(0);
+    await executeCommand('getElementStateStyles', { id: 'b', states: ['hover'] }, emptyBridge);
+    expect(getForcedPseudoState()).toMatchObject({ target: 'span#h' });
+    expect(enters).toBe(afterHover * 2);
   });
 
   it('hover and active are forced, focus is real, and the element is restored after', async () => {

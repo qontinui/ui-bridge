@@ -18,6 +18,9 @@ import {
   releaseForcedPseudoState,
   releaseForcedPseudoStateIfOwner,
   releasesForcedPseudoState,
+  reapplyIfIdle,
+  snapshotForcedPseudoState,
+  FORCED_PSEUDO_STATE_VERSION,
   rewritePseudoSelector,
   selectorHasPseudo,
   composedAncestry,
@@ -369,6 +372,53 @@ describe('the hold is one per page, not one per bundle', () => {
     }
   });
 
+  it('reapplyIfIdle: a hold newer than the snapshot wins; an idle pointer gets the snapshot back, JS half included', async () => {
+    const a = document.createElement('span');
+    const b = document.createElement('i');
+    document.body.append(a, b);
+    try {
+      let replays = 0;
+      await forcePseudoState(a, 'hover', { holdMs: 60_000, afterMark: () => (replays += 1) });
+      const snap = snapshotForcedPseudoState()!;
+      expect(snap).toMatchObject({ target: a, state: 'hover' });
+      await forcePseudoState(b, 'hover');
+      expect(await reapplyIfIdle(snap)).toBeNull();
+      expect(getForcedPseudoState()).toMatchObject({ target: 'i' });
+      await releaseForcedPseudoState();
+      const back = await reapplyIfIdle(snap);
+      expect(back).not.toBeNull();
+      expect(getForcedPseudoState()).toMatchObject({ target: 'span' });
+      expect(back!.holdMs).toBeGreaterThan(50_000);
+      expect(replays).toBe(2);
+    } finally {
+      a.remove();
+      b.remove();
+    }
+  });
+
+  it('a different state version on the page is isolated from, not shared', async () => {
+    const key = Symbol.for('ui-bridge.forcedPseudo');
+    const host = globalThis as unknown as Record<symbol, unknown>;
+    const ours = host[key];
+    const foreign = { version: FORCED_PSEUDO_STATE_VERSION - 1, hold: 'not-our-shape' };
+    host[key] = foreign;
+    const el = document.createElement('span');
+    document.body.appendChild(el);
+    try {
+      await forcePseudoState(el, 'hover');
+      expect(foreign.hold).toBe('not-our-shape');
+      const isolated = host[
+        Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`)
+      ] as { hold: unknown };
+      expect(isolated.hold).not.toBeNull();
+      expect((await releaseForcedPseudoState()).released).toBe(true);
+    } finally {
+      host[key] = ours;
+      delete host[Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`)];
+      el.remove();
+    }
+  });
+
   it('releaseForcedPseudoStateIfOwner releases only the hold it names', async () => {
     const a = document.createElement('span');
     const b = document.createElement('i');
@@ -452,6 +502,14 @@ describe('releaseAfter — which dispatches release the hold', () => {
       await releaseAfter(a, () => undefined);
     }
     expect(getForcedPseudoState()).not.toBeNull();
+  });
+
+  it('a dispatch that was never reached (dispatched() false) keeps the hold', async () => {
+    await held();
+    await releaseAfter('click', () => undefined, { dispatched: () => false });
+    expect(getForcedPseudoState()).not.toBeNull();
+    await releaseAfter('click', () => undefined, { dispatched: () => true });
+    expect(getForcedPseudoState()).toBeNull();
   });
 
   it('with nothing held, a write action reports no release', async () => {

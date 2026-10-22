@@ -74,6 +74,14 @@
  *    drift in the verified restore rather than being hidden.
  *  - `:hover` inside an attribute-selector string, or after an escaped
  *    backslash (`.a\\:hover`), is outside the rewrite's grammar.
+ *  - `@scope (.card:hover) { … }`: an `@scope` prelude is not a style rule's
+ *    `selectorText`, so a `:hover` in its scope-start or scope-end selector is
+ *    not rewritten (the style rules inside the block are).
+ *  - `:host-context(.x:hover)` is rewritten like any selector, but
+ *    `:host-context()` accepts only a compound selector and engines differ on
+ *    whether an `:is()` inside it parses (Firefox never shipped
+ *    `:host-context`). A refused rewrite is counted in `rulesFailed`, which
+ *    makes the report `complete: false`.
  */
 
 import { readRunningAnimations } from '../core/running-animations';
@@ -246,7 +254,10 @@ export interface ForcedPseudoHoldSnapshot {
   state: ForcedPseudoStateName;
   /** What was left of its TTL when the snapshot was taken. */
   remainingMs: number;
+  settleTimeoutMs: number;
   registry?: ForcedPseudoElementSource;
+  /** The JS half of the original hover, so a re-apply replays the enter events too. */
+  afterMark?: (target: Element) => void;
 }
 
 // ============================================================================
@@ -371,12 +382,18 @@ interface Hold {
   settleTimeoutMs: number;
   timer: ReturnType<typeof setTimeout> | null;
   registry?: ForcedPseudoElementSource;
+  /** The JS half of the hover (enter events), replayed when the hold is re-applied. */
+  afterMark?: (target: Element) => void;
+  /** The document and shadow roots whose sheets were scanned. */
+  roots: Array<Document | ShadowRoot>;
   /** Elements whose four properties must read their before values after release. */
   verify: VerifyEntry[];
   report: ForcedPseudoReport | null;
 }
 
 interface ForcedPseudoGlobal {
+  /** The shape version of this object; see {@link FORCED_PSEUDO_STATE_VERSION}. */
+  version: number;
   hold: Hold | null;
   /** Apply and release are serialized: a release never interleaves with an apply's settle. */
   queue: Promise<unknown>;
@@ -394,14 +411,41 @@ interface ForcedPseudoGlobal {
  */
 const GLOBAL_KEY = Symbol.for('ui-bridge.forcedPseudo');
 
+/**
+ * The shape of the shared state object. Two SDK copies of DIFFERENT versions
+ * on one page (an app bundle plus an injected runtime) must not read each
+ * other's state through a shape they do not know: on a mismatch this copy
+ * isolates itself under a version-suffixed key instead of sharing. Bump it
+ * whenever {@link ForcedPseudoGlobal} or {@link Hold} changes shape.
+ */
+export const FORCED_PSEUDO_STATE_VERSION = 3;
+
+function freshState(): ForcedPseudoGlobal {
+  return {
+    version: FORCED_PSEUDO_STATE_VERSION,
+    hold: null,
+    queue: Promise.resolve(),
+    rewritten: new WeakSet(),
+    nextHoldId: 1,
+  };
+}
+
 function g(): ForcedPseudoGlobal {
   const host = globalThis as unknown as Record<symbol, ForcedPseudoGlobal | undefined>;
-  let state = host[GLOBAL_KEY];
-  if (!state) {
-    state = { hold: null, queue: Promise.resolve(), rewritten: new WeakSet(), nextHoldId: 1 };
+  const shared = host[GLOBAL_KEY];
+  if (!shared) {
+    const state = freshState();
     host[GLOBAL_KEY] = state;
+    return state;
   }
-  return state;
+  if (shared.version === FORCED_PSEUDO_STATE_VERSION) return shared;
+  const isolatedKey = Symbol.for(`ui-bridge.forcedPseudo@v${FORCED_PSEUDO_STATE_VERSION}`);
+  let isolated = host[isolatedKey];
+  if (!isolated) {
+    isolated = freshState();
+    host[isolatedKey] = isolated;
+  }
+  return isolated;
 }
 
 function serialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -517,7 +561,10 @@ export function composedAncestry(target: Element): Element[] {
  * each chain element lives in, and the open shadow root each chain element
  * hosts (its `:host(:hover)` rules).
  */
-function sheetsInScope(target: Element): CSSStyleSheet[] {
+function sheetsInScope(target: Element): {
+  sheets: CSSStyleSheet[];
+  roots: Array<Document | ShadowRoot>;
+} {
   const out: CSSStyleSheet[] = [];
   const seen = new Set<CSSStyleSheet>();
   const add = (sheet: CSSStyleSheet | null | undefined): void => {
@@ -538,20 +585,55 @@ function sheetsInScope(target: Element): CSSStyleSheet[] {
     addRoot(shadowRootOf(el));
     addRoot(el.shadowRoot);
   }
-  return out;
+  return { sheets: out, roots: Array.from(roots) };
 }
 
-/** Whether a rule is still in its parent's rule list (a deleted rule may keep its `parentStyleSheet`). */
-function ruleIsAttached(rule: CSSRule): boolean {
+function listHas(list: CSSRuleList, rule: CSSRule): boolean {
+  return Array.prototype.includes.call(list, rule) as boolean;
+}
+
+/**
+ * Whether a sheet still applies to a scanned root: its `<style>`/`<link>` is
+ * connected and still owns it, it is still adopted by one of the roots, or (an
+ * `@import`ed sheet) its import rule is itself still live.
+ */
+function sheetIsLive(sheet: CSSStyleSheet, roots: Array<Document | ShadowRoot>): boolean {
+  if (sheet.ownerRule) return ruleIsAttached(sheet.ownerRule, roots);
+  const owner = sheet.ownerNode as (Node & { sheet?: CSSStyleSheet | null }) | null | undefined;
+  // `undefined` (not `null`): the platform does not track owners at all
+  // (jsdom). The rule-in-sheet checks above are then the whole answer.
+  if (owner === undefined) return true;
+  if (owner) return owner.isConnected && owner.sheet === sheet;
+  return roots.some((root) => (root.adoptedStyleSheets ?? []).includes(sheet));
+}
+
+/**
+ * Whether a rewritten rule is still part of a live sheet. Each level of
+ * `parentRule` must still list its child (a deleted rule keeps its parent
+ * pointers), the top-level rule must still be in its sheet, and that sheet must
+ * still be in scope (a removed `<style>`, an un-adopted sheet). A rule that
+ * fails any of these draws nothing and is counted as already gone.
+ */
+function ruleIsAttached(rule: CSSRule, roots: Array<Document | ShadowRoot>): boolean {
   try {
-    const parent = (rule.parentRule as unknown as RuleContainer | null) ?? rule.parentStyleSheet;
-    return !!parent && Array.prototype.includes.call(parent.cssRules, rule);
+    let current: CSSRule = rule;
+    while (current.parentRule) {
+      const parent = current.parentRule as unknown as RuleContainer;
+      if (!listHas(parent.cssRules, current)) return false;
+      current = current.parentRule;
+    }
+    const sheet = current.parentStyleSheet;
+    if (!sheet || !listHas(sheet.cssRules, current)) return false;
+    return sheetIsLive(sheet, roots);
   } catch {
     return false;
   }
 }
 
-function restoreRewritten(records: RewrittenRule[]): {
+function restoreRewritten(
+  records: RewrittenRule[],
+  roots: Array<Document | ShadowRoot>
+): {
   rulesRestored: number;
   rulesAlreadyGone: number;
   selectorDrift: ForcedPseudoSelectorDrift[];
@@ -562,7 +644,7 @@ function restoreRewritten(records: RewrittenRule[]): {
   const selectorDrift: ForcedPseudoSelectorDrift[] = [];
   for (const { rule, originalText, rewrittenText } of records) {
     rewritten.delete(rule);
-    if (!ruleIsAttached(rule)) {
+    if (!ruleIsAttached(rule, roots)) {
       rulesAlreadyGone += 1;
       continue;
     }
@@ -583,7 +665,10 @@ function restoreRewritten(records: RewrittenRule[]): {
   return { rulesRestored, rulesAlreadyGone, selectorDrift };
 }
 
-function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
+function scanSheets(
+  target: Element,
+  state: ForcedPseudoStateName
+): ScanResult & { roots: Array<Document | ShadowRoot> } {
   const out: ScanResult = {
     rewritten: [],
     rulesFailed: 0,
@@ -610,14 +695,15 @@ function scanSheets(target: Element, state: ForcedPseudoStateName): ScanResult {
     out.sheetsScanned += 1;
     walkRules(rules, state, out, visit);
   };
+  const { sheets, roots } = sheetsInScope(target);
   try {
-    for (const sheet of sheetsInScope(target)) visit(sheet);
+    for (const sheet of sheets) visit(sheet);
   } catch (error) {
     // Never leave a half-forced page behind a failed apply.
-    restoreRewritten(out.rewritten);
+    restoreRewritten(out.rewritten, roots);
     throw error;
   }
-  return out;
+  return { ...out, roots };
 }
 
 // ============================================================================
@@ -770,7 +856,10 @@ async function releaseHold(
   if (s.hold === current) s.hold = null;
 
   const preexisting = runningAnimationSet(current.doc);
-  const { rulesRestored, rulesAlreadyGone, selectorDrift } = restoreRewritten(current.rewritten);
+  const { rulesRestored, rulesAlreadyGone, selectorDrift } = restoreRewritten(
+    current.rewritten,
+    current.roots
+  );
   let unmarkedElements = 0;
   for (const el of current.marked) {
     if (el.hasAttribute(current.attribute)) {
@@ -856,130 +945,157 @@ export function forcePseudoState(
   state: ForcedPseudoStateName,
   options: ForcePseudoStateOptions = {}
 ): Promise<ForcedPseudoReport> {
+  return serialized(() => applyNow(target, state, options));
+}
+
+/**
+ * Re-apply a hold taken with {@link snapshotForcedPseudoState} — only if the
+ * pointer is idle when it runs. Decided INSIDE the serialized queue, so a hold
+ * applied after the snapshot always wins over the snapshot. Returns `null`
+ * when it did not apply (something else is held, or the target is gone).
+ */
+export function reapplyIfIdle(
+  snapshot: ForcedPseudoHoldSnapshot
+): Promise<ForcedPseudoReport | null> {
   return serialized(async () => {
-    const s = g();
-    const replaced = s.hold ? await releaseHold(s.hold, 'replaced') : undefined;
-
-    const holdMs = clampHoldMs(options.holdMs);
-    const settleTimeoutMs = clampSettleMs(options.settleTimeoutMs);
-    const attribute = pseudoStateAttribute(state);
-    const doc = target.ownerDocument;
-
-    // Before: every registered element's four properties, and the target's.
-    const before = new Map<Element, { id: string; values: RevealValues }>();
-    for (const { id, element } of registeredElements(options.registry)) {
-      const values = readRevealValues(element);
-      if (values) before.set(element, { id, values });
-    }
-    const targetBefore = readRevealValues(target);
-    const preexisting = runningAnimationSet(doc);
-
-    const scanStart = now();
-    const scan = scanSheets(target, state);
-    const scanMs = now() - scanStart;
-
-    const marked = composedAncestry(target);
-    for (const el of marked) el.setAttribute(attribute, '');
-
-    const appliedAt = Date.now();
-    const current: Hold = {
-      holdId: s.nextHoldId++,
-      state,
-      attribute,
-      target,
-      doc,
-      rewritten: scan.rewritten,
-      marked,
-      appliedAt,
-      expiresAt: appliedAt + holdMs,
-      settleTimeoutMs,
-      timer: null,
-      registry: options.registry,
-      verify: [],
-      report: null,
-    };
-    s.hold = current;
-    // Armed BEFORE the settle wait, so even an apply whose caller dies
-    // mid-settle cannot leave the page altered.
-    const timer = setTimeout(() => {
-      void releaseIfCurrent(current, 'ttl');
-    }, holdMs);
-    (timer as { unref?: () => void }).unref?.();
-    current.timer = timer;
-
-    try {
-      options.afterMark?.(target);
-    } catch {
-      // The JS half of a hover is best-effort; the CSS half is already applied.
-    }
-
-    // Read the target's style first, so a delayed transition has been CREATED
-    // when the settle collects animations.
-    void readRevealValues(target);
-    const { settled, settleMs } = await settleAfter(doc, preexisting, settleTimeoutMs);
-
-    const revealed: ForcedPseudoRevealed[] = [];
-    const verify: VerifyEntry[] = [];
-    let targetId = fingerprint(target);
-    for (const { id, element } of registeredElements(options.registry)) {
-      if (element === target) targetId = id;
-      const after = readRevealValues(element);
-      if (!after) continue;
-      const prior = before.get(element);
-      const changes: ForcedPseudoChange[] = [];
-      for (const property of REVEAL_PROPERTIES) {
-        const was = prior ? prior.values[property] : null;
-        if (was !== after[property]) {
-          changes.push({ property, before: was, after: after[property] });
-        }
-      }
-      // A newly-registered element counts as revealed only when it draws.
-      const appeared = !prior;
-      if (
-        appeared &&
-        (after.display === 'none' ||
-          after.visibility === 'hidden' ||
-          parseFloat(after.opacity) === 0)
-      ) {
-        continue;
-      }
-      if (changes.length === 0) continue;
-      const rect = element.getBoundingClientRect();
-      revealed.push({
-        id,
-        appeared,
-        changes,
-        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      });
-      if (prior && element !== target) verify.push({ id, element, before: prior.values });
-    }
-    if (targetBefore) verify.push({ id: targetId, element: target, before: targetBefore });
-    current.verify = verify;
-
-    const report: ForcedPseudoReport = {
-      holdId: current.holdId,
-      state,
-      attribute,
-      target: fingerprint(target),
-      rulesRewritten: scan.rewritten.length,
-      rulesFailed: scan.rulesFailed,
-      rulesNotApplicable: scan.rulesNotApplicable,
-      sheetsScanned: scan.sheetsScanned,
-      unreadableSheets: scan.unreadableSheets,
-      unreadableSheetHrefs: scan.unreadableSheetHrefs,
-      complete: scan.unreadableSheets === 0 && scan.rulesFailed === 0,
-      markedElements: marked.length,
-      settled,
-      settleMs,
-      scanMs,
-      holdMs,
-      expiresAt: current.expiresAt,
-      revealed,
-      ...(replaced ? { replaced } : {}),
-    };
-    current.report = report;
-    return report;
+    if (g().hold || !snapshot.target.isConnected) return null;
+    return applyNow(snapshot.target, snapshot.state, {
+      holdMs: Math.max(1, snapshot.remainingMs),
+      settleTimeoutMs: snapshot.settleTimeoutMs,
+      registry: snapshot.registry,
+      afterMark: snapshot.afterMark,
+    });
   });
+}
+
+/** The apply itself. Always runs inside {@link serialized}. */
+async function applyNow(
+  target: Element,
+  state: ForcedPseudoStateName,
+  options: ForcePseudoStateOptions
+): Promise<ForcedPseudoReport> {
+  const s = g();
+  const replaced = s.hold ? await releaseHold(s.hold, 'replaced') : undefined;
+
+  const holdMs = clampHoldMs(options.holdMs);
+  const settleTimeoutMs = clampSettleMs(options.settleTimeoutMs);
+  const attribute = pseudoStateAttribute(state);
+  const doc = target.ownerDocument;
+
+  // Before: every registered element's four properties, and the target's.
+  const before = new Map<Element, { id: string; values: RevealValues }>();
+  for (const { id, element } of registeredElements(options.registry)) {
+    const values = readRevealValues(element);
+    if (values) before.set(element, { id, values });
+  }
+  const targetBefore = readRevealValues(target);
+  const preexisting = runningAnimationSet(doc);
+
+  const scanStart = now();
+  const scan = scanSheets(target, state);
+  const scanMs = now() - scanStart;
+
+  const marked = composedAncestry(target);
+  for (const el of marked) el.setAttribute(attribute, '');
+
+  const appliedAt = Date.now();
+  const current: Hold = {
+    holdId: s.nextHoldId++,
+    state,
+    attribute,
+    target,
+    doc,
+    rewritten: scan.rewritten,
+    marked,
+    appliedAt,
+    expiresAt: appliedAt + holdMs,
+    settleTimeoutMs,
+    timer: null,
+    registry: options.registry,
+    afterMark: options.afterMark,
+    roots: scan.roots,
+    verify: [],
+    report: null,
+  };
+  s.hold = current;
+  // Armed BEFORE the settle wait, so even an apply whose caller dies
+  // mid-settle cannot leave the page altered.
+  const timer = setTimeout(() => {
+    void releaseIfCurrent(current, 'ttl');
+  }, holdMs);
+  (timer as { unref?: () => void }).unref?.();
+  current.timer = timer;
+
+  try {
+    options.afterMark?.(target);
+  } catch {
+    // The JS half of a hover is best-effort; the CSS half is already applied.
+  }
+
+  // Read the target's style first, so a delayed transition has been CREATED
+  // when the settle collects animations.
+  void readRevealValues(target);
+  const { settled, settleMs } = await settleAfter(doc, preexisting, settleTimeoutMs);
+
+  const revealed: ForcedPseudoRevealed[] = [];
+  const verify: VerifyEntry[] = [];
+  let targetId = fingerprint(target);
+  for (const { id, element } of registeredElements(options.registry)) {
+    if (element === target) targetId = id;
+    const after = readRevealValues(element);
+    if (!after) continue;
+    const prior = before.get(element);
+    const changes: ForcedPseudoChange[] = [];
+    for (const property of REVEAL_PROPERTIES) {
+      const was = prior ? prior.values[property] : null;
+      if (was !== after[property]) {
+        changes.push({ property, before: was, after: after[property] });
+      }
+    }
+    // A newly-registered element counts as revealed only when it draws.
+    const appeared = !prior;
+    if (
+      appeared &&
+      (after.display === 'none' || after.visibility === 'hidden' || parseFloat(after.opacity) === 0)
+    ) {
+      continue;
+    }
+    if (changes.length === 0) continue;
+    const rect = element.getBoundingClientRect();
+    revealed.push({
+      id,
+      appeared,
+      changes,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    });
+    if (prior && element !== target) verify.push({ id, element, before: prior.values });
+  }
+  if (targetBefore) verify.push({ id: targetId, element: target, before: targetBefore });
+  current.verify = verify;
+
+  const report: ForcedPseudoReport = {
+    holdId: current.holdId,
+    state,
+    attribute,
+    target: fingerprint(target),
+    rulesRewritten: scan.rewritten.length,
+    rulesFailed: scan.rulesFailed,
+    rulesNotApplicable: scan.rulesNotApplicable,
+    sheetsScanned: scan.sheetsScanned,
+    unreadableSheets: scan.unreadableSheets,
+    unreadableSheetHrefs: scan.unreadableSheetHrefs,
+    complete: scan.unreadableSheets === 0 && scan.rulesFailed === 0,
+    markedElements: marked.length,
+    settled,
+    settleMs,
+    scanMs,
+    holdMs,
+    expiresAt: current.expiresAt,
+    revealed,
+    ...(replaced ? { replaced } : {}),
+  };
+  current.report = report;
+  return report;
 }
 
 function releaseIfCurrent(
@@ -1050,7 +1166,9 @@ export function snapshotForcedPseudoState(): ForcedPseudoHoldSnapshot | null {
     target: current.target,
     state: current.state,
     remainingMs: Math.max(0, current.expiresAt - Date.now()),
+    settleTimeoutMs: current.settleTimeoutMs,
     registry: current.registry,
+    afterMark: current.afterMark,
   };
 }
 
@@ -1076,6 +1194,13 @@ export interface ReleaseAfterOptions {
    * attempt would make the retry hit `pointer-events:none`.
    */
   notDispatched?: (error: unknown) => boolean;
+  /**
+   * Whether the page was actually reached. A caller that hands the dispatch
+   * to something that may fail BEFORE calling it (the effect verifier's
+   * pre-observation) sets a flag inside the dispatch and reports it here; the
+   * hold is released only when it returns true. Omitted = reached.
+   */
+  dispatched?: () => boolean;
 }
 
 /**
@@ -1099,7 +1224,7 @@ export async function releaseAfter<T>(
     if (options.notDispatched?.(error)) dispatched = false;
     throw error;
   } finally {
-    if (dispatched) {
+    if (dispatched && (options.dispatched?.() ?? true)) {
       const report = await releaseHeldAfterDispatch(action);
       if (report) options.onRelease?.(report);
     }

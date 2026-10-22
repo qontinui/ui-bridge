@@ -19,7 +19,7 @@ import type {
 import { classString } from '../core/class-name';
 import {
   forcePseudoState,
-  getForcedPseudoState,
+  reapplyIfIdle,
   releaseForcedPseudoStateIfOwner,
   snapshotForcedPseudoState,
 } from '../control/forced-hover';
@@ -219,12 +219,10 @@ export async function captureStateVariations(
   try {
     return await captureEachState(el, targetStates);
   } finally {
-    if (agentHold && agentHold.target.isConnected && getForcedPseudoState() === null) {
-      await forcePseudoState(agentHold.target, agentHold.state, {
-        holdMs: Math.max(1, agentHold.remainingMs),
-        registry: agentHold.registry,
-      });
-    }
+    // Inside the serialized queue, and only if the pointer is idle: a hover
+    // someone applied while inspection ran is newer, and wins. The re-apply
+    // replays the original hover's JS half (its enter events) too.
+    if (agentHold) await reapplyIfIdle(agentHold);
   }
 }
 
