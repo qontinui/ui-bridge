@@ -38,8 +38,14 @@ function place(id: string, x: number, y: number, w: number, h: number, text = ''
   document.body.appendChild(el);
   el.getBoundingClientRect = () =>
     ({
-      x, y, width: w, height: h,
-      top: y, left: x, right: x + w, bottom: y + h,
+      x,
+      y,
+      width: w,
+      height: h,
+      top: y,
+      left: x,
+      right: x + w,
+      bottom: y + h,
       toJSON: () => ({}),
     }) as DOMRect;
   boxes.push({ el, rect: { x, y, w, h } });
@@ -190,7 +196,6 @@ describe('ElementState occlusion reporting', () => {
     // end case, where height is small and width is not.
     expect(probes).toBe(9);
   });
-
 });
 
 /** Count `elementFromPoint` calls made while reading `id`'s state. */
@@ -294,8 +299,14 @@ describe('collapsed disclosure is hidden, not occluded', () => {
     details.appendChild(child);
     child.getBoundingClientRect = () =>
       ({
-        x: 0, y: 0, width: 200, height: 40,
-        top: 0, left: 0, right: 200, bottom: 40,
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 40,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 40,
         toJSON: () => ({}),
       }) as DOMRect;
     // What the measured run blamed: the terminal link layer beneath it.
@@ -306,7 +317,10 @@ describe('collapsed disclosure is hidden, not occluded', () => {
   type WithCheckVisibility = { checkVisibility?: unknown };
   let savedCheckVisibility: PropertyDescriptor | undefined;
   beforeEach(() => {
-    savedCheckVisibility = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'checkVisibility');
+    savedCheckVisibility = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'checkVisibility'
+    );
   });
   afterEach(() => {
     if (savedCheckVisibility) {
@@ -377,8 +391,14 @@ describe('collapsed disclosure is hidden, not occluded', () => {
     const summary = details.querySelector('summary') as HTMLElement;
     summary.getBoundingClientRect = () =>
       ({
-        x: 500, y: 500, width: 100, height: 20,
-        top: 500, left: 500, right: 600, bottom: 520,
+        x: 500,
+        y: 500,
+        width: 100,
+        height: 20,
+        top: 500,
+        left: 500,
+        right: 600,
+        bottom: 520,
         toJSON: () => ({}),
       }) as DOMRect;
     registry.registerElement('summary', summary, { type: 'generic' });
@@ -447,8 +467,14 @@ describe('implicit canvas paintsText keeps the ordinary grid', () => {
     document.body.appendChild(canvas);
     canvas.getBoundingClientRect = () =>
       ({
-        x: 0, y: 0, width: 300, height: 150,
-        top: 0, left: 0, right: 300, bottom: 150,
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 150,
+        top: 0,
+        left: 0,
+        right: 300,
+        bottom: 150,
         toJSON: () => ({}),
       }) as DOMRect;
     boxes.push({ el: canvas, rect: { x: 0, y: 0, w: 300, h: 150 } });
@@ -464,8 +490,14 @@ describe('implicit canvas paintsText keeps the ordinary grid', () => {
     document.body.appendChild(icon);
     icon.getBoundingClientRect = () =>
       ({
-        x: 0, y: 0, width: 24, height: 24,
-        top: 0, left: 0, right: 24, bottom: 24,
+        x: 0,
+        y: 0,
+        width: 24,
+        height: 24,
+        top: 0,
+        left: 0,
+        right: 24,
+        bottom: 24,
         toJSON: () => ({}),
       }) as DOMRect;
     boxes.push({ el: icon, rect: { x: 0, y: 0, w: 24, h: 24 } });
@@ -496,6 +528,48 @@ describe('the registry-owned stamp', () => {
 
     registry.unregisterElement('direct');
     expect(div.getAttribute('data-ui-bridge-id')).toBe('direct');
+  });
+
+  // Review L1: stamp ownership is per registry and per id.
+  it('a second registration of the node does not take the first one stamp, nor strip it on unregister', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    registry.registerElement('a', div, { type: 'generic' });
+    registry.registerElement('b', div, { type: 'generic' });
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('a');
+
+    registry.unregisterElement('b');
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('a');
+
+    registry.unregisterElement('a');
+    expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
+  it('another registry never removes a stamp this registry wrote', () => {
+    const first = new UIBridgeRegistry();
+    const second = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    first.registerElement('shared', div, { type: 'generic' });
+    second.registerElement('shared', div, { type: 'generic' });
+
+    second.unregisterElement('shared');
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('shared');
+    first.unregisterElement('shared');
+    expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
+  it('a stamp someone else rewrote is theirs: unregister leaves it', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    registry.registerElement('direct', div, { type: 'generic' });
+    // A hook or JSX prop writes its own id over the registry stamp.
+    div.setAttribute('data-ui-bridge-id', 'hook-owned');
+
+    registry.unregisterElement('direct');
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('hook-owned');
   });
 
   it('does not displace the node own name: a DOM id still wins the derived name', () => {
