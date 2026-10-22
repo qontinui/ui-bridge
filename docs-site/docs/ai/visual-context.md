@@ -195,8 +195,9 @@ table is the single source of truth, so the SDK ships stubs for all thirteen
 A capture result (`capture`, `annotate`, `diff`, `raw`) names its bytes by
 `url`, whose literal value is the relative HTTP path
 `/ui-bridge/vision/cache/<sha256>`, never by a host file path. `sha256` is the
-hash of the cache key (`v=1|mut=<mutation counter>|req=<request>`), not of the
-image bytes.
+hash of the route's cache key, not of the image bytes (for `capture` and
+`annotate` the key is `v=1|mut=<mutation counter>|req=<request>`; `raw` and
+`diff` use their own keys).
 
 The runner contract the SDK's types target also accepts `inline: true` on
 `capture`, `annotate` or `raw`, which returns the encoded image as `base64` in

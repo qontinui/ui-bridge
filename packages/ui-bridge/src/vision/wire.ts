@@ -127,10 +127,10 @@ export interface VisionCaptureRequest extends VisionInlineOption {
   /** Frame source: a device / app id. Omitted = the runner's own window. */
   target?: string;
   // `annotateElements` (runner `CaptureRequest.annotate_elements`) is
-  // DELIBERATELY omitted: the runner accepts the key only to reject it with
-  // HTTP 400 ("annotate_elements selector is not implemented"), so typing it
-  // would advertise a request that can never succeed. Add it when the runner
-  // implements the selector.
+  // DELIBERATELY omitted: `vision/annotate` rejects it with HTTP 400
+  // ("annotate_elements selector is not implemented") and `vision/capture`
+  // silently ignores it, so typing it would advertise a request that never
+  // does anything. Add it when the runner implements the selector.
 }
 
 /** Why a `vision/raw` capture was taken — the runner 400s on anything else. */
@@ -161,9 +161,10 @@ export interface VisionCaptureResult {
    */
   base64?: string;
   /**
-   * Hex sha256 of the capture's CACHE KEY — the string
-   * `v=1|mut=<mutation counter>|req=<request>` — not of the image bytes. It
-   * addresses the cache entry `url` points at.
+   * Hex sha256 of the route's CACHE KEY, not of the image bytes (for
+   * `capture`/`annotate` the key is `v=1|mut=<mutation counter>|req=<request>`;
+   * `raw` and `diff` use their own keys). It addresses the cache entry `url`
+   * points at.
    */
   sha256: string;
   width: number;
