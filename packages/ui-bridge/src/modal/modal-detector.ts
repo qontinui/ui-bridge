@@ -437,6 +437,7 @@ export class ModalDetector {
         id: generateId(el, modalIndex),
         domId: el.id || undefined,
         testId: el.getAttribute('data-testid') ?? undefined,
+        tagName: el.tagName.toLowerCase(),
         bridgeId: el.getAttribute('data-ui-bridge-id') ?? undefined,
         title: extractTitle(el),
         type: resolveType(el),

@@ -527,8 +527,10 @@ A modal judged blocking only by the backdrop heuristic, or matched only by a
 library or custom selector, is never an expected overlay; a Radix/shadcn
 Dialog, which sets no `aria-modal`, therefore over-reports. Matching is
 deliberately narrow: each kind of identity matches only its own kind — the
-modal's registry id (`bridgeId`), `tag#<its real DOM id>`, or
-`tag[data-testid="<its testid>"]` (the name a blocking dialog with neither gets).
+modal's registry id (`bridgeId`, exactly), `<its tag>#<its real DOM id>`, or
+`<its tag>[data-testid="<its testid>"]` (the name a blocking dialog with
+neither gets). A name that is a registered element's id matches only a
+`bridgeId`, never a DOM form.
 Class and bare-tag descriptors are not identities and never match, because an entry marked expected is *removed* from the default
 response, and a loose rule would hide the very regressions this endpoint exists
 to surface.
