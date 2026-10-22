@@ -622,6 +622,51 @@ describe('a copy of a hidden element', () => {
     }
   });
 
+  it('a forged marker with a valid hash does not get its payload written (L-E)', async () => {
+    const payload = 'position: fixed; inset: 0px; background: red; z-index: 99999';
+    let binary = '';
+    for (const byte of new TextEncoder().encode(payload)) binary += String.fromCharCode(byte);
+    const forge = async (id: (real: string) => string): Promise<HTMLElement> => {
+      document.body.innerHTML = '<p id="src">x</p>';
+      hide();
+      const src = document.getElementById('src')!;
+      const real = inline(src, '--qontinui-tv')[0];
+      const copy = src.cloneNode(true) as HTMLElement;
+      show();
+      // The hide's own hash, a payload the forger chose.
+      const hash = real.split(':')[2];
+      copy.style.setProperty('--qontinui-tv', `${id(real)}:s${btoa(binary)}:${hash}`, 'important');
+      document.body.appendChild(copy);
+      await flushObservers();
+      hide();
+      show();
+      return copy;
+    };
+    // A prefix this page never issued: the payload is not trusted.
+    const forged = await forge(() => 'forgedprefix-0');
+    for (const prop of ['position', 'z-index', 'background-color', 'inset']) {
+      expect(inline(forged, prop), prop).toEqual(['', '']);
+    }
+    // Control: the hash itself is valid, so with an issued prefix the same
+    // payload WOULD be restored. That residual needs a script in the page,
+    // which can rewrite any style anyway.
+    const control = await forge((real) => real.split(':')[0]!);
+    expect(control.getAttribute('style')).toBe(payload);
+  });
+
+  it('a stale copy of a shorthand-styled element restores byte-exact (N-1)', async () => {
+    document.body.innerHTML = '<div id="b" style="border: 2px solid; padding: 1px">b</div>';
+    hide();
+    const keep = document.getElementById('b')!.cloneNode(true) as HTMLElement;
+    show();
+    document.body.appendChild(keep);
+    await flushObservers();
+    hide();
+    const res = show();
+    expect(res.restore).toMatchObject({ propertyLevel: 0, verified: true });
+    expect(keep.getAttribute('style')).toBe('border: 2px solid; padding: 1px');
+  });
+
   it('the marker is gone after an exact restore', () => {
     document.body.innerHTML = '<p style="margin: 1px">x</p>';
     hide();

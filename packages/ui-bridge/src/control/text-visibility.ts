@@ -505,6 +505,12 @@ interface HiddenState {
 const SCHEMA = 1;
 
 interface TextVisibilitySlot {
+  /**
+   * Marker id prefixes this page's hides issued (the latest
+   * {@link ISSUED_PREFIX_LIMIT}). Optional: an older slot without it trusts
+   * no stale marker.
+   */
+  issued?: string[];
   schema: number;
   state: HiddenState | null;
   lastRestore: TextVisibilityRestore | null;
@@ -514,6 +520,21 @@ interface TextVisibilitySlot {
 }
 
 const SLOT_KEY = Symbol.for('@qontinui/ui-bridge/text-visibility');
+const ISSUED_PREFIX_LIMIT = 64;
+
+/** Remember a hide's marker prefix as issued by this page. */
+function noteIssued(prefix: string): void {
+  const sl = slot();
+  const issued = (sl.issued ??= []);
+  issued.push(prefix);
+  if (issued.length > ISSUED_PREFIX_LIMIT) issued.splice(0, issued.length - ISSUED_PREFIX_LIMIT);
+}
+
+/** Whether a marker id carries a prefix one of this page's hides issued. */
+function issuedHere(id: string): boolean {
+  const dash = id.lastIndexOf('-');
+  return dash > 0 && (slot().issued ?? []).includes(id.slice(0, dash));
+}
 
 function holder(): Record<symbol, Partial<TextVisibilitySlot> | undefined> {
   return globalThis as unknown as Record<symbol, Partial<TextVisibilitySlot> | undefined>;
@@ -769,6 +790,22 @@ function canonicalInline(style: CSSStyleDeclaration): string {
   return lines.join('\n');
 }
 
+/**
+ * The fingerprint of a hide, from an element's `style` attribute text: the
+ * marker taken out, then parsed, serialized and parsed again, and read off
+ * the CSSOM. The write side (the hide's serialization before the marker,
+ * which is what Chromium writes into the attribute) and the check side (a
+ * copy's attribute, marker included) take the same path, so engine-specific
+ * serialization (Chromium reorders a shorthand a pin overrides) cancels out.
+ * The write side reads `cssText` rather than the attribute because jsdom's
+ * attribute reflection drops the last declaration's `!important`.
+ */
+function hideHash(el: Element, attr: string | null): string {
+  const parsed = inlineStyleOf(el, attr);
+  parsed.removeProperty(MARKER);
+  return fnv1a(canonicalInline(inlineStyleOf(el, parsed.cssText)));
+}
+
 /** The inline style a `style` attribute text parses to, on a detached scratch element. */
 function inlineStyleOf(el: Element, attr: string | null): CSSStyleDeclaration {
   const scratch = el.ownerDocument.createElement('div');
@@ -869,10 +906,12 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
       // the original: exact when the rest of its attribute is still the hide
       // that marker's hash names, per owned property otherwise.
       const carried = parseMarker(carriedMarker);
-      if (carried.original !== undefined) {
+      // Only a marker this page issued is trusted to carry an original: user
+      // HTML through a sanitizer that keeps custom properties could forge one
+      // whose payload an exact restore would then write.
+      if (carried.original !== undefined && issuedHere(carried.id)) {
         const untouched =
-          carried.hash !== undefined &&
-          fnv1a(canonicalInline(inlineStyleOf(el, el.getAttribute('style')))) === carried.hash;
+          carried.hash !== undefined && hideHash(el, el.getAttribute('style')) === carried.hash;
         record.originalAttr = untouched ? carried.original : undefined;
         const parsed = inlineStyleOf(el, carried.original);
         for (const prop of record.values.keys()) {
@@ -903,7 +942,7 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
     }
     // The marker last: it names the hide written so far (its hash) and the
     // original, so a copy that outlives this hide can still be restored.
-    const markerValue = `${marker}:${encodeOriginal(record.originalAttr)}:${fnv1a(canonicalInline(style))}`;
+    const markerValue = `${marker}:${encodeOriginal(record.originalAttr)}:${hideHash(el, style.cssText)}`;
     record.values.set(MARKER, markerValue);
     style.setProperty(MARKER, markerValue, IMPORTANT);
     record.ours.set(MARKER, readInline(style, MARKER));
@@ -1093,6 +1132,7 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
   // throws part-way is rolled back below, and one whose caller vanished is
   // restored by the TTL.
   slot().state = s;
+  noteIssued(s.markerPrefix);
   armTtl(s, ttlMs);
   try {
     s.sheet = createPseudoSheet();

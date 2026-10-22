@@ -389,11 +389,20 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
     transport.register('__eval', (p: unknown, ctx: unknown) =>
       (ctx as { page: EvalPage }).page.evaluate(
         (what: string) => {
-          const w = window as unknown as { __ds?: ShadowRoot; __keep?: HTMLElement };
+          const w = window as unknown as {
+            __ds?: ShadowRoot;
+            __keep?: HTMLElement;
+            __keepBordered?: HTMLElement;
+          };
           if (what === 'host') {
             const host = document.createElement('div');
             host.id = 'ds-host';
             document.body.appendChild(host);
+            // A shorthand a pin overrides: Chromium reorders it on re-parse (N-1).
+            const bordered = document.createElement('div');
+            bordered.id = 'bordered';
+            bordered.setAttribute('style', 'border: 2px solid; padding: 1px');
+            document.body.appendChild(bordered);
             return null;
           }
           if (what === 'copySheets') {
@@ -406,6 +415,8 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
             // And a copy of a hidden element is kept off the page.
             w.__keep = document.getElementById('box')!.cloneNode(true) as HTMLElement;
             w.__keep.id = 'box-kept';
+            w.__keepBordered = document.getElementById('bordered')!.cloneNode(true) as HTMLElement;
+            w.__keepBordered.id = 'bordered-kept';
             return document.adoptedStyleSheets.length;
           }
           if (what === 'rules') {
@@ -413,13 +424,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
           }
           if (what === 'insertKeep') {
             document.body.appendChild(w.__keep!);
+            document.body.appendChild(w.__keepBordered!);
             return w.__keep!.style.getPropertyValue('color');
           }
           const styles = [
             document.getElementById('box')!.getAttribute('style'),
             w.__keep!.getAttribute('style'),
+            w.__keepBordered!.getAttribute('style'),
           ];
           w.__keep!.remove();
+          w.__keepBordered!.remove();
+          document.getElementById('bordered')!.remove();
           document.getElementById('ds-host')!.remove();
           return styles;
         },
@@ -462,9 +477,10 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
     expect(lines[1]!.result).toMatchObject({ restore: { verified: true } });
     // L-D: the copy that outlived its hide is restored exactly.
     expect(keptColour).toBe('transparent');
-    expect(lines[2]!.result).toMatchObject({ coverage: { clones: 1 } });
-    expect(lines[3]!.result).toMatchObject({ restore: { verified: true } });
+    expect(lines[2]!.result).toMatchObject({ coverage: { clones: 2 } });
+    // Both stale copies restore EXACTLY (N-1: no property-level fallback).
+    expect(lines[3]!.result).toMatchObject({ restore: { verified: true, propertyLevel: 0 } });
     const box = 'position:absolute;left:380px;top:5px;width:10px;height:10px;background:rgb(1,2,3)';
-    expect(styles).toEqual([box, box]);
+    expect(styles).toEqual([box, box, 'border: 2px solid; padding: 1px']);
   }, 60_000);
 });
