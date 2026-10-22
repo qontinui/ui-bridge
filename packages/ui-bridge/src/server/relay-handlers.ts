@@ -40,6 +40,7 @@ import { Recency, isSatisfiedBy, parseRecency } from '../core/recency';
 import { findElements } from '../core/find';
 import { computeSnapshotSignature } from '../core/snapshot-signature';
 import type { ElementQuery } from '../core/find';
+import type { CanvasCoverage } from '../core/types';
 import {
   applyCanonicalFindFilter,
   isFindRefusalError,
@@ -130,6 +131,12 @@ function isRelayFindRefusal(result: unknown): boolean {
   const refusal = (result as Record<string, unknown>).refusal;
   return typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal);
 }
+
+/** `canvasCoverage` for a snapshot whose page SDK predates the canvas census. */
+const PAGE_SDK_LACKS_COVERAGE: CanvasCoverage = {
+  state: 'unavailable',
+  reason: 'page-sdk-lacks-coverage',
+};
 
 /** Maximum allowed response size for fallback screenshots (10 MB) */
 const MAX_SCREENSHOT_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -2359,6 +2366,7 @@ export function createRelayHandlers(
             occludedBy?: string;
             occludedPct?: number;
             textContent?: string;
+            paintsText?: boolean;
           };
         }>;
 
@@ -2370,8 +2378,13 @@ export function createRelayHandlers(
               occludedBy: el.state?.occludedBy,
               occludedPct: el.state?.occludedPct,
               textContent: el.state?.textContent,
+              paintsText: el.state?.paintsText,
             })),
             modalContext: snapshot?.modalStack,
+            // A snapshot without the field came from a page SDK that predates
+            // the census (every page that has it stamps it, `accessor-threw`
+            // included). That is UNKNOWN, never "no canvases".
+            canvasCoverage: snapshot?.canvasCoverage ?? PAGE_SDK_LACKS_COVERAGE,
             minRatio: params?.minRatio,
             includeExpected: params?.includeExpected,
           }),
