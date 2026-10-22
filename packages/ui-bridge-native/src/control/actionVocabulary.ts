@@ -19,7 +19,7 @@
  * peerDependency of this package (see the header of `core/abortable.ts`), so a
  * consumer may install `@qontinui/ui-bridge-native` alone. The runner's
  * Phase 1 copy (in flight, `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`)
- * mirrors this table. Each copy's tests assert the entries as literals; keep
+ * will mirror this table. Each copy's tests assert the entries as literals; keep
  * them in sync.
  */
 
