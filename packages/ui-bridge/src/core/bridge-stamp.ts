@@ -15,6 +15,12 @@
  * that rewrites the SAME value is indistinguishable from the registry and is
  * treated as the registry's stamp.
  *
+ * The hand-off is per registry, by design: when a registry removes its stamp
+ * on unregister it passes the stamp to another LIVE registration of the same
+ * registry on that node, never to another registry's. A node registered in
+ * two registries whose stamp-writing registry unregisters is left unstamped,
+ * even though the other registry still holds it (pinned behaviour).
+ *
  * Its own module so `a11y.ts` can read it without importing the registry,
  * which imports `a11y.ts`.
  */

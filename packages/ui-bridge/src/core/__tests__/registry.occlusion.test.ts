@@ -559,6 +559,31 @@ describe('the registry-owned stamp', () => {
     expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
   });
 
+  it('a re-registration of an id on a new node is not a stamp heir of the old node', () => {
+    const registry = new UIBridgeRegistry();
+    const first = document.createElement('div');
+    const second = document.createElement('div');
+    document.body.append(first, second);
+    registry.registerElement('a', first, { type: 'generic' });
+    registry.registerElement('b', first, { type: 'generic' });
+    registry.registerElement('b', second, { type: 'generic' });
+
+    registry.unregisterElement('a');
+    expect(first.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
+  it('the stamp is never handed across registries (pinned)', () => {
+    const first = new UIBridgeRegistry();
+    const second = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    first.registerElement('a', div, { type: 'generic' });
+    second.registerElement('b', div, { type: 'generic' });
+
+    first.unregisterElement('a');
+    expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
   it('another registry never removes a stamp this registry wrote', () => {
     const first = new UIBridgeRegistry();
     const second = new UIBridgeRegistry();
