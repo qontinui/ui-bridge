@@ -3497,12 +3497,15 @@ export interface CanvasCoverageMeasured {
  * - `page-sdk-lacks-coverage` — the relay's snapshot came from a page SDK that
  *   predates the census (upgrade the page's `@qontinui/ui-bridge`).
  * - `accessor-threw` — the page has the census, and it threw.
+ * - `no-document` — the registry answering the sweep runs with no DOM (a
+ *   server-side registry), so there are no canvases it could count.
  * - `ipc-failed` — a host (the runner's Rust twin) could not reach the page's
  *   census at all.
  */
 export type CanvasCoverageUnavailableReason =
   | 'page-sdk-lacks-coverage'
   | 'accessor-threw'
+  | 'no-document'
   | 'ipc-failed';
 
 export interface CanvasCoverageUnavailable {

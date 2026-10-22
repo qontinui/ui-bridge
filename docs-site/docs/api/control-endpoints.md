@@ -499,6 +499,7 @@ is not attributed: that element's hit-test would see an overlay but judge
 | `{ "state": "measured", "canvases", "attributed", "unattributed": [{ "descriptor", "rect" }] }` | The census ran. `descriptor` is the canvas's own DOM descriptor (`canvas#id`, `canvas.firstClass`, `canvas`); `rect` is viewport-relative CSS px. |
 | `{ "state": "unavailable", "reason": "page-sdk-lacks-coverage" }` | Relay only: the page's SDK predates the census. Upgrade the page's `@qontinui/ui-bridge`. |
 | `{ "state": "unavailable", "reason": "accessor-threw" }` | The page has the census and it threw. |
+| `{ "state": "unavailable", "reason": "no-document" }` | The registry answering the sweep has no DOM (a server-side registry), so it cannot count canvases. |
 | `{ "state": "unavailable", "reason": "ipc-failed" }` | A host (the runner's Rust twin) could not reach the page's census. |
 
 `unavailable` withholds `clear` (the verdict reads `unknown_canvas`). This
