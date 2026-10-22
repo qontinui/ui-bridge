@@ -52,9 +52,8 @@ import { stateSourceFromRegistry, type StateRegistryLike } from '../ai/timeline-
 import { computeFingerprint, extractSourceLocation } from '../debug/error-fingerprint';
 import { hasNestedQuantifiers } from '../core/param-schema';
 import {
-  findHoverableAncestor,
-  dispatchHoverEnter,
-  nextAnimationFrame,
+  dispatchHoverEnterChain,
+  forcedHoverTiming,
   readHandlerErrorEnvelope,
   DefaultActionExecutor,
   getClickRefusal,
@@ -63,6 +62,15 @@ import {
   dispatchRightClick,
   dispatchMiddleClick,
 } from '../control/action-executor';
+import {
+  forcePseudoState,
+  releaseHeldAfterDispatch,
+  releaseForcedPseudoState,
+  type ForcedHoverActionReport,
+  type ForcedPseudoReleaseReport,
+} from '../control/forced-hover';
+import { captureStateVariations, INTERACTION_STATES } from '../ai/design-inspector';
+import type { InteractionStateName } from '../core/types';
 import { inertAbortSignal } from '../core/abortable';
 import type { ComponentActionRequest, DragAction, MouseAction } from '../control/types';
 import { comboboxSelect, isComboboxLike } from '../control/combobox-select';
@@ -1687,7 +1695,11 @@ export async function executeCommand(
           domEl.offsetParent !== null &&
           getComputedStyle(domEl).visibility !== 'hidden' &&
           getComputedStyle(domEl).display !== 'none';
-        if (!isVis)
+        // `unhover` releases the page's single forced hover whichever element
+        // it names, and that element is often the one the release just hid
+        // again: it is never refused for visibility or `disabled`.
+        const isUnhover = request.action === 'unhover';
+        if (!isVis && !isUnhover)
           return createActionFailure(
             id,
             'ELEMENT_NOT_VISIBLE',
@@ -1705,7 +1717,7 @@ export async function executeCommand(
           return createClickRefusalFailure(id, request.action, clickRefusal, startTime);
         // Every other action: native `disabled` only. A hover-revealed
         // `pointer-events:none` target must still be focusable, typeable, etc.
-        if (readDisabledSignals(domEl).disabled)
+        if (readDisabledSignals(domEl).disabled && !isUnhover)
           return createActionFailure(
             id,
             'ELEMENT_NOT_ENABLED',
@@ -1716,6 +1728,40 @@ export async function executeCommand(
         registered = el;
       }
 
+      // Auto-release, on THIS path too (plan
+      // 2026-10-22-ui-bridge-hover-forces-the-css-hover-state, sub-decision 6).
+      // qontinui-web (`createRelayHandlers`) and the runner's WS route reach the
+      // SDK only through this case, which never calls the executor, so the
+      // executor's `releaseAfter` does not cover them. Everything that returned
+      // above (freshness, resolution, visibility, the click gate) did not
+      // dispatch and keeps the hold; a write-class action that got here
+      // releases it in the `finally` below once it completes, success or
+      // failure — the same `releaseHeldAfterDispatch` `releaseAfter` runs.
+      //
+      // A failure returned from inside the switch BEFORE it touched the page
+      // (`Cannot type into DIV`, a refused submit, malformed keys, an unknown
+      // verb) is a validation refusal: `refuse` marks it not-dispatched, so it
+      // keeps the hold like the refusals above. A response for an action that
+      // did dispatch goes through `settleDispatched`, which releases first and
+      // reports the release on that response — failure responses included.
+      let forcedHover: ForcedHoverActionReport | undefined;
+      let heldRelease: ForcedPseudoReleaseReport | undefined;
+      let relayDispatched = true;
+      let releaseSettled = false;
+      const refuse = <T>(failure: T): T => {
+        relayDispatched = false;
+        return failure;
+      };
+      const settleDispatched = async <T extends object>(
+        response: T
+      ): Promise<T | (T & { forcedHover: ForcedHoverActionReport })> => {
+        releaseSettled = true;
+        heldRelease = await releaseHeldAfterDispatch(request.action);
+        return heldRelease
+          ? { ...response, forcedHover: { ...forcedHover, released: heldRelease } }
+          : response;
+      };
+      const revealSource = { getAllElements: () => registry.getAllElements() };
       try {
         // Custom-action precedence — a registered handler wins over a
         // same-named built-in. This is the SAME defect, and the same fix, as
@@ -1744,7 +1790,7 @@ export async function executeCommand(
           const handlerResult = await customAction.handler(request.params, {
             signal: inertAbortSignal(),
           });
-          return {
+          return settleDispatched({
             success: true,
             action: request.action,
             elementId: id,
@@ -1754,7 +1800,7 @@ export async function executeCommand(
             snapshotFreshness,
             durationMs: performance.now() - startTime,
             timestamp: Date.now(),
-          };
+          });
         }
 
         switch (request.action) {
@@ -1766,25 +1812,21 @@ export async function executeCommand(
             // gated behind a CSS `:hover` / Tailwind `group-hover` rule (the
             // runner's `ZoneHoverActions` toolbar is the canonical case: its
             // buttons are `pointer-events:none` until a `.group` ancestor is
-            // hovered). Reuse the exact hover helpers the HTTP action-executor
-            // path uses (`findHoverableAncestor` + `dispatchHoverEnter` +
-            // `nextAnimationFrame`) so both dispatch paths share one
-            // implementation. Hover the nearest hoverable ancestor first so a
-            // `group-hover:pointer-events-auto` rule flips the target
-            // interactive, then the target itself, then yield one animation
-            // frame for the style recomputation before clicking. The hover is
-            // intentionally left in place (no `mouseleave`) so the control
-            // stays interactive through the click.
-            const ancestor = findHoverableAncestor(dom);
-            if (ancestor && ancestor !== dom) {
-              dispatchHoverEnter(ancestor);
-            }
-            dispatchHoverEnter(dom);
-            await nextAnimationFrame();
-            // `dispatchRealClick` ends with a native `dom.click()`, which fires
-            // even while the element computes to `pointer-events:none` in jsdom
-            // (no real hit-test) — mirroring `performHoverClick` in the HTTP
-            // path, so behavior matches regardless of how the CSS recalc lands.
+            // hovered). The same primitive as the executor's
+            // `performHoverClick`: force the real CSS `:hover` state on the
+            // target and its ancestors (`forced-hover.ts`), send the enter
+            // events for JS-driven reveals, wait for the transitions it started,
+            // then click. `hoverClick` is write-class, so the hold is released
+            // when it completes (the `finally` after this switch).
+            const applied = await forcePseudoState(dom, 'hover', {
+              ...forcedHoverTiming(request.params),
+              registry: revealSource,
+              afterMark: () => dispatchHoverEnterChain(dom),
+            });
+            forcedHover = { applied };
+            // `dispatchRealClick` ends with a native `dom.click()`, which a
+            // synthetic dispatch delivers regardless of `pointer-events` — the
+            // safety net for a hover rule in a sheet the page cannot read.
             dispatchRealClick(dom);
             break;
           }
@@ -1794,9 +1836,23 @@ export async function executeCommand(
           case 'blur':
             dom.blur();
             break;
-          case 'hover':
-            dom.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-            dom.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          case 'hover': {
+            // Force the real CSS `:hover` state and HOLD it (until `unhover`,
+            // the next hover, a dispatched write-class action, or `holdMs`);
+            // the enter events cover JS-driven reveals. Same primitive as the
+            // executor's `hover`.
+            const applied = await forcePseudoState(dom, 'hover', {
+              ...forcedHoverTiming(request.params),
+              registry: revealSource,
+              afterMark: () => dispatchHoverEnterChain(dom),
+            });
+            forcedHover = { applied };
+            break;
+          }
+          case 'unhover':
+            // Releases the single forced hover, whichever element it names;
+            // `released: false` when nothing was held.
+            forcedHover = { released: await releaseForcedPseudoState('explicit') };
             break;
           case 'scrollIntoView': {
             type ScrollLogicalPos = 'start' | 'center' | 'end' | 'nearest';
@@ -1952,11 +2008,13 @@ export async function executeCommand(
                 blur: false,
               });
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot type into ${dom.tagName}`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot type into ${dom.tagName}`,
+                  startTime
+                )
               );
             break;
           }
@@ -1964,11 +2022,13 @@ export async function executeCommand(
             if (dom instanceof HTMLInputElement || dom instanceof HTMLTextAreaElement) {
               applyValueMutation(dom, { value: '', mode: 'clear', blur: false });
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot clear ${dom.tagName}`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot clear ${dom.tagName}`,
+                  startTime
+                )
               );
             break;
           }
@@ -1977,11 +2037,13 @@ export async function executeCommand(
               const val = request.value || (request.params?.value as string) || '';
               applyValueMutation(dom, { value: val, mode: 'replace', blur: false });
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot set value on ${dom.tagName}`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot set value on ${dom.tagName}`,
+                  startTime
+                )
               );
             break;
           }
@@ -2003,15 +2065,21 @@ export async function executeCommand(
               if (!outcome.ok) {
                 // Typed failure, not a resolved no-op: a `success: true` over a
                 // control that never opened is a false green.
-                return createActionFailure(id, 'UB-ACTION-FAILED', outcome.message, startTime);
+                // The combobox WAS driven (it was opened and searched); its failure
+                // is an outcome of a dispatched action, not a refusal.
+                return settleDispatched(
+                  createActionFailure(id, 'UB-ACTION-FAILED', outcome.message, startTime)
+                );
               }
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot select on ${dom.tagName}. Use a <select> element or a combobox ` +
-                  `(role="combobox").`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot select on ${dom.tagName}. Use a <select> element or a combobox ` +
+                    `(role="combobox").`,
+                  startTime
+                )
               );
             break;
           }
@@ -2020,11 +2088,13 @@ export async function executeCommand(
               dom.checked = true;
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot check ${dom.tagName}`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot check ${dom.tagName}`,
+                  startTime
+                )
               );
             break;
           }
@@ -2033,11 +2103,13 @@ export async function executeCommand(
               dom.checked = false;
               dom.dispatchEvent(new Event('change', { bubbles: true }));
             } else
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot uncheck ${dom.tagName}`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot uncheck ${dom.tagName}`,
+                  startTime
+                )
               );
             break;
           }
@@ -2046,11 +2118,8 @@ export async function executeCommand(
             if (form) {
               const refused = requestFormSubmit(form, dom);
               if (refused)
-                return createActionFailure(
-                  id,
-                  'ACTION_REJECTED',
-                  `Element ${id}: ${refused}`,
-                  startTime
+                return refuse(
+                  createActionFailure(id, 'ACTION_REJECTED', `Element ${id}: ${refused}`, startTime)
                 );
             } else {
               // No form: the fallback IS a click, so it answers to the same
@@ -2058,7 +2127,8 @@ export async function executeCommand(
               // route around the guard above on an aria-disabled /
               // pointer-events:none control.
               const refusal = getClickRefusal(dom, 'click');
-              if (refusal) return createClickRefusalFailure(id, 'submit', refusal, startTime);
+              if (refusal)
+                return refuse(createClickRefusalFailure(id, 'submit', refusal, startTime));
               dispatchRealClick(dom);
             }
             break;
@@ -2068,11 +2138,13 @@ export async function executeCommand(
             if (!form)
               // Matches the executor's `performReset` "No form found" arm;
               // falling through reported success with nothing reset.
-              return createActionFailure(
-                id,
-                'UNSUPPORTED_ACTION',
-                `Cannot reset ${dom.tagName}: no form found`,
-                startTime
+              return refuse(
+                createActionFailure(
+                  id,
+                  'UNSUPPORTED_ACTION',
+                  `Cannot reset ${dom.tagName}: no form found`,
+                  startTime
+                )
               );
             form.reset();
             break;
@@ -2088,11 +2160,13 @@ export async function executeCommand(
             if (Array.isArray(rawKeys)) {
               const normalized = normalizeKeyDescriptors(rawKeys);
               if (!normalized.ok)
-                return createActionFailure(
-                  id,
-                  'INVALID_PARAMS',
-                  `sendKeys: ${normalized.error}`,
-                  startTime
+                return refuse(
+                  createActionFailure(
+                    id,
+                    'INVALID_PARAMS',
+                    `sendKeys: ${normalized.error}`,
+                    startTime
+                  )
                 );
               arrayKeys = normalized.keys;
             }
@@ -2193,11 +2267,13 @@ export async function executeCommand(
             break;
           }
           default:
-            return createActionFailure(
-              id,
-              'UNSUPPORTED_ACTION',
-              `Unknown action: ${request.action}`,
-              startTime
+            return refuse(
+              createActionFailure(
+                id,
+                'UNSUPPORTED_ACTION',
+                `Unknown action: ${request.action}`,
+                startTime
+              )
             );
         }
       } catch (err) {
@@ -2213,8 +2289,8 @@ export async function executeCommand(
           `Action failed: ${(err as Error).message}`,
           startTime
         );
-        if (!handlerError) return failure;
-        return {
+        if (!handlerError) return settleDispatched(failure);
+        return settleDispatched({
           ...failure,
           // Hoisted so callers can match on `code` without walking
           // `failureDetails.context` — parity with the executor path.
@@ -2227,8 +2303,13 @@ export async function executeCommand(
               ...handlerError.fields,
             },
           },
-        };
+        });
+      } finally {
+        if (relayDispatched && !releaseSettled) {
+          heldRelease = await releaseHeldAfterDispatch(request.action);
+        }
       }
+      if (heldRelease) forcedHover = { ...forcedHover, released: heldRelease };
       return {
         success: true,
         action: request.action,
@@ -2237,6 +2318,9 @@ export async function executeCommand(
         // answer here, not an omission: it says the action ran WITHOUT its
         // freshness being verified.
         snapshotFreshness,
+        // `hover` / `hoverClick` / `unhover`, and a write-class action that
+        // released a held hover: what was forced and/or released.
+        ...(forcedHover ? { forcedHover } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
       };
@@ -4893,16 +4977,18 @@ export async function executeCommand(
       const el = getElement(id);
       if (!el) return { error: `Element ${id} not found` };
       const dom = el.element as HTMLElement;
-      const base = getComputedStylesSafe(dom);
-      return {
-        id,
-        baseStyles: base,
-        stateStyles: states.reduce<Record<string, string>>((acc, s) => {
-          acc[s] = 'Requires interaction';
-          return acc;
-        }, {}),
-        timestamp: Date.now(),
-      };
+      // The same implementation the HTTP handler uses: `hover`/`active` are
+      // forced through the in-place selector rewrite (`forced-hover.ts`) and released
+      // after the read, `focus` through `el.focus()` with the previous focus
+      // restored. Each state is read in its real computed appearance, never
+      // the placeholder this case used to return without interacting at all.
+      const stateStyles = await captureStateVariations(
+        dom,
+        states.filter((s): s is InteractionStateName =>
+          (INTERACTION_STATES as readonly string[]).includes(s)
+        )
+      );
+      return { elementId: id, stateStyles, timestamp: Date.now() };
     }
 
     case 'getDesignSnapshot': {

@@ -376,9 +376,32 @@ class AsyncUIBridgeClient:
         """Remove focus from an element."""
         return await self._execute_action(element_id, "blur")
 
-    async def hover(self, element_id: str) -> ActionResponse:
-        """Hover over an element."""
-        return await self._execute_action(element_id, "hover")
+    async def hover(
+        self,
+        element_id: str,
+        *,
+        hold_ms: int | None = None,
+        settle_timeout_ms: int | None = None,
+    ) -> ActionResponse:
+        """
+        Hover over an element: force its real CSS ``:hover`` state (and its
+        ancestors', so ``group-hover`` rules fire) and hold it.
+
+        See :meth:`UIBridgeClient.hover` for how the hold is released.
+        """
+        params: dict[str, Any] = {}
+        if hold_ms is not None:
+            params["holdMs"] = hold_ms
+        if settle_timeout_ms is not None:
+            params["settleTimeoutMs"] = settle_timeout_ms
+        return await self._execute_action(element_id, "hover", params=params or None)
+
+    async def unhover(self, element_id: str) -> ActionResponse:
+        """
+        Release the page's forced hover, whichever element holds it. A no-op
+        (``released: False``) when nothing is held.
+        """
+        return await self._execute_action(element_id, "unhover")
 
     async def scroll(
         self,

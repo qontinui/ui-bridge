@@ -4,6 +4,7 @@
  * Types for the control protocol and action execution.
  */
 
+import type { ForcedHoverActionReport } from './forced-hover';
 import type {
   ActionRequest,
   ActionResponse,
@@ -146,6 +147,14 @@ export interface ControlActionResponse extends ActionResponse {
   idleWaitMs?: number;
   /** DOM changes caused by the action (populated when captureAfter: true) */
   changes?: ActionChanges;
+  /**
+   * The forced CSS `:hover` this action applied and/or released
+   * (`control/forced-hover.ts`). Present on `hover` (`applied`), `hoverClick`
+   * (`applied` + `released`), `unhover` (`released`, `released: false` when
+   * nothing was held), and on any write-class action that released a held
+   * hover when it completed (`released`, reason `next-action`).
+   */
+  forcedHover?: ForcedHoverActionReport;
 }
 
 /**
