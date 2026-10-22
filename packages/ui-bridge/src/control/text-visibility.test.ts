@@ -435,6 +435,29 @@ describe('an app that writes while text is hidden', () => {
 // ---------------------------------------------------------------------------
 
 describe('a hide that throws part-way', () => {
+  it('reports rolledBack: null when the rollback throws too, and clears the state', () => {
+    document.body.innerHTML = PAGE;
+    const proto = Object.getPrototypeOf(document.body.style) as CSSStyleDeclaration;
+    const real = proto.setProperty;
+    const target = document.querySelector('button')!.style;
+    const spy = vi.spyOn(proto, 'setProperty').mockImplementation(function (
+      this: CSSStyleDeclaration,
+      ...args: Parameters<CSSStyleDeclaration['setProperty']>
+    ) {
+      if (this === target) throw new Error('this element refuses every write');
+      return real.apply(this, args);
+    });
+    let res: ReturnType<typeof setTextVisibility>;
+    try {
+      res = setTextVisibility({ hidden: true });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res).toMatchObject({ success: false, code: 'HIDE_FAILED', rolledBack: null });
+    expect((res as TextVisibilityFailure).error).toContain('the rollback threw too');
+    expect(textHidden()).toBe(false);
+  });
+
   it('is rolled back before it answers, and nothing is left hidden', () => {
     document.body.innerHTML = PAGE;
     const before = document.body.innerHTML;
@@ -495,6 +518,148 @@ describe('two copies of the module in one page', () => {
     });
     expect(document.body.innerHTML).toBe(before);
     expect(a.textHidden()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A copy of a hidden element (M-A)
+// ---------------------------------------------------------------------------
+
+describe('a copy of a hidden element', () => {
+  it('takes the original of the element it was copied from, not the hide it carries', async () => {
+    document.body.innerHTML =
+      '<ul><li id="row" style="padding: 1px">row <span>child</span></li></ul>';
+    hide();
+    const row = document.getElementById('row')!;
+    const copy = row.cloneNode(true) as HTMLElement;
+    copy.id = 'row2';
+    document.querySelector('ul')!.appendChild(copy);
+    await flushObservers();
+    // The copy is hidden too, under its own marker.
+    expect(inline(copy, 'color')).toEqual(['transparent', 'important']);
+    expect(inline(copy, '--qontinui-tv')[0]).not.toBe(inline(row, '--qontinui-tv')[0]);
+    const again = hide();
+    expect(again.coverage.clones).toBe(2);
+    const res = show();
+    expect(res.restore).toMatchObject({ verified: true, drift: [] });
+    expect(copy.getAttribute('style')).toBe('padding: 1px');
+    expect(copy.querySelector('span')!.hasAttribute('style')).toBe(false);
+    expect(row.getAttribute('style')).toBe('padding: 1px');
+  });
+
+  it('keeps what the app changed on the copy as the copy’s own', async () => {
+    document.body.innerHTML = '<p id="src" style="color: red">x</p>';
+    hide();
+    const copy = document.getElementById('src')!.cloneNode(true) as HTMLElement;
+    copy.style.setProperty('margin', '3px');
+    document.body.appendChild(copy);
+    await flushObservers();
+    show();
+    expect(inline(copy, 'color')).toEqual(['red', '']);
+    expect(inline(copy, 'margin')).toEqual(['3px', '']);
+    expect(inline(copy, '--qontinui-tv')).toEqual(['', '']);
+    expect(inline(copy, 'transition-property')).toEqual(['', '']);
+  });
+
+  it('a stale copy from an earlier hide is recorded without the hide it carries', () => {
+    document.body.innerHTML =
+      '<p id="old" style="padding: 2px; color: transparent !important; ' +
+      'text-shadow: none !important; --qontinui-tv: gone-1">x</p>';
+    const res = hide();
+    expect(res.coverage.clones).toBe(1);
+    show();
+    const p = document.getElementById('old')!;
+    expect(inline(p, 'padding')).toEqual(['2px', '']);
+    expect(inline(p, 'color')).toEqual(['', '']);
+    expect(inline(p, 'text-shadow')).toEqual(['', '']);
+    expect(inline(p, '--qontinui-tv')).toEqual(['', '']);
+  });
+
+  it('the marker is gone after an exact restore', () => {
+    document.body.innerHTML = '<p style="margin: 1px">x</p>';
+    hide();
+    expect(inline(document.querySelector('p')!, '--qontinui-tv')[0]).not.toBe('');
+    show();
+    expect(document.querySelector('p')!.getAttribute('style')).toBe('margin: 1px');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The repeated hide handles the app's pending mutations (NIT 2)
+// ---------------------------------------------------------------------------
+
+describe('a repeated hide', () => {
+  it('handles mutations the observer has not reported yet instead of dropping them', () => {
+    document.body.innerHTML = '<p id="p" style="color: red">x</p>';
+    const first = hide();
+    const p = document.getElementById('p')!;
+    p.style.color = 'green';
+    const late = document.createElement('b');
+    document.body.appendChild(late);
+    const again = hide();
+    expect(again.changed).toBe(true);
+    expect(again.coverage.elements).toBe(first.coverage.elements + 1);
+    expect(inline(late, 'color')).toEqual(['transparent', 'important']);
+    expect(inline(p, 'color')).toEqual(['transparent', 'important']);
+    expect(show().restore).toMatchObject({ verified: true });
+    expect(inline(p, 'color')).toEqual(['green', '']);
+    expect(late.hasAttribute('style')).toBe(false);
+  });
+
+  it('counts a swapped-in body’s shadow root once (NIT 1)', async () => {
+    document.body.innerHTML = '<p>old</p>';
+    hide();
+    const fresh = document.createElement('body');
+    const host = document.createElement('div');
+    host.attachShadow({ mode: 'open' }).innerHTML = '<p>in shadow</p>';
+    fresh.appendChild(host);
+    document.documentElement.replaceChild(fresh, document.body);
+    await flushObservers();
+    expect(hide().coverage.shadowRoots).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The slot carries a schema (L-B)
+// ---------------------------------------------------------------------------
+
+describe('a slot another copy owns under a different schema', () => {
+  const KEY = Symbol.for('@qontinui/ui-bridge/text-visibility');
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  afterEach(() => {
+    delete g[KEY];
+  });
+
+  it('is delegated to the functions the owning copy stored, never read here', () => {
+    document.body.innerHTML = PAGE;
+    const before = document.body.innerHTML;
+    const answer = { success: true, hidden: true, changed: true, owner: 'other' };
+    const handle = vi.fn(() => answer);
+    g[KEY] = {
+      schema: 2,
+      // Records this copy must not touch: reading them would throw.
+      get state(): never {
+        throw new Error('a foreign record was read');
+      },
+      lastRestore: null,
+      handle,
+      hidden: () => true,
+    };
+    expect(setTextVisibility({ hidden: true })).toBe(answer);
+    expect(handle).toHaveBeenCalledWith({ hidden: true });
+    expect(textHidden()).toBe(true);
+    expect(document.body.innerHTML).toBe(before);
+  });
+
+  it('is refused, typed, when the owner left nothing to delegate to', () => {
+    document.body.innerHTML = PAGE;
+    const before = document.body.innerHTML;
+    g[KEY] = { state: { records: 'not ours' }, lastRestore: null };
+    expect(setTextVisibility({ hidden: true })).toMatchObject({
+      success: false,
+      code: 'STATE_SCHEMA_MISMATCH',
+    });
+    expect(document.body.innerHTML).toBe(before);
   });
 });
 

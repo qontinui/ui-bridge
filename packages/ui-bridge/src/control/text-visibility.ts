@@ -48,15 +48,30 @@
  *    element's computed border, outline, column-rule, box-shadow and
  *    background colours (and an SVG graphic's `fill`, `stroke`, `stop-color`,
  *    `flood-color`, `lighting-color`) are read BEFORE anything is written and
- *    written back as the same values. Pseudo-elements and `::placeholder`
- *    inherit the hide from their element; one whose own stylesheet sets
- *    `-webkit-text-fill-color` or `text-shadow` explicitly keeps it (a CSS
- *    limit: an inline style cannot reach a pseudo-element).
+ *    written back as the same values.
+ *  - Pseudo-elements (`::before`, `::after`, `::marker`, `::placeholder`,
+ *    `::first-line`, `::first-letter`), which no inline style reaches: a
+ *    constructed stylesheet adopted into the document and every open shadow
+ *    root walked sets `transition-property: none`, `-webkit-text-fill-color:
+ *    transparent` and `text-shadow: none` on them, `!important`, behind a
+ *    `:not(#qtv#qtv#qtv)` that lifts its specificity over any ordinary rule.
+ *    Not `color`: a pseudo-element's `currentColor` is often a shape (a
+ *    chevron border, a mask icon), and the fill colour hides its glyphs
+ *    alone. An engine without constructable stylesheets (`coverage.
+ *    pseudoStyleSheets: 0`) leaves pseudo-elements to inherit the hide.
+ *  - A marker, `--qontinui-tv: <id>`, inline on every hidden element. A copy
+ *    of a hidden element (`cloneNode`, jQuery `.clone()`, a snapshot cache)
+ *    arrives carrying the hide AND the marker, so it is recognised: it takes
+ *    the originals of the element it was copied from instead of recording the
+ *    hide as its own (`coverage.clones`). The restore removes the marker.
  *
  * NOT COVERED, by the same token: a shadow root attached AFTER the hide (no
  * mutation announces `attachShadow`), closed shadow roots (unreachable from
  * outside), and iframes (another document). Text in any of them stays
- * visible in frame B.
+ * visible in frame B. And a copy of a hidden element that the app keeps OFF
+ * the document and inserts only after the restore (a snapshot restored later)
+ * carries the hide, because nothing is watching by then; a later hide that
+ * meets one recognises the stale marker and records it without the hide.
  *
  * Elements added while text is hidden are hidden too (counted as
  * `coverage.lateAdded`). Their pins are read with every hidden ancestor's
@@ -95,7 +110,10 @@
  *  - One state per page, not per SDK copy: it lives on `globalThis` under a
  *    `Symbol.for` key, as the dev-controls gate does, so with an app bundle
  *    and the injected runtime in one page a show through either restores a
- *    hide made through the other.
+ *    hide made through the other. The slot carries a `schema`; a copy that
+ *    finds another schema never touches those records itself: it delegates
+ *    to the functions the owning copy stored there, or refuses
+ *    (`STATE_SCHEMA_MISMATCH`) when there are none.
  *
  * It is a DEV CONTROL (`core/dev-controls.ts`): the command handlers answer
  * `capability_unavailable_in_build` unless the realm opted in. That refusal
@@ -136,14 +154,23 @@ export type TextVisibilityErrorCode =
   /** No `document.body` to hide text in. */
   | 'NO_DOCUMENT'
   /** A write threw part-way through the hide; what it wrote was rolled back. */
-  | 'HIDE_FAILED';
+  | 'HIDE_FAILED'
+  /**
+   * Another copy of the SDK in this page owns the hide state under a
+   * different schema and left no functions to delegate to.
+   */
+  | 'STATE_SCHEMA_MISMATCH';
 
 export interface TextVisibilityFailure {
   success: false;
   code: TextVisibilityErrorCode;
   error: string;
-  /** On `HIDE_FAILED`: the rollback of what the hide had written. */
-  rolledBack?: TextVisibilityRestore;
+  /**
+   * On `HIDE_FAILED`: the rollback of what the hide had written, or `null`
+   * when the rollback itself threw (the page may then be partly hidden; the
+   * state is cleared either way).
+   */
+  rolledBack?: TextVisibilityRestore | null;
   timestamp: number;
 }
 
@@ -163,6 +190,16 @@ export interface TextVisibilityCoverage {
   shadowRoots: number;
   /** Of `elements`, those added to the page after the hide (hidden on arrival). */
   lateAdded: number;
+  /**
+   * Of `elements`, copies of a hidden element (they arrived carrying its
+   * marker) recorded with its originals, not the hide they carried.
+   */
+  clones: number;
+  /**
+   * Roots (the document and open shadow roots) the pseudo-element stylesheet
+   * was adopted into; 0 where the engine has no constructable stylesheets.
+   */
+  pseudoStyleSheets: number;
 }
 
 export interface TextVisibilityHideSuccess {
@@ -403,15 +440,24 @@ function planFor(
 // State
 // ============================================================================
 
+/** The inline custom property that marks a hidden element (see the module doc). */
+const MARKER = '--qontinui-tv';
+
+type Plan = ReturnType<typeof planFor>;
+
 interface ElementRecord {
   el: Element;
   /** The element's inline style object (live; the same object for its lifetime). */
   style: CSSStyleDeclaration;
+  /** This element's marker value. */
+  marker: string;
+  /** What was planned for it; a copy of it reuses this. */
+  plan: Plan;
   /** The `style` attribute before the first write; `undefined` once the app rewrote it. */
   originalAttr: string | null | undefined;
   /** The attribute as this control last left it; `null` until its writes finished. */
   written: string | null;
-  /** The values this control writes, by property. */
+  /** The values this control writes, by property (the marker included). */
   values: Map<string, string>;
   /** Each owned property's inline value before the hide (or the app's newer one). */
   originals: Map<string, InlineValue>;
@@ -421,6 +467,11 @@ interface ElementRecord {
 
 interface HiddenState {
   records: Map<Element, ElementRecord>;
+  /** Records by marker value, so a copy can find the element it was copied from. */
+  byMarker: Map<string, ElementRecord>;
+  /** Prefix of this hide's marker values (unique per hide), and the next number. */
+  markerPrefix: string;
+  nextMarker: number;
   coverage: TextVisibilityCoverage;
   hiddenAt: number;
   ttlMs: number;
@@ -429,27 +480,59 @@ interface HiddenState {
   observer: MutationObserver | null;
   /** The `document.body` the hide last covered; a different one gets covered too. */
   body: HTMLElement;
+  /** Open shadow roots walked (each counted, watched and given the sheet once). */
+  shadowRoots: Set<ShadowRoot>;
+  /** The pseudo-element stylesheet, and the roots it was adopted into. */
+  sheet: CSSStyleSheet | null;
+  sheetRoots: Array<Document | ShadowRoot>;
 }
 
+/**
+ * The version of the {@link HiddenState} / {@link ElementRecord} shapes. Bump
+ * it whenever either changes shape: a copy of the SDK that finds another
+ * schema in the slot must not read those records.
+ */
+const SCHEMA = 1;
+
 interface TextVisibilitySlot {
+  schema: number;
   state: HiddenState | null;
   lastRestore: TextVisibilityRestore | null;
+  /** The owning copy's command and probe, for a copy with another schema. */
+  handle: (raw: unknown) => TextVisibilityResult;
+  hidden: () => boolean;
 }
 
 const SLOT_KEY = Symbol.for('@qontinui/ui-bridge/text-visibility');
 
+function holder(): Record<symbol, Partial<TextVisibilitySlot> | undefined> {
+  return globalThis as unknown as Record<symbol, Partial<TextVisibilitySlot> | undefined>;
+}
+
+/** The slot when another copy owns it under a different schema; else null. */
+function foreignSlot(): Partial<TextVisibilitySlot> | null {
+  const s = holder()[SLOT_KEY];
+  return s && s.schema !== SCHEMA ? s : null;
+}
+
 /**
- * The page's one hide state. On `globalThis` under a `Symbol.for` key, like
- * the dev-controls gate, so two copies of the SDK in one page (an app bundle
- * and the injected runtime) share it: a show through either restores a hide
- * made through the other.
+ * The page's one hide state, in this copy's schema. On `globalThis` under a
+ * `Symbol.for` key, like the dev-controls gate, so two copies of the SDK in
+ * one page (an app bundle and the injected runtime) share it. Reached only
+ * after {@link foreignSlot} said the schema is ours.
  */
 function slot(): TextVisibilitySlot {
-  const holder = globalThis as unknown as Record<symbol, TextVisibilitySlot | undefined>;
-  let s = holder[SLOT_KEY];
+  const h = holder();
+  let s = h[SLOT_KEY] as TextVisibilitySlot | undefined;
   if (!s) {
-    s = { state: null, lastRestore: null };
-    holder[SLOT_KEY] = s;
+    s = {
+      schema: SCHEMA,
+      state: null,
+      lastRestore: null,
+      handle: handleOwn,
+      hidden: () => slot().state !== null,
+    };
+    h[SLOT_KEY] = s;
   }
   return s;
 }
@@ -504,6 +587,83 @@ function parentOrHost(el: Element): Element | null {
   return parent && parent.nodeType === 11 && parent.host ? parent.host : null;
 }
 
+// ---------------------------------------------------------------------------
+// The pseudo-element stylesheet
+// ---------------------------------------------------------------------------
+
+const PSEUDO_ELEMENTS = [
+  '::before',
+  '::after',
+  '::marker',
+  '::placeholder',
+  '::first-line',
+  '::first-letter',
+];
+/** Three ids of specificity, so no ordinary page rule outranks the hide. */
+const PSEUDO_SCOPE = '*:not(#qtv#qtv#qtv)';
+
+/**
+ * One rule per pseudo-element: an engine that does not know one drops that
+ * rule alone, not the list.
+ */
+function pseudoRules(declarations: string): string {
+  return PSEUDO_ELEMENTS.map((p) => `${PSEUDO_SCOPE}${p} { ${declarations} }`).join('\n');
+}
+
+const PSEUDO_HIDE = pseudoRules(
+  'transition-property: none !important; -webkit-text-fill-color: transparent !important; ' +
+    'text-shadow: none !important;'
+);
+/** What the sheet holds between the restore's two passes: transitions still off. */
+const PSEUDO_HOLD = pseudoRules('transition-property: none !important;');
+
+type SheetRoot = Document | ShadowRoot;
+
+function adoptable(root: SheetRoot): root is SheetRoot & { adoptedStyleSheets: CSSStyleSheet[] } {
+  return Array.isArray((root as { adoptedStyleSheets?: unknown }).adoptedStyleSheets);
+}
+
+function createPseudoSheet(): CSSStyleSheet | null {
+  if (typeof document === 'undefined' || !adoptable(document)) return null;
+  const view = document.defaultView as (Window & { CSSStyleSheet?: typeof CSSStyleSheet }) | null;
+  const Sheet = view?.CSSStyleSheet;
+  if (typeof Sheet !== 'function') return null;
+  try {
+    const sheet = new Sheet();
+    sheet.replaceSync(PSEUDO_HIDE);
+    return sheet;
+  } catch {
+    return null;
+  }
+}
+
+function adoptSheet(s: HiddenState, root: SheetRoot): void {
+  if (!s.sheet || !adoptable(root) || s.sheetRoots.includes(root)) return;
+  root.adoptedStyleSheets = [...root.adoptedStyleSheets, s.sheet];
+  s.sheetRoots.push(root);
+  s.coverage.pseudoStyleSheets = s.sheetRoots.length;
+}
+
+function unadoptSheet(s: HiddenState): void {
+  for (const root of s.sheetRoots) {
+    if (adoptable(root))
+      root.adoptedStyleSheets = root.adoptedStyleSheets.filter((x) => x !== s.sheet);
+  }
+}
+
+/** Count, watch and give the sheet to an open shadow root, once. */
+function noteShadowRoot(s: HiddenState, root: ShadowRoot): void {
+  if (s.shadowRoots.has(root)) return;
+  s.shadowRoots.add(root);
+  s.coverage.shadowRoots = s.shadowRoots.size;
+  if (s.observer) watch(s.observer, root);
+  adoptSheet(s, root);
+}
+
+// ---------------------------------------------------------------------------
+// Recording and writing
+// ---------------------------------------------------------------------------
+
 /**
  * Run `read` with every hidden ancestor of `elements` showing its original
  * `color`, then put the hide back byte for byte. An element added while text
@@ -535,53 +695,116 @@ function withAncestorColoursRevealed<T>(
   }
 }
 
+/** The value the hide writes for an owned property, when it is a fixed one. */
+const HIDE_VALUES = new Map<string, string>([
+  ...GLYPH_VALUES,
+  ...SVG_TEXT_VALUES,
+  ...CLIP_TEXT_VALUES,
+]);
+
+/** How one element is to be recorded, decided before any write. */
+interface Target {
+  el: Element;
+  style: CSSStyleDeclaration;
+  /** For a copy of a recorded element: that record. */
+  source: ElementRecord | null;
+  /** It carries a marker no record of this hide owns (a stale copy). */
+  stale: boolean;
+}
+
 /**
  * Hide `elements`, recording each one first. All computed reads happen before
  * any write: hiding a parent changes its children's `currentColor`, so a pin
  * read after it would pin the hidden value. An element seen twice (a node
  * moved twice, or a parent and child appended in one task) is planned once:
  * a second plan would read the first one's hide as the element's original.
+ *
+ * An element carrying a marker arrived as a copy of a hidden element. Its
+ * own inline style IS the hide, so its originals come from the record it was
+ * copied from (or, for a marker no record owns, every fixed hide value it
+ * carries is taken as absent), never from what it carries.
  */
 function hideElements(elements: Element[], s: HiddenState, late: boolean): void {
   const view = typeof window !== 'undefined' ? window : null;
   const planned = new Set<Element>();
-  const targets: Array<{ el: Element; style: CSSStyleDeclaration }> = [];
+  const targets: Target[] = [];
   for (const el of elements) {
     if (s.records.has(el) || planned.has(el)) continue;
     const style = styleOf(el);
     if (!style) continue;
     planned.add(el);
-    targets.push({ el, style });
+    const marker = style.getPropertyValue(MARKER).trim();
+    const source = marker ? (s.byMarker.get(marker) ?? null) : null;
+    targets.push({ el, style, source, stale: marker !== '' && source === null });
   }
   if (targets.length === 0) return;
-  const read = () =>
-    targets.map((t) => ({ ...t, plan: planFor(t.el, computedStyleOf(view, t.el)) }));
+  const read = (): Array<Target & { plan: Plan }> =>
+    targets.map((t) => ({
+      ...t,
+      plan: t.source ? t.source.plan : planFor(t.el, computedStyleOf(view, t.el)),
+    }));
   // `plans` holds strings read off the computed styles, so the writes below
   // cannot change what was planned.
   const plans = late
     ? withAncestorColoursRevealed(
-        targets.map((t) => t.el),
+        targets.filter((t) => !t.source).map((t) => t.el),
         s.records,
         read
       )
     : read();
-  for (const { el, style, plan } of plans) {
+  for (const { el, style, source, stale, plan } of plans) {
+    const marker = `${s.markerPrefix}-${s.nextMarker++}`;
     const record: ElementRecord = {
       el,
       style,
+      marker,
+      plan,
       originalAttr: el.getAttribute('style'),
       written: null,
       values: new Map(),
       originals: new Map(),
       ours: new Map(),
     };
-    for (const [prop, value] of plan.values) {
-      record.values.set(prop, value);
-      if (!record.originals.has(prop)) record.originals.set(prop, readInline(style, prop));
+    for (const [prop, value] of plan.values) record.values.set(prop, value);
+    record.values.set(MARKER, marker);
+    if (source) {
+      // A copy: what it carries is the source's hide. Each owned property it
+      // still carries as the source's hide wrote it goes back to the
+      // source's original; one the app changed on the copy is the copy's own.
+      const untouched = el.getAttribute('style') === source.written;
+      record.originalAttr =
+        untouched && source.originalAttr !== undefined ? source.originalAttr : undefined;
+      for (const prop of record.values.keys()) {
+        if (prop === MARKER) {
+          record.originals.set(prop, emptyInline());
+          continue;
+        }
+        const now = readInline(style, prop);
+        const theirs = source.ours.get(prop);
+        record.originals.set(
+          prop,
+          theirs && sameInline(now, theirs) ? (source.originals.get(prop) ?? emptyInline()) : now
+        );
+      }
+      s.coverage.clones += 1;
+    } else if (stale) {
+      // A copy from an earlier hide, whose record is gone: a fixed hide value
+      // it carries is the hide, not the element's.
+      record.originalAttr = undefined;
+      for (const prop of record.values.keys()) {
+        const now = readInline(style, prop);
+        const hideValue = HIDE_VALUES.get(prop);
+        const isHide = prop === MARKER || (hideValue !== undefined && now.value === hideValue);
+        record.originals.set(prop, isHide ? emptyInline() : now);
+      }
+      s.coverage.clones += 1;
+    } else {
+      for (const prop of record.values.keys()) record.originals.set(prop, readInline(style, prop));
     }
     // Owned before the first write, so a write that throws leaves nothing a
     // rollback cannot reach.
     s.records.set(el, record);
+    s.byMarker.set(marker, record);
     for (const [prop, value] of record.values) {
       style.setProperty(prop, value, IMPORTANT);
       record.ours.set(prop, readInline(style, prop));
@@ -605,6 +828,7 @@ function reassert(record: ElementRecord): void {
   if (record.el.getAttribute('style') === record.written) return;
   const style = record.style;
   for (const [prop, ours] of record.ours) {
+    if (prop === MARKER) continue; // never the app's: it stays absent on restore
     const now = readInline(style, prop);
     if (!sameInline(now, ours)) record.originals.set(prop, now);
   }
@@ -616,54 +840,58 @@ function reassert(record: ElementRecord): void {
   record.written = record.el.getAttribute('style');
 }
 
-/**
- * Cover `body` (a body the app swapped in) and watch it. Idempotent: what is
- * already recorded is skipped.
- */
+/** Cover `body` (a body the app swapped in) and watch it. Idempotent. */
 function coverBody(s: HiddenState, body: HTMLElement): void {
   const elements: Element[] = [];
   const shadowRoots: ShadowRoot[] = [];
   collectElements(body, elements, shadowRoots, new Set());
+  for (const root of shadowRoots) noteShadowRoot(s, root);
   hideElements(elements, s, true);
   s.body = body;
-  if (s.observer) {
-    for (const root of [body, ...shadowRoots]) watch(s.observer, root);
-    s.observer.takeRecords();
+  if (s.observer) watch(s.observer, body);
+}
+
+/**
+ * Handle the APP's mutations (`mutations` holds nothing this control wrote),
+ * then drop the records this control's own writes queued meanwhile.
+ */
+function onMutations(
+  s: HiddenState,
+  observer: MutationObserver,
+  mutations: MutationRecord[]
+): void {
+  if (slot().state !== s) return;
+  const added: Element[] = [];
+  const newShadowRoots: ShadowRoot[] = [];
+  const seen = new Set<Element>();
+  for (const m of mutations) {
+    if (m.type === 'attributes') {
+      const rec = s.records.get(m.target as Element);
+      if (rec) reassert(rec);
+    } else {
+      for (const node of Array.from(m.addedNodes)) {
+        if (node.nodeType === 1 && (node as Element).isConnected) {
+          // Already-recorded elements are walked (a moved subtree can carry
+          // new children) and skipped by hideElements.
+          collectElements(node as Element, added, newShadowRoots, seen);
+        }
+      }
+    }
   }
-  s.coverage.shadowRoots += shadowRoots.length;
+  for (const root of newShadowRoots) noteShadowRoot(s, root);
+  if (added.length > 0) hideElements(added, s, true);
+  // A body swapped in (Turbo, body.replaceWith) was hidden above; watch it.
+  if (typeof document !== 'undefined' && document.body && document.body !== s.body) {
+    coverBody(s, document.body);
+  }
+  observer.takeRecords();
 }
 
 function observe(s: HiddenState, roots: Array<Node>): MutationObserver | null {
   if (typeof MutationObserver === 'undefined') return null;
-  const observer = new MutationObserver((mutations) => {
-    if (slot().state !== s) return;
-    const added: Element[] = [];
-    const newShadowRoots: ShadowRoot[] = [];
-    const seen = new Set<Element>();
-    for (const m of mutations) {
-      if (m.type === 'attributes') {
-        const rec = s.records.get(m.target as Element);
-        if (rec) reassert(rec);
-      } else {
-        for (const node of Array.from(m.addedNodes)) {
-          if (node.nodeType === 1 && (node as Element).isConnected) {
-            // Already-recorded elements are walked (a moved subtree can carry
-            // new children) and skipped by hideElements.
-            collectElements(node as Element, added, newShadowRoots, seen);
-          }
-        }
-      }
-    }
-    if (added.length > 0) hideElements(added, s, true);
-    for (const root of newShadowRoots) watch(observer, root);
-    s.coverage.shadowRoots += newShadowRoots.length;
-    // A body swapped in (Turbo, body.replaceWith) was hidden above; watch it.
-    if (typeof document !== 'undefined' && document.body && document.body !== s.body) {
-      coverBody(s, document.body);
-    }
-    // Drop the records this callback's own writes queued.
-    observer.takeRecords();
-  });
+  const observer: MutationObserver = new MutationObserver((mutations) =>
+    onMutations(s, observer, mutations)
+  );
   for (const root of roots) watch(observer, root);
   // The <html> element's children, so a replaced <body> is seen arriving.
   if (typeof document !== 'undefined' && document.documentElement) {
@@ -692,13 +920,20 @@ function armTtl(s: HiddenState, ttlMs: number): void {
 }
 
 function hideFailed(e: unknown): TextVisibilityFailure {
-  const rolledBack = restore('rollback');
+  let rolledBack: TextVisibilityRestore | null;
+  let note = 'everything it had written was restored (see rolledBack)';
+  try {
+    rolledBack = restore('rollback');
+  } catch (r) {
+    // restore() clears the state before its first write, so the next hide
+    // starts fresh; what the rollback did not reach may still be hidden.
+    rolledBack = null;
+    note = `and the rollback threw too (${r instanceof Error ? r.message : String(r)})`;
+  }
   return {
     success: false,
     code: 'HIDE_FAILED',
-    error:
-      `the hide threw part-way (${e instanceof Error ? e.message : String(e)}); everything ` +
-      `it had written was restored (see rolledBack)`,
+    error: `the hide threw part-way (${e instanceof Error ? e.message : String(e)}); ${note}`,
     rolledBack,
     timestamp: Date.now(),
   };
@@ -707,25 +942,34 @@ function hideFailed(e: unknown): TextVisibilityFailure {
 function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure {
   const current = slot().state;
   if (current) {
-    let changed = false;
-    if (typeof document !== 'undefined' && document.body && document.body !== current.body) {
-      // The app replaced <body> since the hide (and no observer saw it).
-      const before = current.coverage.elements;
-      try {
+    const before = current.coverage.elements;
+    try {
+      // Mutations the app made since the observer last ran are the app's:
+      // handle them (that also covers a swapped-in body) rather than drop them.
+      if (current.observer) {
+        onMutations(current, current.observer, current.observer.takeRecords());
+      } else if (
+        typeof document !== 'undefined' &&
+        document.body &&
+        document.body !== current.body
+      ) {
         coverBody(current, document.body);
-      } catch (e) {
-        return hideFailed(e);
       }
-      changed = current.coverage.elements !== before;
+    } catch (e) {
+      return hideFailed(e);
     }
     armTtl(current, ttlMs);
-    return hideSuccess(current, changed);
+    return hideSuccess(current, current.coverage.elements !== before);
   }
   if (typeof document === 'undefined' || !document.body) {
     return failure('NO_DOCUMENT', 'there is no document.body to hide text in');
   }
+  const hiddenAt = Date.now();
   const s: HiddenState = {
     records: new Map(),
+    byMarker: new Map(),
+    markerPrefix: `${hiddenAt.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    nextMarker: 0,
     coverage: {
       scope: 'document',
       elements: 0,
@@ -734,13 +978,18 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
       pinned: 0,
       shadowRoots: 0,
       lateAdded: 0,
+      clones: 0,
+      pseudoStyleSheets: 0,
     },
-    hiddenAt: Date.now(),
+    hiddenAt,
     ttlMs,
     expiresAt: 0,
     timer: null,
     observer: null,
     body: document.body,
+    shadowRoots: new Set(),
+    sheet: null,
+    sheetRoots: [],
   };
   // The state and the TTL are in place BEFORE the first write: a hide that
   // throws part-way is rolled back below, and one whose caller vanished is
@@ -748,12 +997,14 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
   slot().state = s;
   armTtl(s, ttlMs);
   try {
+    s.sheet = createPseudoSheet();
+    adoptSheet(s, document);
     const elements: Element[] = [];
     const shadowRoots: ShadowRoot[] = [];
     collectElements(document.body, elements, shadowRoots, new Set());
-    s.coverage.shadowRoots = shadowRoots.length;
+    for (const root of shadowRoots) noteShadowRoot(s, root);
     hideElements(elements, s, false);
-    s.observer = observe(s, [document.body, ...shadowRoots]);
+    s.observer = observe(s, [document.body, ...s.shadowRoots]);
   } catch (e) {
     return hideFailed(e);
   }
@@ -817,8 +1068,9 @@ function decide(record: ElementRecord): Decision {
 
 /**
  * Restore every recorded element. Two passes: everything but the transition
- * comes back under `transition-property: none`, styles are flushed, then the
- * transition itself — so the text never fades back in.
+ * comes back under `transition-property: none` (the pseudo-element sheet
+ * shrinks to just that), styles are flushed, then the transition itself and
+ * the sheet goes — so no text fades back in.
  */
 function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityRestore {
   const sl = slot();
@@ -842,16 +1094,24 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
       if (!d.drifted.has(TRANSITION)) d.record.style.setProperty(TRANSITION, 'none', IMPORTANT);
     }
   }
+  if (s.sheet) {
+    try {
+      s.sheet.replaceSync(PSEUDO_HOLD);
+    } catch {
+      // Removed below either way.
+    }
+  }
   // Flush: the restored colours become the computed style with no transition.
   if (typeof document !== 'undefined' && document.body) void document.body.offsetWidth;
 
-  // Pass 2: the transition, and the exact attribute text.
+  // Pass 2: the transition, the exact attribute text, and the sheet goes.
   for (const d of decisions) {
     if (d.kind === 'exact') writeAttr(d.record.el, d.original);
     else if (!d.drifted.has(TRANSITION)) {
       writeInline(d.record.style, TRANSITION, d.record.originals.get(TRANSITION) ?? emptyInline());
     }
   }
+  unadoptSheet(s);
 
   // Verify by reading back — every element, in the document or not.
   let exact = 0;
@@ -879,6 +1139,9 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
         drift.push({ tag: d.record.el.localName, properties: Array.from(d.drifted).sort() });
       }
     }
+  }
+  for (const root of s.sheetRoots) {
+    if (adoptable(root) && s.sheet && root.adoptedStyleSheets.includes(s.sheet)) verified = false;
   }
 
   const result: TextVisibilityRestore = {
@@ -908,13 +1171,8 @@ function failure(code: TextVisibilityErrorCode, error: string): TextVisibilityFa
   return { success: false, code, error, timestamp: Date.now() };
 }
 
-/**
- * `POST /control/text-visibility {hidden, ttlMs?}` — hide the page's glyphs
- * (`hidden: true`) or restore them exactly (`hidden: false`). Exported so an
- * embedded host (the qontinui-runner's own webview hook) can serve the same
- * engine the relay dispatcher does.
- */
-export function setTextVisibility(raw: unknown): TextVisibilityResult {
+/** This copy's command, over a slot in this copy's schema. */
+function handleOwn(raw: unknown): TextVisibilityResult {
   const req = validateTextVisibilityRequest(raw);
   if (typeof req === 'string') return failure('INVALID_REQUEST', req);
   if (req.hidden) return hide(req.ttlMs);
@@ -937,13 +1195,40 @@ export function setTextVisibility(raw: unknown): TextVisibilityResult {
   };
 }
 
-/** True while text is hidden. */
+/**
+ * `POST /control/text-visibility {hidden, ttlMs?}` — hide the page's glyphs
+ * (`hidden: true`) or restore them exactly (`hidden: false`). Exported so an
+ * embedded host (the qontinui-runner's own webview hook) can serve the same
+ * engine the relay dispatcher does.
+ *
+ * When another copy of the SDK in this page owns the state under a different
+ * schema, the call goes to the functions that copy stored, or is refused
+ * (`STATE_SCHEMA_MISMATCH`); this copy never reads those records.
+ */
+export function setTextVisibility(raw: unknown): TextVisibilityResult {
+  const foreign = foreignSlot();
+  if (foreign) {
+    if (typeof foreign.handle === 'function') return foreign.handle(raw);
+    return failure(
+      'STATE_SCHEMA_MISMATCH',
+      `another copy of the SDK in this page holds the text-visibility state under schema ` +
+        `${JSON.stringify(foreign.schema)} (this copy: ${SCHEMA}) and left no handler to ` +
+        `delegate to; drive it through that copy`
+    );
+  }
+  return handleOwn(raw);
+}
+
+/** True while text is hidden (asked of the owning copy when the schema differs). */
 export function textHidden(): boolean {
+  const foreign = foreignSlot();
+  if (foreign) return typeof foreign.hidden === 'function' ? foreign.hidden() : false;
   return slot().state !== null;
 }
 
 /** Test-only: restore anything hidden and forget the last restore. */
 export function resetTextVisibilityForTest(): void {
+  if (foreignSlot()) return;
   if (slot().state) restore('request');
   slot().lastRestore = null;
 }

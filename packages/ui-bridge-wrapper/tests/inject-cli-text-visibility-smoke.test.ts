@@ -160,13 +160,15 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>text</titl
   background:linear-gradient(90deg,#f00,#00f);-webkit-background-clip:text;background-clip:text;
   -webkit-text-fill-color:transparent}
 #pseudo{position:absolute;left:10px;top:190px;width:150px;height:40px}
-#pseudo::before{content:"BEFORE";color:rgb(0,128,0);font:bold 24px sans-serif}
+#pseudo::before{content:"BEFORE";color:rgb(0,128,0);-webkit-text-fill-color:rgb(0,128,0);
+  font:bold 24px sans-serif;transition:all 5s linear}
 </style></head><body>
 <div id="hero"><img src="/hero.png" alt="hero" data-ui-bridge-image-slot="hero"><h1 id="over" style="letter-spacing: 1px !important">Hello</h1></div>
 <button id="btn">Go</button>
 <svg id="icon" width="40" height="40"><rect width="40" height="40" fill="currentColor"/></svg>
 <h2 id="grad">Grad</h2>
 <div id="pseudo"></div>
+<div id="box" style="position:absolute;left:380px;top:5px;width:10px;height:10px;background:rgb(1,2,3)"></div>
 </body></html>`;
 
 /** Where each kind of text paints, and the colour beneath it. */
@@ -257,6 +259,21 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
             w.__late!.remove();
             return null;
           }
+          const c = window as unknown as { __clone?: HTMLElement };
+          if (what === 'clone') {
+            c.__clone = document.getElementById('box')!.cloneNode(true) as HTMLElement;
+            c.__clone.id = 'box-copy';
+            document.body.appendChild(c.__clone);
+            return null;
+          }
+          if (what === 'cloneStyles') {
+            const styles = [
+              document.getElementById('box')!.getAttribute('style'),
+              c.__clone!.getAttribute('style'),
+            ];
+            c.__clone!.remove();
+            return styles;
+          }
           return w.__late!.getAttribute('style');
         },
         (p as { what: string }).what
@@ -267,6 +284,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
     let before: unknown;
     let after: unknown;
     let lateAfter: unknown;
+    let cloneStyles: unknown;
     try {
       await transport.ready();
       before = await transport.dispatch('__state');
@@ -286,14 +304,17 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
         { action: 'textVisibility', payload: { hidden: true, ttlMs: 30_000 } },
       ]);
       await transport.dispatch('__late', { what: 'add' });
+      // A copy of a hidden element arrives carrying the hide (M-A).
+      await transport.dispatch('__late', { what: 'clone' });
       await run([{ action: 'getControlSnapshot', payload: {} }]);
       await transport.dispatch('__late', { what: 'remove' });
       await run([
         { action: 'textVisibility', payload: { hidden: false } },
         { action: 'getControlSnapshot', payload: {} },
       ]);
-      after = await transport.dispatch('__state');
       lateAfter = await transport.dispatch('__late', { what: 'style' });
+      cloneStyles = await transport.dispatch('__late', { what: 'cloneStyles' });
+      after = await transport.dispatch('__state');
     } finally {
       await transport.close().catch(() => {});
     }
@@ -303,7 +324,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       success: true,
       hidden: true,
       changed: true,
-      coverage: { scope: 'document', backgroundClipText: 1 },
+      coverage: { scope: 'document', backgroundClipText: 1, pseudoStyleSheets: 1 },
     });
     expect(show!.result).toMatchObject({
       success: true,
@@ -311,6 +332,11 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
       changed: true,
       restore: { verified: true, propertyLevel: 0, drift: [], detached: 1 },
     });
+    // The copy of a hidden element has the source's original style, not the
+    // hide it arrived carrying.
+    const boxStyle =
+      'position:absolute;left:380px;top:5px;width:10px;height:10px;background:rgb(1,2,3)';
+    expect(cloneStyles).toEqual([boxStyle, boxStyle]);
     // The late element got its own style attribute back, though detached.
     expect(lateAfter).toBe(
       'position:absolute;left:300px;top:120px;width:60px;height:40px;' +
