@@ -8,14 +8,46 @@
  * Information about a detected modal/dialog
  */
 export interface ModalInfo {
-  /** Unique identifier (element id, or generated) */
+  /**
+   * Identifier: the element's DOM id, else its `data-testid`, else a generated
+   * `modal-N`. Ambiguous by construction; match on `domId` / `testId` /
+   * `bridgeId` when the KIND of identity matters.
+   */
   id: string;
+  /** The element's real DOM `id`, when it has one. */
+  domId?: string;
+  /** The element's `data-testid`, when it has one. */
+  testId?: string;
+  /**
+   * The element's lowercase tag name. `domId` / `testId` identify the dialog
+   * only together with it (`<tag>#<domId>`), so a duplicate id on another
+   * element is not mistaken for the dialog.
+   */
+  tagName?: string;
+  /**
+   * The modal element's `data-ui-bridge-id`, when it has one: the name an
+   * occlusion report gives a registered occluder. Lets `/control/visibility`
+   * recognise a registered modal whose registry id differs from its DOM id.
+   */
+  bridgeId?: string;
   /** Dialog title text, if detectable */
   title?: string;
   /** Type of modal */
   type: 'dialog' | 'alertdialog' | 'modal' | 'drawer' | 'popover' | 'sheet';
   /** Whether this modal blocks interaction with content behind it */
   blocking: boolean;
+  /**
+   * WHY `blocking` is true. `element`: `isBlockingDialog` accepts the element
+   * itself (an `alertdialog`; `aria-modal="true"` on a `role=dialog`,
+   * `role=alertdialog` or `<dialog>`; or a `<dialog>` matching `:modal`) — the
+   * same predicate the registry's occlusion hit-test names a dialog by.
+   * `backdrop`: only the backdrop heuristic, a class substring
+   * (`backdrop`/`overlay`/`mask`) on a neighbour, which also fires on
+   * non-modal UI. Absent when not blocking, and absent from page SDKs older
+   * than the field. Only `element` makes an occlusion an expected overlay in
+   * `/control/visibility`.
+   */
+  blockingSource?: 'element' | 'backdrop';
   /** Computed z-index of the modal */
   zIndex: number;
   /** Whether a backdrop/overlay is present */

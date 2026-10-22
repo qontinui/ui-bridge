@@ -290,6 +290,19 @@ export interface ElementState {
   /** Share of the sampled points another element owns, 0-100. */
   occludedPct?: number;
   /**
+   * Present (always `true`) when the element was registered with
+   * `paintsText: true`, or is itself a registered `<canvas>`: its identifying
+   * text is PAINTED (a canvas, a terminal, a chart) rather than held in the
+   * DOM, so `textContent` is not evidence of whether it shows text.
+   *
+   * Such an element is hit-tested on a dense grid (8x8 interior points plus a
+   * row along the top and bottom edges) instead of the nine-point one, so a
+   * one-row status strip over a tall terminal is seen, and the
+   * `/control/visibility` sweep reports any occlusion of it as hiding text
+   * (`textSource: 'painted'`).
+   */
+  paintsText?: true;
+  /**
    * Laid-out content width vs. the visible box, in CSS pixels. When
    * `scrollWidth > clientWidth` the text is horizontally truncated —
    * a `truncate` / `text-overflow: ellipsis` / `overflow: hidden`.
@@ -992,6 +1005,17 @@ export interface RegisteredElement {
    * `2026-06-03-runner-popout-terminal-windows.md` Phase 0.
    */
   windowLabel?: string;
+
+  /**
+   * `true` when this element's identifying text is painted rather than held
+   * in the DOM — set by the `paintsText` registration option, and implied for
+   * a registered `<canvas>`. See `ElementState.paintsText`.
+   *
+   * It is also what attributes a `<canvas>` in the canvas census
+   * (`UIBridgeRegistry.getCanvasCoverage`): a canvas whose first registered
+   * ancestor-or-self has this flag is swept; any other canvas is not.
+   */
+  paintsText?: boolean;
 
   /**
    * Action-driven cached state overlays.
@@ -2303,6 +2327,13 @@ export interface BridgeSnapshot {
   page?: SnapshotPageContext;
   /** Modal/dialog/popover context (populated when a modalDetector enricher is registered) */
   modalStack?: SnapshotModalContext;
+  /**
+   * The canvas census (`UIBridgeRegistry.getCanvasCoverage`), stamped on every
+   * DOM-side snapshot so the relay's `/control/visibility` can tell a canvas
+   * nobody swept from a page with none. `unavailable` with `accessor-threw`
+   * when the census threw. Absent only when there is no `document`.
+   */
+  canvasCoverage?: CanvasCoverage;
   /** Toast/notification context (populated when a toastCapture enricher is registered) */
   toasts?: SnapshotToastContext;
   /** Element-relationship context (populated when a relationshipTracker enricher is registered) */
@@ -3420,3 +3451,62 @@ export interface AccessibilityReport {
   /** Duration of the validation in milliseconds */
   durationMs: number;
 }
+
+// ============================================================================
+// Canvas coverage (the `/control/visibility` canvas census)
+// ============================================================================
+
+/**
+ * A visible `<canvas>` that no `paintsText` registration covers. Text painted
+ * into it is invisible to the occlusion sweep: the hit-test runs only over
+ * registered elements, and a registered element without `paintsText` judges
+ * "hides text" from DOM text, which a canvas never has.
+ */
+export interface UnattributedCanvas {
+  /** DOM descriptor of the canvas itself: `canvas#id`, `canvas.firstClass`, or `canvas`. */
+  descriptor: string;
+  /** Viewport-relative box in CSS pixels. */
+  rect: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * The census was taken. `canvases` counts every visible canvas of at least
+ * 48x48 CSS px that intersects the viewport; `attributed` counts those whose
+ * first registered ancestor-or-self (by registry membership) is `paintsText`,
+ * including a registered `<canvas>` itself; `unattributed` lists the rest.
+ */
+export interface CanvasCoverageMeasured {
+  state: 'measured';
+  canvases: number;
+  attributed: number;
+  unattributed: UnattributedCanvas[];
+}
+
+/**
+ * Why no census is available.
+ *
+ * - `page-sdk-lacks-coverage` — the relay's snapshot came from a page SDK that
+ *   predates the census (upgrade the page's `@qontinui/ui-bridge`).
+ * - `accessor-threw` — the page has the census, and it threw.
+ * - `no-document` — the registry answering the sweep runs with no DOM (a
+ *   server-side registry), so there are no canvases it could count.
+ * - `ipc-failed` — a host (the runner's Rust twin) could not reach the page's
+ *   census at all.
+ */
+export type CanvasCoverageUnavailableReason =
+  | 'page-sdk-lacks-coverage'
+  | 'accessor-threw'
+  | 'no-document'
+  | 'ipc-failed';
+
+export interface CanvasCoverageUnavailable {
+  state: 'unavailable';
+  reason: CanvasCoverageUnavailableReason;
+}
+
+/**
+ * The `canvasCoverage` field of a `/control/visibility` report (and of a
+ * snapshot). `unavailable` withholds a `clear` verdict: without the census the
+ * sweep cannot say an unswept canvas is not being covered.
+ */
+export type CanvasCoverage = CanvasCoverageMeasured | CanvasCoverageUnavailable;
