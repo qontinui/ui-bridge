@@ -895,12 +895,6 @@ function createFailureDetails(
  * const server = new StandaloneServer(handlers);
  * ```
  */
-// Module-level heartbeat tracking for health detection
-let lastHeartbeatTimestamp = 0;
-
-/**
- * Check if the app is responsive based on heartbeat freshness.
- */
 /**
  * The live registry's canvas census, as `/control/visibility` reports it. A
  * registry without the accessor predates it; one whose accessor answers
@@ -913,6 +907,12 @@ function inPageCanvasCoverage(registry: RegistryLike): CanvasCoverage {
   return registry.getCanvasCoverage() ?? { state: 'unavailable', reason: 'accessor-threw' };
 }
 
+// Module-level heartbeat tracking for health detection
+let lastHeartbeatTimestamp = 0;
+
+/**
+ * Check if the app is responsive based on heartbeat freshness.
+ */
 export function isAppResponsive(): boolean {
   return lastHeartbeatTimestamp > 0 && Date.now() - lastHeartbeatTimestamp < 30_000;
 }

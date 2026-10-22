@@ -929,12 +929,21 @@ export function useAutoRegister(options: AutoRegisterOptions = {}): void {
           }
           id = `${id}-${suffix}`;
         }
-      } else if (bridge.registry.getElement(id)) {
-        // The element is already registered under its stamped id — nothing
-        // for the scanner to do. Record the mapping so future mutations
-        // don't re-scan it and return early.
-        registeredElementsRef.current.set(element, id);
-        return;
+      } else {
+        const existing = bridge.registry.getElement(id);
+        if (existing) {
+          // The element is already registered under its stamped id — nothing
+          // for the scanner to register. Take ownership (so a removal
+          // unregisters it) ONLY of an entry the scanner itself made: a hook
+          // or direct `registerElement` owner manages its own lifecycle, and
+          // adopting it would let a DOM move unregister that entry and
+          // re-register it as `origin: 'auto'`, dropping its options
+          // (`paintsText`, label, actions).
+          if (existing.origin === 'auto') {
+            registeredElementsRef.current.set(element, id);
+          }
+          return;
+        }
       }
 
       const type = inferElementType(element);
