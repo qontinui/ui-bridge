@@ -257,6 +257,13 @@ export function useUIElement(options: UseUIElementOptions): UseUIElementReturn {
   const register = useCallback(() => {
     if (!bridge || !elementRef.current || registeredRef.current) return;
 
+    // The hook owns its stamp (the bbox tracker and the runner resolve the
+    // node by it), so write it before registering: the registry then leaves
+    // it alone instead of recording a registry-owned stamp it would take back
+    // on unregister.
+    if (elementRef.current.getAttribute(UI_BRIDGE_ID_ATTR) !== id) {
+      elementRef.current.setAttribute(UI_BRIDGE_ID_ATTR, id);
+    }
     bridge.registry.registerElement(id, elementRef.current, {
       type,
       label,

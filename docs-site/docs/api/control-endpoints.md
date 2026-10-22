@@ -480,7 +480,11 @@ descendants, and a hit on a descendant counts as the container itself. A
   over a tall terminal is seen;
 - reports any occlusion as `hidesText: true`, `textSource: "painted"`.
 
-A registered `<canvas>` element is implicitly `paintsText`.
+A registered `<canvas>` element is implicitly `paintsText`: it attributes itself
+in the census and its occlusions read `textSource: "painted"`, but it keeps the
+ordinary nine-point grid (and the 48 px centre-only rule). Only an explicit
+`paintsText: true` pays for the dense grid, because media discovery may register
+hundreds of canvases.
 
 `canvasCoverage` is the census that keeps `clear` honest. It counts every
 visible `<canvas>` of at least 48×48 CSS px that intersects the viewport.

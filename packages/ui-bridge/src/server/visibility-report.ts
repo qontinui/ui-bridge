@@ -137,7 +137,11 @@ function decideVerdict(
  * accepts ONLY those:
  *
  * - `occludedBy === modal.id` — the occluder is registered under the same id
- * - `occludedBy === "<tag>#<modal.id>"` — unregistered occluder, DOM id match
+ * - `occludedBy === modal.bridgeId` — the occluder is the registered modal,
+ *   whose registry id differs from its DOM id / testid
+ * - `occludedBy === "<tag>#<modal.id>"` — the occluder's own DOM id matches
+ *   (`describeOccluder` prefers a hit's own DOM id over a registered
+ *   ancestor's id, so this holds inside a registered container too)
  *
  * Class and bare-tag descriptors are deliberately NOT matched. They are not
  * identities, and a false positive here is expensive: an entry marked expected
@@ -149,6 +153,7 @@ function modalIdentities(modalContext: SnapshotModalContext): Set<string> {
   const ids = new Set<string>();
   for (const modal of modalContext.modals ?? []) {
     if (modal?.id) ids.add(modal.id);
+    if (modal?.bridgeId) ids.add(modal.bridgeId);
   }
   return ids;
 }
