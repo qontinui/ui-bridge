@@ -626,7 +626,9 @@ describe('a copy of a hidden element', () => {
     const payload = 'position: fixed; inset: 0px; background: red; z-index: 99999';
     let binary = '';
     for (const byte of new TextEncoder().encode(payload)) binary += String.fromCharCode(byte);
-    const forge = async (id: (real: string) => string): Promise<HTMLElement> => {
+    const forge = async (
+      id: (real: string) => string
+    ): Promise<{ copy: HTMLElement; restore: TextVisibilityShowSuccess['restore'] }> => {
       document.body.innerHTML = '<p id="src">x</p>';
       hide();
       const src = document.getElementById('src')!;
@@ -639,19 +641,37 @@ describe('a copy of a hidden element', () => {
       document.body.appendChild(copy);
       await flushObservers();
       hide();
-      show();
-      return copy;
+      return { copy, restore: show().restore };
     };
-    // A prefix this page never issued: the payload is not trusted.
-    const forged = await forge(() => 'forgedprefix-0');
+    // A prefix this page never issued: the payload is not trusted, and the
+    // restore says it cannot vouch for that copy.
+    const { copy: forged, restore } = await forge(() => 'forgedprefix-0');
     for (const prop of ['position', 'z-index', 'background-color', 'inset']) {
       expect(inline(forged, prop), prop).toEqual(['', '']);
     }
+    expect(restore).toMatchObject({ untrustedMarkers: 1, verified: false });
     // Control: the hash itself is valid, so with an issued prefix the same
     // payload WOULD be restored. That residual needs a script in the page,
     // which can rewrite any style anyway.
     const control = await forge((real) => real.split(':')[0]!);
-    expect(control.getAttribute('style')).toBe(payload);
+    expect(control.copy.getAttribute('style')).toBe(payload);
+    expect(control.restore).toMatchObject({ untrustedMarkers: 0 });
+  });
+
+  it('a stale copy from 70 hides ago is still trusted and restores exactly', async () => {
+    document.body.innerHTML = '<p id="src" style="color: rgb(1, 2, 3)">x</p>';
+    hide();
+    const keep = document.getElementById('src')!.cloneNode(true) as HTMLElement;
+    show();
+    for (let i = 0; i < 70; i++) {
+      hide();
+      show();
+    }
+    document.body.appendChild(keep);
+    await flushObservers();
+    hide();
+    expect(show().restore).toMatchObject({ untrustedMarkers: 0, propertyLevel: 0, verified: true });
+    expect(keep.getAttribute('style')).toBe('color: rgb(1, 2, 3)');
   });
 
   it('a stale copy of a shorthand-styled element restores byte-exact (N-1)', async () => {

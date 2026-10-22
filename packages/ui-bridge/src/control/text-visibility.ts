@@ -250,9 +250,16 @@ export interface TextVisibilityRestore {
   drift: TextVisibilityDrift[];
   driftCount: number;
   /**
+   * Copies that arrived carrying a well-formed marker this page did not issue
+   * (forged, or from a hide it cannot vouch for). Their carried original was
+   * not used, so what they were before is unknown; any makes `verified` false.
+   */
+  untrustedMarkers: number;
+  /**
    * True only when every recorded element — in the document or not — reads
    * back exactly as recorded: a byte-identical attribute, or every owned
-   * property back with nothing drifted.
+   * property back with nothing drifted — and no copy carried an untrusted
+   * marker.
    */
   verified: boolean;
   restoredAt: number;
@@ -479,6 +486,8 @@ interface HiddenState {
   records: Map<Element, ElementRecord>;
   /** Records by marker value, so a copy can find the element it was copied from. */
   byMarker: Map<string, ElementRecord>;
+  /** Copies seen carrying a well-formed marker this page did not issue. */
+  untrustedMarkers: number;
   /** Prefix of this hide's marker values (unique per hide), and the next number. */
   markerPrefix: string;
   nextMarker: number;
@@ -506,11 +515,12 @@ const SCHEMA = 1;
 
 interface TextVisibilitySlot {
   /**
-   * Marker id prefixes this page's hides issued (the latest
-   * {@link ISSUED_PREFIX_LIMIT}). Optional: an older slot without it trusts
+   * Marker id prefixes this page's hides issued — every one, uncapped (a few
+   * bytes per hide): a cap would turn a legitimate stale copy from an old
+   * hide into an untrusted one. Optional: an older slot without it trusts
    * no stale marker.
    */
-  issued?: string[];
+  issued?: Set<string>;
   schema: number;
   state: HiddenState | null;
   lastRestore: TextVisibilityRestore | null;
@@ -520,20 +530,17 @@ interface TextVisibilitySlot {
 }
 
 const SLOT_KEY = Symbol.for('@qontinui/ui-bridge/text-visibility');
-const ISSUED_PREFIX_LIMIT = 64;
 
 /** Remember a hide's marker prefix as issued by this page. */
 function noteIssued(prefix: string): void {
   const sl = slot();
-  const issued = (sl.issued ??= []);
-  issued.push(prefix);
-  if (issued.length > ISSUED_PREFIX_LIMIT) issued.splice(0, issued.length - ISSUED_PREFIX_LIMIT);
+  (sl.issued ??= new Set()).add(prefix);
 }
 
 /** Whether a marker id carries a prefix one of this page's hides issued. */
 function issuedHere(id: string): boolean {
   const dash = id.lastIndexOf('-');
-  return dash > 0 && (slot().issued ?? []).includes(id.slice(0, dash));
+  return dash > 0 && (slot().issued?.has(id.slice(0, dash)) ?? false);
 }
 
 function holder(): Record<symbol, Partial<TextVisibilitySlot> | undefined> {
@@ -918,7 +925,18 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
           record.originals.set(prop, prop === MARKER ? emptyInline() : readInline(parsed, prop));
         }
       } else {
-        // No original carried: a fixed hide value it carries is the hide.
+        // A well-formed marker (an id, an original, a hash) whose prefix this
+        // page never issued is forged, or from a hide this page cannot vouch
+        // for: its original is not trusted, and the restore says so rather
+        // than claim the copy is back to what it was.
+        if (
+          carried.original !== undefined &&
+          carried.hash !== undefined &&
+          carried.id.includes('-')
+        ) {
+          s.untrustedMarkers += 1;
+        }
+        // No trusted original: a fixed hide value it carries is the hide.
         record.originalAttr = undefined;
         for (const prop of record.values.keys()) {
           const now = readInline(style, prop);
@@ -1107,6 +1125,7 @@ function hide(ttlMs: number): TextVisibilityHideSuccess | TextVisibilityFailure 
     byMarker: new Map(),
     markerPrefix: `${hiddenAt.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
     nextMarker: 0,
+    untrustedMarkers: 0,
     coverage: {
       scope: 'document',
       elements: 0,
@@ -1291,6 +1310,7 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     if (adoptable(root) && s.sheet && root.adoptedStyleSheets.includes(s.sheet)) verified = false;
   }
   if (s.sheet && s.sheet.cssRules.length > 0) verified = false;
+  if (s.untrustedMarkers > 0) verified = false;
 
   const result: TextVisibilityRestore = {
     trigger,
@@ -1300,6 +1320,7 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     detached,
     drift,
     driftCount,
+    untrustedMarkers: s.untrustedMarkers,
     verified,
     restoredAt: Date.now(),
   };
