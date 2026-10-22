@@ -159,6 +159,7 @@ import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
 import { performDragSequence } from './drag-sequence';
+import { describeUnknownAction, type UnknownActionHint } from './actionVocabulary';
 import type {
   ActionParams,
   EffectSignature,
@@ -253,6 +254,27 @@ const SUPPORTED_ACTIONS = new Set<string>([
   'reset',
   'autocomplete',
 ]);
+
+/**
+ * Unknown-action refusal for one element: lists the element's own verbs
+ * (advertised `actions` + custom actions; the built-in list when it advertises
+ * none) and the "did you mean" suggestion — see `./actionVocabulary`.
+ */
+function unknownActionHintFor(
+  action: string,
+  elementId: string | undefined,
+  registered: RegisteredElement | undefined,
+  advertised: readonly string[] = registered?.actions ?? []
+): UnknownActionHint {
+  const custom = Object.keys(registered?.customActions ?? {});
+  const all = [...SUPPORTED_ACTIONS, ...custom];
+  const own = [...advertised, ...custom];
+  return describeUnknownAction(action, {
+    elementId,
+    accepted: own.length > 0 ? own : all,
+    fallback: all,
+  });
+}
 
 /**
  * Default wait options
@@ -1206,13 +1228,18 @@ export class DefaultActionExecutor implements ActionExecutor {
       const registered = this.registry.getElement(elementId);
       const isCtrTarget = !registered && getGlobalCtr().has(elementId);
       if (!registered?.customActions?.[actionName] && !isCtrTarget) {
-        const message = `Unsupported action: '${actionName}'. Supported: ${Array.from(SUPPORTED_ACTIONS).join(', ')}`;
+        const hint = unknownActionHintFor(actionName, registered?.id, registered);
+        const message = hint.message;
         return {
           success: false,
           error: message,
           failureDetails: buildActionFailureDetails('UB-UNSUPPORTED-ACTION', message, {
             elementId,
-            context: { action: actionName },
+            context: {
+              action: actionName,
+              supportedActions: hint.supportedActions,
+              didYouMean: hint.didYouMean,
+            },
             durationMs: performance.now() - startTime,
           }),
           durationMs: performance.now() - startTime,
@@ -2863,7 +2890,17 @@ export class DefaultActionExecutor implements ActionExecutor {
             signal: inertAbortSignal(),
           });
         }
-        throw new Error(`Unknown action: ${action}`);
+        const hint = unknownActionHintFor(
+          action,
+          owner?.id,
+          owner,
+          owner?.actions ?? this.inferActions(element)
+        );
+        throw Object.assign(new Error(hint.message), {
+          code: 'UNKNOWN_ACTION',
+          supportedActions: hint.supportedActions,
+          didYouMean: hint.didYouMean,
+        });
       }
     }
   }

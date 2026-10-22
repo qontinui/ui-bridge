@@ -16,6 +16,12 @@ export {
   controlBatch,
   MAX_BATCH_SIZE,
 } from './action-executor';
+export {
+  ACTION_VERB_SYNONYMS,
+  suggestAction,
+  describeUnknownAction,
+  type UnknownActionHint,
+} from './actionVocabulary';
 
 // Form fill utility
 export { fillFormFields } from './fill-form';
