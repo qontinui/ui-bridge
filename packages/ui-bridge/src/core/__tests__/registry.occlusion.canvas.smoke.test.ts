@@ -268,7 +268,7 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('canvas-aware occlusion (real Chromium)',
     }
   }, 60_000);
 
-  it('logs what the dense grid costs per paintsText surface', async () => {
+  it('keeps the dense grid within the 2 ms per-surface budget', async () => {
     await freshPage();
     try {
       // The same node read as a paintsText surface (81 probes) and as an
@@ -298,8 +298,9 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('canvas-aware occlusion (real Chromium)',
         `[smoke] getState() per read: paintsText ${dense.toFixed(3)} ms (81 probes), ` +
           `ordinary ${plain.toFixed(3)} ms (9 probes), dense-grid cost ${(dense - plain).toFixed(3)} ms`
       );
-      expect(dense).toBeGreaterThan(0);
-      expect(plain).toBeGreaterThan(0);
+      // The plan's budget: if the 72 extra probes cost more than ~2 ms per
+      // surface, the grid drops to 6x6.
+      expect(dense - plain).toBeLessThan(2);
     } finally {
       await page.close();
     }

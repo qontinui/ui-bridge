@@ -13,6 +13,7 @@ import { UIBridgeRegistry } from '../registry';
 import { createHandlers, type RegistryLike } from '../../server/handlers';
 import { DefaultActionExecutor } from '../../control/action-executor';
 import type { VisibilityReport } from '../../server/types';
+import { ModalDetector } from '../../modal/modal-detector';
 
 function boxed<T extends HTMLElement>(el: T, x: number, y: number, w: number, h: number): T {
   el.getBoundingClientRect = () =>
@@ -265,6 +266,30 @@ describe('in-page /control/visibility reports the census', () => {
       hidesText: true,
       textSource: 'painted',
     });
+  });
+
+  it('a directly registered modal whose registry id differs from its DOM id is an expected overlay', async () => {
+    const registry = new UIBridgeRegistry();
+    registry.setEnrichers({ modalDetector: new ModalDetector() });
+    const label = div();
+    label.textContent = 'Zone 8';
+    registry.registerElement('zone-label', label, { type: 'generic' });
+    const dialog = document.createElement('div');
+    dialog.id = 'confirm-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+    // Registered directly, under an id that is neither its DOM id nor a testid.
+    registry.registerElement('confirm', dialog, { type: 'generic' });
+    document.elementFromPoint = (() => dialog) as typeof document.elementFromPoint;
+
+    const report = await visibility(registry as unknown as RegistryLike);
+    expect(registry.getModalContext()?.modals[0]).toMatchObject({
+      id: 'confirm-dialog',
+      bridgeId: 'confirm',
+    });
+    expect(report.expectedOverlaysFiltered).toBe(1);
+    expect(report.occlusions.map((o) => o.element)).not.toContain('zone-label');
   });
 
   it('a registry without the accessor is page-sdk-lacks-coverage; one that answers undefined threw', async () => {

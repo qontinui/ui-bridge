@@ -418,3 +418,17 @@ describe('buildVisibilityReport — painted text', () => {
     expect(r.occlusions.map((o) => o.element)).toEqual(['terminal', 'blank-big']);
   });
 });
+
+describe('buildVisibilityReport — a registered modal is recognised by its registry id', () => {
+  it('matches occludedBy against the modal bridgeId', () => {
+    const ctx: SnapshotModalContext = {
+      modals: [modal('confirm-dialog', { bridgeId: 'confirm' })],
+      hasBlockingModal: true,
+      count: 1,
+    };
+    const r = sweep({ elements: [covered({ occludedBy: 'confirm' })], modalContext: ctx });
+    expect(r.expectedOverlaysFiltered).toBe(1);
+    expect(r.occlusions).toEqual([]);
+  });
+});
+

@@ -457,3 +457,55 @@ describe('useAutoRegister — data-ui-bridge-test-id alias (Item 10)', () => {
     expect(registry.getElement('button-save-settings')).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// A direct registration is not the scanner's to own. `registerElement` stamps
+// `data-ui-bridge-id`, which is in the scanner's selectors; adopting such a
+// node let a DOM move unregister the direct entry and re-register it as
+// `origin: 'auto'`, dropping its options.
+// ---------------------------------------------------------------------------
+
+describe('useAutoRegister — never adopts a direct registration', () => {
+  let registry: UIBridgeRegistry;
+
+  beforeEach(() => {
+    registry = new UIBridgeRegistry();
+    mockBridge = createMockBridge(registry);
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockBridge = null;
+    document.body.innerHTML = '';
+  });
+
+  it('keeps a directly registered paintsText surface across a DOM move', async () => {
+    const host = document.createElement('div');
+    const other = document.createElement('div');
+    const surface = document.createElement('div');
+    host.appendChild(surface);
+    document.body.append(host, other);
+    registry.registerElement('terminal-surface-a', surface, {
+      type: 'canvas',
+      label: 'Terminal: zone 1',
+      paintsText: true,
+    });
+
+    render(<AutoRegisterHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Move: remove, then re-insert elsewhere.
+    surface.remove();
+    await new Promise((r) => setTimeout(r, 20));
+    other.appendChild(surface);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const entry = registry.getElement('terminal-surface-a');
+    expect(entry).toBeDefined();
+    expect(entry?.element).toBe(surface);
+    expect(entry?.origin).toBe('hook');
+    expect(entry?.paintsText).toBe(true);
+    expect(entry?.label).toBe('Terminal: zone 1');
+    expect(entry?.getState().paintsText).toBe(true);
+  });
+});

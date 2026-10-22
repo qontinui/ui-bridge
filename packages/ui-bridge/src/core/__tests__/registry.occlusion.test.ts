@@ -439,3 +439,103 @@ describe('registry membership and the data-ui-bridge-id stamp', () => {
     expect(registry.getRegisteredAncestor(document.body)).toBeUndefined();
   });
 });
+
+describe('implicit canvas paintsText keeps the ordinary grid', () => {
+  it('a media-style registered <canvas> is painted but probed on the nine-point grid', () => {
+    const registry = new UIBridgeRegistry();
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    canvas.getBoundingClientRect = () =>
+      ({
+        x: 0, y: 0, width: 300, height: 150,
+        top: 0, left: 0, right: 300, bottom: 150,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    boxes.push({ el: canvas, rect: { x: 0, y: 0, w: 300, h: 150 } });
+    registry.registerElement('media-canvas-0', canvas, { type: 'canvas', category: 'media' });
+
+    expect(stateOf(registry, 'media-canvas-0').paintsText).toBe(true);
+    expect(probesFor(registry, 'media-canvas-0')).toBe(9);
+  });
+
+  it('a small implicit canvas keeps the 48px centre-only rule', () => {
+    const registry = new UIBridgeRegistry();
+    const icon = document.createElement('canvas');
+    document.body.appendChild(icon);
+    icon.getBoundingClientRect = () =>
+      ({
+        x: 0, y: 0, width: 24, height: 24,
+        top: 0, left: 0, right: 24, bottom: 24,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    boxes.push({ el: icon, rect: { x: 0, y: 0, w: 24, h: 24 } });
+    registry.registerElement('media-canvas-1', icon, { type: 'canvas', category: 'media' });
+
+    expect(probesFor(registry, 'media-canvas-1')).toBe(1);
+  });
+});
+
+describe('the registry-owned stamp', () => {
+  it('is removed on unregister, so the node stops naming a gone entry', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    document.body.appendChild(div);
+    registry.registerElement('direct', div, { type: 'generic' });
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('direct');
+
+    registry.unregisterElement('direct');
+    expect(div.hasAttribute('data-ui-bridge-id')).toBe(false);
+  });
+
+  it('a developer stamp survives unregister', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    div.setAttribute('data-ui-bridge-id', 'direct');
+    document.body.appendChild(div);
+    registry.registerElement('direct', div, { type: 'generic' });
+
+    registry.unregisterElement('direct');
+    expect(div.getAttribute('data-ui-bridge-id')).toBe('direct');
+  });
+
+  it('does not displace the node own name: a DOM id still wins the derived name', () => {
+    const registry = new UIBridgeRegistry();
+    const div = document.createElement('div');
+    div.id = 'session-panel';
+    document.body.appendChild(div);
+    registry.registerElement('panel-3', div, { type: 'generic' });
+
+    const st = stateOf(registry, 'panel-3');
+    expect(st.accessibleName).toBe('session-panel');
+    expect(st.nameSource).toBe('derived');
+  });
+});
+
+describe('describeOccluder prefers the hit own DOM id over a registered ancestor', () => {
+  it('names an unregistered overlay inside a registered container by its own id', () => {
+    const registry = new UIBridgeRegistry();
+    const label = place('label', 0, 0, 100, 20, 'important');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const toast = document.createElement('div');
+    toast.id = 'toast';
+    container.appendChild(toast);
+    boxes.push({ el: toast, rect: { x: 0, y: 0, w: 400, h: 400 } });
+    registry.registerElement('label', label, { type: 'generic' });
+    registry.registerElement('app-shell', container, { type: 'generic' });
+
+    expect(stateOf(registry, 'label').occludedBy).toBe('div#toast');
+  });
+
+  it('still names an anonymous piece of a registered widget by the widget', () => {
+    const registry = new UIBridgeRegistry();
+    const label = place('label', 0, 0, 100, 20, 'important');
+    const minimap = place('minimap', 600, 600, 10, 10);
+    const piece = document.createElement('span');
+    minimap.appendChild(piece);
+    boxes.push({ el: piece, rect: { x: 0, y: 0, w: 400, h: 400 } });
+    registry.registerElement('label', label, { type: 'generic' });
+
+    expect(stateOf(registry, 'label').occludedBy).toBe('minimap');
+  });
+});
