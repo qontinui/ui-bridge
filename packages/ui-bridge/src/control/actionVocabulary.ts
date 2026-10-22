@@ -14,11 +14,11 @@
  * name both the web verb (`click`) and the native one (`press`); the
  * per-element accepted filter chooses between them.
  *
- * THE SAME TABLE lives in the runner (`src-tauri/src/mcp/ui_bridge/
- * action_vocabulary.rs`) and in `@qontinui/ui-bridge-native`
- * (`src/control/actionVocabulary.ts` — a package-local copy, because
- * `@qontinui/ui-bridge` is only an optional peer of that package). Each copy's
- * tests assert the entries as literals; keep the three in sync.
+ * `@qontinui/ui-bridge-native` keeps a package-local copy
+ * (`src/control/actionVocabulary.ts`), because `@qontinui/ui-bridge` is only
+ * an optional peer of that package. The runner's Phase 1 copy (in flight,
+ * `src-tauri/src/mcp/ui_bridge/action_vocabulary.rs`) mirrors this table. Each
+ * copy's tests assert the entries as literals; keep them in sync.
  */
 
 /** Commonly-guessed verb → ordered canonical candidates. */
@@ -90,20 +90,18 @@ export interface UnknownActionHint {
 /**
  * Build the refusal for an unknown action.
  *
- * `accepted` is the element's own verb list when the element is known (its
- * advertised `actions` plus its custom actions), else the global list. The
- * suggestion is drawn from `accepted` first and, failing that, from
- * `fallback` (every verb the executor would actually run), so a verb the
- * element does not advertise but would still execute is not withheld.
+ * `accepted` is the element's own accepted list: its advertised `actions` plus
+ * its custom actions, or — when the element advertises none — every verb the
+ * executor runs (which is then genuinely what it accepts). The suggestion is
+ * drawn ONLY from `accepted`, so it is never a verb the element would reject.
+ * `elementId` is omitted when the target is not a known element.
  */
 export function describeUnknownAction(
   requested: string,
-  options: { accepted: readonly string[]; elementId?: string; fallback?: readonly string[] }
+  options: { accepted: readonly string[]; elementId?: string }
 ): UnknownActionHint {
   const supportedActions = Array.from(new Set(options.accepted));
-  const didYouMean =
-    suggestAction(requested, supportedActions) ??
-    (options.fallback ? suggestAction(requested, options.fallback) : undefined);
+  const didYouMean = suggestAction(requested, supportedActions);
   const subject = options.elementId !== undefined ? ` for element '${options.elementId}'` : '';
   const listLabel = options.elementId !== undefined ? 'This element accepts' : 'Supported';
   const message =
@@ -112,4 +110,35 @@ export function describeUnknownAction(
   return didYouMean !== undefined
     ? { message, didYouMean, supportedActions }
     : { message, supportedActions };
+}
+
+/**
+ * The structured fields of a hint, for a failure's `context` bag — with no
+ * `didYouMean` key at all when there is no suggestion.
+ */
+export function unknownActionContext(hint: UnknownActionHint): {
+  supportedActions: string[];
+  didYouMean?: string;
+} {
+  return hint.didYouMean !== undefined
+    ? { supportedActions: hint.supportedActions, didYouMean: hint.didYouMean }
+    : { supportedActions: hint.supportedActions };
+}
+
+/**
+ * The typed throw for an unknown action raised from inside an executor's
+ * dispatch, so the outer catch can report it under the same error code as the
+ * early gate instead of a generic action failure.
+ */
+export class UnknownActionError extends Error {
+  readonly code = 'UNKNOWN_ACTION';
+  readonly supportedActions: string[];
+  readonly didYouMean?: string;
+
+  constructor(hint: UnknownActionHint) {
+    super(hint.message);
+    this.name = 'UnknownActionError';
+    this.supportedActions = hint.supportedActions;
+    if (hint.didYouMean !== undefined) this.didYouMean = hint.didYouMean;
+  }
 }

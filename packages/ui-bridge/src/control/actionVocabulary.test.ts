@@ -2,12 +2,19 @@
  * The "did you mean" verb table (plan
  * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary, D3 /
  * Phase 8). The table is asserted as LITERALS so an edited or dropped entry
- * goes red here; the same literals are asserted in the runner's
- * `action_vocabulary.rs` and in `@qontinui/ui-bridge-native`.
+ * goes red here. The same literals are asserted against `@qontinui/ui-bridge-native`'s package-local
+ * copy. The
+ * runner's Phase 1 copy (in flight) mirrors this table.
  */
 
 import { describe, it, expect } from 'vitest';
-import { ACTION_VERB_SYNONYMS, describeUnknownAction, suggestAction } from './actionVocabulary';
+import {
+  ACTION_VERB_SYNONYMS,
+  UnknownActionError,
+  describeUnknownAction,
+  suggestAction,
+  unknownActionContext,
+} from './actionVocabulary';
 
 describe('ACTION_VERB_SYNONYMS', () => {
   it('is exactly the D3 table', () => {
@@ -97,14 +104,13 @@ describe('describeUnknownAction', () => {
     );
   });
 
-  it('falls back to the executable verbs for the suggestion only', () => {
-    const hint = describeUnknownAction('fill', {
-      elementId: 'b',
-      accepted: ['click'],
-      fallback: ['click', 'type'],
+  it('suggests only from the accepted list, never a verb the element rejects', () => {
+    const hint = describeUnknownAction('fill', { elementId: 'b', accepted: ['click'] });
+    expect(hint).toEqual({
+      message: "Unknown action 'fill' for element 'b'. This element accepts: click.",
+      supportedActions: ['click'],
     });
-    expect(hint.supportedActions).toEqual(['click']);
-    expect(hint.didYouMean).toBe('type');
+    expect('didYouMean' in hint).toBe(false);
   });
 
   it('omits the suggestion when there is none and labels a global list', () => {
@@ -113,5 +119,26 @@ describe('describeUnknownAction', () => {
       message: "Unknown action 'frobnicate'. Supported: click, type.",
       supportedActions: ['click', 'type'],
     });
+  });
+});
+
+describe('unknownActionContext / UnknownActionError', () => {
+  it('carries no didYouMean key when there is no suggestion', () => {
+    const none = describeUnknownAction('frobnicate', { accepted: ['click'] });
+    expect(unknownActionContext(none)).toEqual({ supportedActions: ['click'] });
+    expect('didYouMean' in unknownActionContext(none)).toBe(false);
+    expect(Object.keys(new UnknownActionError(none))).not.toContain('didYouMean');
+  });
+
+  it('carries the suggestion and code when there is one', () => {
+    const hint = describeUnknownAction('tap', { accepted: ['press'] });
+    expect(unknownActionContext(hint)).toEqual({
+      supportedActions: ['press'],
+      didYouMean: 'press',
+    });
+    const err = new UnknownActionError(hint);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe(hint.message);
+    expect({ ...err }).toMatchObject({ code: 'UNKNOWN_ACTION', didYouMean: 'press' });
   });
 });

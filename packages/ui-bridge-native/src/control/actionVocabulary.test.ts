@@ -2,9 +2,9 @@
  * The "did you mean" verb table (plan
  * 2026-10-22-runner-ui-bridge-makes-an-agent-guess-its-own-vocabulary, D3 /
  * Phase 8). The table is asserted as LITERALS so an edited or dropped entry
- * goes red here; the same literals are asserted in the runner's
- * `action_vocabulary.rs` and in `@qontinui/ui-bridge` (this package keeps a
- * package-local copy: `@qontinui/ui-bridge` is only an optional peer).
+ * goes red here. The same literals are asserted against `@qontinui/ui-bridge`
+ * (this package keeps a package-local copy: `@qontinui/ui-bridge` is only an
+ * optional peer). The runner's Phase 1 copy (in flight) mirrors this table.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -98,14 +98,13 @@ describe('describeUnknownAction', () => {
     );
   });
 
-  it('falls back to the executable verbs for the suggestion only', () => {
-    const hint = describeUnknownAction('fill', {
-      elementId: 'b',
-      accepted: ['click'],
-      fallback: ['click', 'type'],
+  it('suggests only from the accepted list, never a verb the element rejects', () => {
+    const hint = describeUnknownAction('fill', { elementId: 'b', accepted: ['click'] });
+    expect(hint).toEqual({
+      message: "Unknown action 'fill' for element 'b'. This element accepts: click.",
+      supportedActions: ['click'],
     });
-    expect(hint.supportedActions).toEqual(['click']);
-    expect(hint.didYouMean).toBe('type');
+    expect('didYouMean' in hint).toBe(false);
   });
 
   it('omits the suggestion when there is none and labels a global list', () => {

@@ -47,9 +47,9 @@ import type {
 } from './types';
 
 /**
- * Every verb `performAction`'s switch implements — the accepted list an
- * unknown-action refusal names when the element advertises none (keep in step
- * with `NativeStandardAction` and the switch below).
+ * Every verb `performAction`'s switch implements — the element's accepted
+ * list when it advertises none (keep in step with `NativeStandardAction` and
+ * the switch below).
  */
 const NATIVE_STANDARD_ACTIONS: readonly NativeStandardAction[] = [
   'press',
@@ -449,11 +449,9 @@ export class DefaultNativeActionExecutor implements NativeActionExecutor {
       default: {
         const custom = Object.keys(element.customActions ?? {});
         const own = [...(element.actions ?? []), ...custom];
-        const all = [...NATIVE_STANDARD_ACTIONS, ...custom];
         const hint = describeUnknownAction(action, {
           elementId: element.id,
-          accepted: own.length > 0 ? own : all,
-          fallback: all,
+          accepted: own.length > 0 ? own : [...NATIVE_STANDARD_ACTIONS, ...custom],
         });
         throw new NativeActionError(hint.message, 'UNKNOWN_ACTION', hint.didYouMean);
       }
