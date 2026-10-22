@@ -748,9 +748,7 @@ type RegistryVisibilityReason = 'hidden' | 'off-screen' | 'occluded' | 'no-layou
  */
 function safeElementFromPoint(x: number, y: number): Element | null {
   try {
-    return typeof document.elementFromPoint === 'function'
-      ? document.elementFromPoint(x, y)
-      : null;
+    return typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : null;
   } catch {
     return null;
   }
@@ -821,8 +819,7 @@ function computeVisibilityVerdict(
   // notice.
   const wide = rect.width >= OCCLUSION_PERIMETER_MIN_PX;
   const tall = rect.height >= OCCLUSION_PERIMETER_MIN_PX;
-  const points =
-    wide || tall ? OCCLUSION_SAMPLE_POINTS : OCCLUSION_SAMPLE_POINTS.slice(0, 1);
+  const points = wide || tall ? OCCLUSION_SAMPLE_POINTS : OCCLUSION_SAMPLE_POINTS.slice(0, 1);
 
   for (const [fx, fy] of points) {
     const px = rect.left + rect.width * fx;
@@ -887,7 +884,14 @@ function isScrollContainer(element: HTMLElement, style: CSSStyleDeclaration): bo
  * Infer available actions based on element type
  */
 function inferActions(type: ElementType): StandardAction[] {
-  const baseActions: StandardAction[] = ['focus', 'blur', 'hover', 'scroll', 'scrollIntoView'];
+  const baseActions: StandardAction[] = [
+    'focus',
+    'blur',
+    'hover',
+    'unhover',
+    'scroll',
+    'scrollIntoView',
+  ];
 
   // `hoverClick` rides alongside `click` on every clickable type: a control
   // hidden behind a `group-hover:pointer-events-auto` rule (e.g. the runner's

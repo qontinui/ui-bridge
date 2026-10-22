@@ -197,6 +197,13 @@ import type {
 } from './types';
 import { applyCanonicalFindFilter, type CanonicalFindContext } from '../core/find-filter';
 import { mediaFactsOf } from '../core/media-observation';
+import {
+  forcePseudoState,
+  releaseAfter,
+  releaseForcedPseudoState,
+  type ForcedHoverActionReport,
+  type ForcedPseudoElementSource,
+} from './forced-hover';
 
 /**
  * What `find()`'s DOM scan matches when the caller passes no `selector`: the
@@ -242,6 +249,7 @@ const SUPPORTED_ACTIONS = new Set<string>([
   'focus',
   'blur',
   'hover',
+  'unhover',
   'scroll',
   'scrollIntoView',
   'check',
@@ -493,13 +501,32 @@ const CLICK_LIKE_ACTIONS = new Set<string>([
  * Click-like actions for which a base-state `pointer-events: none` is NOT a
  * blocking signal. `hoverClick` exists specifically to drive a control whose
  * `pointer-events` are gated behind a CSS `:hover`/`group-hover` rule
- * (e.g. the runner's `ZoneHoverActions` toolbar buttons): it synthesizes the
- * hover that flips `pointer-events` to `auto` and only then clicks. Refusing
- * it on the un-hovered `pointer-events: none` reading would defeat its whole
- * purpose. A genuine `aria-disabled`/native `disabled` still blocks it — only
- * the pointer-events discriminator is waived.
+ * (e.g. the runner's `ZoneHoverActions` toolbar buttons). The gate runs on the
+ * UN-hovered reading, before `hoverClick` forces the hover (`forced-hover.ts`)
+ * that flips such a control to `pointer-events: auto`, so refusing it there
+ * would defeat its purpose. The waiver is also the safety net for a hover rule
+ * the forced hover cannot reach (a cross-origin sheet): the click is a native
+ * `element.click()`, which a synthetic dispatch delivers regardless of
+ * `pointer-events`. A genuine `aria-disabled`/native `disabled` still blocks
+ * it — only the pointer-events discriminator is waived.
  */
 const POINTER_EVENTS_TOLERANT_ACTIONS = new Set<string>(['hoverClick']);
+
+/** What `hover`, `hoverClick` and `unhover` return from dispatch, before it is lifted to `forcedHover`. */
+interface ForcedHoverResult {
+  forcedHover: ForcedHoverActionReport;
+}
+
+const FORCED_HOVER_ACTIONS = new Set<string>(['hover', 'hoverClick', 'unhover']);
+
+function isForcedHoverResult(action: string, result: unknown): result is ForcedHoverResult {
+  return (
+    FORCED_HOVER_ACTIONS.has(action) &&
+    typeof result === 'object' &&
+    result !== null &&
+    'forcedHover' in result
+  );
+}
 
 /**
  * Secondary-button click: the pointer pair around the mouse pair (so
@@ -905,19 +932,33 @@ export function findHoverableAncestor(element: HTMLElement): HTMLElement | null 
 /**
  * Fire the hover-enter event quartet on a single element. Pointer events are
  * dispatched alongside their mouse counterparts so both pointer-only
- * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers react.
+ * (`onPointerEnter`) and mouse-only (`onMouseEnter`) JS handlers react.
  * `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover` do —
- * dispatching both covers handlers attached either way.
+ * dispatching both covers handlers attached either way. These events never
+ * set the CSS `:hover` flag; `forced-hover.ts` does that half.
  *
  * Exported so the React IPC command-handler path
  * (`react/commandHandlers.ts`) reuses the exact hover synthesis the HTTP
- * action-executor path uses for `hoverClick`, instead of duplicating it.
+ * action-executor path uses for `hover`/`hoverClick`, instead of duplicating it.
  */
 export function dispatchHoverEnter(element: HTMLElement): void {
   element.dispatchEvent(createPointerEvent('pointerover', element));
   element.dispatchEvent(createMouseEvent('mouseover', element));
   element.dispatchEvent(createPointerEvent('pointerenter', element));
   element.dispatchEvent(createMouseEvent('mouseenter', element));
+}
+
+/**
+ * The JS half of a hover: enter events on the nearest hoverable ancestor, then
+ * on the target — the natural pointer-enter order. Exported so the relay path
+ * (`react/commandHandlers.ts`) sends exactly what the executor sends.
+ */
+export function dispatchHoverEnterChain(element: HTMLElement): void {
+  const ancestor = findHoverableAncestor(element);
+  if (ancestor && ancestor !== element) {
+    dispatchHoverEnter(ancestor);
+  }
+  dispatchHoverEnter(element);
 }
 
 /**
@@ -1478,6 +1519,28 @@ export class DefaultActionExecutor implements ActionExecutor {
       // genuine action failure propagates to the catch below.
       let result: unknown;
       let effectVerification: EffectVerification | undefined;
+      // A write-class action that reached dispatch releases a held forced
+      // hover in its `finally` (sub-decision 6 of plan
+      // 2026-10-22-ui-bridge-hover-forces-the-css-hover-state): `hover` header
+      // → `click` revealed button succeeds, then the page is back at rest.
+      // Everything that returned above (resolution, freshness, wait) never
+      // dispatched, and a click/visibility REFUSAL thrown by the gate in
+      // `performAction` did not dispatch either — both keep the hold, because
+      // the runner retries exactly those.
+      let heldRelease: ForcedHoverActionReport['released'];
+      let forcedHover: ForcedHoverActionReport | undefined;
+      const dispatch = (): Promise<unknown> =>
+        releaseAfter(
+          request.action,
+          () => this.performAction(element, request.action, actionParams, registered),
+          {
+            onRelease: (report) => {
+              heldRelease = report;
+            },
+            notDispatched: (err) =>
+              err instanceof ElementDisabledError || err instanceof ElementNotVisibleError,
+          }
+        );
       // Verify when the executor-wide flag is on OR the caller opted in for this
       // single request via `verifyEffect: true`. The per-request override lets a
       // consumer (e.g. the runner's `effect_check` step) request a verified
@@ -1498,8 +1561,10 @@ export class DefaultActionExecutor implements ActionExecutor {
           params: actionParams as Record<string, unknown> | undefined,
           requestId: request.requestId,
         };
-        const verified = await this.getEffectVerifier().verifyAction(effectParams, signature, () =>
-          this.performAction(element, request.action, actionParams, registered)
+        const verified = await this.getEffectVerifier().verifyAction(
+          effectParams,
+          signature,
+          dispatch
         );
         result = verified.result;
         effectVerification = verified.verification;
@@ -1515,8 +1580,15 @@ export class DefaultActionExecutor implements ActionExecutor {
           timestamp: Date.now(),
         });
       } else {
-        result = await this.performAction(element, request.action, actionParams, registered);
+        result = await dispatch();
       }
+      // `hover` / `hoverClick` / `unhover` return their forced-hover report as
+      // the dispatch result; it is lifted to the response's own field.
+      if (isForcedHoverResult(request.action, result)) {
+        forcedHover = { ...result.forcedHover };
+        result = undefined;
+      }
+      if (heldRelease) forcedHover = { ...forcedHover, released: heldRelease };
 
       // Visual click feedback — show a brief highlight at the action location
       // for observability during automation (TuriX-CUA inspired pattern)
@@ -1607,6 +1679,7 @@ export class DefaultActionExecutor implements ActionExecutor {
         effectVerification,
         elementResolution,
         snapshotFreshness,
+        ...(forcedHover ? { forcedHover } : {}),
         durationMs: performance.now() - startTime,
         timestamp: Date.now(),
         requestId: request.requestId,
@@ -2745,6 +2818,19 @@ export class DefaultActionExecutor implements ActionExecutor {
       return this.performHoverClick(element, params as MouseAction);
     }
 
+    // `hover` / `unhover` force and release the real CSS `:hover` state
+    // (`forced-hover.ts`). Handled here, before the canonical delegation, for
+    // the same reason as `hoverClick`: ui-bridge-auto's `hover` only fires
+    // synthetic events, which never set `:hover`, and it has no `unhover`.
+    if (action === 'hover') {
+      return this.performForcedHover(element, params);
+    }
+    if (action === 'unhover') {
+      const released = await releaseForcedPseudoState('explicit');
+      const out: ForcedHoverResult = { forcedHover: { released } };
+      return out;
+    }
+
     // Delegate to ui-bridge-auto's canonical action implementation if available.
     // This ensures a single source of truth for action semantics.
     const canonical = getCanonicalPerformAction();
@@ -2764,19 +2850,14 @@ export class DefaultActionExecutor implements ActionExecutor {
       return canonical(element, action, enriched);
     }
 
-    // Fallback: inline implementations (used when ui-bridge-auto is not installed)
-    // Auto-hover parent if element is opacity-hidden (e.g., close button revealed on hover)
-    const computedStyle = window.getComputedStyle(element);
-    if (parseFloat(computedStyle.opacity) === 0 && element.parentElement) {
-      this.performHover(element.parentElement);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
+    // Fallback: inline implementations (used when ui-bridge-auto is not installed).
+    // There is deliberately no implicit parent-hover before an action: a
+    // hover-revealed control is driven by an explicit `hover` (or
+    // `hoverClick`), which forces the real CSS state instead of guessing at
+    // a parent.
     switch (action as StandardAction) {
       case 'click':
         return this.performClick(element, params as MouseAction);
-      case 'hoverClick':
-        return this.performHoverClick(element, params as MouseAction);
       case 'doubleClick':
         return this.performDoubleClick(element, params as MouseAction);
       case 'rightClick':
@@ -2795,8 +2876,6 @@ export class DefaultActionExecutor implements ActionExecutor {
         return this.performFocus(element);
       case 'blur':
         return this.performBlur(element);
-      case 'hover':
-        return this.performHover(element);
       case 'scroll':
         return this.performScroll(element, params as ScrollAction);
       case 'scrollIntoView': {
@@ -2893,6 +2972,38 @@ export class DefaultActionExecutor implements ActionExecutor {
   }
 
   /**
+   * The registry, as the forced-hover module reads it for `revealed`.
+   */
+  private revealSource(): ForcedPseudoElementSource {
+    return { getAllElements: () => this.registry.getAllElements() };
+  }
+
+  /**
+   * `hover`: force the target's real CSS `:hover` state — and its ancestors',
+   * so a `group-hover:` rule keyed on a `.group` ancestor fires — through
+   * `forced-hover.ts`, and send the enter events to the target and its nearest
+   * hoverable ancestor for JS-driven reveals. The hover is HELD until
+   * `unhover`, the next `hover`/`hoverClick`, the completion of a dispatched
+   * write-class action, or its TTL (`holdMs`, default 30 s, ceiling 300 s), so
+   * a following `click` on a revealed control is not refused.
+   *
+   * LIMIT: app JS that reads `el.matches(':hover')` still sees `false`.
+   */
+  private async performForcedHover(
+    element: HTMLElement,
+    params?: Record<string, unknown>
+  ): Promise<ForcedHoverResult> {
+    const applied = await forcePseudoState(element, 'hover', {
+      holdMs: typeof params?.holdMs === 'number' ? params.holdMs : undefined,
+      settleTimeoutMs:
+        typeof params?.settleTimeoutMs === 'number' ? params.settleTimeoutMs : undefined,
+      registry: this.revealSource(),
+      afterMark: () => dispatchHoverEnterChain(element),
+    });
+    return { forcedHover: { applied } };
+  }
+
+  /**
    * Hover-reveal click: a single-dispatch composite that drives a control
    * whose interactivity is gated behind a CSS `:hover` / Tailwind
    * `group-hover` rule.
@@ -2901,51 +3012,34 @@ export class DefaultActionExecutor implements ActionExecutor {
    * `opacity: 0`) in the rest state and only flip them to
    * `pointer-events: auto` when a `.group` ancestor is hovered — the runner's
    * `ZoneHoverActions` (maximize / export / close / "send terminal to a
-   * window") is the canonical example. A normal `click` is refused on the
-   * un-hovered `pointer-events: none` reading, and a separate one-shot `hover`
-   * action doesn't help because the synthetic `:hover` doesn't persist across
-   * the next HTTP `click` call.
+   * window") is the canonical example.
    *
-   * `performHoverClick` resolves that in one call:
-   *   1. Synthesize `pointerenter`/`mouseenter`/`pointerover`/`mouseover` on
-   *      the target AND its nearest hoverable ancestor (the `.group` /
-   *      hover-revealing container), so a `group-hover:pointer-events-auto`
-   *      rule activates.
-   *   2. Wait one animation frame so the style/layout flip is applied.
-   *   3. Perform the normal click dispatch chain.
+   * `performHoverClick`:
+   *   1. Forces the real CSS `:hover` state on the target and its ancestors
+   *      (`forced-hover.ts`: attribute-selector twins of every `:hover` rule),
+   *      so `group-hover:opacity-100 group-hover:pointer-events-auto` actually
+   *      apply, and sends the enter events for JS-driven reveals. Synthetic
+   *      events alone never set `:hover`; that is why this step exists.
+   *   2. Waits (bounded) for the transitions the hover started to finish.
+   *   3. Clicks.
    *
-   * The hover is left in place (no matching `mouseleave`) so the control stays
-   * interactive for the duration of the click — mirroring how a real pointer
-   * would still be over the toolbar at click time.
+   * `hoverClick` is write-class, so the forced hover is released when it
+   * completes (`releaseAfter` in `executeAction`); the response carries the
+   * apply and the verified release under `forcedHover`. When the hover rule
+   * lives in a sheet the page cannot read (cross-origin), the control may stay
+   * `pointer-events: none`; the click still lands because it is a native
+   * `element.click()` and the pointer-events gate is waived for `hoverClick`.
    */
-  private async performHoverClick(element: HTMLElement, options?: MouseAction): Promise<void> {
-    // Hover the nearest hoverable ancestor first (outermost → innermost is
-    // irrelevant for `:hover` activation, but ancestor-then-target matches the
-    // natural pointer-enter order and lets a `group-hover` rule on the
-    // ancestor flip the descendant's pointer-events before we touch it).
-    const ancestor = findHoverableAncestor(element);
-    if (ancestor && ancestor !== element) {
-      this.dispatchHoverEnter(ancestor);
-    }
-    this.dispatchHoverEnter(element);
-
-    // Wait one animation frame so the browser applies the hover-driven style
-    // recomputation (pointer-events / opacity) before we click. Fall back to a
-    // microtask-ish 0ms timeout in environments without rAF (e.g. jsdom).
-    await nextAnimationFrame();
-
+  private async performHoverClick(
+    element: HTMLElement,
+    options?: MouseAction
+  ): Promise<ForcedHoverResult> {
+    const applied = await forcePseudoState(element, 'hover', {
+      registry: this.revealSource(),
+      afterMark: () => dispatchHoverEnterChain(element),
+    });
     this.performClick(element, options);
-  }
-
-  /**
-   * Fire the hover-enter event quartet on a single element. Pointer events are
-   * dispatched alongside their mouse counterparts so both pointer-only
-   * (`onPointerEnter`) and mouse-only (`:hover`, `onMouseEnter`) consumers
-   * react. `pointerenter`/`mouseenter` do not bubble; `pointerover`/`mouseover`
-   * do — dispatching both covers handlers attached either way.
-   */
-  private dispatchHoverEnter(element: HTMLElement): void {
-    dispatchHoverEnter(element);
+    return { forcedHover: { applied } };
   }
 
   private performDoubleClick(element: HTMLElement, options?: MouseAction): void {
@@ -3258,11 +3352,6 @@ export class DefaultActionExecutor implements ActionExecutor {
   private performBlur(element: HTMLElement): void {
     element.blur();
     element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-  }
-
-  private performHover(element: HTMLElement): void {
-    element.dispatchEvent(createMouseEvent('mouseenter', element));
-    element.dispatchEvent(createMouseEvent('mouseover', element));
   }
 
   private async performScroll(
@@ -3714,7 +3803,15 @@ export class DefaultActionExecutor implements ActionExecutor {
     // `hoverClick` is advertised alongside `click` on every clickable type so a
     // hover-gated control (pointer-events:none until group-hover) is drivable
     // in one call without a page/evaluate workaround.
-    const baseActions = ['focus', 'blur', 'hover', 'sendKeys', 'scroll', 'scrollIntoView'];
+    const baseActions = [
+      'focus',
+      'blur',
+      'hover',
+      'unhover',
+      'sendKeys',
+      'scroll',
+      'scrollIntoView',
+    ];
 
     switch (type) {
       case 'button':

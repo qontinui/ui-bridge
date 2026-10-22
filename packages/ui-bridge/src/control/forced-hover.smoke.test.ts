@@ -512,4 +512,50 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('forcePseudoState (real Chromium)', () =>
     expect(rel).toMatchObject({ settled: true, restore: 'verified' });
     await page.close();
   }, 30_000);
+
+  it('executeAction("hover") end to end: the registry flips the revealed control visible, and a write-class click releases it', async () => {
+    const page = await openPage(GROUP_HTML);
+    await page.addStyleTag({ content: TAILWIND_V4_DEV_CSS });
+    const out = await page.evaluate(async () => {
+      const registry = new window.FH.UIBridgeRegistry();
+      registry.registerElement('header', document.getElementById('header'), { type: 'generic' });
+      registry.registerElement('tool', document.getElementById('tool'), { type: 'button' });
+      const executor = new window.FH.DefaultActionExecutor(registry);
+      const visible = (): boolean => registry.getElement('tool').getState().visible;
+      const beforeVisible = visible();
+      const refused = await executor.executeAction('tool', { action: 'click' });
+      const hover = await executor.executeAction('header', { action: 'hover' });
+      const hoveredVisible = visible();
+      let clicked = 0;
+      document.getElementById('tool')!.addEventListener('click', () => (clicked += 1));
+      const click = await executor.executeAction('tool', { action: 'click' });
+      return {
+        beforeVisible,
+        refusedSuccess: refused.success,
+        hoverSuccess: hover.success,
+        revealed: hover.forcedHover?.applied?.revealed?.map((r: { id: string }) => r.id),
+        hoveredVisible,
+        clickSuccess: click.success,
+        clicked,
+        clickRelease: click.forcedHover?.released,
+        afterVisible: visible(),
+        held: window.FH.getForcedPseudoState(),
+      };
+    });
+    expect(out.beforeVisible).toBe(false);
+    expect(out.refusedSuccess).toBe(false);
+    expect(out.hoverSuccess).toBe(true);
+    expect(out.revealed).toContain('tool');
+    expect(out.hoveredVisible).toBe(true);
+    expect(out.clickSuccess).toBe(true);
+    expect(out.clicked).toBe(1);
+    expect(out.clickRelease).toMatchObject({
+      released: true,
+      reason: 'next-action',
+      restore: 'verified',
+    });
+    expect(out.afterVisible).toBe(false);
+    expect(out.held).toBeNull();
+    await page.close();
+  }, 30_000);
 });

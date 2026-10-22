@@ -185,7 +185,10 @@ Conditions:
   both the HTTP executor and the React IPC relay. A hover-revealed
   control (e.g. a `group-hover:pointer-events-auto` close button) is therefore
   NOT `clickable` until it is hovered — use a `hoverClick` action for it
-  rather than waiting on `clickable`.
+  rather than waiting on `clickable`, or `hover` its container first: `hover`
+  forces the real CSS `:hover` state (the target and its ancestors), reports
+  what it revealed under `forcedHover`, and holds it until `unhover`, the next
+  `hover`, a completed write-class action such as the `click`, or `holdMs`.
 - `text-matches` — element exists AND its label/aria-label/title/textContent
   contains `text_match` (pass as a sibling field).
 

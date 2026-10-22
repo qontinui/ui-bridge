@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UIBridgeRegistry } from '../core/registry';
 import { DefaultActionExecutor } from './action-executor';
+import { getForcedPseudoState } from './forced-hover';
 
 describe('DefaultActionExecutor — hoverClick (hover-revealed control)', () => {
   let registry: UIBridgeRegistry;
@@ -165,6 +166,38 @@ describe('DefaultActionExecutor — hoverClick (hover-revealed control)', () => 
     const result = await executor.executeAction('nested-btn', { action: 'hoverClick' });
     expect(result.success, `hoverClick failed: ${result.error}`).toBe(true);
     expect(clicked).toBe(true);
+  });
+
+  it('hoverClick drives a PURE-CSS group-hover control (no JS listener) by forcing :hover, and leaves nothing held', async () => {
+    // The real ZoneHoverActions shape: nothing in JS reacts to the hover; only
+    // a `.group:hover` rule flips the button interactive. Synthetic enter
+    // events alone never set `:hover`, so this used to "succeed" only through
+    // the pointer-events waiver. Now the rule itself is forced.
+    const style = document.createElement('style');
+    style.textContent = `.gated { pointer-events: none; } .group:hover .gated { pointer-events: auto; }`;
+    document.head.appendChild(style);
+    const group = document.createElement('div');
+    group.className = 'group';
+    const button = document.createElement('button');
+    button.className = 'gated';
+    group.appendChild(button);
+    container.appendChild(group);
+    registry.registerElement('css-btn', button, { type: 'button', label: 'Close' });
+    let pointerEventsAtClick = '';
+    button.addEventListener('click', () => {
+      pointerEventsAtClick = getComputedStyle(button).pointerEvents;
+    });
+    try {
+      const result = await executor.executeAction('css-btn', { action: 'hoverClick' });
+      expect(result.success, `hoverClick failed: ${result.error}`).toBe(true);
+      expect(pointerEventsAtClick).toBe('auto');
+      expect(result.forcedHover?.applied?.rulesCloned).toBe(1);
+      expect(result.forcedHover?.released).toMatchObject({ released: true, restore: 'verified' });
+      expect(getComputedStyle(button).pointerEvents).toBe('none');
+      expect(getForcedPseudoState()).toBeNull();
+    } finally {
+      style.remove();
+    }
   });
 
   it('advertises hoverClick alongside click on discovered buttons', async () => {
