@@ -20,6 +20,8 @@ export {
   ACTION_VERB_SYNONYMS,
   suggestAction,
   describeUnknownAction,
+  unknownActionContext,
+  UnknownActionError,
   type UnknownActionHint,
 } from './actionVocabulary';
 

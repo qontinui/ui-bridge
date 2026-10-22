@@ -37,6 +37,10 @@ export interface ControlActionRequest extends NativeActionRequest {
 export interface ControlActionResponse extends NativeActionResponse {
   /** Request ID for correlation */
   requestId?: string;
+  /** `UNKNOWN_ACTION` when the element does not implement the requested verb. */
+  code?: string;
+  /** On an `UNKNOWN_ACTION` refusal, the verb the caller most likely meant. */
+  didYouMean?: string;
   /** Retry count */
   retryCount?: number;
 }

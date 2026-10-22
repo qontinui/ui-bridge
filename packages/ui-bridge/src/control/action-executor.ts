@@ -159,7 +159,12 @@ import type { SemanticSnapshotManager } from '../ai/semantic-snapshot';
 import type { SemanticSnapshot } from '../ai/types';
 import type { ComponentSignatureArms, SignatureLookup } from './effect-signatures';
 import { performDragSequence } from './drag-sequence';
-import { describeUnknownAction, type UnknownActionHint } from './actionVocabulary';
+import {
+  describeUnknownAction,
+  unknownActionContext,
+  UnknownActionError,
+  type UnknownActionHint,
+} from './actionVocabulary';
 import type {
   ActionParams,
   EffectSignature,
@@ -258,7 +263,8 @@ const SUPPORTED_ACTIONS = new Set<string>([
 /**
  * Unknown-action refusal for one element: lists the element's own verbs
  * (advertised `actions` + custom actions; the built-in list when it advertises
- * none) and the "did you mean" suggestion — see `./actionVocabulary`.
+ * none, which is then genuinely what it accepts) and a "did you mean" drawn
+ * only from that list — see `./actionVocabulary`.
  */
 function unknownActionHintFor(
   action: string,
@@ -267,12 +273,10 @@ function unknownActionHintFor(
   advertised: readonly string[] = registered?.actions ?? []
 ): UnknownActionHint {
   const custom = Object.keys(registered?.customActions ?? {});
-  const all = [...SUPPORTED_ACTIONS, ...custom];
   const own = [...advertised, ...custom];
   return describeUnknownAction(action, {
     elementId,
-    accepted: own.length > 0 ? own : all,
-    fallback: all,
+    accepted: own.length > 0 ? own : [...SUPPORTED_ACTIONS, ...custom],
   });
 }
 
@@ -1235,11 +1239,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           error: message,
           failureDetails: buildActionFailureDetails('UB-UNSUPPORTED-ACTION', message, {
             elementId,
-            context: {
-              action: actionName,
-              supportedActions: hint.supportedActions,
-              didYouMean: hint.didYouMean,
-            },
+            context: { action: actionName, ...unknownActionContext(hint) },
             durationMs: performance.now() - startTime,
           }),
           durationMs: performance.now() - startTime,
@@ -1693,7 +1693,11 @@ export class DefaultActionExecutor implements ActionExecutor {
           durationMs: performance.now() - startTime,
         });
       } else {
-        failureDetails = buildActionFailureDetails('UB-ACTION-FAILED', message, {
+        // An unknown verb raised inside dispatch reports the same errorCode as
+        // the early gate (`UB-UNSUPPORTED-ACTION`), not a generic failure.
+        const errorCode =
+          error instanceof UnknownActionError ? 'UB-UNSUPPORTED-ACTION' : 'UB-ACTION-FAILED';
+        failureDetails = buildActionFailureDetails(errorCode, message, {
           elementId,
           // The canonical `errorCode` stays `UB-ACTION-FAILED` — the handler's
           // vocabulary is not the SDK taxonomy. Its `code` and the fields it
@@ -2896,11 +2900,7 @@ export class DefaultActionExecutor implements ActionExecutor {
           owner,
           owner?.actions ?? this.inferActions(element)
         );
-        throw Object.assign(new Error(hint.message), {
-          code: 'UNKNOWN_ACTION',
-          supportedActions: hint.supportedActions,
-          didYouMean: hint.didYouMean,
-        });
+        throw new UnknownActionError(hint);
       }
     }
   }
