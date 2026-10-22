@@ -51,6 +51,7 @@ import {
   readInteractionBlockers,
 } from './a11y';
 import { createStableRef } from './stable-ref';
+import { clearRegistryStamp, isRegistryStamp, markRegistryStamp } from './bridge-stamp';
 import {
   computeSnapshotIdentity,
   computeMountFold,
@@ -446,6 +447,13 @@ function captureFormControlState(
 interface ElementStateOptions {
   /** See `ElementState.paintsText`. */
   paintsText?: boolean;
+  /**
+   * Hit-test on the dense painted-text grid. Only an EXPLICIT `paintsText:
+   * true` registration gets it: an implicit `<canvas>` (media discovery
+   * registers up to 200 of them) keeps the nine-point grid and the 48px
+   * centre-only rule, so the dense grid stays a handful per page.
+   */
+  denseSampling?: boolean;
 }
 
 /**
@@ -506,7 +514,7 @@ function getElementState(element: HTMLElement, options: ElementStateOptions = {}
     rect,
     computedStyle,
     inViewport,
-    paintsText
+    options.denseSampling === true
   );
 
   const state: ElementState = {
@@ -773,7 +781,8 @@ const PAINTED_TEXT_EDGE_INSET_PX = 8;
  * falls entirely inside it. The edge rows sit `min(8px, 2% of height)` in from
  * each edge, so they land on the first and last text row.
  *
- * Dense sampling is limited to `paintsText` elements: a handful per page,
+ * Dense sampling is limited to EXPLICIT `paintsText: true` registrations
+ * (an implicitly painted `<canvas>` keeps the nine-point grid): a handful per page,
  * against a hot path that refuses a blanket multiplier (see
  * `OCCLUSION_PERIMETER_MIN_PX`). The centre stays first, like the nine-point
  * grid's.
@@ -870,6 +879,15 @@ interface VisibilityVerdict {
  */
 function describeOccluder(hit: Element): string {
   const el = hit as HTMLElement;
+  const ownStamp = el.getAttribute('data-ui-bridge-id');
+  if (ownStamp) return ownStamp;
+  // The hit carries a DOM id of its own: that is an identity, and naming it
+  // by a registered ANCESTOR instead would blame the container for an
+  // unregistered overlay inside it (and hide a modal's `#id` from the
+  // expected-overlay matcher).
+  if (el.id) return describeDomNode(el);
+  // An anonymous piece (an <svg> path, a canvas layer) of a registered
+  // widget is that widget.
   const registered = el.closest<HTMLElement>('[data-ui-bridge-id]');
   const id = registered?.getAttribute('data-ui-bridge-id');
   if (id) return id;
@@ -916,7 +934,7 @@ function computeVisibilityVerdict(
   rect: DOMRect,
   style: CSSStyleDeclaration,
   inViewport: boolean,
-  paintsText: boolean
+  denseSampling: boolean
 ): VisibilityVerdict {
   if (rect.width === 0 || rect.height === 0) return { visible: false, reason: 'no-layout' };
   if (style.display === 'none') return { visible: false, reason: 'hidden' };
@@ -937,11 +955,11 @@ function computeVisibilityVerdict(
 
   // Adaptive: the centre alone for small elements, the full perimeter for
   // elements big enough to be partially covered in a way a reader would
-  // notice, and the dense grid for painted text (see
+  // notice, and the dense grid for an explicit painted-text surface (see
   // `paintedTextSamplePoints`).
   const wide = rect.width >= OCCLUSION_PERIMETER_MIN_PX;
   const tall = rect.height >= OCCLUSION_PERIMETER_MIN_PX;
-  const points = paintsText
+  const points = denseSampling
     ? paintedTextSamplePoints(rect.height)
     : wide || tall
       ? OCCLUSION_SAMPLE_POINTS
@@ -1387,13 +1405,15 @@ export class UIBridgeRegistry {
   getCanvasCoverage(): CanvasCoverageMeasured | undefined {
     if (typeof document === 'undefined') return undefined;
     try {
+      const all = Array.from(document.getElementsByTagName('canvas'));
+      if (all.length === 0) return { state: 'measured', canvases: 0, attributed: 0, unattributed: [] };
       const byNode = this.elementsByNode();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       let canvases = 0;
       let attributed = 0;
       const unattributed: UnattributedCanvas[] = [];
-      for (const canvas of Array.from(document.getElementsByTagName('canvas'))) {
+      for (const canvas of all) {
         const rect = canvas.getBoundingClientRect();
         if (rect.width < OCCLUSION_PERIMETER_MIN_PX || rect.height < OCCLUSION_PERIMETER_MIN_PX) {
           continue;
@@ -1956,12 +1976,16 @@ export class UIBridgeRegistry {
        * layer: layers are descendants, and a descendant hit counts as self.
        *
        * Defaults to `true` for a `<canvas>` element and `false` otherwise.
+       * The implicit canvas default carries the attribution and the painted
+       * `hidesText`, but NOT the dense grid: only an explicit `true` pays for
+       * 81 probes, since media discovery may register hundreds of canvases.
        */
       paintsText?: boolean;
     } = {}
   ): RegisteredElement {
     const type = options.type ?? inferElementType(element);
     const paintsText = options.paintsText ?? element?.tagName === 'CANVAS';
+    const denseSampling = options.paintsText === true;
     const actions = options.actions ?? inferActions(type);
 
     // Resolve the owning window. Default ("main") elements leave the
@@ -2023,7 +2047,7 @@ export class UIBridgeRegistry {
       value: undefined,
     };
     const computeState = (): ElementState => {
-      const live = getElementState(element, { paintsText });
+      const live = getElementState(element, { paintsText, denseSampling });
       const overlay = stateOverridesRef.value;
       if (!overlay) return live;
       // Shallow-merge: cached overlay wins for fields the action wrote
@@ -2121,11 +2145,24 @@ export class UIBridgeRegistry {
     // `describeOccluder` resolves an occluder through this attribute, and an
     // unstamped direct registration used to surface as a bare `div.x`. An
     // existing stamp is never overwritten: it is a developer-assigned id.
-    if (
-      typeof element?.hasAttribute === 'function' &&
-      !element.hasAttribute('data-ui-bridge-id')
-    ) {
-      element.setAttribute('data-ui-bridge-id', actualId);
+    //
+    // A stamp the registry writes for a non-scanner registration is
+    // remembered (`markRegistryStamp`): it does not outrank the node's own
+    // name sources (`a11y.ts`), and `unregisterElement` removes it again.
+    // The scanner (`origin: 'auto'`) always owned its stamp outright, and
+    // keeps doing so.
+    if (typeof element?.hasAttribute === 'function') {
+      if (!element.hasAttribute('data-ui-bridge-id')) {
+        element.setAttribute('data-ui-bridge-id', actualId);
+        if (registered.origin !== 'auto') markRegistryStamp(element);
+      } else if (
+        isRegistryStamp(element) &&
+        element.getAttribute('data-ui-bridge-id') !== actualId
+      ) {
+        // Our own stamp from an earlier registration of this node under a
+        // different id: keep it naming the current entry.
+        element.setAttribute('data-ui-bridge-id', actualId);
+      }
     }
     // F3: sticky latch + per-window/per-route tally
     this.everHadRegistrationsFlag = true;
@@ -2373,6 +2410,19 @@ export class UIBridgeRegistry {
       }
       registered.mounted = false;
       bucket.delete(id);
+      // Take back a stamp the registry wrote for this registration, so the
+      // node stops naming an entry that no longer exists (and the
+      // auto-scanner, which registers any `[data-ui-bridge-id]` node, does
+      // not adopt it under the stale id).
+      const node = registered.element;
+      if (
+        node &&
+        isRegistryStamp(node) &&
+        node.getAttribute('data-ui-bridge-id') === id
+      ) {
+        node.removeAttribute('data-ui-bridge-id');
+        clearRegistryStamp(node);
+      }
       // F3: drop this element from the per-window/per-route tally. Note we do
       // NOT clear `everHadRegistrationsFlag` — it's a one-way latch that stays
       // true for the rest of the registry's lifetime so callers can tell
