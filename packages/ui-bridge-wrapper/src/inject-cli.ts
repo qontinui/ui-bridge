@@ -162,6 +162,19 @@ Exec (Variant A — one-shot; presence of any --exec/--exec-stdin selects this m
       mediaOverrideList {}
         What is still overridden — the proof the page ended restored.
 
+  Hiding text for one frame (dev control, served by the injected runtime):
+
+      textVisibility {"hidden":true,"ttlMs":30000}
+        Make every glyph on the page transparent (colour, text fill, SVG text
+        fill, text-shadow), with transitions off so the frame is not caught
+        mid-fade; nothing moves, and currentColor borders and icons keep their
+        colour. Capture frame A before and frame B after: inside a text
+        element's box the two differ exactly where its glyphs paint. A TTL
+        (default 30000 ms) restores the page if the run dies.
+      textVisibility {"hidden":false}
+        Restore exactly (the style attributes read back byte for byte);
+        "restore":{"verified":true} is a clean restore.
+
   Exec output & exit code:
     One JSON line per action, in order, on stdout — ALWAYS one line per action,
     including failures. An action that succeeded prints {"action":..,"result":..}.
