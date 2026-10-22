@@ -54,16 +54,25 @@
  *    constructed stylesheet adopted into the document and every open shadow
  *    root walked sets `transition-property: none`, `-webkit-text-fill-color:
  *    transparent` and `text-shadow: none` on them, `!important`, behind a
- *    `:not(#qtv#qtv#qtv)` that lifts its specificity over any ordinary rule.
+ *    `:not(#qtv#qtv#qtv)` that outranks any unlayered `!important` rule with
+ *    fewer than four ids. An `!important` rule inside an `@layer`, or one
+ *    with four or more ids, still wins over it.
  *    Not `color`: a pseudo-element's `currentColor` is often a shape (a
  *    chevron border, a mask icon), and the fill colour hides its glyphs
  *    alone. An engine without constructable stylesheets (`coverage.
  *    pseudoStyleSheets: 0`) leaves pseudo-elements to inherit the hide.
- *  - A marker, `--qontinui-tv: <id>`, inline on every hidden element. A copy
+ *  - A marker, `--qontinui-tv: <id>:<original>:<hash>`, inline on every hidden
+ *    element: its record's id, its original `style` attribute (base64, or
+ *    `n` for none, `u` for unknown), and a hash of the hide it wrote. A copy
  *    of a hidden element (`cloneNode`, jQuery `.clone()`, a snapshot cache)
  *    arrives carrying the hide AND the marker, so it is recognised: it takes
  *    the originals of the element it was copied from instead of recording the
- *    hide as its own (`coverage.clones`). The restore removes the marker.
+ *    hide as its own (`coverage.clones`). A copy whose record is gone (made
+ *    during an earlier hide) restores from the original the marker carries:
+ *    exactly, when the rest of its attribute is still the hide's. The restore
+ *    removes the marker. `--qontinui-tv` is therefore a RESERVED custom
+ *    property name: a page must not use it, and an element that carries one
+ *    when a hide begins is taken for such a copy.
  *
  * NOT COVERED, by the same token: a shadow root attached AFTER the hide (no
  * mutation announces `attachShadow`), closed shadow roots (unreachable from
@@ -71,7 +80,8 @@
  * visible in frame B. And a copy of a hidden element that the app keeps OFF
  * the document and inserts only after the restore (a snapshot restored later)
  * carries the hide, because nothing is watching by then; a later hide that
- * meets one recognises the stale marker and records it without the hide.
+ * meets one recognises the stale marker and restores it from the original
+ * the marker carries.
  *
  * Elements added while text is hidden are hidden too (counted as
  * `coverage.lateAdded`). Their pins are read with every hidden ancestor's
@@ -449,7 +459,7 @@ interface ElementRecord {
   el: Element;
   /** The element's inline style object (live; the same object for its lifetime). */
   style: CSSStyleDeclaration;
-  /** This element's marker value. */
+  /** This element's marker id (the first part of its marker value). */
   marker: string;
   /** What was planned for it; a copy of it reuses this. */
   plan: Plan;
@@ -702,6 +712,70 @@ const HIDE_VALUES = new Map<string, string>([
   ...CLIP_TEXT_VALUES,
 ]);
 
+/** FNV-1a, 32-bit, base 36: a short fingerprint of an attribute string. */
+function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+/** `n` for no attribute, `u` for unknown, else `s` + base64 of the UTF-8 text. */
+function encodeOriginal(value: string | null | undefined): string {
+  if (value === undefined) return 'u';
+  if (value === null) return 'n';
+  let binary = '';
+  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
+  return `s${btoa(binary)}`;
+}
+
+/** The inverse of {@link encodeOriginal}; `undefined` for unknown or malformed. */
+function decodeOriginal(token: string | undefined): string | null | undefined {
+  if (token === 'n') return null;
+  if (!token || token[0] !== 's') return undefined;
+  try {
+    const binary = atob(token.slice(1));
+    return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  } catch {
+    return undefined;
+  }
+}
+
+/** A marker's parts. Base64 has no `:`, so the split is unambiguous. */
+function parseMarker(value: string): {
+  id: string;
+  original: string | null | undefined;
+  hash: string | undefined;
+} {
+  const [id = '', original, hash] = value.split(':');
+  return { id, original: decodeOriginal(original), hash: hash || undefined };
+}
+
+/**
+ * An inline style's declarations, marker excluded, as `prop:value:priority`
+ * lines read off the CSSOM (longhands, in order). Text serializations of one
+ * declaration block differ between a live element and a re-parse (jsdom drops
+ * a trailing `!important`); the CSSOM does not.
+ */
+function canonicalInline(style: CSSStyleDeclaration): string {
+  const lines: string[] = [];
+  for (let i = 0; i < style.length; i++) {
+    const prop = style.item(i);
+    if (prop === MARKER) continue;
+    lines.push(`${prop}:${style.getPropertyValue(prop)}:${style.getPropertyPriority(prop)}`);
+  }
+  return lines.join('\n');
+}
+
+/** The inline style a `style` attribute text parses to, on a detached scratch element. */
+function inlineStyleOf(el: Element, attr: string | null): CSSStyleDeclaration {
+  const scratch = el.ownerDocument.createElement('div');
+  if (attr !== null) scratch.setAttribute('style', attr);
+  return scratch.style;
+}
+
 /** How one element is to be recorded, decided before any write. */
 interface Target {
   el: Element;
@@ -710,6 +784,8 @@ interface Target {
   source: ElementRecord | null;
   /** It carries a marker no record of this hide owns (a stale copy). */
   stale: boolean;
+  /** The marker it arrived carrying, or `''`. */
+  markerValue: string;
 }
 
 /**
@@ -733,9 +809,10 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
     const style = styleOf(el);
     if (!style) continue;
     planned.add(el);
-    const marker = style.getPropertyValue(MARKER).trim();
-    const source = marker ? (s.byMarker.get(marker) ?? null) : null;
-    targets.push({ el, style, source, stale: marker !== '' && source === null });
+    const markerValue = style.getPropertyValue(MARKER).trim();
+    const id = markerValue ? parseMarker(markerValue).id : '';
+    const source = id ? (s.byMarker.get(id) ?? null) : null;
+    targets.push({ el, style, markerValue, source, stale: markerValue !== '' && source === null });
   }
   if (targets.length === 0) return;
   const read = (): Array<Target & { plan: Plan }> =>
@@ -752,7 +829,7 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
         read
       )
     : read();
-  for (const { el, style, source, stale, plan } of plans) {
+  for (const { el, style, source, stale, markerValue: carriedMarker, plan } of plans) {
     const marker = `${s.markerPrefix}-${s.nextMarker++}`;
     const record: ElementRecord = {
       el,
@@ -788,14 +865,28 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
       }
       s.coverage.clones += 1;
     } else if (stale) {
-      // A copy from an earlier hide, whose record is gone: a fixed hide value
-      // it carries is the hide, not the element's.
-      record.originalAttr = undefined;
-      for (const prop of record.values.keys()) {
-        const now = readInline(style, prop);
-        const hideValue = HIDE_VALUES.get(prop);
-        const isHide = prop === MARKER || (hideValue !== undefined && now.value === hideValue);
-        record.originals.set(prop, isHide ? emptyInline() : now);
+      // A copy from an earlier hide, whose record is gone. Its marker carries
+      // the original: exact when the rest of its attribute is still the hide
+      // that marker's hash names, per owned property otherwise.
+      const carried = parseMarker(carriedMarker);
+      if (carried.original !== undefined) {
+        const untouched =
+          carried.hash !== undefined &&
+          fnv1a(canonicalInline(inlineStyleOf(el, el.getAttribute('style')))) === carried.hash;
+        record.originalAttr = untouched ? carried.original : undefined;
+        const parsed = inlineStyleOf(el, carried.original);
+        for (const prop of record.values.keys()) {
+          record.originals.set(prop, prop === MARKER ? emptyInline() : readInline(parsed, prop));
+        }
+      } else {
+        // No original carried: a fixed hide value it carries is the hide.
+        record.originalAttr = undefined;
+        for (const prop of record.values.keys()) {
+          const now = readInline(style, prop);
+          const hideValue = HIDE_VALUES.get(prop);
+          const isHide = prop === MARKER || (hideValue !== undefined && now.value === hideValue);
+          record.originals.set(prop, isHide ? emptyInline() : now);
+        }
       }
       s.coverage.clones += 1;
     } else {
@@ -806,9 +897,16 @@ function hideElements(elements: Element[], s: HiddenState, late: boolean): void 
     s.records.set(el, record);
     s.byMarker.set(marker, record);
     for (const [prop, value] of record.values) {
+      if (prop === MARKER) continue;
       style.setProperty(prop, value, IMPORTANT);
       record.ours.set(prop, readInline(style, prop));
     }
+    // The marker last: it names the hide written so far (its hash) and the
+    // original, so a copy that outlives this hide can still be restored.
+    const markerValue = `${marker}:${encodeOriginal(record.originalAttr)}:${fnv1a(canonicalInline(style))}`;
+    record.values.set(MARKER, markerValue);
+    style.setProperty(MARKER, markerValue, IMPORTANT);
+    record.ours.set(MARKER, readInline(style, MARKER));
     record.written = el.getAttribute('style');
     s.coverage.elements += 1;
     if (late) s.coverage.lateAdded += 1;
@@ -1112,6 +1210,15 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
     }
   }
   unadoptSheet(s);
+  // Empty it too: a root this control never saw (a design system that copied
+  // document.adoptedStyleSheets into a new shadow root) may still hold it.
+  if (s.sheet) {
+    try {
+      s.sheet.replaceSync('');
+    } catch {
+      // Verified below.
+    }
+  }
 
   // Verify by reading back — every element, in the document or not.
   let exact = 0;
@@ -1143,6 +1250,7 @@ function restore(trigger: TextVisibilityRestore['trigger']): TextVisibilityResto
   for (const root of s.sheetRoots) {
     if (adoptable(root) && s.sheet && root.adoptedStyleSheets.includes(s.sheet)) verified = false;
   }
+  if (s.sheet && s.sheet.cssRules.length > 0) verified = false;
 
   const result: TextVisibilityRestore = {
     trigger,
@@ -1219,10 +1327,15 @@ export function setTextVisibility(raw: unknown): TextVisibilityResult {
   return handleOwn(raw);
 }
 
-/** True while text is hidden (asked of the owning copy when the schema differs). */
-export function textHidden(): boolean {
+/**
+ * True while text is hidden, false when it is not, and `null` when this copy
+ * cannot know: another copy of the SDK owns the state under a different
+ * schema and left no `hidden` probe to ask (then {@link setTextVisibility}
+ * answers `STATE_SCHEMA_MISMATCH` too).
+ */
+export function textHidden(): boolean | null {
   const foreign = foreignSlot();
-  if (foreign) return typeof foreign.hidden === 'function' ? foreign.hidden() : false;
+  if (foreign) return typeof foreign.hidden === 'function' ? foreign.hidden() : null;
   return slot().state !== null;
 }
 

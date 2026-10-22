@@ -373,4 +373,98 @@ describe.skipIf(!PLAYWRIGHT_AVAILABLE)('text visibility (real Chromium)', () => 
     // 4. The DOM and every computed style read back identical.
     expect(after).toEqual(before);
   }, 60_000);
+
+  it('empties the sheet a root it never saw copied, and restores a copy that outlived its hide exactly', async () => {
+    const args = parseArgs([
+      '--url',
+      url,
+      '--viewport',
+      '400x240',
+      '--exec',
+      'getControlSnapshot {}',
+      '--quiet',
+    ]);
+    const transport = createTransport({ kind: 'injected', options: buildTransportOptions(args) });
+    type EvalPage = { evaluate<R, A>(fn: (a: A) => R, arg: A): Promise<R> };
+    transport.register('__eval', (p: unknown, ctx: unknown) =>
+      (ctx as { page: EvalPage }).page.evaluate(
+        (what: string) => {
+          const w = window as unknown as { __ds?: ShadowRoot; __keep?: HTMLElement };
+          if (what === 'host') {
+            const host = document.createElement('div');
+            host.id = 'ds-host';
+            document.body.appendChild(host);
+            return null;
+          }
+          if (what === 'copySheets') {
+            // A design system attaches a shadow root after the hide (no
+            // mutation announces it) and copies the document's sheets in.
+            const root = document.getElementById('ds-host')!.attachShadow({ mode: 'open' });
+            root.innerHTML = '<p>in a design-system root</p>';
+            root.adoptedStyleSheets = [...document.adoptedStyleSheets];
+            w.__ds = root;
+            // And a copy of a hidden element is kept off the page.
+            w.__keep = document.getElementById('box')!.cloneNode(true) as HTMLElement;
+            w.__keep.id = 'box-kept';
+            return document.adoptedStyleSheets.length;
+          }
+          if (what === 'rules') {
+            return w.__ds!.adoptedStyleSheets.reduce((n, sheet) => n + sheet.cssRules.length, 0);
+          }
+          if (what === 'insertKeep') {
+            document.body.appendChild(w.__keep!);
+            return w.__keep!.style.getPropertyValue('color');
+          }
+          const styles = [
+            document.getElementById('box')!.getAttribute('style'),
+            w.__keep!.getAttribute('style'),
+          ];
+          w.__keep!.remove();
+          document.getElementById('ds-host')!.remove();
+          return styles;
+        },
+        (p as { what: string }).what
+      )
+    );
+    const lines: ExecLine[] = [];
+    const run = async (action: string, payload: unknown): Promise<void> => {
+      const anyError = await executeActions(
+        transport,
+        [{ action, payload }],
+        () => null,
+        (line) => lines.push(line)
+      );
+      expect(anyError, JSON.stringify(lines.filter((l) => l.error))).toBe(false);
+    };
+    let sheetsAdopted: unknown;
+    let rulesAfter: unknown;
+    let keptColour: unknown;
+    let styles: unknown;
+    try {
+      await transport.ready();
+      await transport.dispatch('__eval', { what: 'host' });
+      await run('textVisibility', { hidden: true });
+      sheetsAdopted = await transport.dispatch('__eval', { what: 'copySheets' });
+      await run('textVisibility', { hidden: false });
+      rulesAfter = await transport.dispatch('__eval', { what: 'rules' });
+      // Inserted after the restore: it still carries the first hide...
+      keptColour = await transport.dispatch('__eval', { what: 'insertKeep' });
+      // ...until a later hide recognises it and restores it from its marker.
+      await run('textVisibility', { hidden: true });
+      await run('textVisibility', { hidden: false });
+      styles = await transport.dispatch('__eval', { what: 'styles' });
+    } finally {
+      await transport.close().catch(() => {});
+    }
+    expect(sheetsAdopted).toBe(1);
+    // L-C: the root this control never saw still lists the sheet, but it is empty.
+    expect(rulesAfter).toBe(0);
+    expect(lines[1]!.result).toMatchObject({ restore: { verified: true } });
+    // L-D: the copy that outlived its hide is restored exactly.
+    expect(keptColour).toBe('transparent');
+    expect(lines[2]!.result).toMatchObject({ coverage: { clones: 1 } });
+    expect(lines[3]!.result).toMatchObject({ restore: { verified: true } });
+    const box = 'position:absolute;left:380px;top:5px;width:10px;height:10px;background:rgb(1,2,3)';
+    expect(styles).toEqual([box, box]);
+  }, 60_000);
 });

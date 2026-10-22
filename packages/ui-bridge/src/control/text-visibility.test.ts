@@ -575,6 +575,53 @@ describe('a copy of a hidden element', () => {
     expect(inline(p, '--qontinui-tv')).toEqual(['', '']);
   });
 
+  it('a copy kept off the page and inserted after the restore is restored exactly by a later hide (L-D)', async () => {
+    document.head.innerHTML =
+      '<style>#row { border: 2px solid; background: rgb(200, 200, 200) }</style>';
+    document.body.innerHTML =
+      '<ul><li id="row">row</li><li id="styled" style="padding: 1px; font-family: &quot;Ünïcødé&quot;">s</li></ul>';
+    const styledOriginal = document.getElementById('styled')!.getAttribute('style');
+    hide();
+    const keep = document.getElementById('row')!.cloneNode(true) as HTMLElement;
+    const keepStyled = document.getElementById('styled')!.cloneNode(true) as HTMLElement;
+    show();
+    // Inserted after the restore: nothing is watching, so they carry the hide.
+    document.querySelector('ul')!.append(keep, keepStyled);
+    await flushObservers();
+    expect(inline(keep, 'color')).toEqual(['transparent', 'important']);
+    expect(inline(keep, 'border-top-color')[1]).toBe('important');
+    const again = hide();
+    expect(again.coverage.clones).toBe(2);
+    expect(show().restore).toMatchObject({ verified: true, drift: [] });
+    expect(keep.hasAttribute('style')).toBe(false);
+    expect(keepStyled.getAttribute('style')).toBe(styledOriginal);
+  });
+
+  it('a stale copy the app restyled is restored per property from the original it carries (L-D)', async () => {
+    document.head.innerHTML =
+      '<style>#row { border: 2px solid; background: rgb(200, 200, 200) }</style>';
+    document.body.innerHTML = '<ul><li id="row" style="padding: 1px">row</li></ul>';
+    hide();
+    const keep = document.getElementById('row')!.cloneNode(true) as HTMLElement;
+    show();
+    keep.style.setProperty('margin', '3px');
+    document.querySelector('ul')!.append(keep);
+    await flushObservers();
+    hide();
+    show();
+    expect(inline(keep, 'padding')).toEqual(['1px', '']);
+    expect(inline(keep, 'margin')).toEqual(['3px', '']);
+    for (const prop of [
+      'color',
+      'border-top-color',
+      'background-color',
+      'transition-property',
+      '--qontinui-tv',
+    ]) {
+      expect(inline(keep, prop), prop).toEqual(['', '']);
+    }
+  });
+
   it('the marker is gone after an exact restore', () => {
     document.body.innerHTML = '<p style="margin: 1px">x</p>';
     hide();
@@ -659,6 +706,8 @@ describe('a slot another copy owns under a different schema', () => {
       success: false,
       code: 'STATE_SCHEMA_MISMATCH',
     });
+    // This copy cannot know, and says so rather than answering false.
+    expect(textHidden()).toBeNull();
     expect(document.body.innerHTML).toBe(before);
   });
 });
